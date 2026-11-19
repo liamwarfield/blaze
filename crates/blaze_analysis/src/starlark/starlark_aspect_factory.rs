@@ -102,6 +102,9 @@ impl StarlarkAspectFactory {
                 let mut eval = Evaluator::new(&module);
                 eval.extra = Some(thread);
                 eval.set_forbid_recursion(!thread.semantics.allow_recursion);
+                // Java: net/starlark/java/eval/StringModule.java:326 and lib/json/Json.java:346 read
+                // the thread's semantics (`--internal_starlark_utf_8_byte_strings`).
+                eval.set_utf8_byte_strings(thread.semantics.utf8_byte_strings());
                 eval.set_max_callstack_size(opts.max_callstack_size.max(1))
                     .expect("fresh evaluator");
 

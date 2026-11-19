@@ -1,0 +1,2 @@
+SYNTAX lex_hex_empty.star:1:7: invalid hex literal
+SYNTAX lex_hex_empty.star:1:7: invalid base-16 integer literal: 0x

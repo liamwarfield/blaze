@@ -1,0 +1,2 @@
+import %workspace%/a.bazelrc
+try-import %workspace%/b.bazelrc

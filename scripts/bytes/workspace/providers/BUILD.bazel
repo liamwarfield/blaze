@@ -1,0 +1,12 @@
+load(":defs.bzl", "prov_rule")
+
+config_feature_flag(
+    name = "flag",
+    allowed_values = ["à🐷", "b"],
+    default_value = "à🐷",
+)
+
+prov_rule(
+    name = "prov",
+    flag = ":flag",
+)

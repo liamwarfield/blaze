@@ -67,6 +67,7 @@ pub(crate) fn iterate_chars<'v>(
     }))
 }
 
+#[allow(dead_code)] // BLAZE PATCH 0043: no `codepoints` method
 pub(crate) fn iterate_codepoints<'v>(
     string: StringValue<'v>,
     heap: Heap<'v>,

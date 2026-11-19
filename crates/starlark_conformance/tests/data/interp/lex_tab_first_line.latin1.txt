@@ -1,0 +1,5 @@
+SYNTAX lex_tab_first_line.star:1:2: Tab characters are not allowed for indentation. Use spaces instead.
+SYNTAX lex_tab_first_line.star:1:1: indentation error
+SYNTAX lex_tab_first_line.star:1:10: syntax error at 'outdent': expected expression
+SYNTAX lex_tab_first_line.star:1:1: contains syntax errors
+SYNTAX lex_tab_first_line.star:1:10: contains syntax errors

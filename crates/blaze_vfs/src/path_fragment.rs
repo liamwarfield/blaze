@@ -5,6 +5,8 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, LazyLock};
 
+use blaze_util::string_encoding::internal_to_unicode;
+
 use crate::os_path_policy::{HOST_POLICY, NORMALIZED, OsPathPolicy};
 
 // Java: com/google/devtools/build/lib/vfs/PathFragment.java:60 PathFragment.OS
@@ -372,29 +374,40 @@ impl PathFragment {
 
     /// Returns true iff `other` is an ancestor of this path, ignoring case.
     ///
-    /// Java compares UTF-16 code units with `String.regionMatches(ignoreCase=true, ...)`; this
-    /// compares Unicode scalar values with the same simple (single-char) case mappings.
+    /// Java converts both paths with `internalToUnicode` and compares UTF-16 code units with
+    /// `String.regionMatches(ignoreCase=true, ...)`; this compares the Unicode chars of the
+    /// same prefix with the same simple (single-char) case mappings, and measures lengths in
+    /// UTF-16 units as Java does.
     // Java: com/google/devtools/build/lib/vfs/PathFragment.java:435 PathFragment.startsWithIgnoringCase
     pub fn starts_with_ignoring_case(&self, other: &PathFragment) -> bool {
         // Drive strings are ASCII only and hence can be checked without conversion to Unicode.
         if self.get_drive_str_length() != other.get_drive_str_length() {
             return false;
         }
-        let this_chars: Vec<char> = self.normalized_path.chars().collect();
-        let other_chars: Vec<char> = other.normalized_path.chars().collect();
-        if other_chars.len() > this_chars.len() {
+        // Convert to regular Unicode strings so that Unicode case mappings are applied correctly.
+        let normalized_path_unicode = internal_to_unicode(&self.normalized_path);
+        let other_normalized_path_unicode = internal_to_unicode(&other.normalized_path);
+        let this_units: Vec<u16> = normalized_path_unicode.encode_utf16().collect();
+        let other_units: Vec<u16> = other_normalized_path_unicode.encode_utf16().collect();
+        if other_units.len() > this_units.len() {
             return false;
         }
-        if !this_chars
-            .iter()
-            .zip(other_chars.iter())
-            .all(|(&a, &b)| chars_equal_ignoring_case(a, b))
+        let this_prefix: Vec<char> =
+            char::decode_utf16(this_units[..other_units.len()].iter().copied())
+                .map(|r| r.unwrap_or('\u{FFFD}'))
+                .collect();
+        let other_chars: Vec<char> = other_normalized_path_unicode.chars().collect();
+        if this_prefix.len() != other_chars.len()
+            || !this_prefix
+                .iter()
+                .zip(other_chars.iter())
+                .all(|(&a, &b)| chars_equal_ignoring_case(a, b))
         {
             return false;
         }
-        this_chars.len() == other_chars.len()
-            || other.normalized_path.len() == self.get_drive_str_length()
-            || this_chars[other_chars.len()] == SEPARATOR_CHAR
+        this_units.len() == other_units.len()
+            || other.normalized_path.chars().count() == self.get_drive_str_length()
+            || this_units[other_units.len()] == SEPARATOR_CHAR as u16
     }
 
     /// Returns true iff `other`, considered as a list of path segments, is relative and a suffix

@@ -25,9 +25,8 @@ use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use super::http_connector::{HttpTransport, UrlConnection};
 use super::proxy_helper::{ProxyInfo, ProxyType};
 use super::streams::InputStream;
-use blaze_util::string_encoding::{latin1_decode, latin1_encode_lossy};
+use blaze_util::string_encoding::{internal_to_unicode, latin1_decode, latin1_encode_lossy};
 
-use crate::authandtls::basic_http_authentication_encode;
 use crate::errors::{IoException, IoExceptionKind};
 use crate::uri::JavaUri;
 
@@ -219,13 +218,16 @@ fn read_response_head(reader: &mut impl BufRead) -> Result<ResponseHead, IoExcep
     let status_line = read_head_line(reader)?.ok_or_else(unexpected_eof)?;
     let mut parts = status_line.splitn(3, ' ');
     let version = parts.next().unwrap_or("");
-    let code = parts.next().and_then(|c| c.trim().parse::<i32>().ok());
+    // Java `String.trim()` strips chars <= ' ' only (not U+0085 or U+00A0, chars of the
+    // Latin-1-decoded line).
+    let java_trim = |s: &str| s.trim_matches(|c: char| c <= ' ').to_string();
+    let code = parts.next().and_then(|c| java_trim(c).parse::<i32>().ok());
     let (Some(code), true) = (code, version.starts_with("HTTP/")) else {
         return Err(IoException::new(format!(
             "Invalid Http response: {status_line}"
         )));
     };
-    let message = parts.next().unwrap_or("").trim().to_string();
+    let message = java_trim(parts.next().unwrap_or(""));
     // Names with the untrimmed text after the colon; `None` is a line without a colon, which
     // `MessageHeader` keeps under a null key (nothing looks those up).
     let mut raw: Vec<(Option<String>, String)> = Vec::new();
@@ -508,9 +510,24 @@ fn host_header(host: &str, port: i32, default_port: u16) -> String {
     }
 }
 
+/// The `Proxy-Authorization` value of a `CONNECT` tunnel.
+///
+/// Java: bazel/repository/downloader/ProxyHelper.java:330-333 hands the credentials to the JDK's
+/// `Authenticator` as `internalToUnicode(username)` / `internalToUnicode(password)`, and the
+/// JDK's `sun.net.www.protocol.http.BasicAuthentication` encodes `user + ":" + password` as
+/// ISO-8859-1 (`?` for a char above U+00FF). Checked on the oracle's JDK (Zulu 25.0.2): user `é`,
+/// password `pw` gives `Basic 6Tpwdw==`. Plain-HTTP proxying uses the request property set by
+/// `HttpConnector` instead (`basic_http_authentication_encode`, the internal bytes).
 fn proxy_authorization(proxy: &ProxyInfo) -> Option<String> {
+    use base64::Engine as _;
     match (proxy.username(), proxy.password()) {
-        (Some(u), Some(p)) => Some(basic_http_authentication_encode(u, p)),
+        (Some(u), Some(p)) => {
+            let plain = format!("{}:{}", internal_to_unicode(u), internal_to_unicode(p));
+            Some(format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode(latin1_encode_lossy(&plain))
+            ))
+        }
         _ => None,
     }
 }
@@ -809,6 +826,31 @@ impl HttpTransport for SocketTransport {
 mod tests {
     use super::*;
 
+    /// Byte-strings review 2026-11-20 S1-4. Expected values from the oracle's JDK (Zulu 25.0.2,
+    /// `-Dfile.encoding=ISO-8859-1`): an `HttpURLConnection` through an HTTP proxy, after a 407,
+    /// sends `Proxy-authorization: Basic 6Tpwdw==` for the `Authenticator` user `é` (U+00E9,
+    /// what `internalToUnicode` makes of C3 A9) and password `pw`. A char above U+00FF is `?`
+    /// (`Basic Pzpwdw==` for `中`).
+    #[test]
+    fn connect_tunnel_credentials_are_latin1_of_the_unicode_string() {
+        use blaze_util::string_encoding::latin1_decode;
+        let proxy = |url: &str| {
+            super::super::proxy_helper::create_proxy(Some(&latin1_decode(url.as_bytes()))).unwrap()
+        };
+        assert_eq!(
+            proxy_authorization(&proxy("http://é:pw@127.0.0.1:3128")).unwrap(),
+            "Basic 6Tpwdw=="
+        );
+        assert_eq!(
+            proxy_authorization(&proxy("http://中:pw@127.0.0.1:3128")).unwrap(),
+            "Basic Pzpwdw=="
+        );
+        assert_eq!(
+            proxy_authorization(&proxy("http://user:pass@127.0.0.1:3128")).unwrap(),
+            "Basic dXNlcjpwYXNz"
+        );
+    }
+
     fn read_all(body: &mut BodyStream<&'static [u8]>) -> Result<Vec<u8>, IoException> {
         let mut out = Vec::new();
         let mut buf = [0u8; 5];
@@ -937,6 +979,16 @@ mod tests {
         let e = read_response_head(&mut &b""[..]).unwrap_err();
         assert_eq!(e.kind, IoExceptionKind::SocketException);
         assert_eq!(e.get_message(), "Unexpected end of file from server");
+    }
+
+    /// Byte-strings review 2026-11-20 S2-6: the status line is Latin-1 text and its parts are
+    /// trimmed as Java's `String.trim()` does (chars <= ' '), which keeps U+0085 and U+00A0.
+    #[test]
+    fn status_line_trim_keeps_latin1_spaces() {
+        let mut raw = &b"HTTP/1.1 200 OK\xa0\x85\r\n\r\n"[..];
+        let head = read_response_head(&mut raw).unwrap();
+        assert_eq!(head.code, 200);
+        assert_eq!(head.message, "OK\u{a0}\u{85}");
     }
 
     #[test]

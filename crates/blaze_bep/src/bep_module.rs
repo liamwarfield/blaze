@@ -64,7 +64,7 @@ use crate::buildeventstream::generic_build_event::{
 };
 use crate::buildeventstream::transport::BuildEventTransport;
 use crate::buildeventstream::transports::file_transport::{
-    BinaryFormatFileTransport, JsonFormatFileTransport,
+    BinaryFormatFileTransport, JsonFormatFileTransport, TextFormatFileTransport,
 };
 use crate::events::actions_events::ActionExecutedEvent;
 use crate::events::analysis_events::{BuildInfoEvent, NoBuildEvent, TargetConfiguredEvent};
@@ -259,7 +259,23 @@ impl BuildEventStreamerBuilder {
         let mut errors = Vec::new();
 
         if !bes_stream_options.build_event_text_file.is_empty() {
-            blaze_util::unported!("TextFormatFileTransport (protobuf TextFormat is not ported)");
+            match open_output(
+                &ctx.workspace_or_home,
+                &bes_stream_options.build_event_text_file,
+            ) {
+                Ok(out) => transports.push(Arc::new(TextFormatFileTransport::new(
+                    out,
+                    bep_options.clone(),
+                    uploader_supplier
+                        .uploader_for(bes_stream_options.build_event_text_file_path_conversion),
+                    artifact_group_namer.clone(),
+                    bes_stream_options.build_event_text_file_upload_mode,
+                ))),
+                Err(_) => errors.push(format!(
+                    "Unable to write to '{}'. Omitting --build_event_text_file.",
+                    bes_stream_options.build_event_text_file
+                )),
+            }
         }
         if !bes_stream_options.build_event_binary_file.is_empty() {
             match open_output(

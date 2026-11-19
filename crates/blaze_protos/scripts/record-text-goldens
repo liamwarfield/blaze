@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Records the TextFormat golden files of crates/blaze_protos/tests/data/text from the pinned
+# oracle (Bazel 9.3.2) on a tiny scratch workspace (~/.cache/blaze/work/protos-text-ws).
+# Usage: crates/blaze_protos/scripts/record-text-goldens [help]
+# Writes bep.pb + bep.txt (one build, --build_event_binary_file and --build_event_text_file),
+# cquery.pb + cquery.txt (--output=proto / --output=textproto) and aquery.txt
+# (--output=textproto). Runs the oracle under systemd-run with MemoryMax=12G.
+set -euo pipefail
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,7p' "$0"; exit 0; fi
+crate="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+data="$crate/tests/data/text"
+ws="$HOME/.cache/blaze/work/protos-text-ws"
+ur="$HOME/.cache/blaze/oracle-out/ur-protos-text"
+bazel="$HOME/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64"
+mkdir -p "$ws" "$data"
+cat > "$ws/MODULE.bazel" <<'M'
+module(name = "protos_text_ws")
+M
+printf 'hello\n' > "$ws/in.txt"
+cat > "$ws/BUILD" <<'B'
+genrule(
+    name = "gen",
+    srcs = ["in.txt"],
+    outs = ["out.txt"],
+    cmd = "cat $< > $@ && echo 'a=b <c> & d é \"q\" \\\\ \t' >> $@",
+    tags = ["manual-not", "x=y", "ünï"],
+)
+
+filegroup(
+    name = "fg",
+    srcs = [
+        "in.txt",
+        ":gen",
+    ],
+)
+B
+run() {
+  systemd-run --user --collect --quiet --pipe --wait --same-dir -p MemoryMax=12G -p MemorySwapMax=0 \
+    --setenv=HOME="$HOME" --setenv=PATH=/usr/bin:/bin \
+    "$bazel" --output_user_root="$ur" --nohome_rc --nosystem_rc "$@"
+}
+cd "$ws"
+c=(--repository_cache="$HOME/.cache/blaze/repo-cache" --color=no --curses=no)
+run cquery "${c[@]}" '//:all' --output=proto > "$data/cquery.pb"
+run cquery "${c[@]}" '//:all' --output=textproto > "$data/cquery.txt"
+run aquery "${c[@]}" '//:gen' --output=textproto > "$data/aquery.txt"
+run clean "${c[@]}"
+run build "${c[@]}" //:fg --build_event_binary_file="$data/bep.pb" \
+  --build_event_text_file="$data/bep.txt"
+run shutdown
+ls -l "$data"

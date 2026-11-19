@@ -11,9 +11,13 @@
 //!   `write_message_field`), not `prost::Message::encode`. prost writes a oneof at the position
 //!   of its lowest field number and drops default map keys and values; Java does neither.
 //! - JSON: [`json::JsonFormat::printer`], a port of `com.google.protobuf.util.JsonFormat`.
+//! - Text: [`text_format::printer`] and [`text_format::get_parser`], a port of
+//!   `com.google.protobuf.TextFormat`, driven by the runtime descriptors of [`descriptors`].
 //! - Map fields are `Vec<XxxEntry>` in insertion order (Java's `MapField` order); keep keys
 //!   unique, as a Java map would.
 
+pub mod descriptors;
+pub mod dynamic_message;
 pub mod java;
 pub mod json;
 pub mod text_format;

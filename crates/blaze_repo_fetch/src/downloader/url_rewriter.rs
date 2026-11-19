@@ -424,11 +424,11 @@ impl UrlRewriter {
                 continue;
             }
             if let Some(user_info) = url.url.get_user_info() {
-                // PORT: Java encodes userInfo.getBytes(ISO_8859_1); identical for ASCII.
-                let bytes: Vec<u8> = user_info.chars().map(|c| c as u32 as u8).collect();
+                // Java `userInfo.getBytes(ISO_8859_1)`: `?` for a char above U+00FF.
                 let token = format!(
                     "Basic {}",
-                    base64::engine::general_purpose::STANDARD.encode(bytes)
+                    base64::engine::general_purpose::STANDARD
+                        .encode(blaze_util::string_encoding::latin1_encode_lossy(&user_info))
                 );
                 let mut h = IndexMap::new();
                 h.insert("Authorization".to_string(), vec![token]);

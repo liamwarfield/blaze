@@ -79,6 +79,8 @@ pub struct FieldInfo {
     pub java_type_name: &'static str,
     pub rust_type_name: &'static str,
     pub default_converter: fn() -> Option<Arc<dyn Converter>>,
+    /// `Class.isEnum()` / `getEnumConstants()` ([`FieldType::enum_constants`]).
+    pub enum_constants: fn() -> Option<Vec<String>>,
 }
 
 impl FieldInfo {
@@ -92,6 +94,7 @@ impl FieldInfo {
             java_type_name: T::JAVA_TYPE_NAME,
             rust_type_name: std::any::type_name::<T>(),
             default_converter: T::default_converter,
+            enum_constants: T::enum_constants,
         }
     }
 }

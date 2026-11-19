@@ -1240,6 +1240,9 @@ impl<T: JavaEnum> Converter for EnumConverter<T> {
     fn convert(&self, input: Option<&str>, _: Option<&ConversionContext>) -> ConvResult {
         Ok(Some(Value::new(self.convert_enum(non_null(input))?)))
     }
+    fn enum_type_constants(&self) -> Option<Vec<String>> {
+        Some(T::values().iter().map(|v| v.java_to_string()).collect())
+    }
     // Java: com/google/devtools/common/options/EnumConverter.java:63 EnumConverter.getTypeDescription
     fn get_type_description(&self) -> String {
         ascii_lower(&join_english_list(
@@ -1295,6 +1298,9 @@ impl<T: JavaEnum> BoolOrEnumConverter<T> {
 impl<T: JavaEnum> Converter for BoolOrEnumConverter<T> {
     fn convert(&self, input: Option<&str>, _: Option<&ConversionContext>) -> ConvResult {
         Ok(Some(Value::new(self.convert_enum(non_null(input))?)))
+    }
+    fn enum_type_constants(&self) -> Option<Vec<String>> {
+        self.inner.enum_type_constants()
     }
     fn get_type_description(&self) -> String {
         self.inner.get_type_description()
@@ -1369,7 +1375,8 @@ macro_rules! option_enum {
         $crate::option_field_type!(
             $name,
             ::core::stringify!($name),
-            raw = [ $( $name::$variant ),* ][0]
+            raw = [ $( $name::$variant ),* ][0],
+            enum
         );
     };
     (@str $variant:ident) => { ::core::stringify!($variant) };
@@ -1404,6 +1411,11 @@ macro_rules! enum_converter {
             }
             fn reverse_for_starlark(&self, v: &$crate::Value) -> ::std::string::String {
                 $crate::converters::EnumConverter::<$enum>::new($type_name).reverse_for_starlark(v)
+            }
+            fn enum_type_constants(
+                &self,
+            ) -> ::core::option::Option<::std::vec::Vec<::std::string::String>> {
+                $crate::converters::EnumConverter::<$enum>::new($type_name).enum_type_constants()
             }
         }
     };
@@ -1440,6 +1452,11 @@ macro_rules! bool_or_enum_converter {
             }
             fn reverse_for_starlark(&self, v: &$crate::Value) -> ::std::string::String {
                 Self::inner().reverse_for_starlark(v)
+            }
+            fn enum_type_constants(
+                &self,
+            ) -> ::core::option::Option<::std::vec::Vec<::std::string::String>> {
+                Self::inner().enum_type_constants()
             }
             fn is_bool_or_enum(&self) -> bool {
                 true

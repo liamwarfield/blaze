@@ -3,6 +3,7 @@
 //! - `script_test`: runs Bazel's `src/test/java/net/starlark/java/eval/testdata/*.star`.
 //! - `dialect`: the Bazel dialect and universe, as seen from stock starlark-rust.
 //! - `harness`: the ScriptTest predeclared builtins.
+//! - `probe`: one file as `java/StarlarkProbe.java` runs it on Bazel's interpreter.
 //! - `traceback`: CLI evaluation with Bazel-format errors (rendering lives in blaze_starlark).
 //!
 //! The integration spikes moved to crates/blaze_starlark/tests/integration_test.rs; the BUILD
@@ -10,5 +11,6 @@
 
 pub mod dialect;
 pub mod harness;
+pub mod probe;
 pub mod script_test;
 pub mod traceback;

@@ -1,0 +1,1 @@
+EVAL in call to strip(), parameter 'chars' got value of type 'int', want 'string or NoneType'

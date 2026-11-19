@@ -1,0 +1,1 @@
+SYNTAX str_int_unicode_digit.star:1:13: invalid escape sequence: \\u. Use '\\\\' to insert '\\'.

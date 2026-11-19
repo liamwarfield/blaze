@@ -64,6 +64,10 @@ pub struct Dialect {
     ///
     /// [Starlark spec proposal](https://github.com/bazelbuild/starlark/issues/91).
     pub enable_f_strings: bool,
+    /// BLAZE PATCH 0040: are `b"..."` bytes literals (and `br`/`rb`) supported? Enabled in
+    /// every built-in dialect (upstream behaviour). Bazel has none: its lexer reads `b"x"` as the
+    /// identifier `b` followed by a string literal (net/starlark/java/syntax/Lexer.java:855-877).
+    pub enable_bytes_literals: bool, // BLAZE PATCH 0040
     /// Like `#[non_exhaustive]`, but allows struct expression.
     ///
     /// [Explanation](https://github.com/rust-lang/rust-clippy/issues/6559).
@@ -93,6 +97,7 @@ impl Dialect {
         enable_load_reexport: true, // But they plan to change it
         enable_top_level_stmt: false,
         enable_f_strings: false,
+        enable_bytes_literals: true, // BLAZE PATCH 0040
         _non_exhaustive: (),
     };
 
@@ -108,6 +113,7 @@ impl Dialect {
         enable_load_reexport: true,
         enable_top_level_stmt: true,
         enable_f_strings: false,
+        enable_bytes_literals: true, // BLAZE PATCH 0040
         _non_exhaustive: (),
     };
 
@@ -123,6 +129,7 @@ impl Dialect {
         enable_load_reexport: true,
         enable_top_level_stmt: true,
         enable_f_strings: true,
+        enable_bytes_literals: true, // BLAZE PATCH 0040
         _non_exhaustive: (),
     };
 }

@@ -14,7 +14,9 @@ blaze_cmdline = { path = "../blaze_cmdline" }
 blaze_vfs = { path = "../blaze_vfs" }
 indexmap.workspace = true
 regex.workspace = true
+pulldown-cmark.workspace = true
 
 [dev-dependencies]
+blaze_protos = { path = "../blaze_protos" }
 regex.workspace = true
 indexmap.workspace = true

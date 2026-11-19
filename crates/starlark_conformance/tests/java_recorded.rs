@@ -8,96 +8,17 @@
 
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Mutex;
 
-use blaze_starlark::EvalError;
-use blaze_starlark::error::EvalErrorKind;
-use starlark::PrintHandler;
-use starlark::environment::GlobalsBuilder;
-use starlark::environment::Module;
-use starlark::eval::Evaluator;
-use starlark::syntax::AstModule;
-use starlark_conformance::dialect;
-use starlark_conformance::harness::bare_message;
 use starlark_conformance::script_test::ScriptMode;
 
 fn data_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data")
 }
 
-/// The probe's output escaping (StarlarkProbe.out).
-fn escape(s: &str) -> String {
-    let mut out = String::new();
-    for c in s.chars() {
-        let u = c as u32;
-        if c == '\\' {
-            out.push_str("\\\\");
-        } else if u < 0x20 || (0x7f..=0xff).contains(&u) {
-            out.push_str(&format!("\\x{u:02x}"));
-        } else if u > 0xff {
-            out.push_str(&format!("\\u{{{u:04x}}}"));
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
-#[derive(Default)]
-struct Collect(Mutex<Vec<String>>);
-
-impl PrintHandler for Collect {
-    fn println(&self, text: &str) -> starlark::Result<()> {
-        self.0.lock().unwrap().push(escape(text));
-        Ok(())
-    }
-}
-
 /// Runs `name` (a file in tests/data) as the probe does; returns the printed lines.
 fn run(name: &str, mode: ScriptMode) -> Vec<String> {
     let bytes = std::fs::read(data_dir().join(name)).unwrap();
-    let source = match mode {
-        ScriptMode::Latin1 => blaze_util::string_encoding::latin1_decode(&bytes).into_owned(),
-        ScriptMode::Unicode => String::from_utf8(bytes).unwrap(),
-    };
-    let name = name.to_owned();
-    std::thread::Builder::new()
-        .stack_size(1 << 28)
-        .spawn(move || {
-            let (builder, _, _) = dialect::bazel_universe_builder();
-            let mut builder: GlobalsBuilder = builder.with(blaze_starlark::json::register_json);
-            builder.set("_utf8_byte_strings", mode.utf8_byte_strings());
-            let globals = builder.build();
-            let out = Collect::default();
-            let ast = match AstModule::parse(&name, source, &dialect::bzl_dialect()) {
-                Ok(ast) => ast,
-                Err(e) => return vec![syntax_line(&e)],
-            };
-            let result = Module::with_temp_heap(|module| {
-                let mut eval = Evaluator::new(&module);
-                eval.set_forbid_recursion(true);
-                eval.set_utf8_byte_strings(mode.utf8_byte_strings());
-                eval.set_print_handler(&out);
-                eval.eval_module(ast, &globals).map(|_| ())
-            });
-            let mut lines = out.0.into_inner().unwrap();
-            if let Err(e) = result {
-                lines.push(escape(&format!("EVAL {}", bare_message(&e))));
-            }
-            lines
-        })
-        .unwrap()
-        .join()
-        .unwrap()
-}
-
-/// `SYNTAX file:line:col: message` (Java `SyntaxError.toString`).
-fn syntax_line(e: &starlark::Error) -> String {
-    let err = EvalError::from_starlark(e);
-    match &err.kind {
-        EvalErrorKind::Syntax(errors) => escape(&format!("SYNTAX {}", errors[0])),
-        _ => escape(&format!("EVAL {}", err.message)),
-    }
+    starlark_conformance::probe::run(name, &bytes, mode)
 }
 
 fn expected(name: &str, mode: ScriptMode) -> Vec<String> {
@@ -161,4 +82,81 @@ fn java_recorded_unicode_latin1_chars() {
     let bad = compare("latin1_chars.star", ScriptMode::Unicode);
     assert!(bad.is_empty(), "differences from Java:\n{}", bad.join("\n"));
     assert!(Path::new(&data_dir().join("latin1_chars.unicode.txt")).exists());
+}
+
+/// Cases of `tests/data/interp` whose error text is Bazel's in Blaze too (texts Blaze ports:
+/// `fail`, `int()` parsing, the lexer's tab and number-literal errors). Elsewhere the error text
+/// is starlark-rust's (accepted, docs/decisions.md) and only its kind is compared.
+const INTERP_TEXT_COMPARED: &[&str] = &[
+    "lex_tab_",
+    "lex_binary_literal",
+    "lex_float_too_large",
+    "lex_int_00",
+    "str_fail_",
+    "str_int_",
+    "more_i_base0_dec",
+    "more_i_base_neg",
+    "more_i_big_base0_octal",
+    "more_i_double_sign",
+    "more_i_float_str",
+    "more_i_only_prefix",
+    "more_i_sign_after_prefix",
+    "more_i_space_inner",
+];
+
+/// `tests/data/interp/NAME.star` against `NAME.latin1.txt`, recorded on Bazel's interpreter by
+/// `scripts/starlark/interp-diff record-java`. Printed lines must be equal; then Java's first
+/// error line (Java reports every syntax error of a file, starlark-rust the first) must have the
+/// same kind (`SYNTAX`, a lexer/parser/resolver error, or `EVAL`), and for the cases of
+/// [`INTERP_TEXT_COMPARED`] the same text.
+fn compare_interp(name: &str) -> Vec<String> {
+    let dir = data_dir().join("interp");
+    let bytes = std::fs::read(dir.join(name)).unwrap();
+    let got = starlark_conformance::probe::run(name, &bytes, ScriptMode::Latin1);
+    let stem = name.strip_suffix(".star").unwrap();
+    let want: Vec<String> = std::fs::read_to_string(dir.join(format!("{stem}.latin1.txt")))
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let is_error = |l: &String| l.starts_with("SYNTAX ") || l.starts_with("EVAL ");
+    let split = |v: &[String]| {
+        let n = v.iter().position(is_error).unwrap_or(v.len());
+        (v[..n].to_vec(), v.get(n).cloned())
+    };
+    let (want_out, want_err) = split(&want);
+    let (got_out, got_err) = split(&got);
+    let text = INTERP_TEXT_COMPARED.iter().any(|p| stem.starts_with(p));
+    let same_err = match (&want_err, &got_err) {
+        (None, None) => true,
+        (Some(w), Some(g)) if text => w == g,
+        (Some(w), Some(g)) => w.split(' ').next() == g.split(' ').next(),
+        _ => false,
+    };
+    if want_out == got_out && same_err {
+        Vec::new()
+    } else {
+        vec![format!("{name}:\n  java {want:?}\n  rust {got:?}")]
+    }
+}
+
+#[test]
+fn java_recorded_interp() {
+    let mut files: Vec<String> = std::fs::read_dir(data_dir().join("interp"))
+        .unwrap()
+        .filter_map(|e| {
+            let n = e.unwrap().file_name().into_string().unwrap();
+            n.ends_with(".star").then_some(n)
+        })
+        .collect();
+    files.sort();
+    assert!(files.len() >= 140, "{files:?}");
+    let bad: Vec<String> = files.iter().flat_map(|f| compare_interp(f)).collect();
+    assert!(
+        bad.is_empty(),
+        "{} of {} cases differ from Java:\n{}",
+        bad.len(),
+        files.len(),
+        bad.join("\n")
+    );
 }

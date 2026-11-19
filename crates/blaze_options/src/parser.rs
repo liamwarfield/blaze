@@ -6,16 +6,24 @@ use std::sync::Arc;
 use indexmap::{IndexMap, IndexSet};
 
 use crate::converter::ConversionContext;
+use crate::converters::HelpVerbosity;
 use crate::data::OptionsData;
 use crate::definition::{OptionDefinitionRef, OptionsBase, OptionsClass, OptionsClassRef};
 use crate::exception::{ConstructionException, OptionsParsingException};
 use crate::global_rc::GlobalRcUtils;
+use crate::option_filter_descriptions::OptionFilterDescriptions;
+use crate::options_usage::OptionsUsage;
 use crate::parsed::{OptionInstanceOrigin, ParsedOptionRef};
 use crate::parser_impl::{OptionsParserImpl, OptionsParserImplResult};
 use crate::priority::PriorityCategory;
 use crate::tags::OptionDocumentationCategory;
 use crate::value::Value;
 use crate::value_description::OptionValueDescription;
+
+/// Java's `String.trim()`: strips the characters `<= ' '` from both ends.
+fn java_trim(s: &str) -> &str {
+    s.trim_matches(|c: char| c <= ' ')
+}
 
 // Java: com/google/devtools/common/options/OptionsParser.java:111 OptionsParser.STARLARK_SKIPPED_PREFIXES
 /// Skipped prefixes for starlark options.
@@ -340,9 +348,19 @@ impl OptionsParser {
         args: &[&str],
     ) {
         if args.contains(&"--help") {
-            crate::unported!(
-                "OptionsParser.describeOptionsWithDeprecatedCategories (OptionsUsage)"
+            // System.out: a PrintStream with the default charset (ISO-8859-1).
+            let text = format!(
+                "{}\n",
+                self.describe_options_with_deprecated_categories(
+                    &IndexMap::new(),
+                    HelpVerbosity::LONG
+                )
             );
+            let _ = std::io::Write::write_all(
+                &mut std::io::stdout(),
+                &blaze_util::string_encoding::latin1_encode_lossy(&text),
+            );
+            std::process::exit(0);
         }
         if let Err(e) = self.parse_with_priority(
             priority,
@@ -362,9 +380,118 @@ impl OptionsParser {
         }
     }
 
+    /// Returns a description of all the options this parser can digest. In addition to `Option`
+    /// annotations, this method also interprets `OptionsUsage` annotations which give an
+    /// intuitive short description for the options. Options of the same category (see
+    /// `OptionDocumentationCategory`) will be grouped together.
+    ///
+    /// `help_verbosity`: if `LONG`, the options will be described verbosely, including their
+    /// types, defaults and descriptions. If `MEDIUM`, the descriptions are omitted, and if
+    /// `SHORT`, the options are just enumerated.
     // Java: com/google/devtools/common/options/OptionsParser.java:443 OptionsParser.describeOptions
-    pub fn describe_options(&self) -> String {
-        crate::unported!("OptionsParser.describeOptions (OptionsUsage)")
+    pub fn describe_options(&self, help_verbosity: HelpVerbosity) -> String {
+        let mut desc = String::new();
+        let options_by_category = self.get_options_sorted_by_category();
+        let option_category_descriptions =
+            OptionFilterDescriptions::get_option_categories_enum_description();
+        for (category, categorized_option_list) in &options_by_category {
+            let category_description = &option_category_descriptions[category];
+
+            // Describe the category if we're going to end up using it at all.
+            if !categorized_option_list.is_empty() {
+                desc.push('\n');
+                desc.push_str(category_description);
+                desc.push_str(":\n");
+            }
+            // Describe the options in this category.
+            for option_def in categorized_option_list {
+                OptionsUsage::get_usage(
+                    option_def,
+                    &mut desc,
+                    help_verbosity,
+                    &self.impl_.options_data,
+                    true,
+                );
+            }
+        }
+
+        java_trim(&desc).to_string()
+    }
+
+    /// Returns a description of all the options this parser can digest, grouped by the
+    /// deprecated `category` strings.
+    ///
+    /// `category_descriptions`: a mapping from category names to category descriptions.
+    /// Descriptions are optional; if omitted, a string based on the category name will be used.
+    // Java: com/google/devtools/common/options/OptionsParser.java:517 OptionsParser.describeOptionsWithDeprecatedCategories
+    pub fn describe_options_with_deprecated_categories(
+        &self,
+        category_descriptions: &IndexMap<String, String>,
+        help_verbosity: HelpVerbosity,
+    ) -> String {
+        let data = &self.impl_.options_data;
+        let mut desc = String::new();
+        if !data.get_options_classes().is_empty() {
+            let mut all_fields: Vec<OptionDefinitionRef> = Vec::new();
+            for options_class in data.get_options_classes() {
+                all_fields.extend(options_class.definitions());
+            }
+            // OptionDefinition.BY_CATEGORY (a stable sort).
+            all_fields.sort_by(|a, b| {
+                a.get_option_category()
+                    .cmp(b.get_option_category())
+                    .then_with(|| a.get_option_name().cmp(b.get_option_name()))
+            });
+            let mut prev_category: Option<&str> = None;
+
+            for option_definition in all_fields {
+                let category = option_definition.get_option_category();
+                if Some(category) != prev_category
+                    && option_definition.get_documentation_category()
+                        != OptionDocumentationCategory::UNDOCUMENTED
+                {
+                    let description = match category_descriptions.get(category) {
+                        Some(d) => d.clone(),
+                        None => format!("Options category '{}'", category),
+                    };
+                    desc.push('\n');
+                    desc.push_str(&description);
+                    desc.push_str(":\n");
+                    prev_category = Some(category);
+                }
+
+                if option_definition.get_documentation_category()
+                    != OptionDocumentationCategory::UNDOCUMENTED
+                {
+                    OptionsUsage::get_usage(
+                        option_definition,
+                        &mut desc,
+                        help_verbosity,
+                        data,
+                        false,
+                    );
+                }
+            }
+        }
+        java_trim(&desc).to_string()
+    }
+
+    /// Returns a string listing the possible flag completion for this command along with the
+    /// command completion if any. See `OptionsUsage.getCompletion` for more details on the
+    /// format for the flag completion.
+    // Java: com/google/devtools/common/options/OptionsParser.java:557 OptionsParser.getOptionsCompletion
+    pub fn get_options_completion(&self) -> String {
+        let mut desc = String::new();
+
+        self.visit_options(
+            |option_definition| {
+                option_definition.get_documentation_category()
+                    != OptionDocumentationCategory::UNDOCUMENTED
+            },
+            |option_definition| OptionsUsage::get_completion(option_definition, &mut desc),
+        );
+
+        desc
     }
 
     // Java: com/google/devtools/common/options/OptionsParser.java:568 OptionsParser.visitOptions
@@ -386,12 +513,49 @@ impl OptionsParser {
         }
     }
 
-    /// Documented options, grouped by category in declaration order of the categories.
+    /// Returns all documented options loaded in this parser, grouped by categories in display
+    /// order.
     // Java: com/google/devtools/common/options/OptionsParser.java:470 OptionsParser.getOptionsSortedByCategory
     pub fn get_options_sorted_by_category(
         &self,
     ) -> IndexMap<OptionDocumentationCategory, Vec<OptionDefinitionRef>> {
-        crate::unported!("OptionsParser.getOptionsSortedByCategory (OptionFilterDescriptions)")
+        let data = &self.impl_.options_data;
+        if data.get_options_classes().is_empty() {
+            return IndexMap::new();
+        }
+
+        // Get the documented options grouped by category.
+        let mut options_by_categories: IndexMap<
+            OptionDocumentationCategory,
+            Vec<OptionDefinitionRef>,
+        > = IndexMap::new();
+        for options_class in data.get_options_classes() {
+            for option_definition in options_class.definitions() {
+                // Only track documented options.
+                if option_definition.get_documentation_category()
+                    != OptionDocumentationCategory::UNDOCUMENTED
+                {
+                    options_by_categories
+                        .entry(option_definition.get_documentation_category())
+                        .or_default()
+                        .push(option_definition);
+                }
+            }
+        }
+
+        // Put the categories into display order and sort the options in each category.
+        let mut sorted_categories_to_options = IndexMap::new();
+        for category in OptionFilterDescriptions::DOCUMENTATION_ORDER {
+            // PORT: Java's ListMultimap.get returns an empty (non-null) list for a missing key,
+            // so every category in the display order is present.
+            let mut option_list = options_by_categories
+                .get(category)
+                .cloned()
+                .unwrap_or_default();
+            option_list.sort_by(|a, b| a.get_option_name().cmp(b.get_option_name()));
+            sorted_categories_to_options.insert(*category, option_list);
+        }
+        sorted_categories_to_options
     }
 
     // Java: com/google/devtools/common/options/OptionsParser.java:591 OptionsParser.getOptionDescription

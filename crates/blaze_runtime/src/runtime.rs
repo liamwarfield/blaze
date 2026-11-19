@@ -7,7 +7,7 @@ use blaze_events::OutErr;
 use blaze_optdefs::command::blaze_server_startup_options::BlazeServerStartupOptions;
 use blaze_options::definition::{OptionDefinitionRef, OptionsClassRef};
 use blaze_options::{OptionsParser, OptionsParsingException, PriorityCategory};
-use blaze_protos::command_server::RunRequest;
+use blaze_protos::command_server::{ExecRequest, RunRequest, RunResponse};
 use blaze_vfs::{FileSystemRef, Path, PathFragment, UnixFileSystem};
 use indexmap::IndexMap;
 
@@ -261,9 +261,24 @@ impl BlazeRuntime {
             "batch client",
             Some(startup_options_from_command_line),
         );
-        // PORT: result.getExecRequest() (the `run` command) is not ported.
+        let Some(request) = result.get_exec_request() else {
+            // Simple case: we are given an exit code
+            runtime.shutdown();
+            return result.get_exit_code().get_numeric_exit_code();
+        };
+
+        // Not so simple case: we need to execute a binary on shutdown. exec() is not accessible
+        // from Java and is impossible on Windows in any case, so we just execute the binary after
+        // getting out of the way as completely as possible and forward its exit code.
+        // When this code is executed, no locks are held: the client lock is released by the
+        // client before it executes any command and the server lock is handled by
+        // BlazeCommandDispatcher, whose job is done by the time we get here.
+        // PORT: in-process, the client's locks are still held (O_CLOEXEC does not apply to a
+        // child process that is not exec'd from this one); dispatcher.shutdown() and
+        // signalHandler.uninstall() have nothing to release.
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1137 BlazeRuntime.batchMain
         runtime.shutdown();
-        result.get_exit_code().get_numeric_exit_code()
+        run_exec_request_in_batch_mode(request)
     }
 
     /// Server mode for exactly one command: `serverMain` creates the runtime and the gRPC
@@ -274,19 +289,27 @@ impl BlazeRuntime {
         modules: Vec<Arc<dyn BlazeModule>>,
         startup_args: Vec<String>,
         request: RunRequest,
-    ) -> i32 {
+    ) -> RunResponse {
+        // PORT: a server that fails to start exits with this code; in-process it is the
+        // response's.
+        let exit_response = |exit_code: i32| RunResponse {
+            finished: true,
+            exit_code,
+            ..Default::default()
+        };
         let runtime = match Self::new_runtime(modules, &startup_args) {
             Ok(r) => r,
             Err(NewRuntimeError::Options(e)) => {
                 OutErr::system_out_err().print_err_ln(e.get_message());
-                return ExitCode::COMMAND_LINE_ERROR.get_numeric_exit_code();
+                return exit_response(ExitCode::COMMAND_LINE_ERROR.get_numeric_exit_code());
             }
             Err(NewRuntimeError::Abrupt(e)) => {
                 OutErr::system_out_err().print_err_ln(e.get_message());
-                return e
-                    .get_detailed_exit_code()
-                    .get_exit_code()
-                    .get_numeric_exit_code();
+                return exit_response(
+                    e.get_detailed_exit_code()
+                        .get_exit_code()
+                        .get_numeric_exit_code(),
+                );
             }
         };
         // server.pid was written in the C++ launcher; in-process the server is this process.
@@ -341,7 +364,16 @@ impl BlazeRuntime {
             Some(startup_options_tagged_with_bazel_rc),
         );
         runtime.shutdown();
-        result.get_exit_code().get_numeric_exit_code()
+        // Java: com/google/devtools/build/lib/server/GrpcServerImpl.java:644 GrpcServerImpl.executeCommand
+        // PORT: no cookie or command id (the in-process server has no gRPC request ids).
+        RunResponse {
+            finished: true,
+            termination_expected: result.shutdown(),
+            exit_code: result.get_exit_code().get_numeric_exit_code(),
+            exec_request: result.get_exec_request().cloned(),
+            failure_detail: result.get_failure_detail().cloned(),
+            ..Default::default()
+        }
     }
 
     /// Parses the startup arguments twice: once to read `--option_sources`, then with the right
@@ -598,6 +630,68 @@ impl std::hash::Hash for ClassKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         (self.0 as *const _ as usize).hash(state);
     }
+}
+
+/// `batchMain`'s execution of the `run` command's `ExecRequest` as a child process (a
+/// `ProcessBuilder` with inherited I/O), whose exit code it returns.
+// Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1152 BlazeRuntime.batchMain
+fn run_exec_request_in_batch_mode(request: &ExecRequest) -> i32 {
+    use blaze_util::string_encoding::{internal_to_platform, latin1_decode};
+    // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1215 BlazeRuntime.internalBytesToPlatformString
+    // (the bytes are an internal string's; the platform string is the same bytes).
+    let internal = |bytes: &[u8]| latin1_decode(bytes).into_owned();
+    let argv: Vec<String> = request.argv.iter().map(|a| internal(a)).collect();
+    let working_directory = internal(&request.working_directory);
+    if argv.is_empty() {
+        // ProcessBuilder.start: IndexOutOfBoundsException on an empty command.
+        panic!("IndexOutOfBoundsException: ProcessBuilder.start with an empty command");
+    }
+    let mut process = std::process::Command::new(&*internal_to_platform(&argv[0]));
+    process
+        .args(
+            argv[1..]
+                .iter()
+                .map(|a| internal_to_platform(a).into_owned()),
+        )
+        .current_dir(&*internal_to_platform(&working_directory));
+    for name in &request.environment_variable_to_clear {
+        process.env_remove(&*internal_to_platform(&internal(name)));
+    }
+    for variable in &request.environment_variable {
+        process.env(
+            &*internal_to_platform(&internal(&variable.name)),
+            &*internal_to_platform(&internal(&variable.value)),
+        );
+    }
+    match process.status() {
+        // Process.waitFor: the exit status, or 0x80 + the signal number.
+        Ok(status) => {
+            use std::os::unix::process::ExitStatusExt as _;
+            status
+                .code()
+                .unwrap_or_else(|| 0x80 + status.signal().unwrap_or(0))
+        }
+        Err(e) => {
+            // We are in batch mode, thus, stdout/stderr are the same as that of the client.
+            // The message of the JDK's ProcessBuilder.start IOException.
+            let message = format!(
+                "Cannot run program \"{}\" (in directory \"{}\"): error={}, {}",
+                argv[0],
+                working_directory,
+                e.raw_os_error().unwrap_or(0),
+                strerror(e.raw_os_error().unwrap_or(0))
+            );
+            eprintln!("Cannot execute process for 'run' command: {message}");
+            ExitCode::LOCAL_ENVIRONMENTAL_ERROR.get_numeric_exit_code()
+        }
+    }
+}
+
+/// The C library's text of an errno value (the JDK's `error=N, <strerror>` message part).
+fn strerror(errno: i32) -> String {
+    // SAFETY: strerror returns a pointer to a NUL-terminated static or thread-local string.
+    let message = unsafe { std::ffi::CStr::from_ptr(libc::strerror(errno)) };
+    blaze_util::string_encoding::latin1_decode(message.to_bytes()).into_owned()
 }
 
 #[cfg(test)]

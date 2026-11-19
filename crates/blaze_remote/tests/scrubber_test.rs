@@ -588,3 +588,76 @@ fn last_rule_wins() {
 
     assert_eq!(spawn_scrubber.transform_argument("foospam"), "fooeggs");
 }
+
+/// Not in ScrubberTest.java (byte-strings switch, docs/research/07-byte-strings-exec-sites.md
+/// `scrubber.rs`): the patterns run over internal strings (exec paths and arguments: one Latin-1
+/// char per byte), where `java.util.regex.Pattern`'s defaults differ from the `regex` crate's:
+/// `\w \d \s \b \h \v` are ASCII-only, `.` excludes U+0085 (the second byte of `Å`, C3 85) and
+/// `\r`, `(?i)` folds ASCII letters only. Each row is (pattern, internal input,
+/// `shouldOmitInput` i.e. `matcher(input).matches()`, `transformArgument` with the
+/// replacement `<R>`). The expected values were produced by running the Java code of
+/// `SpawnScrubber.shouldOmitInput` / `transformArgument` (Scrubber.java:165,175) with
+/// `java.util.regex.Pattern` of OpenJDK 25 (Bazel 9.3.2 embeds JDK 25.0.2) on the same
+/// strings; none comes from running Blaze.
+#[test]
+fn non_ascii_inputs_follow_java_pattern_defaults() {
+    let cases: &[(&str, &str, bool, &str)] = &[
+        ("\\w+", "\u{c3}\u{a9}", false, "\u{c3}\u{a9}"),
+        ("\\w+", "a\u{c3}\u{a9}b", false, "<R>\u{c3}\u{a9}b"),
+        ("\\d", "\u{c2}\u{b2}", false, "\u{c2}\u{b2}"),
+        ("\\s", "a\u{c2}\u{a0}b", false, "a\u{c2}\u{a0}b"),
+        ("\\W", "\u{c3}\u{a9}", false, "<R>\u{a9}"),
+        ("[\\w]+", "a\u{c3}\u{a9}b", false, "<R>\u{c3}\u{a9}b"),
+        ("[^\\w]", "\u{c3}\u{a9}", false, "<R>\u{a9}"),
+        (
+            "\\bfoo\\b",
+            "\u{c3}\u{a9}foo\u{c3}\u{a9}",
+            false,
+            "\u{c3}\u{a9}<R>\u{c3}\u{a9}",
+        ),
+        ("(?i)\u{e9}", "\u{c3}\u{89}", false, "\u{c3}\u{89}"),
+        ("(?i)foo", "FOO", true, "<R>"),
+        ("(?i)[a-c]+", "ABC", true, "<R>"),
+        (".*", "\u{c3}\u{85}", false, "<R>\u{85}"),
+        ("a.b", "a\u{d}b", false, "a\u{d}b"),
+        ("a..b", "a\u{c2}\u{85}b", false, "a\u{c2}\u{85}b"),
+        ("(?s)a..b", "a\u{c2}\u{85}b", true, "<R>"),
+        ("(?i:x)y", "XY", false, "XY"),
+        ("(?i:x)y", "Xy", true, "<R>"),
+        ("(?i)[^a-z]", "Q", false, "Q"),
+        ("(?i)\\x41", "a", true, "<R>"),
+        ("\\Qa.b\\E", "a.b", true, "<R>"),
+        ("\\Qa.b\\E", "axb", false, "axb"),
+        ("\\h", "\u{c2}\u{a0}", false, "\u{c2}<R>"),
+        ("\\v", "\u{c2}\u{85}", false, "\u{c2}<R>"),
+        ("(?i)\u{c3}", "\u{e3}", false, "\u{e3}"),
+        ("(?i)\u{c3}", "\u{c3}\u{a9}", false, "<R>\u{a9}"),
+        ("(?i)[\u{c0}-\u{de}]", "\u{e9}", false, "\u{e9}"),
+        ("\u{e9}", "\u{c3}\u{a9}", false, "\u{c3}\u{a9}"),
+        (
+            "bazel-out/.*\\.o",
+            "bazel-out/\u{c3}\u{85}n.o",
+            false,
+            "bazel-out/\u{c3}\u{85}n.o",
+        ),
+    ];
+    for &(pattern, input, matches, transformed) in cases {
+        let scrubber = new_scrubber(config_with_transform(config::Transform {
+            omitted_inputs: vec![pattern.to_string()],
+            arg_replacements: vec![replacement(pattern, "<R>")],
+            ..Default::default()
+        }));
+        let spawn = create_spawn();
+        let spawn_scrubber = scrubber.for_spawn(&spawn).unwrap();
+        assert_eq!(
+            spawn_scrubber.should_omit_input(&PathFragment::create(input)),
+            matches,
+            "matches: pattern {pattern:?} input {input:?}"
+        );
+        assert_eq!(
+            spawn_scrubber.transform_argument(input),
+            transformed,
+            "find: pattern {pattern:?} input {input:?}"
+        );
+    }
+}

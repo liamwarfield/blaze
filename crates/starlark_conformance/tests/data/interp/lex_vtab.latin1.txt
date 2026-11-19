@@ -1,0 +1,1 @@
+SYNTAX lex_vtab.star:1:6: invalid character: '\x0b'

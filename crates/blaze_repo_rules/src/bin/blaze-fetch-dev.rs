@@ -296,6 +296,8 @@ fn mod_main(
         match r {
             ModCommandResult::Success => 0,
             ModCommandResult::Failure { exit_code, .. } => *exit_code,
+            // ExitCode.INTERRUPTED
+            ModCommandResult::Interrupted { .. } => 8,
         }
     }
 
@@ -329,6 +331,19 @@ fn mod_main(
         Ok(r) => r,
         Err(r) => return exit_code(&r),
     };
+    if matches!(
+        request.subcommand,
+        blaze_optdefs::misc::mod_options::ModSubcommand::DUMP_REPO_MAPPING
+            | blaze_optdefs::misc::mod_options::ModSubcommand::TIDY
+            | blaze_optdefs::misc::mod_options::ModSubcommand::SHOW_REPO
+    ) {
+        // These subcommands are wired only in `blaze mod` (blaze_runtime).
+        blaze_util::unported!(
+            "ModCommand.execInternal",
+            "{:?} in blaze-fetch-dev (use `blaze mod`)",
+            request.subcommand
+        );
+    }
 
     // PORT: BuildLanguageOptions.toStarlarkSemantics is not wired yet; Bazel's defaults.
     let semantics = StarlarkSemantics::default();
@@ -395,6 +410,7 @@ fn mod_main(
                 &inspector,
                 reporter.as_ref(),
                 &mut out,
+                None,
             );
             out.flush().ok();
             exit_code(&r)

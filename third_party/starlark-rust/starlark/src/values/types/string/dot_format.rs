@@ -114,7 +114,9 @@ impl<'v, T: Iterator<Item = Value<'v>>> FormatArgs<'v, T> {
         }
     }
 
-    fn by_index(&mut self, index: usize) -> anyhow::Result<Value<'v>> {
+    // BLAZE PATCH 0045: a Java `int` index (FormatParser.java:89-96: negative is "No replacement
+    // found for index -1", after the numbering check).
+    fn by_index(&mut self, index: i32) -> anyhow::Result<Value<'v>> { // BLAZE PATCH 0045
         if self.by_order {
             Err(anyhow::anyhow!(
                 "Cannot mix manual field specification and automatic field numbering in format string",
@@ -124,8 +126,8 @@ impl<'v, T: Iterator<Item = Value<'v>>> FormatArgs<'v, T> {
                 self.args.extend(&mut self.iterator);
                 self.by_index = true;
             }
-            match self.args.get(index) {
-                None => Err(ValueError::IndexOutOfBound(index as i32).into()),
+            match usize::try_from(index).ok().and_then(|i| self.args.get(i)) { // BLAZE PATCH 0045
+                None => Err(ValueError::IndexOutOfBound(index).into()), // BLAZE PATCH 0045
                 Some(v) => Ok(*v),
             }
         }
@@ -174,10 +176,14 @@ fn format_capture<'v, T: Iterator<Item = Value<'v>>>(
     if field.is_empty() {
         conv(args.next_ordered()?, result);
         Ok(())
-    } else if field.bytes().all(|c| c.is_ascii_digit()) {
-        let i = usize::from_str(field).map_err(|e| {
-            anyhow::anyhow!("Error parsing `{field}` as a format string index: {e}")
-        })?;
+    // BLAZE PATCH 0045: Java FormatParser.processOpeningBrace (FormatParser.java:85-100): a
+    // field of digits and `-` is an index when `Integer.parseInt` accepts it, else a keyword.
+    } else if let Some(i) = field // BLAZE PATCH 0045
+        .bytes() // BLAZE PATCH 0045
+        .all(|c| c.is_ascii_digit() || c == b'-') // BLAZE PATCH 0045
+        .then(|| i32::from_str(field).ok()) // BLAZE PATCH 0045
+        .flatten() // BLAZE PATCH 0045
+    {
         conv(args.by_index(i)?, result);
         Ok(())
     } else {
@@ -278,10 +284,8 @@ mod tests {
             Some(("abc".to_owned(), "def".to_owned())),
             parse_format_one("abc{}def")
         );
-        assert_eq!(
-            Some(("abc".to_owned(), "def".to_owned())),
-            parse_format_one("abc{!s}def")
-        );
+        // BLAZE PATCH 0045: `{!s}` is the field `!s`, not a conversion.
+        assert_eq!(None, parse_format_one("abc{!s}def"));
         assert_eq!(None, parse_format_one("abc{!r}def"));
         assert_eq!(
             Some(("a{b".to_owned(), "c}d{".to_owned())),

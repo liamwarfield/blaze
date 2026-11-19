@@ -6,14 +6,25 @@
 //! byte-strings semantics flag from the evaluator (`Evaluator::utf8_byte_strings`, starlark-rust
 //! patch 0034), as Java reads `INTERNAL_BAZEL_ONLY_UTF_8_BYTE_STRINGS` from the thread.
 
+use std::fmt;
+
+use allocative::Allocative;
+use starlark::any::ProvidesStaticType;
 use starlark::environment::GlobalsBuilder;
+use starlark::environment::Methods;
+use starlark::environment::MethodsBuilder;
+use starlark::environment::MethodsStatic;
 use starlark::eval::Evaluator;
 use starlark::starlark_module;
+use starlark::starlark_simple_value;
 use starlark::values::Heap;
+use starlark::values::NoSerialize;
+use starlark::values::StarlarkValue;
 use starlark::values::Value;
 use starlark::values::dict::AllocDict;
 use starlark::values::dict::DictRef;
 use starlark::values::list::AllocList;
+use starlark::values::starlark_value;
 
 use crate::printer::quote;
 use crate::structs::StructureMarker;
@@ -708,13 +719,36 @@ pub fn json_indent(s: &str, prefix: &str, indent: &str) -> anyhow::Result<String
     Ok(out)
 }
 
-/// The `json` module (Java: `Json.INSTANCE`, put in the BUILD, .bzl and cquery environments by
-/// StarlarkGlobalsImpl.addCommonUtilToplevels). Register with
-/// `builder.namespace("json", register_json_members)`.
+/// The `json` module value (Java: net/starlark/java/lib/json/Json.java `Json.INSTANCE`,
+/// `@StarlarkBuiltin(name = "json")`, put in the BUILD, .bzl and cquery environments by
+/// StarlarkGlobalsImpl.addCommonUtilToplevels): `type(json)` is "json", and its str/repr is
+/// StarlarkValue's default, `<unknown object net.starlark.java.lib.json.Json>`.
+#[derive(Debug, ProvidesStaticType, NoSerialize, Allocative)]
+pub struct Json;
+
+starlark_simple_value!(Json);
+
+impl fmt::Display for Json {
+    // Java: net/starlark/java/eval/StarlarkValue.java repr (default):
+    // "<unknown object " + getClass().getName() + ">".
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<unknown object net.starlark.java.lib.json.Json>")
+    }
+}
+
+#[starlark_value(type = "json")]
+impl<'v> StarlarkValue<'v> for Json {
+    fn get_methods() -> Option<&'static Methods> {
+        static RES: MethodsStatic = MethodsStatic::new("json", json_methods);
+        Some(RES.methods())
+    }
+}
+
 #[starlark_module]
-pub fn register_json_members(builder: &mut GlobalsBuilder) {
+fn json_methods(builder: &mut MethodsBuilder) {
     /// Java: Json.encode
     fn encode<'v>(
+        #[starlark(this)] _this: Value<'v>,
         #[starlark(require = pos)] x: Value<'v>,
         heap: Heap<'v>,
     ) -> starlark::Result<String> {
@@ -723,6 +757,7 @@ pub fn register_json_members(builder: &mut GlobalsBuilder) {
 
     /// Java: Json.decode
     fn decode<'v>(
+        #[starlark(this)] _this: Value<'v>,
         #[starlark(require = pos)] x: &str,
         // Java @Param(name = "default", named = true): also positional.
         default: Option<Value<'v>>,
@@ -740,6 +775,7 @@ pub fn register_json_members(builder: &mut GlobalsBuilder) {
 
     /// Java: Json.indent
     fn indent<'v>(
+        #[starlark(this)] _this: Value<'v>,
         #[starlark(require = pos)] s: &str,
         #[starlark(require = named, default = "")] prefix: &str,
         #[starlark(require = named, default = "\t")] indent: &str,
@@ -749,6 +785,7 @@ pub fn register_json_members(builder: &mut GlobalsBuilder) {
 
     /// Java: Json.encodeIndent
     fn encode_indent<'v>(
+        #[starlark(this)] _this: Value<'v>,
         #[starlark(require = pos)] x: Value<'v>,
         #[starlark(require = named, default = "")] prefix: &str,
         #[starlark(require = named, default = "\t")] indent: &str,
@@ -759,7 +796,7 @@ pub fn register_json_members(builder: &mut GlobalsBuilder) {
     }
 }
 
-/// Registers the `json` namespace.
+/// Registers the `json` module value.
 pub fn register_json(builder: &mut GlobalsBuilder) {
-    builder.namespace("json", register_json_members);
+    builder.set("json", Json);
 }

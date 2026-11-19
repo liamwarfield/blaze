@@ -232,14 +232,22 @@ impl InProcessServer for ProbeServer {
         self.report(args)
     }
 
-    fn run_command(&self, _startup: &ServerStartup, request: RunRequest) -> i32 {
-        self.report(
-            request
-                .arg
-                .iter()
-                .map(|arg| String::from_utf8_lossy(arg).into_owned())
-                .collect(),
-        )
+    fn run_command(
+        &self,
+        _startup: &ServerStartup,
+        request: RunRequest,
+    ) -> blaze_protos::command_server::RunResponse {
+        blaze_protos::command_server::RunResponse {
+            finished: true,
+            exit_code: self.report(
+                request
+                    .arg
+                    .iter()
+                    .map(|arg| String::from_utf8_lossy(arg).into_owned())
+                    .collect(),
+            ),
+            ..Default::default()
+        }
     }
 
     fn canceller(&self) -> std::sync::Arc<dyn Fn() + Send + Sync> {

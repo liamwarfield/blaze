@@ -1,0 +1,378 @@
+#!/usr/bin/env python3
+"""textproto/compare: check Blaze's protobuf TextFormat printer and parser against Bazel's output.
+
+Usage:
+  scripts/textproto/compare files <bep|cquery|aquery|single> <message type> <binary> <text>
+  scripts/textproto/compare run <project> --binary B --out DIR [--steps build,cquery,aquery]
+  scripts/textproto/compare check DIR
+  scripts/textproto/compare bep-e2e <project> <reference DIR> <candidate DIR> [--verbose]
+  scripts/textproto/compare help
+
+files    Prints <binary> (the binary output of a Bazel invocation) with Blaze's printer
+         (target/debug/blaze-textproto, built with `scripts/cargo-capped build -p blaze_protos
+         --bin blaze-textproto`; override with $BLAZE_TEXTPROTO) and compares the result byte
+         for byte with <text> (the text output of the same invocation). Then round-trips every
+         record: parse(print(m)) == m (Message.equals). Framings: see `blaze-textproto help`.
+run      Runs binary B (the oracle or a Blaze binary) on a fresh copy of the corpus project, as
+         scripts/oracle/record does (clean env, --nohome_rc --nosystem_rc, shared repository
+         cache, memory cap): `mod graph`, then the project command with
+         --build_event_text_file, --build_event_binary_file and --build_event_json_file; then
+         cquery P --output=proto|textproto and aquery deps(P) --output=proto|textproto (P = the
+         project's patterns joined with " + "); then `info` for the path context and
+         `shutdown`. Writes DIR/{bep.txt,bep.pb,bep.json,cquery.pb,cquery.txt,aquery.pb,
+         aquery.txt,*.stderr,exit_codes.json,context.json}. The workspace is
+         ~/.cache/blaze/work/textproto-<DIR name>/<project>, the output user root
+         ~/.cache/blaze/oracle-out/textproto-<DIR name> (both wiped first).
+check    `files` on every pair DIR holds (bep, cquery, aquery), and checks that the text BEP
+         parsed back (blaze-textproto bep-text-to-json) equals DIR/bep.json event by event.
+bep-e2e  Compares the --build_event_text_file of two runs: each is parsed back to JSON events
+         and normalised with the referee's BEP normaliser (scripts/oracle/surfaces.normalise_bep,
+         each run with its own path/user/host context), then compared item by item with the
+         referee's allow list for the project, plus the progress skeleton (as scripts/bep-compare;
+         also reported as a multiset, since the order of announcements varies between runs and
+         even between two transports of one oracle run).
+
+Exit status: 0 when everything compared is identical, 1 on a difference, 2 on a usage error.
+Python 3 standard library only.
+"""
+import argparse
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import socket
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+sys.path.insert(0, os.path.join(ROOT, "scripts", "oracle"))
+import oracle_common as oc  # noqa: E402
+import oracle_compare as cmp  # noqa: E402
+import surfaces  # noqa: E402
+from normalise import Context  # noqa: E402
+
+
+def load_record_module():
+    path = os.path.join(ROOT, "scripts", "oracle", "record")
+    loader = importlib.machinery.SourceFileLoader("oracle_record", path)
+    spec = importlib.util.spec_from_loader("oracle_record", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def tool():
+    return os.environ.get("BLAZE_TEXTPROTO") or os.path.join(ROOT, "target", "debug", "blaze-textproto")
+
+
+PAIRS = [
+    # name, framing, message type, binary file, text file
+    ("bep", "bep", "build_event_stream.BuildEvent", "bep.pb", "bep.txt"),
+    ("cquery", "cquery", "analysis.CqueryResult", "cquery.pb", "cquery.txt"),
+    ("aquery", "aquery", "analysis.ActionGraphContainer", "aquery.pb", "aquery.txt"),
+]
+
+
+AQUERY_LABELS = (b"artifacts", b"actions", b"targets", b"dep_set_of_files", b"configuration",
+                 b"aspect_descriptors", b"rule_classes", b"path_fragments")
+
+
+def split_records(framing, data):
+    """The records of a text output (each with its framing), in output order."""
+    if framing == "bep":
+        # `event {\n` ... `}\n\n`; strings never hold a raw newline.
+        parts = data.split(b"}\n\nevent {\n")
+        return [(b"" if i == 0 else b"event {\n") + part + (b"}\n\n" if i < len(parts) - 1 else b"")
+                for i, part in enumerate(parts)]
+    if framing == "aquery":
+        # `<ActionGraphContainer field> {\n` at column 0 starts a record; no message inside one
+        # has a field with one of these names.
+        records, cur = [], []
+        for line in data.splitlines(keepends=True):
+            if any(line == l + b" {\n" for l in AQUERY_LABELS) and cur:
+                records.append(b"".join(cur))
+                cur = []
+            cur.append(line)
+        if cur:
+            records.append(b"".join(cur))
+        return records
+    return None
+
+
+def compare_files(framing, msg_type, binary, text, label=None):
+    """Prints and round-trips; returns True when identical."""
+    label = label or os.path.basename(text)
+    p = subprocess.run([tool(), "print", framing, msg_type, binary], stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE)
+    if p.returncode != 0:
+        print("%s: blaze-textproto print failed: %s" % (label, p.stderr.decode(errors="replace").strip()))
+        return False
+    with open(text, "rb") as f:
+        expected = f.read()
+    got = p.stdout
+    ok = got == expected
+    if ok:
+        print("%s: printer IDENTICAL (%d bytes)" % (label, len(expected)))
+    elif split_records(framing, expected) is not None and \
+            sorted(split_records(framing, expected)) == sorted(split_records(framing, got)):
+        n = len(split_records(framing, expected))
+        moved = sum(1 for x, y in zip(split_records(framing, expected), split_records(framing, got)) if x != y)
+        print("%s: printer IDENTICAL per record (%d records, %d bytes); record order differs at %d "
+              "positions (the binary and text outputs order records differently)" % (
+                  label, n, len(expected), moved))
+        ok = True
+    else:
+        i = next((k for k in range(min(len(got), len(expected))) if got[k] != expected[k]),
+                 min(len(got), len(expected)))
+        line = expected[:i].count(b"\n") + 1
+        print("%s: printer DIFFERS at byte %d (line %d); expected %d bytes, got %d" % (
+            label, i, line, len(expected), len(got)))
+        print("  expected: %r" % expected[max(0, i - 80):i + 80])
+        print("  got:      %r" % got[max(0, i - 80):i + 80])
+    rp = subprocess.run([tool(), "reprint", framing, msg_type, text], stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE)
+    reprinted = rp.returncode == 0 and rp.stdout == expected
+    print("%s: print(parse(text)) %s" % (
+        label, "IDENTICAL to the text (%d bytes)" % len(expected) if reprinted else
+        "DIFFERS: " + (rp.stderr.decode(errors="replace").strip()[:2000] or "%d vs %d bytes" % (
+            len(rp.stdout), len(expected)))))
+    if framing == "aquery" and not ok:
+        # aquery numbers its records in output order, which differs between two invocations
+        # (parallel output): the binary and text outputs cannot be compared byte for byte; the
+        # printer is judged by print(parse(text)) on the text output.
+        print("%s: (binary and text are separate aquery invocations with differently numbered "
+              "records; not compared)" % label)
+        ok = True
+    ok = ok and reprinted
+    r = subprocess.run([tool(), "roundtrip", framing, msg_type, binary], stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE)
+    summary = r.stdout.decode().strip()
+    print("%s: round trip %s (%s)" % (label, "OK" if r.returncode == 0 else "DIFFERS", summary))
+    if r.returncode != 0:
+        print(r.stderr.decode(errors="replace")[:4000])
+    return ok and r.returncode == 0
+
+
+def cmd_files(argv):
+    if len(argv) != 4:
+        print(__doc__)
+        return 2
+    return 0 if compare_files(*argv) else 1
+
+
+def run_logged(argv, cwd, out_path, err_path):
+    scoped = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "-p", "MemoryMax=12G",
+              "-p", "MemorySwapMax=0", "--", "env", "-i", "HOME=" + oc.HOME,
+              "PATH=/usr/bin:/bin"] + argv
+    with open(out_path, "wb") as out, open(err_path, "wb") as err:
+        p = subprocess.run(scoped, cwd=cwd, stdout=out, stderr=err, stdin=subprocess.DEVNULL)
+    return p.returncode
+
+
+def cmd_run(argv):
+    ap = argparse.ArgumentParser(prog="compare run")
+    ap.add_argument("project")
+    ap.add_argument("--binary", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--steps", default="build,cquery,aquery")
+    a = ap.parse_args(argv)
+    steps = set(a.steps.split(","))
+    rec = load_record_module()
+    spec = oc.load_projects()[a.project] if hasattr(oc, "load_projects") else \
+        json.load(open(os.path.join(ROOT, "corpus", "projects.json")))["projects"][a.project]
+    out = os.path.abspath(a.out)
+    os.makedirs(out, exist_ok=True)
+    name = os.path.basename(out.rstrip("/"))
+    binary = os.path.abspath(oc.expand(a.binary))
+    ws = os.path.join(oc.WORK, "textproto-" + name, a.project)
+    root = os.path.join(oc.OUTPUT_ROOTS, "textproto-" + name)
+    rec.kill_servers(root)
+    rec.make_writable_and_remove(root)
+    os.makedirs(root)
+    rec.prepare_workspace(oc.expand(spec["checkout"]), ws)
+    ws = os.path.realpath(ws)
+    verb, patterns = spec["commands"][0][0], spec["commands"][0][1:]
+    expr = " + ".join(patterns)
+    startup = [binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc"]
+    common = ["--repository_cache=" + oc.REPO_CACHE, "--color=no", "--curses=no"]
+    cmds = [("mod_graph", ["mod", "graph", "--output=json"], None)]
+    if "build" in steps:
+        cmds.append(("build", [verb] + patterns + [
+            "--build_event_text_file=" + os.path.join(out, "bep.txt"),
+            "--build_event_binary_file=" + os.path.join(out, "bep.pb"),
+            "--build_event_json_file=" + os.path.join(out, "bep.json"),
+        ], None))
+    if "cquery" in steps:
+        cmds += [("cquery_proto", ["cquery", expr, "--output=proto"], "cquery.pb"),
+                 ("cquery_textproto", ["cquery", expr, "--output=textproto"], "cquery.txt")]
+    if "aquery" in steps:
+        flags = ["--include_param_files", "--include_file_write_contents"]
+        cmds += [("aquery_proto", ["aquery", "deps(%s)" % expr, "--output=proto"] + flags, "aquery.pb"),
+                 ("aquery_textproto", ["aquery", "deps(%s)" % expr, "--output=textproto"] + flags,
+                  "aquery.txt")]
+    cmds.append(("info", ["info", "output_base", "execution_root", "install_base"], "info.txt"))
+    codes = {}
+    for key, args, stdout_name in cmds:
+        verb_ = args[0]
+        argv_ = startup + [verb_] + common + args[1:]
+        stdout_path = os.path.join(out, stdout_name or (key + ".stdout"))
+        rc = run_logged(argv_, ws, stdout_path, os.path.join(out, key + ".stderr"))
+        codes[key] = rc
+        print("[textproto] %s %s: exit %d" % (a.project, key, rc), flush=True)
+    run_logged(startup + ["shutdown"], ws, os.path.join(out, "shutdown.stdout"),
+               os.path.join(out, "shutdown.stderr"))
+    rec.kill_servers(root)
+    info = rec.parse_info(open(os.path.join(out, "info.txt"), encoding="utf-8", errors="replace").read())
+    output_base = info.get("output_base") or os.path.join(root, hashlib.md5(ws.encode()).hexdigest())
+    paths = {
+        "execroot": info.get("execution_root") or os.path.join(output_base, "execroot", "_main"),
+        "output_base": output_base,
+        "install_base": info.get("install_base"),
+        "output_user_root": root,
+        "workspace": ws,
+        "record_dir": out,
+        "binary": binary,
+        "binary_dir": os.path.dirname(binary),
+        "home": oc.HOME,
+    }
+    user = os.environ.get("USER") or os.path.basename(oc.HOME)
+    host = socket.gethostname().split(".")[0]
+    with open(os.path.join(out, "context.json"), "w") as f:
+        json.dump(Context(paths, user, host).to_dict(), f, indent=1)
+    with open(os.path.join(out, "exit_codes.json"), "w") as f:
+        json.dump(codes, f, indent=1)
+    with open(os.path.join(out, "binary.txt"), "w") as f:
+        f.write("%s %s\n" % (binary, oc.sha256_file(binary) if hasattr(oc, "sha256_file") else ""))
+    return 0
+
+
+def text_bep_events(path):
+    p = subprocess.run([tool(), "bep-text-to-json", path], stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE)
+    if p.returncode != 0:
+        raise SystemExit("bep-text-to-json %s: %s" % (path, p.stderr.decode(errors="replace")))
+    return [json.loads(l) for l in p.stdout.decode("utf-8").splitlines() if l.strip()]
+
+
+def cmd_check(argv):
+    if len(argv) != 1:
+        print(__doc__)
+        return 2
+    d = argv[0]
+    ok = True
+    n = 0
+    for name, framing, msg_type, binary, text in PAIRS:
+        b, t = os.path.join(d, binary), os.path.join(d, text)
+        if not (os.path.exists(b) and os.path.exists(t)):
+            print("%s: not recorded" % name)
+            continue
+        if os.path.getsize(b) == 0 and os.path.getsize(t) == 0:
+            print("%s: both empty (see %s/*.stderr)" % (name, d))
+            continue
+        n += 1
+        ok = compare_files(framing, msg_type, b, t, label="%s/%s" % (os.path.basename(d.rstrip("/")), name)) and ok
+    jp, tp = os.path.join(d, "bep.json"), os.path.join(d, "bep.txt")
+    if os.path.exists(jp) and os.path.exists(tp):
+        from_text = text_bep_events(tp)
+        with open(jp, encoding="utf-8") as f:
+            from_json = [json.loads(l) for l in f if l.strip()]
+        ct = [oc.canonical(x) for x in from_text]
+        cj = [oc.canonical(x) for x in from_json]
+        same = sorted(ct) == sorted(cj)
+        moved = sum(1 for x, y in zip(ct, cj) if x != y)
+        print("bep: text parsed back == bep.json: %s (%d / %d events%s)" % (
+            "IDENTICAL" if same else "DIFFERS", len(from_text), len(from_json),
+            "; order differs at %d positions" % moved if same and moved else ""))
+        if not same:
+            missing = sorted(set(cj) - set(ct))
+            extra = sorted(set(ct) - set(cj))
+            for x in missing[:3]:
+                print("  only in json: %s" % x[:600])
+            for x in extra[:3]:
+                print("  only in text: %s" % x[:600])
+        ok = ok and same
+    return 0 if ok and n else 1
+
+
+def progress_skeleton(events):
+    out = []
+    for e in events:
+        if "progress" in e.get("id", {}):
+            children = [{"namedSet": {}} if "namedSet" in c else c for c in e.get("children", [])]
+            out.append({"id": e["id"], "children": children, "last": bool(e.get("lastMessage"))})
+    return out
+
+
+def cmd_bep_e2e(argv):
+    ap = argparse.ArgumentParser(prog="compare bep-e2e")
+    ap.add_argument("project")
+    ap.add_argument("reference")
+    ap.add_argument("candidate")
+    ap.add_argument("--verbose", action="store_true")
+    a = ap.parse_args(argv)
+
+    def load(d):
+        ctx = Context.from_dict(json.load(open(os.path.join(d, "context.json"))))
+        events = text_bep_events(os.path.join(d, "bep.txt"))
+        return events, surfaces.normalise_bep(ctx, events)
+
+    ref_events, ref = load(a.reference)
+    cand_events, cand = load(a.candidate)
+    allow = cmp.AllowList()
+    counts = {"MATCH": 0, "ALLOWED": 0, "DIFF": 0, "MISSING": 0, "EXTRA": 0}
+    for key in sorted(set(ref) | set(cand)):
+        if key not in cand:
+            kind, paths = "MISSING", []
+        elif key not in ref:
+            kind, paths = "EXTRA", []
+        elif oc.canonical(ref[key]) == oc.canonical(cand[key]):
+            counts["MATCH"] += 1
+            continue
+        else:
+            kind, paths = "DIFF", cmp.diff_paths(ref[key], cand[key])
+        if allow.match(a.project, "bep", key, kind, paths):
+            counts["ALLOWED"] += 1
+            continue
+        counts[kind] += 1
+        print("%s %s" % (kind, key[:160]))
+        if kind == "DIFF":
+            for line in cmp.describe_diff(ref[key], cand[key], paths)[: (40 if a.verbose else 8)]:
+                print(line)
+    po, pc = progress_skeleton(ref_events), progress_skeleton(cand_events)
+    progress_ok = oc.canonical(po) == oc.canonical(pc)
+    # Which progress event announces which event depends on thread timing; even one oracle
+    # invocation's text and JSON files differ in it. The multiset ignores that order.
+    multiset_ok = sorted(oc.canonical(x) for x in po) == sorted(oc.canonical(x) for x in pc)
+    if not progress_ok:
+        print("PROGRESS skeleton differs in order: reference %d events, candidate %d" % (len(po), len(pc)))
+        for x, y in zip(po, pc):
+            if x != y:
+                print("  - %s\n  + %s" % (oc.canonical(x), oc.canonical(y)))
+    print("%s bep text: %d items: %s; progress skeleton %s in order, %s as a multiset (%d events)" % (
+        a.project, len(set(ref) | set(cand)), ", ".join("%s %d" % kv for kv in counts.items()),
+        "MATCH" if progress_ok else "DIFF", "MATCH" if multiset_ok else "DIFF", len(pc)))
+    bad = counts["DIFF"] + counts["MISSING"] + counts["EXTRA"]
+    return 1 if bad or not progress_ok else 0
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("help", "--help", "-h"):
+        print(__doc__)
+        return 0 if len(argv) >= 2 else 2
+    sub, rest = argv[1], argv[2:]
+    if sub == "files":
+        return cmd_files(rest)
+    if sub == "run":
+        return cmd_run(rest)
+    if sub == "check":
+        return cmd_check(rest)
+    if sub == "bep-e2e":
+        return cmd_bep_e2e(rest)
+    print(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

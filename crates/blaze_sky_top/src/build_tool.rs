@@ -355,6 +355,20 @@ pub trait ExecutionPhase {
     ) -> Result<(), BuildToolError>;
 }
 
+/// Validates the targets of a build request before building begins (`run`: exactly one
+/// executable target).
+// Java: com/google/devtools/build/lib/buildtool/TargetValidator.java:26 TargetValidator
+pub trait TargetValidator {
+    /// Hook for subclasses to validate a build request before building begins. Implementors
+    /// should print warnings for invalid targets iff keepGoing.
+    // Java: com/google/devtools/build/lib/buildtool/TargetValidator.java:36 TargetValidator.validateTargets
+    fn validate_targets(
+        &self,
+        targets: &[blaze_packages::target::Target],
+        keep_going: bool,
+    ) -> Result<(), crate::project::LoadingFailedException>;
+}
+
 /// Provides the bulk of the implementation of the 'blaze build' command.
 // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:206 BuildTool
 pub struct BuildTool<'a> {
@@ -363,6 +377,8 @@ pub struct BuildTool<'a> {
     relative_working_directory: PathFragment,
     analysis_post_processor: &'a dyn AnalysisPostProcessor,
     execution_phase: Option<&'a dyn ExecutionPhase>,
+    /// The `validator` argument of `processRequest` (`null` but for `run`).
+    validator: Option<&'a dyn TargetValidator>,
 }
 
 impl<'a> BuildTool<'a> {
@@ -379,7 +395,14 @@ impl<'a> BuildTool<'a> {
             relative_working_directory,
             analysis_post_processor: post_processor,
             execution_phase: None,
+            validator: None,
         }
+    }
+
+    /// The target validator `processRequest` passes to `evaluateTargetPatterns` (`run`).
+    pub fn with_target_validator(mut self, validator: &'a dyn TargetValidator) -> Self {
+        self.validator = Some(validator);
+        self
     }
 
     /// A build tool whose requests may execute (`build`, `test`).
@@ -584,7 +607,8 @@ impl<'a> BuildTool<'a> {
         &self,
         request: &BuildRequest,
     ) -> Result<crate::target_pattern_phase::TargetPatternPhaseValue, BuildToolError> {
-        self.skyframe_executor
+        let result = self
+            .skyframe_executor
             .load_target_patterns_with_filters_detailed(
                 self.reporter.clone(),
                 &request.targets,
@@ -603,8 +627,20 @@ impl<'a> BuildTool<'a> {
                     detailed_exit_code,
                 },
                 TargetPatternPhaseDetailedError::Interrupted => BuildToolError::Interrupted,
-            })
-        // PORT: no TargetValidator is passed by cquery/aquery.
+            })?;
+        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:488 BuildTool.evaluateTargetPatterns
+        if let Some(validator) = self.validator {
+            let target_labels = result
+                .get_targets(
+                    self.reporter.clone(),
+                    self.skyframe_executor.get_package_manager(),
+                )
+                .map_err(|_| BuildToolError::Interrupted)?;
+            validator
+                .validate_targets(&target_labels, request.keep_going)
+                .map_err(BuildToolError::LoadingFailed)?;
+        }
+        Ok(result)
     }
 }
 

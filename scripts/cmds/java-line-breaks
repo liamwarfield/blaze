@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Records the JDK's line-break boundaries (java.text.BreakIterator.getLineInstance, the iterator
+# OptionsUsage.paragraphFill uses) for test cases, as the expected values of Blaze's port
+# (crates/blaze_options/src/line_break_iterator.rs).
+# usage: scripts/cmds/java-line-breaks [CASES [OUT]]
+#        scripts/cmds/java-line-breaks help
+# CASES: one text per line (escapes \t \r \n \\ \uXXXX; lines starting with # are skipped),
+#   default scripts/cmds/line-break-cases.txt.
+# OUT: default crates/blaze_options/tests/data/line_breaks.tsv, lines "b0,b1,...<TAB>case".
+# Environment: JAVA (default: java on PATH; the result must come from JDK 25, Bazel's JDK).
+set -euo pipefail
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,10p' "$0"; exit 0; fi
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+root="$(cd -- "$here/../.." && pwd)"
+cases="${1:-$here/line-break-cases.txt}"
+out="${2:-$root/crates/blaze_options/tests/data/line_breaks.tsv}"
+java="${JAVA:-java}"
+"$java" -version 2>&1 | head -1 >&2
+mkdir -p "$(dirname "$out")"
+"$java" "$here/LineBreaks.java" < "$cases" > "$out.tmp"
+mv "$out.tmp" "$out"
+echo "wrote $out ($(wc -l < "$out") cases)" >&2

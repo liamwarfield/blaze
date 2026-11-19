@@ -1,0 +1,406 @@
+#!/usr/bin/env python3
+"""Compares Blaze with the oracle on `help`, `canonicalize-flags`, `fetch` and `license`.
+See `compare help`."""
+
+import argparse
+import difflib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+sys.dont_write_bytecode = True  # do not write __pycache__ into scripts/oracle/
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))
+ORACLE_SCRIPTS = os.path.join(REPO, "scripts", "oracle")
+sys.path.insert(0, ORACLE_SCRIPTS)
+
+import oracle_common as oc  # noqa: E402
+
+
+def _load_record():
+    """scripts/oracle/record has no .py suffix; load it by path for its workspace helpers."""
+    path = os.path.join(ORACLE_SCRIPTS, "record")
+    loader = importlib.machinery.SourceFileLoader("oracle_record", path)
+    spec = importlib.util.spec_from_loader("oracle_record", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+record = _load_record()
+
+USAGE = """\
+usage: scripts/cmds/compare [--side oracle|blaze|both] [--case REGEX] [--blaze PATH]
+                            [--diff-lines N] [--json PATH] [--list]
+       scripts/cmds/compare help | --help
+
+Runs a list of invocations with the oracle (real Bazel 9.3.2,
+~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64) and with Blaze, and compares exit code, stdout
+and stderr byte for byte (after the normalisations listed below). Commands: `help` (the index,
+`help <command>` for every command of Bazel 9.3.2 with the default verbosity, --short and
+--long, the help topics, completion, flags-as-proto, everything-as-html, errors),
+`canonicalize-flags` (in brotli), `fetch` on brotli and re2 (empty and warm output base) and `license`.
+
+Each invocation runs as (the way scripts/w1/compare-info runs them)
+    systemd-run --user --collect --wait --pipe -q -p MemoryMax=12G -p MemorySwapMax=0
+      --working-directory=<cwd> env -i HOME=$HOME PATH=/usr/bin:/bin USER=$USER
+      <binary> --output_user_root=<root> --nohome_rc --nosystem_rc [startup...] <command...>
+so every invocation starts a fresh server, with one output user root per side (oracle:
+~/.cache/blaze/oracle-out/ur-cmds, blaze: ~/.cache/blaze/work/cmds/blaze-ur). Each side first
+runs `version` once (not compared) so that "Extracting Bazel installation..." is not part of
+a compared case. cwd is ~/.cache/blaze/work/cmds/outside (an empty directory outside any
+workspace) or a copy of a corpus project, ~/.cache/blaze/work/cmds/<side>/<project> (prepared
+like scripts/oracle/record: rsync of ~/.cache/blaze/corpus/<project>, restored to git HEAD).
+Fetch cases pass --output_base=~/.cache/blaze/work/cmds/<side>/ob-<project> and
+--repository_cache=~/.cache/blaze/repo-cache; a case marked "fresh" deletes that output base
+first.
+
+Normalisations (both sides): the side's output user root, workspace copy, output base and
+install md5 become <UR>, <WS>, <OB>, <INSTALL_MD5>; the JVM's own "OpenJDK 64-Bit Server VM warning: ..." stderr lines are
+removed (Blaze has no JVM); "Elapsed time: N.NNNs" and "Critical Path: N.NNs" become <T>;
+UI progress lines (printed on a timer) are removed; random download temp directory names
+(/temp<digits>/) become /temp<N>/. The rules and their reasons: NORMALIZATION_RULES.
+
+Results: ~/.cache/blaze/work/cmds/results/<side>/<case>.{out,err,rc,cmd}. Per case: IDENTICAL,
+DIFFERENT (streams that differ, diff shown), BLAZE-UNPORTED (Blaze hit unported!(...)).
+
+Options:
+  --side S        oracle, blaze or both (default both). With blaze only, the stored oracle
+                  results are compared.
+  --case REGEX    run only cases whose name matches (re.search)
+  --blaze PATH    blaze binary (default <repo>/target/debug/blaze)
+  --diff-lines N  lines of diff shown per differing case (default 40; 0 = none)
+  --json PATH     write machine-readable results
+  --list          print the case list and exit
+
+Exit status: 0 iff every selected case is IDENTICAL; 1 otherwise; 2 on usage errors.
+"""
+
+HOME = oc.HOME
+USER = os.environ.get("USER") or os.path.basename(HOME)
+ORACLE_BIN = os.path.join(oc.CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+DEFAULT_BLAZE = os.path.join(REPO, "target", "debug", "blaze")
+WORK = os.path.join(oc.WORK, "cmds")
+OUTSIDE = os.path.join(WORK, "outside")
+RESULTS = os.path.join(WORK, "results")
+ROOTS = {
+    "oracle": os.path.join(oc.OUTPUT_ROOTS, "ur-cmds"),
+    "blaze": os.path.join(WORK, "blaze-ur"),
+}
+REPO_CACHE = os.path.join(oc.CACHE, "repo-cache")
+MEMORY_MAX = "12G"
+COMMAND_TIMEOUT = 1200
+
+# Every command Bazel 9.3.2 registers (BuiltinCommandModule, MobileInstallModule,
+# BazelRepositoryModule; `bazel help` lists them all, none is hidden).
+COMMANDS = [
+    "aquery", "build", "canonicalize-flags", "clean", "config", "coverage", "cquery", "dump",
+    "fetch", "help", "info", "license", "mobile-install", "mod", "print_action", "query", "run",
+    "shutdown", "test", "vendor", "version",
+]
+
+
+class Case:
+    def __init__(self, name, argv, cwd="outside", startup=(), fresh_output_base=False):
+        self.name = name
+        self.argv = list(argv)
+        self.cwd = cwd  # "outside" or a project name
+        self.startup = list(startup)
+        self.fresh_output_base = fresh_output_base
+
+    @property
+    def slug(self):
+        return re.sub(r"[^A-Za-z0-9_.=-]+", "_", self.name)
+
+
+def build_cases():
+    cases = [Case("help", ["help"])]
+    for command in COMMANDS:
+        cases.append(Case("help " + command, ["help", command]))
+        cases.append(Case("help " + command + " --short", ["help", command, "--short"]))
+        cases.append(Case("help " + command + " --long", ["help", command, "--long"]))
+    for topic in ["startup_options", "target-syntax", "info-keys"]:
+        cases.append(Case("help " + topic, ["help", topic]))
+    cases += [
+        Case("help startup_options --long", ["help", "startup_options", "--long"]),
+        Case("help startup_options --short", ["help", "startup_options", "--short"]),
+        Case("help --help_verbosity=short build", ["help", "--help_verbosity=short", "build"]),
+        Case("help -l version", ["help", "-l", "version"]),
+        Case("help completion", ["help", "completion"]),
+        Case("help completion bash", ["help", "completion", "bash"]),
+        Case("help completion zsh", ["help", "completion", "zsh"]),
+        Case("help completion bash extra", ["help", "completion", "bash", "extra"]),
+        Case("help flags-as-proto", ["help", "flags-as-proto"]),
+        Case("help everything-as-html", ["help", "everything-as-html"]),
+        Case("help nosuchcommand", ["help", "nosuchcommand"]),
+        Case("help build test", ["help", "build", "test"]),
+        Case("help in brotli", ["help"], cwd="brotli"),
+        Case("help info-keys in brotli", ["help", "info-keys"], cwd="brotli"),
+    ]
+    # canonicalize-flags
+    canon = [
+        ("canonicalize-flags empty", []),
+        ("canonicalize-flags simple", ["--", "--jobs=4", "-k"]),
+        ("canonicalize-flags repeated", ["--", "--copt=-a", "--copt=-b", "--jobs=1", "--jobs=2"]),
+        ("canonicalize-flags expansion", ["--", "--config=foo"]),
+        ("canonicalize-flags expansion noincompatible", ["--", "--experimental_remote_downloader_local_fallback"]),
+        ("canonicalize-flags expansion option", ["--", "--remote_download_minimal"]),
+        ("canonicalize-flags expansion keep_going", ["--", "--keep_going", "--nokeep_going"]),
+        ("canonicalize-flags for_command test", ["--for_command=test", "--", "--test_output=all", "--nocache_test_results"]),
+        ("canonicalize-flags for_command query", ["--for_command=query", "--", "--output=label_kind"]),
+        ("canonicalize-flags for_command bad", ["--for_command=nosuch", "--", "--jobs=1"]),
+        ("canonicalize-flags show_warnings", ["--show_warnings", "--", "--jobs=1", "--jobs=2"]),
+        ("canonicalize-flags invalid flag", ["--", "--nosuchflag"]),
+        ("canonicalize-flags invalid value", ["--", "--jobs=abc"]),
+        ("canonicalize-flags residue", ["--", "foo"]),
+        ("canonicalize-flags boolean forms", ["--", "--nobuild", "--build_tests_only=yes", "--keep_going=false"]),
+        ("canonicalize-flags abbreviation", ["--", "-s", "-k"]),
+        ("canonicalize-flags old name", ["--", "--experimental_action_listener=//:x"]),
+        ("canonicalize-flags no dashdash", ["--jobs=4"]),
+        ("canonicalize-flags canonicalize_policy", ["--canonicalize_policy", "--", "--jobs=1"]),
+        ("canonicalize-flags starlark flag", ["--", "--//foo:bar=1"]),
+    ]
+    # Bazel crashes (NullPointerException in SkyframeExecutor.preparePackageLoading) when
+    # canonicalize-flags runs outside a workspace; one case records that, the rest run in brotli.
+    cases.append(Case("canonicalize-flags outside workspace", ["canonicalize-flags", "--", "--jobs=4"]))
+    for name, args in canon:
+        cases.append(Case(name, ["canonicalize-flags"] + args, cwd="brotli"))
+    # fetch
+    for project in ["brotli", "re2"]:
+        cases += [
+            Case("fetch %s empty output base" % project, ["fetch"], cwd=project, fresh_output_base=True),
+            Case("fetch %s warm" % project, ["fetch"], cwd=project),
+            Case("fetch %s --all" % project, ["fetch", "--all"], cwd=project),
+            Case("fetch %s --configure" % project, ["fetch", "--configure"], cwd=project),
+            Case("fetch %s --configure empty" % project, ["fetch", "--configure"], cwd=project, fresh_output_base=True),
+            Case("fetch %s --repo=@bazel_tools" % project, ["fetch", "--repo=@bazel_tools"], cwd=project),
+            Case("fetch %s --repo=@@platforms" % project, ["fetch", "--repo=@@platforms"], cwd=project),
+            Case("fetch %s --repo=@nosuch" % project, ["fetch", "--repo=@nosuch"], cwd=project),
+            Case("fetch %s --repo=bad" % project, ["fetch", "--repo=bad"], cwd=project),
+            Case("fetch %s --all --configure" % project, ["fetch", "--all", "--configure"], cwd=project),
+            Case("fetch %s --nofetch" % project, ["fetch", "--nofetch"], cwd=project),
+            Case("fetch %s --repo and target" % project, ["fetch", "--repo=@platforms", "//:all"], cwd=project),
+            Case("fetch %s --force --repo" % project, ["fetch", "--force", "--repo=@platforms"], cwd=project),
+            Case("fetch %s targets" % project, ["fetch", "//..."], cwd=project),
+            Case("fetch %s targets empty" % project, ["fetch", "//..."], cwd=project, fresh_output_base=True),
+            Case("fetch %s bad target" % project, ["fetch", "//nosuch:target"], cwd=project),
+        ]
+    cases.append(Case("fetch outside workspace", ["fetch"]))
+    # license
+    cases.append(Case("license", ["license"]))
+    cases.append(Case("license in brotli", ["license"], cwd="brotli"))
+    return cases
+
+
+NORMALIZATION_RULES = [
+    {"name": "paths", "why": "Each side has its own output user root, workspace copy and output "
+                             "base; they are inputs of the run, not behaviour."},
+    {"name": "install_md5", "pattern": r"/install/[0-9a-f]{32}/", "repl": "/install/<INSTALL_MD5>/",
+     "streams": ("out", "err"),
+     "why": "The install md5 (name of <UR>/install/<md5>) is a checksum of the binary's embedded "
+            "files; Blaze's archive differs by design (as in scripts/w1/compare-info)."},
+    {"name": "jvm_warning", "pattern": r"(?m)^OpenJDK 64-Bit Server VM warning: [^\n]*\n",
+     "repl": "", "streams": ("err",),
+     "why": "Printed by the JVM itself, not by Bazel code; Blaze has no JVM."},
+    {"name": "elapsed", "pattern": r"Elapsed time: \d+\.\d+s", "repl": "Elapsed time: <T>s",
+     "streams": ("out", "err"), "why": "Wall-clock time."},
+    {"name": "critical_path", "pattern": r"Critical Path: \d+\.\d+s", "repl": "Critical Path: <T>s",
+     "streams": ("out", "err"), "why": "Wall-clock time."},
+    {"name": "progress", "pattern":
+     r"(?m)^(Computing main repo mapping: |Loading: |Analyzing: |Fetching |\[[\d,]+ / [\d,]+\] )[^\n]*\n",
+     "repl": "", "streams": ("err",),
+     "why": "UI progress lines, printed on a timer (--show_progress_rate_limit), so their number "
+            "depends on wall-clock time."},
+    {"name": "download_temp", "pattern": r"/temp\d+/", "repl": "/temp<N>/",
+     "streams": ("out", "err"),
+     "why": "Temporary download directories get a random number (Files.createTempDirectory)."},
+]
+
+
+def normalize(data, stream, ctx):
+    text = data.decode("latin-1")
+    for key in ("ob", "ws", "ur"):
+        value = ctx.get(key)
+        if value:
+            text = text.replace(value, "<%s>" % key.upper())
+    for rule in NORMALIZATION_RULES:
+        if "pattern" in rule and stream in rule["streams"]:
+            text = re.sub(rule["pattern"], rule["repl"], text)
+    return text
+
+
+def wrap(binary, root, cwd, startup, argv):
+    return [
+        "systemd-run", "--user", "--collect", "--wait", "--pipe", "-q",
+        "-p", "MemoryMax=" + MEMORY_MAX, "-p", "MemorySwapMax=0",
+        "--working-directory=" + cwd,
+        "env", "-i", "HOME=" + HOME, "PATH=/usr/bin:/bin", "USER=" + USER,
+        binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc",
+    ] + list(startup) + list(argv)
+
+
+def invoke(cmd, timeout=COMMAND_TIMEOUT):
+    t0 = time.monotonic()
+    try:
+        p = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=timeout)
+        out, err, rc = p.stdout, p.stderr, p.returncode
+    except subprocess.TimeoutExpired as e:
+        out, err, rc = e.stdout or b"", (e.stderr or b"") + b"\n[compare] timed out\n", -9
+    return out, err, rc, time.monotonic() - t0
+
+
+def side_work(side):
+    return os.path.join(WORK, side)
+
+
+def run_side(side, binary, cases):
+    root = ROOTS[side]
+    os.makedirs(OUTSIDE, exist_ok=True)
+    sd = os.path.join(RESULTS, side)
+    os.makedirs(sd, exist_ok=True)
+    # Warm-up: extracts the install base so that no compared case prints "Extracting...".
+    invoke(wrap(binary, root, OUTSIDE, [], ["version"]))
+    projects = sorted({c.cwd for c in cases if c.cwd != "outside"})
+    workspaces = {}
+    for project in projects:
+        ws = os.path.join(side_work(side), project)
+        record.prepare_workspace(os.path.join(oc.CACHE, "corpus", project), ws)
+        workspaces[project] = os.path.realpath(ws)
+    install_dir = os.path.join(root, "install")
+    installs = sorted(os.listdir(install_dir)) if os.path.isdir(install_dir) else []
+    install_md5 = installs[0] if len(installs) == 1 else None
+    for case in cases:
+        startup = list(case.startup)
+        ctx = {"ur": root, "install_md5": install_md5}
+        if case.cwd == "outside":
+            cwd = OUTSIDE
+        else:
+            cwd = workspaces[case.cwd]
+            ctx["ws"] = cwd
+        argv = list(case.argv)
+        if argv[0] == "fetch":
+            ob = os.path.join(side_work(side), "ob-" + case.cwd)
+            if case.fresh_output_base and os.path.lexists(ob):
+                record.make_writable_and_remove(ob)
+            startup.append("--output_base=" + ob)
+            argv.insert(1, "--repository_cache=" + REPO_CACHE)
+            ctx["ob"] = ob
+        cmd = wrap(binary, root, cwd, startup, argv)
+        out, err, rc, dur = invoke(cmd)
+        base = os.path.join(sd, case.slug)
+        for ext, data in (("out", out), ("err", err)):
+            with open(base + "." + ext, "wb") as f:
+                f.write(data)
+        with open(base + ".rc", "w") as f:
+            f.write("%d\n" % rc)
+        with open(base + ".cmd", "w") as f:
+            f.write(json.dumps({"cwd": cwd, "argv": cmd, "ctx": ctx}) + "\n")
+        print("[cmds] %s: %-55s rc=%-3d %6.1fs" % (side, case.name[:55], rc, dur), flush=True)
+
+
+def load(side, case):
+    base = os.path.join(RESULTS, side, case.slug)
+    try:
+        with open(base + ".out", "rb") as f:
+            out = f.read()
+        with open(base + ".err", "rb") as f:
+            err = f.read()
+        with open(base + ".rc") as f:
+            rc = int(f.read().strip())
+        with open(base + ".cmd") as f:
+            ctx = json.load(f)["ctx"]
+        if not ctx.get("install_md5"):
+            install_dir = os.path.join(ctx["ur"], "install")
+            installs = sorted(os.listdir(install_dir)) if os.path.isdir(install_dir) else []
+            ctx["install_md5"] = installs[0] if len(installs) == 1 else None
+    except (OSError, ValueError, KeyError):
+        return None
+    return {"out": normalize(out, "out", ctx), "err": normalize(err, "err", ctx), "rc": rc}
+
+
+def compare(cases, diff_lines):
+    rows = []
+    for case in cases:
+        o = load("oracle", case)
+        b = load("blaze", case)
+        if o is None or b is None:
+            rows.append((case.name, "MISSING", "oracle" if o is None else "blaze"))
+            continue
+        if "blaze: not ported yet:" in b["err"]:
+            m = re.search(r"blaze: not ported yet: ([^\n]*)", b["err"])
+            rows.append((case.name, "BLAZE-UNPORTED", m.group(1)[:100]))
+            continue
+        differing = [s for s in ("rc", "out", "err") if o[s] != b[s]]
+        if not differing:
+            rows.append((case.name, "IDENTICAL", ""))
+            continue
+        detail = ",".join(differing)
+        if "rc" in differing:
+            detail += " (oracle %d, blaze %d)" % (o["rc"], b["rc"])
+        rows.append((case.name, "DIFFERENT", detail))
+        if diff_lines:
+            for s in ("out", "err"):
+                if s in differing:
+                    d = list(difflib.unified_diff(
+                        o[s].splitlines(), b[s].splitlines(), "oracle." + s, "blaze." + s,
+                        lineterm="", n=1))
+                    print("--- %s: %s" % (case.name, s))
+                    for line in d[:diff_lines]:
+                        print("    " + line[:200])
+                    if len(d) > diff_lines:
+                        print("    ... (%d more diff lines)" % (len(d) - diff_lines))
+    return rows
+
+
+def main(argv):
+    if argv and argv[0] in ("help", "--help", "-h"):
+        print(USAGE, end="")
+        return 0
+    ap = argparse.ArgumentParser(usage=USAGE, add_help=False)
+    ap.add_argument("--side", default="both", choices=["oracle", "blaze", "both"])
+    ap.add_argument("--case")
+    ap.add_argument("--blaze", default=DEFAULT_BLAZE)
+    ap.add_argument("--diff-lines", type=int, default=40)
+    ap.add_argument("--json")
+    ap.add_argument("--list", action="store_true")
+    try:
+        args = ap.parse_args(argv)
+    except SystemExit:
+        return 2
+    cases = build_cases()
+    if args.case:
+        cases = [c for c in cases if re.search(args.case, c.name)]
+    if args.list:
+        for c in cases:
+            print(c.name)
+        return 0
+    if shutil.which("systemd-run") is None:
+        oc.die("systemd-run not found")
+    if args.side in ("oracle", "both"):
+        run_side("oracle", ORACLE_BIN, cases)
+    if args.side in ("blaze", "both"):
+        run_side("blaze", os.path.realpath(args.blaze), cases)
+    rows = compare(cases, args.diff_lines)
+    width = max(len(r[0]) for r in rows) if rows else 10
+    counts = {}
+    print()
+    for name, status, detail in rows:
+        counts[status] = counts.get(status, 0) + 1
+        print("%-*s  %-14s %s" % (width, name, status, detail))
+    print()
+    print("total %d: %s" % (len(rows), ", ".join("%s %d" % kv for kv in sorted(counts.items()))))
+    if args.json:
+        oc.write_json(args.json, [{"case": n, "status": s, "detail": d} for n, s, d in rows])
+    return 0 if all(r[1] == "IDENTICAL" for r in rows) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

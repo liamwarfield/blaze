@@ -137,24 +137,11 @@ impl Fingerprint {
     /// `writeStringNoTag` UTF-8-encodes the Latin-1 chars, so each byte `>= 0x80` of the original
     /// text takes two bytes (the "double encoding" seen in the oracle's action keys).
     ///
-    /// Until the decoding switch the caller's string is still Unicode;
-    /// `string_encoding::to_internal` (the migration seam) bridges that, here and nowhere else.
     /// This is the one string method: there is no second encoding to choose at a call site.
     pub fn add_string(&mut self, input: &str) -> &mut Self {
-        let input = crate::string_encoding::to_internal(input);
         self.write_varint64(input.len() as u64);
         self.write(input.as_bytes());
         self
-    }
-
-    /// The same as [`Fingerprint::add_string`].
-    // PORT: transitional. Before the string model was decided, `add_string` hashed the Rust
-    // string's bytes and this method re-created Java's double encoding by hand; call sites chose
-    // between the two (review 2026-11-18-actions S1-1). Both now do what Java's `addString` does.
-    // blaze_util, blaze_collect, blaze_actions and blaze_cc_features call only `add_string`; this
-    // name stays for the other crates' callers and goes away with the last of them.
-    pub fn add_internal_string(&mut self, input: &str) -> &mut Self {
-        self.add_string(input)
     }
 
     /// Java: Fingerprint.addNullableString
@@ -214,9 +201,8 @@ impl Fingerprint {
     }
 
     /// Java: Fingerprint.getHexDigest — SHA-256 of `input.getBytes(UTF_8)`, hex. The same
-    /// invariant and seam as [`Fingerprint::add_string`].
+    /// invariant as [`Fingerprint::add_string`].
     pub fn get_hex_digest(input: &str) -> String {
-        let input = crate::string_encoding::to_internal(input);
         hex::encode(Sha256::digest(input.as_bytes()))
     }
 }
@@ -254,7 +240,6 @@ mod tests {
     fn all_string_methods(s: &str) -> Vec<u8> {
         let mut a = Fingerprint::new();
         a.add_string(s);
-        a.add_internal_string(s);
         a.add_strings([s]);
         a.add_string_map([(s, s)]);
         a.add_iterable_strings([s]);
@@ -265,7 +250,6 @@ mod tests {
     fn all_string_methods_expected() -> Vec<u8> {
         let e = E_ACUTE_TWICE;
         let mut b = Fingerprint::new();
-        b.add_bytes(&e);
         b.add_bytes(&e);
         b.add_bytes(&[1]).add_bytes(&e);
         b.add_bytes(&[1]).add_bytes(&e).add_bytes(&e);
@@ -279,32 +263,16 @@ mod tests {
     /// switch the caller passes that internal string.
     #[test]
     fn add_string_of_internal_string_is_javas_double_encoding() {
-        use crate::string_encoding::{unicode_to_internal, with_strings_are_internal_for_testing};
+        use crate::string_encoding::unicode_to_internal;
         let internal = unicode_to_internal("é");
         assert_eq!(
             internal.chars().map(|c| c as u32).collect::<Vec<_>>(),
             [0xc3, 0xa9]
         );
-        with_strings_are_internal_for_testing(true, || {
-            assert_eq!(all_string_methods(&internal), all_string_methods_expected());
-            assert_eq!(
-                Fingerprint::get_hex_digest(&internal),
-                hex::encode(Sha256::digest([0xc3, 0x83, 0xc2, 0xa9]))
-            );
-        });
-    }
-
-    /// Before the switch the caller still holds the Unicode string; the seam gives the same
-    /// bytes.
-    #[test]
-    fn add_string_of_unicode_string_before_the_switch() {
-        use crate::string_encoding::with_strings_are_internal_for_testing;
-        with_strings_are_internal_for_testing(false, || {
-            assert_eq!(all_string_methods("é"), all_string_methods_expected());
-            assert_eq!(
-                Fingerprint::get_hex_digest("é"),
-                hex::encode(Sha256::digest([0xc3, 0x83, 0xc2, 0xa9]))
-            );
-        });
+        assert_eq!(all_string_methods(&internal), all_string_methods_expected());
+        assert_eq!(
+            Fingerprint::get_hex_digest(&internal),
+            hex::encode(Sha256::digest([0xc3, 0x83, 0xc2, 0xa9]))
+        );
     }
 }

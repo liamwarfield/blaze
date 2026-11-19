@@ -60,18 +60,11 @@ pub fn create_parser_input(
         }
     }
     match blaze_util::string_encoding::parser_input_from_latin1(&bytes) {
-        Ok(std::borrow::Cow::Borrowed(_)) => {
+        std::borrow::Cow::Borrowed(_) => {
             // ASCII: the bytes are the text.
             Ok(String::from_utf8(bytes).expect("ASCII"))
         }
-        Ok(std::borrow::Cow::Owned(s)) => Ok(s),
-        // PORT: only while `STRINGS_ARE_INTERNAL` is false (the seam of
-        // blaze_util::string_encoding): a file that is not UTF-8 has no text then.
-        Err(_) => blaze_util::unported!(
-            "ParserInput.fromLatin1 (non-UTF-8 Starlark file)",
-            "{}",
-            file
-        ),
+        std::borrow::Cow::Owned(s) => Ok(s),
     }
 }
 

@@ -306,6 +306,11 @@ pub trait FieldType: Sized + Clone + fmt::Debug + Send + Sync + 'static {
     fn to_value(&self) -> Option<Value>;
     /// The field's value in a freshly constructed (unparsed) instance.
     fn raw_default() -> Self;
+    /// `Class.isEnum()` and `Class.getEnumConstants()` (each constant's `toString()`), for a
+    /// field whose type is a Java enum; `None` otherwise.
+    fn enum_constants() -> Option<Vec<String>> {
+        None
+    }
 }
 
 fn scalar_from<T: OptionScalar>(v: Option<&Value>) -> Result<T, FieldTypeMismatch> {
@@ -423,14 +428,7 @@ impl FieldType for Void {
 /// always overwritten by the parser (Java holds `null` there). Without it, `Default` is used.
 #[macro_export]
 macro_rules! option_field_type {
-    ($t:ty, $jname:expr) => {
-        $crate::option_field_type!(
-            $t,
-            $jname,
-            raw = <$t as ::core::default::Default>::default()
-        );
-    };
-    ($t:ty, $jname:expr, raw = $raw:expr) => {
+    (@impl $t:ty, $jname:expr, $raw:expr, $($extra:tt)*) => {
         impl $crate::FieldType for $t {
             const JAVA_TYPE_NAME: &'static str = $jname;
             fn from_value(
@@ -447,7 +445,30 @@ macro_rules! option_field_type {
                 // Placeholder until the parser sets the field; Java would hold `null` here.
                 $raw
             }
+            $($extra)*
         }
+    };
+    ($t:ty, $jname:expr) => {
+        $crate::option_field_type!(
+            $t,
+            $jname,
+            raw = <$t as ::core::default::Default>::default()
+        );
+    };
+    ($t:ty, $jname:expr, raw = $raw:expr, enum) => {
+        $crate::option_field_type!(@impl $t, $jname, $raw,
+            fn enum_constants() -> ::core::option::Option<::std::vec::Vec<::std::string::String>> {
+                ::core::option::Option::Some(
+                    <$t as $crate::converters::JavaEnum>::values()
+                        .iter()
+                        .map(|v| $crate::OptionScalar::java_to_string(v))
+                        .collect(),
+                )
+            }
+        );
+    };
+    ($t:ty, $jname:expr, raw = $raw:expr) => {
+        $crate::option_field_type!(@impl $t, $jname, $raw,);
     };
 }
 
@@ -477,6 +498,9 @@ impl<T: FieldType> FieldType for Option<T> {
     }
     fn raw_default() -> Self {
         None
+    }
+    fn enum_constants() -> Option<Vec<String>> {
+        T::enum_constants()
     }
 }
 

@@ -1,0 +1,1 @@
+EVAL Cannot mix manual and automatic numbering of positional fields

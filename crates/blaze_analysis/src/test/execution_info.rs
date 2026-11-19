@@ -70,17 +70,20 @@ impl ExecutionInfo {
 }
 
 impl fmt::Display for ExecutionInfo {
-    // Java: StructImpl.repr (fields sorted).
+    // Java: com/google/devtools/build/lib/packages/NativeInfo.java:125 NativeInfo.repr (legacy
+    // fields, sorted by name; strings through Printer.java:225 appendQuoted). Oracle:
+    // `struct(exec_group = "test", requirements = {"K": "à"})`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use blaze_starlark::printer::quote;
         let reqs: Vec<String> = self
             .execution_info
             .iter()
-            .map(|(k, v)| format!("{k:?}: {v:?}"))
+            .map(|(k, v)| format!("{}: {}", quote(k), quote(v)))
             .collect();
         write!(
             f,
-            "ExecutionInfo(exec_group = {:?}, requirements = {{{}}})",
-            self.exec_group,
+            "struct(exec_group = {}, requirements = {{{}}})",
+            quote(&self.exec_group),
             reqs.join(", ")
         )
     }
@@ -277,4 +280,29 @@ pub const fn analysis_test_result_info_provider() -> BuiltinProvider {
         id: ANALYSIS_TEST_RESULT_INFO,
         constructor: BuiltinConstructor::Native(analysis_test_result_info_constructor),
     })
+}
+
+#[cfg(test)]
+mod byte_strings_tests {
+    use super::*;
+    use blaze_util::string_encoding::latin1_decode;
+
+    // Byte-strings review 2026-11-20 S1-3. Oracle (bazel 9.3.2):
+    // `repr(testing.ExecutionInfo({"K": v}, exec_group = "g" + v))` with v = "à🐷\377" prints
+    // `struct(exec_group = "g<v>", requirements = {"K": "<v>"})`, v as raw bytes; without
+    // exec_group it is `"test"`.
+    #[test]
+    fn repr_is_struct_with_latin1_chars() {
+        let v = latin1_decode(b"\xc3\xa0\xf0\x9f\x90\xb7\xff").into_owned();
+        let reqs = IndexMap::from([("K".to_string(), v.clone())]);
+        let info = ExecutionInfo::with_exec_group(reqs.clone(), format!("g{v}"));
+        assert_eq!(
+            info.to_string(),
+            format!("struct(exec_group = \"g{v}\", requirements = {{\"K\": \"{v}\"}})")
+        );
+        assert_eq!(
+            ExecutionInfo::new(reqs).to_string(),
+            format!("struct(exec_group = \"test\", requirements = {{\"K\": \"{v}\"}})")
+        );
+    }
 }

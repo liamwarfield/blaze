@@ -108,6 +108,7 @@ impl FromStr for StarlarkInt {
 }
 
 impl StarlarkInt {
+    #[allow(dead_code)] // BLAZE PATCH 0044: `int()` parses as Java's StarlarkInt.parse
     pub(crate) fn from_str_radix(s: &str, base: u32) -> crate::Result<StarlarkInt> {
         // BLAZE PATCH 0028: a value error, not the lexer's `Parser` kind (which reads as a syntax
         // error of the file; Java: `int()` fails as an ordinary EvalException).

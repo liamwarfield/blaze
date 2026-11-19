@@ -30,7 +30,7 @@
 //!
 //! Verified against the protobuf-java-util bytecode in the oracle's `A-server.jar`
 //! (`JsonFormat$PrinterImpl`, `JsonFormat$ParserImpl`, `Timestamps`, `Durations`) and against
-//! Java output (`tests/golden.rs`, `tests/synthetic.rs`). `TextFormat` is not ported yet.
+//! Java output (`tests/golden.rs`, `tests/synthetic.rs`). `TextFormat` is in `text_format`.
 
 use std::collections::BTreeSet;
 use std::fmt;

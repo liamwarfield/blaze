@@ -1,0 +1,3 @@
+# Byte-strings review 2026-11-20 S2-1: run with --nointernal_starlark_utf_8_byte_strings.
+# With the flag off, `strip` uses Latin-1 whitespace (StringModule.java:326-334), so U+00A0 goes.
+print("CASE flagoff_module " + repr("\240a\240".strip()))

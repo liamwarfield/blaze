@@ -1,0 +1,10 @@
+# Byte-strings review 2026-11-20 S1-2. The `bash -c` argument is the genrule setup prefix
+# ("source external/bazel_tools/tools/genrule/genrule-setup.sh; ", 60 chars) and this command
+# (73 Java chars: 30 `é`, each the two chars C3 A9), 133 chars in all, so "/bin/bash -c" (12) plus
+# the argument stays under CommandFailureUtils' 200 and Bazel prints the whole command without
+# --verbose_failures. Counted in UTF-8 bytes of the internal string it would be 12 + 193 > 200.
+genrule(
+    name = "long",
+    outs = ["long.txt"],
+    cmd = "echo éééééééééééééééééééééééééééééé; exit 1",
+)

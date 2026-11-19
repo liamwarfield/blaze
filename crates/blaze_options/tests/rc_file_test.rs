@@ -874,3 +874,26 @@ fn invalid_compare_version() {
 #[test]
 #[ignore = "Windows-only test (PORT: skipped, windows only)"]
 fn bazel_rc_try_import_does_not_fail_for_invalid_posix_path_on_windows() {}
+
+// Byte-strings review 2026-11-20 S1-1. Expected value from the C++ client: workspace_layout.cc:80
+// `PathExists` runs `access(2)` on the raw bytes of the path, and the client's workspace path is
+// those bytes (an internal string: one char per byte). A workspace directory `wsé` (C3 A9) holding
+// `extra.bazelrc` resolves.
+#[test]
+fn workspace_relative_import_resolves_in_non_ascii_workspace() {
+    use blaze_options::rc::rc_file::resolve_workspace_relative_rc_file_path;
+    use blaze_util::string_encoding::latin1_decode;
+    let tmp = fresh_tmpdir("non_ascii_workspace");
+    let unicode_workspace = join(&tmp, "wsé");
+    mkdirs(&unicode_workspace);
+    write_file("build --foo", &join(&unicode_workspace, "extra.bazelrc"));
+    let workspace = latin1_decode(unicode_workspace.as_bytes()).into_owned();
+    assert_eq!(
+        resolve_workspace_relative_rc_file_path(&workspace, "%workspace%/extra.bazelrc"),
+        Some(join(&workspace, "extra.bazelrc"))
+    );
+    assert_eq!(
+        resolve_workspace_relative_rc_file_path(&workspace, "%workspace%/missing.bazelrc"),
+        None
+    );
+}

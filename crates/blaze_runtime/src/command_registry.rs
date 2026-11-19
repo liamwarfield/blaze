@@ -791,13 +791,8 @@ macro_rules! unported_command {
 
 // Integration lead: implemented in crate::commands::build.
 pub use crate::commands::build::BuildCommand;
-unported_command!(
-    /// The 'blaze canonicalize-flags' command.
-    // Java: com/google/devtools/build/lib/runtime/commands/CanonicalizeCommand.java:70 CanonicalizeCommand
-    CanonicalizeCommand,
-    CANONICALIZE_COMMAND,
-    "CanonicalizeCommand.exec"
-);
+// cmds implementer: implemented in crate::commands::canonicalize.
+pub use crate::commands::canonicalize::CanonicalizeCommand;
 unported_command!(
     /// Handles the 'coverage' command on the Bazel command line.
     // Java: com/google/devtools/build/lib/runtime/commands/CoverageCommand.java:113 CoverageCommand
@@ -821,15 +816,8 @@ unported_command!(
 );
 // W4 analysis lead: implemented in crate::commands::query.
 pub use crate::commands::query::QueryCommand;
-unported_command!(
-    /// Builds and run a target with the given command line arguments.
-    /// PORT: Java constructs it with a `TestPolicy`
-    /// (`StandaloneTestStrategy.DEFAULT_LOCAL_POLICY`, from `BazelBuiltinCommandModule`).
-    // Java: com/google/devtools/build/lib/runtime/commands/RunCommand.java:120 RunCommand
-    RunCommand,
-    RUN_COMMAND,
-    "RunCommand.exec"
-);
+// Implemented in crate::commands::run.
+pub use crate::commands::run::RunCommand;
 // Integration lead: implemented in crate::commands::build.
 pub use crate::commands::build::TestCommand;
 // W4 analysis lead: implemented in crate::commands::aquery.
@@ -843,13 +831,8 @@ unported_command!(
     CONFIG_COMMAND,
     "ConfigCommand.exec"
 );
-unported_command!(
-    /// A command that prints an embedded license text.
-    // Java: com/google/devtools/build/lib/runtime/commands/LicenseCommand.java:43 LicenseCommand
-    LicenseCommand,
-    LICENSE_COMMAND,
-    "LicenseCommand.exec"
-);
+// cmds implementer: implemented in crate::commands::license.
+pub use crate::commands::license::LicenseCommand;
 unported_command!(
     /// Implementation of the 'mobile-install' command.
     // Java: com/google/devtools/build/lib/runtime/mobileinstall/MobileInstallCommand.java:79 MobileInstallCommand
@@ -857,13 +840,8 @@ unported_command!(
     MOBILE_INSTALL_COMMAND,
     "MobileInstallCommand.exec"
 );
-unported_command!(
-    /// Fetches external repositories. Which is so fetch.
-    // Java: com/google/devtools/build/lib/bazel/commands/FetchCommand.java:74 FetchCommand
-    FetchCommand,
-    FETCH_COMMAND,
-    "FetchCommand.exec"
-);
+// cmds implementer: implemented in crate::commands::fetch.
+pub use crate::commands::fetch::FetchCommand;
 // Integration lead: implemented in crate::commands::mod_command.
 pub use crate::commands::mod_command::ModCommand;
 unported_command!(
@@ -874,18 +852,6 @@ unported_command!(
     VENDOR_COMMAND,
     "VendorCommand.exec"
 );
-
-impl LicenseCommand {
-    /// Whether this binary embeds `license/LICENSE`.
-    ///
-    /// PORT: Java checks for the jar resource `license/LICENSE`; the Bazel 9.3.2 release binary
-    /// (the oracle) embeds it and registers `license`. Blaze registers it the same way; printing
-    /// the license (`exec`) is not ported.
-    // Java: com/google/devtools/build/lib/runtime/commands/LicenseCommand.java:50 LicenseCommand.isSupported
-    pub fn is_supported() -> bool {
-        true
-    }
-}
 
 #[cfg(test)]
 mod tests {

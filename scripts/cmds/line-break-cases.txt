@@ -1,0 +1,30 @@
+# Inputs for scripts/cmds/java-line-breaks (one text per line; escapes \t \r \n \\ \uXXXX).
+Additional places to search for archives before accessing the network to download them.
+`{--repository_cache}/contents`
+contents cache to be disabled, otherwise the default of `{--repository_cache}/contents`
+--[no]experimental_foo (a boolean; default: "false")
+Expands to: --foo=bar --baz 
+Using this option will also add: --a --b 
+Tags: affects_outputs, loading_and_analysis
+e.g. --flag=value, x-y-z, -5, --5, (--foo), a - b, a -- b
+don't it's 'single' "double" ``x''
+${var} $foo a$b 50% a/b/c C++ a;b a:b a,b
+1,000.5 1.5.6 -1.5 +3 $5.00 (5) [5] {5} 5x x5 v1.2.3
+foo.bar ... ?! a? b! (a) [b] {c} a(b)c foo() foo()bar f(x)y
+a b a   b a b a‑b a b
+« quoted » ¢ ° ² ½ £ ¥ x­y
+a—b a–b a — b a’s “quoted” ‘x’
+tab\there cr\r\nlf x\ry a\u0003b c\u0001d \u0001lead trail\u0001 e\u007ff
+   leading spaces   and  double  spaces   
+-leading-dash --double --- triple -- 
+http://example.com/path?query=a&b=c#frag https://github.com/bazelbuild/bazel/issues/1234.
+'quoted', "quoted", (paren), [bracket], {brace}; a: b. c? d! e% f"
+%{product} help <command> --[no]keep_going [-k] (a boolean; default: "false")
+regex like ^foo.*$ or \\d+ or [a-z]+ and a|b and ~x and @repo//pkg:target and //foo/...
+A=B, A==B, a=>b, a->b, a<-b, <a>, a.b.c-d_e
+x)(y x))((y x()y ($x) ('x') $(x) $'x' '$x'
+a $ b a ' b a 'b a' b
+ 
+	
+zero​width a​ b ​lead x﻿y x ﻿ y a⁠b a ‎ b
+ lead trail  a  b a    b a   b

@@ -1452,8 +1452,11 @@ impl<'v, 'a, 'e> Compiler<'v, 'a, 'e, '_> {
                 // Desugar f"foo{x}bar{y}" to "foo{}bar{}.format(x, y)"
                 let heap = self.eval.module_env.frozen_heap();
 
+                // BLAZE PATCH 0045: `str.format` has no `!r` conversion (Bazel's), so a `{!r}`
+                // field of the f-string becomes `{}` with the argument `"%r" % (x,)`.
+                let (format_text, repr_args) = fstring_repr_fields(format.node.as_str()); // BLAZE PATCH 0045
                 let format = IrSpanned {
-                    node: ExprCompiled::Value(heap.alloc(format.node.as_str())),
+                    node: ExprCompiled::Value(heap.alloc(format_text.as_str())), // BLAZE PATCH 0045
                     span: fstring_span,
                 };
                 let method = IrSpanned {
@@ -1462,8 +1465,36 @@ impl<'v, 'a, 'e> Compiler<'v, 'a, 'e, '_> {
                 };
 
                 let mut args = ArgsCompiledValue::default();
-                for expr in expressions {
-                    args.push_pos(self.expr(expr)?);
+                for (i, expr) in expressions.iter().enumerate() { // BLAZE PATCH 0045
+                    let arg = self.expr(expr)?;
+                    let arg = if repr_args.contains(&i) { // BLAZE PATCH 0045
+                        let arg_span = arg.span; // BLAZE PATCH 0045
+                        let percent_r = IrSpanned { // BLAZE PATCH 0045
+                            node: ExprCompiled::Value( // BLAZE PATCH 0045
+                                self.eval.module_env.frozen_heap().alloc("%r"), // BLAZE PATCH 0045
+                            ), // BLAZE PATCH 0045
+                            span: arg_span, // BLAZE PATCH 0045
+                        }; // BLAZE PATCH 0045
+                        let one = IrSpanned { // BLAZE PATCH 0045
+                            node: ExprCompiled::tuple( // BLAZE PATCH 0045
+                                vec![arg], // BLAZE PATCH 0045
+                                self.eval.module_env.frozen_heap(), // BLAZE PATCH 0045
+                            ), // BLAZE PATCH 0045
+                            span: arg_span, // BLAZE PATCH 0045
+                        }; // BLAZE PATCH 0045
+                        IrSpanned { // BLAZE PATCH 0045
+                            node: ExprCompiled::bin_op( // BLAZE PATCH 0045
+                                Builtin2::Percent, // BLAZE PATCH 0045
+                                percent_r, // BLAZE PATCH 0045
+                                one, // BLAZE PATCH 0045
+                                &mut self.opt_ctx(), // BLAZE PATCH 0045
+                            ), // BLAZE PATCH 0045
+                            span: arg_span, // BLAZE PATCH 0045
+                        } // BLAZE PATCH 0045
+                    } else { // BLAZE PATCH 0045
+                        arg // BLAZE PATCH 0045
+                    }; // BLAZE PATCH 0045
+                    args.push_pos(arg);
                 }
 
                 CallCompiled::call(span, method, args, &mut self.opt_ctx())
@@ -1492,3 +1523,30 @@ impl<'v, 'a, 'e> Compiler<'v, 'a, 'e, '_> {
             .collect::<Result<_, CompilerInternalError>>()
     }
 }
+
+/// BLAZE PATCH 0045: an f-string's desugared format string (`{}` / `{!r}` fields only, from
+/// `grammar_util::fstring_from_parts`) with `{!r}` turned into `{}`, and the indexes of the
+/// arguments that were `{!r}`.
+fn fstring_repr_fields(format: &str) -> (String, Vec<usize>) { // BLAZE PATCH 0045
+    use starlark_syntax::dot_format_parser::FormatConv; // BLAZE PATCH 0045
+    use starlark_syntax::dot_format_parser::FormatParser; // BLAZE PATCH 0045
+    use starlark_syntax::dot_format_parser::FormatToken; // BLAZE PATCH 0045
+    let mut out = String::with_capacity(format.len()); // BLAZE PATCH 0045
+    let mut repr_args = Vec::new(); // BLAZE PATCH 0045
+    let mut parser = FormatParser::new_with_conversions(format); // BLAZE PATCH 0045
+    let mut index = 0; // BLAZE PATCH 0045
+    while let Ok(Some(token)) = parser.next() { // BLAZE PATCH 0045
+        match token { // BLAZE PATCH 0045
+            FormatToken::Text(t) => out.push_str(t), // BLAZE PATCH 0045
+            FormatToken::Escape(e) => out.push_str(e.back_to_escape()), // BLAZE PATCH 0045
+            FormatToken::Capture { conv, .. } => { // BLAZE PATCH 0045
+                if conv == FormatConv::Repr { // BLAZE PATCH 0045
+                    repr_args.push(index); // BLAZE PATCH 0045
+                } // BLAZE PATCH 0045
+                out.push_str("{}"); // BLAZE PATCH 0045
+                index += 1; // BLAZE PATCH 0045
+            } // BLAZE PATCH 0045
+        } // BLAZE PATCH 0045
+    } // BLAZE PATCH 0045
+    (out, repr_args) // BLAZE PATCH 0045
+} // BLAZE PATCH 0045

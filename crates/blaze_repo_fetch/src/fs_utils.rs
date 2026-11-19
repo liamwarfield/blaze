@@ -6,8 +6,8 @@
 use std::io::{self, Read, Write};
 
 use blaze_util::string_encoding::java_new_string_utf8;
+use blaze_util::string_encoding::jni_latin1_chars;
 use blaze_util::string_encoding::latin1_decode;
-use blaze_util::string_encoding::latin1_encode_lossy;
 use blaze_vfs::{NOW_SENTINEL_TIME, Path, PathFragment, Symlinks};
 
 use crate::errors::IoException;
@@ -226,13 +226,27 @@ pub fn create_hard_link(link_path: &Path, original_path: &Path) -> io::Result<()
 /// The internal string under which the file system sees `path` when Java hands it a string
 /// that is not internal (a Unicode string, e.g. a name decoded from UTF-8 or US-ASCII) without
 /// converting it: the JNI (`GetStringLatin1Chars`) passes a char <= U+00FF as that byte and any
-/// other char as `?`. So a Unicode `é` (U+00E9) names a file with the single byte E9.
-// Java: src/main/native/latin1_jni_path.cc GetStringLatin1Chars
+/// other UTF-16 unit as `?`. So a Unicode `é` (U+00E9) names a file with the single byte E9, and
+/// `🐷` (a surrogate pair) is `??`.
+// Java: src/main/native/latin1_jni_path.cc:121-124 GetStringLatin1Chars
 pub fn unicode_path_as_seen_by_file_system(path: &str) -> String {
-    latin1_decode(&latin1_encode_lossy(path)).into_owned()
+    latin1_decode(&jni_latin1_chars(path)).into_owned()
 }
 
 /// Converts a VFS result into the Java exception type.
 pub(crate) fn io<T>(r: io::Result<T>) -> Result<T, IoException> {
     r.map_err(IoException::from)
+}
+
+#[cfg(test)]
+mod byte_strings_tests {
+    use super::*;
+
+    // Byte-strings review 2026-11-20 S2-4: latin1_jni_path.cc:121-124 writes one `?` per UTF-16
+    // unit above U+00FF, so the patch header `+++ b/🐷.txt` creates `??.txt` in Bazel.
+    #[test]
+    fn unicode_path_as_seen_by_file_system_is_per_utf16_unit() {
+        assert_eq!(unicode_path_as_seen_by_file_system("🐷.txt"), "??.txt");
+        assert_eq!(unicode_path_as_seen_by_file_system("é中"), "\u{e9}?");
+    }
 }

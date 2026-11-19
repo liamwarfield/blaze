@@ -73,20 +73,14 @@ pub fn check_unported_semantics_keys(semantics: &StarlarkSemantics) {
             semantics.incompatible_use_cc_configure_from_rules_cc
         );
     }
-    // Java: net/starlark/java/lib/json/Json.java, net/starlark/java/eval/StringModule.java,
-    // com/google/devtools/build/lib/bazel/bzlmod/FactsAdapter.java read
-    // StarlarkSemantics.INTERNAL_BAZEL_ONLY_UTF_8_BYTE_STRINGS; Blaze keeps code-point strings
-    // (docs/decisions.md 2026-11-17, byte-string migration pending), which is the default's
-    // behaviour for ASCII only.
-    if semantics.internal_starlark_utf_8_byte_strings
-        != defaults.internal_starlark_utf_8_byte_strings
-    {
-        blaze_util::unported!(
-            "StarlarkSemantics.INTERNAL_BAZEL_ONLY_UTF_8_BYTE_STRINGS",
-            "--internal_starlark_utf_8_byte_strings={}",
-            semantics.internal_starlark_utf_8_byte_strings
-        );
-    }
+    // `--internal_starlark_utf_8_byte_strings` is read where Java reads
+    // StarlarkSemantics.INTERNAL_BAZEL_ONLY_UTF_8_BYTE_STRINGS: `StringModule.matcher`
+    // (net/starlark/java/eval/StringModule.java:326-334) and `Json.decode`
+    // (net/starlark/java/lib/json/Json.java:346-353), both through the evaluator's flag that every
+    // Blaze evaluator sets from its thread's semantics; FactsAdapter.java:41 fixes it to true.
+    // PORT: with the flag off, a char above U+FFFF made by `json.decode` is one Starlark char in
+    // Blaze and two (a UTF-16 pair) in Java (byte-strings review 2026-11-20 S2-1; the
+    // `flagoff_rule_json` case of scripts/bytes).
 }
 
 // Java: com/google/devtools/build/lib/packages/semantics/BuildLanguageOptions.java:997 BuildLanguageOptions.toStarlarkSemantics

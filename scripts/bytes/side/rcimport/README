@@ -1,0 +1,5 @@
+Byte-strings review 2026-11-20 S1-1. scripts/bytes/run copies this directory to a workspace
+whose path ends in `bytes_rc_é` and runs `query //:x`. `.bazelrc` imports a.bazelrc
+(`--output=label_kind`) and then try-imports b.bazelrc (`--output=build`), both through
+`%workspace%`: the output is the build form only when both resolve in the non-ASCII path; a
+failing `import` is fatal, a failing `try-import` leaves label_kind.

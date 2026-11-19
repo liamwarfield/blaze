@@ -1,28 +1,41 @@
-//! Port of the reading half of `com.google.protobuf.TextFormat` (protobuf-java 33.4, the version
-//! Bazel 9.3.2 builds with: `MODULE.bazel` `single_version_override(module_name = "protobuf",
-//! version = "33.4")`; Bazel's `third_party/protobuf.patch` does not touch `TextFormat.java`).
-//! Paths in the `// Java:` markers are relative to `java/core/src/main/java` of that release.
+//! Port of `com.google.protobuf.TextFormat` (protobuf-java 33.4, the version Bazel 9.3.2 builds
+//! with: `MODULE.bazel` `bazel_dep(name = "protobuf", version = "33.4")`; Bazel's
+//! `third_party/protobuf.patch` does not touch `TextFormat.java`). Paths in the `// Java:`
+//! markers are relative to `java/core/src/main/java` of that release.
 //!
-//! What is ported: `Tokenizer`, `Parser.merge(CharSequence, Message.Builder)` with the default
-//! parser (`TextFormat.getParser()`: unknown fields and extensions are errors, singular fields may
-//! be overwritten, recursion limit 100, empty extension and type registries), the skipping of
-//! unknown fields, `unescapeBytes` and `parseInteger`.
+//! - Printing: [`printer`] (`TextFormat.printer()`), [`Printer`], [`message_to_string`]
+//!   (`Message.toString()`), [`escape_bytes`], [`unsigned_to_string_32`] / `_64`.
+//! - Parsing: [`get_parser`], [`Parser`] / [`ParserBuilder`], [`merge`] (`TextFormat.merge`),
+//!   [`parse`] (`TextFormat.parse`), the `Tokenizer`, [`unescape_bytes`], [`parse_int32`] ...
+//! - [`TypeRegistry`] for `google.protobuf.Any`.
 //!
-//! PORT: protobuf-java drives the parser with the message's `Descriptor`. Blaze has no runtime
-//! descriptors, so the descriptors of the one message Blaze parses from text,
-//! `build.bazel.remote.execution.v2.Platform` (read by `PlatformUtils.getPlatformProto`), are
-//! written out here ([`PLATFORM`], [`PROPERTY`]) and the parse goes into a [`DynamicMessage`]
-//! (Java: `MessageReflection.BuilderAdapter` over the builder). The field types that schema does
-//! not use (numbers, bools, enums, bytes, groups, maps) have no [`FieldType`] variant, so their
-//! branches of `consumeFieldValue` cannot be reached and are not ported; values of those shapes
-//! are still tokenized and skipped as Java does when they belong to unknown fields.
+//! Both halves are descriptor-driven, as in Java: they walk the runtime descriptors of
+//! [`crate::descriptors`] (the `FileDescriptorSet` that `build.rs` compiles, embedded in the
+//! crate) over a [`DynamicMessage`]. A generated message enters as the `DynamicMessage` parsed
+//! from its Java encoding and leaves as the generated message decoded from the
+//! `DynamicMessage`'s encoding. No code is written per message type.
 //!
 //! PORT: Java's `CharSequence` is UTF-16; the tokenizer works on the UTF-16 code units of the
 //! input, so line and column numbers in errors count what Java counts.
 
+use std::collections::BTreeSet;
 use std::fmt;
 
-use crate::build::bazel::remote::execution::v2::{Platform, platform};
+use crate::JavaMessage;
+use crate::build::bazel::remote::execution::v2::Platform;
+use crate::descriptors::{Descriptor, FieldDescriptor, JavaType, Type, pool};
+pub use crate::dynamic_message::{
+    DynamicMessage, UnknownField as UnknownFieldSetField, UnknownFieldSet, Value,
+};
+use crate::json::InvalidProtocolBufferException;
+
+mod printer;
+
+pub use printer::{
+    Printer, debug_format_printer, default_format_printer, escape_bytes,
+    escape_double_quotes_and_backslashes, escape_text, message_to_string, printer,
+    unsigned_to_string_32, unsigned_to_string_64,
+};
 
 /// `Parser.Builder.recursionLimit` default.
 // Java: com/google/protobuf/TextFormat.java:1941 TextFormat.Parser.Builder.recursionLimit
@@ -90,11 +103,8 @@ impl std::error::Error for InvalidEscapeSequenceException {}
 
 /// `java.lang.NumberFormatException` from `parseInteger` and the JDK number parsers it calls.
 ///
-/// PORT: the messages of `Long.parseLong` and `new BigInteger(String, int)` are JDK text that
-/// only reaches a user through `Couldn't parse integer: ...` for an integer field; the Platform
-/// schema has none (numbers are only skipped inside unknown fields, where the message is
-/// dropped), so those two use `NumberFormatException.forInputString`'s format. The messages
-/// `parseInteger` builds itself are Java's.
+/// The messages of `Long.parseLong`, `Integer.parseInt` and `new BigInteger(String, int)` are
+/// JDK 21's; they reach a user through `Couldn't parse integer: ...`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NumberFormatException(pub String);
 
@@ -105,180 +115,125 @@ impl fmt::Display for NumberFormatException {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Descriptors (the schema the parser is driven by).
+// TypeRegistry (`com.google.protobuf.TypeRegistry`): the types `Any` may be expanded as.
 
-/// The `FieldDescriptor.Type`s of the fields Blaze parses from text.
-#[derive(Debug)]
-pub enum FieldType {
-    /// `TYPE_STRING` (`JavaType.STRING`).
-    String,
-    /// `TYPE_MESSAGE` (`JavaType.MESSAGE`) with its message type.
-    Message(&'static Descriptor),
+/// A registry of message types the printer and parser expand `google.protobuf.Any` with.
+// Java: com/google/protobuf/TypeRegistry.java TypeRegistry
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TypeRegistry {
+    /// `types`: full name to descriptor.
+    types: BTreeSet<String>,
 }
 
-/// The parts of `Descriptors.FieldDescriptor` the parser reads.
-#[derive(Debug)]
-pub struct FieldDescriptor {
-    /// `getName()`.
-    pub name: &'static str,
-    /// `getFullName()`.
-    pub full_name: &'static str,
-    /// `isRepeated()`.
-    pub repeated: bool,
-    /// `getType()`.
-    pub field_type: FieldType,
-}
-
-impl FieldDescriptor {
-    /// `isGroupLike()`: only `TYPE_GROUP` fields can be; no field here is a group.
-    fn is_group_like(&self) -> bool {
-        false
+impl TypeRegistry {
+    /// `TypeRegistry.getEmptyTypeRegistry()`.
+    pub fn get_empty_type_registry() -> TypeRegistry {
+        TypeRegistry::default()
     }
 
-    /// `getMessageType()`.
-    fn get_message_type(&self) -> &'static Descriptor {
-        match self.field_type {
-            FieldType::Message(d) => d,
-            FieldType::String => {
-                panic!("UnsupportedOperationException: This field is not of message type.")
-            }
+    /// `TypeRegistry.newBuilder()`.
+    pub fn new_builder() -> TypeRegistryBuilder {
+        TypeRegistryBuilder {
+            files: BTreeSet::new(),
+            types: BTreeSet::new(),
         }
     }
 
-    /// `getJavaType() == JavaType.MESSAGE`.
-    fn is_message(&self) -> bool {
-        matches!(self.field_type, FieldType::Message(_))
+    pub(crate) fn is_empty(&self) -> bool {
+        self.types.is_empty()
+    }
+
+    /// `find(name)`.
+    // Java: com/google/protobuf/TypeRegistry.java:42 TypeRegistry.find
+    pub fn find(&self, name: &str) -> Option<&'static Descriptor> {
+        self.types
+            .contains(name)
+            .then(|| printer::find_message_type(name))
+            .flatten()
+    }
+
+    /// Find a type by its typeUrl. Returns `None` if it cannot be found in this registry.
+    // Java: com/google/protobuf/TypeRegistry.java:49 TypeRegistry.getDescriptorForTypeUrl
+    pub fn get_descriptor_for_type_url(
+        &self,
+        type_url: &str,
+    ) -> Result<Option<&'static Descriptor>, InvalidProtocolBufferException> {
+        Ok(self.find(&get_type_name(type_url)?))
     }
 }
 
-/// The parts of `Descriptors.Descriptor` the parser reads.
-#[derive(Debug)]
-pub struct Descriptor {
-    /// `getName()`.
-    pub name: &'static str,
-    /// `getFullName()`.
-    pub full_name: &'static str,
-    /// `getFields()`, in declaration order.
-    pub fields: &'static [FieldDescriptor],
-}
-
-/// Descriptors are singletons: equal iff the same descriptor.
-impl PartialEq for Descriptor {
-    fn eq(&self, other: &Descriptor) -> bool {
-        std::ptr::eq(self, other)
+/// `typeUrl.split("/")`'s last part (Java's `split` drops trailing empty strings).
+// Java: com/google/protobuf/TypeRegistry.java:60 TypeRegistry.getTypeName
+fn get_type_name(type_url: &str) -> Result<String, InvalidProtocolBufferException> {
+    let mut parts: Vec<&str> = type_url.split('/').collect();
+    while parts.len() > 1 && parts.last() == Some(&"") {
+        parts.pop();
     }
+    if parts.len() == 1 && parts[0].is_empty() {
+        parts.clear();
+    }
+    if parts.len() <= 1 {
+        return Err(InvalidProtocolBufferException::new(format!(
+            "Invalid type url found: {type_url}"
+        )));
+    }
+    Ok(parts[parts.len() - 1].to_string())
 }
 
-impl Eq for Descriptor {}
+/// `TypeRegistry.Builder`.
+// Java: com/google/protobuf/TypeRegistry.java TypeRegistry.Builder
+#[derive(Clone, Debug)]
+pub struct TypeRegistryBuilder {
+    files: BTreeSet<String>,
+    types: BTreeSet<String>,
+}
 
-impl Descriptor {
-    /// `findFieldByName(name)`.
-    fn find_field_by_name(&self, name: &str) -> Option<&'static FieldDescriptor> {
-        // `fields` is 'static; reborrow through the static slice.
-        let fields: &'static [FieldDescriptor] = self.fields;
-        fields.iter().find(|f| f.name == name)
+impl TypeRegistryBuilder {
+    /// `add(Descriptor)`: adds the type's file, its dependencies, and all their messages.
+    pub fn add<M: JavaMessage>(mut self) -> Self {
+        let descriptor = descriptor_of::<M>();
+        self.add_file(&descriptor.get_file().name);
+        self
     }
 
-    fn field_index(&self, field: &FieldDescriptor) -> usize {
-        self.fields
-            .iter()
-            .position(|f| std::ptr::eq(f, field))
-            .expect("field of this message type")
+    /// `add(Descriptor)` of a pool descriptor.
+    pub fn add_descriptor(mut self, descriptor: &Descriptor) -> Self {
+        self.add_file(&descriptor.get_file().name);
+        self
     }
-}
 
-/// `build.bazel.remote.execution.v2.Platform.Property` (`remote_execution.proto`:
-/// `string name = 1; string value = 2;`).
-pub static PROPERTY: Descriptor = Descriptor {
-    name: "Property",
-    full_name: "build.bazel.remote.execution.v2.Platform.Property",
-    fields: &[
-        FieldDescriptor {
-            name: "name",
-            full_name: "build.bazel.remote.execution.v2.Platform.Property.name",
-            repeated: false,
-            field_type: FieldType::String,
-        },
-        FieldDescriptor {
-            name: "value",
-            full_name: "build.bazel.remote.execution.v2.Platform.Property.value",
-            repeated: false,
-            field_type: FieldType::String,
-        },
-    ],
-};
-
-/// `build.bazel.remote.execution.v2.Platform` (`repeated Property properties = 1;`).
-pub static PLATFORM: Descriptor = Descriptor {
-    name: "Platform",
-    full_name: "build.bazel.remote.execution.v2.Platform",
-    fields: &[FieldDescriptor {
-        name: "properties",
-        full_name: "build.bazel.remote.execution.v2.Platform.properties",
-        repeated: true,
-        field_type: FieldType::Message(&PROPERTY),
-    }],
-};
-
-/// A value of one field.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum FieldValue {
-    String(String),
-    Message(DynamicMessage),
-}
-
-/// A message under construction (`MessageReflection.BuilderAdapter` over its builder): per field
-/// of the descriptor, its values (at most one for a singular field; present iff `hasField`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DynamicMessage {
-    pub descriptor: &'static Descriptor,
-    pub values: Vec<Vec<FieldValue>>,
-}
-
-impl DynamicMessage {
-    pub fn new(descriptor: &'static Descriptor) -> DynamicMessage {
-        DynamicMessage {
-            descriptor,
-            values: descriptor.fields.iter().map(|_| Vec::new()).collect(),
+    // Java: com/google/protobuf/TypeRegistry.java TypeRegistry.Builder.addFile
+    fn add_file(&mut self, name: &str) {
+        // Skip the file if it's already added.
+        if !self.files.insert(name.to_string()) {
+            return;
+        }
+        let file = pool().find_file_by_name(name).expect("file of the pool");
+        for dependency in &file.dependencies {
+            self.add_file(dependency);
+        }
+        for message in file.get_message_types() {
+            self.add_message(message);
         }
     }
 
-    /// The values of the field with this name.
-    pub fn get(&self, name: &str) -> &[FieldValue] {
-        match self.descriptor.find_field_by_name(name) {
-            Some(f) => &self.values[self.descriptor.field_index(f)],
-            None => &[],
+    // Java: com/google/protobuf/TypeRegistry.java TypeRegistry.Builder.addMessage
+    fn add_message(&mut self, message: &'static Descriptor) {
+        for nested_type in message.get_nested_types() {
+            self.add_message(nested_type);
         }
-    }
 
-    // Java: com/google/protobuf/MessageReflection.java BuilderAdapter.hasField
-    fn has_field(&self, field: &FieldDescriptor) -> bool {
-        !self.values[self.descriptor.field_index(field)].is_empty()
-    }
-
-    // Java: com/google/protobuf/MessageReflection.java BuilderAdapter.setField
-    fn set_field(&mut self, field: &FieldDescriptor, value: FieldValue) {
-        let i = self.descriptor.field_index(field);
-        self.values[i] = vec![value];
-    }
-
-    // Java: com/google/protobuf/MessageReflection.java BuilderAdapter.addRepeatedField
-    fn add_repeated_field(&mut self, field: &FieldDescriptor, value: FieldValue) {
-        let i = self.descriptor.field_index(field);
-        self.values[i].push(value);
-    }
-
-    /// `newMergeTargetForField(field, null)`: a singular message field that is set is merged
-    /// into; otherwise a new builder of the field's type.
-    // Java: com/google/protobuf/MessageReflection.java:603 BuilderAdapter.newMergeTargetForField
-    fn new_merge_target_for_field(&mut self, field: &FieldDescriptor) -> DynamicMessage {
-        if !field.repeated && self.has_field(field) {
-            let i = self.descriptor.field_index(field);
-            if let Some(FieldValue::Message(m)) = self.values[i].first() {
-                return m.clone();
-            }
+        if self.types.contains(&message.full_name) {
+            // logger.warning("Type " + message.getFullName() + " is added multiple times.")
+            return;
         }
-        DynamicMessage::new(field.get_message_type())
+
+        self.types.insert(message.full_name.clone());
+    }
+
+    /// `build()`.
+    pub fn build(self) -> TypeRegistry {
+        TypeRegistry { types: self.types }
     }
 }
 
@@ -523,6 +478,14 @@ impl<'a> Tokenizer<'a> {
         Ok(())
     }
 
+    // Java: com/google/protobuf/TextFormat.java:1367 TextFormat.Tokenizer.lookingAtInteger
+    fn looking_at_integer(&self) -> bool {
+        match self.current_token.first() {
+            None => false,
+            Some(&c) => is_digit_plus_minus(c),
+        }
+    }
+
     /// Returns `true` if the current token's text is equal to that specified.
     // Java: com/google/protobuf/TextFormat.java:1376 TextFormat.Tokenizer.lookingAt
     fn looking_at(&self, text: &str) -> bool {
@@ -554,6 +517,32 @@ impl<'a> Tokenizer<'a> {
     // Java: com/google/protobuf/TextFormat.java:1403 TextFormat.Tokenizer.tryConsumeIdentifier
     fn try_consume_identifier(&mut self) -> bool {
         self.consume_identifier().is_ok()
+    }
+
+    /// If the next token is a 32-bit signed integer, consume it and return its value. Otherwise,
+    /// throw a [`ParseException`].
+    // Java: com/google/protobuf/TextFormat.java:1416 TextFormat.Tokenizer.consumeInt32
+    fn consume_int32(&mut self) -> Result<i32, ParseException> {
+        match parse_int32(&self.current_token_string()) {
+            Ok(result) => {
+                self.next_token();
+                Ok(result)
+            }
+            Err(e) => Err(self.integer_parse_exception(&e)),
+        }
+    }
+
+    /// If the next token is a 32-bit unsigned integer, consume it and return its value.
+    /// Otherwise, throw a [`ParseException`].
+    // Java: com/google/protobuf/TextFormat.java:1430 TextFormat.Tokenizer.consumeUInt32
+    fn consume_uint32(&mut self) -> Result<i32, ParseException> {
+        match parse_uint32(&self.current_token_string()) {
+            Ok(result) => {
+                self.next_token();
+                Ok(result)
+            }
+            Err(e) => Err(self.integer_parse_exception(&e)),
+        }
     }
 
     /// If the next token is a 64-bit signed integer, consume it and return its value. Otherwise,
@@ -596,27 +585,35 @@ impl<'a> Tokenizer<'a> {
         self.consume_uint64().is_ok()
     }
 
-    /// If the next token is a double, consume it. Otherwise, throw a [`ParseException`].
-    ///
-    /// PORT: returns no value; only `skipFieldValue` calls it here, and it drops the value.
+    /// If the next token is a double, consume it and return its value. Otherwise, throw a
+    /// [`ParseException`].
     // Java: com/google/protobuf/TextFormat.java:1498 TextFormat.Tokenizer.consumeDouble
-    fn consume_double(&mut self) -> Result<(), ParseException> {
+    fn consume_double(&mut self) -> Result<f64, ParseException> {
         // We need to parse infinity and nan separately because
         // Double.parseDouble() does not accept "inf", "infinity", or "nan".
+        // PORT: `toLowerCase(Locale.ROOT)`; only ASCII spellings can match.
         match self.current_token_string().to_ascii_lowercase().as_str() {
-            "-inf" | "-infinity" | "inf" | "infinity" | "nan" => {
+            "-inf" | "-infinity" => {
                 self.next_token();
-                return Ok(());
+                return Ok(f64::NEG_INFINITY);
+            }
+            "inf" | "infinity" => {
+                self.next_token();
+                return Ok(f64::INFINITY);
+            }
+            "nan" => {
+                self.next_token();
+                return Ok(f64::NAN);
             }
             _ => {
                 // fall through
             }
         }
 
-        match java_parse_floating(&self.current_token_string()) {
-            Ok(()) => {
+        match java_parse_double(&self.current_token_string()) {
+            Ok(result) => {
                 self.next_token();
-                Ok(())
+                Ok(result)
             }
             Err(e) => Err(self.float_parse_exception(&e)),
         }
@@ -629,30 +626,62 @@ impl<'a> Tokenizer<'a> {
         self.consume_double().is_ok()
     }
 
-    /// If the next token is a float, consume it. Otherwise, throw a [`ParseException`].
-    ///
-    /// PORT: returns no value, as [`Self::consume_double`].
+    /// If the next token is a float, consume it and return its value. Otherwise, throw a
+    /// [`ParseException`].
     // Java: com/google/protobuf/TextFormat.java:1543 TextFormat.Tokenizer.consumeFloat
-    fn consume_float(&mut self) -> Result<(), ParseException> {
+    fn consume_float(&mut self) -> Result<f32, ParseException> {
         // We need to parse infinity and nan separately because
         // Float.parseFloat() does not accept "inf", "infinity", or "nan".
         match self.current_token_string().to_ascii_lowercase().as_str() {
-            "-inf" | "-inff" | "-infinity" | "-infinityf" | "inf" | "inff" | "infinity"
-            | "infinityf" | "nan" | "nanf" => {
+            "-inf" | "-inff" | "-infinity" | "-infinityf" => {
                 self.next_token();
-                return Ok(());
+                return Ok(f32::NEG_INFINITY);
+            }
+            "inf" | "inff" | "infinity" | "infinityf" => {
+                self.next_token();
+                return Ok(f32::INFINITY);
+            }
+            "nan" | "nanf" => {
+                self.next_token();
+                return Ok(f32::NAN);
             }
             _ => {
                 // fall through
             }
         }
 
-        match java_parse_floating(&self.current_token_string()) {
-            Ok(()) => {
+        match java_parse_float(&self.current_token_string()) {
+            Ok(result) => {
                 self.next_token();
-                Ok(())
+                Ok(result)
             }
             Err(e) => Err(self.float_parse_exception(&e)),
+        }
+    }
+
+    /// If the next token is a boolean, consume it and return its value. Otherwise, throw a
+    /// [`ParseException`].
+    // Java: com/google/protobuf/TextFormat.java:1591 TextFormat.Tokenizer.consumeBoolean
+    fn consume_boolean(&mut self) -> Result<bool, ParseException> {
+        if self.token_equals("true")
+            || self.token_equals("True")
+            || self.token_equals("t")
+            || self.token_equals("1")
+        {
+            self.next_token();
+            Ok(true)
+        } else if self.token_equals("false")
+            || self.token_equals("False")
+            || self.token_equals("f")
+            || self.token_equals("0")
+        {
+            self.next_token();
+            Ok(false)
+        } else {
+            Err(self.parse_exception(&format!(
+                "Expected \"true\" or \"false\". Found \"{}\".",
+                self.current_token_string()
+            )))
         }
     }
 
@@ -731,7 +760,6 @@ impl<'a> Tokenizer<'a> {
     /// Returns a [`ParseException`] with the line and column numbers of the previous token in
     /// the description, suitable for throwing.
     // Java: com/google/protobuf/TextFormat.java:1681 TextFormat.Tokenizer.parseExceptionPreviousToken
-    #[allow(dead_code)]
     fn parse_exception_previous_token(&self, description: &str) -> ParseException {
         // Note:  People generally prefer one-based line and column numbers.
         ParseException::new(
@@ -790,10 +818,10 @@ struct UnknownField {
     type_: UnknownFieldType,
 }
 
-/// `Parser.SingularOverwritePolicy`.
+/// Determines if repeated values for non-repeated fields and oneofs are permitted.
+// Java: com/google/protobuf/TextFormat.java:1879 TextFormat.Parser.SingularOverwritePolicy
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
-enum SingularOverwritePolicy {
+pub enum SingularOverwritePolicy {
     /// Later values are merged with earlier values. For primitive fields or conflicting oneofs,
     /// the last value is retained.
     AllowSingularOverwrites,
@@ -801,181 +829,266 @@ enum SingularOverwritePolicy {
     ForbidSingularOverwrites,
 }
 
-/// The settings of `TextFormat.getParser()` (`Parser.newBuilder().build()`).
+/// Parser for text-format proto2 instances. This class is thread-safe. The implementation
+/// largely follows google/protobuf/text_format.cc.
+///
+/// Use [`get_parser`] to obtain the default parser, or [`ParserBuilder`] to control the parser
+/// behavior.
+///
+/// PORT: `parseInfoTreeBuilder` (`TextFormatParseInfoTree`) and extension registries are not
+/// ported: Blaze registers no extension, so `[name]` fields are always unknown extensions, as
+/// with `ExtensionRegistry.getEmptyRegistry()`. `detectSilentMarker` is empty in this version.
+/// The warnings Java logs (`java.util.logging`) when unknown fields or enum values are allowed
+/// are not written anywhere.
+// Java: com/google/protobuf/TextFormat.java:1859 TextFormat.Parser
+#[derive(Clone, Debug)]
+pub struct Parser {
+    type_registry: TypeRegistry,
+    allow_unknown_fields: bool,
+    allow_unknown_enum_values: bool,
+    allow_unknown_extensions: bool,
+    singular_overwrite_policy: SingularOverwritePolicy,
+    recursion_limit: i32,
+}
+
+/// Builder that can be used to obtain new instances of [`Parser`].
 // Java: com/google/protobuf/TextFormat.java:1933 TextFormat.Parser.Builder
-const ALLOW_UNKNOWN_FIELDS: bool = false;
-const ALLOW_UNKNOWN_EXTENSIONS: bool = false;
-const SINGULAR_OVERWRITE_POLICY: SingularOverwritePolicy =
-    SingularOverwritePolicy::AllowSingularOverwrites;
+#[derive(Clone, Debug)]
+pub struct ParserBuilder {
+    allow_unknown_fields: bool,
+    allow_unknown_enum_values: bool,
+    allow_unknown_extensions: bool,
+    singular_overwrite_policy: SingularOverwritePolicy,
+    type_registry: TypeRegistry,
+    recursion_limit: i32,
+}
+
+impl ParserBuilder {
+    /// Sets the TypeRegistry for resolving Any.
+    pub fn set_type_registry(mut self, type_registry: TypeRegistry) -> Self {
+        self.type_registry = type_registry;
+        self
+    }
+
+    /// Set whether this parser will allow unknown fields.
+    pub fn set_allow_unknown_fields(mut self, allow_unknown_fields: bool) -> Self {
+        self.allow_unknown_fields = allow_unknown_fields;
+        self
+    }
+
+    /// Set whether this parser will allow unknown extensions.
+    pub fn set_allow_unknown_extensions(mut self, allow_unknown_extensions: bool) -> Self {
+        self.allow_unknown_extensions = allow_unknown_extensions;
+        self
+    }
+
+    /// Sets parser behavior when a non-repeated field appears more than once.
+    pub fn set_singular_overwrite_policy(mut self, p: SingularOverwritePolicy) -> Self {
+        self.singular_overwrite_policy = p;
+        self
+    }
+
+    /// Set the maximum recursion limit that the parser will allow.
+    pub fn set_recursion_limit(mut self, recursion_limit: i32) -> Self {
+        self.recursion_limit = recursion_limit;
+        self
+    }
+
+    /// `build()`.
+    pub fn build(self) -> Parser {
+        Parser {
+            type_registry: self.type_registry,
+            allow_unknown_fields: self.allow_unknown_fields,
+            allow_unknown_enum_values: self.allow_unknown_enum_values,
+            allow_unknown_extensions: self.allow_unknown_extensions,
+            singular_overwrite_policy: self.singular_overwrite_policy,
+            recursion_limit: self.recursion_limit,
+        }
+    }
+}
+
+/// Return a [`Parser`] instance which can parse text-format messages
+/// (`Parser.newBuilder().build()`).
+// Java: com/google/protobuf/TextFormat.java:1790 TextFormat.getParser
+pub fn get_parser() -> Parser {
+    Parser::new_builder().build()
+}
+
+/// Parse a text-format message from `input` and merge the contents into `builder`.
+// Java: com/google/protobuf/TextFormat.java:1801 TextFormat.merge
+pub fn merge<M: JavaMessage>(input: &str, builder: &mut M) -> Result<(), ParseException> {
+    get_parser().merge(input, builder)
+}
+
+/// Parse a text-format message from `input`.
+///
+/// `builder.build()` throws the unchecked `UninitializedMessageException` when a required field
+/// is missing; that is a panic here.
+// Java: com/google/protobuf/TextFormat.java:1811 TextFormat.parse
+pub fn parse<M: JavaMessage>(input: &str) -> Result<M, ParseException> {
+    let descriptor = descriptor_of::<M>();
+    let mut target = DynamicMessage::new(descriptor);
+    get_parser().merge_dynamic(input, &mut target)?;
+    let missing = target.find_missing_fields();
+    if !missing.is_empty() {
+        panic!(
+            "UninitializedMessageException: Message missing required fields: {}",
+            missing.join(", ")
+        );
+    }
+    Ok(target.into_message())
+}
+
+fn descriptor_of<M: JavaMessage>() -> &'static Descriptor {
+    pool()
+        .find_message_type_by_name(M::FULL_NAME)
+        .unwrap_or_else(|| panic!("no descriptor for {}", M::FULL_NAME))
+}
 
 /// `TextFormat.getParser().merge(input, platformBuilder)` for a
 /// `build.bazel.remote.execution.v2.Platform.Builder`: parses a text-format `Platform` from
 /// `input` and merges it into `builder` (repeated `properties` are appended).
-///
-/// PORT: the parse goes into a fresh [`DynamicMessage`] and is merged into `builder` at the end;
-/// Java writes into the builder as it goes, so on a `ParseException` Java's builder holds the
-/// fields parsed so far and this one is unchanged. `PlatformUtils.getPlatformProto` discards
-/// the builder on a `ParseException`.
 // Java: com/google/protobuf/TextFormat.java:2019 TextFormat.Parser.merge
 pub fn merge_platform(input: &str, builder: &mut Platform) -> Result<(), ParseException> {
-    let message = merge(input, &PLATFORM)?;
-    for value in message.get("properties") {
-        let FieldValue::Message(property) = value else {
-            unreachable!("properties is a message field")
-        };
-        let string = |name: &str| match property.get(name).first() {
-            Some(FieldValue::String(s)) => s.clone(),
-            Some(FieldValue::Message(_)) => unreachable!("{name} is a string field"),
-            None => String::new(),
-        };
-        builder.properties.push(platform::Property {
-            name: string("name"),
-            value: string("value"),
-        });
-    }
-    Ok(())
+    get_parser().merge(input, builder)
 }
 
-/// Parse a text-format message of type `descriptor` from `input`.
-///
-/// Extensions are never recognized (`ExtensionRegistry.getEmptyRegistry()`).
-// Java: com/google/protobuf/TextFormat.java:2119 TextFormat.Parser.merge
-pub fn merge(
-    input: &str,
-    descriptor: &'static Descriptor,
-) -> Result<DynamicMessage, ParseException> {
-    let text: Vec<u16> = input.encode_utf16().collect();
-    let mut tokenizer = Tokenizer::new(&text);
-    let mut target = DynamicMessage::new(descriptor);
-    let mut unknown_fields: Vec<UnknownField> = Vec::new();
-
-    while !tokenizer.at_end() {
-        merge_field(
-            &mut tokenizer,
-            &mut target,
-            &mut unknown_fields,
-            RECURSION_LIMIT,
-        )?;
-    }
-    check_unknown_fields(&unknown_fields)?;
-    Ok(target)
-}
-
-/// Check both unknown fields and unknown extensions and log warning messages or throw
-/// exceptions according to the flag.
-// Java: com/google/protobuf/TextFormat.java:2079 TextFormat.Parser.checkUnknownFields
-fn check_unknown_fields(unknown_fields: &[UnknownField]) -> Result<(), ParseException> {
-    if unknown_fields.is_empty() {
-        return Ok(());
+impl Parser {
+    /// Returns a new instance of [`ParserBuilder`].
+    pub fn new_builder() -> ParserBuilder {
+        ParserBuilder {
+            allow_unknown_fields: false,
+            allow_unknown_enum_values: false,
+            allow_unknown_extensions: false,
+            singular_overwrite_policy: SingularOverwritePolicy::AllowSingularOverwrites,
+            type_registry: TypeRegistry::get_empty_type_registry(),
+            recursion_limit: RECURSION_LIMIT,
+        }
     }
 
-    let mut msg = String::from("Input contains unknown fields and/or extensions:");
-    for field in unknown_fields {
-        msg.push('\n');
-        msg.push_str(&field.message);
+    /// Parse a text-format message from `input` and merge the contents into `builder`.
+    ///
+    /// PORT: the parse goes into a [`DynamicMessage`] holding `builder`'s fields and replaces
+    /// `builder` at the end; Java writes into the builder as it goes, so on a `ParseException`
+    /// Java's builder holds the fields parsed so far and this one is unchanged.
+    // Java: com/google/protobuf/TextFormat.java:2019 TextFormat.Parser.merge
+    pub fn merge<M: JavaMessage>(
+        &self,
+        input: &str,
+        builder: &mut M,
+    ) -> Result<(), ParseException> {
+        let mut target = DynamicMessage::from_message(builder);
+        self.merge_dynamic(input, &mut target)?;
+        *builder = target.into_message();
+        Ok(())
     }
 
-    if ALLOW_UNKNOWN_FIELDS {
-        unreachable!("TextFormat.getParser() does not allow unknown fields");
+    /// Parse a text-format message from `input` and merge the contents into `target`.
+    // Java: com/google/protobuf/TextFormat.java:2119 TextFormat.Parser.merge
+    pub fn merge_dynamic(
+        &self,
+        input: &str,
+        target: &mut DynamicMessage,
+    ) -> Result<(), ParseException> {
+        let text: Vec<u16> = input.encode_utf16().collect();
+        let mut tokenizer = Tokenizer::new(&text);
+        let mut unknown_fields: Vec<UnknownField> = Vec::new();
+
+        while !tokenizer.at_end() {
+            self.merge_field(
+                &mut tokenizer,
+                target,
+                &mut unknown_fields,
+                self.recursion_limit,
+            )?;
+        }
+        self.check_unknown_fields(&unknown_fields)
     }
 
-    let mut first_error_index = 0;
-    if ALLOW_UNKNOWN_EXTENSIONS {
-        let mut all_unknown_extensions = true;
+    /// Check both unknown fields and unknown extensions and log warning messages or throw
+    /// exceptions according to the flag.
+    // Java: com/google/protobuf/TextFormat.java:2079 TextFormat.Parser.checkUnknownFields
+    fn check_unknown_fields(&self, unknown_fields: &[UnknownField]) -> Result<(), ParseException> {
+        if unknown_fields.is_empty() {
+            return Ok(());
+        }
+
+        let mut msg = String::from("Input contains unknown fields and/or extensions:");
         for field in unknown_fields {
-            if field.type_ == UnknownFieldType::Field {
-                all_unknown_extensions = false;
-                break;
+            msg.push('\n');
+            msg.push_str(&field.message);
+        }
+
+        if self.allow_unknown_fields {
+            // logger.warning(msg)
+            return Ok(());
+        }
+
+        let mut first_error_index = 0;
+        if self.allow_unknown_extensions {
+            let mut all_unknown_extensions = true;
+            for field in unknown_fields {
+                if field.type_ == UnknownFieldType::Field {
+                    all_unknown_extensions = false;
+                    break;
+                }
+                first_error_index += 1;
             }
-            first_error_index += 1;
+            if all_unknown_extensions {
+                // logger.warning(msg)
+                return Ok(());
+            }
         }
-        if all_unknown_extensions {
-            unreachable!("TextFormat.getParser() does not allow unknown extensions");
-        }
+
+        let line_column: Vec<&str> = unknown_fields[first_error_index]
+            .message
+            .split(':')
+            .collect();
+        Err(ParseException::new(
+            line_column[0].parse::<i32>().expect("Integer.parseInt"),
+            line_column[1].parse::<i32>().expect("Integer.parseInt"),
+            &msg,
+        ))
     }
 
-    let line_column: Vec<&str> = unknown_fields[first_error_index]
-        .message
-        .split(':')
-        .collect();
-    Err(ParseException::new(
-        line_column[0].parse::<i32>().expect("Integer.parseInt"),
-        line_column[1].parse::<i32>().expect("Integer.parseInt"),
-        &msg,
-    ))
-}
+    /// Parse a single field from `tokenizer` and merge it into `target`.
+    // Java: com/google/protobuf/TextFormat.java:2152 TextFormat.Parser.mergeField
+    fn merge_field(
+        &self,
+        tokenizer: &mut Tokenizer<'_>,
+        target: &mut DynamicMessage,
+        unknown_fields: &mut Vec<UnknownField>,
+        recursion_limit: i32,
+    ) -> Result<(), ParseException> {
+        let mut field: Option<&'static FieldDescriptor> = None;
+        let name: String;
+        let type_ = target.get_descriptor_for_type();
 
-/// Parse a single field from `tokenizer` and merge it into `target`.
-///
-/// PORT: `parseTreeBuilder` is null for `TextFormat.getParser()`, and `detectSilentMarker` is
-/// empty in this version; both are left out.
-// Java: com/google/protobuf/TextFormat.java:2152 TextFormat.Parser.mergeField
-fn merge_field(
-    tokenizer: &mut Tokenizer<'_>,
-    target: &mut DynamicMessage,
-    unknown_fields: &mut Vec<UnknownField>,
-    recursion_limit: i32,
-) -> Result<(), ParseException> {
-    let mut field: Option<&'static FieldDescriptor> = None;
-    let name: String;
-    let type_ = target.descriptor;
-
-    if type_.full_name == "google.protobuf.Any" && tokenizer.try_consume("[") {
-        // No Any message is parsed from text in Blaze.
-        // PORT: blaze_protos has no blaze_util; `unimplemented!` per PORTING.md.
-        unimplemented!("Java: TextFormat.Parser.mergeAnyFieldValue (google.protobuf.Any)");
-    }
-
-    if tokenizer.try_consume("[") {
-        // An extension.
-        let mut name_builder = tokenizer.consume_identifier()?;
-        while tokenizer.try_consume(".") {
-            name_builder.push('.');
-            name_builder.push_str(&tokenizer.consume_identifier()?);
-        }
-        name = name_builder;
-
-        // `target.findExtensionByName(extensionRegistry, name)`: the registry is
-        // `ExtensionRegistry.getEmptyRegistry()`, so there is no extension.
-        let message = format!(
-            "{}:{}:\t{}.[{}]",
-            tokenizer.get_previous_line() + 1,
-            tokenizer.get_previous_column() + 1,
-            type_.full_name,
-            name
-        );
-        unknown_fields.push(UnknownField {
-            message,
-            type_: UnknownFieldType::Extension,
-        });
-
-        tokenizer.consume("]")?;
-    } else {
-        name = tokenizer.consume_identifier()?;
-        field = type_.find_field_by_name(&name);
-
-        // Group names are expected to be capitalized as they appear in the
-        // .proto file, which actually matches their type names, not their field
-        // names.
-        if field.is_none() {
-            // Explicitly specify US locale so that this code does not break when
-            // executing in Turkey.
-            // PORT: an identifier is ASCII ([A-Za-z0-9_.]), where `toLowerCase(Locale.US)` is
-            // ASCII lowercasing.
-            let lower_name = name.to_ascii_lowercase();
-            field = type_.find_field_by_name(&lower_name);
-            // If the case-insensitive match worked but the field is NOT a group,
-            if field.is_some_and(|f| !f.is_group_like()) {
-                field = None;
+        if type_.full_name == "google.protobuf.Any" && tokenizer.try_consume("[") {
+            if recursion_limit < 1 {
+                return Err(tokenizer.parse_exception("Message is nested too deep"));
             }
-            if field.is_some_and(|f| f.get_message_type().name != name) {
-                field = None;
-            }
+            return self.merge_any_field_value(
+                tokenizer,
+                target,
+                unknown_fields,
+                type_,
+                recursion_limit - 1,
+            );
         }
 
-        if field.is_none() {
+        if tokenizer.try_consume("[") {
+            // An extension.
+            let mut name_builder = tokenizer.consume_identifier()?;
+            while tokenizer.try_consume(".") {
+                name_builder.push('.');
+                name_builder.push_str(&tokenizer.consume_identifier()?);
+            }
+            name = name_builder;
+
+            // `target.findExtensionByName(extensionRegistry, name)`: no extension is registered.
             let message = format!(
-                "{}:{}:\t{}.{}",
+                "{}:{}:\t{}.[{}]",
                 tokenizer.get_previous_line() + 1,
                 tokenizer.get_previous_column() + 1,
                 type_.full_name,
@@ -983,32 +1096,418 @@ fn merge_field(
             );
             unknown_fields.push(UnknownField {
                 message,
-                type_: UnknownFieldType::Field,
+                type_: UnknownFieldType::Extension,
             });
+
+            tokenizer.consume("]")?;
+        } else {
+            name = tokenizer.consume_identifier()?;
+            field = type_.find_field_by_name(&name);
+
+            // Group names are expected to be capitalized as they appear in the
+            // .proto file, which actually matches their type names, not their field
+            // names.
+            if field.is_none() {
+                // Explicitly specify US locale so that this code does not break when
+                // executing in Turkey.
+                // PORT: an identifier is ASCII ([A-Za-z0-9_.]), where `toLowerCase(Locale.US)`
+                // is ASCII lowercasing.
+                let lower_name = name.to_ascii_lowercase();
+                field = type_.find_field_by_name(&lower_name);
+                // If the case-insensitive match worked but the field is NOT a group,
+                if field.is_some_and(|f| !f.is_group_like()) {
+                    field = None;
+                }
+                if field.is_some_and(|f| f.get_message_type().name != name) {
+                    field = None;
+                }
+            }
+
+            if field.is_none() {
+                let message = format!(
+                    "{}:{}:\t{}.{}",
+                    tokenizer.get_previous_line() + 1,
+                    tokenizer.get_previous_column() + 1,
+                    type_.full_name,
+                    name
+                );
+                unknown_fields.push(UnknownField {
+                    message,
+                    type_: UnknownFieldType::Field,
+                });
+            }
+        }
+
+        // Skips unknown fields.
+        let Some(field) = field else {
+            self.guess_field_type_and_skip(tokenizer, type_, recursion_limit)?;
+            return Ok(());
+        };
+
+        // Handle potential ':'.
+        if field.get_java_type() == JavaType::Message {
+            tokenizer.try_consume(":"); // optional
+            self.consume_field_values(tokenizer, target, field, unknown_fields, recursion_limit)?;
+        } else {
+            tokenizer.consume(":")?; // required
+            self.consume_field_values(tokenizer, target, field, unknown_fields, recursion_limit)?;
+        }
+
+        // For historical reasons, fields may optionally be separated by commas or
+        // semicolons.
+        if !tokenizer.try_consume(";") {
+            tokenizer.try_consume(",");
+        }
+        Ok(())
+    }
+
+    /// Parse a one or more field values from `tokenizer` and merge it into `target`.
+    // Java: com/google/protobuf/TextFormat.java:2335 TextFormat.Parser.consumeFieldValues
+    fn consume_field_values(
+        &self,
+        tokenizer: &mut Tokenizer<'_>,
+        target: &mut DynamicMessage,
+        field: &'static FieldDescriptor,
+        unknown_fields: &mut Vec<UnknownField>,
+        recursion_limit: i32,
+    ) -> Result<(), ParseException> {
+        // Support specifying repeated field values as a comma-separated list.
+        // Ex."foo: [1, 2, 3]"
+        if field.is_repeated() && tokenizer.try_consume("[") {
+            if !tokenizer.try_consume("]") {
+                // Allow "foo: []" to be treated as empty.
+                loop {
+                    self.consume_field_value(
+                        tokenizer,
+                        target,
+                        field,
+                        unknown_fields,
+                        recursion_limit,
+                    )?;
+                    if tokenizer.try_consume("]") {
+                        // End of list.
+                        break;
+                    }
+                    tokenizer.consume(",")?;
+                }
+            }
+        } else {
+            self.consume_field_value(tokenizer, target, field, unknown_fields, recursion_limit)?;
+        }
+        Ok(())
+    }
+
+    /// Parse a single field value from `tokenizer` and merge it into `target`.
+    // Java: com/google/protobuf/TextFormat.java:2380 TextFormat.Parser.consumeFieldValue
+    fn consume_field_value(
+        &self,
+        tokenizer: &mut Tokenizer<'_>,
+        target: &mut DynamicMessage,
+        field: &'static FieldDescriptor,
+        unknown_fields: &mut Vec<UnknownField>,
+        recursion_limit: i32,
+    ) -> Result<(), ParseException> {
+        if self.singular_overwrite_policy == SingularOverwritePolicy::ForbidSingularOverwrites
+            && !field.is_repeated()
+        {
+            if target.has_field(field) {
+                return Err(tokenizer.parse_exception_previous_token(&format!(
+                    "Non-repeated field \"{}\" cannot be overwritten.",
+                    field.full_name
+                )));
+            } else if let Some(oneof) = field.get_containing_oneof()
+                && target.has_oneof(oneof.index)
+            {
+                return Err(tokenizer.parse_exception_previous_token(&format!(
+                    "Field \"{}\" is specified along with field \"{}\", another member of oneof \"{}\".",
+                    field.full_name,
+                    target
+                        .get_oneof_field_descriptor(oneof.index)
+                        .expect("hasOneof")
+                        .full_name,
+                    oneof.name
+                )));
+            }
+        }
+
+        let value = if field.get_java_type() == JavaType::Message {
+            if recursion_limit < 1 {
+                return Err(tokenizer.parse_exception("Message is nested too deep"));
+            }
+
+            let end_token = if tokenizer.try_consume("<") {
+                ">"
+            } else {
+                tokenizer.consume("{")?;
+                "}"
+            };
+
+            let mut sub_field = target.new_merge_target_for_field(field);
+
+            while !tokenizer.try_consume(end_token) {
+                if tokenizer.at_end() {
+                    return Err(tokenizer.parse_exception(&format!("Expected \"{end_token}\".")));
+                }
+                self.merge_field(
+                    tokenizer,
+                    &mut sub_field,
+                    unknown_fields,
+                    recursion_limit - 1,
+                )?;
+            }
+
+            Value::Message(sub_field)
+        } else {
+            match field.type_ {
+                Type::Int32 | Type::Sint32 | Type::Sfixed32 => {
+                    Value::Int(tokenizer.consume_int32()?)
+                }
+                Type::Int64 | Type::Sint64 | Type::Sfixed64 => {
+                    Value::Long(tokenizer.consume_int64()?)
+                }
+                Type::Uint32 | Type::Fixed32 => Value::Int(tokenizer.consume_uint32()?),
+                Type::Uint64 | Type::Fixed64 => Value::Long(tokenizer.consume_uint64()?),
+                Type::Float => Value::Float(tokenizer.consume_float()?),
+                Type::Double => Value::Double(tokenizer.consume_double()?),
+                Type::Bool => Value::Boolean(tokenizer.consume_boolean()?),
+                Type::String => Value::String(tokenizer.consume_string()?.into_bytes()),
+                Type::Bytes => Value::Bytes(tokenizer.consume_byte_string()?),
+                Type::Enum => {
+                    let enum_type = field.get_enum_type();
+
+                    if tokenizer.looking_at_integer() {
+                        let number = tokenizer.consume_int32()?;
+                        // `findValueByNumberCreatingIfUnknown` for an open enum.
+                        let known = enum_type.find_value_by_number(number).is_some();
+                        if enum_type.is_closed() && !known {
+                            let unknown_value_msg = format!(
+                                "Enum type \"{}\" has no value with number {}.",
+                                enum_type.full_name, number
+                            );
+                            if self.allow_unknown_enum_values {
+                                // logger.warning(unknownValueMsg)
+                                return Ok(());
+                            } else {
+                                return Err(
+                                    tokenizer.parse_exception_previous_token(&unknown_value_msg)
+                                );
+                            }
+                        }
+                        Value::Enum(number)
+                    } else {
+                        let id = tokenizer.consume_identifier()?;
+                        match enum_type.find_value_by_name(&id) {
+                            Some(v) => Value::Enum(v.number),
+                            None => {
+                                let unknown_value_msg = format!(
+                                    "Enum type \"{}\" has no value named \"{}\".",
+                                    enum_type.full_name, id
+                                );
+                                if self.allow_unknown_enum_values {
+                                    // logger.warning(unknownValueMsg)
+                                    return Ok(());
+                                } else {
+                                    return Err(tokenizer
+                                        .parse_exception_previous_token(&unknown_value_msg));
+                                }
+                            }
+                        }
+                    }
+                }
+                Type::Message | Type::Group => panic!("RuntimeException: Can't get here."),
+            }
+        };
+
+        if field.is_repeated() {
+            // TODO: If field.isMapField() and FORBID_SINGULAR_OVERWRITES mode,
+            //     check for duplicate map keys here.
+            target.add_repeated_field(field, value);
+        } else {
+            target.set_field(field, value);
+        }
+        Ok(())
+    }
+
+    // Java: com/google/protobuf/TextFormat.java:2548 TextFormat.Parser.mergeAnyFieldValue
+    fn merge_any_field_value(
+        &self,
+        tokenizer: &mut Tokenizer<'_>,
+        target: &mut DynamicMessage,
+        unknown_fields: &mut Vec<UnknownField>,
+        any_descriptor: &'static Descriptor,
+        recursion_limit: i32,
+    ) -> Result<(), ParseException> {
+        // Try to parse human readable format of Any in the form: [type_url]: { ... }
+        let mut type_url_builder = String::new();
+        // Parse the type_url inside [].
+        loop {
+            type_url_builder.push_str(&tokenizer.consume_identifier()?);
+            if tokenizer.try_consume("]") {
+                break;
+            }
+            if tokenizer.try_consume("/") {
+                type_url_builder.push('/');
+            } else if tokenizer.try_consume(".") {
+                type_url_builder.push('.');
+            } else {
+                return Err(tokenizer.parse_exception_previous_token("Expected a valid type URL."));
+            }
+        }
+        tokenizer.try_consume(":");
+        let any_end_token = if tokenizer.try_consume("<") {
+            ">"
+        } else {
+            tokenizer.consume("{")?;
+            "}"
+        };
+        let type_url = type_url_builder;
+        let content_type = match self.type_registry.get_descriptor_for_type_url(&type_url) {
+            Ok(c) => c,
+            Err(_) => {
+                return Err(tokenizer
+                    .parse_exception(&format!("Invalid valid type URL. Found: {type_url}")));
+            }
+        };
+        let Some(content_type) = content_type else {
+            return Err(tokenizer.parse_exception(&format!(
+                "Unable to parse Any of type: {type_url}. Please make sure that the TypeRegistry \
+                 contains the descriptors for the given types."
+            )));
+        };
+        let mut content_builder = DynamicMessage::new(content_type);
+        while !tokenizer.try_consume(any_end_token) {
+            self.merge_field(
+                tokenizer,
+                &mut content_builder,
+                unknown_fields,
+                recursion_limit,
+            )?;
+        }
+
+        let type_url_field = any_descriptor
+            .find_field_by_name("type_url")
+            .expect("Any.type_url");
+        let value_field = any_descriptor
+            .find_field_by_name("value")
+            .expect("Any.value");
+        target.set_field(type_url_field, Value::String(type_url.into_bytes()));
+        target.set_field(value_field, Value::Bytes(content_builder.to_byte_array()));
+        Ok(())
+    }
+
+    /// Skips the next field including the field's name and value.
+    // Java: com/google/protobuf/TextFormat.java:2618 TextFormat.Parser.skipField
+    fn skip_field(
+        &self,
+        tokenizer: &mut Tokenizer<'_>,
+        type_: &'static Descriptor,
+        recursion_limit: i32,
+    ) -> Result<(), ParseException> {
+        let _name = consume_full_type_name(tokenizer)?;
+        self.guess_field_type_and_skip(tokenizer, type_, recursion_limit)?;
+
+        // For historical reasons, fields may optionally be separated by commas or
+        // semicolons.
+        if !tokenizer.try_consume(";") {
+            tokenizer.try_consume(",");
+        }
+        Ok(())
+    }
+
+    /// Skips the whole body of a message including the beginning delimiter and the ending
+    /// delimiter.
+    // Java: com/google/protobuf/TextFormat.java:2634 TextFormat.Parser.skipFieldMessage
+    fn skip_field_message(
+        &self,
+        tokenizer: &mut Tokenizer<'_>,
+        type_: &'static Descriptor,
+        recursion_limit: i32,
+    ) -> Result<(), ParseException> {
+        let delimiter = if tokenizer.try_consume("<") {
+            ">"
+        } else {
+            tokenizer.consume("{")?;
+            "}"
+        };
+        while !tokenizer.looking_at(">") && !tokenizer.looking_at("}") {
+            self.skip_field(tokenizer, type_, recursion_limit)?;
+        }
+        tokenizer.consume(delimiter)
+    }
+
+    /// Tries to guess the type of this field and skip it.
+    ///
+    /// If this field is not a message, there should be a ":" between the field name and the
+    /// field value and also the field value should not start with "{" or "<" which indicates
+    /// the beginning of a message body. If there is no ":" or there is a "{" or "<" after ":",
+    /// this field has to be a message or the input is ill-formed. For short-formed repeated
+    /// fields (i.e. with "[]"), if it is repeated scalar, there must be a ":" between the field
+    /// name and the starting "[" .
+    // Java: com/google/protobuf/TextFormat.java:2670 TextFormat.Parser.guessFieldTypeAndSkip
+    fn guess_field_type_and_skip(
+        &self,
+        tokenizer: &mut Tokenizer<'_>,
+        type_: &'static Descriptor,
+        recursion_limit: i32,
+    ) -> Result<(), ParseException> {
+        let semicolon_consumed = tokenizer.try_consume(":");
+        if tokenizer.looking_at("[") {
+            // Short repeated field form. If a semicolon was consumed, it could be repeated
+            // scalar or repeated message. If not, it must be repeated message.
+            self.skip_field_short_formed_repeated(
+                tokenizer,
+                semicolon_consumed,
+                type_,
+                recursion_limit,
+            )
+        } else if semicolon_consumed && !tokenizer.looking_at("{") && !tokenizer.looking_at("<") {
+            skip_field_value(tokenizer)
+        } else {
+            if recursion_limit < 1 {
+                return Err(tokenizer.parse_exception("Message is nested too deep"));
+            }
+            self.skip_field_message(tokenizer, type_, recursion_limit - 1)
         }
     }
 
-    // Skips unknown fields.
-    let Some(field) = field else {
-        guess_field_type_and_skip(tokenizer, type_, recursion_limit)?;
-        return Ok(());
-    };
+    /// Skips a short-formed repeated field value.
+    ///
+    /// Reports an error if scalar type is not allowed but showing up inside "[]".
+    // Java: com/google/protobuf/TextFormat.java:2692 TextFormat.Parser.skipFieldShortFormedRepeated
+    fn skip_field_short_formed_repeated(
+        &self,
+        tokenizer: &mut Tokenizer<'_>,
+        scalar_allowed: bool,
+        type_: &'static Descriptor,
+        recursion_limit: i32,
+    ) -> Result<(), ParseException> {
+        if !tokenizer.try_consume("[") || tokenizer.try_consume("]") {
+            // Try skipping "[]".
+            return Ok(());
+        }
 
-    // Handle potential ':'.
-    if field.is_message() {
-        tokenizer.try_consume(":"); // optional
-        consume_field_values(tokenizer, target, field, unknown_fields, recursion_limit)?;
-    } else {
-        tokenizer.consume(":")?; // required
-        consume_field_values(tokenizer, target, field, unknown_fields, recursion_limit)?;
+        loop {
+            if tokenizer.looking_at("{") || tokenizer.looking_at("<") {
+                // Try skipping message field inside "[]"
+                if recursion_limit < 1 {
+                    return Err(tokenizer.parse_exception("Message is nested too deep"));
+                }
+                self.skip_field_message(tokenizer, type_, recursion_limit - 1)?;
+            } else if scalar_allowed {
+                // Try skipping scalar field inside "[]".
+                skip_field_value(tokenizer)?;
+            } else {
+                return Err(tokenizer.parse_exception(
+                    "Invalid repeated scalar field: missing \":\" before \"[\".",
+                ));
+            }
+            if tokenizer.try_consume("]") {
+                break;
+            }
+            tokenizer.consume(",")?;
+        }
+        Ok(())
     }
-
-    // For historical reasons, fields may optionally be separated by commas or
-    // semicolons.
-    if !tokenizer.try_consume(";") {
-        tokenizer.try_consume(",");
-    }
-    Ok(())
 }
 
 // Java: com/google/protobuf/TextFormat.java:2310 TextFormat.Parser.consumeFullTypeName
@@ -1034,134 +1533,6 @@ fn consume_full_type_name(tokenizer: &mut Tokenizer<'_>) -> Result<String, Parse
     Ok(name)
 }
 
-/// Parse a one or more field values from `tokenizer` and merge it into `target`.
-// Java: com/google/protobuf/TextFormat.java:2335 TextFormat.Parser.consumeFieldValues
-fn consume_field_values(
-    tokenizer: &mut Tokenizer<'_>,
-    target: &mut DynamicMessage,
-    field: &'static FieldDescriptor,
-    unknown_fields: &mut Vec<UnknownField>,
-    recursion_limit: i32,
-) -> Result<(), ParseException> {
-    // Support specifying repeated field values as a comma-separated list.
-    // Ex."foo: [1, 2, 3]"
-    if field.repeated && tokenizer.try_consume("[") {
-        if !tokenizer.try_consume("]") {
-            // Allow "foo: []" to be treated as empty.
-            loop {
-                consume_field_value(tokenizer, target, field, unknown_fields, recursion_limit)?;
-                if tokenizer.try_consume("]") {
-                    // End of list.
-                    break;
-                }
-                tokenizer.consume(",")?;
-            }
-        }
-    } else {
-        consume_field_value(tokenizer, target, field, unknown_fields, recursion_limit)?;
-    }
-    Ok(())
-}
-
-/// Parse a single field value from `tokenizer` and merge it into `target`.
-// Java: com/google/protobuf/TextFormat.java:2380 TextFormat.Parser.consumeFieldValue
-fn consume_field_value(
-    tokenizer: &mut Tokenizer<'_>,
-    target: &mut DynamicMessage,
-    field: &'static FieldDescriptor,
-    unknown_fields: &mut Vec<UnknownField>,
-    recursion_limit: i32,
-) -> Result<(), ParseException> {
-    if SINGULAR_OVERWRITE_POLICY == SingularOverwritePolicy::ForbidSingularOverwrites
-        && !field.repeated
-    {
-        // PORT: the oneof half of this check is left out: the schema has no oneof.
-        if target.has_field(field) {
-            return Err(tokenizer.parse_exception_previous_token(&format!(
-                "Non-repeated field \"{}\" cannot be overwritten.",
-                field.full_name
-            )));
-        }
-    }
-
-    let value = match field.field_type {
-        FieldType::Message(_) => {
-            if recursion_limit < 1 {
-                return Err(tokenizer.parse_exception("Message is nested too deep"));
-            }
-
-            let end_token = if tokenizer.try_consume("<") {
-                ">"
-            } else {
-                tokenizer.consume("{")?;
-                "}"
-            };
-
-            let mut sub_field = target.new_merge_target_for_field(field);
-
-            while !tokenizer.try_consume(end_token) {
-                if tokenizer.at_end() {
-                    return Err(tokenizer.parse_exception(&format!("Expected \"{end_token}\".")));
-                }
-                merge_field(
-                    tokenizer,
-                    &mut sub_field,
-                    unknown_fields,
-                    recursion_limit - 1,
-                )?;
-            }
-
-            FieldValue::Message(sub_field)
-        }
-        FieldType::String => FieldValue::String(tokenizer.consume_string()?),
-    };
-
-    if field.repeated {
-        target.add_repeated_field(field, value);
-    } else {
-        target.set_field(field, value);
-    }
-    Ok(())
-}
-
-/// Skips the next field including the field's name and value.
-// Java: com/google/protobuf/TextFormat.java:2618 TextFormat.Parser.skipField
-fn skip_field(
-    tokenizer: &mut Tokenizer<'_>,
-    type_: &'static Descriptor,
-    recursion_limit: i32,
-) -> Result<(), ParseException> {
-    let _name = consume_full_type_name(tokenizer)?;
-    guess_field_type_and_skip(tokenizer, type_, recursion_limit)?;
-
-    // For historical reasons, fields may optionally be separated by commas or
-    // semicolons.
-    if !tokenizer.try_consume(";") {
-        tokenizer.try_consume(",");
-    }
-    Ok(())
-}
-
-/// Skips the whole body of a message including the beginning delimiter and the ending
-/// delimiter.
-// Java: com/google/protobuf/TextFormat.java:2634 TextFormat.Parser.skipFieldMessage
-fn skip_field_message(
-    tokenizer: &mut Tokenizer<'_>,
-    type_: &'static Descriptor,
-    recursion_limit: i32,
-) -> Result<(), ParseException> {
-    let delimiter = if tokenizer.try_consume("<") {
-        ">"
-    } else {
-        tokenizer.consume("{")?;
-        "}"
-    };
-    while !tokenizer.looking_at(">") && !tokenizer.looking_at("}") {
-        skip_field(tokenizer, type_, recursion_limit)?;
-    }
-    tokenizer.consume(delimiter)
-}
-
 /// Skips a field value.
 // Java: com/google/protobuf/TextFormat.java:2650 TextFormat.Parser.skipFieldValue
 fn skip_field_value(tokenizer: &mut Tokenizer<'_>) -> Result<(), ParseException> {
@@ -1176,71 +1547,6 @@ fn skip_field_value(tokenizer: &mut Tokenizer<'_>) -> Result<(), ParseException>
             "Invalid field value: {}",
             tokenizer.current_token_string()
         )));
-    }
-    Ok(())
-}
-
-/// Tries to guess the type of this field and skip it.
-///
-/// If this field is not a message, there should be a ":" between the field name and the field
-/// value and also the field value should not start with "{" or "<" which indicates the beginning
-/// of a message body. If there is no ":" or there is a "{" or "<" after ":", this field has to
-/// be a message or the input is ill-formed. For short-formed repeated fields (i.e. with "[]"),
-/// if it is repeated scalar, there must be a ":" between the field name and the starting "[" .
-// Java: com/google/protobuf/TextFormat.java:2670 TextFormat.Parser.guessFieldTypeAndSkip
-fn guess_field_type_and_skip(
-    tokenizer: &mut Tokenizer<'_>,
-    type_: &'static Descriptor,
-    recursion_limit: i32,
-) -> Result<(), ParseException> {
-    let semicolon_consumed = tokenizer.try_consume(":");
-    if tokenizer.looking_at("[") {
-        // Short repeated field form. If a semicolon was consumed, it could be repeated scalar or
-        // repeated message. If not, it must be repeated message.
-        skip_field_short_formed_repeated(tokenizer, semicolon_consumed, type_, recursion_limit)
-    } else if semicolon_consumed && !tokenizer.looking_at("{") && !tokenizer.looking_at("<") {
-        skip_field_value(tokenizer)
-    } else {
-        if recursion_limit < 1 {
-            return Err(tokenizer.parse_exception("Message is nested too deep"));
-        }
-        skip_field_message(tokenizer, type_, recursion_limit - 1)
-    }
-}
-
-/// Skips a short-formed repeated field value.
-///
-/// Reports an error if scalar type is not allowed but showing up inside "[]".
-// Java: com/google/protobuf/TextFormat.java:2692 TextFormat.Parser.skipFieldShortFormedRepeated
-fn skip_field_short_formed_repeated(
-    tokenizer: &mut Tokenizer<'_>,
-    scalar_allowed: bool,
-    type_: &'static Descriptor,
-    recursion_limit: i32,
-) -> Result<(), ParseException> {
-    if !tokenizer.try_consume("[") || tokenizer.try_consume("]") {
-        // Try skipping "[]".
-        return Ok(());
-    }
-
-    loop {
-        if tokenizer.looking_at("{") || tokenizer.looking_at("<") {
-            // Try skipping message field inside "[]"
-            if recursion_limit < 1 {
-                return Err(tokenizer.parse_exception("Message is nested too deep"));
-            }
-            skip_field_message(tokenizer, type_, recursion_limit - 1)?;
-        } else if scalar_allowed {
-            // Try skipping scalar field inside "[]".
-            skip_field_value(tokenizer)?;
-        } else {
-            return Err(tokenizer
-                .parse_exception("Invalid repeated scalar field: missing \":\" before \"[\"."));
-        }
-        if tokenizer.try_consume("]") {
-            break;
-        }
-        tokenizer.consume(",")?;
     }
     Ok(())
 }
@@ -1603,35 +1909,81 @@ fn java_parse_long(s: &str, radix: u32) -> Result<i64, NumberFormatException> {
     Ok(if negative { -result } else { result })
 }
 
-/// `new BigInteger(s, radix)`: (negative, magnitude), the magnitude `None` when it does not fit
-/// in 128 bits (its bit length is then above 64 in any case).
+/// `new BigInteger(s, radix)` (JDK 21): (negative, magnitude), the magnitude `None` when it does
+/// not fit in 128 bits (its bit length is then above 64 in any case). The digits are read in
+/// groups of `digitsPerInt[radix]` with `Integer.parseInt`, whose message names the group.
 fn java_parse_big_integer(
-    s: &str,
+    val: &str,
     radix: u32,
 ) -> Result<(bool, Option<u128>), NumberFormatException> {
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    let mut negative = false;
-    if let Some(&b) = bytes.first()
-        && (b == b'-' || b == b'+')
-    {
-        negative = b == b'-';
-        i = 1;
+    // A number token is ASCII: chars are bytes.
+    let bytes = val.as_bytes();
+    let len = bytes.len();
+    let mut cursor = 0;
+    if len == 0 {
+        return Err(NumberFormatException("Zero length BigInteger".to_string()));
     }
-    if i == bytes.len() {
-        return Err(for_input_string(s, radix));
+    let mut negative = false;
+    let index1 = val.rfind('-');
+    let index2 = val.rfind('+');
+    if let Some(index1) = index1 {
+        if index1 != 0 || index2.is_some() {
+            return Err(NumberFormatException(
+                "Illegal embedded sign character".to_string(),
+            ));
+        }
+        negative = true;
+        cursor = 1;
+    } else if let Some(index2) = index2 {
+        if index2 != 0 {
+            return Err(NumberFormatException(
+                "Illegal embedded sign character".to_string(),
+            ));
+        }
+        cursor = 1;
+    }
+    if cursor == len {
+        return Err(NumberFormatException("Zero length BigInteger".to_string()));
+    }
+    // Skip leading zeros
+    while cursor < len && bytes[cursor] == b'0' {
+        cursor += 1;
+    }
+    if cursor == len {
+        return Ok((false, Some(0)));
+    }
+    let num_digits = len - cursor;
+    let digits_per_int = match radix {
+        8 => 10,
+        10 => 9,
+        16 => 7,
+        _ => unreachable!("parseInteger uses radix 8, 10 or 16"),
+    };
+    // Process first (potentially short) digit group
+    let mut first_group_len = num_digits % digits_per_int;
+    if first_group_len == 0 {
+        first_group_len = digits_per_int;
     }
     let mut magnitude: Option<u128> = Some(0);
-    while i < bytes.len() {
-        let Some(d) = (bytes[i] as char).to_digit(radix) else {
-            return Err(for_input_string(s, radix));
-        };
+    let mut group_len = first_group_len;
+    while cursor < len {
+        let group = &val[cursor..cursor + group_len];
+        cursor += group_len;
+        group_len = digits_per_int;
+        // `Integer.parseInt(group, radix)`.
+        let mut group_val: u128 = 0;
+        for b in group.bytes() {
+            let Some(d) = (b as char).to_digit(radix) else {
+                return Err(for_input_string(group, radix));
+            };
+            group_val = group_val * radix as u128 + d as u128;
+        }
+        let super_radix = (radix as u128).pow(group.len() as u32);
         magnitude = magnitude
-            .and_then(|m| m.checked_mul(radix as u128))
-            .and_then(|m| m.checked_add(d as u128));
-        i += 1;
+            .and_then(|m| m.checked_mul(super_radix))
+            .and_then(|m| m.checked_add(group_val));
     }
-    Ok((negative && magnitude != Some(0), magnitude))
+    Ok((negative, magnitude))
 }
 
 /// `BigInteger.bitLength()`: the minimal two's-complement width without the sign bit.
@@ -1643,11 +1995,55 @@ fn big_integer_bit_length(negative: bool, magnitude: Option<u128>) -> u32 {
     if negative { bits(m - 1) } else { bits(m) }
 }
 
+/// A literal `Double.parseDouble(s)` / `Float.parseFloat(s)` accept
+/// (`jdk.internal.math.FloatingDecimal.readJavaFormatString`; the two share the grammar).
+enum JavaFloatingLiteral {
+    NaN,
+    Infinity {
+        negative: bool,
+    },
+    /// A decimal literal without its type suffix, in a form Rust's parsers read (both round
+    /// correctly to nearest, as Java does).
+    Decimal(String),
+    /// A hexadecimal literal.
+    Hex,
+}
+
+/// `Double.parseDouble(s)`.
+fn java_parse_double(s: &str) -> Result<f64, NumberFormatException> {
+    Ok(match java_parse_floating(s)? {
+        JavaFloatingLiteral::NaN => f64::NAN,
+        JavaFloatingLiteral::Infinity { negative } => {
+            if negative {
+                f64::NEG_INFINITY
+            } else {
+                f64::INFINITY
+            }
+        }
+        JavaFloatingLiteral::Decimal(d) => d.parse::<f64>().expect("validated decimal"),
+        JavaFloatingLiteral::Hex => unimplemented!("Java: FloatingDecimal.parseHexString"),
+    })
+}
+
+/// `Float.parseFloat(s)`.
+fn java_parse_float(s: &str) -> Result<f32, NumberFormatException> {
+    Ok(match java_parse_floating(s)? {
+        JavaFloatingLiteral::NaN => f32::NAN,
+        JavaFloatingLiteral::Infinity { negative } => {
+            if negative {
+                f32::NEG_INFINITY
+            } else {
+                f32::INFINITY
+            }
+        }
+        JavaFloatingLiteral::Decimal(d) => d.parse::<f32>().expect("validated decimal"),
+        JavaFloatingLiteral::Hex => unimplemented!("Java: FloatingDecimal.parseHexString"),
+    })
+}
+
 /// Whether `Double.parseDouble(s)` / `Float.parseFloat(s)` accept `s`
-/// (`jdk.internal.math.FloatingDecimal.readJavaFormatString`). The two share the grammar.
-///
-/// PORT: the value is not computed; the callers only skip the token.
-fn java_parse_floating(s: &str) -> Result<(), NumberFormatException> {
+/// (`jdk.internal.math.FloatingDecimal.readJavaFormatString`), and what it is.
+fn java_parse_floating(s: &str) -> Result<JavaFloatingLiteral, NumberFormatException> {
     let err = || NumberFormatException(format!("For input string: \"{s}\""));
     // `in.trim()`
     let t = s.trim_matches(|c: char| c <= ' ');
@@ -1664,19 +2060,21 @@ fn java_parse_floating(s: &str) -> Result<(), NumberFormatException> {
     };
     if c == b'N' {
         return if &b[i..] == b"NaN" {
-            Ok(())
+            Ok(JavaFloatingLiteral::NaN)
         } else {
             Err(err())
         };
     } else if c == b'I' {
         return if &b[i..] == b"Infinity" {
-            Ok(())
+            Ok(JavaFloatingLiteral::Infinity {
+                negative: b[0] == b'-',
+            })
         } else {
             Err(err())
         };
     } else if c == b'0' && b.len() > i + 1 && (b[i + 1] == b'x' || b[i + 1] == b'X') {
         return if is_java_hex_float(&b[i + 2..]) {
-            Ok(())
+            Ok(JavaFloatingLiteral::Hex)
         } else {
             Err(err())
         };
@@ -1720,7 +2118,9 @@ fn java_parse_floating(s: &str) -> Result<(), NumberFormatException> {
     if i < b.len() && (i != b.len() - 1 || !matches!(b[i], b'f' | b'F' | b'd' | b'D')) {
         return Err(err());
     }
-    Ok(())
+    // The literal without the type suffix.
+    let end = if i < b.len() { i } else { b.len() };
+    Ok(JavaFloatingLiteral::Decimal(t[..end].to_string()))
 }
 
 /// The part after `0x` of `FloatingDecimal.HEX_FLOAT_PATTERN`:

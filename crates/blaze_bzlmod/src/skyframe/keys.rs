@@ -16,6 +16,8 @@ use crate::inspector::BazelModuleInspectorValue;
 
 // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:149 SkyFunctions.MODULE_FILE
 pub const MODULE_FILE: SkyFunctionName = SkyFunctionName("MODULE_FILE");
+// Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:157 SkyFunctions.BAZEL_MOD_TIDY
+pub const BAZEL_MOD_TIDY: SkyFunctionName = SkyFunctionName("BAZEL_MOD_TIDY");
 // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:159 SkyFunctions.BAZEL_MODULE_RESOLUTION
 pub const BAZEL_MODULE_RESOLUTION: SkyFunctionName = SkyFunctionName("BAZEL_MODULE_RESOLUTION");
 // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:161 SkyFunctions.BAZEL_MODULE_INSPECTION
@@ -438,4 +440,54 @@ impl fmt::Debug for SingleExtensionEvalKey {
 impl Key for SingleExtensionEvalKey {
     type Value = SingleExtensionValue;
     const FUNCTION: SkyFunctionName = SINGLE_EXTENSION_EVAL;
+}
+
+/// All Skyframe information required for the `bazel mod tidy` command.
+// Java: com/google/devtools/build/lib/bazel/bzlmod/BazelModTidyValue.java:38 BazelModTidyValue
+#[derive(Debug, Clone)]
+pub struct BazelModTidyValue {
+    /// Buildozer fixups for incorrect use_repo declarations by the root module.
+    pub fixups: Vec<RootModuleFileFixup>,
+    /// The path of the buildozer binary provided by the "buildozer" module.
+    pub buildozer: blaze_vfs::Path,
+    /// The set of paths to the root MODULE.bazel file and all its includes.
+    pub module_file_paths: indexmap::IndexSet<blaze_vfs::PathFragment>,
+    /// Errors encountered while evaluating prerequisites for `bazel mod tidy`.
+    pub errors: Vec<blaze_bzlmod_model::ExternalDepsException>,
+}
+
+impl BazelModTidyValue {
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelModTidyValue.java:53 BazelModTidyValue.create
+    pub fn create(
+        fixups: Vec<RootModuleFileFixup>,
+        buildozer: blaze_vfs::Path,
+        module_file_paths: indexmap::IndexSet<blaze_vfs::PathFragment>,
+        errors: Vec<blaze_bzlmod_model::ExternalDepsException>,
+    ) -> BazelModTidyValue {
+        BazelModTidyValue {
+            fixups,
+            buildozer,
+            module_file_paths,
+            errors,
+        }
+    }
+}
+
+/// `BazelModTidyValue.KEY`.
+///
+/// PORT: Java's key is a lambda whose `toString` is a JVM class name; `Debug` prints the
+/// function name instead.
+// Java: com/google/devtools/build/lib/bazel/bzlmod/BazelModTidyValue.java:51 BazelModTidyValue.KEY
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BazelModTidyKey;
+
+impl fmt::Debug for BazelModTidyKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{BAZEL_MOD_TIDY}")
+    }
+}
+
+impl Key for BazelModTidyKey {
+    type Value = BazelModTidyValue;
+    const FUNCTION: SkyFunctionName = BAZEL_MOD_TIDY;
 }

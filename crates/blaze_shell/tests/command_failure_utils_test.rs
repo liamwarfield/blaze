@@ -203,3 +203,34 @@ fn describe_command_pretty_print_args() {
          # Runner: remote"
     );
 }
+
+// Byte-strings review 2026-11-20 S1-2. Java CommandFailureUtils.java:105-106 compares
+// `message.length() + commandElement.length()` (chars) with 200. The third element is the
+// internal string of 70 ASCII chars and 40 `é` (C3 A9): 150 Java chars (230 UTF-8 bytes of the
+// Rust string), so with "/bin/bash -c" (12 chars) Java prints the whole command.
+#[test]
+fn describe_command_failure_counts_chars_of_internal_strings() {
+    let e = blaze_util::string_encoding::latin1_decode("é".as_bytes()).into_owned();
+    let arg = format!("{}{}", "a".repeat(70), e.repeat(40));
+    assert_eq!(arg.chars().count(), 150);
+    let args = vec!["/bin/bash".to_string(), "-c".to_string(), arg.clone()];
+    let env = common::map(&[]);
+    let message = CommandFailureUtils::describe_command_failure_full(
+        false,
+        "Mnemonic",
+        &args,
+        Some(&env),
+        None,
+        None,
+        Some(&format!("target {}", target())),
+        None,
+        None,
+    );
+    assert_eq!(
+        message,
+        format!(
+            "bash failed: error executing Mnemonic command (from target //foo:bar) \
+             /bin/bash -c '{arg}'"
+        )
+    );
+}

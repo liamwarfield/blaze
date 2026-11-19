@@ -75,21 +75,24 @@ impl RunEnvironmentInfo {
 }
 
 impl fmt::Display for RunEnvironmentInfo {
-    // Java: StructImpl.repr (fields sorted).
+    // Java: com/google/devtools/build/lib/packages/NativeInfo.java:125 NativeInfo.repr (legacy
+    // fields, sorted by name; strings through Printer.java:225 appendQuoted). Oracle:
+    // `struct(environment = {"K": "à"}, inherited_environment = ["à"])`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use blaze_starlark::printer::quote;
         let env: Vec<String> = self
             .environment
             .iter()
-            .map(|(k, v)| format!("{k:?}: {v:?}"))
+            .map(|(k, v)| format!("{}: {}", quote(k), quote(v)))
             .collect();
         let inherited: Vec<String> = self
             .inherited_environment
             .iter()
-            .map(|s| format!("{s:?}"))
+            .map(|s| quote(s))
             .collect();
         write!(
             f,
-            "RunEnvironmentInfo(environment = {{{}}}, inherited_environment = [{}])",
+            "struct(environment = {{{}}}, inherited_environment = [{}])",
             env.join(", "),
             inherited.join(", ")
         )
@@ -210,4 +213,27 @@ pub fn run_environment_info_constructor<'v>(
         inherited_environment,
         /* should_error_on_non_executable_rule= */ true,
     )))
+}
+
+#[cfg(test)]
+mod byte_strings_tests {
+    use super::*;
+    use blaze_util::string_encoding::latin1_decode;
+
+    // Byte-strings review 2026-11-20 S1-3. Oracle (bazel 9.3.2): `repr(RunEnvironmentInfo({"K": v},
+    // [v]))` and `str(...)` with v = "à🐷\377" print
+    // `struct(environment = {"K": "<v>"}, inherited_environment = ["<v>"])`, v as raw bytes.
+    #[test]
+    fn repr_is_struct_with_latin1_chars() {
+        let v = latin1_decode(b"\xc3\xa0\xf0\x9f\x90\xb7\xff").into_owned();
+        let info = RunEnvironmentInfo::new(
+            IndexMap::from([("K".to_string(), v.clone())]),
+            vec![v.clone()],
+            false,
+        );
+        assert_eq!(
+            info.to_string(),
+            format!("struct(environment = {{\"K\": \"{v}\"}}, inherited_environment = [\"{v}\"])")
+        );
+    }
 }

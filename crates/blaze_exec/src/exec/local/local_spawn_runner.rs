@@ -589,9 +589,25 @@ fn compute_short_host_name() -> String {
     if local == "localhost" {
         return local;
     }
-    use std::net::ToSocketAddrs;
-    match (local.as_str(), 0u16).to_socket_addrs() {
-        Ok(_) => local,
-        Err(_) => "unknown".to_string(),
+    // The JDK resolves the name through `getaddrinfo` with its platform bytes
+    // (`JNU_GetStringPlatformChars`, ISO-8859-1): the bytes `gethostname` returned.
+    let Ok(c_name) = std::ffi::CString::new(&buf[..len]) else {
+        return "unknown".to_string();
+    };
+    let mut res: *mut libc::addrinfo = std::ptr::null_mut();
+    // SAFETY: `c_name` is NUL-terminated; `res` is freed below when the call succeeds.
+    let rc = unsafe {
+        libc::getaddrinfo(
+            c_name.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            &mut res,
+        )
+    };
+    if rc != 0 {
+        return "unknown".to_string();
     }
+    // SAFETY: `res` was allocated by the successful getaddrinfo call above.
+    unsafe { libc::freeaddrinfo(res) };
+    local
 }

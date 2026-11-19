@@ -1,0 +1,5 @@
+load(":defs.bzl", "r")
+
+print("CASE flagoff_build " + repr("\240a\240".strip()))
+
+r(name = "t")

@@ -6,7 +6,7 @@
 //! in-process (docs/crates.md): the client builds exactly the arguments and the request the server
 //! would receive and hands them to an [`InProcessServer`] instead of a JVM.
 
-use blaze_protos::command_server::RunRequest;
+use blaze_protos::command_server::{RunRequest, RunResponse};
 
 /// What the client hands to the server when it would start the server JVM.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,9 +41,11 @@ pub trait InProcessServer {
 
     /// `RunClientServerMode`: start a server with `startup` (`BlazeRuntime.main` in server mode)
     /// and run one `RunRequest`, built exactly as `BlazeServer::Communicate` builds it (args =
-    /// command, logging args, command arguments; cookie empty). Returns the exit code of the final
-    /// `RunResponse`. The server shuts down when the command finishes.
-    fn run_command(&self, startup: &ServerStartup, request: RunRequest) -> i32;
+    /// command, logging args, command arguments; cookie empty). Returns the final `RunResponse`
+    /// (`finished`, `exit_code`, the `run` command's `exec_request`, `failure_detail`; its
+    /// output fields are empty: the server wrote to this process's stdout and stderr). The
+    /// server shuts down when the command finishes.
+    fn run_command(&self, startup: &ServerStartup, request: RunRequest) -> RunResponse;
 
     /// The server's cancel of the running command (`GrpcServerImpl.cancel` /
     /// `CommandManager.doCancel`: interrupts the command thread), which the client's cancel

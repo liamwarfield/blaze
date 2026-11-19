@@ -215,7 +215,10 @@ impl<'a> ProtoOutputFormatterCallback<'a> {
                 out.write_all(&bytes)?;
             }
             OutputType::TEXT => {
-                blaze_util::unported!("TextFormat.printer().print", "--output=textproto")
+                // TextFormat.printer().print(message, printStream): escapes every non-ASCII
+                // byte, so the text is ASCII whatever the writer's charset.
+                let text = blaze_protos::text_format::printer().print_to_string(message);
+                out.write_all(&print_stream_bytes(&text))?;
             }
             OutputType::JSON => {
                 let json = JsonFormat::printer()

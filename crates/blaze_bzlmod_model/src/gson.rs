@@ -67,6 +67,9 @@ impl std::error::Error for JsonParseError {}
 // PORT: Gson's error messages include a JSONPath; this reader reports line and column and the
 // path of enclosing names it can track, which may differ from Gson in corner cases.
 pub fn parse_lenient(input: &str) -> Result<Option<JsonValue>, JsonParseError> {
+    // Java: Gson 2.11 JsonReader.fillBuffer skips one leading byte order mark (U+FEFF) and
+    // counts columns after it (`lineStart++`).
+    let input = input.strip_prefix('\u{feff}').unwrap_or(input);
     let mut r = LenientReader::new(input);
     // Gson skips a non-execute prefix in lenient mode.
     if r.rest().starts_with(")]}'\n") {
@@ -84,6 +87,24 @@ pub fn parse_lenient(input: &str) -> Result<Option<JsonValue>, JsonParseError> {
         ));
     }
     Ok(Some(value))
+}
+
+/// Four UTF-16 units that are all ASCII hex digits, as one unit (Gson's `\u` escape).
+fn hex4(units: &[u16]) -> Option<u16> {
+    if units.len() != 4 {
+        return None;
+    }
+    let mut result: u16 = 0;
+    for &c in units {
+        let digit = match c {
+            0x30..=0x39 => c - 0x30,
+            0x61..=0x66 => c - 0x61 + 10,
+            0x41..=0x46 => c - 0x41 + 10,
+            _ => return None,
+        };
+        result = (result << 4) + digit;
+    }
+    Some(result)
 }
 
 struct LenientReader<'a> {
@@ -314,22 +335,25 @@ impl<'a> LenientReader<'a> {
                 };
                 match e {
                     'u' => {
-                        let rest = self.rest();
-                        if rest.len() < 4 {
+                        // Java: Gson 2.11 JsonReader.readEscapeCharacter: the next four chars
+                        // (UTF-16 units), each an ASCII hex digit.
+                        let units: Vec<u16> = self.rest().encode_utf16().take(4).collect();
+                        if units.len() < 4 {
                             return Err(self.syntax_error("Unterminated escape sequence"));
                         }
-                        let hex = &rest[..4];
-                        let Ok(unit) = u16::from_str_radix(hex, 16) else {
-                            return Err(JsonParseError(format!(
-                                "com.google.gson.stream.MalformedJsonException: Malformed Unicode escape \\u{hex}{}",
-                                self.location()
+                        let Some(unit) = hex4(&units) else {
+                            // PORT: a surrogate pair cut by the fourth unit prints as U+FFFD
+                            // (Java keeps the lone unit).
+                            return Err(self.syntax_error(&format!(
+                                "Malformed Unicode escape \\u{}",
+                                String::from_utf16_lossy(&units)
                             )));
                         };
                         self.pos += 4;
                         // Combine surrogate pairs.
                         if (0xD800..0xDC00).contains(&unit) && self.rest().starts_with("\\u") {
-                            let hex2 = self.rest().get(2..6).unwrap_or("");
-                            if let Ok(low) = u16::from_str_radix(hex2, 16)
+                            let low = self.rest()[2..].encode_utf16().take(4).collect::<Vec<_>>();
+                            if let Some(low) = hex4(&low)
                                 && (0xDC00..0xE000).contains(&low)
                             {
                                 self.pos += 6;

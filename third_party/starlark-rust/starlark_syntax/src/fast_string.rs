@@ -178,6 +178,7 @@ fn split_at_end(x: &str, i: CharIndex) -> &str {
     }
 }
 
+#[allow(dead_code)] // BLAZE PATCH 0041: replaced by Java's clamping
 fn convert_str_indices_slow(
     s: &str,
     start: Option<i32>,
@@ -213,45 +214,38 @@ fn convert_str_indices_slow(
 }
 
 /// Convert common `start` and `end` arguments of `str` functions like `str.find`.
+///
+/// BLAZE PATCH 0041: Java `StringModule.substringIndices` (net/starlark/java/eval/
+/// StringModule.java:111-126): each index is made non-negative and clamped to `[0, len]`
+/// (`EvalUtils.toIndex`), and an end before the start becomes the start, so the result is never
+/// `None`: `"abc".find("", 5)` searches the empty substring at 3 (was `None`, i.e. "not found").
 #[inline(always)]
-pub fn convert_str_indices(
-    s: &str,
-    start: Option<i32>,
-    end: Option<i32>,
-) -> Option<StrIndices<'_>> {
-    match (start, end) {
-        // Following cases but last optimize index computation
-        // by avoiding computing the length of the string.
-        (None, None) => Some(StrIndices {
-            start: CharIndex(0),
-            haystack: s,
-        }),
-        (Some(start), None) if start >= 0 => {
-            let (_, s) = split_at(s, CharIndex(start as usize))?;
-            Some(StrIndices {
-                start: CharIndex(start as usize),
-                haystack: s,
-            })
-        }
-        (None, Some(end)) if end >= 0 => {
-            let s = split_at_end(s, CharIndex(end as usize));
-            Some(StrIndices {
-                start: CharIndex(0),
-                haystack: s,
-            })
-        }
-        (Some(start), Some(end)) if start >= 0 && end >= start => {
-            let (_, s) = split_at(s, CharIndex(start as usize))?;
-            let s = split_at_end(s, CharIndex((end - start) as usize));
-            Some(StrIndices {
-                start: CharIndex(start as usize),
-                haystack: s,
-            })
-        }
-        (Some(start), Some(end)) if ((start >= 0) == (end >= 0)) && start > end => None,
-        (start, end) => convert_str_indices_slow(s, start, end),
-    }
-}
+pub fn convert_str_indices( // BLAZE PATCH 0041
+    s: &str, // BLAZE PATCH 0041
+    start: Option<i32>, // BLAZE PATCH 0041
+    end: Option<i32>, // BLAZE PATCH 0041
+) -> Option<StrIndices<'_>> { // BLAZE PATCH 0041
+    if start.is_none() && end.is_none() { // BLAZE PATCH 0041
+        return Some(StrIndices { // BLAZE PATCH 0041
+            start: CharIndex(0), // BLAZE PATCH 0041
+            haystack: s, // BLAZE PATCH 0041
+        }); // BLAZE PATCH 0041
+    } // BLAZE PATCH 0041
+    let n = len(s).0 as i32; // BLAZE PATCH 0041
+    // Java EvalUtils.toIndex (EvalUtils.java:63).
+    let to_index = |i: i32| { // BLAZE PATCH 0041
+        let i = if i < 0 { i.saturating_add(n) } else { i }; // BLAZE PATCH 0041
+        i.clamp(0, n) as usize // BLAZE PATCH 0041
+    }; // BLAZE PATCH 0041
+    let istart = start.map_or(0, to_index); // BLAZE PATCH 0041
+    let iend = end.map_or(n as usize, to_index).max(istart); // BLAZE PATCH 0041
+    let (_, rest) = split_at(s, CharIndex(istart))?; // BLAZE PATCH 0041
+    let haystack = split_at_end(rest, CharIndex(iend - istart)); // BLAZE PATCH 0041
+    Some(StrIndices { // BLAZE PATCH 0041
+        start: CharIndex(istart), // BLAZE PATCH 0041
+        haystack, // BLAZE PATCH 0041
+    }) // BLAZE PATCH 0041
+} // BLAZE PATCH 0041
 
 #[inline]
 pub fn contains(haystack: &str, needle: &str) -> bool {

@@ -4,7 +4,7 @@
 mod embedded;
 
 use blaze_client::server::{InProcessServer, ServerStartup};
-use blaze_protos::command_server::RunRequest;
+use blaze_protos::command_server::{RunRequest, RunResponse};
 use blaze_runtime::runtime::BlazeRuntime;
 use blaze_runtime::version_info::{BlazeVersionInfo, try_get_build_info};
 
@@ -25,7 +25,7 @@ impl InProcessServer for BazelServer {
         BlazeRuntime::batch_main(blaze_runtime::bazel_modules::bazel_modules(), args)
     }
 
-    fn run_command(&self, startup: &ServerStartup, request: RunRequest) -> i32 {
+    fn run_command(&self, startup: &ServerStartup, request: RunRequest) -> RunResponse {
         Self::init();
         BlazeRuntime::server_main_single_command(
             blaze_runtime::bazel_modules::bazel_modules(),

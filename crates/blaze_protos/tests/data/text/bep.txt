@@ -1,0 +1,2316 @@
+event {
+id {
+  started {
+  }
+}
+children {
+  progress {
+  }
+}
+children {
+  unstructured_command_line {
+  }
+}
+children {
+  structured_command_line {
+    command_line_label: "original"
+  }
+}
+children {
+  structured_command_line {
+    command_line_label: "canonical"
+  }
+}
+children {
+  structured_command_line {
+    command_line_label: "tool"
+  }
+}
+children {
+  build_metadata {
+  }
+}
+children {
+  options_parsed {
+  }
+}
+children {
+  workspace_status {
+  }
+}
+children {
+  pattern {
+    pattern: "//:fg"
+  }
+}
+children {
+  build_finished {
+  }
+}
+started {
+  uuid: "772371f0-dec6-4568-93d8-ae08e8c1c19c"
+  start_time_millis: 1795114553520
+  build_tool_version: "9.3.2"
+  options_description: "--flag_alias=\'build_python_zip=@@rules_python+//python/config_settings:build_python_zip\' --flag_alias=\'incompatible_default_to_explicit_init_py=@@rules_python+//python/config_settings:incompatible_default_to_explicit_init_py\' --flag_alias=\'python_path=@@rules_python+//python/config_settings:python_path\' --flag_alias=\'experimental_python_import_all_repositories=@@rules_python+//python/config_settings:experimental_python_import_all_repositories\' --repository_cache=/home/liamwarfield/.cache/blaze/repo-cache --color=no --curses=no --build_event_binary_file=/home/liamwarfield/.t3/projects/blaze/crates/blaze_protos/tests/data/text/bep.pb --build_event_text_file=/home/liamwarfield/.t3/projects/blaze/crates/blaze_protos/tests/data/text/bep.txt"
+  command: "build"
+  working_directory: "/home/liamwarfield/.cache/blaze/work/protos-text-ws"
+  workspace_directory: "/home/liamwarfield/.cache/blaze/work/protos-text-ws"
+  server_pid: 798873
+  start_time {
+    seconds: 1795114553
+    nanos: 520000000
+  }
+  host: "fedora"
+  user: "liamwarfield"
+}
+}
+
+event {
+id {
+  build_metadata {
+  }
+}
+build_metadata {
+}
+}
+
+event {
+id {
+  unstructured_command_line {
+  }
+}
+unstructured_command_line {
+  args: "build"
+  args: "--startup_time=1110"
+  args: "--command_wait_time=0"
+  args: "--restart_reason=no_daemon"
+  args: "--binary_path=/home/liamwarfield/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64"
+  args: "--rc_source=client"
+  args: "--default_override=0:common=--isatty=0"
+  args: "--default_override=0:common=--terminal_columns=80"
+  args: "--client_env=HOME=/home/liamwarfield"
+  args: "--client_env=LANG=en_US.UTF-8"
+  args: "--client_env=LOGNAME=liamwarfield"
+  args: "--client_env=PATH=/usr/bin:/bin"
+  args: "--client_env=SHELL=/usr/bin/fish"
+  args: "--client_env=USER=liamwarfield"
+  args: "--client_env=XDG_DATA_DIRS=/home/liamwarfield/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share/:/usr/share/:/var/lib/snapd/desktop"
+  args: "--client_env=XDG_RUNTIME_DIR=/run/user/1000"
+  args: "--client_env=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus"
+  args: "--client_env=DESKTOP_SESSION=plasma"
+  args: "--client_env=DISPLAY=:0"
+  args: "--client_env=GDK_CORE_DEVICE_EVENTS=1"
+  args: "--client_env=GDMSESSION=plasma"
+  args: "--client_env=GDM_LANG=en_US.UTF-8"
+  args: "--client_env=GTK2_RC_FILES=/home/liamwarfield/.gtkrc-2.0-kde4"
+  args: "--client_env=ICEAUTHORITY=/run/user/1000/iceauth_SqplGF"
+  args: "--client_env=KDE_APPLICATIONS_AS_SCOPE=1"
+  args: "--client_env=KDE_FULL_SESSION=true"
+  args: "--client_env=KDE_SESSION_UID=1000"
+  args: "--client_env=KDE_SESSION_VERSION=6"
+  args: "--client_env=PWD=/home/liamwarfield"
+  args: "--client_env=QT_WAYLAND_RECONNECT=1"
+  args: "--client_env=SESSION_MANAGER=local/unix:@/tmp/.ICE-unix/765932,unix/unix:/tmp/.ICE-unix/765932"
+  args: "--client_env=SSH_ASKPASS=/usr/bin/ksshaskpass"
+  args: "--client_env=SSH_AUTH_SOCK=/run/user/1000/ssh-agent.socket"
+  args: "--client_env=USERNAME=liamwarfield"
+  args: "--client_env=WAYLAND_DISPLAY=wayland-1"
+  args: "--client_env=XAUTHORITY=/run/user/1000/xauth_kcasTu"
+  args: "--client_env=XDG_CONFIG_DIRS=/home/liamwarfield/.config/kdedefaults:/etc/xdg:/usr/share/kde-settings/kde-profile/default/xdg"
+  args: "--client_env=XDG_CURRENT_DESKTOP=KDE"
+  args: "--client_env=XDG_MENU_PREFIX=plasma-"
+  args: "--client_env=XDG_SEAT=seat0"
+  args: "--client_env=XDG_SESSION_CLASS=user"
+  args: "--client_env=XDG_SESSION_DESKTOP=plasma"
+  args: "--client_env=XDG_SESSION_EXTRA_DEVICE_ACCESS=render:accel"
+  args: "--client_env=XDG_SESSION_ID=7"
+  args: "--client_env=XDG_SESSION_TYPE=wayland"
+  args: "--client_env=XDG_VTNR=2"
+  args: "--client_env=XKB_DEFAULT_LAYOUT=us"
+  args: "--client_env=_JAVA_AWT_WM_NONREPARENTING=1"
+  args: "--client_env=MANAGERPID=2829"
+  args: "--client_env=MANAGERPIDFDID=241"
+  args: "--client_env=INVOCATION_ID=7b22b794f9de4d1ea472439af49f28bb"
+  args: "--client_env=SYSTEMD_EXEC_PID=798830"
+  args: "--client_env=MEMORY_PRESSURE_WATCH=/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-p798774-i51127758.service/memory.pressure"
+  args: "--client_env=MEMORY_PRESSURE_WRITE=c29tZSAyMDAwMDAgMjAwMDAwMAA="
+  args: "--client_cwd=/home/liamwarfield/.cache/blaze/work/protos-text-ws"
+  args: "--repository_cache=/home/liamwarfield/.cache/blaze/repo-cache"
+  args: "--color=no"
+  args: "--curses=no"
+  args: "//:fg"
+  args: "--build_event_binary_file=/home/liamwarfield/.t3/projects/blaze/crates/blaze_protos/tests/data/text/bep.pb"
+  args: "--build_event_text_file=/home/liamwarfield/.t3/projects/blaze/crates/blaze_protos/tests/data/text/bep.txt"
+}
+}
+
+event {
+id {
+  options_parsed {
+  }
+}
+options_parsed {
+  startup_options: "--max_idle_secs=10800"
+  startup_options: "--noshutdown_on_low_sys_mem"
+  startup_options: "--connect_timeout_secs=30"
+  startup_options: "--output_user_root=/home/liamwarfield/.cache/blaze/oracle-out/ur-protos-text"
+  startup_options: "--output_base=/home/liamwarfield/.cache/blaze/oracle-out/ur-protos-text/521935a97a6a1b1c5a6071e51ee1502d"
+  startup_options: "--failure_detail_out=/home/liamwarfield/.cache/blaze/oracle-out/ur-protos-text/521935a97a6a1b1c5a6071e51ee1502d/failure_detail.rawproto"
+  startup_options: "--idle_server_tasks"
+  startup_options: "--write_command_log"
+  startup_options: "--nofatal_event_bus_exceptions"
+  startup_options: "--nowindows_enable_symlinks"
+  startup_options: "--noclient_debug"
+  explicit_startup_options: "--output_user_root=/home/liamwarfield/.cache/blaze/oracle-out/ur-protos-text"
+  cmd_line: "--repository_cache=/home/liamwarfield/.cache/blaze/repo-cache"
+  cmd_line: "--color=no"
+  cmd_line: "--curses=no"
+  cmd_line: "--build_event_binary_file=/home/liamwarfield/.t3/projects/blaze/crates/blaze_protos/tests/data/text/bep.pb"
+  cmd_line: "--build_event_text_file=/home/liamwarfield/.t3/projects/blaze/crates/blaze_protos/tests/data/text/bep.txt"
+  explicit_cmd_line: "--repository_cache=/home/liamwarfield/.cache/blaze/repo-cache"
+  explicit_cmd_line: "--color=no"
+  explicit_cmd_line: "--curses=no"
+  explicit_cmd_line: "--build_event_binary_file=/home/liamwarfield/.t3/projects/blaze/crates/blaze_protos/tests/data/text/bep.pb"
+  explicit_cmd_line: "--build_event_text_file=/home/liamwarfield/.t3/projects/blaze/crates/blaze_protos/tests/data/text/bep.txt"
+  invocation_policy {
+  }
+}
+}
+
+event {
+id {
+  structured_command_line {
+    command_line_label: "original"
+  }
+}
+structured_command_line {
+  command_line_label: "original"
+  sections {
+    section_label: "executable"
+    chunk_list {
+      chunk: "bazel"
+    }
+  }
+  sections {
+    section_label: "startup options"
+    option_list {
+      option {
+        combined_form: "--output_user_root=/home/liamwarfield/.cache/blaze/oracle-out/ur-protos-text"
+      }
+      option {
+      }
+      option {
+        combined_form: "--nohome_rc"
+      }
+      option {
+      }
+      option {
+        combined_form: "--nosystem_rc"
+      }
+      option {
+      }
+    }
+  }
+  sections {
+    section_label: "command"
+    chunk_list {
+      chunk: "build"
+    }
+  }
+  sections {
+    section_label: "command options"
+    option_list {
+      option {
+        combined_form: "--rc_source=client"
+        option_name: "rc_source"
+        option_value: "client"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--default_override=0:common=--isatty=0"
+        option_name: "default_override"
+        option_value: "0:common=--isatty=0"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--default_override=0:common=--terminal_columns=80"
+        option_name: "default_override"
+        option_value: "0:common=--terminal_columns=80"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--startup_time=1110"
+        option_name: "startup_time"
+        option_value: "1110"
+        effect_tags: AFFECTS_OUTPUTS
+        effect_tags: BAZEL_MONITORING
+        metadata_tags: HIDDEN
+        source: "command line options"
+      }
+      option {
+        combined_form: "--command_wait_time=0"
+        option_name: "command_wait_time"
+        option_value: "0"
+        effect_tags: AFFECTS_OUTPUTS
+        effect_tags: BAZEL_MONITORING
+        metadata_tags: HIDDEN
+        source: "command line options"
+      }
+      option {
+        combined_form: "--restart_reason=no_daemon"
+        option_name: "restart_reason"
+        option_value: "no_daemon"
+        effect_tags: AFFECTS_OUTPUTS
+        effect_tags: BAZEL_MONITORING
+        metadata_tags: HIDDEN
+        source: "command line options"
+      }
+      option {
+        combined_form: "--binary_path=/home/liamwarfield/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64"
+        option_name: "binary_path"
+        option_value: "/home/liamwarfield/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64"
+        effect_tags: AFFECTS_OUTPUTS
+        effect_tags: BAZEL_MONITORING
+        metadata_tags: HIDDEN
+        source: "command line options"
+      }
+      option {
+        combined_form: "--client_env=HOME=/home/liamwarfield"
+        option_name: "client_env"
+        option_value: "HOME=/home/liamwarfield"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=LANG=en_US.UTF-8"
+        option_name: "client_env"
+        option_value: "LANG=en_US.UTF-8"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=LOGNAME=liamwarfield"
+        option_name: "client_env"
+        option_value: "LOGNAME=liamwarfield"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=PATH=/usr/bin:/bin"
+        option_name: "client_env"
+        option_value: "PATH=/usr/bin:/bin"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=SHELL=/usr/bin/fish"
+        option_name: "client_env"
+        option_value: "SHELL=/usr/bin/fish"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=USER=liamwarfield"
+        option_name: "client_env"
+        option_value: "USER=liamwarfield"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_DATA_DIRS=/home/liamwarfield/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share/:/usr/share/:/var/lib/snapd/desktop"
+        option_name: "client_env"
+        option_value: "XDG_DATA_DIRS=/home/liamwarfield/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share/:/usr/share/:/var/lib/snapd/desktop"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_RUNTIME_DIR=/run/user/1000"
+        option_name: "client_env"
+        option_value: "XDG_RUNTIME_DIR=/run/user/1000"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus"
+        option_name: "client_env"
+        option_value: "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=DESKTOP_SESSION=plasma"
+        option_name: "client_env"
+        option_value: "DESKTOP_SESSION=plasma"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=DISPLAY=:0"
+        option_name: "client_env"
+        option_value: "DISPLAY=:0"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=GDK_CORE_DEVICE_EVENTS=1"
+        option_name: "client_env"
+        option_value: "GDK_CORE_DEVICE_EVENTS=1"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=GDMSESSION=plasma"
+        option_name: "client_env"
+        option_value: "GDMSESSION=plasma"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=GDM_LANG=en_US.UTF-8"
+        option_name: "client_env"
+        option_value: "GDM_LANG=en_US.UTF-8"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=GTK2_RC_FILES=/home/liamwarfield/.gtkrc-2.0-kde4"
+        option_name: "client_env"
+        option_value: "GTK2_RC_FILES=/home/liamwarfield/.gtkrc-2.0-kde4"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=ICEAUTHORITY=/run/user/1000/iceauth_SqplGF"
+        option_name: "client_env"
+        option_value: "ICEAUTHORITY=/run/user/1000/iceauth_SqplGF"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=KDE_APPLICATIONS_AS_SCOPE=1"
+        option_name: "client_env"
+        option_value: "KDE_APPLICATIONS_AS_SCOPE=1"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=KDE_FULL_SESSION=true"
+        option_name: "client_env"
+        option_value: "KDE_FULL_SESSION=true"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=KDE_SESSION_UID=1000"
+        option_name: "client_env"
+        option_value: "KDE_SESSION_UID=1000"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=KDE_SESSION_VERSION=6"
+        option_name: "client_env"
+        option_value: "KDE_SESSION_VERSION=6"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=PWD=/home/liamwarfield"
+        option_name: "client_env"
+        option_value: "PWD=/home/liamwarfield"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=QT_WAYLAND_RECONNECT=1"
+        option_name: "client_env"
+        option_value: "QT_WAYLAND_RECONNECT=1"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=SESSION_MANAGER=local/unix:@/tmp/.ICE-unix/765932,unix/unix:/tmp/.ICE-unix/765932"
+        option_name: "client_env"
+        option_value: "SESSION_MANAGER=local/unix:@/tmp/.ICE-unix/765932,unix/unix:/tmp/.ICE-unix/765932"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=SSH_ASKPASS=/usr/bin/ksshaskpass"
+        option_name: "client_env"
+        option_value: "SSH_ASKPASS=/usr/bin/ksshaskpass"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=SSH_AUTH_SOCK=/run/user/1000/ssh-agent.socket"
+        option_name: "client_env"
+        option_value: "SSH_AUTH_SOCK=/run/user/1000/ssh-agent.socket"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=USERNAME=liamwarfield"
+        option_name: "client_env"
+        option_value: "USERNAME=liamwarfield"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=WAYLAND_DISPLAY=wayland-1"
+        option_name: "client_env"
+        option_value: "WAYLAND_DISPLAY=wayland-1"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XAUTHORITY=/run/user/1000/xauth_kcasTu"
+        option_name: "client_env"
+        option_value: "XAUTHORITY=/run/user/1000/xauth_kcasTu"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_CONFIG_DIRS=/home/liamwarfield/.config/kdedefaults:/etc/xdg:/usr/share/kde-settings/kde-profile/default/xdg"
+        option_name: "client_env"
+        option_value: "XDG_CONFIG_DIRS=/home/liamwarfield/.config/kdedefaults:/etc/xdg:/usr/share/kde-settings/kde-profile/default/xdg"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_CURRENT_DESKTOP=KDE"
+        option_name: "client_env"
+        option_value: "XDG_CURRENT_DESKTOP=KDE"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_MENU_PREFIX=plasma-"
+        option_name: "client_env"
+        option_value: "XDG_MENU_PREFIX=plasma-"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_SEAT=seat0"
+        option_name: "client_env"
+        option_value: "XDG_SEAT=seat0"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_SESSION_CLASS=user"
+        option_name: "client_env"
+        option_value: "XDG_SESSION_CLASS=user"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_SESSION_DESKTOP=plasma"
+        option_name: "client_env"
+        option_value: "XDG_SESSION_DESKTOP=plasma"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_SESSION_EXTRA_DEVICE_ACCESS=render:accel"
+        option_name: "client_env"
+        option_value: "XDG_SESSION_EXTRA_DEVICE_ACCESS=render:accel"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_SESSION_ID=7"
+        option_name: "client_env"
+        option_value: "XDG_SESSION_ID=7"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_SESSION_TYPE=wayland"
+        option_name: "client_env"
+        option_value: "XDG_SESSION_TYPE=wayland"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_VTNR=2"
+        option_name: "client_env"
+        option_value: "XDG_VTNR=2"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XKB_DEFAULT_LAYOUT=us"
+        option_name: "client_env"
+        option_value: "XKB_DEFAULT_LAYOUT=us"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=_JAVA_AWT_WM_NONREPARENTING=1"
+        option_name: "client_env"
+        option_value: "_JAVA_AWT_WM_NONREPARENTING=1"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=MANAGERPID=2829"
+        option_name: "client_env"
+        option_value: "MANAGERPID=2829"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=MANAGERPIDFDID=241"
+        option_name: "client_env"
+        option_value: "MANAGERPIDFDID=241"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=INVOCATION_ID=7b22b794f9de4d1ea472439af49f28bb"
+        option_name: "client_env"
+        option_value: "INVOCATION_ID=7b22b794f9de4d1ea472439af49f28bb"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=SYSTEMD_EXEC_PID=798830"
+        option_name: "client_env"
+        option_value: "SYSTEMD_EXEC_PID=798830"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=MEMORY_PRESSURE_WATCH=/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-p798774-i51127758.service/memory.pressure"
+        option_name: "client_env"
+        option_value: "MEMORY_PRESSURE_WATCH=/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-p798774-i51127758.service/memory.pressure"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=MEMORY_PRESSURE_WRITE=c29tZSAyMDAwMDAgMjAwMDAwMAA="
+        option_name: "client_env"
+        option_value: "MEMORY_PRESSURE_WRITE=c29tZSAyMDAwMDAgMjAwMDAwMAA="
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_cwd=/home/liamwarfield/.cache/blaze/work/protos-text-ws"
+        option_name: "client_cwd"
+        option_value: "/home/liamwarfield/.cache/blaze/work/protos-text-ws"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--repository_cache=/home/liamwarfield/.cache/blaze/repo-cache"
+        option_name: "repository_cache"
+        option_value: "/home/liamwarfield/.cache/blaze/repo-cache"
+        effect_tags: BAZEL_INTERNAL_CONFIGURATION
+        source: "command line options"
+      }
+      option {
+        combined_form: "--color=no"
+        option_name: "color"
+        option_value: "no"
+        effect_tags: UNKNOWN
+        source: "command line options"
+      }
+      option {
+        combined_form: "--curses=no"
+        option_name: "curses"
+        option_value: "no"
+        effect_tags: UNKNOWN
+        source: "command line options"
+      }
+      option {
+        combined_form: "--build_event_binary_file=/home/liamwarfield/.t3/projects/blaze/crates/blaze_protos/tests/data/text/bep.pb"
+        option_name: "build_event_binary_file"
+        option_value: "/home/liamwarfield/.t3/projects/blaze/crates/blaze_protos/tests/data/text/bep.pb"
+        effect_tags: AFFECTS_OUTPUTS
+        source: "command line options"
+      }
+      option {
+        combined_form: "--build_event_text_file=/home/liamwarfield/.t3/projects/blaze/crates/blaze_protos/tests/data/text/bep.txt"
+        option_name: "build_event_text_file"
+        option_value: "/home/liamwarfield/.t3/projects/blaze/crates/blaze_protos/tests/data/text/bep.txt"
+        effect_tags: AFFECTS_OUTPUTS
+        source: "command line options"
+      }
+    }
+  }
+  sections {
+    section_label: "residual"
+    chunk_list {
+      chunk: "//:fg"
+    }
+  }
+}
+}
+
+event {
+id {
+  structured_command_line {
+    command_line_label: "tool"
+  }
+}
+structured_command_line {
+}
+}
+
+event {
+id {
+  pattern {
+    pattern: "//:fg"
+  }
+}
+children {
+  target_configured {
+    label: "//:fg"
+  }
+}
+expanded {
+}
+}
+
+event {
+id {
+  progress {
+  }
+}
+children {
+  progress {
+    opaque_count: 1
+  }
+}
+children {
+  workspace {
+  }
+}
+progress {
+  stderr: "Computing main repo mapping: \nLoading: \nLoading: 0 packages loaded\n"
+}
+}
+
+event {
+id {
+  workspace {
+  }
+}
+workspace_info {
+  local_exec_root: "/home/liamwarfield/.cache/blaze/oracle-out/ur-protos-text/521935a97a6a1b1c5a6071e51ee1502d/execroot/_main"
+}
+}
+
+event {
+id {
+  structured_command_line {
+    command_line_label: "canonical"
+  }
+}
+structured_command_line {
+  command_line_label: "canonical"
+  sections {
+    section_label: "executable"
+    chunk_list {
+      chunk: "bazel"
+    }
+  }
+  sections {
+    section_label: "startup options"
+    option_list {
+      option {
+        combined_form: "--max_idle_secs=10800"
+        option_name: "max_idle_secs"
+        option_value: "10800"
+        effect_tags: EAGERNESS_TO_EXIT
+        effect_tags: LOSES_INCREMENTAL_STATE
+        source: "default"
+      }
+      option {
+        combined_form: "--noshutdown_on_low_sys_mem"
+        option_name: "shutdown_on_low_sys_mem"
+        option_value: "0"
+        effect_tags: EAGERNESS_TO_EXIT
+        effect_tags: LOSES_INCREMENTAL_STATE
+        source: "default"
+      }
+      option {
+        combined_form: "--connect_timeout_secs=30"
+        option_name: "connect_timeout_secs"
+        option_value: "30"
+        effect_tags: BAZEL_INTERNAL_CONFIGURATION
+        source: "default"
+      }
+      option {
+        combined_form: "--output_user_root=/home/liamwarfield/.cache/blaze/oracle-out/ur-protos-text"
+        option_name: "output_user_root"
+        option_value: "/home/liamwarfield/.cache/blaze/oracle-out/ur-protos-text"
+        effect_tags: AFFECTS_OUTPUTS
+        effect_tags: LOSES_INCREMENTAL_STATE
+        source: "command line"
+      }
+      option {
+        combined_form: "--install_base=/home/liamwarfield/.cache/blaze/oracle-out/ur-protos-text/install/58cf1ecbff441bac762b0050d6da21e9"
+        option_name: "install_base"
+        option_value: "/home/liamwarfield/.cache/blaze/oracle-out/ur-protos-text/install/58cf1ecbff441bac762b0050d6da21e9"
+        effect_tags: CHANGES_INPUTS
+        effect_tags: LOSES_INCREMENTAL_STATE
+        metadata_tags: HIDDEN
+        source: "default"
+      }
+      option {
+        combined_form: "--install_md5=58cf1ecbff441bac762b0050d6da21e9"
+        option_name: "install_md5"
+        option_value: "58cf1ecbff441bac762b0050d6da21e9"
+        effect_tags: LOSES_INCREMENTAL_STATE
+        effect_tags: BAZEL_MONITORING
+        metadata_tags: HIDDEN
+        source: "default"
+      }
+      option {
+        combined_form: "--lock_install_base"
+        option_name: "lock_install_base"
+        option_value: "1"
+        effect_tags: BAZEL_INTERNAL_CONFIGURATION
+        metadata_tags: HIDDEN
+        source: "default"
+      }
+      option {
+        combined_form: "--output_base=/home/liamwarfield/.cache/blaze/oracle-out/ur-protos-text/521935a97a6a1b1c5a6071e51ee1502d"
+        option_name: "output_base"
+        option_value: "/home/liamwarfield/.cache/blaze/oracle-out/ur-protos-text/521935a97a6a1b1c5a6071e51ee1502d"
+        effect_tags: AFFECTS_OUTPUTS
+        effect_tags: LOSES_INCREMENTAL_STATE
+        source: "default"
+      }
+      option {
+        combined_form: "--workspace_directory=/home/liamwarfield/.cache/blaze/work/protos-text-ws"
+        option_name: "workspace_directory"
+        option_value: "/home/liamwarfield/.cache/blaze/work/protos-text-ws"
+        effect_tags: CHANGES_INPUTS
+        effect_tags: LOSES_INCREMENTAL_STATE
+        metadata_tags: HIDDEN
+        source: "default"
+      }
+      option {
+        combined_form: "--default_system_javabase=/usr/lib/jvm/java-11-temurin-jdk"
+        option_name: "default_system_javabase"
+        option_value: "/usr/lib/jvm/java-11-temurin-jdk"
+        effect_tags: CHANGES_INPUTS
+        effect_tags: LOSES_INCREMENTAL_STATE
+        metadata_tags: HIDDEN
+        source: "default"
+      }
+      option {
+        combined_form: "--failure_detail_out=/home/liamwarfield/.cache/blaze/oracle-out/ur-protos-text/521935a97a6a1b1c5a6071e51ee1502d/failure_detail.rawproto"
+        option_name: "failure_detail_out"
+        option_value: "/home/liamwarfield/.cache/blaze/oracle-out/ur-protos-text/521935a97a6a1b1c5a6071e51ee1502d/failure_detail.rawproto"
+        effect_tags: AFFECTS_OUTPUTS
+        effect_tags: LOSES_INCREMENTAL_STATE
+        source: "default"
+      }
+      option {
+        combined_form: "--idle_server_tasks"
+        option_name: "idle_server_tasks"
+        option_value: "1"
+        effect_tags: LOSES_INCREMENTAL_STATE
+        effect_tags: HOST_MACHINE_RESOURCE_OPTIMIZATIONS
+        source: "default"
+      }
+      option {
+        combined_form: "--write_command_log"
+        option_name: "write_command_log"
+        option_value: "1"
+        effect_tags: AFFECTS_OUTPUTS
+        effect_tags: LOSES_INCREMENTAL_STATE
+        source: "default"
+      }
+      option {
+        combined_form: "--nofatal_event_bus_exceptions"
+        option_name: "fatal_event_bus_exceptions"
+        option_value: "0"
+        effect_tags: EAGERNESS_TO_EXIT
+        effect_tags: LOSES_INCREMENTAL_STATE
+        source: "default"
+      }
+      option {
+        combined_form: "--nowindows_enable_symlinks"
+        option_name: "windows_enable_symlinks"
+        option_value: "0"
+        effect_tags: BAZEL_INTERNAL_CONFIGURATION
+        source: "default"
+      }
+      option {
+        combined_form: "--client_debug=false"
+        option_name: "client_debug"
+        option_value: "false"
+        effect_tags: AFFECTS_OUTPUTS
+        effect_tags: BAZEL_MONITORING
+        source: "default"
+      }
+      option {
+        combined_form: "--product_name=Bazel"
+        option_name: "product_name"
+        option_value: "Bazel"
+        effect_tags: LOSES_INCREMENTAL_STATE
+        effect_tags: AFFECTS_OUTPUTS
+        effect_tags: BAZEL_MONITORING
+        metadata_tags: HIDDEN
+        source: "default"
+      }
+      option {
+        combined_form: "--option_sources=home_Urc::output_Uuser_Uroot::system_Urc:"
+        option_name: "option_sources"
+        option_value: "home_Urc::output_Uuser_Uroot::system_Urc:"
+        effect_tags: AFFECTS_OUTPUTS
+        metadata_tags: HIDDEN
+        source: "default"
+      }
+      option {
+        combined_form: "--ignore_all_rc_files"
+        option_name: "ignore_all_rc_files"
+        option_value: "1"
+        effect_tags: CHANGES_INPUTS
+      }
+    }
+  }
+  sections {
+    section_label: "command"
+    chunk_list {
+      chunk: "build"
+    }
+  }
+  sections {
+    section_label: "command options"
+    option_list {
+      option {
+        combined_form: "--flag_alias=build_python_zip=@@rules_python+//python/config_settings:build_python_zip"
+        option_name: "flag_alias"
+        option_value: "build_python_zip=@@rules_python+//python/config_settings:build_python_zip"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: NON_CONFIGURABLE
+        source: "module resolution"
+      }
+      option {
+        combined_form: "--flag_alias=incompatible_default_to_explicit_init_py=@@rules_python+//python/config_settings:incompatible_default_to_explicit_init_py"
+        option_name: "flag_alias"
+        option_value: "incompatible_default_to_explicit_init_py=@@rules_python+//python/config_settings:incompatible_default_to_explicit_init_py"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: NON_CONFIGURABLE
+        source: "module resolution"
+      }
+      option {
+        combined_form: "--flag_alias=python_path=@@rules_python+//python/config_settings:python_path"
+        option_name: "flag_alias"
+        option_value: "python_path=@@rules_python+//python/config_settings:python_path"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: NON_CONFIGURABLE
+        source: "module resolution"
+      }
+      option {
+        combined_form: "--flag_alias=experimental_python_import_all_repositories=@@rules_python+//python/config_settings:experimental_python_import_all_repositories"
+        option_name: "flag_alias"
+        option_value: "experimental_python_import_all_repositories=@@rules_python+//python/config_settings:experimental_python_import_all_repositories"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: NON_CONFIGURABLE
+        source: "module resolution"
+      }
+      option {
+        combined_form: "--isatty=0"
+        option_name: "isatty"
+        option_value: "0"
+        effect_tags: UNKNOWN
+        metadata_tags: HIDDEN
+        source: "client"
+      }
+      option {
+        combined_form: "--terminal_columns=80"
+        option_name: "terminal_columns"
+        option_value: "80"
+        effect_tags: UNKNOWN
+        metadata_tags: HIDDEN
+        source: "client"
+      }
+      option {
+        combined_form: "--rc_source=client"
+        option_name: "rc_source"
+        option_value: "client"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--default_override=0:common=--isatty=0"
+        option_name: "default_override"
+        option_value: "0:common=--isatty=0"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--default_override=0:common=--terminal_columns=80"
+        option_name: "default_override"
+        option_value: "0:common=--terminal_columns=80"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--startup_time=1110"
+        option_name: "startup_time"
+        option_value: "1110"
+        effect_tags: AFFECTS_OUTPUTS
+        effect_tags: BAZEL_MONITORING
+        metadata_tags: HIDDEN
+        source: "command line options"
+      }
+      option {
+        combined_form: "--command_wait_time=0"
+        option_name: "command_wait_time"
+        option_value: "0"
+        effect_tags: AFFECTS_OUTPUTS
+        effect_tags: BAZEL_MONITORING
+        metadata_tags: HIDDEN
+        source: "command line options"
+      }
+      option {
+        combined_form: "--restart_reason=no_daemon"
+        option_name: "restart_reason"
+        option_value: "no_daemon"
+        effect_tags: AFFECTS_OUTPUTS
+        effect_tags: BAZEL_MONITORING
+        metadata_tags: HIDDEN
+        source: "command line options"
+      }
+      option {
+        combined_form: "--binary_path=/home/liamwarfield/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64"
+        option_name: "binary_path"
+        option_value: "/home/liamwarfield/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64"
+        effect_tags: AFFECTS_OUTPUTS
+        effect_tags: BAZEL_MONITORING
+        metadata_tags: HIDDEN
+        source: "command line options"
+      }
+      option {
+        combined_form: "--client_env=HOME=/home/liamwarfield"
+        option_name: "client_env"
+        option_value: "HOME=/home/liamwarfield"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=LANG=en_US.UTF-8"
+        option_name: "client_env"
+        option_value: "LANG=en_US.UTF-8"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=LOGNAME=liamwarfield"
+        option_name: "client_env"
+        option_value: "LOGNAME=liamwarfield"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=PATH=/usr/bin:/bin"
+        option_name: "client_env"
+        option_value: "PATH=/usr/bin:/bin"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=SHELL=/usr/bin/fish"
+        option_name: "client_env"
+        option_value: "SHELL=/usr/bin/fish"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=USER=liamwarfield"
+        option_name: "client_env"
+        option_value: "USER=liamwarfield"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_DATA_DIRS=/home/liamwarfield/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share/:/usr/share/:/var/lib/snapd/desktop"
+        option_name: "client_env"
+        option_value: "XDG_DATA_DIRS=/home/liamwarfield/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share/:/usr/share/:/var/lib/snapd/desktop"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_RUNTIME_DIR=/run/user/1000"
+        option_name: "client_env"
+        option_value: "XDG_RUNTIME_DIR=/run/user/1000"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus"
+        option_name: "client_env"
+        option_value: "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=DESKTOP_SESSION=plasma"
+        option_name: "client_env"
+        option_value: "DESKTOP_SESSION=plasma"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=DISPLAY=:0"
+        option_name: "client_env"
+        option_value: "DISPLAY=:0"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=GDK_CORE_DEVICE_EVENTS=1"
+        option_name: "client_env"
+        option_value: "GDK_CORE_DEVICE_EVENTS=1"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=GDMSESSION=plasma"
+        option_name: "client_env"
+        option_value: "GDMSESSION=plasma"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=GDM_LANG=en_US.UTF-8"
+        option_name: "client_env"
+        option_value: "GDM_LANG=en_US.UTF-8"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=GTK2_RC_FILES=/home/liamwarfield/.gtkrc-2.0-kde4"
+        option_name: "client_env"
+        option_value: "GTK2_RC_FILES=/home/liamwarfield/.gtkrc-2.0-kde4"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=ICEAUTHORITY=/run/user/1000/iceauth_SqplGF"
+        option_name: "client_env"
+        option_value: "ICEAUTHORITY=/run/user/1000/iceauth_SqplGF"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=KDE_APPLICATIONS_AS_SCOPE=1"
+        option_name: "client_env"
+        option_value: "KDE_APPLICATIONS_AS_SCOPE=1"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=KDE_FULL_SESSION=true"
+        option_name: "client_env"
+        option_value: "KDE_FULL_SESSION=true"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=KDE_SESSION_UID=1000"
+        option_name: "client_env"
+        option_value: "KDE_SESSION_UID=1000"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=KDE_SESSION_VERSION=6"
+        option_name: "client_env"
+        option_value: "KDE_SESSION_VERSION=6"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=PWD=/home/liamwarfield"
+        option_name: "client_env"
+        option_value: "PWD=/home/liamwarfield"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=QT_WAYLAND_RECONNECT=1"
+        option_name: "client_env"
+        option_value: "QT_WAYLAND_RECONNECT=1"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=SESSION_MANAGER=local/unix:@/tmp/.ICE-unix/765932,unix/unix:/tmp/.ICE-unix/765932"
+        option_name: "client_env"
+        option_value: "SESSION_MANAGER=local/unix:@/tmp/.ICE-unix/765932,unix/unix:/tmp/.ICE-unix/765932"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=SSH_ASKPASS=/usr/bin/ksshaskpass"
+        option_name: "client_env"
+        option_value: "SSH_ASKPASS=/usr/bin/ksshaskpass"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=SSH_AUTH_SOCK=/run/user/1000/ssh-agent.socket"
+        option_name: "client_env"
+        option_value: "SSH_AUTH_SOCK=/run/user/1000/ssh-agent.socket"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=USERNAME=liamwarfield"
+        option_name: "client_env"
+        option_value: "USERNAME=liamwarfield"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=WAYLAND_DISPLAY=wayland-1"
+        option_name: "client_env"
+        option_value: "WAYLAND_DISPLAY=wayland-1"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XAUTHORITY=/run/user/1000/xauth_kcasTu"
+        option_name: "client_env"
+        option_value: "XAUTHORITY=/run/user/1000/xauth_kcasTu"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_CONFIG_DIRS=/home/liamwarfield/.config/kdedefaults:/etc/xdg:/usr/share/kde-settings/kde-profile/default/xdg"
+        option_name: "client_env"
+        option_value: "XDG_CONFIG_DIRS=/home/liamwarfield/.config/kdedefaults:/etc/xdg:/usr/share/kde-settings/kde-profile/default/xdg"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_CURRENT_DESKTOP=KDE"
+        option_name: "client_env"
+        option_value: "XDG_CURRENT_DESKTOP=KDE"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_MENU_PREFIX=plasma-"
+        option_name: "client_env"
+        option_value: "XDG_MENU_PREFIX=plasma-"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_SEAT=seat0"
+        option_name: "client_env"
+        option_value: "XDG_SEAT=seat0"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_SESSION_CLASS=user"
+        option_name: "client_env"
+        option_value: "XDG_SESSION_CLASS=user"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_SESSION_DESKTOP=plasma"
+        option_name: "client_env"
+        option_value: "XDG_SESSION_DESKTOP=plasma"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_SESSION_EXTRA_DEVICE_ACCESS=render:accel"
+        option_name: "client_env"
+        option_value: "XDG_SESSION_EXTRA_DEVICE_ACCESS=render:accel"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_SESSION_ID=7"
+        option_name: "client_env"
+        option_value: "XDG_SESSION_ID=7"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_SESSION_TYPE=wayland"
+        option_name: "client_env"
+        option_value: "XDG_SESSION_TYPE=wayland"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XDG_VTNR=2"
+        option_name: "client_env"
+        option_value: "XDG_VTNR=2"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=XKB_DEFAULT_LAYOUT=us"
+        option_name: "client_env"
+        option_value: "XKB_DEFAULT_LAYOUT=us"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=_JAVA_AWT_WM_NONREPARENTING=1"
+        option_name: "client_env"
+        option_value: "_JAVA_AWT_WM_NONREPARENTING=1"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=MANAGERPID=2829"
+        option_name: "client_env"
+        option_value: "MANAGERPID=2829"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=MANAGERPIDFDID=241"
+        option_name: "client_env"
+        option_value: "MANAGERPIDFDID=241"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=INVOCATION_ID=7b22b794f9de4d1ea472439af49f28bb"
+        option_name: "client_env"
+        option_value: "INVOCATION_ID=7b22b794f9de4d1ea472439af49f28bb"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=SYSTEMD_EXEC_PID=798830"
+        option_name: "client_env"
+        option_value: "SYSTEMD_EXEC_PID=798830"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=MEMORY_PRESSURE_WATCH=/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-p798774-i51127758.service/memory.pressure"
+        option_name: "client_env"
+        option_value: "MEMORY_PRESSURE_WATCH=/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-p798774-i51127758.service/memory.pressure"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_env=MEMORY_PRESSURE_WRITE=c29tZSAyMDAwMDAgMjAwMDAwMAA="
+        option_name: "client_env"
+        option_value: "MEMORY_PRESSURE_WRITE=c29tZSAyMDAwMDAgMjAwMDAwMAA="
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--client_cwd=/home/liamwarfield/.cache/blaze/work/protos-text-ws"
+        option_name: "client_cwd"
+        option_value: "/home/liamwarfield/.cache/blaze/work/protos-text-ws"
+        effect_tags: CHANGES_INPUTS
+        metadata_tags: HIDDEN
+        source: "options generated by bazel launcher"
+      }
+      option {
+        combined_form: "--repository_cache=/home/liamwarfield/.cache/blaze/repo-cache"
+        option_name: "repository_cache"
+        option_value: "/home/liamwarfield/.cache/blaze/repo-cache"
+        effect_tags: BAZEL_INTERNAL_CONFIGURATION
+        source: "command line options"
+      }
+      option {
+        combined_form: "--color=no"
+        option_name: "color"
+        option_value: "no"
+        effect_tags: UNKNOWN
+        source: "command line options"
+      }
+      option {
+        combined_form: "--curses=no"
+        option_name: "curses"
+        option_value: "no"
+        effect_tags: UNKNOWN
+        source: "command line options"
+      }
+      option {
+        combined_form: "--build_event_binary_file=/home/liamwarfield/.t3/projects/blaze/crates/blaze_protos/tests/data/text/bep.pb"
+        option_name: "build_event_binary_file"
+        option_value: "/home/liamwarfield/.t3/projects/blaze/crates/blaze_protos/tests/data/text/bep.pb"
+        effect_tags: AFFECTS_OUTPUTS
+        source: "command line options"
+      }
+      option {
+        combined_form: "--build_event_text_file=/home/liamwarfield/.t3/projects/blaze/crates/blaze_protos/tests/data/text/bep.txt"
+        option_name: "build_event_text_file"
+        option_value: "/home/liamwarfield/.t3/projects/blaze/crates/blaze_protos/tests/data/text/bep.txt"
+        effect_tags: AFFECTS_OUTPUTS
+        source: "command line options"
+      }
+    }
+  }
+  sections {
+    section_label: "residual"
+    chunk_list {
+      chunk: "//:fg"
+    }
+  }
+}
+}
+
+event {
+id {
+  progress {
+    opaque_count: 1
+  }
+}
+children {
+  progress {
+    opaque_count: 2
+  }
+}
+children {
+  configuration {
+    id: "e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a"
+  }
+}
+progress {
+}
+}
+
+event {
+id {
+  configuration {
+    id: "e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a"
+  }
+}
+configuration {
+  mnemonic: "k8-fastbuild"
+  platform_name: "k8"
+  cpu: "k8"
+  make_variable {
+    key: "BINDIR"
+    value: "bazel-out/k8-fastbuild/bin"
+  }
+  make_variable {
+    key: "COMPILATION_MODE"
+    value: "fastbuild"
+  }
+  make_variable {
+    key: "GENDIR"
+    value: "bazel-out/k8-fastbuild/bin"
+  }
+  make_variable {
+    key: "TARGET_CPU"
+    value: "x86_64"
+  }
+}
+}
+
+event {
+id {
+  workspace_status {
+  }
+}
+workspace_status {
+  item {
+    key: "BUILD_EMBED_LABEL"
+  }
+  item {
+    key: "BUILD_HOST"
+    value: "fedora"
+  }
+  item {
+    key: "BUILD_TIMESTAMP"
+    value: "1795114556"
+  }
+  item {
+    key: "BUILD_USER"
+    value: "liamwarfield"
+  }
+  item {
+    key: "FORMATTED_DATE"
+    value: "2026 Nov 19 18 55 56 Thu"
+  }
+}
+}
+
+event {
+id {
+  progress {
+    opaque_count: 2
+  }
+}
+children {
+  progress {
+    opaque_count: 3
+  }
+}
+children {
+  configuration {
+    id: "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18"
+  }
+}
+progress {
+  stderr: "Analyzing: target //:fg (5 packages loaded, 6 targets configured)\nAnalyzing: target //:fg (5 packages loaded, 6 targets configured)\n\n"
+}
+}
+
+event {
+id {
+  configuration {
+    id: "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18"
+  }
+}
+configuration {
+  mnemonic: "k8-fastbuild"
+  platform_name: "k8"
+  cpu: "k8"
+  make_variable {
+    key: "BINDIR"
+    value: "bazel-out/k8-fastbuild/bin"
+  }
+  make_variable {
+    key: "COMPILATION_MODE"
+    value: "fastbuild"
+  }
+  make_variable {
+    key: "GENDIR"
+    value: "bazel-out/k8-fastbuild/bin"
+  }
+  make_variable {
+    key: "TARGET_CPU"
+    value: "x86_64"
+  }
+}
+}
+
+event {
+id {
+  target_configured {
+    label: "//:fg"
+  }
+}
+children {
+  target_completed {
+    label: "//:fg"
+    configuration {
+      id: "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18"
+    }
+  }
+}
+configured {
+  target_kind: "filegroup rule"
+}
+}
+
+event {
+id {
+  progress {
+    opaque_count: 3
+  }
+}
+children {
+  progress {
+    opaque_count: 4
+  }
+}
+children {
+  named_set {
+    id: "0"
+  }
+}
+progress {
+  stderr: "INFO: Analyzed target //:fg (6 packages loaded, 10 targets configured).\n"
+}
+}
+
+event {
+id {
+  named_set {
+    id: "0"
+  }
+}
+named_set_of_files {
+  files {
+    name: "in.txt"
+    uri: "file:///home/liamwarfield/.cache/blaze/work/protos-text-ws/in.txt"
+    digest: "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+    length: 6
+  }
+  files {
+    name: "out.txt"
+    uri: "file:///home/liamwarfield/.cache/blaze/oracle-out/ur-protos-text/521935a97a6a1b1c5a6071e51ee1502d/execroot/_main/bazel-out/k8-fastbuild/bin/out.txt"
+    path_prefix: "bazel-out"
+    path_prefix: "k8-fastbuild"
+    path_prefix: "bin"
+    digest: "8b336b56d533cb88ea2d1412b0a3b02b42d46f85d69b7e54c31f2ce43dbfce04"
+    length: 30
+  }
+}
+}
+
+event {
+id {
+  target_completed {
+    label: "//:fg"
+    configuration {
+      id: "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18"
+    }
+  }
+}
+completed {
+  success: true
+  output_group {
+    name: "default"
+    file_sets {
+      id: "0"
+    }
+  }
+}
+}
+
+event {
+id {
+  progress {
+    opaque_count: 4
+  }
+}
+children {
+  progress {
+    opaque_count: 5
+  }
+}
+children {
+  convenience_symlinks_identified {
+  }
+}
+progress {
+  stderr: "INFO: Found 1 target...\n"
+}
+}
+
+event {
+id {
+  convenience_symlinks_identified {
+  }
+}
+convenience_symlinks_identified {
+  convenience_symlinks {
+    path: "bazel-bin"
+    action: CREATE
+    target: "execroot/_main/bazel-out/k8-fastbuild/bin"
+  }
+  convenience_symlinks {
+    path: "bazel-testlogs"
+    action: CREATE
+    target: "execroot/_main/bazel-out/k8-fastbuild/testlogs"
+  }
+  convenience_symlinks {
+    path: "bazel-genfiles"
+    action: DELETE
+  }
+  convenience_symlinks {
+    path: "bazel-out"
+    action: CREATE
+    target: "execroot/_main/bazel-out"
+  }
+  convenience_symlinks {
+    path: "bazel-protos-text-ws"
+    action: CREATE
+    target: "execroot/_main"
+  }
+}
+}
+
+event {
+id {
+  build_finished {
+  }
+}
+children {
+  build_tool_logs {
+  }
+}
+children {
+  build_metrics {
+  }
+}
+finished {
+  overall_success: true
+  finish_time_millis: 1795114556233
+  exit_code {
+    name: "SUCCESS"
+  }
+  finish_time {
+    seconds: 1795114556
+    nanos: 233000000
+  }
+}
+}
+
+event {
+id {
+  progress {
+    opaque_count: 5
+  }
+}
+progress {
+  stderr: "Target //:fg up-to-date:\n  bazel-bin/out.txt\nINFO: Elapsed time: 2.713s, Critical Path: 0.06s\nINFO: 2 processes: 1 internal, 1 linux-sandbox.\nINFO: Build completed successfully, 2 total actions\nINFO: \n"
+}
+}
+
+event {
+id {
+  build_tool_logs {
+  }
+}
+build_tool_logs {
+  log {
+    name: "elapsed time"
+    contents: "2.713000"
+  }
+  log {
+    name: "critical path"
+    contents: "Critical Path: 0.06s, Remote (0.00% of the time): [parse: 0.00%, queue: 0.00%, network: 0.00%, upload: 0.00%, setup: 0.00%, process: 0.00%, fetch: 0.00%, retry: 0.00%, processOutputs: 0.00%, other: 0.00%, input files: 0, input bytes: 0, memory bytes: 0]\n  0.06s action \'Executing genrule //:gen\'"
+  }
+  log {
+    name: "process stats"
+    contents: "2 processes: 1 internal, 1 linux-sandbox."
+  }
+  log {
+    name: "command.profile.gz"
+    uri: "file:///home/liamwarfield/.cache/blaze/oracle-out/ur-protos-text/521935a97a6a1b1c5a6071e51ee1502d/command-772371f0-dec6-4568-93d8-ae08e8c1c19c.profile.gz"
+  }
+}
+}
+
+event {
+id {
+  build_metrics {
+  }
+}
+last_message: true
+build_metrics {
+  action_summary {
+    actions_created: 2
+    actions_executed: 2
+    actions_created_not_including_aspects: 1
+    action_data {
+      mnemonic: "BazelWorkspaceStatusAction"
+      actions_executed: 1
+      first_started_ms: 1795114556047
+      last_ended_ms: 1795114556070
+      actions_created: 1
+    }
+    action_data {
+      mnemonic: "Genrule"
+      actions_executed: 1
+      first_started_ms: 1795114556145
+      last_ended_ms: 1795114556200
+      system_time {
+        nanos: 3000000
+      }
+      actions_created: 1
+    }
+    runner_count {
+      name: "total"
+      count: 2
+    }
+    runner_count {
+      name: "internal"
+      count: 1
+    }
+    runner_count {
+      name: "linux-sandbox"
+      count: 1
+      exec_kind: "Local"
+    }
+    action_cache_statistics {
+      size_in_bytes: 253
+      save_time_in_ms: 1
+      misses: 2
+      miss_details {
+      }
+      miss_details {
+        reason: DIFFERENT_DEPS
+      }
+      miss_details {
+        reason: DIFFERENT_ENVIRONMENT
+      }
+      miss_details {
+        reason: DIFFERENT_FILES
+      }
+      miss_details {
+        reason: CORRUPTED_CACHE_ENTRY
+      }
+      miss_details {
+        reason: NOT_CACHED
+        count: 1
+      }
+      miss_details {
+        reason: UNCONDITIONAL_EXECUTION
+        count: 1
+      }
+      miss_details {
+        reason: DIGEST_MISMATCH
+      }
+      load_time_in_ms: 10
+    }
+  }
+  memory_metrics {
+    garbage_metrics {
+      type: "CodeHeap \'non-profiled nmethods\'"
+      garbage_collected: 60800
+    }
+    garbage_metrics {
+      type: "CodeHeap \'profiled nmethods\'"
+      garbage_collected: 294016
+    }
+    garbage_metrics {
+      type: "G1 Eden Space"
+      garbage_collected: 100663296
+    }
+    garbage_metrics {
+      type: "G1 Survivor Space"
+      garbage_collected: 102576
+    }
+  }
+  target_metrics {
+    targets_configured: 11
+    targets_configured_not_including_aspects: 10
+  }
+  package_metrics {
+    packages_loaded: 6
+  }
+  timing_metrics {
+    cpu_time_in_ms: 5250
+    wall_time_in_ms: 1633
+    analysis_phase_time_in_ms: 94
+    execution_phase_time_in_ms: 96
+    actions_execution_start_in_ms: 1499
+    critical_path_time {
+      nanos: 55464419
+    }
+  }
+  cumulative_metrics {
+    num_analyses: 1
+    num_builds: 1
+  }
+  artifact_metrics {
+    source_artifacts_read {
+      size_in_bytes: 872
+      count: 2
+    }
+    output_artifacts_seen {
+      size_in_bytes: 158
+      count: 3
+    }
+    output_artifacts_from_action_cache {
+    }
+    top_level_artifacts {
+      size_in_bytes: 36
+      count: 2
+    }
+  }
+  build_graph_metrics {
+    action_lookup_value_count: 10
+    action_count: 1
+    output_artifact_count: 1
+    post_invocation_skyframe_node_count: 635
+    action_lookup_value_count_not_including_aspects: 10
+    action_count_not_including_aspects: 1
+    input_file_configured_target_count: 2
+    other_configured_target_count: 1
+    built_values {
+      skyfunction_name: "DIRECTORY_LISTING"
+      count: 3
+    }
+    built_values {
+      skyfunction_name: "SINGLE_EXTENSION_EVAL"
+      count: 1
+    }
+    built_values {
+      skyfunction_name: "IGNORED_SUBDIRECTORIES"
+      count: 4
+    }
+    built_values {
+      skyfunction_name: "ACTION_EXECUTION"
+      count: 2
+    }
+    built_values {
+      skyfunction_name: "CONTAINING_PACKAGE_LOOKUP"
+      count: 11
+    }
+    built_values {
+      skyfunction_name: "BUILD_CONFIGURATION"
+      count: 3
+    }
+    built_values {
+      skyfunction_name: "STARLARK_BUILTINS"
+      count: 1
+    }
+    built_values {
+      skyfunction_name: "REPO_FILE"
+      count: 4
+    }
+    built_values {
+      skyfunction_name: "PLATFORM"
+      count: 2
+    }
+    built_values {
+      skyfunction_name: "BAZEL_MODULE_RESOLUTION"
+      count: 1
+    }
+    built_values {
+      skyfunction_name: "TARGET_PATTERN"
+      count: 1
+    }
+    built_values {
+      skyfunction_name: "BUILD_DRIVER"
+      count: 1
+    }
+    built_values {
+      skyfunction_name: "SINGLE_EXTENSION"
+      count: 1
+    }
+    built_values {
+      skyfunction_name: "PACKAGE"
+      count: 6
+    }
+    built_values {
+      skyfunction_name: "REPO_SPEC"
+      count: 27
+    }
+    built_values {
+      skyfunction_name: "REPO_PACKAGE_ARGS"
+      count: 3
+    }
+    built_values {
+      skyfunction_name: "GLOBS"
+      count: 3
+    }
+    built_values {
+      skyfunction_name: "TOOLCHAIN_RESOLUTION"
+      count: 1
+    }
+    built_values {
+      skyfunction_name: "BUILD_CONFIGURATION_KEY"
+      count: 1
+    }
+    built_values {
+      skyfunction_name: "FILE"
+      count: 102
+    }
+    built_values {
+      skyfunction_name: "BZL_LOAD"
+      count: 25
+    }
+    built_values {
+      skyfunction_name: "DIRECTORY_LISTING_STATE"
+      count: 3
+    }
+    built_values {
+      skyfunction_name: "REPOSITORY_DIRECTORY"
+      count: 3
+    }
+    built_values {
+      skyfunction_name: "CONFIGURED_TARGET"
+      count: 12
+    }
+    built_values {
+      skyfunction_name: "BUILD_INFO"
+      count: 1
+    }
+    built_values {
+      skyfunction_name: "REPO_DEFINITION"
+      count: 3
+    }
+    built_values {
+      skyfunction_name: "LOCAL_REPOSITORY_LOOKUP"
+      count: 3
+    }
+    built_values {
+      skyfunction_name: "REGISTERED_EXECUTION_PLATFORMS"
+      count: 1
+    }
+    built_values {
+      skyfunction_name: "BAZEL_LOCK_FILE"
+      count: 2
+    }
+    built_values {
+      skyfunction_name: "REPOSITORY_MAPPING"
+      count: 5
+    }
+    built_values {
+      skyfunction_name: "PACKAGE_LOOKUP"
+      count: 14
+    }
+    built_values {
+      skyfunction_name: "CLIENT_ENVIRONMENT_VARIABLE"
+      count: 1
+    }
+    built_values {
+      skyfunction_name: "PLATFORM_MAPPING"
+      count: 1
+    }
+    built_values {
+      skyfunction_name: "BAZEL_DEP_GRAPH"
+      count: 1
+    }
+    built_values {
+      skyfunction_name: "ARTIFACT"
+      count: 2
+    }
+    built_values {
+      skyfunction_name: "BASELINE_OPTIONS"
+      count: 1
+    }
+    built_values {
+      skyfunction_name: "REPOSITORY_ENVIRONMENT_VARIABLE"
+      count: 1
+    }
+    built_values {
+      skyfunction_name: "MODULE_FILE"
+      count: 158
+    }
+    built_values {
+      skyfunction_name: "TARGET_COMPLETION"
+      count: 1
+    }
+    built_values {
+      skyfunction_name: "PROJECT_FILES_LOOKUP"
+      count: 1
+    }
+    built_values {
+      skyfunction_name: "FILE_STATE"
+      count: 93
+    }
+    built_values {
+      skyfunction_name: "MODULE_EXTENSION_REPO_MAPPING_ENTRIES"
+      count: 1
+    }
+    built_values {
+      skyfunction_name: "TARGET_PATTERN_PHASE"
+      count: 1
+    }
+    built_values {
+      skyfunction_name: "REGISTRY"
+      count: 1
+    }
+    built_values {
+      skyfunction_name: "SINGLE_EXTENSION_USAGES"
+      count: 1
+    }
+    evaluated_values {
+      skyfunction_name: "DIRECTORY_LISTING"
+      count: 6
+    }
+    evaluated_values {
+      skyfunction_name: "SINGLE_EXTENSION_EVAL"
+      count: 3
+    }
+    evaluated_values {
+      skyfunction_name: "IGNORED_SUBDIRECTORIES"
+      count: 12
+    }
+    evaluated_values {
+      skyfunction_name: "ACTION_EXECUTION"
+      count: 3
+    }
+    evaluated_values {
+      skyfunction_name: "CONTAINING_PACKAGE_LOOKUP"
+      count: 24
+    }
+    evaluated_values {
+      skyfunction_name: "BUILD_CONFIGURATION"
+      count: 5
+    }
+    evaluated_values {
+      skyfunction_name: "STARLARK_BUILTINS"
+      count: 2
+    }
+    evaluated_values {
+      skyfunction_name: "REPO_FILE"
+      count: 8
+    }
+    evaluated_values {
+      skyfunction_name: "PLATFORM"
+      count: 4
+    }
+    evaluated_values {
+      skyfunction_name: "TARGET_PATTERN"
+      count: 2
+    }
+    evaluated_values {
+      skyfunction_name: "BAZEL_MODULE_RESOLUTION"
+      count: 16
+    }
+    evaluated_values {
+      skyfunction_name: "BUILD_DRIVER"
+      count: 3
+    }
+    evaluated_values {
+      skyfunction_name: "SINGLE_EXTENSION"
+      count: 3
+    }
+    evaluated_values {
+      skyfunction_name: "PACKAGE"
+      count: 22
+    }
+    evaluated_values {
+      skyfunction_name: "REPO_SPEC"
+      count: 27
+    }
+    evaluated_values {
+      skyfunction_name: "REPO_PACKAGE_ARGS"
+      count: 3
+    }
+    evaluated_values {
+      skyfunction_name: "GLOBS"
+      count: 6
+    }
+    evaluated_values {
+      skyfunction_name: "TOOLCHAIN_RESOLUTION"
+      count: 2
+    }
+    evaluated_values {
+      skyfunction_name: "BUILD_CONFIGURATION_KEY"
+      count: 2
+    }
+    evaluated_values {
+      skyfunction_name: "FILE"
+      count: 230
+    }
+    evaluated_values {
+      skyfunction_name: "BZL_LOAD"
+      count: 66
+    }
+    evaluated_values {
+      skyfunction_name: "DIRECTORY_LISTING_STATE"
+      count: 3
+    }
+    evaluated_values {
+      skyfunction_name: "REPOSITORY_DIRECTORY"
+      count: 9
+    }
+    evaluated_values {
+      skyfunction_name: "CONFIGURED_TARGET"
+      count: 28
+    }
+    evaluated_values {
+      skyfunction_name: "BUILD_INFO"
+      count: 1
+    }
+    evaluated_values {
+      skyfunction_name: "REPO_DEFINITION"
+      count: 5
+    }
+    evaluated_values {
+      skyfunction_name: "LOCAL_REPOSITORY_LOOKUP"
+      count: 3
+    }
+    evaluated_values {
+      skyfunction_name: "REGISTERED_EXECUTION_PLATFORMS"
+      count: 1
+    }
+    evaluated_values {
+      skyfunction_name: "BAZEL_LOCK_FILE"
+      count: 4
+    }
+    evaluated_values {
+      skyfunction_name: "REPOSITORY_MAPPING"
+      count: 8
+    }
+    evaluated_values {
+      skyfunction_name: "CLIENT_ENVIRONMENT_VARIABLE"
+      count: 1
+    }
+    evaluated_values {
+      skyfunction_name: "PACKAGE_LOOKUP"
+      count: 49
+    }
+    evaluated_values {
+      skyfunction_name: "PLATFORM_MAPPING"
+      count: 2
+    }
+    evaluated_values {
+      skyfunction_name: "BAZEL_DEP_GRAPH"
+      count: 2
+    }
+    evaluated_values {
+      skyfunction_name: "ARTIFACT"
+      count: 4
+    }
+    evaluated_values {
+      skyfunction_name: "BASELINE_OPTIONS"
+      count: 1
+    }
+    evaluated_values {
+      skyfunction_name: "REPOSITORY_ENVIRONMENT_VARIABLE"
+      count: 1
+    }
+    evaluated_values {
+      skyfunction_name: "MODULE_FILE"
+      count: 171
+    }
+    evaluated_values {
+      skyfunction_name: "TARGET_COMPLETION"
+      count: 2
+    }
+    evaluated_values {
+      skyfunction_name: "PROJECT_FILES_LOOKUP"
+      count: 2
+    }
+    evaluated_values {
+      skyfunction_name: "FILE_STATE"
+      count: 93
+    }
+    evaluated_values {
+      skyfunction_name: "MODULE_EXTENSION_REPO_MAPPING_ENTRIES"
+      count: 1
+    }
+    evaluated_values {
+      skyfunction_name: "TARGET_PATTERN_PHASE"
+      count: 2
+    }
+    evaluated_values {
+      skyfunction_name: "REGISTRY"
+      count: 2
+    }
+    evaluated_values {
+      skyfunction_name: "SINGLE_EXTENSION_USAGES"
+      count: 1
+    }
+  }
+  network_metrics {
+    system_network_stats {
+      bytes_sent: 25091
+      bytes_recv: 72924
+      packets_sent: 191
+      packets_recv: 188
+      peak_bytes_sent_per_sec: 51778
+      peak_bytes_recv_per_sec: 180771
+      peak_packets_sent_per_sec: 351
+      peak_packets_recv_per_sec: 351
+    }
+  }
+  worker_pool_metrics {
+  }
+  dynamic_execution_metrics {
+  }
+  remote_analysis_cache_statistics {
+  }
+}
+}
+

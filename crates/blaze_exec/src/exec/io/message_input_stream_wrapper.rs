@@ -195,8 +195,8 @@ impl<T: JavaMessage> MessageInputStream<T> for JsonInputStreamWrapper<T> {
                 .ok_or_else(|| io::Error::other("Scanner closed"))?;
             let mut bytes = Vec::new();
             stream.read_to_end(&mut bytes)?;
-            // The Scanner's UTF-8 decoder replaces malformed input.
-            let text = String::from_utf8_lossy(&bytes);
+            // `new Scanner(stream, UTF_8)`: the JDK's UTF-8 decoder replaces malformed input.
+            let text = blaze_util::string_encoding::java_new_string_utf8(&bytes);
             self.tokens = Some(Self::tokenize(&text));
         }
         let Some(token) = self.tokens.as_mut().and_then(|t| t.pop_front()) else {

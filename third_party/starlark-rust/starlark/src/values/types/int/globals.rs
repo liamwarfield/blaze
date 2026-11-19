@@ -41,19 +41,13 @@ pub(crate) fn register_int(globals: &mut GlobalsBuilder) {
     /// `+Inf`, `-Inf`).
     /// If x is a `bool`, the result is 0 for `False` or 1 for `True`.
     ///
-    /// If x is a string, it is interpreted like a string literal;
-    /// an optional base prefix (`0`, `0b`, `0B`, `0x`, `0X`) determines which
-    /// base to use. The string may specify an arbitrarily large integer,
-    /// whereas true integer literals are restricted to 64 bits.
-    /// If a non-zero `base` argument is provided, the string is interpreted
-    /// in that base and no base prefix is permitted; the base argument may
-    /// specified by name.
-    ///
-    /// `int()` with no arguments returns 0.
+    /// If x is a string, it is parsed as Bazel's `StarlarkInt.parse` does (BLAZE PATCH 0044):
+    /// `base` defaults to 10; with `base = 0` a `0b`/`0o`/`0x` prefix determines the base, and a
+    /// prefix matching an explicit base is allowed. The string may specify an arbitrarily large
+    /// integer. `x` is required.
     ///
     /// ```
     /// # starlark::assert::all_true(r#"
-    /// int() == 0
     /// int(1) == 1
     /// int(False) == 0
     /// int(True) == 1
@@ -68,8 +62,8 @@ pub(crate) fn register_int(globals: &mut GlobalsBuilder) {
     /// int(2e9) == 2000000000
     /// # "#);
     /// # starlark::assert::fail(r#"
-    /// int("hello")   # error: Cannot parse
-    /// # "#, "Cannot parse");
+    /// int("hello")   # error: invalid base-10 literal
+    /// # "#, "invalid base-10 literal");
     /// # starlark::assert::fail(r#"
     /// int(float("nan"))   # error: cannot be represented as exact integer
     /// # "#, "cannot be represented as exact integer");
@@ -79,84 +73,25 @@ pub(crate) fn register_int(globals: &mut GlobalsBuilder) {
     /// ```
     #[starlark(as_type = PointerI32, speculative_exec_safe)]
     fn int<'v>(
-        #[starlark(require = pos)] a: Option<
-            ValueOf<'v, Either<Either<NumRef<'v>, bool>, &'v str>>,
-        >,
+        // BLAZE PATCH 0044: `x` is required (Java MethodLibrary.java:551-570: no default).
+        #[starlark(require = pos)] a: ValueOf<'v, Either<Either<NumRef<'v>, bool>, &'v str>>, // BLAZE PATCH 0044
         base: Option<i32>,
         heap: Heap<'v>,
     ) -> starlark::Result<ValueOfUnchecked<'v, StarlarkInt>> {
-        let Some(a) = a else {
-            return Ok(ValueOfUnchecked::new(heap.alloc(0)));
-        };
         let num_or_bool = match a.typed {
             Either::Left(num_or_bool) => num_or_bool,
-            Either::Right(s) => {
-                let base = base.unwrap_or(0);
-                if base == 1 || base < 0 || base > 36 {
-                    return Err(anyhow::anyhow!(
-                        "{} is not a valid base, int() base must be >= 2 and <= 36",
-                        base
-                    )
-                    .into());
-                }
-                let (negate, s) = {
-                    match s.chars().next() {
-                        Some('+') => (false, s.get(1..).unwrap()),
-                        Some('-') => (true, s.get(1..).unwrap()),
-                        _ => (false, s),
-                    }
-                };
-                let base = if base == 0 {
-                    match s.get(0..2) {
-                        Some("0b") | Some("0B") => 2,
-                        Some("0o") | Some("0O") => 8,
-                        Some("0x") | Some("0X") => 16,
-                        _ => 10,
-                    }
-                } else {
-                    base as u32
-                };
-                let s = match base {
-                    16 => {
-                        if s.starts_with("0x") || s.starts_with("0X") {
-                            s.get(2..).unwrap()
-                        } else {
-                            s
-                        }
-                    }
-                    8 => {
-                        if s.starts_with("0o") || s.starts_with("0O") {
-                            s.get(2..).unwrap()
-                        } else {
-                            s
-                        }
-                    }
-                    2 => {
-                        if s.starts_with("0b") || s.starts_with("0B") {
-                            s.get(2..).unwrap()
-                        } else {
-                            s
-                        }
-                    }
-                    _ => s,
-                };
-                // We already handled the sign above, so we are not trying to parse another sign.
-                if s.starts_with('-') || s.starts_with('+') {
-                    return Err(anyhow::anyhow!("Cannot parse `{}` as an integer", s,).into());
-                }
-
-                let x = StarlarkInt::from_str_radix(s, base)?;
-                let x = if negate { -x } else { x };
-                return Ok(ValueOfUnchecked::new(heap.alloc(x)));
-            }
+            // BLAZE PATCH 0044: Java MethodLibrary.intForStarlark (MethodLibrary.java:613):
+            // `StarlarkInt.parse(x, base)` with base 10 when unbound.
+            Either::Right(s) => { // BLAZE PATCH 0044
+                let x = java_parse_int(s, base.unwrap_or(10)) // BLAZE PATCH 0044
+                    .map_err(crate::Error::new_value)?; // BLAZE PATCH 0044
+                return Ok(ValueOfUnchecked::new(heap.alloc(x))); // BLAZE PATCH 0044
+            } // BLAZE PATCH 0044
         };
 
-        if let Some(base) = base {
-            return Err(anyhow::anyhow!(
-                "int() cannot convert non-string with explicit base '{}'",
-                base
-            )
-            .into());
+        if base.is_some() {
+            // BLAZE PATCH 0044: Java's text (MethodLibrary.java:624).
+            return Err(anyhow::anyhow!("can't convert non-string with explicit base").into()); // BLAZE PATCH 0044
         }
 
         match num_or_bool {
@@ -168,3 +103,71 @@ pub(crate) fn register_int(globals: &mut GlobalsBuilder) {
         }
     }
 }
+
+/// BLAZE PATCH 0044: Java `StarlarkInt.parse` (net/starlark/java/eval/StarlarkInt.java:99-168).
+/// Digits are Java's `Character.digit(c, base)`, which for chars up to U+00FF (every char of a
+/// Blaze internal string) is ASCII `0-9`, `a-z`, `A-Z` only; chars above U+00FF (other Unicode
+/// digits, which Java accepts) are rejected here.
+fn java_parse_int(s: &str, base: i32) -> anyhow::Result<StarlarkInt> { // BLAZE PATCH 0044
+    use num_bigint::BigInt; // BLAZE PATCH 0044
+    use num_traits::Num; // BLAZE PATCH 0044
+    let repr = |x: &str| { // BLAZE PATCH 0044
+        let mut r = String::new(); // BLAZE PATCH 0044
+        crate::values::types::string::repr::string_repr(x, &mut r); // BLAZE PATCH 0044
+        r // BLAZE PATCH 0044
+    }; // BLAZE PATCH 0044
+    let string_for_errors = s; // BLAZE PATCH 0044
+    if s.is_empty() { // BLAZE PATCH 0044
+        return Err(anyhow::anyhow!("empty string")); // BLAZE PATCH 0044
+    } // BLAZE PATCH 0044
+    let mut base = base; // BLAZE PATCH 0044
+    let (is_negative, s) = match s.as_bytes()[0] { // BLAZE PATCH 0044
+        b'+' => (false, &s[1..]), // BLAZE PATCH 0044
+        b'-' => (true, &s[1..]), // BLAZE PATCH 0044
+        _ => (false, s), // BLAZE PATCH 0044
+    }; // BLAZE PATCH 0044
+    let mut digits = s; // BLAZE PATCH 0044
+    let mut stripped = false; // BLAZE PATCH 0044
+    let mut chars = s.chars(); // BLAZE PATCH 0044
+    if let (Some('0'), Some(c)) = (chars.next(), chars.next()) { // BLAZE PATCH 0044
+        let prefix_base = match c { // BLAZE PATCH 0044
+            'b' | 'B' => 2, // BLAZE PATCH 0044
+            'o' | 'O' => 8, // BLAZE PATCH 0044
+            'x' | 'X' => 16, // BLAZE PATCH 0044
+            _ => 0, // BLAZE PATCH 0044
+        }; // BLAZE PATCH 0044
+        if prefix_base != 0 && (base == 0 || base == prefix_base) { // BLAZE PATCH 0044
+            base = prefix_base; // BLAZE PATCH 0044
+            digits = &s[2..]; // BLAZE PATCH 0044
+            stripped = true; // BLAZE PATCH 0044
+        } // BLAZE PATCH 0044
+    } // BLAZE PATCH 0044
+    if !stripped && base == 0 { // BLAZE PATCH 0044
+        // Don't infer base when input starts with '0' due to octal/decimal ambiguity.
+        if s.chars().count() > 1 && s.starts_with('0') { // BLAZE PATCH 0044
+            return Err(anyhow::anyhow!( // BLAZE PATCH 0044
+                "cannot infer base when string begins with a 0: {}", // BLAZE PATCH 0044
+                repr(string_for_errors) // BLAZE PATCH 0044
+            )); // BLAZE PATCH 0044
+        } // BLAZE PATCH 0044
+        base = 10; // BLAZE PATCH 0044
+    } // BLAZE PATCH 0044
+    if !(2..=36).contains(&base) { // BLAZE PATCH 0044
+        return Err(anyhow::anyhow!( // BLAZE PATCH 0044
+            "invalid base {base} (want 2 <= base <= 36)" // BLAZE PATCH 0044
+        )); // BLAZE PATCH 0044
+    } // BLAZE PATCH 0044
+    let invalid = || { // BLAZE PATCH 0044
+        anyhow::anyhow!("invalid base-{base} literal: {}", repr(string_for_errors)) // BLAZE PATCH 0044
+    }; // BLAZE PATCH 0044
+    // Java: Long.parseLong / new BigInteger: at least one digit, each `Character.digit >= 0`
+    // (their own sign was ruled out above).
+    if digits.is_empty() // BLAZE PATCH 0044
+        || !digits.chars().all(|c| c.is_ascii() && c.to_digit(base as u32).is_some()) // BLAZE PATCH 0044
+    { // BLAZE PATCH 0044
+        return Err(invalid()); // BLAZE PATCH 0044
+    } // BLAZE PATCH 0044
+    let value = BigInt::from_str_radix(digits, base as u32).map_err(|_| invalid())?; // BLAZE PATCH 0044
+    let value = if is_negative { -value } else { value }; // BLAZE PATCH 0044
+    Ok(StarlarkInt::from(value)) // BLAZE PATCH 0044
+} // BLAZE PATCH 0044

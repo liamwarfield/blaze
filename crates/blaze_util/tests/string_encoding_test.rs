@@ -280,51 +280,14 @@ fn java_new_string_utf8_matches_the_jdk() {
     assert_eq!((vectors, digests), (42, 2));
 }
 
-/// The migration seam, on both sides of the switch.
+// Byte-strings review 2026-11-20 S2-4. Java src/main/native/latin1_jni_path.cc:121-124 (and the
+// JDK's getString8859_1Chars) map each UTF-16 unit: <= U+00FF to that byte, others to `?`.
+// A patch header `+++ b/🐷.txt` names the file `??.txt` in Bazel.
 #[test]
-fn seam_functions_before_and_after_the_switch() {
-    use blaze_util::string_encoding::{
-        internal_length, internal_string_bytes, internal_string_from_bytes, to_internal,
-        with_strings_are_internal_for_testing,
-    };
-    // "é🐷" as its UTF-8 bytes, which is what Bazel holds (one Latin-1 char per byte).
-    let bytes = "é🐷".as_bytes();
-    let internal = latin1_decode(bytes).into_owned();
-
-    // Before: Blaze holds the Unicode string.
-    with_strings_are_internal_for_testing(false, || {
-        assert_eq!(to_internal("é🐷"), internal);
-        assert_eq!(&*internal_string_bytes("é🐷"), bytes);
-        assert_eq!(internal_string_from_bytes(bytes).unwrap(), "é🐷");
-        assert_eq!(internal_length("é🐷"), 6);
-        // Bytes that are not UTF-8 have no Unicode string.
-        assert!(internal_string_from_bytes(&[b'a', 0xff]).is_err());
-    });
-    // After: Blaze holds the internal string.
-    with_strings_are_internal_for_testing(true, || {
-        assert_eq!(to_internal(&internal), internal);
-        assert_eq!(&*internal_string_bytes(&internal), bytes);
-        assert_eq!(internal_string_from_bytes(bytes).unwrap(), internal);
-        assert_eq!(internal_length(&internal), 6);
-        assert_eq!(
-            internal_string_from_bytes(&[b'a', 0xff]).unwrap(),
-            "a\u{ff}"
-        );
-        assert_eq!(&*internal_string_bytes("a\u{ff}"), [b'a', 0xff]);
-    });
-    // ASCII is the same on both sides and is never copied.
-    for on in [false, true] {
-        with_strings_are_internal_for_testing(on, || {
-            assert!(matches!(to_internal("abc"), Cow::Borrowed("abc")));
-            assert!(matches!(
-                internal_string_bytes("abc"),
-                Cow::Borrowed(b"abc")
-            ));
-            assert!(matches!(
-                internal_string_from_bytes(b"abc"),
-                Ok(Cow::Borrowed("abc"))
-            ));
-            assert_eq!(internal_length("abc"), 3);
-        });
-    }
+fn jni_latin1_chars_is_per_utf16_unit() {
+    use blaze_util::string_encoding::jni_latin1_chars;
+    assert_eq!(&*jni_latin1_chars("🐷.txt"), b"??.txt");
+    assert_eq!(&*jni_latin1_chars("é中"), b"\xe9?");
+    assert_eq!(&*jni_latin1_chars("\u{c3}\u{a9}"), b"\xc3\xa9");
+    assert_eq!(&*jni_latin1_chars("abc"), b"abc");
 }

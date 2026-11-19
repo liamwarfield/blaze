@@ -1,0 +1,1 @@
+SYNTAX lex_int_00.star:1:7: invalid octal literal: 00 (use '0o0')

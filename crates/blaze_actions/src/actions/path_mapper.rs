@@ -108,8 +108,9 @@ pub trait PathMapper: Send + Sync {
 
     // Java: com/google/devtools/build/lib/actions/PathMapper.java:116 PathMapper.computeExecPathLengthDiff
     fn compute_exec_path_length_diff(&self, artifact: &Artifact) -> i32 {
-        artifact.get_exec_path_string().len() as i32
-            - self.get_mapped_exec_path_string(artifact).len() as i32
+        // Java `length()`: chars, one per byte of an internal string.
+        artifact.get_exec_path_string().chars().count() as i32
+            - self.get_mapped_exec_path_string(artifact).chars().count() as i32
     }
 
     /// Returns a `MapFn` that can be applied to an object to obtain its mapped string

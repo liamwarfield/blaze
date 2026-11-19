@@ -240,8 +240,19 @@ impl fmt::Display for EvalError {
 /// Message of a starlark-rust error without location or stack (Java `getMessage`).
 pub fn bare_message(e: &starlark::Error) -> String {
     match e.kind() {
-        // Stock `fail` prefixes a space ("fail: msg"); Blaze's `fail` does not.
-        starlark::ErrorKind::Fail(m) => m.to_string().trim_start().to_owned(),
+        // Java: net/starlark/java/eval/MethodLibrary.java:888 MethodLibrary.fail: the message is
+        // the printed arguments as they are. Blaze's `fail` marks its message; stock `fail`
+        // prefixes one space per argument (" msg"), the first of which is not part of it.
+        starlark::ErrorKind::Fail(m)
+            if m.downcast_ref::<crate::env::FailMessage>().is_some()
+                || m.downcast_ref::<crate::env::FailWithoutStack>().is_some() =>
+        {
+            m.to_string()
+        }
+        starlark::ErrorKind::Fail(m) => {
+            let m = m.to_string();
+            m.strip_prefix(' ').map(str::to_owned).unwrap_or(m)
+        }
         _ => format!("{:#}", e.without_diagnostic()),
     }
 }

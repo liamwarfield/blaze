@@ -44,10 +44,16 @@ pub struct JavaUri {
     raw_fragment: Option<String>,
 }
 
+/// `index` is a byte offset into `input`; Java's index counts chars (UTF-16 units).
 fn fail(reason: &str, input: &str, index: Option<usize>) -> UriSyntaxException {
     UriSyntaxException {
         message: match index {
-            Some(i) => format!("{} at index {}: {}", reason, i, input),
+            Some(i) => format!(
+                "{} at index {}: {}",
+                reason,
+                input.get(..i).map_or(i, |p| p.encode_utf16().count()),
+                input
+            ),
             None => format!("{}: {}", reason, input),
         },
     }
@@ -565,6 +571,28 @@ mod tests {
         assert_eq!(
             e.message,
             "Illegal character in path at index 14: http://a.com/b c"
+        );
+    }
+
+    // Byte-strings review 2026-11-20 S2-6. Expected values from `new java.net.URI(s)` (JDK 25):
+    // the index counts UTF-16 units. The internal string of `https://h/é x` has é as the two
+    // chars C3 A9 (index 12, not the UTF-8 byte offset 14); 🐷 is two units.
+    #[test]
+    fn syntax_error_index_counts_utf16_units() {
+        let e = JavaUri::create("https://h/\u{c3}\u{a9} x").unwrap_err();
+        assert_eq!(
+            e.message,
+            "Illegal character in path at index 12: https://h/\u{c3}\u{a9} x"
+        );
+        let e = JavaUri::create("http://a/🐷 x").unwrap_err();
+        assert_eq!(
+            e.message,
+            "Illegal character in path at index 11: http://a/🐷 x"
+        );
+        let e = JavaUri::create("f\u{c3}\u{a9}:///x").unwrap_err();
+        assert_eq!(
+            e.message,
+            "Illegal character in scheme name at index 1: f\u{c3}\u{a9}:///x"
         );
     }
 

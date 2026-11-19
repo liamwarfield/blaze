@@ -761,9 +761,9 @@ impl RemoteSpawnRunner {
             // default charset (ISO-8859-1): the Unicode proto message is written one byte per
             // char and `?` for a char above U+00FF.
             // Java: com/google/devtools/build/lib/util/io/OutErr.java:134 OutErr.printErr
-            let _ = out_err.write_err(&blaze_util::string_encoding::latin1_encode_lossy(
-                &format!("Remote server execution message: {message}\n"),
-            ));
+            let _ = out_err.write_err(&blaze_util::string_encoding::latin1_encode_lossy(&format!(
+                "Remote server execution message: {message}\n"
+            )));
         }
     }
 

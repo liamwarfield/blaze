@@ -1668,3 +1668,198 @@ fn patch_0036_repeat_limit_counts_chars() {
     );
     assert_eq!(eval_bytes(r#"r = len("é" * 3)"#, true), Ok(b"6".to_vec()));
 }
+
+/// Java Lexer.tokenize (Lexer.java:824-828) ignores tabs and carriage returns between tokens and
+/// inside brackets (newlineInsideExpression, :191); Lexer.computeIndentation (:217-220) rejects
+/// a tab anywhere in indentation, also on blank and comment-only lines and at the end of the
+/// file; a comment runs to the line feed (scanToNewline, :555). Expected values: Bazel's
+/// interpreter (tests/data/interp/lex_tab_*.latin1.txt, lex_cr_*.latin1.txt).
+#[test]
+fn patch_0037_lexer_whitespace() {
+    assert_eq!(eval("x =\t1\nr = x"), Ok("1".into()));
+    assert_eq!(eval("x = 1\t# c\nr = x"), Ok("1".into()));
+    assert_eq!(eval("r = [1,\n\t2]"), Ok("[1, 2]".into()));
+    assert_eq!(eval("x = 1 + \\\n\t2\nr = x"), Ok("3".into()));
+    assert_eq!(eval("x = 1 \r+ 2\nr = x"), Ok("3".into()));
+    assert_eq!(eval("x = 1  # a\rb\nr = x"), Ok("1".into()));
+    assert_eq!(eval("# a\rb\nr = 1"), Ok("1".into()));
+    assert_eq!(eval("x = 1\r\r\nr = x"), Ok("1".into()));
+    assert_eq!(eval("r = [1,\r2]"), Ok("[1, 2]".into()));
+    let tab = "Tab characters are not allowed for indentation. Use spaces instead.";
+    assert_eq!(
+        syntax_error("x = 1\n\t\nr = x\n"),
+        format!("t.bzl:2:2: {tab}")
+    );
+    assert_eq!(
+        syntax_error("x = 1\n\t# c\nr = x\n"),
+        format!("t.bzl:2:2: {tab}")
+    );
+    assert_eq!(syntax_error("r = 1\n\t"), format!("t.bzl:2:2: {tab}"));
+    assert_eq!(syntax_error("\t\nr = 1\n"), format!("t.bzl:1:2: {tab}"));
+    assert_eq!(
+        syntax_error("def f():\n\treturn 1\n"),
+        format!("t.bzl:2:2: {tab}")
+    );
+    // A lone CR is not a line end.
+    assert!(eval("x = 1\rr = x").is_err());
+}
+
+/// Java IntLiteral.scan (IntLiteral.java:69-84): no binary literals and no leading 0 ("invalid
+/// octal literal"); Lexer.scanNumberOrDotOrEllipsis (:1005-1008): "floating-point literal too
+/// large". Expected values: tests/data/interp/lex_binary_literal*.latin1.txt,
+/// lex_int_00.latin1.txt, lex_float_too_large.latin1.txt.
+#[test]
+fn patch_0038_number_literals() {
+    assert_eq!(
+        syntax_error("r = 0b101\n"),
+        "t.bzl:1:5: invalid octal literal: 0b101 (use '0ob101')"
+    );
+    assert_eq!(
+        syntax_error("r = 0B1\n"),
+        "t.bzl:1:5: invalid octal literal: 0B1 (use '0oB1')"
+    );
+    assert_eq!(
+        syntax_error("r = 00\n"),
+        "t.bzl:1:5: invalid octal literal: 00 (use '0o0')"
+    );
+    assert_eq!(
+        syntax_error("r = 1e999\n"),
+        "t.bzl:1:5: floating-point literal too large"
+    );
+    assert_eq!(
+        eval("r = (0o17, 0O17, 0x1F, 0XaB, 1., .5e1, 01.5, 0e0, 1e308)"),
+        Ok("(15, 15, 31, 171, 1.0, 5.0, 1.5, 0.0, 1e+308)".into())
+    );
+}
+
+/// Java's keywordMap (Lexer.java:569-599) has no `async` and `await`: they are identifiers.
+#[test]
+fn patch_0039_async_await_identifiers() {
+    assert_eq!(
+        eval("async = 1\nawait = 2\nr = (async, await)"),
+        Ok("(1, 2)".into())
+    );
+}
+
+/// Bazel has no bytes literals: `b"x"` is the identifier `b` and a string, a syntax error
+/// (tests/data/interp/lex_bytes_*.latin1.txt). Upstream dialects keep them.
+#[test]
+fn patch_0040_no_bytes_literals() {
+    for src in ["r = b\"abc\"\n", "r = rb\"abc\"\n", "r = br'abc'\n"] {
+        let e = AstModule::parse("t.bzl", src.to_owned(), &dialect::bzl_dialect()).unwrap_err();
+        assert!(
+            bare_message(&e).contains("unexpected string literal"),
+            "{src}: {}",
+            bare_message(&e)
+        );
+    }
+    assert!(
+        AstModule::parse(
+            "t.bzl",
+            "r = b\"abc\"\n".to_owned(),
+            &starlark::syntax::Dialect::Standard
+        )
+        .is_ok()
+    );
+}
+
+/// Java StringModule.substringIndices (StringModule.java:111-126): indices clamped, an end
+/// before the start is the start. Expected values: tests/data/interp/str_values.latin1.txt.
+#[test]
+fn patch_0041_string_index_clamping() {
+    assert_eq!(
+        eval(
+            "s = 'abc'\nr = (s.find('', 5), s.rfind('', 5), s.index('', 5), s.rindex('', 5), \
+             s.find('', 2, 1), s.rfind('', 2, 1), s.find('', -10), s.rfind('', -10, -20))"
+        ),
+        Ok("(3, 3, 3, 3, 2, 2, 0, 0)".into())
+    );
+    assert_eq!(
+        eval(
+            "s = 'abc'\nr = (s.count('', 2, 1), s.count('', 5), s.count(''), s.count('', -1), \
+             s.startswith('', 5), s.endswith('', 5), s.startswith('', 3, 1), \
+             s.endswith(('x', ''), 5), s.startswith('c', 2, 1), s.find('a', 1, 0))"
+        ),
+        Ok("(1, 1, 4, 2, True, True, True, True, False, -1)".into())
+    );
+}
+
+/// Java Starlark.slice (Starlark.java:692, :698): a `None` bound is the default.
+#[test]
+fn patch_0042_string_slice_none_bounds() {
+    assert_eq!(
+        eval("s = 'abc'\nr = (s[None:2], s[1:None], s[None:None:None], s[None:None:-1])"),
+        Ok("(\"ab\", \"bc\", \"abc\", \"cba\")".into())
+    );
+}
+
+/// Java StringModule has no `codepoints`.
+#[test]
+fn patch_0043_no_codepoints() {
+    assert!(eval("r = 'abc'.codepoints()").is_err());
+    assert_eq!(eval("r = 'codepoints' in dir('')"), Ok("False".into()));
+}
+
+/// Java MethodLibrary.intForStarlark (MethodLibrary.java:613) and StarlarkInt.parse
+/// (StarlarkInt.java:99-168). Expected values: tests/data/interp/str_int_*.latin1.txt,
+/// more_i_*.latin1.txt.
+#[test]
+fn patch_0044_int_parse() {
+    assert_eq!(
+        eval(
+            "r = (int('0x10', 0), int('0b11', 0), int('0o7', 0), int('10', 16), int('-0x10', 0), \
+             int('0b1', 16), int('z', 36), int('+7'), int('-0'), int('0', 0), int('-0o7', 0))"
+        ),
+        Ok("(16, 3, 7, 16, -16, 177, 35, 7, 0, 0, -7)".into())
+    );
+    for (src, want) in [
+        ("r = int('1_000')", "invalid base-10 literal: \"1_000\""),
+        ("r = int('f_f', 16)", "invalid base-16 literal: \"f_f\""),
+        ("r = int('0x10')", "invalid base-10 literal: \"0x10\""),
+        (
+            "r = int('010', 0)",
+            "cannot infer base when string begins with a 0: \"010\"",
+        ),
+        (
+            "r = int('00', 0)",
+            "cannot infer base when string begins with a 0: \"00\"",
+        ),
+        ("r = int('1', 1)", "invalid base 1 (want 2 <= base <= 36)"),
+        ("r = int('')", "empty string"),
+        ("r = int('0x-1', 16)", "invalid base-16 literal: \"0x-1\""),
+        (
+            "r = int(10, 2)",
+            "can't convert non-string with explicit base",
+        ),
+    ] {
+        assert_eq!(eval(src), Err(want.to_owned()), "{src}");
+    }
+    assert!(eval("r = int()").is_err());
+}
+
+/// Java FormatParser (FormatParser.java:85-100, :193): no `!r`/`!s` conversions (the whole field
+/// is the key); a field of digits and `-` is an index when Integer.parseInt accepts it.
+/// Expected values: tests/data/interp/str_format_*.latin1.txt, more_f_*.latin1.txt.
+#[test]
+fn patch_0045_format_fields() {
+    assert!(eval("r = '{!r}'.format(1)").is_err());
+    assert!(eval("r = '{0!r}'.format('a')").is_err());
+    assert!(eval("r = '{x!s}'.format(x = 1)").is_err());
+    assert_eq!(eval("r = '{a!r}'.format(**{'a!r': 1})"), Ok("\"1\"".into()));
+    assert_eq!(eval("r = '{-0}'.format('a')"), Ok("\"a\"".into()));
+    assert!(eval("r = '{-1}'.format('a')").is_err());
+    assert_eq!(
+        eval("r = '{99999999999}'.format(**{'99999999999': 7})"),
+        Ok("\"7\"".into())
+    );
+    assert_eq!(eval("r = '{-}'.format(**{'-': 8})"), Ok("\"8\"".into()));
+}
+
+/// Java StringModule.strip/lstrip/rstrip (StringModule.java:243-320): `chars` may be None.
+#[test]
+fn patch_0046_strip_none_chars() {
+    assert_eq!(
+        eval("r = (' a '.strip(None), ' a '.lstrip(None), ' a '.rstrip(None))"),
+        Ok("(\"a\", \"a \", \" a\")".into())
+    );
+}

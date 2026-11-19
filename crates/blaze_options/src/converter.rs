@@ -38,6 +38,25 @@ pub trait Converter: Send + Sync {
     fn is_bool_or_enum(&self) -> bool {
         false
     }
+
+    /// `getClass().getSimpleName()`. Blaze's converter types keep the Java class names
+    /// (PORTING.md "Names"), so this is the Rust type name without its path and generic
+    /// arguments; a converter whose Java class is anonymous overrides it with `""`.
+    fn java_simple_class_name(&self) -> &'static str {
+        let full = std::any::type_name::<Self>();
+        let without_generics = full.split('<').next().unwrap_or(full);
+        let rust_name = without_generics
+            .rsplit("::")
+            .next()
+            .unwrap_or(without_generics);
+        nested_java_converter_simple_name(rust_name).unwrap_or(rust_name)
+    }
+
+    /// For `converter instanceof EnumConverter`: `getEnumType().getEnumConstants()`, each
+    /// constant's `toString()`; `None` for other converters.
+    fn enum_type_constants(&self) -> Option<Vec<String>> {
+        None
+    }
 }
 
 /// Java dereferences the (non-null) input of contextless converters; a `null` input is a
@@ -47,4 +66,56 @@ pub fn non_null(input: Option<&str>) -> &str {
         Some(s) => s,
         None => panic!("NullPointerException: converter input is null"),
     }
+}
+
+/// Converters whose Java class is a nested class: PORTING.md names them `OuterInner`, while
+/// Java's `getSimpleName()` is `Inner`. Each entry is (Rust name, Java simple name), from the
+/// Java sources at the pin (e.g. `CompilationMode.Converter`, `PackageOptions.OptionConverter`
+/// of `LazyMacroExpansionPackages`, `ResourceConverter.AssignmentConverter`).
+const NESTED_JAVA_CONVERTERS: &[(&str, &str)] = &[
+    // com/google/devtools/build/lib/outputfilter/AutoOutputFilter.java AutoOutputFilter.Converter
+    ("AutoOutputFilterConverter", "Converter"),
+    // com/google/devtools/build/lib/bazel/repository/RepositoryOptions.java
+    ("BazelCompatibilityModeConverter", "Converter"),
+    ("CheckDirectDepsModeConverter", "Converter"),
+    ("LockfileModeConverter", "Converter"),
+    ("RequireRepoExtensionMetadataModeConverter", "Converter"),
+    // com/google/devtools/build/lib/analysis/test/TestConfiguration.java CancelConcurrentTests.Converter
+    ("CancelConcurrentTestsConverter", "Converter"),
+    // com/google/devtools/build/lib/remote/options/RemoteOptions.java
+    ("ChunkingFunctionValueConverter", "Converter"),
+    ("CircuitBreakerStrategyConverter", "Converter"),
+    ("ConcurrentChangesCheckLevelConverter", "Converter"),
+    ("ExecutionMessagePrintModeConverter", "Converter"),
+    // com/google/devtools/build/lib/analysis/config/CompilationMode.java CompilationMode.Converter
+    ("CompilationModeConverter", "Converter"),
+    // com/google/devtools/build/lib/analysis/config/ExecutionInfoModifier.java ExecutionInfoModifier.Converter
+    ("ExecutionInfoModifierConverter", "Converter"),
+    // com/google/devtools/build/lib/profiler/MemoryProfiler.java MemoryProfileStableHeapParameters.Converter
+    ("MemoryProfileStableHeapParametersConverter", "Converter"),
+    // com/google/devtools/build/lib/exec/ExecutionOptions.java
+    ("TestOutputFormatConverter", "Converter"),
+    ("TestSummaryFormatConverter", "Converter"),
+    // com/google/devtools/build/lib/runtime/CommandLineEvent.java ToolCommandLineEvent.Converter
+    ("ToolCommandLineEventConverter", "Converter"),
+    // com/google/devtools/build/lib/packages/semantics/BuildLanguageOptions.java Utf8EnforcementMode.Converter
+    ("Utf8EnforcementModeConverter", "Converter"),
+    // com/google/devtools/build/lib/pkgcache/PackageOptions.java:281 LazyMacroExpansionPackages.OptionConverter
+    (
+        "LazyMacroExpansionPackagesOptionConverter",
+        "OptionConverter",
+    ),
+    // com/google/devtools/build/lib/util/ResourceConverter.java:57 ResourceConverter.AssignmentConverter
+    (
+        "ResourceConverterAssignmentConverter",
+        "AssignmentConverter",
+    ),
+];
+
+/// The Java simple name of a converter whose Java class is nested (see `NESTED_JAVA_CONVERTERS`).
+pub fn nested_java_converter_simple_name(rust_name: &str) -> Option<&'static str> {
+    NESTED_JAVA_CONVERTERS
+        .iter()
+        .find(|(rust, _)| *rust == rust_name)
+        .map(|(_, java)| *java)
 }

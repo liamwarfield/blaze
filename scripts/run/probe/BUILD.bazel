@@ -1,0 +1,43 @@
+# Probe package for scripts/run/compare: copied into the work copies of the corpus projects as
+# //blaze_run_probe. Identical input for the oracle and for Blaze.
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
+
+# Prints its arguments, the BUILD_* variables, the working directory and the runfiles variables.
+cc_binary(
+    name = "printenv",
+    srcs = ["printenv.c"],
+    args = ["from_args_attr"],
+    data = ["data.txt"],
+)
+
+# Exits with code 3 after printing one line.
+cc_binary(
+    name = "exit3",
+    srcs = ["exit3.c"],
+)
+
+# --run_under target: prints a marker and its argument count, then execs the rest of its argv.
+cc_binary(
+    name = "wrapper",
+    srcs = ["wrapper.c"],
+)
+
+# Does not compile.
+cc_binary(
+    name = "broken",
+    srcs = ["broken.c"],
+)
+
+# Not executable.
+filegroup(
+    name = "notexec",
+    srcs = ["data.txt"],
+)
+
+# A test target run through `run`: prints the test environment it sees.
+cc_test(
+    name = "envtest",
+    srcs = ["printenv.c"],
+    data = ["data.txt"],
+)

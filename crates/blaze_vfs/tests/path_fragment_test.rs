@@ -5,6 +5,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+use blaze_util::string_encoding::{latin1_decode, unicode_to_internal};
 use blaze_vfs::PathFragment;
 
 fn create(s: &str) -> PathFragment {
@@ -633,8 +634,13 @@ fn test_starts_with() {
     // (path, different case) => false
     assert!(!foobar.starts_with(&create("/Foo/bar")));
     assert!(!foobar.starts_with(&create("/Foo")));
-    assert!(!create("/ÄÖÜ/bar").starts_with(&create("/äöü")));
-    assert!(!create("ÄÖÜ/bar").starts_with(&create("äöü")));
+    assert!(
+        !create(&unicode_to_internal("/ÄÖÜ/bar"))
+            .starts_with(&create(&unicode_to_internal("/äöü")))
+    );
+    assert!(
+        !create(&unicode_to_internal("ÄÖÜ/bar")).starts_with(&create(&unicode_to_internal("äöü")))
+    );
 }
 
 #[test]
@@ -669,8 +675,26 @@ fn test_starts_with_ignoring_case() {
     // (path, different case) => true
     assert!(foobar.starts_with_ignoring_case(&create("/Foo/bar")));
     assert!(foobar.starts_with_ignoring_case(&create("/Foo")));
-    assert!(create("/ÄÖÜ/bar").starts_with_ignoring_case(&create("/äöü")));
-    assert!(create("ÄÖÜ/bar").starts_with_ignoring_case(&create("äöü")));
+    assert!(
+        create(&unicode_to_internal("/ÄÖÜ/bar"))
+            .starts_with_ignoring_case(&create(&unicode_to_internal("/äöü")))
+    );
+    assert!(
+        create(&unicode_to_internal("ÄÖÜ/bar"))
+            .starts_with_ignoring_case(&create(&unicode_to_internal("äöü")))
+    );
+
+    // Byte-strings review 2026-11-20 S2-2 (Java PathFragment.java:442-443 converts both paths
+    // with internalToUnicode first): `/inc/é` starts with `/inc/É`; the bytes E3 A9 do not
+    // start with C3 A9 although U+00E3 and U+00C3 are the two cases of one Latin-1 char.
+    assert!(
+        create(&latin1_decode("/inc/é".as_bytes()))
+            .starts_with_ignoring_case(&create(&latin1_decode("/inc/É".as_bytes())))
+    );
+    assert!(
+        !create(&latin1_decode(b"/inc/\xe3\xa9"))
+            .starts_with_ignoring_case(&create(&latin1_decode(b"/inc/\xc3\xa9")))
+    );
 }
 
 fn to_paths_set(strs: &[&str]) -> Vec<PathFragment> {

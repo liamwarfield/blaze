@@ -1,0 +1,2 @@
+SYNTAX lex_backtick.star:1:5: invalid character: '`'
+SYNTAX lex_backtick.star:1:7: invalid character: '`'

@@ -124,6 +124,20 @@ impl std::fmt::Display for FailWithoutStack {
 
 impl std::error::Error for FailWithoutStack {}
 
+/// Marker in a `fail()` error with the stack trace (Java `EvalException` from
+/// MethodLibrary.fail): the message is exactly what `fail` printed, leading whitespace included
+/// (starlark-rust's own `fail` prefixes a space, which `error::bare_message` removes).
+#[derive(Debug)]
+pub struct FailMessage(pub String);
+
+impl std::fmt::Display for FailMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for FailMessage {}
+
 /// The `(` of the innermost call: Java `StarlarkThread.getCallerLocation()` for a builtin.
 pub fn caller_location(eval: &Evaluator) -> Option<Location> {
     eval.call_stack_top_location()
@@ -194,7 +208,7 @@ fn register_print_fail(builder: &mut GlobalsBuilder) {
             need_sep = true;
         }
         let e = if include_stack {
-            anyhow::anyhow!("{out}")
+            anyhow::Error::new(FailMessage(out))
         } else {
             anyhow::Error::new(FailWithoutStack(out))
         };

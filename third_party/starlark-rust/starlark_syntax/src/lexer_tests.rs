@@ -134,11 +134,12 @@ fn test_int_lit() {
         r#"
 0 123
 0x7F 0x7d
-0B1011 0b1010
 0o755 0O753
 "#,
     );
     // Starlark requires us to ban leading zeros (confusion with implicit octal)
+    // BLAZE PATCH 0038: and Bazel has no binary literals (`0b...`, tested in starlark_conformance
+    // patch_0038_number_literals); the binary literals of this input were removed.
     lexer_fail_golden_test("int_lit", &["x = 01"]);
 }
 

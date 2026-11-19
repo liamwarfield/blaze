@@ -608,6 +608,39 @@ pub fn labels_to_targets(
     Ok(Some(builder))
 }
 
+// Java: com/google/devtools/build/lib/skyframe/TargetPatternPhaseValue.java:66 TargetPatternPhaseValue.getTargetsFromLabels
+fn get_targets_from_labels(
+    labels: &IndexSet<Label>,
+    event_handler: Arc<dyn blaze_events::ExtendedEventHandler>,
+    package_manager: &blaze_sky_loading::package_manager::SkyframePackageManager,
+) -> Result<Vec<Target>, blaze_skyframe::Interrupted> {
+    use blaze_sky_loading::package_manager::NoSuchPackageOrInterrupted;
+    let mut result: Vec<Target> = Vec::with_capacity(labels.len());
+    for label in labels {
+        let package = match package_manager
+            .get_package(event_handler.clone(), label.get_package_identifier())
+        {
+            Ok(package) => package,
+            Err(NoSuchPackageOrInterrupted::Interrupted) => {
+                return Err(blaze_skyframe::Interrupted);
+            }
+            Err(NoSuchPackageOrInterrupted::NoSuchPackage(e)) => panic!(
+                "IllegalStateException: Failed to get preloaded package from \
+                     TargetPatternPhaseValue for {label}: {e}"
+            ),
+        };
+        match package.get_target(label.get_name()) {
+            // ImmutableSet.Builder: a label appears once in targetLabels.
+            Ok(target) => result.push(target.clone()),
+            Err(e) => panic!(
+                "IllegalStateException: Failed to get preloaded package from \
+                 TargetPatternPhaseValue for {label}: {e}"
+            ),
+        }
+    }
+    Ok(result)
+}
+
 // -------------------------------------------------------------------------------------------
 // TARGET_PATTERN_PHASE.
 
@@ -726,6 +759,17 @@ impl TargetPatternPhaseValue {
     // Java: com/google/devtools/build/lib/skyframe/TargetPatternPhaseValue.java:96 TargetPatternPhaseValue.getNonExpandedLabels
     pub fn get_non_expanded_labels(&self) -> &IndexSet<Label> {
         &self.non_expanded_labels
+    }
+
+    /// The targets of [`Self::get_target_labels`], from the (already loaded) packages.
+    /// `Err(Interrupted)` where Java throws `InterruptedException`.
+    // Java: com/google/devtools/build/lib/skyframe/TargetPatternPhaseValue.java:84 TargetPatternPhaseValue.getTargets
+    pub fn get_targets(
+        &self,
+        event_handler: Arc<dyn blaze_events::ExtendedEventHandler>,
+        package_manager: &blaze_sky_loading::package_manager::SkyframePackageManager,
+    ) -> Result<Vec<Target>, blaze_skyframe::Interrupted> {
+        get_targets_from_labels(&self.target_labels, event_handler, package_manager)
     }
 
     // Java: com/google/devtools/build/lib/skyframe/TargetPatternPhaseValue.java:119 TargetPatternPhaseValue.hasError

@@ -15,3 +15,9 @@ pub mod bep;
 pub mod build;
 pub mod mod_command;
 pub mod target_patterns_helper;
+// run.
+pub mod run;
+// cmds implementer: license, canonicalize-flags, fetch.
+pub mod canonicalize;
+pub mod fetch;
+pub mod license;

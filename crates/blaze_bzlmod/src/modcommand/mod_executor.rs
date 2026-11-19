@@ -339,10 +339,22 @@ impl<'a> ModExecutor<'a> {
         self.output(&result);
     }
 
-    /// Needs `RepoDefinitionValue` and `RepoOutputFormatter`, which are not ported.
+    /// `target_repo_definitions` maps each argument to its repo; `backend` holds the evaluated
+    /// `RepoDefinitionValue`s and prints them (`RepoOutputFormatter`).
     // Java: com/google/devtools/build/lib/bazel/bzlmod/modcommand/ModExecutor.java:174 ModExecutor.showRepo
-    pub fn show_repo(&mut self) {
-        blaze_util::unported!("ModExecutor.showRepo")
+    pub fn show_repo(
+        &mut self,
+        target_repo_definitions: &IndexMap<String, blaze_cmdline::RepositoryName>,
+        backend: &dyn super::mod_command::ShowRepoBackend,
+    ) {
+        let output_format = self.options.output_format;
+        for (key, repo) in target_repo_definitions {
+            backend.print(&mut self.printer, output_format, key, repo);
+        }
+
+        // Ignore IOException like PrintWriter.
+        let _ = self.printer.output_stream().flush();
+        self.printer.flush();
     }
 
     // Java: com/google/devtools/build/lib/bazel/bzlmod/modcommand/ModExecutor.java:188 ModExecutor.showExtension

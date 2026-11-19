@@ -1,0 +1,1 @@
+SYNTAX lex_cr_lone_eol.star:1:7: syntax error at 'print': expected newline

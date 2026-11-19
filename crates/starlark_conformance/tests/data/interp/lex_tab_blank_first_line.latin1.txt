@@ -1,0 +1,1 @@
+SYNTAX lex_tab_blank_first_line.star:1:2: Tab characters are not allowed for indentation. Use spaces instead.

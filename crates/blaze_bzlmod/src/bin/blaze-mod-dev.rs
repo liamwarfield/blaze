@@ -154,6 +154,20 @@ fn real_main() -> i32 {
         Ok(r) => r,
         Err(r) => return exit_code(&r),
     };
+    if matches!(
+        request.subcommand,
+        blaze_optdefs::misc::mod_options::ModSubcommand::DUMP_REPO_MAPPING
+            | blaze_optdefs::misc::mod_options::ModSubcommand::TIDY
+            | blaze_optdefs::misc::mod_options::ModSubcommand::SHOW_REPO
+    ) {
+        // This development binary registers only the Bzlmod functions (no repository rules,
+        // repository mappings or module extension evaluation); `blaze mod` runs these.
+        blaze_util::unported!(
+            "ModCommand.execInternal",
+            "{:?} in blaze-mod-dev (use `blaze mod`)",
+            request.subcommand
+        );
+    }
 
     // PORT: BuildLanguageOptions.toStarlarkSemantics is not wired yet; Bazel's defaults.
     let semantics = StarlarkSemantics::default();
@@ -244,6 +258,7 @@ fn real_main() -> i32 {
             &inspector,
             reporter.as_ref(),
             &mut out,
+            None,
         );
         out.flush().ok();
         exit_code(&r)
@@ -256,5 +271,7 @@ fn exit_code(r: &ModCommandResult) -> i32 {
     match r {
         ModCommandResult::Success => 0,
         ModCommandResult::Failure { exit_code, .. } => *exit_code,
+        // ExitCode.INTERRUPTED
+        ModCommandResult::Interrupted { .. } => 8,
     }
 }

@@ -1,0 +1,1 @@
+SYNTAX lex_exp_no_digits.star:1:7: invalid float literal

@@ -500,13 +500,16 @@ fn is_retryable_exception(e: &IoException) -> bool {
 }
 
 /// The complement of a conservative range of characters valid for all reasonable file systems.
+// Java: com/google/devtools/build/lib/bazel/repository/downloader/DownloadManager.java:515
+// FS_UNSAFE_CHARS.replaceFrom(basename, '_'): Guava's CharMatcher works on UTF-16 units, so a
+// char above U+FFFF becomes two `_`.
 fn replace_fs_unsafe_chars(s: &str) -> String {
     s.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || ".-_".contains(c) {
-                c
+                c.to_string()
             } else {
-                '_'
+                "_".repeat(c.len_utf16())
             }
         })
         .collect()
@@ -567,5 +570,15 @@ fn get_url_base_name(url: &JavaUri) -> String {
     match path {
         None => String::new(),
         Some(p) => PathFragment::create(&p).get_base_name().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod byte_strings_tests {
+    // Byte-strings review 2026-11-20 S2-4: Guava's CharMatcher.replaceFrom
+    // (DownloadManager.java:535) replaces each UTF-16 unit, so `🐷` becomes `__`.
+    #[test]
+    fn replace_fs_unsafe_chars_is_per_utf16_unit() {
+        assert_eq!(super::replace_fs_unsafe_chars("a🐷é.tar"), "a___.tar");
     }
 }

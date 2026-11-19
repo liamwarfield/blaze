@@ -1,0 +1,3 @@
+SYNTAX lex_dedent_mismatch.star:3:2: indentation error
+SYNTAX lex_dedent_mismatch.star:3:3: return statements must be inside a function
+SYNTAX lex_dedent_mismatch.star:3:10: name 'x' is not defined

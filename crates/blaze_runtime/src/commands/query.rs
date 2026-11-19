@@ -106,6 +106,40 @@ pub(crate) fn create_skyframe_executor_reporting_to(
     execution: Option<blaze_sky_top::execution_phase::ExecutionSetup>,
     event_handler: Arc<dyn ExtendedEventHandler>,
 ) -> Result<SkyframeExecutor, BlazeCommandResult> {
+    create_skyframe_executor_internal(
+        env,
+        options,
+        top_level_build_options,
+        execution,
+        event_handler,
+        Default::default(),
+    )
+}
+
+/// [`create_skyframe_executor`] with the repository precomputed values a command injects
+/// (Java `env.getSkyframeExecutor().injectExtraPrecomputedValues`, e.g. `fetch --force`).
+pub(crate) fn create_skyframe_executor_with_repo_precomputed(
+    env: &CommandEnvironment,
+    repo_precomputed: blaze_repo_rules::registration::RepoPrecomputedValues,
+) -> Result<SkyframeExecutor, BlazeCommandResult> {
+    create_skyframe_executor_internal(
+        env,
+        env.get_options().clone(),
+        None,
+        None,
+        reporter(env),
+        repo_precomputed,
+    )
+}
+
+fn create_skyframe_executor_internal(
+    env: &CommandEnvironment,
+    options: Arc<OptionsParsingResult>,
+    top_level_build_options: Option<BuildOptions>,
+    execution: Option<blaze_sky_top::execution_phase::ExecutionSetup>,
+    event_handler: Arc<dyn ExtendedEventHandler>,
+    repo_precomputed: blaze_repo_rules::registration::RepoPrecomputedValues,
+) -> Result<SkyframeExecutor, BlazeCommandResult> {
     let keep_going = options
         .get_options::<KeepGoingOption>()
         .map(|o| o.keep_going)
@@ -127,7 +161,7 @@ pub(crate) fn create_skyframe_executor_reporting_to(
         client_env: env.get_client_env().clone(),
         repo_env: env.get_repo_env().clone(),
         nonstrict_repo_env: env.get_nonstrict_repo_env().clone(),
-        repo_precomputed: Default::default(),
+        repo_precomputed,
         execution,
         keep_going,
         top_level_build_options,

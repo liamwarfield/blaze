@@ -70,7 +70,8 @@ pub enum LexemeError {
     Indentation,
     #[error("Parse error: invalid input `{0}`")]
     InvalidInput(String),
-    #[error("Parse error: tabs are not allowed")]
+    // BLAZE PATCH 0037: Java's text (net/starlark/java/syntax/Lexer.java:220).
+    #[error("Tab characters are not allowed for indentation. Use spaces instead.")] // BLAZE PATCH 0037
     InvalidTab,
     #[error("unclosed string literal")] // BLAZE PATCH 0032: Java's text (Lexer.java:301)
     UnfinishedStringLiteral,
@@ -95,6 +96,11 @@ pub enum LexemeError {
     CannotParse(String, u32),
     #[error("Parse error: f-string expression is missing closing `}}`")]
     UnfinishedFStringExpression,
+    // BLAZE PATCH 0038: Java's texts (net/starlark/java/syntax/IntLiteral.java:82, Lexer.java:1007).
+    #[error("invalid octal literal: {0} (use '0o{1}')")] // BLAZE PATCH 0038
+    BlazeInvalidOctalLiteral(String, String), // BLAZE PATCH 0038
+    #[error("floating-point literal too large")] // BLAZE PATCH 0038
+    BlazeFloatTooLarge, // BLAZE PATCH 0038
 }
 
 impl From<LexemeError> for crate::error::Error {
@@ -138,10 +144,12 @@ pub struct Lexer<'a> {
     done: bool,
     /// Stack of f-string states (for nested f-strings).
     fstring_stack: Vec<FStringState>,
+    /// BLAZE PATCH 0040: `Dialect::enable_bytes_literals`.
+    bytes_literals: bool, // BLAZE PATCH 0040
 }
 
 impl<'a> Lexer<'a> {
-    pub fn new(input: &'a str, _dialect: &Dialect, codemap: CodeMap) -> Self {
+    pub fn new(input: &'a str, dialect: &Dialect, codemap: CodeMap) -> Self { // BLAZE PATCH 0040
         let lexer = Token::lexer(input);
         let mut lexer2 = Self {
             codemap,
@@ -152,6 +160,7 @@ impl<'a> Lexer<'a> {
             parens: 0,
             done: false,
             fstring_stack: Vec::new(),
+            bytes_literals: dialect.enable_bytes_literals, // BLAZE PATCH 0040
         };
         if let Err(e) = lexer2.calculate_indent() {
             lexer2.buffer.push_back(Err(e));
@@ -207,11 +216,20 @@ impl<'a> Lexer<'a> {
         let mut it = CursorBytes::new(self.lexer.remainder());
         let mut spaces = 0;
         let mut tabs = 0;
+        // BLAZE PATCH 0037: Java Lexer.computeIndentation (Lexer.java:217-220) reports a tab
+        // anywhere in the indentation it skips, including blank lines, lines holding only a
+        // comment, and trailing whitespace at the end of the file; at the position after the
+        // first tab.
+        let mut first_tab: Option<usize> = None; // BLAZE PATCH 0037
+        let indent_scan_start = self.lexer.span().end; // BLAZE PATCH 0037
         let mut indent_start = self.lexer.span().end;
         loop {
             match it.next_char() {
                 None => {
                     self.lexer.bump(it.pos());
+                    if let Some(at) = first_tab { // BLAZE PATCH 0037
+                        return self.err_pos(LexemeError::InvalidTab, at); // BLAZE PATCH 0037
+                    } // BLAZE PATCH 0037
                     return Ok(());
                 }
                 Some(' ') => {
@@ -219,11 +237,17 @@ impl<'a> Lexer<'a> {
                 }
                 Some('\t') => {
                     tabs += 1;
+                    if first_tab.is_none() { // BLAZE PATCH 0037
+                        first_tab = Some(indent_scan_start + it.pos()); // BLAZE PATCH 0037
+                    } // BLAZE PATCH 0037
                 }
                 Some('\n') => {
                     // A line that is entirely blank gets emitted as a newline, and then
                     // we don't consume the subsequent newline character.
                     self.lexer.bump(it.pos() - 1);
+                    if let Some(at) = first_tab { // BLAZE PATCH 0037
+                        return self.err_pos(LexemeError::InvalidTab, at); // BLAZE PATCH 0037
+                    } // BLAZE PATCH 0037
                     return Ok(());
                 }
                 Some('\r') => {
@@ -257,8 +281,8 @@ impl<'a> Lexer<'a> {
         }
         self.lexer.bump(it.pos() - 1); // last character broke us out the loop
         let indent = spaces + tabs * 8;
-        if tabs > 0 {
-            return self.err_pos(LexemeError::InvalidTab, self.lexer.span().start);
+        if let Some(at) = first_tab { // BLAZE PATCH 0037
+            return self.err_pos(LexemeError::InvalidTab, at); // BLAZE PATCH 0037
         }
         let now = self.indent_levels.last().copied().unwrap_or(0);
 
@@ -806,15 +830,11 @@ impl<'a> Lexer<'a> {
                                 self.wrap(Token::Newline)
                             }
                             Some(Ok(token)) => match token {
-                                Token::Tabs => {
-                                    self.buffer.push_back(
-                                        self.err_pos(
-                                            LexemeError::InvalidTab,
-                                            self.lexer.span().start,
-                                        ),
-                                    );
-                                    continue;
-                                }
+                                // BLAZE PATCH 0037: a tab between tokens is ignored, as a space
+                                // (Java Lexer.tokenize, Lexer.java:824-828; inside brackets
+                                // newlineInsideExpression, :191). Tabs in indentation are
+                                // checked by `calculate_indent`.
+                                Token::Tabs => continue, // BLAZE PATCH 0037
                                 Token::Newline => {
                                     if self.parens == 0 && !self.in_fstring_expr_mode() {
                                         let span = self.lexer.span();
@@ -830,7 +850,11 @@ impl<'a> Lexer<'a> {
                                 Token::RawDecInt => {
                                     let s = self.lexer.slice();
                                     if s.len() > 1 && &s[0..1] == "0" {
-                                        return Some(self.err_now(LexemeError::StartsZero));
+                                        // BLAZE PATCH 0038: Java IntLiteral.scan (IntLiteral.java:82).
+                                        return Some(self.err_now(|s| { // BLAZE PATCH 0038
+                                            let rest = s[1..].to_owned(); // BLAZE PATCH 0038
+                                            LexemeError::BlazeInvalidOctalLiteral(s, rest) // BLAZE PATCH 0038
+                                        })); // BLAZE PATCH 0038
                                     }
                                     Some(self.int(s, 10))
                                 }
@@ -844,11 +868,18 @@ impl<'a> Lexer<'a> {
                                     assert!(s.starts_with("0x") || s.starts_with("0X"));
                                     Some(self.int(&s[2..], 16))
                                 }
-                                Token::RawBinInt => {
-                                    let s = self.lexer.slice();
-                                    assert!(s.starts_with("0b") || s.starts_with("0B"));
-                                    Some(self.int(&s[2..], 2))
-                                }
+                                // BLAZE PATCH 0038: Bazel has no binary literals: its lexer scans
+                                // `0b101` (Lexer.java:945-953) and IntLiteral.scan rejects every
+                                // `0` prefix but `0x`/`0o` (IntLiteral.java:69-84).
+                                Token::RawBinInt => Some(self.err_now(|s| { // BLAZE PATCH 0038
+                                    let rest = s[1..].to_owned(); // BLAZE PATCH 0038
+                                    LexemeError::BlazeInvalidOctalLiteral(s, rest) // BLAZE PATCH 0038
+                                })), // BLAZE PATCH 0038
+                                // BLAZE PATCH 0038: Java Lexer.scanNumberOrDotOrEllipsis
+                                // (Lexer.java:1005-1008): a float literal that is not finite.
+                                Token::Float(f) if !f.is_finite() => { // BLAZE PATCH 0038
+                                    Some(self.err_now(|_| LexemeError::BlazeFloatTooLarge)) // BLAZE PATCH 0038
+                                } // BLAZE PATCH 0038
                                 Token::Int(..) => unreachable!("Lexer does not produce Int tokens"),
                                 Token::RawDoubleQuote => {
                                     let raw = self.lexer.span().len() == 2;
@@ -910,6 +941,14 @@ impl<'a> Lexer<'a> {
                                         }
                                     }
                                     self.wrap(token)
+                                }
+                                // BLAZE PATCH 0040: without bytes literals, the prefix is an
+                                // identifier and the quote starts an ordinary string literal
+                                // (Java Lexer.java:855-877).
+                                Token::RawByteDoubleQuote | Token::RawByteSingleQuote // BLAZE PATCH 0040
+                                    if !self.bytes_literals => // BLAZE PATCH 0040
+                                {
+                                    Some(self.bytes_prefix_as_identifier()) // BLAZE PATCH 0040
                                 }
                                 Token::RawByteDoubleQuote => {
                                     // span len: b" = 2, br" = 3, rb" = 3
@@ -983,6 +1022,26 @@ impl<'a> Lexer<'a> {
             };
         }
     }
+
+    /// BLAZE PATCH 0040: the current `b"` / `br"` / `rb"` token (and its single-quote forms) as
+    /// Bazel's lexer reads it: an identifier (`b`, `br`, `rb`), then a non-raw string literal
+    /// opened by the quote (queued in `buffer`).
+    fn bytes_prefix_as_identifier(&mut self) -> Lexeme { // BLAZE PATCH 0040
+        let span = self.lexer.span(); // BLAZE PATCH 0040
+        let slice = self.lexer.slice(); // BLAZE PATCH 0040
+        let ident = slice[..slice.len() - 1].to_owned(); // BLAZE PATCH 0040
+        let string = if slice.ends_with('"') { // BLAZE PATCH 0040
+            self.parse_double_quoted_string(false) // BLAZE PATCH 0040
+        } else { // BLAZE PATCH 0040
+            self.parse_single_quoted_string(false) // BLAZE PATCH 0040
+        }; // BLAZE PATCH 0040
+        if let Some(string) = string { // BLAZE PATCH 0040
+            let string = map_lexeme_t(string, |(s, _offset)| Token::String(s)) // BLAZE PATCH 0040
+                .map(|(_, t, r)| (span.end - 1, t, r)); // BLAZE PATCH 0040
+            self.buffer.push_back(string); // BLAZE PATCH 0040
+        } // BLAZE PATCH 0040
+        Ok((span.start, Token::Identifier(ident), span.end - 1)) // BLAZE PATCH 0040
+    } // BLAZE PATCH 0040
 
     fn parse_double_quoted_string(&mut self, raw: bool) -> Option<LexemeT<(String, usize)>> {
         if self.lexer.remainder().starts_with("\"\"") {
@@ -1322,12 +1381,16 @@ pub enum FStringConv {
 /// All token that can be generated by the lexer
 #[derive(Logos, Debug, Clone, PartialEq)]
 #[logos(skip r" +")] // whitespace
+#[logos(skip r"\r")] // BLAZE PATCH 0037: a carriage return between tokens is ignored (Lexer.java:826)
 #[logos(skip r"\\\n")] // Escaped newline
 #[logos(skip r"\\\r\n")] // Escaped newline (Windows line ending)
 pub enum Token {
     /// Comment as token.
     /// Span includes the leading `#`, but the content does not.
-    #[regex(r#"#[^\r\n]*"#, |lex| lex.slice()[1..].to_owned())]
+    // BLAZE PATCH 0037: a comment runs to the line feed (Java Lexer.scanToNewline, Lexer.java:555);
+    // a carriage return inside it is part of it. A trailing CR (CRLF line end) is not kept in
+    // the content, as before.
+    #[regex(r#"#[^\n]*"#, |lex| { let s = &lex.slice()[1..]; s.strip_suffix('\r').unwrap_or(s).to_owned() })] // BLAZE PATCH 0037
     Comment(String),
 
     #[regex("\t+")] // Tabs (might be an error)
@@ -1370,11 +1433,11 @@ pub enum Token {
 
     Bytes(Vec<u8>), // A bytes literal
 
+    // BLAZE PATCH 0039: `async` and `await` are not reserved (Java's keywordMap,
+    // net/starlark/java/syntax/Lexer.java:569-599, does not have them): identifiers.
     #[regex(
         "as|\
         assert|\
-        async|\
-        await|\
         class|\
         del|\
         except|\

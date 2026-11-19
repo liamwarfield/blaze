@@ -133,9 +133,17 @@ pub fn register_repo_rules_functions(
     });
     let builder = builder
         .typed_function::<SingleExtensionKey, _>(blaze_bzlmod::skyframe::compute_single_extension);
-    builder.typed_function::<ModuleExtensionRepoMappingEntriesKey, _>(|key, env| {
+    let builder = builder.typed_function::<ModuleExtensionRepoMappingEntriesKey, _>(|key, env| {
         crate::bzlmod::repo_mapping_entries::compute(key, env)
-    })
+    });
+    // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:248 BazelRepositoryModule.workspaceInit
+    let builder =
+        builder.typed_function::<blaze_bzlmod::skyframe::keys::BazelModTidyKey, _>(|key, env| {
+            crate::bzlmod::bazel_mod_tidy_function::compute(key, env)
+        });
+    builder.typed_function::<crate::bzlmod::bazel_fetch_all_function::BazelFetchAllKey, _>(
+        |key, env| crate::bzlmod::bazel_fetch_all_function::compute(key, env),
+    )
 }
 
 /// The REPOSITORY_DIRECTORY implementation for [`crate::external_repos::BzlmodExternalRepos`].

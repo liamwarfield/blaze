@@ -346,7 +346,10 @@ pub fn attribute_values_to_gson_json(attr_values: &AttributeValues) -> String {
     let mut w = JsonWriter::new(false);
     w.begin_object().name("attributes").begin_object();
     for (name, v) in attr_values.attributes() {
-        w.name(name);
+        // The `attributes` field is a `Dict<String, Object>`: with complex map key serialization
+        // its keys go through GsonTypeAdapterUtil.STRING_ADAPTER (internalToUnicode) too.
+        // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:64
+        w.name(&internal_to_unicode(name));
         value(&mut w, v);
     }
     w.end_object().end_object();
@@ -365,6 +368,20 @@ mod tests {
         assert_eq!(
             DigestWriter::read_marker_file("\nabc\n\n", "abc").map(|v| v.len()),
             Some(0)
+        );
+    }
+
+    // Byte-strings review 2026-11-20 S2-6. Java (GsonTypeAdapterUtil.java:64 STRING_ADAPTER on
+    // the keys and values of the `attributes` Dict, complex map key serialization) writes the
+    // Unicode form of both: the internal `é` (C3 A9) is written as U+00E9 in the JSON string.
+    #[test]
+    fn attribute_names_and_values_are_converted_to_unicode() {
+        let e = latin1_decode("é".as_bytes()).into_owned();
+        let values =
+            AttributeValues::create([(format!("n{e}"), AttributeValue::String(format!("v{e}")))]);
+        assert_eq!(
+            attribute_values_to_gson_json(&values),
+            "{\"attributes\":{\"né\":\"vé\"}}"
         );
     }
 }

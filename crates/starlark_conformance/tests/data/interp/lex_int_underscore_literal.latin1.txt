@@ -1,0 +1,2 @@
+SYNTAX lex_int_underscore_literal.star:1:46: syntax error at '_0': expected ,
+SYNTAX lex_int_underscore_literal.star:1:49: contains syntax errors

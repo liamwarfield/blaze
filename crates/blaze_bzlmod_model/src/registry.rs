@@ -147,9 +147,10 @@ impl RegistryFetcher for FileRegistryFetcher {
         }
         let path = url.get_path().unwrap_or_default();
         // The JDK's `file:` handler opens `new File(path)`, whose name reaches the OS in the
-        // platform charset (ISO-8859-1 in Bazel's server): one byte per char, `?` for a char
-        // above U+00FF (a `%`-escaped non-ASCII path decodes to such Unicode chars).
-        let path_bytes = blaze_util::string_encoding::latin1_encode_lossy(&path);
+        // platform charset (ISO-8859-1 in Bazel's server; jnu_util.c getString8859_1Chars): one
+        // byte per UTF-16 unit, `?` for a unit above U+00FF (a `%`-escaped non-ASCII path decodes
+        // to such Unicode chars).
+        let path_bytes = blaze_util::string_encoding::jni_latin1_chars(&path);
         let platform_path: &std::ffi::OsStr = std::os::unix::ffi::OsStrExt::from_bytes(&path_bytes);
         let content = match std::fs::read(platform_path) {
             Ok(c) => c,

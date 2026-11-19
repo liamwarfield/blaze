@@ -28,12 +28,24 @@ use crate::util::DigestUtil;
 use crate::util::tracing_metadata_utils;
 use crate::util::utils::grpc_aware_error_message;
 
+// The patterns are matched against internal path strings (one Latin-1 char per byte). Java's
+// `.` does not match the line terminators `\n`, `\r`, U+0085, U+2028, U+2029, and U+0085 is the
+// second byte of common UTF-8 letters (`Å` is C3 85), so `.` is spelled out as the class of
+// everything else (the `regex` crate's `.` only excludes `\n`). `matcher(..).matches()` is the
+// pattern anchored at both ends.
 // Java: com/google/devtools/build/lib/remote/ByteStreamBuildEventArtifactUploader.java:68 ByteStreamBuildEventArtifactUploader.TEST_LOG_PATTERN
-static TEST_LOG_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(?:.*/bazel-out/[^/]*/testlogs/.*)$").expect("valid regex"));
+static TEST_LOG_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^(?:[^\n\r\x{85}\x{2028}\x{2029}]*/bazel-out/[^/]*/testlogs/[^\n\r\x{85}\x{2028}\x{2029}]*)$",
+    )
+    .expect("valid regex")
+});
 // Java: com/google/devtools/build/lib/remote/ByteStreamBuildEventArtifactUploader.java:69 ByteStreamBuildEventArtifactUploader.BUILD_LOG_PATTERN
 static BUILD_LOG_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?:.*/bazel-out/_tmp/actions/std(err|out)-.*)$").expect("valid regex")
+    Regex::new(
+        r"^(?:[^\n\r\x{85}\x{2028}\x{2029}]*/bazel-out/_tmp/actions/std(err|out)-[^\n\r\x{85}\x{2028}\x{2029}]*)$",
+    )
+    .expect("valid regex")
 });
 
 /// A [`BuildEventArtifactUploader`] backed by [`CombinedCache`].
@@ -729,6 +741,40 @@ mod tests {
             false,
             digest_function,
         )
+    }
+
+    /// Not in the Java test: the log patterns on internal paths. Java's `.` does not match
+    /// U+0085, the second char of the internal `Å` (C3 85), so such a path is not a log; `é`
+    /// (C3 A9) is matched. Expectations from `java.util.regex.Pattern` (OpenJDK 25) on the same
+    /// strings: false false / true false / false false / false true.
+    #[test]
+    fn log_patterns_on_internal_paths_follow_java_dot() {
+        let cases = [
+            (
+                "/home/\u{c3}\u{85}sa/ws/bazel-out/k8-fastbuild/testlogs/t/test.log",
+                false,
+                false,
+            ),
+            (
+                "/home/\u{c3}\u{a9}/ws/bazel-out/k8-fastbuild/testlogs/t/test.log",
+                true,
+                false,
+            ),
+            (
+                "/home/x/bazel-out/_tmp/actions/stderr-\u{c3}\u{85}",
+                false,
+                false,
+            ),
+            (
+                "/home/x/bazel-out/_tmp/actions/stdout-\u{c3}\u{a9}",
+                false,
+                true,
+            ),
+        ];
+        for (p, test_log, build_log) in cases {
+            assert_eq!(TEST_LOG_PATTERN.is_match(p), test_log, "{p:?}");
+            assert_eq!(BUILD_LOG_PATTERN.is_match(p), build_log, "{p:?}");
+        }
     }
 
     /// The `customHashFunction_uploaded` URI format (Java needs BLAKE3, which Blaze's file

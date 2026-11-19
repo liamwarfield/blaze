@@ -26,7 +26,7 @@ static BAZEL_VERSION_CMP_OP: LazyLock<Regex> =
 // Java: src/main/cpp/workspace_layout.h:60 WorkspaceLayout::kWorkspacePrefix
 pub const WORKSPACE_PREFIX: &str = "%workspace%/";
 
-// Java: src/main/cpp/workspace_layout.cc:69 WorkspaceLayout::ResolveWorkspaceRelativeRcFilePath
+// Java: src/main/cpp/workspace_layout.cc:73 WorkspaceLayout::ResolveWorkspaceRelativeRcFilePath
 /// Resolves a `%workspace%/...` import path; `None` if the resolved path does not exist.
 pub fn resolve_workspace_relative_rc_file_path(
     workspace: &str,
@@ -34,7 +34,9 @@ pub fn resolve_workspace_relative_rc_file_path(
 ) -> Option<String> {
     assert!(import_path.starts_with(WORKSPACE_PREFIX));
     let resolved_path = join_path(workspace, &import_path[WORKSPACE_PREFIX.len()..]);
-    if std::path::Path::new(&resolved_path).exists() {
+    // Java: src/main/cpp/util/file_posix.cc:372 PathExists (`access(path, F_OK)` on the raw
+    // bytes): the internal string is the bytes of the path.
+    if std::path::Path::new(&*internal_to_platform(&resolved_path)).exists() {
         Some(resolved_path)
     } else {
         None

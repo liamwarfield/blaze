@@ -22,6 +22,12 @@ is deleted first, so that every run fetches @bytes_repo and prints its RCASE lin
 
   build.stderr      `build //... @bytes_repo//:all` stderr (CASE/RCASE/RAWPRINT lines)
   labels.stderr     `build //labels:all` stderr (LCASE lines)
+  providers.stderr  `build //providers:all` stderr (CASE lines: repr of native providers)
+  fail.stderr       `build //fail:all` stderr (a failing genrule; its "error executing" line)
+  flagoff.stderr    side workspace side/flagoff (~/.cache/blaze/work/bytes_flagoff):
+                    `build //:all --aspects=//:defs.bzl%a --nointernal_starlark_utf_8_byte_strings`
+  rc_import.txt     side workspace side/rcimport, copied to the non-ASCII path
+                    ~/.cache/blaze/work/bytes_rc_é: `query //:x` with %workspace% rc imports
   outputs/*         bazel-bin outputs and @bytes_repo files (raw bytes)
   query_build.txt   `query //:all --output=build`
   query_label_kind.txt, query_jsonproto.txt, cquery_jsonproto.txt
@@ -41,6 +47,10 @@ WS = f"{HOME}/.cache/blaze/work/bytes"
 UR = f"{HOME}/.cache/blaze/oracle-out/ur-bytes"
 REPO_CACHE = f"{HOME}/.cache/blaze/repo-cache"
 HERE = os.path.dirname(os.path.abspath(__file__))
+# Side workspaces: (directory under scripts/bytes/side, workspace path). The rc-import one lives
+# under a path with a non-ASCII byte sequence (C3 A9) on purpose.
+WS_FLAGOFF = f"{HOME}/.cache/blaze/work/bytes_flagoff"
+WS_RC = f"{HOME}/.cache/blaze/work/bytes_rc_\u00e9"
 
 
 def find_one(pattern):
@@ -65,6 +75,10 @@ def prepare():
     with open(os.path.join(tp, "sha1.bzl"), "w", encoding="utf-8") as f:
         f.write(text)
     shutil.copy(strings, os.path.join(tp, "strings.bzl"))
+    for name, ws in (("flagoff", WS_FLAGOFF), ("rcimport", WS_RC)):
+        if os.path.exists(ws):
+            shutil.rmtree(ws)
+        shutil.copytree(os.path.join(HERE, "side", name), ws)
 
 
 def main(argv):
@@ -107,9 +121,9 @@ def main(argv):
     common = [f"--repository_cache={REPO_CACHE}", "--color=no", "--curses=no"]
     codes = []
 
-    def run(name, cmd, extra, save_stdout=None):
+    def run(name, cmd, extra, save_stdout=None, cwd=WS):
         p = subprocess.run(
-            startup + [cmd] + common + extra, cwd=WS, env=env, capture_output=True
+            startup + [cmd] + common + extra, cwd=cwd, env=env, capture_output=True
         )
         codes.append(f"{name} {p.returncode}")
         with open(os.path.join(out, name + ".stderr"), "wb") as f:
@@ -120,6 +134,12 @@ def main(argv):
 
     run("build", "build", ["//:all", "@bytes_repo//:all"])
     run("labels", "build", ["//labels:all"])
+    run("providers", "build", ["//providers:all"])
+    run("fail", "build", ["//fail:all"])
+    run("flagoff", "build",
+        ["//:all", "--aspects=//:defs.bzl%a", "--nointernal_starlark_utf_8_byte_strings"],
+        cwd=WS_FLAGOFF)
+    run("rc_import", "query", ["//:x"], "rc_import.txt", cwd=WS_RC)
     run("query_build", "query", ["//:all", "--output=build"], "query_build.txt")
     run("query_label_kind", "query", ["//:all", "--output=label_kind"], "query_label_kind.txt")
     run("query_jsonproto", "query", ["//:all", "--output=streamed_jsonproto"],
@@ -135,7 +155,8 @@ def main(argv):
         shutil.copy(f, os.path.join(out, "outputs", os.path.basename(f)))
     for f in glob.glob(os.path.join(output_base, "external", "+bytes_repo+bytes_repo", "*.txt")):
         shutil.copy(f, os.path.join(out, "outputs", "repo_" + os.path.basename(f)))
-    subprocess.run(startup + ["shutdown"], cwd=WS, env=env, capture_output=True)
+    for ws in (WS, WS_FLAGOFF, WS_RC):
+        subprocess.run(startup + ["shutdown"], cwd=ws, env=env, capture_output=True)
     with open(os.path.join(out, "exit_codes.txt"), "w") as f:
         f.write("\n".join(codes) + "\n")
     print("\n".join(codes))

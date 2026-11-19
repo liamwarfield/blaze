@@ -770,7 +770,9 @@ impl BlazeModule for BazelBuiltinCommandModule {
             Arc::new(crate::commands::info::InfoCommand::new()),
             Arc::new(PrintActionCommand),
             Arc::new(QueryCommand),
-            Arc::new(RunCommand),
+            Arc::new(RunCommand::new(
+                blaze_exec::exec::standalone_test_strategy::default_local_policy(),
+            )),
             Arc::new(crate::commands::shutdown::ShutdownCommand::new()),
             Arc::new(TestCommand),
             Arc::new(crate::commands::version::VersionCommand::new()),

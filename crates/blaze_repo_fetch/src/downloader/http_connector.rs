@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use blaze_events::Event;
 use blaze_events::handler::EventHandler;
-use blaze_util::string_encoding::latin1_encode_lossy;
+use blaze_util::string_encoding::jni_latin1_chars;
 
 use super::download_progress_event::format_grouped;
 use super::http_utils;
@@ -270,9 +270,10 @@ fn open_file_connection(url: &JavaUri) -> UrlConnection {
     let path = url.get_path().unwrap_or_default();
     let mut headers = Vec::new();
     // `new File(path)`: the JDK encodes the file name with `sun.jnu.encoding` (ISO-8859-1 for
-    // Bazel's server), `?` for a char above U+00FF. The path's chars are the URL's own
-    // (internal, from Starlark) or decoded from `%XX` escapes as UTF-8.
-    let os_path = OsString::from_vec(latin1_encode_lossy(&path).into_owned());
+    // Bazel's server; jnu_util.c getString8859_1Chars), `?` for each UTF-16 unit above U+00FF.
+    // The path's chars are the URL's own (internal, from Starlark) or decoded from `%XX` escapes
+    // as UTF-8.
+    let os_path = OsString::from_vec(jni_latin1_chars(&path).into_owned());
     let body: Result<Box<dyn InputStream>, IoException> = match File::open(&os_path) {
         Ok(f) => {
             if let Ok(m) = f.metadata() {

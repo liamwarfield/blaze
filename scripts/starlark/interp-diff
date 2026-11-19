@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""Compares Blaze's Starlark interpreter with Bazel 9.3.2's. See `interp-diff help`."""
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+USAGE = """\
+usage: scripts/starlark/interp-diff record-java [CASEDIR]
+       scripts/starlark/interp-diff binary [--blaze BIN] [--only REGEX] [CASEDIR]
+       scripts/starlark/interp-diff help
+
+CASEDIR (default crates/starlark_conformance/tests/data/interp) holds NAME.star files: small
+Starlark programs that print values (or fail).
+
+record-java  runs every case on Bazel 9.3.2's own interpreter (net.starlark.java in the oracle's
+             A-server.jar) with crates/starlark_conformance/java/StarlarkProbe.java in latin1
+             mode (how Bazel reads BUILD and .bzl files) and writes NAME.latin1.txt next to the
+             case. These are the expected outputs of the starlark_conformance test
+             `java_recorded_interp` (tests/java_recorded.rs).
+
+binary       differential run on the real binaries. One scratch workspace
+             (~/.cache/blaze/oracle-out/interp-diff/ws) gets two packages per case:
+               b_NAME/BUILD        the case as a BUILD file;
+               z_NAME/case.bzl     `probe_ok = 1` followed by the case, as a .bzl file,
+               z_NAME/BUILD        `load(":case.bzl", "probe_ok")`.
+             The oracle (~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64) and Blaze (BIN,
+             default target/debug/blaze) each run once, `query --keep_going //...`, under
+             systemd-run (MemoryMax=12G), with separate output user roots. Per package the tool
+             compares: accepted or rejected (an ERROR line naming the package), and the DEBUG
+             lines (print output with file:line:col). Error texts are not compared (Blaze keeps
+             starlark-rust's core-language texts, docs/decisions.md). Prints one line per
+             package that differs and a summary; exit status 1 if any differs. Stderr of both
+             runs is saved under ~/.cache/blaze/oracle-out/interp-diff/.
+             --only REGEX keeps the cases whose NAME matches."""
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+DEFAULT_CASES = os.path.join(ROOT, "crates/starlark_conformance/tests/data/interp")
+ORACLE = os.path.expanduser("~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64")
+INSTALL_BASE = os.path.expanduser(
+    "~/.cache/blaze/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9")
+PROBE = os.path.join(ROOT, "crates/starlark_conformance/java/StarlarkProbe.java")
+BASE = os.path.expanduser("~/.cache/blaze/oracle-out/interp-diff")
+
+
+def cases_in(casedir, only=None):
+    names = sorted(f[:-5] for f in os.listdir(casedir) if f.endswith(".star"))
+    if only:
+        names = [n for n in names if re.search(only, n)]
+    return names
+
+
+def record_java(casedir):
+    names = cases_in(casedir)
+    for n in names:
+        p = subprocess.run(
+            ["java", "--enable-native-access=ALL-UNNAMED", "-cp",
+             os.path.join(INSTALL_BASE, "A-server.jar"), PROBE, "latin1", n + ".star"],
+            cwd=casedir, capture_output=True)
+        if p.returncode != 0:
+            sys.stderr.write("%s: the probe failed (exit %d):\n%s\n" % (
+                n, p.returncode, p.stderr.decode("latin-1")))
+            sys.exit(1)
+        with open(os.path.join(casedir, n + ".latin1.txt"), "wb") as f:
+            f.write(p.stdout)
+    print("recorded %d cases with %s" % (len(names), os.path.join(INSTALL_BASE, "A-server.jar")))
+
+
+def make_workspace(casedir, names):
+    ws = os.path.join(BASE, "ws")
+    shutil.rmtree(ws, ignore_errors=True)
+    os.makedirs(ws)
+    open(os.path.join(ws, "MODULE.bazel"), "w").close()
+    for n in names:
+        with open(os.path.join(casedir, n + ".star"), "rb") as f:
+            src = f.read()
+        os.makedirs(os.path.join(ws, "b_" + n))
+        with open(os.path.join(ws, "b_" + n, "BUILD"), "wb") as f:
+            f.write(src)
+        os.makedirs(os.path.join(ws, "z_" + n))
+        with open(os.path.join(ws, "z_" + n, "case.bzl"), "wb") as f:
+            f.write(b"probe_ok = 1\n" + src)
+        with open(os.path.join(ws, "z_" + n, "BUILD"), "wb") as f:
+            f.write(b'load(":case.bzl", "probe_ok")\n')
+    return ws
+
+
+def run(binary, ws, tag):
+    home = os.path.expanduser("~")
+    argv = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "-p", "MemoryMax=12G",
+            "-p", "MemorySwapMax=0",
+            binary, "--output_user_root=" + os.path.join(BASE, "ur-" + tag), "--nohome_rc",
+            "--nosystem_rc", "query", "--keep_going", "--color=no", "--curses=no",
+            "--repository_cache=" + home + "/.cache/blaze/repo-cache", "//..."]
+    env = {"HOME": home, "PATH": "/usr/bin:/bin"}
+    for k in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
+        if k in os.environ:
+            env[k] = os.environ[k]
+    p = subprocess.run(argv, cwd=ws, env=env, capture_output=True)
+    err = p.stderr.decode("latin-1").replace(ws, "<WS>")
+    with open(os.path.join(BASE, tag + ".stderr.txt"), "w", encoding="latin-1") as f:
+        f.write(err)
+    with open(os.path.join(BASE, tag + ".stdout.txt"), "wb") as f:
+        f.write(p.stdout)
+    if p.returncode not in (0, 3):
+        sys.stderr.write("%s: exit %d, see %s\n" % (tag, p.returncode,
+                                                  os.path.join(BASE, tag + ".stderr.txt")))
+    return p.returncode, err
+
+
+PKG_RE = re.compile(r"(?:<WS>/|//|package ')([bz]_[A-Za-z0-9_]+)")
+
+
+def summarize(err, packages):
+    """Per package: (rejected, sorted DEBUG lines)."""
+    rejected = set()
+    debug = {p: [] for p in packages}
+    for line in err.split("\n"):
+        if line.startswith("DEBUG: <WS>/"):
+            m = re.match(r"DEBUG: <WS>/([^/]+)/(\S+): (.*)$", line)
+            if m and m.group(1) in debug:
+                debug[m.group(1)].append(m.group(2) + ": " + m.group(3))
+        elif line.startswith("ERROR: "):
+            for m in PKG_RE.finditer(line):
+                if m.group(1) in debug:
+                    rejected.add(m.group(1))
+    return {p: (p in rejected, sorted(debug[p])) for p in packages}
+
+
+def binary(casedir, blaze, only):
+    names = cases_in(casedir, only)
+    ws = make_workspace(casedir, names)
+    packages = ["b_" + n for n in names] + ["z_" + n for n in names]
+    oracle_code, oracle_err = run(ORACLE, ws, "oracle")
+    blaze_code, blaze_err = run(blaze, ws, "blaze")
+    want = summarize(oracle_err, packages)
+    got = summarize(blaze_err, packages)
+    bad = 0
+    for p in packages:
+        if want[p] != got[p]:
+            bad += 1
+            print("DIFF %s: oracle %s %s | blaze %s %s" % (
+                p, "rejected" if want[p][0] else "accepted", want[p][1],
+                "rejected" if got[p][0] else "accepted", got[p][1]))
+    accepted = sum(1 for p in packages if not want[p][0])
+    print("%d cases, %d packages (oracle: %d accepted, %d rejected); exit codes oracle %d, "
+          "blaze %d; %d packages differ" % (len(names), len(packages), accepted,
+                                            len(packages) - accepted, oracle_code, blaze_code,
+                                            bad))
+    print("blaze binary: %s" % blaze)
+    sys.exit(1 if bad else 0)
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("help", "--help", "-h"):
+        print(USAGE)
+        return
+    cmd, rest = args[0], args[1:]
+    if cmd == "record-java":
+        record_java(os.path.abspath(rest[0]) if rest else DEFAULT_CASES)
+        return
+    if cmd == "binary":
+        blaze = os.path.join(ROOT, "target/debug/blaze")
+        only = None
+        casedir = DEFAULT_CASES
+        i = 0
+        while i < len(rest):
+            if rest[i] == "--blaze":
+                blaze = os.path.abspath(rest[i + 1])
+                i += 2
+            elif rest[i] == "--only":
+                only = rest[i + 1]
+                i += 2
+            else:
+                casedir = os.path.abspath(rest[i])
+                i += 1
+        os.makedirs(BASE, exist_ok=True)
+        binary(casedir, blaze, only)
+        return
+    print(USAGE)
+    sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

@@ -27,22 +27,14 @@
 //! All functions are the identity on ASCII and return the borrowed input then (Java returns the
 //! same instance).
 //!
-//! # Migration seam (transitional)
+//! # Source decoding
 //!
 //! The switch was made on 2026-11-19: Starlark sources, file names, the command line and the
 //! environment are decoded one char per byte, so the strings Blaze's inner layers hold are
-//! internal strings ([`STRINGS_ARE_INTERNAL`] is `true`). The record of the migration is
-//! docs/research/07-byte-strings.md section 7; the rules for new code are PORTING.md "Strings"
-//! and docs/research/07-byte-strings-rules.md.
-//!
-//! The seam functions ([`to_internal`], [`internal_string_bytes`],
-//! [`internal_string_from_bytes`], [`internal_length`], [`strings_are_internal`],
-//! [`with_strings_are_internal_for_testing`]) gave, before the switch, what Java computes from
-//! its internal string while Blaze still held Unicode. Each is now the plain function its
-//! documentation names. New code calls the plain function; the seam functions stay only until
-//! their last callers (blaze_remote and three files of blaze_exec, listed in
-//! docs/research/07-byte-strings-exec-sites.md) are converted, and are deleted then, together
-//! with `Fingerprint::add_internal_string` and the `Result` of [`parser_input_from_latin1`].
+//! internal strings. The record of the migration is docs/research/07-byte-strings.md section 7;
+//! the rules for new code are PORTING.md "Strings" and docs/research/07-byte-strings-rules.md.
+//! The transitional seam functions of the migration were deleted once no crate called them
+//! (byte-strings review 2026-11-20 S2-7).
 //!
 //! The source decoders (`StarlarkUtil.createParserInput` for BUILD, .bzl, MODULE.bazel,
 //! REPO.bazel, VENDOR.bazel) must produce their text with [`parser_input_from_latin1`] and
@@ -50,98 +42,16 @@
 //! decoder appears.
 
 use std::borrow::Cow;
-use std::cell::Cell;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
-/// Whether the strings Blaze holds where Java holds internal strings (Starlark strings, paths,
-/// options, environment) are internal strings. `true` since the switch of 2026-11-19 (sources
-/// are decoded with [`parser_input_from_latin1`]); `false` was the state before it, when they
-/// were real Unicode. See "Migration seam" in the module comment.
-// PORT: transitional; delete with the seam functions once it has been `true` for a while.
-pub const STRINGS_ARE_INTERNAL: bool = true;
-
-thread_local! {
-    static STRINGS_ARE_INTERNAL_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
-}
-
-/// [`STRINGS_ARE_INTERNAL`], or the value a test set for this thread.
-pub fn strings_are_internal() -> bool {
-    STRINGS_ARE_INTERNAL_OVERRIDE
-        .get()
-        .unwrap_or(STRINGS_ARE_INTERNAL)
-}
-
-/// Runs `f` with [`strings_are_internal`] forced to `value` on this thread, so that tests can
-/// check both sides of the seam. Not for production code.
-pub fn with_strings_are_internal_for_testing<R>(value: bool, f: impl FnOnce() -> R) -> R {
-    struct Restore(Option<bool>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            STRINGS_ARE_INTERNAL_OVERRIDE.set(self.0);
-        }
-    }
-    let _restore = Restore(STRINGS_ARE_INTERNAL_OVERRIDE.replace(Some(value)));
-    f()
-}
-
-/// Seam: the internal string that `s` stands for. After the switch: `s` itself.
-///
-/// Use it where Java applies a Unicode API to an internal string without converting it (the
-/// UTF-8 encoders behind `Fingerprint.addString`, `String.getBytes(UTF_8)`,
-/// `Hashing.hashString(s, UTF_8)`): the UTF-8 of the result is what Java encodes.
-pub fn to_internal(s: &str) -> Cow<'_, str> {
-    if s.is_ascii() || strings_are_internal() {
-        Cow::Borrowed(s)
-    } else {
-        unicode_to_internal(s)
-    }
-}
-
-/// Seam: `StringUnsafe.getInternalStringBytes(s)` / `s.getBytes(ISO_8859_1)` of the internal
-/// string that `s` stands for. After the switch: [`latin1_encode`].
-pub fn internal_string_bytes(s: &str) -> Cow<'_, [u8]> {
-    if s.is_ascii() || !strings_are_internal() {
-        Cow::Borrowed(s.as_bytes())
-    } else {
-        latin1_encode(s)
-    }
-}
-
-/// Seam: `new String(bytes, ISO_8859_1)` / `StringUnsafe.newInstance(bytes, LATIN1)`, as the
-/// string Blaze holds for that internal string. After the switch: [`latin1_decode`], which never
-/// fails. Before it, bytes that are not UTF-8 have no string and are an error; a caller that
-/// cannot report one calls `unported!`.
-pub fn internal_string_from_bytes(bytes: &[u8]) -> Result<Cow<'_, str>, std::str::Utf8Error> {
-    if bytes.is_ascii() || strings_are_internal() {
-        Ok(latin1_decode(bytes))
-    } else {
-        std::str::from_utf8(bytes).map(Cow::Borrowed)
-    }
-}
-
-/// Seam: Java `ParserInput.fromLatin1(bytes, file)`: the text of a Starlark source file (BUILD,
-/// .bzl, MODULE.bazel, REPO.bazel, VENDOR.bazel) as the interpreter gets it. **Every source
-/// decoder calls this and nothing else**, so that Starlark strings are internal strings exactly
-/// when [`strings_are_internal`] says so, which is what `Fingerprint::add_string` and the other
-/// seam functions assume. After the switch: [`latin1_decode`] (one char per byte, never fails).
-/// Before it, a file that is not UTF-8 has no text and is an error; Java accepts such a file
-/// unless `--incompatible_enforce_starlark_utf8=error`, so the caller reports it or calls
-/// `unported!`.
+/// Java `ParserInput.fromLatin1(bytes, file)`: the text of a Starlark source file (BUILD, .bzl,
+/// MODULE.bazel, REPO.bazel, VENDOR.bazel) as the interpreter gets it: [`latin1_decode`], one
+/// char per byte, never fails. **Every source decoder calls this and nothing else.**
 // Java: net/starlark/java/syntax/ParserInput.java ParserInput.fromLatin1
 // Java: com/google/devtools/build/lib/skyframe/StarlarkUtil.java:43 StarlarkUtil.createParserInput
-pub fn parser_input_from_latin1(bytes: &[u8]) -> Result<Cow<'_, str>, std::str::Utf8Error> {
-    internal_string_from_bytes(bytes)
-}
-
-/// Seam: `String.length()` of the internal string that `s` stands for (its number of bytes).
-/// After the switch: `s.chars().count()`.
-pub fn internal_length(s: &str) -> usize {
-    if s.is_ascii() || !strings_are_internal() {
-        s.len()
-    } else {
-        s.chars().count()
-    }
+pub fn parser_input_from_latin1(bytes: &[u8]) -> Cow<'_, str> {
+    latin1_decode(bytes)
 }
 
 /// Whether `s` can be an internal string: every char is `<= U+00FF`.
@@ -208,6 +118,27 @@ pub fn latin1_encode_lossy(s: &str) -> Cow<'_, [u8]> {
             .map(|c| if (c as u32) <= 0xff { c as u8 } else { b'?' })
             .collect(),
     )
+}
+
+/// The bytes a Java string becomes when the JDK or Bazel's JNI hands it to a system call as a
+/// file name with the ISO-8859-1 platform charset: one byte per UTF-16 code unit, the unit
+/// itself when it is <= U+00FF and `?` otherwise. Unlike [`latin1_encode_lossy`], a char above
+/// U+FFFF (a surrogate pair) is two `?`.
+// Java: src/main/native/latin1_jni_path.cc:121-124 GetStringLatin1Chars (Bazel's JNI paths);
+// the JDK's jnu_util.c getString8859_1Chars (`new File(path)`, FileInputStream) is the same loop.
+pub fn jni_latin1_chars(s: &str) -> Cow<'_, [u8]> {
+    if s.is_ascii() {
+        return Cow::Borrowed(s.as_bytes());
+    }
+    let mut bytes = Vec::with_capacity(s.len());
+    for c in s.chars() {
+        if (c as u32) <= 0xff {
+            bytes.push(c as u8);
+        } else {
+            bytes.extend(std::iter::repeat_n(b'?', c.len_utf16()));
+        }
+    }
+    Cow::Owned(bytes)
 }
 
 /// Java: StringUnsafe.java:92 `throw new IllegalArgumentException(String.format("Expected internal

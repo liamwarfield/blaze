@@ -92,8 +92,9 @@ impl Reporter {
 /// Message of an evaluation error, without location or stack: Java `EvalException.getMessage()`.
 pub fn bare_message(e: &starlark::Error) -> String {
     match e.kind() {
-        // starlark-rust's `fail` prefixes a space: "fail: msg" -> "msg".
-        starlark::ErrorKind::Fail(m) => m.to_string().trim_start().to_owned(),
+        // Blaze's `fail` and starlark-rust's (which prefixes one space) as
+        // blaze_starlark::error::bare_message (Java keeps leading whitespace of the message).
+        starlark::ErrorKind::Fail(_) => blaze_starlark::error::bare_message(e),
         _ => format!("{:#}", e.without_diagnostic()),
     }
 }

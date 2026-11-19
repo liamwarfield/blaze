@@ -39,7 +39,6 @@ use crate::values::none::NoneOr;
 use crate::values::string::dot_format;
 use crate::values::tuple::UnpackTuple;
 use crate::values::type_repr::StarlarkTypeRepr;
-use crate::values::types::string::iter::iterate_codepoints;
 use crate::values::typing::iter::StarlarkIter;
 
 // This does not exists in rust, split would cut the string incorrectly and
@@ -294,30 +293,8 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
         Ok(result)
     }
 
-    /// [string.codepoints](
-    /// https://github.com/bazelbuild/starlark/blob/master/spec.md#string·codepoints
-    /// ): returns an iterable of the unicode codepoint of a string.
-    ///
-    /// `S.codepoints()` returns an iterable value containing the
-    /// sequence of integer Unicode code points encoded by the string S.
-    /// Each invalid code within the string is treated as if it encodes the
-    /// Unicode replacement character, U+FFFD.
-    ///
-    /// By returning an iterable, not a list, the cost of decoding the string
-    /// is deferred until actually needed; apply `list(...)` to the result to
-    /// materialize the entire sequence.
-    ///
-    /// ```
-    /// # starlark::assert::all_true(r#"
-    /// list("Hello, 世界".codepoints()) == [72, 101, 108, 108, 111, 44, 32, 19990, 30028]
-    /// # "#);
-    /// ```
-    fn codepoints<'v>(
-        this: StringValue<'v>,
-        heap: Heap<'v>,
-    ) -> anyhow::Result<ValueOfUnchecked<'v, StarlarkIter<String>>> {
-        Ok(iterate_codepoints(this, heap))
-    }
+    // BLAZE PATCH 0043: no `codepoints` method (Java StringModule has none; `"abc".codepoints()`
+    // fails "'string' value has no field or method 'codepoints'").
 
     /// [string.count](
     /// https://github.com/bazelbuild/starlark/blob/master/spec.md#string·count
@@ -462,7 +439,8 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// The *conversion* specifies how to convert an argument value `x` to a
     /// string. It may be either `!r`, which converts the value using
     /// `repr(x)`, or `!s`, which converts the value using `str(x)` and is
-    /// the default.
+    /// the default. BLAZE PATCH 0045: not in Bazel, whose `format` has no conversions: the
+    /// whole field (`0!r`) is the argument name (net/starlark/java/eval/FormatParser.java).
     ///
     /// The *format specifier*, after a colon, specifies field width,
     /// alignment, padding, and numeric precision.
@@ -474,7 +452,7 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// "a{x}b{y}c{}".format(1, x=2, y=3) == "a2b3c1"
     /// "a{}b{}c".format(1, 2) == "a1b2c"
     /// "({1}, {0})".format("zero", "one") == "(one, zero)"
-    /// "Is {0!r} {0!s}?".format("heterological") == "Is \"heterological\" heterological?"
+    /// "{0!r}".format(**{"0!r": 1}) == "1"
     /// # "#);
     /// ```
     #[starlark(speculative_exec_safe)]
@@ -797,9 +775,12 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     // speculative: the result depends on the evaluator's flag.
     fn lstrip<'v>(
         this: StringValue<'v>,
-        #[starlark(require = pos)] chars: Option<&str>,
+        // BLAZE PATCH 0046: `chars` may be `None` (Java StringModule.java:243-249: String or
+        // NoneType, default None).
+        #[starlark(require = pos, default = NoneOr::None)] chars: NoneOr<&str>, // BLAZE PATCH 0046
         eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0034
     ) -> anyhow::Result<StringValue<'v>> {
+        let chars = chars.into_option(); // BLAZE PATCH 0046
         let res = this.trim_start_matches(java_strip_matcher(chars, eval)); // BLAZE PATCH 0034
         if res.len() == this.len() {
             Ok(this)
@@ -1073,9 +1054,12 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     // speculative: the result depends on the evaluator's flag.
     fn rstrip<'v>(
         this: StringValue<'v>,
-        #[starlark(require = pos)] chars: Option<&str>,
+        // BLAZE PATCH 0046: `chars` may be `None` (Java StringModule.java:243-249: String or
+        // NoneType, default None).
+        #[starlark(require = pos, default = NoneOr::None)] chars: NoneOr<&str>, // BLAZE PATCH 0046
         eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0034
     ) -> anyhow::Result<StringValue<'v>> {
+        let chars = chars.into_option(); // BLAZE PATCH 0046
         let res = this.trim_end_matches(java_strip_matcher(chars, eval)); // BLAZE PATCH 0034
         if res.len() == this.len() {
             Ok(this)
@@ -1266,9 +1250,12 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     // speculative: the result depends on the evaluator's flag.
     fn strip<'v>(
         this: StringValue<'v>,
-        #[starlark(require = pos)] chars: Option<&str>,
+        // BLAZE PATCH 0046: `chars` may be `None` (Java StringModule.java:243-249: String or
+        // NoneType, default None).
+        #[starlark(require = pos, default = NoneOr::None)] chars: NoneOr<&str>, // BLAZE PATCH 0046
         eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0034
     ) -> anyhow::Result<StringValue<'v>> {
+        let chars = chars.into_option(); // BLAZE PATCH 0046
         let res = this.trim_matches(java_strip_matcher(chars, eval)); // BLAZE PATCH 0034
         if res.len() == this.len() {
             Ok(this)
@@ -1412,7 +1399,7 @@ mod tests {
     #[test]
     fn test_opaque_iterator() {
         assert::is_true("type('foo'.elems()) != type([])");
-        assert::is_true("type('foo'.codepoints()) != type([])");
+        // BLAZE PATCH 0043: no `codepoints`.
     }
 
     #[test]

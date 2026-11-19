@@ -1,0 +1,385 @@
+#!/usr/bin/env python3
+"""Compare `mod` subcommands between the oracle (Bazel 9.3.2) and Blaze. See `compare help`."""
+
+import argparse
+import hashlib
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+sys.dont_write_bytecode = True
+
+USAGE = """\
+usage: scripts/mod/compare [--project brotli|re2|brotli-tidy|brotli-tidy-fail]... [--case GLOB]... [--blaze BIN]
+                           [--side oracle|blaze|both] [--list] [--show NAME]
+       scripts/mod/compare help
+
+Runs a fixed list of `mod` invocations (dump_repo_mapping, show_repo, graph, deps, all_paths,
+path, explain, show_extension, tidy and their error cases) with the oracle
+(~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64) and with Blaze (--blaze, default
+target/debug/blaze) on work copies of the corpus projects (and of two fixtures, brotli-tidy and brotli-tidy-fail:
+brotli plus a local module extension whose use_repo calls disagree with its
+extension_metadata, defined in this script), and compares exit code, stdout and
+stderr byte for byte. For `tidy` cases the resulting MODULE.bazel is compared too.
+
+How each command runs (as scripts/oracle/record and scripts/w4a/run do): cwd is the work copy
+~/.cache/blaze/work/mod-compare/<side>/<project> (rsync of ~/.cache/blaze/corpus/<project>
+minus bazel-* and .git; refreshed at the start and before and after every tidy case); env -i HOME,
+PATH=/usr/bin:/bin; startup --output_user_root=~/.cache/blaze/oracle-out/mod-compare-<side>
+--nohome_rc --nosystem_rc; command options --repository_cache=~/.cache/blaze/repo-cache
+--color=no --curses=no; under systemd-run --scope MemoryMax=12G MemorySwapMax=0. Before the
+cases each side runs one discarded `mod graph` (fetches the module graph and the repositories
+it needs into the output base). The oracle's server is shut down before every case, so each
+case runs in a new server as every Blaze command does (a server that already evaluated a
+module extension does not repeat its warnings), and at the end.
+
+Comparison: byte for byte after replacing, on each side, its own output user root with <OUR>,
+its work copy with <WS>, and 32-hex-digit directory names directly under <OUR> and
+<OUR>/install with <MD5> (output base and install base names differ between the two binaries
+and work copies), and dropping a leading "Starting local Bazel server (9.3.2) and connecting to
+it..." line from stderr (Blaze has no persistent server and prints it on every command; the
+oracle prints it only in the discarded warm-up). The table says "raw" when the bytes were
+identical even before that. --side none only re-compares captured files.
+
+Output: one line per case (MATCH / DIFF with the differing parts / DIFF-UI when the only
+difference is in stderr and disappears without the UI's timing-dependent " no actions running"
+progress lines and the newline UiEventHandler.completeBuild adds after stdout that did not end
+in one; both are UI code outside `mod`), a summary line; the captured
+files are in ~/.cache/blaze/work/mod-compare/results/<side>/<project>/<case>.{rc,out,err,module}.
+--show NAME prints a unified diff of one case (project/case). Exit 0 when all selected cases
+match, 1 otherwise.
+"""
+
+HOME = os.path.expanduser("~")
+CACHE = os.path.join(HOME, ".cache", "blaze")
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+REPO_CACHE = os.path.join(CACHE, "repo-cache")
+WORK = os.path.join(CACHE, "work", "mod-compare")
+
+COMMON = [
+    # (name, args); "{ext}" etc. are filled per project.
+    ("dump_main", ["dump_repo_mapping", ""]),
+    ("dump_bazel_tools", ["dump_repo_mapping", "bazel_tools"]),
+    ("dump_rules_cc", ["dump_repo_mapping", "rules_cc+"]),
+    ("dump_platforms", ["dump_repo_mapping", "platforms"]),
+    ("dump_ext_repo", ["dump_repo_mapping", "rules_cc++cc_configure_extension+local_config_cc"]),
+    ("dump_ext_toolchains", ["dump_repo_mapping", "rules_cc++cc_configure_extension+local_config_cc_toolchains"]),
+    ("dump_multi", ["dump_repo_mapping", "", "rules_cc+", "bazel_tools"]),
+    ("dump_unknown", ["dump_repo_mapping", "nonexistent+"]),
+    ("dump_unknown_two", ["dump_repo_mapping", "rules_cc+", "nope1", "nope2"]),
+    ("dump_invalid", ["dump_repo_mapping", "foo bar"]),
+    ("dump_invalid_at", ["dump_repo_mapping", "@rules_cc+"]),
+    ("dump_none", ["dump_repo_mapping"]),
+    ("dump_ascii", ["dump_repo_mapping", "", "--charset=ascii"]),
+    ("show_apparent", ["show_repo", "@rules_cc"]),
+    ("show_canonical", ["show_repo", "@@rules_cc+"]),
+    ("show_module_key", ["show_repo", "rules_cc@{rules_cc_version}"]),
+    ("show_module_name", ["show_repo", "rules_cc"]),
+    ("show_ext_repo", ["show_repo", "@@rules_cc++cc_configure_extension+local_config_cc"]),
+    ("show_bazel_tools", ["show_repo", "@bazel_tools"]),
+    ("show_platforms", ["show_repo", "@platforms"]),
+    ("show_multi", ["show_repo", "@rules_cc", "@@rules_cc++cc_configure_extension+local_config_cc_toolchains", "@bazel_tools"]),
+    ("show_jsonproto", ["show_repo", "@rules_cc", "@@rules_cc++cc_configure_extension+local_config_cc", "@bazel_tools", "--output=streamed_jsonproto"]),
+    ("show_jsonproto_key", ["show_repo", "rules_cc@{rules_cc_version}", "--output=streamed_jsonproto"]),
+    ("show_proto", ["show_repo", "@rules_cc", "@@rules_cc++cc_configure_extension+local_config_cc", "--output=streamed_proto"]),
+    ("show_bad_output", ["show_repo", "@rules_cc", "--output=json"]),
+    ("show_main", ["show_repo", "@{main_repo_name}"]),
+    ("show_unknown_apparent", ["show_repo", "@nonexistent"]),
+    ("show_unknown_canonical", ["show_repo", "@@nonexistent+"]),
+    ("show_unknown_module", ["show_repo", "nonexistent@1.0"]),
+    ("show_too_many", ["show_repo", "--all_repos", "@rules_cc"]),
+    ("show_all_visible", ["show_repo", "--all_visible_repos"]),
+    ("show_all_repos", ["show_repo", "--all_repos"]),
+    ("show_all_repos_jsonproto", ["show_repo", "--all_repos", "--output=streamed_jsonproto"]),
+    ("show_none", ["show_repo"]),
+    ("graph", ["graph"]),
+    ("graph_json", ["graph", "--output=json"]),
+    ("graph_graph", ["graph", "--output=graph"]),
+    ("graph_verbose", ["graph", "--verbose"]),
+    ("graph_extension_info", ["graph", "--extension_info=all"]),
+    ("graph_extra_arg", ["graph", "foo"]),
+    ("deps", ["deps", "rules_cc"]),
+    ("deps_root", ["deps", "<root>"]),
+    ("all_paths", ["all_paths", "platforms"]),
+    ("path", ["path", "platforms"]),
+    ("explain", ["explain", "platforms"]),
+    ("explain_json", ["explain", "platforms", "--output=json"]),
+    ("show_extension", ["show_extension", "@rules_cc//cc:extensions.bzl%cc_configure_extension"]),
+    ("show_extension_bad", ["show_extension", "@rules_cc//cc:nope.bzl%nope"]),
+    ("bad_subcommand", ["frobnicate"]),
+    ("no_subcommand", []),
+    ("all_repos_on_graph", ["graph", "--all_repos"]),
+    ("tidy", ["tidy"]),
+    ("tidy_extra_arg", ["tidy", "foo"]),
+]
+
+TIDY_EXT_BZL = """\
+def _repo_impl(rctx):
+    rctx.file("BUILD", "")
+
+_repo = repository_rule(implementation = _repo_impl)
+
+def _ext_impl(mctx):
+    for name in ["foo", "bar", "baz", "qux"]:
+        _repo(name = name)
+    return mctx.extension_metadata(
+        root_module_direct_deps = ["foo", "bar"],
+        root_module_direct_dev_deps = [],
+        reproducible = True,
+    )
+
+ext = module_extension(implementation = _ext_impl)
+
+def _bad_impl(mctx):
+    fail("tidy fixture: this extension fails")
+
+bad = module_extension(implementation = _bad_impl)
+"""
+
+TIDY_MODULE = """
+tidy_ext = use_extension("//:tidy_ext.bzl", "ext")
+use_repo(tidy_ext, "baz", my_foo = "foo")
+"""
+
+TIDY_DEV_MODULE = """
+tidy_dev_ext = use_extension("//:tidy_ext.bzl", "ext", dev_dependency = True)
+use_repo(tidy_dev_ext, "qux")
+"""
+
+TIDY_FAIL_MODULE = TIDY_MODULE + """
+bad_ext = use_extension("//:tidy_ext.bzl", "bad")
+use_repo(bad_ext, "nothing")
+"""
+
+TIDY_CASES = [
+    ("tidy", ["tidy"]),
+    ("tidy_ascii", ["tidy", "--charset=ascii"]),
+    ("dump_main", ["dump_repo_mapping", ""]),
+    ("dump_ext_repo", ["dump_repo_mapping", "+ext+foo"]),
+    ("show_ext_repo", ["show_repo", "@@+ext+foo"]),
+    ("show_ext_repo_apparent", ["show_repo", "@my_foo", "--output=streamed_jsonproto"]),
+    ("show_extension", ["show_extension", "//:tidy_ext.bzl%ext"]),
+    ("graph_extension_info", ["graph", "--extension_info=all"]),
+]
+
+PROJECTS = {
+    "brotli": {"rules_cc_version": "0.2.17", "main_repo_name": "org_brotli", "cases": COMMON},
+    "re2": {"rules_cc_version": "0.2.14", "main_repo_name": "re2", "cases": COMMON + [
+        ("dump_abseil", ["dump_repo_mapping", "abseil-cpp+"]),
+        ("dump_python_ext", ["dump_repo_mapping", "rules_python++python+python_3_11"]),
+        ("dump_pip_ext", ["dump_repo_mapping", "rules_python++pip+rules_python_publish_deps_311_twine_py3_none_any"]),
+        ("show_python_ext", ["show_repo", "@@rules_python++python+python_3_11"]),
+        ("show_abseil_jsonproto", ["show_repo", "@abseil-cpp", "--output=streamed_jsonproto"]),
+        ("show_benchmark", ["show_repo", "@google_benchmark"]),
+        ("show_extension_python", ["show_extension", "@rules_python//python/extensions:python.bzl%python"]),
+        ("deps_abseil", ["deps", "abseil-cpp", "--depth=3"]),
+        ("explain_rules_cc", ["explain", "rules_cc"]),
+        ("all_paths_rules_cc", ["all_paths", "rules_cc", "--output=json"]),
+        ("graph_include_unused", ["graph", "--include_unused"]),
+    ]},
+    # Fixtures: brotli plus a local module extension whose use_repo calls disagree with its
+    # extension_metadata, so `mod tidy` has fixups to apply (and, in -fail, a failing one).
+    "brotli-tidy": {"base": "brotli", "overlay": {"tidy_ext.bzl": TIDY_EXT_BZL},
+                    "module_append": TIDY_MODULE + TIDY_DEV_MODULE, "cases": TIDY_CASES},
+    "brotli-tidy-fail": {"base": "brotli", "overlay": {"tidy_ext.bzl": TIDY_EXT_BZL},
+                         "module_append": TIDY_FAIL_MODULE, "cases": TIDY_CASES},
+}
+
+
+def side_paths(side, project):
+    ws = os.path.join(WORK, side, project)
+    our = os.path.join(CACHE, "oracle-out", "mod-compare-" + side)
+    return ws, our
+
+
+def sync_workspace(project, ws):
+    os.makedirs(ws, exist_ok=True)
+    cfg = PROJECTS[project]
+    checkout = os.path.join(CACHE, "corpus", cfg.get("base", project))
+    subprocess.run(["rsync", "-a", "--delete", "--exclude=/bazel-*", "--exclude=/.git",
+                    checkout + "/", ws + "/"], check=True)
+    for rel, content in cfg.get("overlay", {}).items():
+        with open(os.path.join(ws, rel), "w") as f:
+            f.write(content)
+    if cfg.get("module_append"):
+        with open(os.path.join(ws, "MODULE.bazel"), "a") as f:
+            f.write(cfg["module_append"])
+
+
+def run(binary, side, project, args):
+    ws, our = side_paths(side, project)
+    cmd = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "-p", "MemoryMax=12G",
+           "-p", "MemorySwapMax=0", "env", "-i", "HOME=" + HOME, "PATH=/usr/bin:/bin",
+           binary, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc"]
+    if args:
+        cmd += ["mod", args[0], "--repository_cache=" + REPO_CACHE, "--color=no",
+                "--curses=no"] + args[1:]
+    else:
+        cmd += ["mod", "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"]
+    p = subprocess.run(cmd, cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       stdin=subprocess.DEVNULL, timeout=3600)
+    return p.returncode, p.stdout, p.stderr
+
+
+def normalise(data, side, project):
+    ws, our = side_paths(side, project)
+    out = data
+    for real, tag in ((os.path.realpath(our), b"<OUR>"), (our, b"<OUR>"),
+                      (os.path.realpath(ws), b"<WS>"), (ws, b"<WS>")):
+        out = out.replace(real.encode(), tag)
+    out = re.sub(rb"<OUR>/([0-9a-f]{32})", b"<OUR>/<MD5>", out)
+    start = b"Starting local Bazel server (9.3.2) and connecting to it...\n"
+    if out.startswith(start):
+        out = out[len(start):]
+    out = re.sub(rb"<OUR>/install/([0-9a-f]{32})", b"<OUR>/install/<MD5>", out)
+    return out
+
+
+def strip_ui(err):
+    """stderr without the UI's progress lines (" no actions running", printed by the oracle's
+    UiStateTracker while work runs longer than its progress interval) and without the newline
+    UiEventHandler.completeBuild writes when stdout ended without one."""
+    lines = [l for l in err.split(b"\n") if l != b" no actions running"]
+    out = b"\n".join(lines)
+    while out.endswith(b"\n\n"):
+        out = out[:-1]
+    if out == b"\n":
+        out = b""
+    return out
+
+
+def result_dir(side, project):
+    d = os.path.join(WORK, "results", side, project)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def shutdown(project):
+    ws, our = side_paths("oracle", project)
+    subprocess.run(["env", "-i", "HOME=" + HOME, "PATH=/usr/bin:/bin", ORACLE,
+                    "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc",
+                    "shutdown"], cwd=ws, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def capture(binary, side, project, name, args):
+    ws, _ = side_paths(side, project)
+    if side == "oracle":
+        # Every case starts a new server: Blaze has none, and a server that already evaluated
+        # a module extension does not repeat its warnings.
+        shutdown(project)
+    if args and args[0] == "tidy":
+        sync_workspace(project, ws)
+    rc, out, err = run(binary, side, project, args)
+    d = result_dir(side, project)
+    files = {"rc": str(rc).encode() + b"\n", "out": out, "err": err}
+    if args and args[0] == "tidy":
+        with open(os.path.join(ws, "MODULE.bazel"), "rb") as f:
+            files["module"] = f.read()
+    for ext, data in files.items():
+        with open(os.path.join(d, name + "." + ext), "wb") as f:
+            f.write(data)
+    if args and args[0] == "tidy":
+        sync_workspace(project, ws)
+
+
+def load(side, project, name):
+    d = result_dir(side, project)
+    res = {}
+    for ext in ("rc", "out", "err", "module"):
+        p = os.path.join(d, name + "." + ext)
+        if os.path.exists(p):
+            with open(p, "rb") as f:
+                res[ext] = f.read()
+    return res
+
+
+def compare(project, name):
+    o, b = load("oracle", project, name), load("blaze", project, name)
+    if not o or not b:
+        return "MISSING", []
+    diffs, raw, ui_only = [], True, True
+    for ext in ("rc", "out", "err", "module"):
+        if ext not in o and ext not in b:
+            continue
+        ov, bv = o.get(ext, b""), b.get(ext, b"")
+        if ov != bv:
+            raw = False
+        on, bn = normalise(ov, "oracle", project), normalise(bv, "blaze", project)
+        if on != bn:
+            diffs.append(ext)
+            if ext != "err" or strip_ui(on) != strip_ui(bn):
+                ui_only = False
+    if diffs:
+        return ("DIFF-UI" if ui_only else "DIFF"), diffs
+    return ("MATCH (raw)" if raw else "MATCH"), []
+
+
+def show(spec):
+    project, name = spec.split("/", 1)
+    import difflib
+    o, b = load("oracle", project, name), load("blaze", project, name)
+    for ext in ("rc", "out", "err", "module"):
+        if ext not in o and ext not in b:
+            continue
+        ov = normalise(o.get(ext, b""), "oracle", project).decode("latin-1").splitlines(True)
+        bv = normalise(b.get(ext, b""), "blaze", project).decode("latin-1").splitlines(True)
+        sys.stdout.writelines(difflib.unified_diff(ov, bv, "oracle/" + name + "." + ext,
+                                                   "blaze/" + name + "." + ext))
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] in ("help", "--help", "-h"):
+        print(USAGE, end="")
+        return 0
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("--project", action="append", choices=sorted(PROJECTS))
+    ap.add_argument("--case", action="append")
+    ap.add_argument("--blaze", default=os.path.join(ROOT, "target", "debug", "blaze"))
+    ap.add_argument("--side", default="both", choices=["oracle", "blaze", "both", "none"])
+    ap.add_argument("--list", action="store_true")
+    ap.add_argument("--show")
+    a = ap.parse_args()
+    if a.show:
+        show(a.show)
+        return 0
+    import fnmatch
+    projects = a.project or list(PROJECTS)
+    sides = {"both": ["oracle", "blaze"], "none": []}.get(a.side, [a.side])
+    binaries = {"oracle": ORACLE, "blaze": os.path.abspath(a.blaze)}
+    all_ok, counts = True, {}
+    print("blaze binary: %s (sha256 %s)" % (
+        binaries["blaze"], hashlib.sha256(open(binaries["blaze"], "rb").read()).hexdigest()[:12]
+        if os.path.exists(binaries["blaze"]) else "missing"))
+    for project in projects:
+        cfg = PROJECTS[project]
+        cases = [(n, [x.format(**cfg) for x in args]) for n, args in cfg["cases"]
+                 if not a.case or any(fnmatch.fnmatch(n, g) for g in a.case)]
+        if a.list:
+            for n, args in cases:
+                print("%s/%s: mod %s" % (project, n, " ".join(repr(x) if x == "" or " " in x else x for x in args)))
+            continue
+        for side in sides:
+            ws, _ = side_paths(side, project)
+            sync_workspace(project, ws)
+            run(binaries[side], side, project, ["graph"])  # warm-up, discarded
+            for n, args in cases:
+                capture(binaries[side], side, project, n, args)
+        for n, _ in cases:
+            status, diffs = compare(project, n)
+            counts[status.split()[0]] = counts.get(status.split()[0], 0) + 1
+            if status not in ("MATCH", "MATCH (raw)"):
+                all_ok = False
+            print("%-8s %-28s %s%s" % (project, n, status, (" " + ",".join(diffs)) if diffs else ""))
+    if "oracle" in sides:
+        for project in projects:
+            shutdown(project)
+    if not a.list:
+        print("summary: " + ", ".join("%s %d" % kv for kv in sorted(counts.items())))
+    return 0 if all_ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

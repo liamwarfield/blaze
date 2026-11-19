@@ -107,12 +107,7 @@ fn create_parser_input(
     // `ParserInput.fromLatin1(bytes, file)`: one char per byte (Bazel's internal string form), so
     // a MODULE.bazel that is not UTF-8 still evaluates (with the warning above at the default
     // enforcement mode).
-    match blaze_util::string_encoding::parser_input_from_latin1(bytes) {
-        Ok(s) => Ok(s.into_owned()),
-        // PORT: only while `STRINGS_ARE_INTERNAL` is false (the seam of
-        // blaze_util::string_encoding).
-        Err(_) => blaze_util::unported!("ParserInput.fromLatin1", "non-UTF-8 file {file}"),
-    }
+    Ok(blaze_util::string_encoding::parser_input_from_latin1(bytes).into_owned())
 }
 
 fn replay_syntax_errors(event_handler: &dyn ExtendedEventHandler, errors: &[SyntaxError]) {
@@ -199,6 +194,9 @@ impl CompiledModuleFile {
             let mut eval = Evaluator::new(&module);
             eval.extra = Some(thread);
             eval.set_forbid_recursion(!thread.semantics.allow_recursion);
+            // Java: net/starlark/java/eval/StringModule.java:326 and lib/json/Json.java:346 read
+            // the thread's semantics (`--internal_starlark_utf_8_byte_strings`).
+            eval.set_utf8_byte_strings(thread.semantics.utf8_byte_strings());
             eval.set_max_callstack_size(DEFAULT_MAX_CALLSTACK)
                 .expect("fresh evaluator");
             let result = eval

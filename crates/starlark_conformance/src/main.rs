@@ -17,6 +17,10 @@ commands:
                        True), which is how Blaze reads Starlark files
   eval [--latin1] FILE evaluate one Starlark file with the ScriptTest globals (print enabled) and
                        show the Bazel-style traceback of any error
+  probe [--unicode] FILE...
+                       run each file as java/StarlarkProbe.java does on Bazel's interpreter
+                       (Blaze's universe, json, print) and print the probe's lines; default
+                       mode is latin1 (one char per byte, byte-strings flag on)
   parse PATH...         compile every Starlark file under PATH (.bzl, .scl, BUILD, *.BUILD,
                        MODULE.bazel, REPO.bazel) with Bazel's dialect and static checks
                        (blaze_starlark::eval::compile) and list failures
@@ -44,6 +48,23 @@ fn real_main() -> anyhow::Result<()> {
         println!("{USAGE}");
         return Ok(());
     };
+    if cmd == "probe" {
+        let mode = if args[1..].iter().any(|a| a == "--unicode") {
+            ScriptMode::Unicode
+        } else {
+            ScriptMode::Latin1
+        };
+        for f in args[1..].iter().filter(|a| *a != "--unicode") {
+            let name = PathBuf::from(f)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            for line in starlark_conformance::probe::run(&name, &std::fs::read(f)?, mode) {
+                println!("{line}");
+            }
+        }
+        return Ok(());
+    }
     if cmd == "parse" {
         let mut files = Vec::new();
         for a in &args[1..] {

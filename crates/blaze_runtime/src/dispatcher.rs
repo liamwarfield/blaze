@@ -671,9 +671,16 @@ impl BlazeCommandDispatcher {
                 );
             }
         }
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:795 BlazeRuntime.afterCommand
         let final_command_result = match module_exit_code {
             Some(code) if !command_result.get_exit_code().is_infrastructure_failure() => {
-                BlazeCommandResult::detailed_exit_code(code)
+                match command_result.get_exec_request() {
+                    Some(exec_request) => BlazeCommandResult::execute_with_detailed_exit_code(
+                        exec_request.clone(),
+                        code,
+                    ),
+                    None => BlazeCommandResult::detailed_exit_code(code),
+                }
             }
             _ => command_result,
         };

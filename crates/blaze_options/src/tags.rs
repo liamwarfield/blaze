@@ -142,6 +142,28 @@ pub enum OptionDocumentationCategory {
 }
 
 impl OptionDocumentationCategory {
+    /// `OptionDocumentationCategory.values()`.
+    pub const VALUES: &'static [OptionDocumentationCategory] = &[
+        Self::UNCATEGORIZED,
+        Self::UNDOCUMENTED,
+        Self::BAZEL_CLIENT_OPTIONS,
+        Self::LOGGING,
+        Self::INPUT_STRICTNESS,
+        Self::EXECUTION_STRATEGY,
+        Self::BUILD_TIME_OPTIMIZATION,
+        Self::OUTPUT_SELECTION,
+        Self::OUTPUT_PARAMETERS,
+        Self::SIGNING,
+        Self::STARLARK_SEMANTICS,
+        Self::TESTING,
+        Self::TOOLCHAIN,
+        Self::QUERY,
+        Self::MOD_COMMAND,
+        Self::BZLMOD,
+        Self::GENERIC_INPUTS,
+        Self::REMOTE,
+    ];
+
     pub fn name(self) -> &'static str {
         match self {
             Self::UNCATEGORIZED => "UNCATEGORIZED",

@@ -12,7 +12,7 @@ use blaze_options::rc::option_processor::{
     BAZEL_SYSTEM_BAZELRC_PATH, OptionProcessor, RcStartupFlag, StartupFlagRegistry,
 };
 use blaze_protos::command_server::{RunRequest, StartupOption};
-use blaze_util::string_encoding::latin1_encode;
+use blaze_util::string_encoding::{latin1_decode, latin1_encode};
 
 use crate::archive_utils::{
     EmbeddedArchive, LoggingInfo, RestartReason, determine_archive_contents, extract_build_label,
@@ -330,15 +330,83 @@ impl BlazeServer {
         //   covered by the client's shared install base lock, held as long as the server runs.
         // Outside --batch the lock descriptors are O_CLOEXEC (AcquireLock), so processes the
         // server spawns do not inherit the locks, and an exec of this process (the `run`
-        // command's ExecRequest, once ported) drops them, as Bazel's client has by then.
+        // command's ExecRequest) drops them, as Bazel's client has by then.
 
         // PORT: in-process, the server runs the request here and writes to this process's
-        // stdout/stderr itself; broken-pipe handling, ExecRequest (`run`) and the abrupt-exit
-        // paths of the response loop belong to the gRPC client (W8). The cancel thread runs while
-        // the command does (Ctrl-C: `signal_handler`).
-        crate::signal_handler::with_cancel_thread(server.canceller(), || {
+        // stdout/stderr itself; broken-pipe handling and the abrupt-exit paths of the response
+        // loop belong to the gRPC client (W8). The cancel thread runs while the command does
+        // (Ctrl-C: `signal_handler`) and is joined when it returns, as SendAction(JOIN) and
+        // cancel_thread.join() do before the ExecRequest is handled.
+        let final_response = crate::signal_handler::with_cancel_thread(server.canceller(), || {
             server.run_command(startup, request)
-        })
+        });
+
+        // Java: src/main/cpp/blaze.cc:2166 BlazeServer::Communicate
+        if let Some(request) = &final_response.exec_request
+            && request.should_exec
+        {
+            if request.argv.is_empty() {
+                bazel_log(
+                    LogLevel::User,
+                    file!(),
+                    line!(),
+                    "\nServer requested exec() but did not pass a binary to execute",
+                );
+                return exit_code::INTERNAL_ERROR;
+            }
+
+            // Clear environment variables before setting the requested ones so that users can
+            // still explicitly override the clearing.
+            // The request's bytes are the client's platform strings: internal strings here.
+            let decode = |bytes: &[u8]| latin1_decode(bytes).into_owned();
+            for variable_name in &request.environment_variable_to_clear {
+                // SAFETY: the cancel thread has been joined; the command's threads are done.
+                unsafe { crate::platform::unset_env(&decode(variable_name)) };
+            }
+
+            let argv: Vec<String> = request.argv.iter().map(|a| decode(a)).collect();
+            for variable in &request.environment_variable {
+                // SAFETY: as above.
+                unsafe {
+                    crate::platform::set_env(&decode(&variable.name), &decode(&variable.value))
+                };
+            }
+
+            let working_directory = decode(&request.working_directory);
+            if !change_directory(&working_directory) {
+                bazel_die(
+                    exit_code::INTERNAL_ERROR,
+                    file!(),
+                    line!(),
+                    format!(
+                        "changing directory into {} failed: {}",
+                        working_directory,
+                        get_last_error_string()
+                    ),
+                );
+            }
+
+            // Execute the requested program, but before doing so, flush everything we still
+            // have to say.
+            {
+                use std::io::Write as _;
+                let _ = std::io::stdout().flush();
+                let _ = std::io::stderr().flush();
+            }
+            crate::platform::execute_run_request(&Path::new(&argv[0]), &argv);
+        }
+
+        if let Some(failure_detail) = &final_response.failure_detail {
+            bazel_log(
+                LogLevel::Info,
+                file!(),
+                line!(),
+                format!("failure_detail: {failure_detail:?}"),
+            );
+        }
+
+        // PORT: no broken pipe is detected in-process (the server writes to the streams itself).
+        final_response.exit_code
     }
 }
 

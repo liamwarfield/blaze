@@ -105,15 +105,16 @@ impl ConfigFeatureFlagProvider {
 }
 
 impl fmt::Display for ConfigFeatureFlagProvider {
-    // Java: StarlarkValue.repr default of a NativeInfo (StructImpl.repr over the struct fields).
+    // Java: com/google/devtools/build/lib/packages/NativeInfo.java:125 NativeInfo.repr (legacy
+    // fields, sorted by name; strings through Printer.java:225 appendQuoted).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "struct(")?;
         match self.get_error() {
-            Some(e) => write!(f, "error = {:?}, ", e)?,
+            Some(e) => write!(f, "error = {}, ", blaze_starlark::printer::quote(e))?,
             None => write!(f, "error = None, ")?,
         }
         match self.get_flag_value() {
-            Some(v) => write!(f, "value = {:?})", v),
+            Some(v) => write!(f, "value = {})", blaze_starlark::printer::quote(v)),
             None => write!(f, "value = None)"),
         }
     }
@@ -244,5 +245,29 @@ pub const fn starlark_constructor() -> ConfigFeatureFlagProviderConstructor {
             id: FEATURE_FLAG_INFO,
             constructor: BuiltinConstructor::Native(feature_flag_info_constructor),
         },
+    }
+}
+
+#[cfg(test)]
+mod byte_strings_tests {
+    use super::*;
+    use blaze_util::string_encoding::latin1_decode;
+
+    // Byte-strings review 2026-11-20 S1-3. Oracle (bazel 9.3.2): a `config_feature_flag` with
+    // value "à🐷" gives `repr(dep[config_common.FeatureFlagInfo])` =
+    // `struct(error = None, value = "` C3 A0 F0 9F 90 B7 `")`.
+    #[test]
+    fn repr_keeps_latin1_chars() {
+        let v = latin1_decode("à🐷".as_bytes()).into_owned();
+        let p = ConfigFeatureFlagProvider::create(Some(v.clone()), None, Arc::new(|_| true));
+        assert_eq!(
+            p.to_string(),
+            format!("struct(error = None, value = \"{v}\")")
+        );
+        let e = ConfigFeatureFlagProvider::create(None, Some(v.clone()), Arc::new(|_| true));
+        assert_eq!(
+            e.to_string(),
+            format!("struct(error = \"{v}\", value = None)")
+        );
     }
 }

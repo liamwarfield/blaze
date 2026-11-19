@@ -1,0 +1,1360 @@
+#!/usr/bin/env python3
+"""File- and method-level map of how much of Bazel's Java (at the pin) Blaze has ported.
+
+Usage:
+  scripts/coverage/java-map build [--out DIR]   scan, classify, write DIR (default docs/coverage):
+                                                java-map.tsv, java-methods.tsv.gz, java-tests.tsv,
+                                                markers-unresolved.tsv, and the generated sections
+                                                of README.md (between BEGIN/END GENERATED lines)
+  scripts/coverage/java-map summary             print the totals and cluster tables only
+  scripts/coverage/java-map check-parser [N]    compare this script's method parser with javac's
+                                                (scripts/coverage/JavaMethods.java, needs a JDK
+                                                >= 21 with jdk.compiler; $JAVA or the newest
+                                                /usr/lib/jvm/*/bin/java) on all main files, or on
+                                                N files picked deterministically
+  scripts/coverage/java-map file PATH           print the parse of one Java file (relative to
+                                                src/main/java or src/test/java) with marks
+  scripts/coverage/java-map help
+
+Inputs (read-only): the pinned Bazel source (~/.cache/blaze/src/bazel-9.3.2: src/main/java,
+src/test/java, src/main/cpp, src/main/protobuf) and the Rust tree crates/ (third_party is not
+scanned). No network, no Cargo. Output is deterministic (sorted rows, gzip mtime 0).
+
+Rules (status, reason, cluster, crate fallback) are the tables near the top of this file:
+SCOPE_RULES, CLUSTER_RULES, PLAN_CRATES. Edit them there; every row cites the rule that fired.
+"""
+
+import collections
+import gzip
+import io
+import os
+import re
+import subprocess
+import sys
+
+HOME = os.path.expanduser("~")
+SRC = os.environ.get("BLAZE_BAZEL_SRC", f"{HOME}/.cache/blaze/src/bazel-9.3.2")
+MAIN = f"{SRC}/src/main/java"
+TEST = f"{SRC}/src/test/java"
+CPP = f"{SRC}/src/main/cpp"
+PROTO = f"{SRC}/src/main/protobuf"
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CRATES = f"{REPO}/crates"
+
+# --------------------------------------------------------------------------------------------
+# Rules. Order matters: the first matching rule wins. Patterns are regexes searched in the path
+# relative to src/main/java (e.g. "com/google/devtools/build/lib/windows/WindowsShell.java").
+# A rule only applies to files that are not PORTED. Do not mark out of scope anything that
+# Linux x86-64 Bazel executes for a normal command.
+# --------------------------------------------------------------------------------------------
+L = "com/google/devtools/build/lib/"
+SCOPE_RULES = [
+    # (reason, path regex, why)
+    ("OUT_OF_SCOPE_OS", r"/windows/", "Windows-only package"),
+    ("OUT_OF_SCOPE_OS", r"/(Windows|Win32)[A-Z]\w*\.java$|Windows\w*\.java$", "Windows class"),
+    ("OUT_OF_SCOPE_OS", r"/(Darwin|MacOS|Macos|Xcode|XCode)\w*\.java$", "macOS class"),
+    ("OUT_OF_SCOPE_OS", L + r"platform/", "system monitors whose native side is a no-op on Linux (src/main/native/unix_jni_linux.cc:78-130)"),
+    ("OUT_OF_SCOPE_OS", L + r"sandbox/WindowsSandbox|" + L + r"sandbox/DarwinSandbox", "non-Linux sandbox"),
+    ("JVM_ONLY", r"/processor/", "javac annotation processor (build-time Java tooling)"),
+    ("JVM_ONLY", L + r"skyframe/serialization/autocodec/", "AutoCodec annotations and processor"),
+    ("JVM_ONLY", L + r"unsafe/", "sun.misc.Unsafe access"),
+    ("JVM_ONLY", L + r"jni/", "JNI library loading"),
+    ("JVM_ONLY", r"net/starlark/java/annot/", "Java annotations for the Starlark interpreter"),
+    ("JVM_ONLY", L + r"util/(StringUnsafe|HeapOffsetHelper|ObjectSizer)\w*\.java$", "JVM object layout"),
+    ("JVM_ONLY", L + r"runtime/(MemoryPressure\w*|GcThrashingDetector|GcChurningDetector|RetainedHeapLimiter|HeapDumpUtil|ThreadDumper)\.java$", "JVM heap/GC monitoring"),
+    ("JVM_ONLY", L + r"(util|runtime)/(ThreadDump\w*|GCStatsRecorder)\.java$", "JVM thread dumps and GC statistics"),
+    ("JVM_ONLY", L + r"server/GcAndInternerShrinkingIdleTask\.java$", "JVM GC and interner shrinking"),
+    ("JVM_ONLY", L + r"skyframe/serialization/strings/UnsafeStringCodec\.java$", "sun.misc.Unsafe string codec"),
+    ("JVM_ONLY", L + r"concurrent/(ForkJoinQuiescingExecutor|NamedForkJoinPool)\.java$", "java.util.concurrent ForkJoin plumbing"),
+    ("OUT_OF_SCOPE_BY_CONTRACT", r"com/google/devtools/build/docgen/", "doc generator, not part of the bazel binary"),
+    ("OUT_OF_SCOPE_BY_CONTRACT", L + r"profiler/memory/", "memory instrumentation (PORTING.md Skip only)"),
+    ("OUT_OF_SCOPE_BY_CONTRACT", L + r"(profiler/MemoryProfiler|buildtool/SkyframeMemoryDumper)\.java$", "memory instrumentation (--memory_profile, dump --memory)"),
+    ("OUT_OF_SCOPE_BY_CONTRACT", L + r"metrics/(PostGCMemoryUseRecorder|MemoryUseRecorder|GarbageCollectionMetricsUtils)\w*\.java$", "memory instrumentation"),
+    ("OUT_OF_SCOPE_BY_CONTRACT", r"/[Gg]oogle(?!Auth)\w*\.java$", "Google-internal (name says Google; GoogleAuth* kept)"),
+    ("TEST_SUPPORT", r"/(testing|testutil|testutils)/", "test-support package"),
+    ("TEST_SUPPORT", r"\w+ForTesting\.java$|/Testing\w*\.java$", "test-support class"),
+    ("STARLARK_RUST_DECISION", r"^net/starlark/java/", "replaced by starlark-rust (decisions.md 2026-11-17)"),
+]
+TRIVIAL_MAX_LOC = 30   # GENERATED_OR_TRIVIAL: package-info, or no method bodies and loc <= this
+
+# Feature clusters for NEEDED files that are not PORTED. First match wins; path regexes like
+# SCOPE_RULES, or "class:" + regex on the file's simple name.
+CLUSTER_RULES = [
+    ("server-client-protocol", [L + r"server/", L + r"runtime/(BlazeCommandDispatcher|CommandDispatcher|BlazeServerStartupOptions|ServerCapabilities|BlockWaitingModule|IdleTask|InstrumentationOutput\w*|CommandLinePathFactory|CommandLog|ClientOptions|ConfigFlagDefinitions|UiOptions|LockingMode|RemoteServer\w*|GrpcServer\w*)", L + r"runtime/(BlazeRuntime|BlazeWorkspace|WorkspaceBuilder)\.java$", L + r"runtime/commands/(Shutdown|Clean)Command", L + r"util/(ProcessUtils|ThreadUtils|DebugLoggerConfigurator|LoggingUtil|InterruptedFailureDetails)", L + r"platform/"]),
+    ("incremental-evaluation", [r"com/google/devtools/build/skyframe/(InMemoryGraph|InMemoryNodeEntry|IncrementalInMemoryNodeEntry|NodeEntry|DirtyBuildingState|InvalidatingNodeVisitor|DirtyTrackingProgressReceiver|Differencer|RecordingDifferencer|SequencedRecordingDifferencer|Version|IntVersion|Delta|EvaluationVersion|ThinNodeEntry|DeletingInvalidationState|DirtinessCheckingState|ChangePruning|DelegatingNodeEntry|EmptyNodeEntry|NodeBatch|QueryableGraph|ProcessableGraph|NotifyingHelper|InMemoryMemoizingEvaluator|AbstractInMemoryMemoizingEvaluator|MemoizingEvaluator|SkyValueDirtinessChecker|GroupedDeps|InvalidationState|ReverseDepsUtility|DirtyType|LifecycleState|EvaluationContext|IncrementalityIntent|InMemoryGraphImpl|AbstractIncrementalInMemoryMemoizingEvaluator|EdgeType|PartialReevaluationMailbox)", L + r"skyframe/(DiffAwareness\w*|LocalDiffAwareness|FileSystemValueChecker\w*|FilesystemValueChecker\w*|DirtinessChecker\w*|ExternalFilesHelper|SkyValueDirtinessChecker|SequencedSkyframeExecutor\w*|SkyframeIncrementalBuildMonitor|PackageRootsNoSymlinkCreation|DiffAwarenessManager|ExternalDirtinessChecker|ModifiedOutputsReceiver|TopDownActionCache|BasicFilesystemDirtinessChecker|MissingDiffDirtinessChecker|UnionDirtinessChecker|DirectoryListingStateValue|PrecomputedValue|ActionExecutionInactivityWatchdog)", r"com/google/devtools/build/skyframe/state/", L + r"skyframe/(SkyframeExecutor|SkyframeExecutorWrappingWalkableGraph|SkyFocus\w*)\.java$", L + r"skyframe/skyfocus/", L + r"vfs/(BatchStat|ModifiedFileSet|DigestUtils|SyscallCache|BulkDeleter|OutputService|DelegateFileSystem|FileStateKey)"]),
+    ("symbolic-macros-and-lazy-loading", [r"/(MacroClass|MacroInstance|MacroFrame|MacroInstanceFunction|MacroInstanceValue|EvalMacroFunction|MacroFunctionApi|StarlarkMacro\w*|LazyMacro\w*|PackagePiece\w*|PackagePieceIdentifier|Materializer\w*|TargetRecorder|MacroVisibility\w*|Subrule\w*|StarlarkSubrule\w*)\.java$", L + r"packages/producers/", L + r"skyframe/(PackagePiece|EvalMacro|MacroInstance|PackageFunctionWithMultipleGlobDeps|PackageFunctionWithSingleGlobDep|PackageFunctionWithoutGlobDeps|GlobsFunction|GlobsValue)"]),
+    ("native-aspects", [L + r"analysis/(NativeAspectClass|ConfiguredAspectFactory|AspectCollection|AspectResolver|DependencyResolutionHelpers)", L + r"packages/(NativeAspectClass|AspectParameters|AspectDescriptor)", L + r"query2/query/aspectresolvers/"]),
+    ("coverage", [r"/(Coverage\w*|InstrumentedFiles\w*|LcovMerger\w*|BaselineCoverage\w*|InstrumentationFilter\w*|CoverageReport\w*)\.java$", L + r"bazel/coverage/", L + r"runtime/commands/CoverageCommand"]),
+    ("workers", [L + r"worker/", L + r"sandbox/\w*Worker"]),
+    ("dynamic-execution", [L + r"dynamic/"]),
+    ("action-rewinding", [L + r"skyframe/rewinding/", r"/(LostInputs\w*|ActionRewind\w*|RewindingStrategy\w*|LostInputsExecException|ImportantOutputHandler\w*)\.java$"]),
+    ("include-scanning", [L + r"includescanning/", L + r"rules/cpp/(IncludeScann\w*|IncludeParser|IncludeProblems|SwigIncludeScanner|CppIncludeScanningContext\w*|ScanningIncludeHelper)"]),
+    ("java-rules-in-core", [L + r"rules/java/", L + r"bazel/rules/java/", L + r"starlarkbuildapi/java/", r"/(Java\w*|Jvm\w*)\.java$"]),
+    ("android-apple-objc-proto", [L + r"rules/(android|apple|objc|proto)/", L + r"starlarkbuildapi/(android|apple|objc|proto)/", r"/(Android|Apple|Objc|J2Objc|XcodeConfig)\w*\.java$"]),
+    ("query-output-formatters", [L + r"query2/query/output/", L + r"query2/(aquery|cquery|common)/", L + r"query2/\w+\.java$", L + r"query2/compat/", L + r"rules/genquery/", L + r"runtime/commands/(Query|CQuery|AQuery)\w*", L + r"buildtool/(QueryProcessor|AqueryProcessor|CqueryProcessor|PostAnalysisQueryProcessor)", L + r"query2/engine/", L + r"query2/query/"]),
+    ("profiler-and-metrics", [L + r"profiler/", L + r"metrics/", L + r"runtime/(MemoryProfiler|BuildSummaryStatsModule|CriticalPath\w*|CommandProfilerModule|ProfilerStartedEvent|BugReportingExceptionHandler|ActionExecutionStatusReporter)", L + r"packages/metrics/", L + r"buildtool/buildevent/BuildMetrics"]),
+    ("remote-execution-and-caching", [L + r"remote/", L + r"authandtls/", L + r"runtime/(CommandLinePathFactory|RemoteRepository\w*)", L + r"bazel/repository/downloader/(GrpcRemoteDownloader|Http\w*|DelegatingDownloader)", L + r"exec/(SpawnCache|RemoteLocalFallbackRegistry)"]),
+    ("build-event-service", [L + r"buildeventservice/", L + r"buildeventstream/", L + r"runtime/(BuildEvent\w*|BuildEventStreamer\w*|BuildEventArtifactUploader\w*|CountingArtifactGroupNamer|SynchronizedOutputStream)", L + r"buildtool/buildevent/"]),
+    ("remote-analysis-caching-serialization", [L + r"skyframe/serialization/"]),
+    ("starlark-debugger-and-docs", [L + r"starlarkdebug/", L + r"starlarkdocextract/", L + r"rules/starlarkdocextract/", L + r"bazel/debug/"]),
+    ("commands", [L + r"runtime/commands/", L + r"bazel/commands/", L + r"runtime/mobileinstall/", L + r"bazel/bzlmod/modcommand/", L + r"runtime/(ProjectFile|Project\w*)"]),
+    ("sandboxing-and-local-exec", [L + r"sandbox/", L + r"exec/", L + r"shell/", L + r"standalone/", L + r"unix/", L + r"actions/(Spawn|Resource|Local)\w*"]),
+    ("repositories-and-bzlmod", [L + r"bazel/bzlmod/", L + r"bazel/repository/", L + r"rules/repository/", L + r"repository/", L + r"skyframe/(Repository\w*|\w*RepositoryDirectory\w*|ClientEnvironment\w*|RepoFile\w*|Bzlmod\w*)", L + r"bazel/(BazelRepositoryModule|BazelRepositoryModule\w*)"]),
+    ("configuration-and-transitions", [L + r"analysis/config/", L + r"skyframe/config/", L + r"rules/config/", L + r"analysis/platform/", L + r"rules/platform/", L + r"skyframe/toolchains/", L + r"analysis/constraints/", L + r"analysis/producers/"]),
+    ("cpp-rules", [L + r"rules/cpp/", L + r"bazel/rules/cpp/", L + r"starlarkbuildapi/cpp/"]),
+    ("python-and-other-native-rules", [L + r"rules/", L + r"bazel/rules/"]),
+    ("analysis-core", [L + r"analysis/", L + r"starlarkbuildapi/", L + r"skyframe/(ConfiguredTarget\w*|Aspect\w*|\w*Analysis\w*|SkyframeBuildView|BuildConfiguration\w*|StarlarkAspect\w*|TargetCompletor|ConfiguredValueCreation\w*|PlatformMapping\w*)"]),
+    ("packages-and-loading", [L + r"packages/", L + r"pkgcache/", L + r"skyframe/(Package\w*|Bzl\w*|Glob\w*|TargetPattern\w*|\w*Recursive\w*|StarlarkBuiltins\w*|Ignored\w*|ContainingPackage\w*|CollectPackages\w*|PrepareDepsOfPattern\w*|BuildFile\w*|ProcessPackageDirectory\w*|TargetMarker\w*|TransitiveTarget\w*|TargetLoading\w*|LoadedPackage\w*|SkyframePackage\w*|BzlCompile\w*|StarlarkFile\w*|CompiledBuildFile\w*|DirectoryListing\w*|File\w*|DirectoryTree\w*|RepositoryMapping\w*|ProjectFiles\w*|WorkspaceName\w*|ToplevelStarlarkAspect\w*)", L + r"cmdline/"]),
+    ("execution-and-action-graph", [L + r"actions/", L + r"skyframe/", L + r"buildtool/", r"com/google/devtools/build/skyframe/"]),
+    ("runtime-and-ui", [L + r"runtime/", L + r"bazel/", L + r"events/", L + r"outputfilter/", L + r"util/io/", L + r"buildeventstream/"]),
+    ("base-libraries", [L + r"util/", L + r"concurrent/", L + r"vfs/", L + r"collect/", L + r"io/", L + r"clock/", L + r"graph/", L + r"supplier/", L + r"versioning/", L + r"bugreport/", L + r"network/", L + r"causes/", r"com/google/devtools/common/options/"]),
+    ("other", [r"."]),
+]
+
+# Fallback owning crate (docs/crates.md -> docs/research/06 section 5.1) when no marker names the
+# file or any file in its package or an ancestor package.
+PLAN_CRATES = [
+    (r"^net/starlark/", "blaze_starlark"),
+    (r"^com/google/devtools/common/options/", "blaze_options"),
+    (r"^com/google/devtools/build/skyframe/", "blaze_skyframe"),
+    (L + r"(util|concurrent|clock|unsafe|supplier|bugreport|profiler|graph|versioning)/", "blaze_util"),
+    (L + r"events/", "blaze_events"),
+    (L + r"collect/", "blaze_collect"),
+    (L + r"(vfs|unix|io)/", "blaze_vfs"),
+    (L + r"cmdline/", "blaze_cmdline"),
+    (L + r"shell/", "blaze_shell"),
+    (L + r"packages/", "blaze_packages"),
+    (L + r"query2/engine/", "blaze_query_engine"),
+    (L + r"query2/", "blaze_query"),
+    (L + r"actions/", "blaze_actions"),
+    (L + r"(buildeventstream|causes)/", "blaze_bep"),
+    (L + r"analysis/", "blaze_analysis"),
+    (L + r"(rules|bazel/rules)/", "blaze_rules"),
+    (L + r"bazel/bzlmod/", "blaze_bzlmod"),
+    (L + r"bazel/repository/", "blaze_repo_fetch"),
+    (L + r"(exec|sandbox|standalone|worker|dynamic)/", "blaze_exec"),
+    (L + r"skyframe/", "blaze_sky_top"),
+    (L + r"buildtool/", "blaze_buildtool"),
+    (L + r"remote/", "blaze_remote"),
+    (L + r"(runtime|server|bazel)/", "blaze_runtime"),
+]
+
+# --------------------------------------------------------------------------------------------
+# Java lexing and parsing
+# --------------------------------------------------------------------------------------------
+
+def strip_java(src):
+    """Return (nocomment, blank): comments -> spaces; in blank also string/char contents."""
+    n = len(src)
+    nc = list(src)
+    bl = list(src)
+    i = 0
+    while i < n:
+        c = src[i]
+        if c == "/" and i + 1 < n and src[i + 1] == "/":
+            j = src.find("\n", i)
+            j = n if j < 0 else j
+            for k in range(i, j):
+                nc[k] = bl[k] = " "
+            i = j
+        elif c == "/" and i + 1 < n and src[i + 1] == "*":
+            j = src.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            for k in range(i, j):
+                if src[k] != "\n":
+                    nc[k] = bl[k] = " "
+            i = j
+        elif c == '"' and src.startswith('"""', i):
+            j = src.find('"""', i + 3)
+            while j > 0 and src[j - 1] == "\\" and src[j - 2] != "\\":
+                j = src.find('"""', j + 1)
+            j = n if j < 0 else j + 3
+            for k in range(i + 3, j - 3):
+                if src[k] != "\n":
+                    bl[k] = " "
+            i = j
+        elif c == '"' or c == "'":
+            j = i + 1
+            while j < n and src[j] != c and src[j] != "\n":
+                j += 2 if src[j] == "\\" else 1
+            for k in range(i + 1, min(j, n)):
+                bl[k] = " "
+            i = j + 1
+        else:
+            i += 1
+    return "".join(nc), "".join(bl)
+
+
+KEYWORDS = {"if", "for", "while", "switch", "catch", "synchronized", "return", "new", "else",
+            "try", "do", "throw", "assert", "case", "default", "yield"}
+TYPE_RE = re.compile(r"(?:^|[\s;}])(?:@\s*)?\b(class|interface|enum)\s+([A-Za-z_$][\w$]*)")
+RECORD_RE = re.compile(r"(?:^|[\s;}])\brecord\s+([A-Za-z_$][\w$]*)\s*(?:<[^()]*>)?\s*\(")
+ANNOT_RE = re.compile(r"@\s*(?!interface\b)[\w$]+(?:\s*\.\s*[\w$]+)*")
+
+
+class Parsed:
+    __slots__ = ("supers", "methods", "types", "idents", "loc", "lines", "doc", "unknown", "imports",
+                 "package")
+
+
+def remove_annotations(h):
+    """Drop `@Name(args)` from a header string (balanced parens)."""
+    out = []
+    i = 0
+    while True:
+        m = ANNOT_RE.search(h, i)
+        if not m:
+            out.append(h[i:])
+            break
+        out.append(h[i:m.start()])
+        j = m.end()
+        k = j
+        while k < len(h) and h[k].isspace():
+            k += 1
+        if k < len(h) and h[k] == "(":
+            d = 0
+            while k < len(h):
+                if h[k] == "(":
+                    d += 1
+                elif h[k] == ")":
+                    d -= 1
+                    if d == 0:
+                        k += 1
+                        break
+                k += 1
+            j = k
+        out.append(" ")
+        i = j
+    return "".join(out)
+
+
+def parse_java(src):
+    nocomment, blank = strip_java(src)
+    p = Parsed()
+    p.lines = src.count("\n") + 1
+    p.loc = sum(1 for ln in nocomment.split("\n") if ln.strip())
+    p.methods = []   # (classpath, name, start, end, kind, is_test)
+    p.types = []     # (classpath, kind, start, end)
+    p.unknown = 0
+    p.supers = {}
+    p.idents = set(re.findall(r"[A-Za-z_$][\w$]*", blank))
+    p.imports = re.findall(r"^\s*import\s+(?:static\s+)?([\w.]+)\s*;", blank, re.M)
+    pm = re.search(r"^\s*package\s+([\w.]+)\s*;", blank, re.M)
+    p.package = pm.group(1) if pm else ""
+    m = re.search(r"/\*\*(.*?)\*/\s*(?:@[^\n]*\n\s*)*(?:public\s+|final\s+|abstract\s+|sealed\s+)*(?:class|interface|enum|record|@interface)\b", src, re.S)
+    p.doc = clean_doc(m.group(1)) if m else ""
+
+    n = len(blank)
+    line_at = [0] * (n + 1)
+    ln = 1
+    for i, ch in enumerate(blank):
+        line_at[i] = ln
+        if ch == "\n":
+            ln += 1
+    line_at[n] = ln
+    match = {}
+    st = []
+    for i, ch in enumerate(blank):
+        if ch in "({[":
+            st.append(i)
+        elif ch in ")}]":
+            if st:
+                match[st.pop()] = i
+    def close(i):
+        return match.get(i, n - 1)
+
+    def first_nonspace(a, b):
+        while a < b and blank[a].isspace():
+            a += 1
+        return a
+
+    def body(a, b, stack, kind):
+        i = a
+        if kind == "enum":
+            # constants section up to the first ';' at this depth (or end of body)
+            while i < b:
+                ch = blank[i]
+                if ch in "({[":
+                    i = close(i) + 1
+                    continue
+                if ch == ";":
+                    i += 1
+                    break
+                i += 1
+        hstart = i
+        has_eq = False
+        while i < b:
+            ch = blank[i]
+            if ch == "(" or ch == "[":
+                i = close(i) + 1
+                continue
+            if ch == "=":
+                has_eq = True
+                i += 1
+                continue
+            if ch == ";" or ch == "{":
+                hs = first_nonspace(hstart, i)
+                header = blank[hs:i]
+                if ch == "{" and has_eq:
+                    i = close(i) + 1
+                    continue
+                h = " ".join(remove_annotations(header).split())
+                if ch == "{":
+                    end = close(i)
+                    tm = TYPE_RE.search(" " + h)
+                    rm = RECORD_RE.search(" " + h)
+                    if tm or rm:
+                        if tm and (not rm or tm.start() <= rm.start()):
+                            k, name = tm.group(1), tm.group(2)
+                        else:
+                            k, name = "record", rm.group(1)
+                        cp = stack + [name]
+                        p.types.append((".".join(cp), k, line_at[hs], line_at[end]))
+                        sm = re.search(r"\b(?:extends|implements)\b(.*)$", h)
+                        if sm:
+                            sup = re.sub(r"<[^<>]*>", "", re.sub(r"<[^<>]*>", "", re.sub(r"<[^<>]*>", "", sm.group(1))))
+                            p.supers.setdefault(name, set()).update(
+                                w for w in re.findall(r"[A-Za-z_$][\w$]*", sup)
+                                if w not in ("extends", "implements", "permits"))
+                        body(i + 1, end, cp, k)
+                    else:
+                        meth = method_header(h, stack)
+                        if meth:
+                            name, mk = meth
+                            p.methods.append((".".join(stack), name, line_at[hs], line_at[end],
+                                              mk, "@Test" in header.replace(" ", "")))
+                        elif h in ("", "static"):
+                            pass
+                        else:
+                            p.unknown += 1
+                    i = end + 1
+                else:
+                    if not has_eq:
+                        meth = method_header(h, stack)
+                        if meth:
+                            name, mk = meth
+                            if mk != "ctor":
+                                p.methods.append((".".join(stack), name, line_at[hs],
+                                                  line_at[i], "abstract", False))
+                    i += 1
+                hstart = i
+                has_eq = False
+                continue
+            if ch == "}":
+                i += 1
+                hstart = i
+                has_eq = False
+                continue
+            i += 1
+
+    # top level
+    body(0, n, [], "top")
+    return p
+
+
+def method_header(h, stack):
+    """If header h (annotations removed) declares a method or constructor, return (name, kind)."""
+    if not stack:
+        return None
+    cls = stack[-1]
+    k = h.find("(")
+    if k < 0:
+        # record compact constructor: `public Foo`
+        words = h.split()
+        if words and words[-1] == cls and all(w in ("public", "private", "protected") for w in words[:-1]):
+            return cls, "ctor"
+        return None
+    pre = h[:k].rstrip()
+    mm = re.search(r"([A-Za-z_$][\w$]*)$", pre)
+    if not mm:
+        return None
+    name = mm.group(1)
+    if name in KEYWORDS:
+        return None
+    # after the parameter list: only `throws ...`, `[]`, `default ...`
+    d = 0
+    j = k
+    while j < len(h):
+        if h[j] == "(":
+            d += 1
+        elif h[j] == ")":
+            d -= 1
+            if d == 0:
+                break
+        j += 1
+    rest = h[j + 1:].strip()
+    if rest and not re.match(r"^(throws\b|default\b|\[\s*\])", rest):
+        return None
+    before = pre[:mm.start()].strip()
+    if re.search(r"[=.]$", before) or "->" in before:
+        return None
+    if name == cls and not re.search(r"[\w>\]]\s*$", before.replace("public", "").replace("private", "").replace("protected", "").strip() or ""):
+        return name, "ctor"
+    if not before:
+        return (name, "ctor") if name == cls else None
+    return name, "method"
+
+
+def clean_doc(s):
+    s = re.sub(r"^\s*\*\s?", "", s, flags=re.M)
+    s = re.sub(r"\{@\w+\s+([^}]*)\}", r"\1", s)
+    s = re.sub(r"<[^>]+>", "", s)
+    s = " ".join(s.split())
+    s = re.split(r"(?<=[a-z0-9)`'\"])\.\s", s + " ", maxsplit=1)[0].strip().rstrip(".")
+    return s[:200]
+
+
+# --------------------------------------------------------------------------------------------
+# Rust scanning
+# --------------------------------------------------------------------------------------------
+
+MARK_PATH_RE = re.compile(r"Java:\s*`?((?:[\w$-]+/)*[\w$-]+\.(?:java|cc|h|c|proto))`?(?::(\d+)(?:-\d+)?)?(?:\s+`?([\w$.<>\[\]]+))?")
+MARK_BARE_RE = re.compile(r"Java:\s*`?([A-Z][\w$]*(?:\.[\w$<>]+)+)")
+UNPORTED_RE = re.compile(r'(?:\bunported!\(\s*"|\bunimplemented!\(\s*"Java:\s*)([^"]*)"')
+SKIP_RE = re.compile(r"//+\s*PORT:\s*skipped,?\s*(.*)")
+IDENT_CAMEL = re.compile(r"\b([A-Z][a-z0-9]+[A-Za-z0-9]*|[A-Z]{2,}[a-z][A-Za-z0-9]*)\b")
+
+
+def crate_of(path):
+    rel = os.path.relpath(path, CRATES)
+    return rel.split(os.sep)[0]
+
+
+def rust_files():
+    out = []
+    for dp, dns, fns in os.walk(CRATES):
+        dns[:] = sorted(d for d in dns if not (d in ("target", "third_party") and dp == CRATES))
+        for f in sorted(fns):
+            if f.endswith(".rs"):
+                out.append(os.path.join(dp, f))
+    return out
+
+
+class RustScan:
+    def __init__(self):
+        self.markers = []      # dict(rs, line, crate, path, jline, member, text)
+        self.unported = []     # (rs, line, crate, name)
+        self.skipped = []      # (rs, line, crate, reason, near_marker_path)
+        self.tests = []        # (rs, line, crate, fn, ignored, reason)
+
+
+def scan_rust():
+    rs = RustScan()
+    for f in rust_files():
+        try:
+            text = open(f, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        cr = crate_of(f)
+        rel = os.path.relpath(f, REPO)
+        lines = text.split("\n")
+        for m in UNPORTED_RE.finditer(text):
+            ls = text.rfind("\n", 0, m.start()) + 1
+            prefix = text[ls:m.start()]
+            if "//" in prefix and prefix.count('"') % 2 == 0:
+                continue
+            if "macro_rules!" in text[max(0, m.start() - 300):m.start()] and "$" in m.group(1):
+                continue
+            rs.unported.append((rel, text.count("\n", 0, m.start()) + 1, cr, m.group(1).strip()))
+        last_marker = []   # (line, path)
+        attrs = []
+        attr_buf = None
+        for no, line in enumerate(lines, 1):
+            s = line.strip()
+            ci = line.find("//")
+            if ci >= 0 and "Java:" in line[ci:]:
+                com = line[ci:]
+                found = False
+                for m in MARK_PATH_RE.finditer(com):
+                    found = True
+                    rs.markers.append(dict(rs=rel, line=no, crate=cr, path=m.group(1),
+                                           jline=int(m.group(2)) if m.group(2) else None,
+                                           member=m.group(3), text=com.strip()))
+                    last_marker.append((no, m.group(1)))
+                if not found:
+                    for m in MARK_BARE_RE.finditer(com):
+                        rs.markers.append(dict(rs=rel, line=no, crate=cr, path=None, jline=None,
+                                               member=m.group(1), text=com.strip()))
+            sm = SKIP_RE.search(line)
+            if sm:
+                near = [p for (l, p) in last_marker if no - 6 <= l <= no]
+                rs.skipped.append((rel, no, cr, sm.group(1).strip(), near[-1] if near else None, lines[max(0, no - 6):no]))
+            # tests
+            if attr_buf is not None:
+                attr_buf += " " + s
+                if attr_balanced(attr_buf):
+                    attrs.append(attr_buf)
+                    attr_buf = None
+                continue
+            if s.startswith("#[") or s.startswith("#!["):
+                if attr_balanced(s):
+                    attrs.append(s)
+                else:
+                    attr_buf = s
+                continue
+            fm = re.match(r"(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+(\w+)", s)
+            if fm:
+                if any(re.match(r"#\[(?:\w+::)*test\b", a) for a in attrs):
+                    ign = [a for a in attrs if a.startswith("#[ignore")]
+                    reason = None
+                    if ign:
+                        rm = re.search(r'#\[ignore\s*=\s*"((?:[^"\\]|\\.)*)"', ign[0])
+                        reason = rm.group(1) if rm else ""
+                    rs.tests.append((rel, no, cr, fm.group(1), bool(ign), reason))
+                attrs = []
+            elif s and not s.startswith("//"):
+                attrs = []
+    return rs
+
+
+def attr_balanced(s):
+    d = 0
+    instr = False
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if instr:
+            if c == "\\":
+                i += 2
+                continue
+            if c == '"':
+                instr = False
+        elif c == '"':
+            instr = True
+        elif c == "[":
+            d += 1
+        elif c == "]":
+            d -= 1
+        i += 1
+    return d <= 0 and not instr
+
+
+# --------------------------------------------------------------------------------------------
+# Helpers
+# --------------------------------------------------------------------------------------------
+
+def snake(name):
+    """PORTING.md "Names": camelCase -> snake_case."""
+    out = []
+    for i, c in enumerate(name):
+        if c.isupper() and i > 0:
+            prev = name[i - 1]
+            nxt = name[i + 1] if i + 1 < len(name) else ""
+            if prev.islower() or prev.isdigit() or (prev.isupper() and nxt.islower()):
+                out.append("_")
+        out.append(c.lower())
+    return "".join(out)
+
+
+def java_files(root):
+    out = []
+    for dp, dns, fns in os.walk(root):
+        dns.sort()
+        for f in sorted(fns):
+            if f.endswith(".java"):
+                out.append(os.path.relpath(os.path.join(dp, f), root))
+    return sorted(out)
+
+
+def first_rule(rules, path, stem):
+    for r in rules:
+        reason, pat = r[0], r[1]
+        if re.search(pat, path):
+            return r
+    return None
+
+
+def cluster_of(path):
+    for name, pats in CLUSTER_RULES:
+        for pat in pats:
+            if re.search(pat, path):
+                return name
+    return "other"
+
+
+def top_package(path):
+    parts = path.split("/")
+    if path.startswith(L):
+        return "lib/" + parts[5] if len(parts) > 6 else "lib/(root)"
+    if path.startswith("net/starlark/java/"):
+        return "net/starlark/" + (parts[3] if len(parts) > 4 else "(root)")
+    if path.startswith("com/google/devtools/common/options/"):
+        return "common/options"
+    if path.startswith("com/google/devtools/build/skyframe/"):
+        return "build/skyframe"
+    if path.startswith("com/google/devtools/build/docgen/"):
+        return "build/docgen"
+    return "/".join(parts[:-1])
+
+
+# --------------------------------------------------------------------------------------------
+# Main model
+# --------------------------------------------------------------------------------------------
+
+class Model:
+    pass
+
+
+def build_model():
+    M = Model()
+    M.files = java_files(MAIN)
+    M.parsed = {}
+    for f in M.files:
+        M.parsed[f] = parse_java(open(os.path.join(MAIN, f), encoding="utf-8", errors="replace").read())
+    M.test_files = java_files(TEST)
+    M.test_parsed = {}
+    for f in M.test_files:
+        M.test_parsed[f] = parse_java(open(os.path.join(TEST, f), encoding="utf-8", errors="replace").read())
+    M.rust = scan_rust()
+
+    # indexes
+    by_name = collections.defaultdict(set)   # simple file stem -> files
+    by_type = collections.defaultdict(set)   # any type simple name -> files
+    for f in M.files:
+        by_name[os.path.basename(f)[:-5]].add(f)
+        for cp, k, a, b in M.parsed[f].types:
+            by_type[cp.split(".")[-1]].add(f)
+    M.by_name, M.by_type = by_name, by_type
+    basename = collections.defaultdict(set)
+    for f in M.files:
+        basename[os.path.basename(f)].add(f)
+    test_set = set(M.test_files)
+
+    # method marks: (file, idx) -> set of kinds ("name","line")
+    M.marks = collections.defaultdict(set)
+    M.file_markers = collections.Counter()
+    M.file_marker_crates = collections.defaultdict(collections.Counter)
+    M.marker_cat = collections.Counter()
+    unresolved = []
+
+    def resolve_member(f, member, jline):
+        """Return (category, [method idx]) for a marker into main file f."""
+        P = M.parsed[f]
+        meths = P.methods
+        in_range = None
+        if jline is not None:
+            cands = [(b - a, i) for i, (cp, nm, a, b, k, t) in enumerate(meths) if a <= jline <= b]
+            if cands:
+                in_range = min(cands)[1]
+        if member:
+            mem = re.sub(r"[\[(].*$", "", member).strip(".,;:`")
+            comps = [c for c in mem.split(".") if c]
+        else:
+            comps = []
+        if comps:
+            last = comps[-1]
+            clsc = comps[:-1]
+            ctor = last in ("<init>", "new") or (clsc and last == clsc[-1])
+            def cpmatch(cp):
+                if not clsc:
+                    return True
+                cps = cp.split(".")
+                return cps[-len(clsc):] == clsc or cps[-1] == clsc[-1]
+            if ctor:
+                named = [i for i, m in enumerate(meths) if m[4] == "ctor" and cpmatch(m[0])]
+            else:
+                named = [i for i, m in enumerate(meths) if m[1] == last and cpmatch(m[0])]
+                if not named:
+                    named = [i for i, m in enumerate(meths) if m[1] == last]
+            if named:
+                if in_range is not None and in_range in named:
+                    return "method: name and line agree", [in_range]
+                if jline is None:
+                    return "method: by name (no line)", named
+                return "method: by name (line elsewhere)", named
+            is_type = any(cp.split(".")[-1] == last for cp, k, a, b in P.types)
+            if is_type or (not clsc and last in by_type):
+                if in_range is not None:
+                    return "type: names a class (line inside a method)", []
+                return "type: names a class", []
+            if last in P.idents or last in ("<clinit>", "static"):
+                if in_range is not None:
+                    return "field/other: identifier in file (line inside a method)", [in_range]
+                return "field/other: identifier in file", []
+            if in_range is not None:
+                return "method: by line only (name not found: renamed or wrong)", [in_range]
+            return "UNRESOLVED: name not in file, line not in a method", []
+        if in_range is not None:
+            return "method: by line (no member named)", [in_range]
+        return "file-level: no member, line outside methods", []
+
+    for mk in M.rust.markers:
+        path, member, jline = mk["path"], mk["member"], mk["jline"]
+        target = None
+        if path:
+            p = re.sub(r"^.*?src/main/java/", "", path)
+            if p.startswith("src/") or path.endswith((".cc", ".h", ".c", ".proto")):
+                cat = "non-Java: C++/native/proto source"
+                M.marker_cat[cat] += 1
+                continue
+            p2 = re.sub(r"^.*?src/test/java/", "", path)
+            if p in M.parsed:
+                target = p
+            elif p2 in test_set or p2.endswith("Test.java") and any(t.endswith("/" + os.path.basename(p2)) for t in [p2]):
+                cat = "test: names a src/test/java file"
+                if p2 not in test_set and not any(t.endswith("/" + os.path.basename(p2)) for t in M.test_files):
+                    cat = "UNRESOLVED: test file not found"
+                    unresolved.append((mk, cat))
+                M.marker_cat[cat] += 1
+                continue
+            elif "/" not in p and p in basename and len(basename[p]) == 1:
+                target = next(iter(basename[p]))
+            else:
+                suf = [f for f in M.files if f.endswith("/" + p)]
+                if len(suf) == 1:
+                    target = suf[0]
+                else:
+                    tsuf = [f for f in M.test_files if f.endswith("/" + p) or f == p]
+                    if tsuf:
+                        cat = "test: names a src/test/java file"
+                    elif not re.match(r"(com/google/devtools/|net/starlark/)", p):
+                        cat = "library: JDK, protobuf, gRPC or other non-Bazel source"
+                    elif len(basename.get(os.path.basename(p), ())) == 1:
+                        target = next(iter(basename[os.path.basename(p)]))
+                    else:
+                        cat = "UNRESOLVED: Bazel file not found"
+                    if target:
+                        c2, idxs = resolve_member(target, member, None)
+                        cat = "stale path (file moved), by file name: " + c2
+                        M.marker_cat[cat] += 1
+                        M.file_markers[target] += 1
+                        M.file_marker_crates[target][mk["crate"]] += 1
+                        for i in idxs:
+                            M.marks[(target, i)].add("name")
+                        continue
+                    M.marker_cat[cat] += 1
+                    if cat.startswith("UNRESOLVED"):
+                        unresolved.append((mk, cat))
+                    continue
+            cat, idxs = resolve_member(target, member, jline)
+        else:
+            mem = re.sub(r"[\[(].*$", "", member).strip(".,;:`")
+            comps = mem.split(".")
+            cands = set()
+            if comps[0] in by_name:
+                cands = set(by_name[comps[0]])
+            elif comps[0] in by_type:
+                cands = set(by_type[comps[0]])
+            if not cands:
+                tcand = [t for t in M.test_files if os.path.basename(t)[:-5] == comps[0]]
+                cat = "test: names a src/test/java class (no path)" if tcand else "UNRESOLVED: no path, class not found"
+                M.marker_cat[cat] += 1
+                if not tcand:
+                    unresolved.append((mk, cat))
+                continue
+            res = []
+            for f in sorted(cands):
+                c, idxs = resolve_member(f, mem, None)
+                if not c.startswith("UNRESOLVED"):
+                    res.append((f, c, idxs))
+            withm = [r for r in res if r[2]]
+            if len(withm) == 1:
+                target, cat, idxs = withm[0]
+                cat = "pathless: " + cat
+            elif len(res) >= 1 and not withm:
+                target, cat, idxs = res[0][0], "pathless: " + res[0][1], []
+                if len(res) > 1:
+                    cat = "pathless: ambiguous class, non-method"
+            elif len(withm) > 1:
+                cat = "pathless: AMBIGUOUS (several files define it)"
+                M.marker_cat[cat] += 1
+                unresolved.append((mk, cat))
+                continue
+            else:
+                cat = "UNRESOLVED: no path, member not found"
+                M.marker_cat[cat] += 1
+                unresolved.append((mk, cat))
+                continue
+        M.marker_cat[cat] += 1
+        if cat.startswith("UNRESOLVED"):
+            unresolved.append((mk, cat))
+        M.file_markers[target] += 1
+        M.file_marker_crates[target][mk["crate"]] += 1
+        for i in idxs:
+            M.marks[(target, i)].add("line" if "line only" in cat or "by line" in cat else "name")
+    M.unresolved = unresolved
+
+    # An abstract method counts as marked when a marked method of the same name exists in a
+    # class that directly extends or implements its type (Starlark API interfaces are ported
+    # through their implementations).
+    implementors = collections.defaultdict(set)   # type simple name -> files
+    for f in M.files:
+        for t, sups in M.parsed[f].supers.items():
+            for sname in sups:
+                implementors[sname].add(f)
+    marked_names = collections.defaultdict(set)
+    for (f, i) in list(M.marks):
+        marked_names[f].add(M.parsed[f].methods[i][1])
+    M.impl_marked = 0
+    for f in M.files:
+        meths = M.parsed[f].methods
+        for i, (cp, nm, a, b, k, t) in enumerate(meths):
+            if k != "abstract" or (f, i) in M.marks:
+                continue
+            tname = cp.split(".")[-1]
+            if any(nm in marked_names[g] for g in implementors.get(tname, ()) if g != f):
+                M.marks[(f, i)].add("impl")
+                M.impl_marked += 1
+
+    # unported sites, skipped comments, ignore reasons -> files
+    def files_for_class_ref(name):
+        comps = re.sub(r"[\[(].*$", "", name).split(".")
+        c0 = comps[0]
+        if c0 in by_name:
+            return sorted(by_name[c0])
+        if c0 in by_type:
+            return sorted(by_type[c0])
+        return []
+
+    M.unported_sites = collections.Counter()
+    M.unported_unattributed = 0
+    M.unported_ambiguous = 0
+    M.unported_test = 0
+    test_stems = set(os.path.basename(t)[:-5] for t in M.test_files)
+    M.unported_unattr_names = collections.Counter()
+    for rel, no, cr, name in M.rust.unported:
+        fs = files_for_class_ref(name)
+        if not fs:
+            if re.split(r"[.(\s]", name)[0] in test_stems:
+                M.unported_test += 1
+            else:
+                M.unported_unattributed += 1
+                M.unported_unattr_names[name] += 1
+            continue
+        if len(fs) > 1:
+            M.unported_ambiguous += 1
+        M.unported_sites[fs[0]] += 1
+    M.skipped_sites = collections.Counter()
+    M.skipped_reasons = collections.defaultdict(list)
+    for rel, no, cr, reason, near, ctx in M.rust.skipped:
+        f = None
+        if near:
+            p = re.sub(r"^.*?src/main/java/", "", near)
+            f = p if p in M.parsed else None
+        if not f:
+            for ident in IDENT_CAMEL.findall(reason):
+                if ident in by_name and len(by_name[ident]) == 1:
+                    f = next(iter(by_name[ident]))
+                    break
+        if f:
+            M.skipped_sites[f] += 1
+            M.skipped_reasons[f].append(reason)
+    M.ignore_by_class = collections.Counter()
+    for rel, no, cr, fn, ign, reason in M.rust.tests:
+        if ign and reason:
+            for ident in set(IDENT_CAMEL.findall(reason)):
+                if ident in by_name and len(by_name[ident]) == 1:
+                    M.ignore_by_class[next(iter(by_name[ident]))] += 1
+
+    # per-file classification
+    M.rows = {}
+    for f in M.files:
+        P = M.parsed[f]
+        meths = P.methods
+        eff = list(range(len(meths)))
+        marked = [i for i in eff if (f, i) in M.marks]
+        all_marked = sum(1 for i in range(len(meths)) if (f, i) in M.marks)
+        touched = M.file_markers[f] > 0 or M.unported_sites[f] > 0 or M.skipped_sites[f] > 0
+        if eff:
+            ratio = len(marked) / len(eff)
+            if ratio > 0.5:
+                status = "PORTED"
+            elif marked or touched:
+                status = "PARTIAL"
+            else:
+                status = "UNTOUCHED"
+        else:
+            status = "PORTED" if M.file_markers[f] else ("PARTIAL" if touched else "UNTOUCHED")
+        reason, rule = "", ""
+        if status != "PORTED":
+            r = first_rule(SCOPE_RULES, f, None)
+            has_body = any(m[4] != "abstract" for m in meths)
+            if r:
+                reason, rule = r[0], r[2]
+            elif f.endswith("package-info.java"):
+                reason, rule = "GENERATED_OR_TRIVIAL", "package-info"
+            elif not has_body and P.loc <= TRIVIAL_MAX_LOC:
+                reason, rule = "GENERATED_OR_TRIVIAL", f"no method bodies, loc <= {TRIVIAL_MAX_LOC}"
+            else:
+                reason, rule = "NEEDED", ""
+        M.rows[f] = dict(path=f, package=P.package, loc=P.loc, methods=len(meths),
+                         eff=len(eff), methods_marked=all_marked, eff_marked=len(marked),
+                         status=status, reason=reason, rule=rule,
+                         unported_sites=M.unported_sites[f], skipped=M.skipped_sites[f],
+                         ignored_tests=M.ignore_by_class[f], markers=M.file_markers[f],
+                         cluster=cluster_of(f) if reason == "NEEDED" else "",
+                         topkg=top_package(f), doc=P.doc)
+    # owning crate
+    dir_crates = collections.defaultdict(collections.Counter)
+    for f in M.files:
+        d = os.path.dirname(f)
+        for cr, n in M.file_marker_crates[f].items():
+            dir_crates[d][cr] += n
+    for f in M.files:
+        row = M.rows[f]
+        if M.file_marker_crates[f]:
+            cr = sorted(M.file_marker_crates[f].items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+            basis = "markers"
+        else:
+            cr, basis = "", ""
+            d = os.path.dirname(f)
+            hop = 0
+            while d:
+                if dir_crates[d]:
+                    cr = sorted(dir_crates[d].items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+                    basis = "package" if hop == 0 else "ancestor"
+                    break
+                d = os.path.dirname(d)
+                hop += 1
+            plan = next((c for pat, c in PLAN_CRATES if re.search(pat, f)), "")
+            if basis == "ancestor" and plan:
+                cr, basis = plan, "plan"
+            if not cr:
+                cr, basis = plan or "-", "plan" if plan else "-"
+        row["crate"], row["crate_basis"] = cr, basis
+    return M
+
+
+# --------------------------------------------------------------------------------------------
+# Tests (part 4)
+# --------------------------------------------------------------------------------------------
+
+def test_map(M):
+    rust_by_name = collections.defaultdict(list)
+    for t in M.rust.tests:
+        rust_by_name[t[3]].append(t)
+    rows = []
+    reasons = collections.Counter()
+    for tf in M.test_files:
+        if not tf.endswith("Test.java"):
+            continue
+        prod = tf[:-len("Test.java")] + ".java"
+        if prod not in M.rows:
+            continue
+        st = M.rows[prod]["status"]
+        if st not in ("PORTED", "PARTIAL"):
+            continue
+        P = M.test_parsed[tf]
+        cls = os.path.basename(tf)[:-5]
+        tests = [m for m in P.methods if m[5]]
+        cls_snake = snake(cls)
+        prod_snake = snake(os.path.basename(prod)[:-5])
+        n_strict = n_loose = n_ign = 0
+        for cp, nm, a, b, k, _ in tests:
+            sn = snake(nm)
+            cands = rust_by_name.get(sn, [])
+            strict = [c for c in cands if cls_snake in c[0] or prod_snake in c[0]
+                      or cls_snake.replace("_test", "") in c[0]]
+            pick = strict or cands
+            if strict:
+                n_strict += 1
+            if cands:
+                n_loose += 1
+            if pick and all(c[4] for c in pick):
+                n_ign += 1
+                reasons[norm_reason(pick[0][5])] += 1
+        rows.append(dict(test=tf, prod=prod, prod_status=st, crate=M.rows[prod]["crate"],
+                         tests=len(tests), matched=n_strict, matched_any=n_loose, ignored=n_ign))
+    return rows, reasons
+
+
+def norm_reason(r):
+    if r is None:
+        return "(no reason)"
+    r = re.sub(r"\s+", " ", r).strip()
+    return r[:110]
+
+
+# --------------------------------------------------------------------------------------------
+# C++ client and protos
+# --------------------------------------------------------------------------------------------
+
+def cpp_map(M):
+    rows = []
+    refs = collections.Counter()
+    for mk in M.rust.markers:
+        if mk["path"] and mk["path"].startswith("src/main/cpp/"):
+            refs[mk["path"][len("src/main/cpp/"):]] += 1
+    for dp, dns, fns in os.walk(CPP):
+        dns.sort()
+        for f in sorted(fns):
+            if not f.endswith((".cc", ".h")):
+                continue
+            rel = os.path.relpath(os.path.join(dp, f), CPP)
+            src = open(os.path.join(dp, f), encoding="utf-8", errors="replace").read()
+            nc, _ = strip_java(src)
+            loc = sum(1 for ln in nc.split("\n") if ln.strip())
+            os_only = bool(re.search(r"windows|darwin|bsd|_mac", rel))
+            rows.append((rel, loc, refs[rel], os_only))
+    return sorted(rows)
+
+
+def proto_map():
+    rows = []
+    build_rs = open(f"{CRATES}/blaze_protos/build.rs").read()
+    for f in sorted(os.listdir(PROTO)):
+        if f.endswith(".proto"):
+            loc = sum(1 for ln in open(os.path.join(PROTO, f)) if ln.strip() and not ln.strip().startswith("//"))
+            rows.append((f, loc, f"src/main/protobuf/{f}" in build_rs))
+    return rows
+
+
+# --------------------------------------------------------------------------------------------
+# Output
+# --------------------------------------------------------------------------------------------
+
+STATUSES = ["PORTED", "PARTIAL", "UNTOUCHED"]
+REASONS = ["NEEDED", "GENERATED_OR_TRIVIAL", "TEST_SUPPORT", "JVM_ONLY", "OUT_OF_SCOPE_OS",
+           "OUT_OF_SCOPE_BY_CONTRACT", "STARLARK_RUST_DECISION"]
+
+
+def unported_lines(r):
+    """Lines of a NEEDED file not yet covered: all lines if UNTOUCHED, the unmarked share if
+    PARTIAL (loc * unmarked methods / methods; an estimate)."""
+    if r["reason"] != "NEEDED":
+        return 0
+    if r["status"] == "UNTOUCHED":
+        return r["loc"]
+    if r["eff"] == 0:
+        return r["loc"]
+    return round(r["loc"] * (r["eff"] - r["eff_marked"]) / r["eff"])
+
+
+def md_table(head, rows):
+    out = ["| " + " | ".join(head) + " |", "| " + " | ".join("---" for _ in head) + " |"]
+    for r in rows:
+        out.append("| " + " | ".join(str(x) for x in r) + " |")
+    return "\n".join(out)
+
+
+def gen_totals(M):
+    rows = list(M.rows.values())
+    out = []
+    t = []
+    for s in STATUSES:
+        rs = [r for r in rows if r["status"] == s]
+        t.append((s, len(rs), sum(r["loc"] for r in rs), sum(r["eff"] for r in rs),
+                  sum(r["eff_marked"] for r in rs)))
+    t.append(("total", len(rows), sum(r["loc"] for r in rows), sum(r["eff"] for r in rows),
+              sum(r["eff_marked"] for r in rows)))
+    out.append("By status (methods include abstract ones; an abstract method is marked when its implementation in a direct subtype is):\n")
+    out.append(md_table(["status", "files", "lines", "methods", "methods marked"], t))
+    t = []
+    for rsn in REASONS:
+        for s in ("PARTIAL", "UNTOUCHED"):
+            rs = [r for r in rows if r["status"] == s and r["reason"] == rsn]
+            if rs:
+                t.append((rsn, s, len(rs), sum(r["loc"] for r in rs), sum(r["eff"] for r in rs),
+                          sum(r["eff"] - r["eff_marked"] for r in rs),
+                          sum(unported_lines(r) for r in rs)))
+    out.append("\nNot PORTED, by reason:\n")
+    out.append(md_table(["reason", "status", "files", "lines", "methods", "methods unmarked",
+                         "unported lines (est.)"], t))
+    return "\n".join(out)
+
+
+def gen_packages(M):
+    agg = collections.OrderedDict()
+    for r in M.rows.values():
+        a = agg.setdefault(r["topkg"], collections.Counter())
+        a["files"] += 1
+        a["loc"] += r["loc"]
+        a[r["status"]] += 1
+        a["ported_loc"] += r["loc"] if r["status"] == "PORTED" else 0
+        a["eff"] += r["eff"]
+        a["eff_marked"] += r["eff_marked"]
+        if r["reason"] == "NEEDED":
+            a["needed_files"] += 1
+            a["needed_unported"] += unported_lines(r)
+        elif r["reason"]:
+            a["oos_loc"] += r["loc"]
+        a["unported_sites"] += r["unported_sites"]
+    rows = sorted(agg.items(), key=lambda kv: (-kv[1]["needed_unported"], kv[0]))
+    t = [(k, a["files"], a["loc"], a["PORTED"], a["PARTIAL"], a["UNTOUCHED"],
+          f'{a["eff_marked"]}/{a["eff"]}', a["needed_files"], a["needed_unported"], a["oos_loc"],
+          a["unported_sites"]) for k, a in rows]
+    return md_table(["package", "files", "lines", "PORTED", "PARTIAL", "UNTOUCHED",
+                     "methods marked", "NEEDED files not ported", "NEEDED unported lines (est.)",
+                     "lines out of scope", "unported! sites"], t)
+
+
+def gen_largest(M, n=60):
+    rs = [r for r in M.rows.values() if r["reason"] == "NEEDED"]
+    rs.sort(key=lambda r: (-unported_lines(r), r["path"]))
+    t = []
+    for r in rs[:n]:
+        t.append((r["path"].replace(L, "lib/"), r["status"], r["loc"],
+                  f'{r["eff_marked"]}/{r["eff"]}', r["cluster"], (r["doc"] or "(no class comment)").replace("|", "\\|")))
+    return md_table(["file", "status", "lines", "marked", "cluster", "what it does (class comment)"], t)
+
+
+def cluster_stats(M):
+    files = {r["path"]: r for r in M.rows.values() if r["reason"] == "NEEDED"}
+    cl = collections.defaultdict(list)
+    for f, r in files.items():
+        cl[r["cluster"]].append(r)
+    # dependencies: imports from files of cluster A to NEEDED-not-ported files of cluster B
+    cls_file = {}
+    for f in M.files:
+        cls_file[f[:-5].replace("/", ".")] = f
+    deps = collections.defaultdict(collections.Counter)
+    for f, r in files.items():
+        for imp in M.parsed[f].imports:
+            g = cls_file.get(imp)
+            while g is None and "." in imp:
+                imp = imp.rsplit(".", 1)[0]
+                g = cls_file.get(imp)
+            if g and g in files and files[g]["cluster"] != r["cluster"]:
+                deps[r["cluster"]][files[g]["cluster"]] += 1
+        # same-package references are not imported: count simple-name uses
+        pkgdir = os.path.dirname(f)
+        idents = M.parsed[f].idents
+        for g in M.by_name:
+            pass
+    for f, r in files.items():
+        pkgdir = os.path.dirname(f)
+        idents = M.parsed[f].idents
+        for g, rg in files.items():
+            if g != f and os.path.dirname(g) == pkgdir and rg["cluster"] != r["cluster"] \
+                    and os.path.basename(g)[:-5] in idents:
+                deps[r["cluster"]][rg["cluster"]] += 1
+    return cl, deps
+
+
+def gen_clusters(M):
+    cl, deps = cluster_stats(M)
+    order = [c for c, _ in CLUSTER_RULES]
+    t = []
+    for c in sorted(cl, key=lambda c: -sum(unported_lines(r) for r in cl[c])):
+        rs = cl[c]
+        d = ", ".join(f"{k} ({v})" for k, v in sorted(deps[c].items(), key=lambda kv: (-kv[1], kv[0]))[:6])
+        t.append((c, len(rs), sum(1 for r in rs if r["status"] == "UNTOUCHED"),
+                  sum(r["loc"] for r in rs), sum(unported_lines(r) for r in rs),
+                  sum(r["eff"] - r["eff_marked"] for r in rs), sum(r["unported_sites"] for r in rs), d or "-"))
+    return md_table(["cluster", "NEEDED files not ported", "of them UNTOUCHED", "lines",
+                     "unported lines (est.)", "unmarked methods", "unported! sites",
+                     "depends on (import edges into other clusters' unported files)"], t)
+
+
+def gen_markers(M):
+    t = sorted(M.marker_cat.items(), key=lambda kv: (kv[0].startswith("UNRESOLVED"), -kv[1], kv[0]))
+    tot = sum(M.marker_cat.values())
+    rows = [(k, v, f"{100*v/tot:.1f}%") for k, v in t] + [("total", tot, "100%")]
+    s = md_table(["marker resolves to", "markers", "share"], rows)
+    s += (f"\n\n`unported!` sites: {len(M.rust.unported)}; attributed to a Java file by class name: "
+          f"{len(M.rust.unported) - M.unported_unattributed - M.unported_test} ({M.unported_ambiguous} of them by a class name "
+          f"that several files define: first file taken); naming a Java test class: {M.unported_test}; "
+          f"not attributable: {M.unported_unattributed}.\n"
+          f"`// PORT: skipped` comments: {len(M.rust.skipped)}; attributed to a Java file: "
+          f"{sum(M.skipped_sites.values())}.\n")
+    return s
+
+
+def gen_tests(M):
+    rows, reasons = test_map(M)
+    tot = collections.Counter()
+    for r in rows:
+        for k in ("tests", "matched", "matched_any", "ignored"):
+            tot[k] += r[k]
+    rust_total = len(M.rust.tests)
+    rust_ign = sum(1 for t in M.rust.tests if t[4])
+    s = (f"Java test classes `src/test/java/.../FooTest.java` whose production class `Foo` is PORTED or "
+         f"PARTIAL: {len(rows)} (of {sum(1 for t in M.test_files if t.endswith('Test.java'))} `*Test.java` files in "
+         f"the pinned source tree).\n\n")
+    s += md_table(["", "count"], [
+        ("@Test methods in those classes", tot["tests"]),
+        ("with a Rust #[test] of the snake_case name in a file named after the class", tot["matched"]),
+        ("with a Rust #[test] of that name anywhere in crates/", tot["matched_any"]),
+        ("of the matched, every matching Rust test is #[ignore]", tot["ignored"]),
+        ("Rust #[test] functions in crates/ (all)", rust_total),
+        ("Rust #[test] functions marked #[ignore] (all)", rust_ign),
+    ])
+    s += "\n\nTop 30 `#[ignore]` reasons among the matched tests:\n\n"
+    s += md_table(["reason (first 110 chars)", "tests"],
+                  [(k.replace("|", "\\|"), v) for k, v in sorted(reasons.items(), key=lambda kv: (-kv[1], kv[0]))[:30]])
+    allr = collections.Counter(norm_reason(t[5]) for t in M.rust.tests if t[4])
+    s += "\n\nTop 30 `#[ignore]` reasons over all Rust tests in crates/:\n\n"
+    s += md_table(["reason (first 110 chars)", "tests"],
+                  [(k.replace("|", "\\|"), v) for k, v in sorted(allr.items(), key=lambda kv: (-kv[1], kv[0]))[:30]])
+    return s, rows
+
+
+def gen_cpp(M):
+    rows = cpp_map(M)
+    lin = [r for r in rows if not r[3]]
+    t = [(r[0], r[1], r[2], "OS-only" if r[3] else "") for r in rows]
+    s = (f"C++ client (`src/main/cpp`): {len(rows)} files, {sum(r[1] for r in rows)} lines; "
+         f"Linux-relevant {len(lin)} files, {sum(r[1] for r in lin)} lines; named by a marker: "
+         f"{sum(1 for r in lin if r[2])} files ({sum(r[1] for r in lin if r[2])} lines).\n\n")
+    s += md_table(["file", "lines", "markers", "note"], t)
+    pr = proto_map()
+    s += (f"\n\nProtos (`src/main/protobuf`): {len(pr)} files; compiled by `blaze_protos/build.rs`: "
+          f"{sum(1 for r in pr if r[2])}.\n\n")
+    s += md_table(["proto", "lines", "compiled"], [(a, b, "yes" if c else "") for a, b, c in pr])
+    return s
+
+
+def write_outputs(M, out):
+    os.makedirs(out, exist_ok=True)
+    cols = ["path", "package", "loc", "methods", "methods_marked", "status", "reason",
+            "unported_sites", "crate", "crate_basis", "methods_with_body", "methods_with_body_marked",
+            "markers", "port_skipped_comments", "ignored_tests_naming_class", "cluster", "reason_rule",
+            "top_package"]
+    with open(f"{out}/java-map.tsv", "w") as fh:
+        fh.write("\t".join(cols) + "\n")
+        for f in M.files:
+            r = M.rows[f]
+            vals = [r["path"], r["package"], r["loc"], r["methods"], r["methods_marked"], r["status"],
+                    r["reason"] or "-", r["unported_sites"], r["crate"], r["crate_basis"], r["eff"],
+                    r["eff_marked"], r["markers"], r["skipped"], r["ignored_tests"], r["cluster"] or "-",
+                    r["rule"] or "-", r["topkg"]]
+            fh.write("\t".join(str(v) for v in vals) + "\n")
+    buf = io.StringIO()
+    buf.write("path\tclass\tmethod\tkind\tstart_line\tend_line\tmarked\n")
+    for f in M.files:
+        for i, (cp, nm, a, b, k, t) in enumerate(M.parsed[f].methods):
+            mk = ",".join(sorted(M.marks.get((f, i), ()))) or "-"
+            buf.write(f"{f}\t{cp}\t{nm}\t{k}\t{a}\t{b}\t{mk}\n")
+    with open(f"{out}/java-methods.tsv.gz", "wb") as fh:
+        with gzip.GzipFile(filename="java-methods.tsv", mode="wb", fileobj=fh, mtime=0) as gz:
+            gz.write(buf.getvalue().encode())
+    tests_md, trows = gen_tests(M)
+    with open(f"{out}/java-tests.tsv", "w") as fh:
+        fh.write("test_class\tproduction_class\tproduction_status\tcrate\ttest_methods\tmatched_in_named_file\tmatched_anywhere\tmatched_all_ignored\n")
+        for r in trows:
+            fh.write(f'{r["test"]}\t{r["prod"]}\t{r["prod_status"]}\t{r["crate"]}\t{r["tests"]}\t{r["matched"]}\t{r["matched_any"]}\t{r["ignored"]}\n')
+    with open(f"{out}/markers-unresolved.tsv", "w") as fh:
+        fh.write("category\trust_file\trust_line\tmarker\n")
+        for mk, cat in sorted(M.unresolved, key=lambda x: (x[1], x[0]["rs"], x[0]["line"])):
+            fh.write(f'{cat}\t{mk["rs"]}\t{mk["line"]}\t{mk["text"][:200]}\n')
+    sections = {
+        "TOTALS": gen_totals(M),
+        "MARKERS": gen_markers(M),
+        "PACKAGES": gen_packages(M),
+        "LARGEST": gen_largest(M),
+        "CLUSTERS": gen_clusters(M),
+        "TESTS": tests_md,
+        "CPP": gen_cpp(M),
+        "RULES": gen_rules(),
+    }
+    readme = f"{out}/README.md"
+    text = open(readme).read() if os.path.exists(readme) else ""
+    for k, v in sections.items():
+        b, e = f"<!-- BEGIN GENERATED {k} -->", f"<!-- END GENERATED {k} -->"
+        block = f"{b}\n{v}\n{e}"
+        if b in text:
+            text = re.sub(re.escape(b) + r".*?" + re.escape(e), lambda _: block, text, flags=re.S)
+        else:
+            text += f"\n\n## {k.title()}\n\n{block}\n"
+    with open(readme, "w") as fh:
+        fh.write(text)
+
+
+def gen_rules():
+    t = [(r[0], "`" + r[1].replace(L, "lib/").replace("|", "\\|") + "`", r[2]) for r in SCOPE_RULES]
+    s = md_table(["reason", "path regex (lib/ = com/google/devtools/build/lib/)", "why"], t)
+    s += f"\n\nThen: `package-info.java`, or no method with a body and at most {TRIVIAL_MAX_LOC} lines of code: GENERATED_OR_TRIVIAL. Everything else: NEEDED.\n\nClusters (first match wins):\n\n"
+    s += md_table(["cluster", "patterns"], [(c, "<br>".join("`" + p.replace(L, "lib/").replace("|", "\\|") + "`" for p in ps)) for c, ps in CLUSTER_RULES])
+    return s
+
+
+# --------------------------------------------------------------------------------------------
+# Parser check against javac
+# --------------------------------------------------------------------------------------------
+
+def find_java():
+    if os.environ.get("JAVA"):
+        return os.environ["JAVA"]
+    best = None
+    for d in sorted(os.listdir("/usr/lib/jvm")) if os.path.isdir("/usr/lib/jvm") else []:
+        j = f"/usr/lib/jvm/{d}/bin/java"
+        mm = re.search(r"(\d+)", d)
+        if os.path.exists(j) and mm:
+            v = int(mm.group(1))
+            if v >= 21 and (best is None or v > best[0]):
+                best = (v, j)
+    return best[1] if best else "java"
+
+
+def check_parser(n=None):
+    files = java_files(MAIN)
+    if n:
+        step = max(1, len(files) // n)
+        files = files[::step][:n]
+    tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), "JavaMethods.java")
+    res = subprocess.run([find_java(), tool, MAIN], input="\n".join(files), capture_output=True,
+                         text=True, check=True)
+    ref = collections.defaultdict(set)
+    for ln in res.stdout.splitlines():
+        p, cp, nm, a, b, k = ln.split("\t")
+        ref[p].add((cp, nm, int(a), int(b)))
+    tot_ref = tot_mine = both = name_only = 0
+    worst = []
+    for f in files:
+        P = parse_java(open(os.path.join(MAIN, f), encoding="utf-8", errors="replace").read())
+        mine = set((cp, nm, a, b) for cp, nm, a, b, k, t in P.methods)
+        r = ref[f]
+        tot_ref += len(r)
+        tot_mine += len(mine)
+        both += len(mine & r)
+        mk = collections.Counter((cp, nm) for cp, nm, a, b in mine)
+        rk = collections.Counter((cp, nm) for cp, nm, a, b in r)
+        name_only += sum((mk & rk).values())
+        diff = len(r ^ mine)
+        if diff:
+            worst.append((diff, f, sorted(r - mine)[:3], sorted(mine - r)[:3]))
+    print(f"files: {len(files)}")
+    print(f"javac methods: {tot_ref}  java-map methods: {tot_mine}")
+    print(f"exact (class, name, start, end) agreement: {both} ({100*both/max(1,tot_ref):.2f}% of javac)")
+    print(f"(class, name) agreement ignoring lines: {name_only} ({100*name_only/max(1,tot_ref):.2f}%)")
+    print(f"missed by java-map: {tot_ref-name_only}; extra in java-map: {tot_mine-name_only}")
+    print(f"files with any difference: {len(worst)}")
+    for d, f, a, b in sorted(worst, reverse=True)[:25]:
+        print(f"  {d:4d} {f}\n       javac-only {a}\n       java-map-only {b}")
+
+
+def show_file(path):
+    M = build_model() if os.environ.get("JAVA_MAP_MARKS") else None
+    root = MAIN if os.path.exists(os.path.join(MAIN, path)) else TEST
+    P = parse_java(open(os.path.join(root, path), encoding="utf-8", errors="replace").read())
+    print(f"loc {P.loc}  types {len(P.types)}  methods {len(P.methods)}  unknown-blocks {P.unknown}")
+    print(f"doc: {P.doc}")
+    for t in P.types:
+        print("  type", t)
+    for i, m in enumerate(P.methods):
+        mk = ",".join(sorted(M.marks.get((path, i), ()))) if M else ""
+        print("  ", m, mk)
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("help", "-h", "--help"):
+        print(__doc__)
+        return 0
+    cmd = argv[1]
+    if cmd == "build":
+        out = f"{REPO}/docs/coverage"
+        if "--out" in argv:
+            out = argv[argv.index("--out") + 1]
+        M = build_model()
+        write_outputs(M, out)
+        print(gen_totals(M))
+        return 0
+    if cmd == "summary":
+        M = build_model()
+        print(gen_totals(M))
+        print()
+        print(gen_markers(M))
+        print(gen_clusters(M))
+        return 0
+    if cmd == "check-parser":
+        check_parser(int(argv[2]) if len(argv) > 2 else None)
+        return 0
+    if cmd == "file":
+        show_file(argv[2])
+        return 0
+    print(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

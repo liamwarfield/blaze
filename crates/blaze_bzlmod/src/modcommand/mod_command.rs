@@ -39,6 +39,41 @@ pub enum ModCommandResult {
         /// The process exit code Bazel uses for this failure.
         exit_code: i32,
     },
+    /// `InterruptedFailureDetails.detailedExitCode(message)`: the message was already reported
+    /// as an ERROR event.
+    Interrupted {
+        message: String,
+    },
+}
+
+/// What `mod show_repo` needs from the layers above this crate: `RepoDefinitionValue` and
+/// `RepoOutputFormatter` need the repository rules (blaze_repo_rules), the attribute formatter
+/// (blaze_query) and the protos, which all depend on this crate.
+/// PORT: crate layering; the Java calls are made in the order `execInternal` and
+/// `ModExecutor.showRepo` make them.
+pub trait ShowRepoBackend {
+    /// `env.getSkyframeExecutor().prepareAndGet(skyKeys, evaluationContext)` for
+    /// `RepoDefinitionValue.key` of each repo (no keep_going). `Ok(None)` when the evaluation
+    /// succeeded; `Ok(Some(message))` when it has an error (`message` is the error's exception
+    /// message, if any); `Err(())` when it was interrupted.
+    fn evaluate_repo_definitions(
+        &mut self,
+        repos: &[RepositoryName],
+    ) -> Result<Option<Option<String>>, ()>;
+
+    /// Whether the evaluated value for `repo` is `RepoDefinitionValue.NOT_FOUND`.
+    fn is_not_found(&self, repo: &RepositoryName) -> bool;
+
+    /// `RepoOutputFormatter.print(key, repoDefinition)` for the evaluated value of `repo`:
+    /// text goes through `printer`, `streamed_proto` bytes straight to the output stream
+    /// (`Printer::output_stream`).
+    fn print(
+        &self,
+        printer: &mut super::output_formatters::Printer<'_>,
+        output_format: OutputFormat,
+        key: &str,
+        repo: &RepositoryName,
+    );
 }
 
 /// `ModCommand.validateArgs`; the error is `(message, code name)`.
@@ -292,19 +327,17 @@ pub fn exec_after_evaluation(
     module_inspector: &BazelModuleInspectorValue,
     reporter: &dyn ExtendedEventHandler,
     out: &mut dyn Write,
+    show_repo_backend: Option<&mut dyn ShowRepoBackend>,
 ) -> ModCommandResult {
-    // Handle commands that do not require BazelModuleInspectorValue.
-    match subcommand {
-        ModSubcommand::DUMP_REPO_MAPPING => {
-            blaze_util::unported!(
-                "ModCommand.execInternal (dump_repo_mapping: RepositoryMappingValue)"
-            )
-        }
-        ModSubcommand::TIDY => {
-            blaze_util::unported!("ModCommand.runTidy")
-        }
-        _ => {}
-    }
+    // Commands that do not require BazelModuleInspectorValue (DUMP_REPO_MAPPING, TIDY) are
+    // handled by the caller, after its evaluation (see [`exec_dump_repo_mapping`] and
+    // [`exec_tidy`]).
+    blaze_util::check_state!(
+        subcommand != ModSubcommand::DUMP_REPO_MAPPING && subcommand != ModSubcommand::TIDY,
+        "Unexpected subcommand: {}",
+        subcommand.java_to_string()
+    );
+    let mut show_repo_backend = show_repo_backend;
     let mut mod_options = mod_options.clone();
 
     // Extract and check the --base_module argument first to use it when parsing the other args.
@@ -359,7 +392,7 @@ pub fn exec_after_evaluation(
     // containers which can be filled accordingly.
     let mut args_as_modules: Option<IndexSet<ModuleKey>> = None;
     let mut args_as_extensions: Option<Vec<ModuleExtensionId>> = None;
-    let mut _args_as_repos: Option<IndexMap<String, RepositoryName>> = None;
+    let mut args_as_repos: Option<IndexMap<String, RepositoryName>> = None;
 
     let Some(base_module) = module_inspector.dep_graph.get(&base_module_key) else {
         panic!("java.lang.NullPointerException");
@@ -377,7 +410,7 @@ pub fn exec_after_evaluation(
                 }
             }
             ModSubcommand::SHOW_REPO => {
-                _args_as_repos = Some(get_repos_to_show(
+                args_as_repos = Some(get_repos_to_show(
                     &mod_options,
                     module_inspector,
                     dep_graph_value,
@@ -537,8 +570,52 @@ pub fn exec_after_evaluation(
         }
     }
 
+    let mut target_repo_definitions: Option<IndexMap<String, RepositoryName>> = None;
     if subcommand == ModSubcommand::SHOW_REPO {
-        blaze_util::unported!("ModCommand.execInternal (show_repo: RepoDefinitionValue)");
+        let args_as_repos = args_as_repos.take().expect("argsAsRepos");
+        let Some(backend) = show_repo_backend.as_deref_mut() else {
+            blaze_util::unported!(
+                "ModCommand.execInternal",
+                "show_repo without a RepoDefinitionValue evaluator"
+            );
+        };
+        // ImmutableSet of the keys: each repo once, in first-seen order.
+        let sky_keys: Vec<RepositoryName> = args_as_repos
+            .values()
+            .cloned()
+            .collect::<IndexSet<_>>()
+            .into_iter()
+            .collect();
+        match backend.evaluate_repo_definitions(&sky_keys) {
+            Err(()) => {
+                let error_message = "mod command interrupted: null".to_string();
+                reporter.handle(&Event::error(error_message.clone()));
+                return ModCommandResult::Interrupted {
+                    message: error_message,
+                };
+            }
+            Ok(Some(message)) => {
+                let message = message.unwrap_or_else(|| {
+                    "Unexpected error during repository rule evaluation.".into()
+                });
+                return report_and_create_failure_result(
+                    reporter,
+                    &message,
+                    ModCommandCode::INVALID_ARGUMENTS,
+                );
+            }
+            Ok(None) => {}
+        }
+        for (key, repo) in &args_as_repos {
+            if backend.is_not_found(repo) {
+                return report_and_create_failure_result(
+                    reporter,
+                    &format!("In repo argument {key}: no such repo"),
+                    ModCommandCode::INVALID_ARGUMENTS,
+                );
+            }
+        }
+        target_repo_definitions = Some(args_as_repos);
     }
 
     // Workaround to allow different default value for DEPS and EXPLAIN, and also use
@@ -578,7 +655,10 @@ pub fn exec_after_evaluation(
             Ok(())
         }
         ModSubcommand::SHOW_REPO => {
-            mod_executor.show_repo();
+            mod_executor.show_repo(
+                target_repo_definitions.as_ref().unwrap(),
+                &**show_repo_backend.as_mut().unwrap(),
+            );
             Ok(())
         }
         ModSubcommand::SHOW_EXTENSION => {
@@ -743,4 +823,69 @@ fn extension_arg_list_to_ids(
         add_to_sorted_set(&mut extensions_builder, id);
     }
     Ok(extensions_builder)
+}
+
+/// The `DUMP_REPO_MAPPING` branch of `ModCommand.execInternal` after the evaluation of the
+/// `RepositoryMappingValue` keys: `repo_mappings[i]` is the value for `repo_names[i]`, `None`
+/// for `RepositoryMappingValue.NOT_FOUND_VALUE`.
+// Java: com/google/devtools/build/lib/bazel/commands/ModCommand.java:335 ModCommand.execInternal
+pub fn exec_dump_repo_mapping(
+    repo_names: &[RepositoryName],
+    repo_mappings: &[Option<&RepositoryMapping>],
+    mod_options: &ModOptions,
+    reporter: &dyn ExtendedEventHandler,
+    out: &mut dyn Write,
+) -> ModCommandResult {
+    let missing_repos = repo_names
+        .iter()
+        .zip(repo_mappings)
+        .filter(|(_, mapping)| mapping.is_none())
+        .map(|(name, _)| name.get_name().to_owned())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !missing_repos.is_empty() {
+        return report_and_create_failure_result(
+            reporter,
+            &format!("Repositories not found: {missing_repos}"),
+            ModCommandCode::INVALID_ARGUMENTS,
+        );
+    }
+    let mappings: Vec<&RepositoryMapping> = repo_mappings.iter().map(|m| m.unwrap()).collect();
+    if let Err(e) = dump_repo_mappings(&mappings, mod_options.charset, out) {
+        panic!("IllegalStateException: {e}");
+    }
+    ModCommandResult::Success
+}
+
+/// `ModCommand.dumpRepoMappings`: one JSON object per mapping (Gson, HTML escaping disabled),
+/// each followed by a newline, written through an `OutputStreamWriter` with `charset` (UTF-8,
+/// or US-ASCII, which writes `?` for every char it cannot encode).
+// Java: com/google/devtools/build/lib/bazel/commands/ModCommand.java:822 ModCommand.dumpRepoMappings
+pub fn dump_repo_mappings(
+    repo_mappings: &[&RepositoryMapping],
+    charset: blaze_optdefs::misc::mod_options::Charset,
+    writer: &mut dyn Write,
+) -> std::io::Result<()> {
+    for repo_mapping in repo_mappings {
+        let mut json_writer = blaze_bzlmod_model::gson::JsonWriter::new(false);
+        json_writer.begin_object();
+        for (key, value) in repo_mapping.entries() {
+            json_writer.name(key);
+            json_writer.value_str(value.get_name());
+        }
+        json_writer.end_object();
+        let mut text = json_writer.into_string();
+        text.push('\n');
+        // The JSON holds internal strings; Java's writer encodes their chars (Latin-1 code
+        // points) with the writer's charset.
+        let bytes: Vec<u8> = match charset {
+            blaze_optdefs::misc::mod_options::Charset::UTF8 => text.into_bytes(),
+            _ => text
+                .chars()
+                .map(|c| if c.is_ascii() { c as u8 } else { b'?' })
+                .collect(),
+        };
+        writer.write_all(&bytes)?;
+    }
+    writer.flush()
 }

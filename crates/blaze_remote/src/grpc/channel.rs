@@ -1476,15 +1476,19 @@ mod tests {
         );
     }
 
-    /// `--remote_header=x=é` (oracle `tc-hdr-o` run1: builds): `getBytes(US_ASCII)` sends '?';
-    /// `--remote_header='bad name=v'` (run2: Bazel crashes, exit 37) is refused.
+    /// `--remote_header=x=aé`: the option value is an internal string (`a`, U+00C3, U+00A9) and
+    /// `getBytes(US_ASCII)` sends one '?' per char: the oracle sends `a??`
+    /// (`scripts/remote/nonascii-probe oracle tg-o1`, step hdr: the server receives the header
+    /// `x` as the bytes `a??`). `--remote_header='bad name=v'` (oracle `tc-hdr-o` run2: Bazel
+    /// crashes, exit 37) is refused.
     #[test]
     fn header_values_are_sent_as_us_ascii() {
         let interceptor =
-            AttachHeadersInterceptor::new(&[("x".to_string(), "aé".to_string())]).unwrap();
+            AttachHeadersInterceptor::new(&[("x".to_string(), "a\u{c3}\u{a9}".to_string())])
+                .unwrap();
         let mut headers = MetadataMap::new();
         let _ = interceptor.intercept_call(&methods::GET_CAPABILITIES, &mut headers);
-        assert_eq!(headers.get("x").unwrap().to_str().unwrap(), "a?");
+        assert_eq!(headers.get("x").unwrap().to_str().unwrap(), "a??");
         assert!(
             AttachHeadersInterceptor::new(&[("bad name".to_string(), "v".to_string())]).is_err()
         );

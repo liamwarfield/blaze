@@ -62,10 +62,10 @@ impl CommandFailureUtils {
         let mut is_first_argument = true;
         for command_element in command_line_elements {
             let command_element = command_element.as_ref();
-            // PORT: Java's String.length() of an internal (Latin-1) string is its UTF-8 byte
-            // length, which is Rust's str::len().
+            // Java `length()` counts chars: one per byte of an internal string.
             if form == CommandDescriptionForm::Abbreviated
-                && message.len() + command_element.len() > APPROXIMATE_MAXIMUM_MESSAGE_LENGTH
+                && message.chars().count() + command_element.chars().count()
+                    > APPROXIMATE_MAXIMUM_MESSAGE_LENGTH
             {
                 message.push_str(" ... (remaining ");
                 message.push_str(&number_remaining.to_string());

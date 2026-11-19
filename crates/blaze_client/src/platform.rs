@@ -313,6 +313,43 @@ pub unsafe fn unset_env(name: &str) {
     unsafe { std::env::remove_var(internal_to_platform(name)) }
 }
 
+// Java: src/main/cpp/blaze_util_posix.cc:322 ExecuteProgram
+fn execute_program(exe: &Path, args_vector: &[String], _run_in_user_cgroup: bool) -> ! {
+    bazel_log(
+        LogLevel::Info,
+        file!(),
+        line!(),
+        format!(
+            "Invoking binary {} in {}",
+            exe.as_printable_path(),
+            get_cwd()
+        ),
+    );
+
+    // TODO(jmmv): This execution does not respect any settings we might apply to the server
+    // process with ConfigureDaemonProcess when executed in the background as a daemon.
+    let argv: Vec<std::ffi::CString> = args_vector.iter().map(|a| cstr(a)).collect();
+    let mut argv_ptrs: Vec<*const libc::c_char> = argv.iter().map(|a| a.as_ptr()).collect();
+    argv_ptrs.push(std::ptr::null());
+    let path = cstr(&exe.as_native_path());
+    // SAFETY: path and every argv entry are NUL-terminated and outlive the call; argv_ptrs is
+    // NULL-terminated.
+    unsafe { libc::execv(path.as_ptr(), argv_ptrs.as_ptr()) };
+    let err = get_last_error_string();
+    bazel_die(
+        exit_code::INTERNAL_ERROR,
+        file!(),
+        line!(),
+        format!("execv of '{}' failed: {}", exe.as_printable_path(), err),
+    );
+}
+
+/// Replaces the current process with the given executable (the `run` command's ExecRequest).
+// Java: src/main/cpp/blaze_util_posix.cc:349 ExecuteRunRequest
+pub fn execute_run_request(exe: &Path, run_request_args: &[String]) -> ! {
+    execute_program(exe, run_request_args, /* run_in_user_cgroup= */ false)
+}
+
 // Java: src/main/cpp/blaze_util_posix.cc:580 WarnIfStartedFromDesktop
 pub fn warn_if_started_from_desktop() -> bool {
     false

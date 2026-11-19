@@ -145,10 +145,14 @@ fn unread_key_use_cc_configure_from_rules_cc_is_loud() {
     semantics_of(&["--incompatible_use_cc_configure_from_rules_cc"]);
 }
 
+// Byte-strings review 2026-11-20 S2-1: the key's Java readers (StringModule.java:326-334,
+// Json.java:346-353) are wired (every evaluator sets the flag from its thread's semantics), so
+// the key is accepted; scripts/bytes `flagoff` compares the effect with the oracle.
 #[test]
-#[should_panic(expected = "--internal_starlark_utf_8_byte_strings=false")]
-fn unread_key_utf_8_byte_strings_is_loud() {
-    semantics_of(&["--nointernal_starlark_utf_8_byte_strings"]);
+fn key_utf_8_byte_strings_is_read() {
+    let semantics = semantics_of(&["--nointernal_starlark_utf_8_byte_strings"]);
+    assert!(!semantics.internal_starlark_utf_8_byte_strings);
+    assert!(!semantics.utf8_byte_strings());
 }
 
 // Keys that Bazel 9.3.2 itself never reads stay accepted (no Java reader at the pin).

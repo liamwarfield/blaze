@@ -1,0 +1,1 @@
+SYNTAX lex_tab_indent.star:2:2: Tab characters are not allowed for indentation. Use spaces instead.

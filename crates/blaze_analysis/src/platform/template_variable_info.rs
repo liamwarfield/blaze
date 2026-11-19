@@ -73,14 +73,20 @@ impl TemplateVariableInfo {
 }
 
 impl fmt::Display for TemplateVariableInfo {
-    // Java: com/google/devtools/build/lib/packages/NativeInfo.java NativeInfo.repr (legacy fields)
+    // Java: com/google/devtools/build/lib/packages/NativeInfo.java:125 NativeInfo.repr (legacy
+    // fields, sorted by name; strings through Printer.java:225 appendQuoted)
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "struct(variables = {{")?;
         for (i, (k, v)) in self.variables.iter().enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
             }
-            write!(f, "{:?}: {:?}", k, v)?;
+            write!(
+                f,
+                "{}: {}",
+                blaze_starlark::printer::quote(k),
+                blaze_starlark::printer::quote(v)
+            )?;
         }
         write!(f, "}})")
     }
@@ -198,4 +204,23 @@ pub const fn provider() -> BuiltinProvider {
         id: TEMPLATE_VARIABLE_INFO,
         constructor: BuiltinConstructor::Native(template_variable_info_constructor),
     })
+}
+
+#[cfg(test)]
+mod byte_strings_tests {
+    use super::*;
+    use blaze_util::string_encoding::latin1_decode;
+
+    // Byte-strings review 2026-11-20 S1-3. Oracle (bazel 9.3.2):
+    // `repr(platform_common.TemplateVariableInfo({"K": "à🐷\377"}))` prints
+    // `struct(variables = {"K": "` C3 A0 F0 9F 90 B7 FF `"})`: the bytes as they are.
+    #[test]
+    fn repr_keeps_latin1_chars() {
+        let v = latin1_decode(b"\xc3\xa0\xf0\x9f\x90\xb7\xff").into_owned();
+        let info = TemplateVariableInfo::new(IndexMap::from([("K".to_string(), v.clone())]), None);
+        assert_eq!(
+            info.to_string(),
+            format!("struct(variables = {{\"K\": \"{v}\"}})")
+        );
+    }
 }

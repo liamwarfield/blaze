@@ -65,9 +65,25 @@ fn parse(args: &[&str]) -> Result<Options<HttpOptions>, OptionsParsingException>
 
 // Java: OptionsTest.paragraphFill
 #[test]
-#[ignore = "needs OptionsUsage.paragraphFill (not ported)"]
 fn paragraph_fill() {
-    blaze_options::unported!("OptionsUsage.paragraphFill");
+    use blaze_options::options_usage::OptionsUsage;
+    // TODO(bazel-team): don't include trailing space after last word in line.
+    let input = "The quick brown fox jumps over the lazy dog.";
+
+    assert_eq!(
+        OptionsUsage::paragraph_fill(input, 2, 13),
+        "  The quick \n  brown fox \n  jumps over \n  the lazy \n  dog."
+    );
+    assert_eq!(
+        OptionsUsage::paragraph_fill(input, 3, 19),
+        "   The quick brown \n   fox jumps over \n   the lazy dog."
+    );
+
+    let input2 = "The quick brown fox jumps\nAnother paragraph.";
+    assert_eq!(
+        OptionsUsage::paragraph_fill(input2, 2, 23),
+        "  The quick brown fox \n  jumps\n  Another paragraph."
+    );
 }
 
 // Java: OptionsTest.getsDefaults
@@ -278,16 +294,26 @@ fn is_picky_about_boolean_nos() {
 
 // Java: OptionsTest.usageForBuiltinTypesNoExpansion
 #[test]
-#[ignore = "needs OptionsUsage (Options.getUsage, not ported)"]
 fn usage_for_builtin_types_no_expansion() {
-    Options::<HttpOptions>::get_usage();
+    let usage = Options::<HttpOptions>::get_usage();
+    // We can't rely on the option ordering.
+    assert!(usage.contains("  --[no]debug [-d] (a boolean; default: \"false\")\n    debug"));
+    assert!(usage.contains(
+        "  --host (a string; default: \"www.google.com\")\n    The URL at which the server will be running."
+    ));
+    assert!(usage.contains(
+        "  --port [-p] (an integer; default: \"80\")\n    The port at which the server will be running."
+    ));
+    assert!(usage.contains(
+        "  --[no]tristate [-t] (a tri-state (auto, yes, no); default: \"auto\")\n    tri-state option returning auto by default"
+    ));
 }
 
 // Java: OptionsTest.usageForStaticExpansion
 #[test]
-#[ignore = "needs OptionsUsage (Options.getUsage, not ported)"]
 fn usage_for_static_expansion() {
-    Options::<HttpOptions>::get_usage();
+    let usage = Options::<HttpOptions>::get_usage();
+    assert!(usage.contains("  --special\n      Expands to: --host=special.google.com --port=8080"));
 }
 
 options! {
@@ -315,9 +341,15 @@ options! {
 
 // Java: OptionsTest.usageForNullDefault
 #[test]
-#[ignore = "needs OptionsUsage (Options.getUsage, not ported)"]
 fn usage_for_null_default() {
-    Options::<NullTestOptions>::get_usage();
+    let usage = Options::<NullTestOptions>::get_usage();
+    assert!(usage.contains(
+        "  --host (a string; default: see description)\n    The URL at which the server will be running."
+    ));
+    assert!(
+        usage
+            .contains("  --none\n    An expanded option.\n      Expands to: --host=www.google.com")
+    );
 }
 
 /// Test-only stand-in for `java.net.URL`: only the protocol check `new URL(String)` performs
@@ -396,9 +428,11 @@ fn custom_converter_throws_exception() {
 
 // Java: OptionsTest.usageWithCustomConverter
 #[test]
-#[ignore = "needs OptionsUsage (Options.getUsage, not ported)"]
 fn usage_with_custom_converter() {
-    Options::<UsesCustomConverter>::get_usage();
+    assert_eq!(
+        Options::<UsesCustomConverter>::get_usage(),
+        "  --url (a url; default: \"http://www.google.com/\")\n"
+    );
 }
 
 // Java: OptionsTest.unknownBooleanOptionNegativeForm

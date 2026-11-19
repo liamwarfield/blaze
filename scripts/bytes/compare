@@ -13,8 +13,10 @@ Compares the recording of `scripts/bytes/run --binary <blaze>` (default
 ~/.cache/blaze/work/bytes-out-blaze) with the oracle's (default ~/.cache/blaze/work/bytes-out),
 byte for byte, and prints `matching / total` plus every item that differs. Items:
 
-  case:<file>:<KIND> <name>   one per CASE / RCASE / LCASE / RAWPRINT line of build.stderr and
-                              labels.stderr (the whole DEBUG line, bytes)
+  case:<file>:<KIND> <name>   one per CASE / RCASE / LCASE / RAWPRINT line of build.stderr,
+                              labels.stderr, providers.stderr and flagoff.stderr (the whole
+                              DEBUG line, bytes)
+  failmsg:<file>:<n>          the n-th line of fail.stderr that contains "error executing"
   output:<name>               one per file under outputs/
   stdout:<name>               query_build.txt, query_label_kind.txt, query_jsonproto.txt,
                               cquery_jsonproto.txt, aquery_text.txt, aquery_jsonproto.txt
@@ -33,7 +35,10 @@ STDOUT = [
     "cquery_jsonproto.txt",
     "aquery_text.txt",
     "aquery_jsonproto.txt",
+    "rc_import.txt",
 ]
+CASE_FILES = ("build.stderr", "labels.stderr", "providers.stderr", "flagoff.stderr")
+FAIL_FILES = ("fail.stderr",)
 
 
 def read(path):
@@ -46,7 +51,7 @@ def read(path):
 
 def items(d):
     out = {}
-    for name in ("build.stderr", "labels.stderr"):
+    for name in CASE_FILES:
         data = read(os.path.join(d, name)) or b""
         seen = {}
         for line in data.split(b"\n"):
@@ -60,6 +65,13 @@ def items(d):
             if n:
                 key = f"{key}#{n + 1}"
             out[f"case:{name}:{key}"] = line
+    for name in FAIL_FILES:
+        data = read(os.path.join(d, name)) or b""
+        n = 0
+        for line in data.split(b"\n"):
+            if b"error executing" in line:
+                n += 1
+                out[f"failmsg:{name}:{n}"] = line
     od = os.path.join(d, "outputs")
     if os.path.isdir(od):
         for name in sorted(os.listdir(od)):

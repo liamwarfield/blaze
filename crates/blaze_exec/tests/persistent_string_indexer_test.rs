@@ -395,3 +395,16 @@ fn test_deferred_io_failure() {
         e
     );
 }
+
+// Byte-strings review 2026-11-20 S2-7 / exec-sites (b) line PersistentStringIndexer.java:173:
+// `dump(PrintStream)` writes through the server's ISO-8859-1 PrintStream, so an internal key `é`
+// (the chars C3 A9) comes out as the bytes C3 A9, not UTF-8 encoded again (C3 83 C2 A9).
+#[test]
+fn dump_writes_internal_strings_as_latin1() {
+    let f = Fixture::new();
+    let key = blaze_util::string_encoding::latin1_decode("é".as_bytes()).into_owned();
+    f.indexer.get_or_create_index(&key);
+    let mut out: Vec<u8> = Vec::new();
+    f.indexer.dump(&mut out);
+    assert_eq!(out, b"String indexer (1 records):\n  0 <=> \xc3\xa9\n");
+}

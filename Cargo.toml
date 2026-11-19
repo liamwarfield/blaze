@@ -47,6 +47,8 @@ prost-build = "0.14"
 protox = "0.10"
 heck = "0.5"
 base64 = "0.22"
+# Markdown help text to HTML (`help everything-as-html`; Bazel uses commonmark-java).
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 # gRPC stack of blaze_remote (remote cache and execution): tonic on tokio, TLS by rustls (ring)
 # with the webpki roots (see docs/decisions.md 2026-11-18, TLS trust).
 tonic = { version = "0.14", default-features = false, features = ["transport", "codegen", "tls-ring", "tls-webpki-roots"] }

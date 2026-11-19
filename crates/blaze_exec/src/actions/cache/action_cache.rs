@@ -262,31 +262,31 @@ impl ActionCacheEntry {
 
     // Java: com/google/devtools/build/lib/actions/cache/ActionCache.java:196 ActionCache.Entry.dump
     pub(crate) fn dump(&self, out: &mut dyn Write) {
-        // PORT: PrintStream swallows write errors.
+        // PORT: PrintStream swallows write errors; its charset is ISO-8859-1 (println_latin1!).
         if self.is_corrupted() {
-            let _ = writeln!(out, "  CORRUPTED");
+            println_latin1!(out, "  CORRUPTED");
             return;
         }
-        let _ = writeln!(
+        println_latin1!(
             out,
             "  digest = {}",
             ActionCacheEntry::format_digest(self.digest.as_deref().unwrap())
         );
         if let Some(discovered_input_paths) = &self.discovered_input_paths {
-            let _ = writeln!(out, "  discoveredInputPaths =");
+            println_latin1!(out, "  discoveredInputPaths =");
             let mut sorted = discovered_input_paths.clone();
             sorted.sort();
             for path in sorted {
-                let _ = writeln!(out, "    {}", path);
+                println_latin1!(out, "    {}", path);
             }
         }
 
         if !self.output_file_metadata.is_empty() {
-            let _ = writeln!(out, "  outputFileMetadata =");
+            println_latin1!(out, "  outputFileMetadata =");
             let mut sorted: Vec<&String> = self.output_file_metadata.keys().collect();
             sorted.sort();
             for path in sorted {
-                let _ = writeln!(
+                println_latin1!(
                     out,
                     "    {} = {}",
                     path,
@@ -296,11 +296,11 @@ impl ActionCacheEntry {
         }
 
         if !self.output_tree_metadata.is_empty() {
-            let _ = writeln!(out, "  outputTreeMetadata =");
+            println_latin1!(out, "  outputTreeMetadata =");
             let mut sorted: Vec<&String> = self.output_tree_metadata.keys().collect();
             sorted.sort();
             for path in sorted {
-                let _ = writeln!(out, "    {} = {}", path, self.output_tree_metadata[path]);
+                println_latin1!(out, "    {} = {}", path, self.output_tree_metadata[path]);
             }
         }
     }

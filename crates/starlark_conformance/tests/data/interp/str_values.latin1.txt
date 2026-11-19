@@ -1,0 +1,25 @@
+3 3 3 3
+2 2 0 0
+1 1 4 2 3
+True True True True
+False True True True
+-1 1 1 -1
+1 1 -1
+ab bc abc cba ab
+[1, 2] (3, 2, 1)
+a| a |  a|
+-a-b-c- -a-bc abc bbb
+["a", "b", "c"] ["a\\r\\n", "b\\r", "c\\n"] [] [""] ["\\n", "\\n"]
+["a", "b,,c"] ["a,b,", "c"] ["a", "b"] ["", "", ""]
+("a", "b", "c") ("", "", "abc") ("abc", "", "")
+abc abc  
+a,b x 
+["a", "b", "c"] []
+16 3 7 16 -16 1
+json 
+True False X
+["capitalize", "count", "elems", "endswith", "find", "format", "index", "isalnum", "isalpha", "isdigit", "islower", "isspace", "istitle", "isupper", "join", "lower", "lstrip", "partition", "removeprefix", "removesuffix", "replace", "rfind", "rindex", "rpartition", "rsplit", "rstrip", "split", "splitlines", "startswith", "strip", "title", "upper"]
+["a", "b", ""] ["", ""] [""] [""]
+["a b"] ["a b"]
+abc ab  ac ca cb 
+12 {} 12 3

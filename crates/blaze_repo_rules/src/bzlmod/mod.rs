@@ -1,5 +1,7 @@
 //! Module extensions (Java `com.google.devtools.build.lib.bazel.bzlmod`, the Starlark parts).
 
+pub mod bazel_fetch_all_function;
+pub mod bazel_mod_tidy_function;
 pub mod eval_thread_context;
 pub mod facts;
 pub mod module_extension;

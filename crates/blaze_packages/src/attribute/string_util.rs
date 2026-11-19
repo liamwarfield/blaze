@@ -52,7 +52,8 @@ pub fn join_english_list_single_quoted<S: AsRef<str>>(choices: &[S]) -> String {
 }
 
 /// Levenshtein distance bounded by `max_edit_distance` (-1 if larger).
-// PORT: Java compares UTF-16 chars; this compares Unicode scalar values (same for ASCII).
+// PORT: Java compares UTF-16 units; this compares chars, the same units for internal strings
+// (every char <= U+00FF) and for any text without chars above U+FFFF.
 // Java: net/starlark/java/spelling/SpellChecker.java SpellChecker.editDistance
 pub fn edit_distance(s1: &str, s2: &str, max_edit_distance: i32) -> i32 {
     if s1 == s2 {

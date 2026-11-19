@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Times `build //src/workerd/server:workerd` with the oracle (Bazel 9.3.2) or Blaze.
+# usage: scripts/workerd/bench <oracle|blaze> <outdir> [--jobs N] [--noop-reps N]
+#        scripts/workerd/bench help
+# Scenarios, in order, on a fresh rsync of the pristine checkout and a fresh output base
+# (install base and the shared repository cache are kept, so nothing is downloaded):
+#   cold      first build, empty output base (server start, fetch/extract, analysis, all actions)
+#   noop      same build again, nothing changed (Bazel: warm server)        x noop-reps
+#   noopcold  oracle only: `shutdown` first, then the same no-op build       x noop-reps
+#   edit      one-line change to src/workerd/server/alarm-scheduler.c++, rebuild (one compile
+#             plus relink), x noop-reps
+# Everything runs in one systemd-run unit (MemoryMax=20G); per command it records wall time and
+# the unit's CPU time (cgroup cpu.stat, tool plus all actions). Output: <outdir>/results.tsv and
+# one timestamped log per command. Env: BLAZE (binary, default target/release/blaze).
+set -euo pipefail
+if [[ "${1:-help}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,14p' "$0"; exit 0; fi
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+who="$1"; out="$2"; shift 2
+jobs=10; reps=3
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --jobs) jobs="$2"; shift 2 ;;
+    --noop-reps) reps="$2"; shift 2 ;;
+    *) echo "unknown argument $1" >&2; exit 2 ;;
+  esac
+done
+case "$who" in
+  oracle) bin="$HOME/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64" ;;
+  blaze) bin="${BLAZE:-$root/target/release/blaze}" ;;
+  *) echo "first argument must be oracle or blaze" >&2; exit 2 ;;
+esac
+mkdir -p "$out"; out="$(cd "$out" && pwd)"
+ws="$HOME/.cache/blaze/work/bench-workerd-$who"
+ur="$HOME/.cache/blaze/oracle-out/ur-bench-workerd-$who"
+checkout="$HOME/.cache/blaze/corpus/workerd"
+
+if [[ "${BENCH_INNER:-}" != 1 ]]; then
+  exec systemd-run --user --collect --quiet --wait --pipe -p MemoryMax=20G -p MemorySwapMax=0 \
+    --setenv=BENCH_INNER=1 --setenv=HOME="$HOME" --setenv=PATH=/usr/bin:/bin \
+    ${BLAZE:+--setenv=BLAZE="$BLAZE"} "$0" "$who" "$out" --jobs "$jobs" --noop-reps "$reps"
+fi
+
+cg="/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)"
+cpu_us() { awk '$1=="usage_usec"{print $2}' "$cg/cpu.stat"; }
+bz() {
+  env -i HOME="$HOME" PATH=/usr/bin:/bin "$bin" --output_user_root="$ur" --nohome_rc --nosystem_rc "$@"
+}
+build_args=(build //src/workerd/server:workerd --repository_cache="$HOME/.cache/blaze/repo-cache"
+  --color=no --curses=no --jobs="$jobs")
+# Prefix each output line with seconds since the command started.
+stamp() { python3 -uc '
+import sys, time
+t0 = float(sys.argv[1])
+for line in sys.stdin:
+    sys.stdout.write("%9.3f %s" % (time.time() - t0, line))
+' "$1"; }
+
+run() { # run <scenario> <rep> <bazel args...>
+  local name="$1" rep="$2"; shift 2
+  local log="$out/$name.$rep.log" t0 t1 c0 c1 rc=0
+  c0=$(cpu_us); t0=$(date +%s.%N)
+  bz "$@" 2>&1 | stamp "$t0" > "$log" || rc=$?
+  t1=$(date +%s.%N); c1=$(cpu_us)
+  local an
+  an=$(awk '/INFO: Analyzed target/{print $1; exit}' "$log")
+  printf '%s\t%s\t%s\t%.3f\t%.3f\t%s\t%s\n' "$who" "$name" "$rep" "$(echo "$t1 - $t0" | bc)" \
+    "$(echo "($c1 - $c0)/1000000" | bc -l)" "${an:--}" "$rc" | tee -a "$out/results.tsv"
+}
+
+cd /
+[[ -d "$ur" ]] && { bz shutdown >/dev/null 2>&1 || true; find "$ur" -mindepth 1 -maxdepth 1 ! -name install -exec rm -rf {} +; }
+mkdir -p "$ws"
+rsync -a --delete --exclude '/bazel-*' --exclude '/.git' "$checkout/" "$ws/"
+cd "$ws"
+printf 'who\tscenario\trep\twall_s\tcpu_s\tanalyzed_at_s\texit\n' > "$out/results.tsv"
+{ echo "binary: $bin"; sha256sum "$bin"; date -Is; uptime; nproc; } > "$out/meta.txt"
+
+run cold 1 "${build_args[@]}"
+sha256sum bazel-bin/src/workerd/server/workerd >> "$out/meta.txt" || true
+for i in $(seq "$reps"); do run noop "$i" "${build_args[@]}"; done
+if [[ "$who" == oracle ]]; then
+  for i in $(seq "$reps"); do bz shutdown >/dev/null 2>&1; run noopcold "$i" "${build_args[@]}"; done
+fi
+for i in $(seq "$reps"); do
+  printf '\nnamespace { [[maybe_unused]] int benchEdit%s = %s; }\n' "$i" "$i" >> src/workerd/server/alarm-scheduler.c++
+  run edit "$i" "${build_args[@]}"
+done
+uptime >> "$out/meta.txt"
+bz shutdown >/dev/null 2>&1 || true

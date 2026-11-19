@@ -90,8 +90,9 @@ def foo(x):
 #[test]
 fn test_tabs_fail() {
     let a = Assert::new();
-    a.fail("def f():\n\tpass", "Parse error");
-    a.fail("def f():\n x\t=3", "Parse error");
+    // BLAZE PATCH 0037: Java's text; a tab between tokens is ignored (Lexer.java:824-828).
+    a.fail("def f():\n\tpass", "Tab characters are not allowed"); // BLAZE PATCH 0037
+    a.pass("def f():\n x\t=3"); // BLAZE PATCH 0037
 }
 
 #[test]

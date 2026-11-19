@@ -67,6 +67,12 @@ impl<'a> Printer<'a> {
         self.print("\n");
     }
 
+    /// The `OutputStream` under the `PrintWriter` (Java writes `streamed_proto` output to it
+    /// directly, bypassing the writer's buffer).
+    pub fn output_stream(&mut self) -> &mut dyn Write {
+        &mut *self.out
+    }
+
     /// `PrintWriter.flush()`.
     pub fn flush(&mut self) {
         let _ = self.out.write_all(&self.buffer);

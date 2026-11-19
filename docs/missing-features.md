@@ -20,7 +20,6 @@ Limits of this list:
 
 Not ported at all (registered, so `help` lists them, but they do not run):
 
-- `run`
 - `coverage`
 - `fetch`
 - `vendor`
@@ -41,6 +40,7 @@ Partly ported:
 | `query` | `--output=graph` and other formatters that need the dependency graph, `--query_file`, SkyQuery (`--universe_scope`), definition and instantiation stacks in proto output, rule class info, native aspects |
 | `cquery` | `--show_config_fragments`, some output formats' start/process hooks |
 | `aquery` | `--skyframe_state`, the dump after a build (`--experimental_aquery_dump_after_build_format`) |
+| `run` | ported after v0.1.0 (20 of 20 oracle comparison cases, 32 of 34 upstream test functions); missing: the Build Event Protocol for `run`, remote flags with `run` |
 | `shutdown` | there is no server to stop |
 
 ## Server and client

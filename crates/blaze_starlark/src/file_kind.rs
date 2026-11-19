@@ -131,6 +131,9 @@ impl FileKind {
             // DotBazelFileSyntaxChecker parse them so the checker can give its own message.
             enable_top_level_stmt: self.has_dot_bazel_checker(),
             enable_f_strings: false,
+            // Java: net/starlark/java/syntax/Lexer.java:855-877 Lexer.tokenize: Bazel has no
+            // bytes literals; `b"x"` is the identifier `b` followed by a string (patch 0040).
+            enable_bytes_literals: false,
             ..Dialect::Standard
         }
     }

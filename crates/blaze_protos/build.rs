@@ -85,6 +85,14 @@ fn main() {
 
     let generated = Generator::new(&fds).generate();
     fs::write(out.join("java_impls.rs"), generated).unwrap();
+
+    // The descriptors themselves (map entries kept), for the descriptor-driven `TextFormat`
+    // printer and parser (`crate::descriptors`).
+    fs::write(
+        out.join("descriptor_set.bin"),
+        prost::Message::encode_to_vec(&fds),
+    )
+    .unwrap();
 }
 
 fn clear_map_entry(msg: &mut DescriptorProto) {

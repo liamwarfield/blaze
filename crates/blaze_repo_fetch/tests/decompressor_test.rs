@@ -1046,3 +1046,52 @@ mod non_ascii_entry_names {
         assert_eq!(readdir_names(&out), vec!["??.txt", "plain.txt"]);
     }
 }
+
+/// Review 2026-11-20 section 3: CompressedTarFunction.java:111 decides "directory" with
+/// `entry.isDirectory()`, which looks at the entry's type and its own name, never at the
+/// `rename_files` target; a header name carries Bazel's charset marker at its end, so a trailing
+/// '/' in it does not count either. Expected values from the oracle (Bazel 9.3.2,
+/// `repository_ctx.extract` of this archive with these `rename_files`): `d` and `w` are files.
+mod tar_rename_files_directory {
+    use super::*;
+
+    /// A tar with a regular file `x` and a regular-typed entry named `z/` (a directory by name).
+    fn archive(dir: &std::path::Path) -> std::path::PathBuf {
+        let path = dir.join("a.tar");
+        let mut builder = tar::Builder::new(std::fs::File::create(&path).unwrap());
+        for (name, data) in [(&b"x"[..], &b"hi"[..]), (&b"z/"[..], &b""[..])] {
+            let mut header = tar::Header::new_ustar();
+            header.as_old_mut().name[..name.len()].copy_from_slice(name);
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_cksum();
+            builder.append(&header, data).unwrap();
+        }
+        builder.finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn directory_is_decided_by_entry_type_not_rename_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fs = fs();
+        let out = path_of(&fs, tmp.path()).get_child("out");
+        let mut renames = IndexMap::new();
+        renames.insert("x".to_string(), "d/".to_string());
+        renames.insert("z/".to_string(), "w".to_string());
+        decompressor::decompress(
+            &DecompressorDescriptor::builder()
+                .set_archive_path(path_of(&fs, &archive(tmp.path())))
+                .set_destination_path(out.clone())
+                .set_rename_files(renames)
+                .build(),
+            None,
+        )
+        .unwrap();
+        // Bazel: `x` is a file, written at `d` (getRelative("d/") is "d").
+        assert!(out.get_child("d").is_file());
+        // Bazel: `z/` is a regular entry whose marked name does not end in '/': a file at `w`.
+        assert!(out.get_child("w").is_file());
+    }
+}

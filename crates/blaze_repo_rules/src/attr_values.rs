@@ -41,6 +41,14 @@ pub fn attribute_value_to_starlark<'v>(value: &AttributeValue, heap: Heap<'v>) -
     }
 }
 
+/// `Starlark.repr` of a stored attribute value (Java calls it on the stored Starlark object).
+// Java: net/starlark/java/eval/Starlark.java:530 Starlark.repr
+pub fn starlark_repr(value: &AttributeValue) -> String {
+    starlark::environment::Module::with_temp_heap(|module| {
+        attribute_value_to_starlark(value, module.heap()).to_repr()
+    })
+}
+
 /// A Starlark value as stored data, deep-copying containers (Java
 /// `ModuleExtensionEvalStarlarkThreadContext.deepCloneAttrValue`). Fails with Java's message
 /// for values that cannot be attribute values.

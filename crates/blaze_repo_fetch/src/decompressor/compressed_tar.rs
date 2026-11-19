@@ -222,6 +222,19 @@ fn parse_binary_big_integer(buffer: &[u8], negative: bool) -> Option<i64> {
     })
 }
 
+/// Whether the entry's name is a PAX `path` record, which Commons Compress decodes as UTF-8
+/// (without Bazel's charset marker).
+fn name_is_from_pax_path<R: Read>(entry: &mut tar::Entry<'_, R>) -> Result<bool, IoException> {
+    if let Some(exts) = entry.pax_extensions()? {
+        for ext in exts {
+            if ext?.key_bytes() == b"path" {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// Commons Compress `TarArchiveEntry.getLastModifiedDate().getTime()`: the PAX `mtime` (with its
 /// fraction, floored to milliseconds) when present, else the header's seconds.
 fn last_modified_millis<R: Read>(
@@ -331,8 +344,14 @@ pub(crate) fn decompress(
         if let Some(parent) = file_path.get_parent_directory() {
             parent.create_directory_and_parents()?;
         }
-        // Commons Compress: isDirectory() is also true for a name ending in '/'.
-        let is_directory = entry_type.is_dir() || entry_name.ends_with('/');
+        // Java `entry.isDirectory()` (CompressedTarFunction.java:111): Commons Compress's
+        // TarArchiveEntry.isDirectory is the directory type, or `getName().endsWith("/")` on
+        // the entry's own name (never the `rename_files` target). A header name decoded with
+        // Bazel's MarkedIso88591Charset ends with the charset's marker (CompressedTarFunction.java
+        // :208-252), so only a PAX `path` name (decoded without the marker) can end in '/'.
+        // Checked on the oracle: a regular entry `z/` extracts as a file.
+        let is_directory =
+            entry_type.is_dir() || (raw_name.ends_with(b"/") && name_is_from_pax_path(&mut entry)?);
         if is_directory {
             file_path.create_directory_and_parents()?;
         } else if entry_type.is_symlink() || entry_type.is_hard_link() {

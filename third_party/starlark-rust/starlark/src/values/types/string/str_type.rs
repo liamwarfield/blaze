@@ -331,6 +331,9 @@ impl<'v> StarlarkValue<'v> for StarlarkStr {
         fn start_stop_to_none_or(v: Option<Value>) -> crate::Result<NoneOr<i32>> {
             match v {
                 None => Ok(NoneOr::None),
+                // BLAZE PATCH 0042: an explicit `None` bound is the default (Java
+                // Starlark.slice, net/starlark/java/eval/Starlark.java:692, :698).
+                Some(v) if v.is_none() => Ok(NoneOr::None), // BLAZE PATCH 0042
                 Some(v) => Ok(NoneOr::Other(i32::unpack_value_err(v)?)),
             }
         }

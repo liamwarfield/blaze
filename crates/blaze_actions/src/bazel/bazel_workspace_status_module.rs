@@ -90,25 +90,28 @@ impl BazelWorkspaceStatusAction {
     /// through `inputs`.
     // Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:174 BazelWorkspaceStatusAction.execute
     pub fn compute_status_files(&self, inputs: &WorkspaceStatusInputs) -> WorkspaceStatusFiles {
-        let mut volatile_map: BTreeMap<String, String> = BTreeMap::new();
-        let mut stable_map: BTreeMap<String, String> = BTreeMap::new();
+        let mut volatile_map: StatusMap = BTreeMap::new();
+        let mut stable_map: StatusMap = BTreeMap::new();
 
-        stable_map.insert(BUILD_EMBED_LABEL.to_string(), inputs.embed_label.clone());
-        stable_map.insert(BUILD_HOST.to_string(), self.hostname.clone());
-        stable_map.insert(BUILD_USER.to_string(), self.username.clone());
+        stable_map.insert(
+            JavaStringKey(BUILD_EMBED_LABEL.to_string()),
+            inputs.embed_label.clone(),
+        );
+        stable_map.insert(JavaStringKey(BUILD_HOST.to_string()), self.hostname.clone());
+        stable_map.insert(JavaStringKey(BUILD_USER.to_string()), self.username.clone());
         let current_time_millis =
             get_current_time_millis(&inputs.client_env, inputs.current_time_millis);
         volatile_map.insert(
-            BUILD_TIMESTAMP.to_string(),
+            JavaStringKey(BUILD_TIMESTAMP.to_string()),
             (current_time_millis / 1000).to_string(),
         );
         volatile_map.insert(
-            "FORMATTED_DATE".to_string(),
+            JavaStringKey("FORMATTED_DATE".to_string()),
             format(current_time_millis / 1000 * 1000),
         );
         let status_map = parse_workspace_status(&inputs.workspace_status_command_output);
         for (key, value) in status_map {
-            if is_stable_key(&key) {
+            if is_stable_key(key.as_str()) {
                 stable_map.insert(key, value);
             } else {
                 volatile_map.insert(key, value);
@@ -116,8 +119,8 @@ impl BazelWorkspaceStatusAction {
         }
 
         let mut overall_map = BTreeMap::new();
-        overall_map.extend(volatile_map.clone());
-        overall_map.extend(stable_map.clone());
+        overall_map.extend(volatile_map.iter().map(|(k, v)| (k.0.clone(), v.clone())));
+        overall_map.extend(stable_map.iter().map(|(k, v)| (k.0.clone(), v.clone())));
 
         WorkspaceStatusFiles {
             stable_status: print_status_map(&stable_map),
@@ -141,6 +144,8 @@ pub struct WorkspaceStatusFiles {
     /// The bytes of `volatile-status.txt`.
     pub volatile_status: Vec<u8>,
     /// The `BuildInfoEvent` map (volatile entries overridden by stable ones).
+    // PORT: keyed by `String` for `BuildInfoEvent` (blaze_exec); its iteration order is code
+    // point order, Java's TreeMap's UTF-16 order differs only for keys with chars above U+FFFF.
     pub overall_map: BTreeMap<String, String>,
 }
 
@@ -195,11 +200,37 @@ fn java_trim(s: &str) -> &str {
     s.trim_matches(|c: char| c <= ' ')
 }
 
+/// A key of Java's `TreeMap<String, String>`: ordered by `String.compareTo` (UTF-16 code units).
+/// `str` order (code points) differs between a char above U+FFFF and one in U+E000..U+FFFF, and
+/// the command's output is a Unicode string (`stdoutStream.toString(UTF_8)`).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct JavaStringKey(pub String);
+
+impl JavaStringKey {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Ord for JavaStringKey {
+    // Java: java/lang/String.java String.compareTo
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.encode_utf16().cmp(other.0.encode_utf16())
+    }
+}
+
+impl PartialOrd for JavaStringKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Java `TreeMap<String, String>` of a status file.
+pub type StatusMap = BTreeMap<JavaStringKey, String>;
+
 /// Parses the output of `--workspace_status_command`.
 // Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:139 BazelWorkspaceStatusAction.parseWorkspaceStatus
-// PORT: Java's TreeMap orders by UTF-16 code units; BTreeMap<String> orders by UTF-8 bytes, which
-// agrees except between supplementary characters and U+E000..U+FFFF.
-pub fn parse_workspace_status(input: &str) -> BTreeMap<String, String> {
+pub fn parse_workspace_status(input: &str) -> StatusMap {
     let mut result = BTreeMap::new();
     // `input.trim().split("\n")`: Java's split drops trailing empty strings, which have fewer
     // than two parts and are skipped below anyway.
@@ -208,7 +239,7 @@ pub fn parse_workspace_status(input: &str) -> BTreeMap<String, String> {
         let split_line: Vec<&str> = line.splitn(2, ' ').collect();
         if split_line.len() >= 2 {
             result.insert(
-                split_line[0].to_string(),
+                JavaStringKey(split_line[0].to_string()),
                 java_trim(split_line[1]).to_string(),
             );
         }
@@ -217,10 +248,10 @@ pub fn parse_workspace_status(input: &str) -> BTreeMap<String, String> {
 }
 
 // Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:151 BazelWorkspaceStatusAction.printStatusMap
-fn print_status_map(map: &BTreeMap<String, String>) -> Vec<u8> {
+fn print_status_map(map: &StatusMap) -> Vec<u8> {
     let mut s = map
         .iter()
-        .map(|(k, v)| format!("{} {}", k, v))
+        .map(|(k, v)| format!("{} {}", k.as_str(), v))
         .collect::<Vec<_>>()
         .join("\n");
     s.push('\n');
@@ -361,6 +392,15 @@ mod tests {
         let m = parse_workspace_status("  STABLE_B  two words \nA 1\nnospace\n\n");
         let v: Vec<(&str, &str)> = m.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         assert_eq!(v, vec![("A", "1"), ("STABLE_B", "two words")]);
+    }
+
+    // Byte-strings review 2026-11-20 S2-5. Java's TreeMap orders keys by UTF-16 units:
+    // `STABLE_🐷` (D83D DC37) sorts before `STABLE_Ａ` (FF21); by code point it would be after.
+    #[test]
+    fn parse_workspace_status_orders_by_utf16_units() {
+        let m = parse_workspace_status("STABLE_Ａ 1\nSTABLE_🐷 2\n");
+        let v: Vec<&str> = m.keys().map(|k| k.as_str()).collect();
+        assert_eq!(v, vec!["STABLE_🐷", "STABLE_Ａ"]);
     }
 
     #[test]

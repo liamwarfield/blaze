@@ -1,0 +1,1 @@
+SYNTAX lex_binary_literal.star:1:7: invalid octal literal: 0b101 (use '0ob101')

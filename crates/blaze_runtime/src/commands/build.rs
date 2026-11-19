@@ -104,7 +104,7 @@ impl BlazeCommand for BuildCommand {
         env: &mut CommandEnvironment,
         options: &OptionsParsingResult,
     ) -> BlazeCommandResult {
-        run_build(env, options, false)
+        run_build(env, options, false, None)
     }
 }
 
@@ -123,7 +123,7 @@ impl BlazeCommand for TestCommand {
         env: &mut CommandEnvironment,
         options: &OptionsParsingResult,
     ) -> BlazeCommandResult {
-        run_build(env, options, true)
+        run_build(env, options, true, None)
     }
 }
 
@@ -156,10 +156,34 @@ pub(crate) fn abrupt_exit_detailed_exit_code(
 ///
 /// PORT: Java runs the module hooks in `BlazeCommandDispatcher` / `BlazeRuntime.afterCommand`
 /// around `command.exec`; the BEP of `build` and `test` lives here.
-fn run_build(
+/// What `RunCommand.runBuild` passes to `BuildTool.processRequest` besides the request (its
+/// targets and its `TargetValidator`), and the rest of `RunCommand.exec`, which runs on the
+/// `BuildResult` once `processRequest` returned (crate::commands::run).
+pub(crate) struct RunBuild<'a> {
+    /// `BuildRequest.Builder.setTargets(targetsToBuild)`.
+    pub(crate) targets: Vec<String>,
+    pub(crate) validator: &'a dyn blaze_sky_top::build_tool::TargetValidator,
+    pub(crate) after_build: Box<dyn FnOnce(RunBuildOutcome<'_>) -> BlazeCommandResult + 'a>,
+}
+
+/// What `BuildTool.processRequest` leaves to `RunCommand`: its `BuildResult` and the command's
+/// Skyframe executor (`env.getSkyframeExecutor()`).
+pub(crate) struct RunBuildOutcome<'b> {
+    pub(crate) env: &'b mut CommandEnvironment,
+    pub(crate) build_result: &'b BuildResult,
+    /// `buildResult.getDetailedExitCode()`.
+    pub(crate) detailed_exit_code: DetailedExitCode,
+    pub(crate) skyframe_executor: &'b SkyframeExecutor,
+    /// The configured targets analyzed by the build (`BuildResultListener`), from which the
+    /// `ConfiguredTarget`s behind `build_result`'s views are taken.
+    pub(crate) analyzed_targets: Vec<ConfiguredTarget>,
+}
+
+pub(crate) fn run_build(
     env: &mut CommandEnvironment,
     options: &OptionsParsingResult,
     run_tests: bool,
+    run: Option<RunBuild<'_>>,
 ) -> BlazeCommandResult {
     // RemoteModule.beforeCommand: the dispatcher runs the modules' beforeCommand in module order
     // (RemoteModule before BuildEventServiceModule) and exits with the first module's
@@ -179,7 +203,7 @@ fn run_build(
         options,
         &build_remote::build_event_artifact_uploader_factory_map(remote.as_ref()),
     );
-    let result = run_build_with_bep(env, options, run_tests, bep.as_ref(), remote.as_ref());
+    let result = run_build_with_bep(env, options, run_tests, bep.as_ref(), remote.as_ref(), run);
     // BlazeRuntime.afterCommand: CommandPrecompleteEvent, then each module's afterCommand in
     // module order; each AbruptExitException is reported as `ERROR: <message>` and the more
     // important exit code (the first on a tie) replaces the result unless that is an
@@ -260,6 +284,7 @@ fn run_build_with_bep(
     run_tests: bool,
     bep: Option<&Arc<BepCommandSupport>>,
     remote: Option<&Arc<build_remote::RemoteSupport>>,
+    run: Option<RunBuild<'_>>,
 ) -> BlazeCommandResult {
     // BuildRequest.Builder.setStartTimeMillis(env.getCommandStartTime())
     let start_time_millis = env.get_command_start_time();
@@ -348,12 +373,20 @@ fn run_build_with_bep(
 
     // Java: com/google/devtools/build/lib/runtime/commands/BuildCommand.java:74 BuildCommand.exec
     // Java: com/google/devtools/build/lib/runtime/commands/TestCommand.java:131 TestCommand.doTest
-    let targets: Vec<String> = match target_patterns_helper::read_from(env, options) {
-        Ok(targets) => targets,
-        Err(e) => {
-            reporter.handle(&Event::error(e.get_message()));
-            return BlazeCommandResult::failure_detail(e.get_failure_detail());
-        }
+    // RunCommand.runBuild: the run target (and the --run_under label), not the residue.
+    let (targets, run) = match run {
+        Some(RunBuild {
+            targets,
+            validator,
+            after_build,
+        }) => (targets, Some((validator, after_build))),
+        None => match target_patterns_helper::read_from(env, options) {
+            Ok(targets) => (targets, None),
+            Err(e) => {
+                reporter.handle(&Event::error(e.get_message()));
+                return BlazeCommandResult::failure_detail(e.get_failure_detail());
+            }
+        },
     };
     if !run_tests && targets.is_empty() {
         let product_name = env.get_runtime().get_product_name();
@@ -604,6 +637,11 @@ fn run_build_with_bep(
         &post_processor,
     )
     .with_execution_phase(&execution_phase);
+    // BuildTool.processRequest(request, validator, ...): RunCommand's TargetValidator.
+    let build_tool = match &run {
+        Some((validator, _)) => build_tool.with_target_validator(*validator),
+        None => build_tool,
+    };
     // BuildTool.buildTargets: BuildStartingEvent. Its subscriber OutputFilteringModule sets the
     // reporter's output filter.
     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:288 BuildTool.buildTargets
@@ -736,13 +774,39 @@ fn run_build_with_bep(
     }
     // SpawnLogModule.buildComplete / afterCommand.
     spawn_log_module.build_complete();
+    // RunCommand.exec after BuildTool.processRequest returned; the modules' afterCommand below
+    // runs after the command (BlazeRuntime.afterCommand), with the ExecRequest kept.
+    // Java: com/google/devtools/build/lib/runtime/commands/RunCommand.java:415 RunCommand.runBuild
+    let run_result = run.map(|(_, after_build)| {
+        let analyzed_targets = build_result_listener.get_analyzed_targets();
+        after_build(RunBuildOutcome {
+            env: &mut *env,
+            build_result: &build_result,
+            detailed_exit_code: detailed_exit_code.clone(),
+            skyframe_executor: &skyframe_executor,
+            analyzed_targets,
+        })
+    });
     // SandboxModule.afterCommand.
     if let Some(execution) = skyframe_executor.get_execution() {
         execution.after_command();
     }
     if let Err(e) = spawn_log_module.after_command() {
         reporter.handle(&Event::error(e.failure_detail.message.clone()));
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:795 BlazeRuntime.afterCommand
+        if let Some(run_result) = &run_result
+            && let Some(exec_request) = run_result.get_exec_request()
+            && !run_result.get_exit_code().is_infrastructure_failure()
+        {
+            return BlazeCommandResult::execute_with_detailed_exit_code(
+                exec_request.clone(),
+                DetailedExitCode::of(e.failure_detail),
+            );
+        }
         return BlazeCommandResult::detailed_exit_code(DetailedExitCode::of(e.failure_detail));
+    }
+    if let Some(run_result) = run_result {
+        return run_result;
     }
 
     let Some(test_support) = test_support else {

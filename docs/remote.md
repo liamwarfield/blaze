@@ -170,4 +170,83 @@ where Bazel would enter it; none is silently ignored.
 
 ## Bazel's own remote tests
 
-@@UPSTREAM@@
+Bazel's own shell and Python integration tests for remote caching and execution (pinned source,
+unmodified) run against Blaze with `scripts/upstream-tests/run` (method and oracle baseline:
+`corpus/upstream-tests/README.md`, `oracle-9.3.2.json`):
+
+```
+scripts/upstream-tests/run --binary <blaze> --label <label> --fresh --test-jobs 4 \
+  --file 'remote*' --file '*disk_cache*' --file '*build_without_the_bytes*' \
+  --file '*bazel_remote_cache_decompression*'
+```
+
+12 targets, 253 functions that pass on the oracle. Runs: `blaze-remote-0` (binary before the
+round-2 fixes, tree on top of 750317c): 110 pass; `blaze-remote-1` (binary sha256
+`43db45a1caf91dff…`, tree 5a4e4a0 plus three uncommitted `blaze_remote` files): 115 pass. Between
+the two: 7 functions gained (`test_multiple_test_attempts`, `test_output_path_is_symlink`,
+`test_prefetcher_recreate_tree_dir`, `test_combined_disk_remote_exec_with_flag_combinations`,
+`test_platform_default_properties_invalidation_with_platform_remote_execution_properties`,
+`test_premature_exit_file_checked_remote_download_minimal`,
+`test_shard_status_file_checked_remote_download_minimal`), and 2 that passed for the wrong
+reason now fail honestly (`remote_execution_mtls_test` `test_remote_grpc_cache` and
+`test_remote_grpcs_cache`: the build used to continue locally after the TLS failure).
+
+`blaze-remote-1`, per test file (results:
+`~/.cache/blaze/upstream-test-results/blaze-remote-1/results.json`; a function is counted under
+the first failure in its log; every failure was read in the log, not guessed from the name):
+
+| test file | oracle pass | Blaze pass | Blaze fail | causes (ids below) |
+|---|---:|---:|---:|---|
+| bazel_remote_cache_decompression_test | 1 | 0 | 1 | R-http 1 |
+| remote_repo_contents_cache_test | 38 | 0 | 38 | N-mod 33, R-repocc 4, R-gate 1 |
+| build_without_the_bytes_test | 63 | 31 | 32 | N-bep 7, R-gate 6, N-cctpl 6, N-java 4, N-server 3, N-ui 2, N-pathmap 2, N-incl 1, N-unused 1 |
+| remote_build_event_uploader_test | 20 | 0 | 20 (not run) | N-toollogs 20 |
+| remote_downloader_test | 4 | 0 | 4 | R-dl 4 |
+| remote_execution_http_test | 15 | 4 | 11 | R-http 11 |
+| remote_execution_mtls_test | 4 | 2 | 2 | R-tlsv1 2 |
+| remote_execution_sandboxing_test | 3 | 3 | 0 | |
+| remote_execution_test | 96 | 71 | 25 | N-bep 6, N-fetch 4, R-cred 3, N-excl 3, N-unused 3, R-gate 2, R-http 1, R-scrub 1, N-server 1, N-modexec 1 |
+| remote_execution_tls_test | 4 | 2 | 2 | R-tlsv1 2 |
+| remote_execution_with_xattr_test | 1 | 0 | 1 | N-xattr 1 |
+| disk_cache_test | 4 | 2 | 2 | R-gc 1, N-sibling 1 |
+| **total** | 253 | 115 | 138 | remote 39, not remote 99 |
+
+Remote causes (39 functions). Every one is either a feature that fails loudly (see "Not ported
+(loud)") or the TLS ruling; none is a silent wrong result:
+
+| id | functions | cause |
+|---|---:|---|
+| R-http | 13 | HTTP remote cache (`--remote_cache=http://...`): `RemoteModule.createCredentials (HTTP remote cache)` |
+| R-gate | 9 | remote flags on `run` (5) and `coverage` (4): the commands themselves are not ported |
+| R-repocc | 4 | remote repo contents cache (`--experimental_remote_repo_contents_cache`); these would first hit N-mod |
+| R-dl | 4 | `--experimental_remote_downloader` |
+| R-tlsv1 | 4 | Bazel's test certificates are X.509 v1, which rustls rejects (ruling: fail closed, "Security posture") |
+| R-cred | 3 | `--credential_helper` |
+| R-scrub | 1 | `--experimental_remote_scrubbing_config` |
+| R-gc | 1 | disk cache garbage collection |
+
+Causes outside the remote subsystem (99 functions), for their owners:
+
+| id | functions | missing |
+|---|---:|---|
+| N-mod | 33 | `mod dump_repo_mapping` (called by the test class's `RepoDir` helper) |
+| N-toollogs | 20 | BEP `buildToolLogs` file entries (`command.profile.gz`, the compact execution log). The first function fails on the missing profile entry, prints the whole BEP into its log, and `unittest.bash` then dies with "Argument list too long", so no function of the target gets a result. The upload itself works (`bytestream://` URIs for the outputs) |
+| N-bep | 13 | `--build_event_text_file` (TextFormat transport) |
+| N-cctpl | 6 | `CcStarlarkInternal.createCppCompileActionTemplate` |
+| N-java | 4 | `java_common_internal_do_not_use.expand_java_opts` |
+| N-server | 4 | no persistent server: Bazel keeps executed actions in memory between two commands of a test, Blaze re-checks the action cache (expected `1 process: 1 internal`, got `2 action cache hit, 1 internal`), and "Lost outputs no longer available remotely" needs that memory |
+| N-unused | 4 | Starlark action with `unused_inputs_list`: panic "Not an input-discovering action" (`blaze_exec` `action_execution.rs`), not an `unported!` |
+| N-fetch | 4 | `fetch` command |
+| N-excl | 3 | exclusive tests (`BuildTool.runExclusiveTests`) |
+| N-ui | 2 | `--experimental_ui_debug_all_events` (`UiStateTracker.writeProgressBar`) |
+| N-pathmap | 2 | path stripping (`StrippingPathMapper.tryCreate`) |
+| N-incl | 1 | include scanning (`CppCompileAction.discoverInputs`) |
+| N-modexec | 1 | `--modify_execution_info` |
+| N-xattr | 1 | `--unix_digest_hash_attribute_name` |
+| N-sibling | 1 | external repository links under `--experimental_sibling_repository_layout` (`IncrementalPackageRoots`) |
+
+Fixed in round 2 after this run found them (they were wrong behaviour, and the independent review
+had not found them): the `RemotePathChecker` stub, `OutputService.startBuild`, test attempts
+under `--remote_download_minimal`, a regular file where a tree directory belongs, the mTLS
+handshake failure downgraded to a warning, the silently ignored remote repo contents cache
+(now loud). Details: docs/reviews/2026-11-19-remote-response.md, "Round 2 response".

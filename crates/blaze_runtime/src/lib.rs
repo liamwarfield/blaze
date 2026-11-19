@@ -21,6 +21,7 @@
     clippy::if_same_then_else
 )]
 
+pub mod blaze_command_utils;
 pub mod command;
 pub mod command_environment;
 pub mod directories;

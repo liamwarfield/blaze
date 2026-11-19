@@ -23,6 +23,10 @@ use dupe::Dupe;
 /// Parser for `.format()` arguments.
 pub struct FormatParser<'a> {
     view: StringView<'a>,
+    /// BLAZE PATCH 0045: whether `{x!r}` / `{x!s}` are conversions (upstream; used only to
+    /// compile f-strings). Bazel's `str.format` has none: the whole field is the key
+    /// (net/starlark/java/eval/FormatParser.java:193 getFieldName).
+    conversions: bool, // BLAZE PATCH 0045
 }
 
 /// Output the capture as `str` or `repr`.
@@ -74,12 +78,23 @@ impl EscapeCurlyBrace {
 }
 
 impl<'a> FormatParser<'a> {
+    /// BLAZE PATCH 0045: Bazel's `str.format` fields: no conversions.
     #[inline]
     pub fn new(s: &'a str) -> Self {
         Self {
             view: StringView::new(s),
+            conversions: false, // BLAZE PATCH 0045
         }
     }
+
+    /// BLAZE PATCH 0045: upstream fields with `!r` / `!s` conversions (f-strings).
+    #[inline]
+    pub fn new_with_conversions(s: &'a str) -> Self { // BLAZE PATCH 0045
+        Self { // BLAZE PATCH 0045
+            view: StringView::new(s), // BLAZE PATCH 0045
+            conversions: true, // BLAZE PATCH 0045
+        } // BLAZE PATCH 0045
+    } // BLAZE PATCH 0045
 
     /// Parse the next token from the format string.
     pub fn next(&mut self) -> anyhow::Result<Option<FormatToken<'a>>> {
@@ -106,7 +121,7 @@ impl<'a> FormatParser<'a> {
                                     conv: FormatConv::Str,
                                 }));
                             }
-                            b'!' => {
+                            b'!' if self.conversions => { // BLAZE PATCH 0045
                                 let capture = &self.view.eat(i + 1)[1..i];
                                 let conv = if self.view.rem().starts_with('r') {
                                     FormatConv::Repr
@@ -221,7 +236,7 @@ mod tests {
     #[test]
     fn test_parser_position() {
         let s = "foo{x}bar{yz}baz{w!s}qux{v!r}quux";
-        let mut parser = FormatParser::new(s);
+        let mut parser = FormatParser::new_with_conversions(s); // BLAZE PATCH 0045
         assert_eq!(parser.next().unwrap(), Some(FormatToken::Text("foo")));
         assert_eq!(
             parser.next().unwrap(),
@@ -259,6 +274,29 @@ mod tests {
             })
         );
         assert_eq!(parser.next().unwrap(), Some(FormatToken::Text("quux")));
+        assert_eq!(parser.next().unwrap(), None);
+    }
+
+    // BLAZE PATCH 0045: Bazel's fields have no conversions.
+    #[test]
+    fn test_parser_bazel_fields_have_no_conversions() {
+        let mut parser = FormatParser::new("{v!r}{!s}");
+        assert_eq!(
+            parser.next().unwrap(),
+            Some(FormatToken::Capture {
+                capture: "v!r",
+                pos: 1,
+                conv: FormatConv::Str,
+            })
+        );
+        assert_eq!(
+            parser.next().unwrap(),
+            Some(FormatToken::Capture {
+                capture: "!s",
+                pos: 6,
+                conv: FormatConv::Str,
+            })
+        );
         assert_eq!(parser.next().unwrap(), None);
     }
 

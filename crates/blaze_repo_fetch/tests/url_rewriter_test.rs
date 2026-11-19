@@ -469,3 +469,29 @@ fn parse_netrc(
     let working_dir = path(&fs, &tmp.path().join("workdir"));
     UrlRewriter::new_credentials_from_netrc(&env, Some(&working_dir))
 }
+
+// Byte-strings review 2026-11-20 S1-5. Java UrlRewriter.java:125 reads the config as UTF-8
+// (Unicode) and :178 encodes the userInfo with `getBytes(ISO_8859_1)`: `中` (U+4E2D) becomes `?`,
+// `é` (U+00E9) the byte E9.
+#[test]
+fn rewritten_url_user_info_is_encoded_as_latin1() {
+    let munger = test_url_rewriter(
+        "/dev/null",
+        "rewrite a.example.com/(.*) 中:pw@mirror.example.com/$1\n\
+         rewrite b.example.com/(.*) é:pw@mirror.example.com/$1\n",
+    )
+    .unwrap();
+    let amended = munger.amend(&[
+        uri("https://a.example.com/x"),
+        uri("https://b.example.com/x"),
+    ]);
+    let updated = munger.update_auth_headers(&amended, &HashMap::new(), None);
+    assert_eq!(
+        updated.get(&amended[0].url),
+        Some(&auth("Basic Pzpwdw==".to_string()))
+    );
+    assert_eq!(
+        updated.get(&amended[1].url),
+        Some(&auth("Basic 6Tpwdw==".to_string()))
+    );
+}

@@ -1,0 +1,1 @@
+SYNTAX lex_ellipsis.star:1:5: syntax error at '...': ellipsis ('...') is not allowed outside type expressions

@@ -1199,7 +1199,7 @@ impl ActionCache for CompactPersistentActionCache {
     /// Dumps the action cache into a human-readable format.
     // Java: com/google/devtools/build/lib/actions/cache/CompactPersistentActionCache.java:766 CompactPersistentActionCache.dump
     fn dump(&self, out: &mut dyn Write) {
-        // PORT: PrintStream swallows write errors.
+        // PORT: PrintStream swallows write errors; its charset is ISO-8859-1 (println_latin1!).
         let mut sorted_keys: Vec<i32> = self
             .action_map
             .keys()
@@ -1207,14 +1207,14 @@ impl ActionCache for CompactPersistentActionCache {
             .filter(|k| *k != VALIDATION_KEY)
             .collect();
         sorted_keys.sort();
-        let _ = writeln!(out, "Action cache ({} records):", sorted_keys.len());
+        println_latin1!(out, "Action cache ({} records):", sorted_keys.len());
         for key in sorted_keys {
             let Some(encoded_entry) = self.action_map.get(&key) else {
                 panic!("NullPointerException");
             };
             let decoded_entry = self.decode(&encoded_entry);
             let timestamp = self.timestamp_map.get(&key);
-            let _ = writeln!(
+            println_latin1!(
                 out,
                 "  {} -> {}",
                 key,
@@ -1222,8 +1222,8 @@ impl ActionCache for CompactPersistentActionCache {
                     .get_string_for_index(key)
                     .unwrap_or_else(|| "null".to_string())
             );
-            let _ = writeln!(out, "  packed_len = {}", encoded_entry.len());
-            let _ = writeln!(
+            println_latin1!(out, "  packed_len = {}", encoded_entry.len());
+            println_latin1!(
                 out,
                 "  timestamp = {}",
                 match timestamp {

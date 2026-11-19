@@ -8,7 +8,7 @@ Program:
 x = 01
 
 Error:
-error: Parse error: integer cannot have leading 0, got `01`
+error: invalid octal literal: 01 (use '0o1')
  --> x:1:5
   |
 1 | x = 01

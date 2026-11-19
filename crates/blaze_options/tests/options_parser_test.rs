@@ -812,10 +812,13 @@ options! {
 
 // Java: OptionsParserTest.describeOptionsWithExpansion
 #[test]
-#[ignore = "needs OptionsUsage (describeOptionsWithDeprecatedCategories), not ported"]
 fn describe_options_with_expansion() {
     let parser = parser_for(&[ExpansionOptions::class()]);
-    let _ = parser.describe_options();
+    let usage = parser.describe_options_with_deprecated_categories(
+        &indexmap::IndexMap::new(),
+        blaze_options::HelpVerbosity::LONG,
+    );
+    assert!(usage.contains("  --expands\n      Expands to: --underlying=from_expansion"));
 }
 
 // Java: OptionsParserTest.overrideExpansionWithExplicit
@@ -2286,9 +2289,15 @@ options! {
 
 // Java: OptionsParserTest.getOptionsCompletionShouldFilterUndocumentedOptions
 #[test]
-#[ignore = "needs OptionsUsage.getCompletion (OptionsParser.getOptionsCompletion), not ported"]
 fn get_options_completion_should_filter_undocumented_options() {
-    let _ = parser_for(&[CompletionOptions::class()]);
+    let parser = parser_for(&[CompletionOptions::class()]);
+    assert_eq!(
+        parser
+            .get_options_completion()
+            .split('\n')
+            .collect::<Vec<_>>(),
+        vec!["--a", "--noa", "--b", "--nob", ""]
+    );
 }
 
 // Java: OptionsParserTest.visitOptionsShouldFailWithoutPredicate

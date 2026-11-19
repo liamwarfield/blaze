@@ -118,10 +118,10 @@ impl PersistentStringIndexer {
     // Java: com/google/devtools/build/lib/actions/cache/PersistentStringIndexer.java:173 PersistentStringIndexer.dump
     pub fn dump(&self, out: &mut dyn Write) {
         let _guard = self.lock.lock();
-        // PORT: PrintStream swallows write errors.
-        let _ = writeln!(out, "String indexer ({} records):", self.size());
+        // PORT: PrintStream swallows write errors; its charset is ISO-8859-1 (println_latin1!).
+        println_latin1!(out, "String indexer ({} records):", self.size());
         for i in 0..self.size() {
-            let _ = writeln!(
+            println_latin1!(
                 out,
                 "  {} <=> {}",
                 i,
@@ -196,7 +196,8 @@ impl MapCodec<String, i32> for StringIndexCodec {
         }
         let mut content = vec![0u8; length as usize];
         in_.read_fully(&mut content)?;
-        Ok(String::from_utf8_lossy(&content).into_owned())
+        // Java `new String(content, UTF_8)`.
+        Ok(blaze_util::string_encoding::java_new_string_utf8(&content))
     }
 
     fn read_value(&self, in_: &mut DataInput) -> io::Result<i32> {

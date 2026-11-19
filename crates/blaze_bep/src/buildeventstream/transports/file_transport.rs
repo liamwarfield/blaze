@@ -1,4 +1,5 @@
-//! Port of `FileTransport`, `JsonFormatFileTransport` and `BinaryFormatFileTransport`.
+//! Port of `FileTransport`, `TextFormatFileTransport`, `JsonFormatFileTransport` and
+//! `BinaryFormatFileTransport`.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -439,5 +440,46 @@ impl SerializeEvent for BinaryFormatSerializer {
         let mut out = Vec::new();
         build_event.write_delimited_to(&mut out);
         out
+    }
+}
+
+/// Serializes events as `TextFormat` blocks.
+// Java: com/google/devtools/build/lib/buildeventstream/transports/TextFormatFileTransport.java:33 TextFormatFileTransport
+pub struct TextFormatSerializer;
+
+/// A simple transport that writes the text representation of the protocol-buffer
+/// representation of the events to a file.
+///
+/// This class is used for debugging.
+pub type TextFormatFileTransport = FileTransport<TextFormatSerializer>;
+
+impl TextFormatFileTransport {
+    // Java: com/google/devtools/build/lib/buildeventstream/transports/TextFormatFileTransport.java:34 TextFormatFileTransport.<init>
+    pub fn new(
+        output_stream: Box<dyn Write + Send>,
+        options: Arc<BuildEventProtocolOptions>,
+        uploader: Arc<dyn BuildEventArtifactUploader>,
+        namer: Arc<dyn ArtifactGroupNamer>,
+        bes_upload_mode: BesUploadMode,
+    ) -> Self {
+        FileTransport::create(
+            output_stream,
+            options,
+            uploader,
+            namer,
+            bes_upload_mode,
+            TextFormatSerializer,
+            "TextFormatFileTransport",
+        )
+    }
+}
+
+impl SerializeEvent for TextFormatSerializer {
+    // Java: com/google/devtools/build/lib/buildeventstream/transports/TextFormatFileTransport.java:49 TextFormatFileTransport.serializeEvent
+    fn serialize_event(&self, build_event: &bes::BuildEvent) -> Vec<u8> {
+        let proto_text_representation =
+            blaze_protos::text_format::printer().print_to_string(build_event);
+        // getBytes(UTF_8); the printer escapes every non-ASCII byte, so the text is ASCII.
+        format!("event {{\n{proto_text_representation}}}\n\n").into_bytes()
     }
 }

@@ -1,0 +1,2 @@
+SYNTAX lex_upper_r_prefix.star:1:8: syntax error at '"a"': expected ,
+SYNTAX lex_upper_r_prefix.star:1:7: name 'R' is not defined

@@ -1,0 +1,2 @@
+SYNTAX lex_fstring.star:2:8: syntax error at '"{x}"': expected ,
+SYNTAX lex_fstring.star:2:7: name 'f' is not defined

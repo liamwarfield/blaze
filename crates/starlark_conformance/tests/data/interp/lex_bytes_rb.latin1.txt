@@ -1,0 +1,2 @@
+SYNTAX lex_bytes_rb.star:1:9: syntax error at '"abc"': expected ,
+SYNTAX lex_bytes_rb.star:1:7: name 'rb' is not defined

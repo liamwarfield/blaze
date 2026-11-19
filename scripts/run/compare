@@ -1,0 +1,342 @@
+#!/usr/bin/env python3
+"""Compare `run` between the oracle (Bazel 9.3.2) and Blaze. See `compare help`."""
+
+import hashlib
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+USAGE = """\
+usage: scripts/run/compare --binary <blaze> [--oracle <bazel>] [--project brotli|re2|all]
+                           [--case ID]... [--label NAME] [--skip-oracle]
+       scripts/run/compare list
+       scripts/run/compare help
+
+Runs a fixed list of `run` invocations (see `list`) with the oracle and with Blaze, each on its
+own work copy of a corpus project (~/.cache/blaze/work/run-compare/<side>/<project>: rsync of
+the read-only checkout minus bazel-* and .git, restored to the checkout's git HEAD, plus the
+probe package scripts/run/probe as //blaze_run_probe) and its own output user root
+(~/.cache/blaze/oracle-out/run-compare-<side>), with a clean environment (HOME, PATH=/usr/bin:/bin
+plus the case's variables), --nohome_rc --nosystem_rc, the shared repository cache, --color=no
+--curses=no, under systemd-run --user --scope -p MemoryMax=12G -p MemorySwapMax=0. Both sides run
+the same cases in the same order from a fresh output root.
+
+Compared per case (after normalising the workspace path, the output user root, the output base
+hash, UUIDs and googletest's "(N ms)" timings on each side):
+  exit     the exit code
+  stdout   the run program's standard output (Bazel writes nothing else to stdout)
+  summary  the stderr lines starting with ERROR:, WARNING:, FAIL, "INFO: Running command line",
+           "INFO: Runnable command line", "INFO: Build completed", "INFO: Build did NOT", and
+           with --subcommands the command description that follows "Running command line:"
+  script   (--script_path cases) the written script, then the output of running it
+
+Output: a table on stdout; raw and normalised outputs under
+~/.cache/blaze/run-compare/<label>/<side>/<project>/<case>.{stdout,stderr,norm.json}, and
+results.json. Exit 0 when every compared field matches, 1 otherwise.
+--skip-oracle reuses the oracle outputs of an earlier run with the same --label.
+"""
+
+HOME = os.path.expanduser("~")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CACHE = os.path.join(HOME, ".cache", "blaze")
+ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+REPO_CACHE = os.path.join(CACHE, "repo-cache")
+PROBE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe")
+CORPUS = os.path.join(CACHE, "corpus")
+TIMEOUT = 3600
+
+P = "//blaze_run_probe"
+
+# (id, project, description, cwd relative to the workspace, startup options, command args,
+#  extra environment, script file written by the case or None)
+CASES = [
+    ("args", "brotli", "cc_binary with arguments after --", "", [],
+     ["//:brotli", "--", "--version"], {}, None),
+    ("exit-code", "brotli", "program exits non-zero", "", [], [P + ":exit3"], {}, None),
+    ("env", "brotli", "BUILD_* variables, cleared runfiles variables, --run_env, args attr",
+     "", [], ["--run_env=RUN_ENV_PROBE=val", P + ":printenv", "--", "a", "b c"],
+     {"RUNFILES_DIR": "/bogus", "TEST_SRCDIR": "/bogus", "JAVA_RUNFILES": "/bogus"}, None),
+    ("subdir", "brotli", "run from a package directory (BUILD_WORKING_DIRECTORY, pretty path)",
+     "blaze_run_probe", [], [":printenv"], {}, None),
+    ("run-in-cwd", "brotli", "--run_in_cwd", "blaze_run_probe", [],
+     ["--run_in_cwd", ":printenv"], {}, None),
+    ("show-args", "brotli", "--noomit_run_args (residue in the INFO line)", "", [],
+     ["--noomit_run_args", P + ":exit3", "--", "x", "y z"], {}, None),
+    ("run-under-cmd", "brotli", "--run_under=<command>", "", [],
+     ["--run_under=echo prefix", P + ":exit3", "--", "x"], {}, None),
+    ("run-under-label", "brotli", "--run_under=<label>", "", [],
+     ["--run_under=" + P + ":wrapper", P + ":printenv", "--", "x"], {}, None),
+    ("script-path", "brotli", "--script_path (script contents, then running it)", "", [],
+     ["--script_path=run_probe.sh", P + ":printenv", "--", "s1"], {}, "run_probe.sh"),
+    ("run-false", "brotli", "--run=false", "", [], ["--run=false", P + ":exit3"], {}, None),
+    ("subcommands", "brotli", "--subcommands (full command description)", "", [],
+     ["--subcommands", P + ":exit3"], {}, None),
+    ("test-target", "brotli", "a cc_test run through `run` (test environment)", "", [],
+     [P + ":envtest", "--", "t1"], {}, None),
+    ("build-fails", "brotli", "target that fails to build", "", [], [P + ":broken"], {}, None),
+    ("not-executable", "brotli", "non-executable target", "", [], [P + ":notexec"], {}, None),
+    ("two-targets", "brotli", "pattern expanding to several targets", "", [],
+     [P + ":all"], {}, None),
+    ("no-target", "brotli", "no target given", "", [], [], {}, None),
+    ("batch", "brotli", "--batch (the server runs the program as a child)", "", ["--batch"],
+     [P + ":exit3", "--", "b"], {}, None),
+    ("re2-test", "re2", "a googletest cc_test through `run`", "", [],
+     ["//:charclass_test"], {}, None),
+    ("re2-test-args", "re2", "test with arguments after --", "", [],
+     ["//:charclass_test", "--", "--gtest_list_tests"], {}, None),
+    ("re2-runs-per-test", "re2", "--runs_per_test=2 (more than one test action)", "", [],
+     ["--runs_per_test=2", "//:charclass_test"], {}, None),
+]
+
+SUMMARY_RE = re.compile(
+    r"^(ERROR:|WARNING:|FAIL|INFO: Running command line|INFO: Runnable command line"
+    r"|INFO: Build completed|INFO: Build did NOT)")
+UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def summary_lines(stderr):
+    """The summary lines of stderr, with the --subcommands command description (the lines after
+    "INFO: Running command line:" up to the one closing its subshell)."""
+    lines = stderr.splitlines()
+    out = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if SUMMARY_RE.match(line):
+            out.append(line)
+            if line in ("INFO: Running command line:", "INFO: Runnable command line:"):
+                while i + 1 < len(lines):
+                    i += 1
+                    out.append(lines[i])
+                    if lines[i].endswith(")"):
+                        break
+        i += 1
+    return out
+
+
+def clean_env(extra):
+    env = {"HOME": HOME, "PATH": "/usr/bin:/bin"}
+    env.update(extra)
+    return env
+
+
+def make_writable_and_remove(path):
+    if not os.path.lexists(path):
+        return
+    subprocess.run(["chmod", "-R", "u+w", path], stderr=subprocess.DEVNULL)
+    shutil.rmtree(path, ignore_errors=True)
+    if os.path.lexists(path):
+        subprocess.run(["rm", "-rf", path])
+
+
+def kill_servers(root):
+    if not os.path.isdir(root):
+        return
+    for name in os.listdir(root):
+        pidfile = os.path.join(root, name, "server", "server.pid.txt")
+        try:
+            pid = int(open(pidfile).read().strip())
+        except (OSError, ValueError):
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+        for _ in range(100):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+
+
+def prepare_workspace(checkout, ws):
+    """Copy the checkout to ws, restore it to the checkout's git HEAD, add the probe package."""
+    os.makedirs(ws, exist_ok=True)
+    subprocess.run(
+        ["rsync", "-a", "--delete", "--delete-excluded", "--exclude=/bazel-*", "--exclude=/.git",
+         checkout.rstrip("/") + "/", ws + "/"], check=True)
+    st = subprocess.run(
+        ["git", "--no-optional-locks", "-C", checkout, "status", "--porcelain=v1", "-z",
+         "--ignored", "--untracked-files=all"], check=True, stdout=subprocess.PIPE).stdout.decode()
+    for entry in st.split("\0"):
+        if len(entry) < 4:
+            continue
+        code, path = entry[:2], entry[3:]
+        if path.startswith("bazel-") and "/" not in path.rstrip("/"):
+            continue
+        dest = os.path.join(ws, path)
+        if code in ("??", "!!"):
+            if os.path.isdir(dest) and not os.path.islink(dest):
+                shutil.rmtree(dest)
+            elif os.path.lexists(dest):
+                os.remove(dest)
+        else:
+            blob = subprocess.run(["git", "-C", checkout, "show", "HEAD:" + path],
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            if blob.returncode == 0:
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "wb") as f:
+                    f.write(blob.stdout)
+    probe = os.path.join(ws, "blaze_run_probe")
+    shutil.copytree(PROBE_DIR, probe)
+
+
+def normaliser(ws, root):
+    output_base_hash = hashlib.md5(ws.encode()).hexdigest()
+
+    def norm(text):
+        text = text.replace(os.path.join(root, output_base_hash), "<OUTPUT_BASE>")
+        text = text.replace(root, "<OUTPUT_USER_ROOT>")
+        text = text.replace(ws, "<WORKSPACE>")
+        text = re.sub(r"<OUTPUT_USER_ROOT>/install/[0-9a-f]{32}", "<INSTALL_BASE>", text)
+        text = UUID_RE.sub("<UUID>", text)
+        # googletest's timings.
+        text = re.sub(r"\((\d+) ms( total)?\)", lambda m: "(<N> ms%s)" % (m.group(2) or ""), text)
+        return text
+    return norm
+
+
+def run_side(side, binary, project, cases, out_dir):
+    ws = os.path.join(CACHE, "work", "run-compare", side, project)
+    root = os.path.join(CACHE, "oracle-out", "run-compare-" + side)
+    kill_servers(root)
+    make_writable_and_remove(ws)
+    make_writable_and_remove(os.path.join(root, hashlib.md5(ws.encode()).hexdigest()))
+    prepare_workspace(os.path.join(CORPUS, project), ws)
+    norm = normaliser(ws, root)
+    os.makedirs(out_dir, exist_ok=True)
+    results = {}
+    for (cid, _proj, _desc, cwd, startup, args, extra_env, script) in cases:
+        cmd = [binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc"] + startup
+        cmd += ["run", "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"] + args
+        env_args = ["%s=%s" % kv for kv in clean_env(extra_env).items()]
+        scoped = ["systemd-run", "--user", "--scope", "--collect", "--quiet",
+                  "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0", "--",
+                  "env", "-i"] + env_args + cmd
+        print("[run-compare] %s %s/%s" % (side, project, cid), flush=True)
+        t0 = time.monotonic()
+        try:
+            p = subprocess.run(scoped, cwd=os.path.join(ws, cwd),
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, timeout=TIMEOUT)
+            rc, out, err = p.returncode, p.stdout, p.stderr
+        except subprocess.TimeoutExpired as e:
+            rc, out, err = -9, e.stdout or b"", (e.stderr or b"") + b"\n[compare] timed out\n"
+        dur = round(time.monotonic() - t0, 1)
+        with open(os.path.join(out_dir, cid + ".stdout"), "wb") as f:
+            f.write(out)
+        with open(os.path.join(out_dir, cid + ".stderr"), "wb") as f:
+            f.write(err)
+        out_s = norm(out.decode("latin-1"))
+        err_s = norm(err.decode("latin-1"))
+        rec = {
+            "argv": cmd, "cwd": cwd, "env": extra_env, "duration_s": dur,
+            "exit": rc,
+            "stdout": out_s,
+            "summary": summary_lines(err_s),
+        }
+        if script is not None:
+            path = os.path.join(ws, cwd, script)
+            if os.path.isfile(path):
+                rec["script"] = norm(open(path, "rb").read().decode("latin-1"))
+                q = subprocess.run([path, "extra arg"], cwd=os.path.join(ws, cwd),
+                                   env=clean_env({}), stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                rec["script_run"] = {"exit": q.returncode,
+                                     "output": norm(q.stdout.decode("latin-1"))}
+                os.remove(path)
+            else:
+                rec["script"] = None
+        results[cid] = rec
+        with open(os.path.join(out_dir, cid + ".norm.json"), "w") as f:
+            json.dump(rec, f, indent=1)
+        print("[run-compare]   exit %d in %.1fs" % (rc, dur), flush=True)
+    # Shut the side's server down (the oracle's; Blaze has none) and keep the output root.
+    subprocess.run([binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc",
+                    "shutdown"], cwd=ws, env=clean_env({}), stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+    return results
+
+
+def compare(oracle, blaze):
+    fields = ["exit", "stdout", "summary", "script", "script_run"]
+    out = {}
+    for f in fields:
+        if f not in oracle and f not in blaze:
+            continue
+        out[f] = "MATCH" if oracle.get(f) == blaze.get(f) else "DIFF"
+    return out
+
+
+def main(argv):
+    if not argv or argv[0] in ("help", "--help", "-h"):
+        print(USAGE)
+        return 0
+    if argv[0] == "list":
+        for c in CASES:
+            print("%-18s %-7s %s" % (c[0], c[1], c[2]))
+        return 0
+    binary, oracle, project, label, only, skip_oracle = None, ORACLE, "all", "run-1", [], False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--binary":
+            binary = os.path.abspath(argv[i + 1]); i += 2
+        elif a == "--oracle":
+            oracle = os.path.abspath(argv[i + 1]); i += 2
+        elif a == "--project":
+            project = argv[i + 1]; i += 2
+        elif a == "--label":
+            label = argv[i + 1]; i += 2
+        elif a == "--case":
+            only.append(argv[i + 1]); i += 2
+        elif a == "--skip-oracle":
+            skip_oracle = True; i += 1
+        else:
+            print("unknown argument: %s\n\n%s" % (a, USAGE), file=sys.stderr)
+            return 2
+    if binary is None:
+        print(USAGE, file=sys.stderr)
+        return 2
+    base = os.path.join(CACHE, "run-compare", label)
+    projects = ["brotli", "re2"] if project == "all" else [project]
+    table = []
+    all_results = {}
+    ok = True
+    for proj in projects:
+        cases = [c for c in CASES if c[1] == proj and (not only or c[0] in only)]
+        if not cases:
+            continue
+        odir = os.path.join(base, "oracle", proj)
+        if skip_oracle:
+            ores = {c[0]: json.load(open(os.path.join(odir, c[0] + ".norm.json"))) for c in cases}
+        else:
+            ores = run_side("oracle", oracle, proj, cases, odir)
+        bres = run_side("blaze", binary, proj, cases, os.path.join(base, "blaze", proj))
+        for c in cases:
+            cmp_ = compare(ores[c[0]], bres[c[0]])
+            ok = ok and all(v == "MATCH" for v in cmp_.values())
+            table.append((proj, c[0], ores[c[0]]["exit"], bres[c[0]]["exit"], cmp_))
+            all_results["%s/%s" % (proj, c[0])] = {
+                "oracle": ores[c[0]], "blaze": bres[c[0]], "compare": cmp_}
+    with open(os.path.join(base, "results.json"), "w") as f:
+        json.dump(all_results, f, indent=1)
+    print()
+    print("| project | case | oracle exit | blaze exit | exit | stdout | summary | script |")
+    print("| --- | --- | --- | --- | --- | --- | --- | --- |")
+    for proj, cid, oe, be, cmp_ in table:
+        script = "/".join(cmp_[k] for k in ("script", "script_run") if k in cmp_) or "-"
+        print("| %s | %s | %d | %d | %s | %s | %s | %s |" % (
+            proj, cid, oe, be, cmp_["exit"], cmp_["stdout"], cmp_["summary"], script))
+    print("\nresults: %s" % os.path.join(base, "results.json"))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,7 +1,9 @@
 //! Ports of the client string helpers used by rc parsing (`src/main/cpp/util/strings.cc`).
 
 // Java: src/main/cpp/util/strings.cc:43 kSeparator
-const SEPARATOR: &[char] = &[' ', '\n', '\t', '\r'];
+// The C++ tests a char with `strchr(kSeparator, c) != nullptr` (strings.cc:186, :235), which also
+// matches the string's terminating NUL: a NUL byte separates tokens too.
+const SEPARATOR: &[char] = &[' ', '\n', '\t', '\r', '\0'];
 
 // Java: src/main/cpp/util/strings.cc:142 blaze_util::Replace
 /// Replaces every occurrence of `oldsub` in `s` with `newsub`.
@@ -118,5 +120,20 @@ pub fn join_path(path1: &str, path2: &str) -> String {
         format!("{}{}", path1, path2)
     } else {
         format!("{}/{}", path1, path2)
+    }
+}
+
+#[cfg(test)]
+mod byte_strings_tests {
+    use super::*;
+
+    // Byte-strings review 2026-11-20 S2-6. src/main/cpp/util/strings.cc:186,235 test separators
+    // with `strchr(kSeparator, c)`, which is non-null for c == '\0' (the terminator matches), so
+    // a NUL byte in an rc line splits tokens; inside quotes the C++ does not test separators.
+    #[test]
+    fn nul_separates_tokens() {
+        assert_eq!(tokenize("build\0--foo", '#'), vec!["build", "--foo"]);
+        assert_eq!(tokenize("\0build", '#'), vec!["build"]);
+        assert_eq!(tokenize("'a\0b'", '#'), vec!["a\0b"]);
     }
 }

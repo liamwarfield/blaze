@@ -45,8 +45,12 @@ impl<O: OptionsClass> Options<O> {
     }
 
     // Java: com/google/devtools/common/options/Options.java:102 Options.getUsage
+    /// Returns a usage string (renders the help information, the defaults, and of course the
+    /// option names).
     pub fn get_usage() -> String {
-        crate::unported!("Options.getUsage (OptionsUsage)")
+        let mut usage = String::new();
+        crate::options_usage::OptionsUsage::get_usage_for_class(O::class(), &mut usage);
+        usage
     }
 
     // Java: com/google/devtools/common/options/Options.java:119 Options.getOptions
