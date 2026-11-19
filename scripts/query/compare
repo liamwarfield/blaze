@@ -5,6 +5,7 @@ usage: scripts/query/compare --binary PATH --label NAME [--project P[,P...]]
                              [--command query,cquery,aquery] [--cells REGEX] [--no-run]
                              [--details N]
        scripts/query/compare cells [--project P] [--command C]   list the matrix, run nothing
+       scripts/query/compare selftest
        scripts/query/compare help
 
 Projects: brotli, re2 (copies of the read-only checkouts in ~/.cache/blaze/corpus), probe (a
@@ -32,8 +33,27 @@ Verdict per cell:
                        matches neither: no byte comparison is defined
   loud                 Blaze stopped at an `unported!` ("not ported yet") or panicked
   different            anything else (stdout or exit code differ)
+  oracle-varies        the oracle varies and Blaze matches neither of its runs
 Results: ~/.cache/blaze/query-compare/<label>/{results.json,matrix.md,cells/<id>/...}.
 --no-run re-classifies the saved outputs. Run it under systemd-run (AGENTS.md: heavy jobs).
+
+Guards (scripts/lib/compare_common.py). Every command of brotli, re2 and probe runs in a --scope
+unit (MemoryMax=12G, clean environment HOME and PATH=/usr/bin:/bin) under a supervisor that
+records how it really ended (`exit N`, `signal NAME`, `oom-kill`, `timeout`), saved as
+<side>.term and compared instead of the exit code (a cell saved without .term is SKIPPED);
+workerd cells go through scripts/workerd/run (a --scope unit too: signals are seen, an OOM kill
+is not). The oracle must be the pinned one (UPSTREAM.json). Each oracle output has
+oracleA.key/oracleB.key: oracle sha256, the argv, the environment and the digest of the
+project's input (the corpus checkout or the probe files); --no-run refuses (SKIPPED) an output
+whose key differs from this run's. The stored outputs are raw bytes, so this tool's own sha256
+is not part of the key (re-classifying them under a changed classify() is what --no-run is for).
+Each cell gets one compare_common class: IDENTICAL (identical or identical-unordered with an
+oracle that exited 0, or an exit code DECLARED_EXIT declares), BOTH-FAILED (identical but both
+failed, not declared), NOT-PORTED (unported!), DIFFERENT (different, oracle-varies, a panic),
+SKIPPED (no saved result, no termination, stale oracle output). The output and results.json
+carry the repository HEAD and dirty flag, both binaries' paths and sha256 and the denominator.
+Exit status: 0 only when at least one cell was compared and every selected cell is IDENTICAL; 1
+otherwise (an empty selection included); 2 on a usage error or a refusal.
 """
 import hashlib
 import json
@@ -43,6 +63,14 @@ import shutil
 import subprocess
 import sys
 import time
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
+import compare_common as cc  # noqa: E402
+
+# Cells (ids) whose non-zero exit is the behaviour under test, with the oracle's exit code.
+# Equal failures of a cell not listed here are BOTH-FAILED. Left to the matrix's owner.
+DECLARED_EXIT = {}
 
 HOME = os.path.expanduser("~")
 CACHE = os.path.join(HOME, ".cache/blaze")
@@ -336,21 +364,54 @@ def run(side, project, binary, argv, timeout=1800):
         cmd = [os.path.join(ROOT, "scripts/workerd/run"), "oracle" if side == "o" else "blaze"]
         if side == "b":
             env["BLAZE"] = binary
-        p = subprocess.run(cmd + argv, capture_output=True, timeout=timeout, env=env)
-        return p.returncode, p.stdout, p.stderr
+        try:
+            p = subprocess.run(cmd + argv, capture_output=True, timeout=timeout, env=env)
+        except subprocess.TimeoutExpired as e:
+            return (cc.Termination("timeout", detail="%ss limit (scripts/workerd/run)" % timeout),
+                    e.stdout or b"", e.stderr or b"")
+        rc = p.returncode
+        # scripts/workerd/run execs a --scope unit: a signal shows as a negative status; an OOM
+        # kill is not detected there.
+        term = cc.Termination("signal", 128 - rc, "SIG%d" % -rc) if rc < 0 else \
+            cc.Termination("exit", rc, detail="via scripts/workerd/run: OOM not checked")
+        return term, p.stdout, p.stderr
     exe = ORACLE if side == "o" else binary
     startup = [exe, "--output_user_root=" + USER_ROOT[side], "--nohome_rc", "--nosystem_rc"]
-    p = subprocess.run(startup + argv, cwd=os.path.join(WORK, side, project),
-                       capture_output=True, timeout=timeout)
-    return p.returncode, p.stdout, p.stderr
+    r = cc.run(startup + argv, os.path.join(WORK, side, project), timeout=timeout, mode="scope",
+               tag="query-compare")
+    return r.term, r.out, r.err
+
+
+_input_digests = {}
+
+
+def input_digest(project):
+    if project not in _input_digests:
+        if project == "probe":
+            _input_digests[project] = cc.sha256_bytes(json.dumps(PROBE_FILES, sort_keys=True)
+                                                      .encode())
+        elif project == "workerd":
+            _input_digests[project] = "workerd via scripts/workerd/run (not digested)"
+        else:
+            _input_digests[project] = cc.tree_digest(os.path.join(CACHE, "corpus", project))
+    return _input_digests[project]
+
+
+def oracle_key(project, cell, side_pass):
+    """Key of a saved oracle output (raw bytes: no tool sha256)."""
+    return cc.cache_key(None, cc.pinned_sha256(),
+                        [ORACLE, "--output_user_root=" + USER_ROOT["o"], "--nohome_rc",
+                         "--nosystem_rc"] + cell_argv(cell),
+                        cc.clean_env(), input_digest(project),
+                        extra={"project": project, "pass": side_pass})
 
 
 def info_paths(side, project, binary):
     """(workspace, output_base, install_base) of one side."""
     paths = []
     for key in ("workspace", "output_base", "install_base"):
-        rc, out, _ = run(side, project, binary, ["info"] + COMMON + [key], timeout=600)
-        paths.append(out.decode("latin-1").strip() if rc == 0 else None)
+        term, out, _ = run(side, project, binary, ["info"] + COMMON + [key], timeout=600)
+        paths.append(out.decode("latin-1").strip() if term.ok else None)
     return paths
 
 
@@ -403,23 +464,44 @@ def classify(cell, oa, ob, b):
 
 
 def save(d, name, res):
-    rc, out, err = res
+    term, out, err = res
     with open(os.path.join(d, name + ".stdout"), "wb") as f:
         f.write(out)
     with open(os.path.join(d, name + ".stderr"), "wb") as f:
         f.write(err)
     with open(os.path.join(d, name + ".rc"), "w") as f:
-        f.write(str(rc))
+        f.write(str(term.exit_code_like()))
+    with open(os.path.join(d, name + ".term"), "w") as f:
+        json.dump(term.to_dict(), f)
 
 
 def load(d, name):
+    """(Termination or None, stdout, stderr); None when saved without a termination."""
     with open(os.path.join(d, name + ".stdout"), "rb") as f:
         out = f.read()
     with open(os.path.join(d, name + ".stderr"), "rb") as f:
         err = f.read()
-    with open(os.path.join(d, name + ".rc")) as f:
-        rc = int(f.read())
-    return rc, out, err
+    try:
+        with open(os.path.join(d, name + ".term")) as f:
+            term = cc.Termination.from_dict(json.load(f))
+    except (OSError, ValueError):
+        term = None
+    return term, out, err
+
+
+def common_class(cell, cid, verdict, oa, b):
+    """compare_common class of a cell from its verdict."""
+    oterm, bterm, berr = oa[0], b[0], b[2]
+    if verdict == "loud":
+        msg = cc.unported_message(berr)
+        return (cc.NOT_PORTED, msg) if msg else (cc.DIFFERENT, "Blaze panicked")
+    if verdict in ("identical", "identical-unordered"):
+        cls, detail = cc.judge(oterm, bterm, [], declared_exit=DECLARED_EXIT.get(cid))
+        return cls, (verdict + ("; " + detail if detail else ""))
+    if verdict == "oracle-varies":
+        return cc.DIFFERENT, "the oracle varies; Blaze matches neither run"
+    cls, detail = cc.judge(oterm, bterm, ["stdout"], declared_exit=DECLARED_EXIT.get(cid))
+    return (cls if cls != cc.IDENTICAL else cc.DIFFERENT), detail
 
 
 def substitute(data, pairs):
@@ -433,6 +515,8 @@ def main(argv):
     if len(argv) < 2 or argv[1] in ("help", "-h", "--help"):
         print(__doc__.strip())
         return 0
+    if argv[1] == "selftest":
+        return selftest()
     list_only = argv[1] == "cells"
     args = {"--project": "brotli,re2,probe", "--command": "query,cquery,aquery", "--cells": None,
             "--binary": None, "--label": None, "--details": "0"}
@@ -466,6 +550,14 @@ def main(argv):
     if not args["--label"] or (not args["--binary"] and "--no-run" not in flags):
         print("--label and --binary are required (see help)", file=sys.stderr)
         return 2
+    if not plan:
+        return cc.empty_selection_error("query/compare", "cells")
+    try:
+        oracle_path, oracle_sha = cc.require_oracle(ORACLE)
+        if "--no-run" not in flags:
+            cc.blaze_identity(args["--binary"])
+    except cc.Refusal as e:
+        return cc.refuse("query/compare", e)
     label_dir = os.path.join(OUT, args["--label"])
     os.makedirs(os.path.join(label_dir, "cells"), exist_ok=True)
     binary = os.path.abspath(args["--binary"]) if args["--binary"] else None
@@ -493,6 +585,8 @@ def main(argv):
                     d = os.path.join(label_dir, "cells", cid)
                     os.makedirs(d, exist_ok=True)
                     save(d, "oracle" + side_pass, run("o", p, binary, cell_argv(c)))
+                    cc.write_key(os.path.join(d, "oracle%s.key" % side_pass),
+                                 oracle_key(p, c, side_pass))
                     if side_pass == "A":
                         t0 = time.time()
                         res = run("b", p, binary, cell_argv(c))
@@ -503,35 +597,103 @@ def main(argv):
             if p != "workerd":
                 run("o", p, binary, ["shutdown"], timeout=300)
         json.dump(meta, open(meta_path, "w"), indent=1)
+    report = cc.Report("query/compare", blaze={"path": meta.get("binary"),
+                                               "sha256": meta.get("binary_sha256")},
+                       oracle={"path": oracle_path, "sha256": oracle_sha},
+                       selection="label %s, %d cells (projects %s, commands %s%s)%s" % (
+                           args["--label"], len(plan), args["--project"], args["--command"],
+                           ", cells %r" % args["--cells"] if args["--cells"] else "",
+                           ", --no-run" if "--no-run" in flags else ""),
+                       tool_files=[os.path.abspath(__file__)])
+    report.print_header()
     results = []
     for p, c, cid in plan:
         d = os.path.join(label_dir, "cells", cid)
         if not os.path.exists(os.path.join(d, "blaze.rc")):
+            report.add(cid, cc.SKIPPED, "no saved Blaze result")
+            continue
+        stale = [cc.check_key(os.path.join(d, "oracle%s.key" % sp), oracle_key(p, c, sp))
+                 for sp in ("A", "B")]
+        stale = [r for r in stale if r]
+        if stale:
+            report.add(cid, cc.SKIPPED, "stale oracle output: " + stale[0])
+            continue
+        if p not in meta.get("paths", {}):
+            report.add(cid, cc.SKIPPED, "no recorded paths for project %s" % p)
             continue
         po, pb = meta["paths"][p]["o"], meta["paths"][p]["b"]
         pairs = sorted(zip(pb, po), key=lambda x: -len(x[0] or ""))
         b = load(d, "blaze")
+        oa, ob = load(d, "oracleA"), load(d, "oracleB")
+        if None in (b[0], oa[0], ob[0]):
+            report.add(cid, cc.SKIPPED, "saved without a recorded termination")
+            continue
         b = (b[0], substitute(b[1], pairs), b[2])
-        verdict = classify(c, load(d, "oracleA"), load(d, "oracleB"), b)
+        verdict = classify(c, oa, ob, b)
+        cls, detail = common_class(c, cid, verdict, oa, b)
+        report.add(cid, cls, detail)
         with open(os.path.join(d, "blaze.normalised.stdout"), "wb") as f:
             f.write(b[1])
         results.append({"id": cid, "project": p, "command": c[0], "expr": c[1], "output": c[2],
-                        "flags": c[3], "verdict": verdict,
-                        "oracle_rc": load(d, "oracleA")[0], "blaze_rc": b[0],
-                        "oracle_deterministic": load(d, "oracleA")[:2] == load(d, "oracleB")[:2]})
-    json.dump(results, open(os.path.join(label_dir, "results.json"), "w"), indent=1)
+                        "flags": c[3], "verdict": verdict, "class": cls,
+                        "oracle_rc": oa[0].exit_code_like(), "blaze_rc": b[0].exit_code_like(),
+                        "oracle_termination": str(oa[0]), "blaze_termination": str(b[0]),
+                        "oracle_deterministic": (oa[0], oa[1]) == (ob[0], ob[1])})
+    report.write_json(os.path.join(label_dir, "results.json"), extra={"results": results})
     write_matrix(label_dir, results, meta)
     counts = {}
     for r in results:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
-    print("cells: %d  %s  (of the identical: %d where both exit non-zero)" % (
-        len(results), "  ".join("%s %d" % kv for kv in sorted(counts.items())),
-        len([r for r in results if r["verdict"] == "identical" and r["oracle_rc"] != 0])))
+    print("cells: %d  %s" % (len(results), "  ".join("%s %d" % kv for kv in sorted(counts.items()))))
     n = int(args["--details"])
     for r in [r for r in results if r["verdict"] in ("different", "loud")][:n]:
         print("%s  %s  %s" % (r["verdict"], r["id"], " ".join([r["command"], "--output=" + r["output"]] + r["flags"] + [r["expr"]])))
+    for row in report.rows:
+        if row["class"] not in (cc.IDENTICAL,):
+            print("  %-17s %s %s" % (row["class"], row["case"], row["detail"]))
+    report.print_footer()
     print("matrix: " + os.path.join(label_dir, "matrix.md"))
-    return 0
+    return report.exit_code()
+
+
+def selftest():
+    cell = ("query", "//x", "label", [])
+
+    def run_pair(ofake, bfake, wd):
+        cc.require_oracle(ofake)
+        res = {}
+        for side, fake in (("oracle", ofake), ("blaze", bfake)):
+            r = cc.run([fake, "query"], wd, mode="scope", tag="selftest")
+            res[side] = (r.term, r.out, r.err)
+        oa = res["oracle"]
+        verdict = classify(cell, oa, oa, res["blaze"])
+        return common_class(cell, "selftest", verdict, oa, res["blaze"])
+
+    def empty_selection():
+        with open(os.devnull, "w") as null:
+            old = sys.stderr
+            sys.stderr = null
+            try:
+                return main(["compare", "--binary", "/bin/true", "--label", "selftest-empty",
+                             "--cells", "^no cell has this id$"])
+            finally:
+                sys.stderr = old
+
+    def extra(st):
+        t0, t1 = cc.Termination("exit", 0), cc.Termination("exit", 1)
+        st.check("identical with both exit 1 is BOTH-FAILED",
+                 common_class(cell, "x", "identical", (t1, b"", b""), (t1, b"", b""))[0]
+                 == cc.BOTH_FAILED)
+        st.check("oracle-varies is not a pass",
+                 common_class(cell, "x", "oracle-varies", (t0, b"", b""), (t0, b"", b""))[0]
+                 == cc.DIFFERENT)
+        st.check("a panic is DIFFERENT",
+                 common_class(cell, "x", "loud", (t0, b"", b""),
+                              (cc.Termination("signal", 134, "SIGABRT"), b"", b"panicked at"))[0]
+                 == cc.DIFFERENT)
+
+    return cc.selftest("query/compare", run_pair=run_pair, empty_selection=empty_selection,
+                       extra=extra, mode="scope")
 
 
 def write_matrix(label_dir, results, meta):

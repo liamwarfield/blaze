@@ -32,3 +32,21 @@ pub const REQUIRES_XCODE: &str = "requires-xcode";
 pub const REQUIRES_XCODE_LABEL: &str = "requires-xcode-label";
 pub const SUPPORTS_PATH_MAPPING: &str = "supports-path-mapping";
 pub const DIFFERENTIATE_WORKSPACE_CACHE: &str = "internal-differentiate-workspace-cache";
+
+/// Denotes what the type of worker protocol the worker uses.
+// Java: com/google/devtools/build/lib/actions/ExecutionRequirements.java:286 ExecutionRequirements.WorkerProtocolFormat
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WorkerProtocolFormat {
+    Json,
+    Proto,
+}
+
+impl std::fmt::Display for WorkerProtocolFormat {
+    /// `toString()`: the enum constant's name.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            WorkerProtocolFormat::Json => "JSON",
+            WorkerProtocolFormat::Proto => "PROTO",
+        })
+    }
+}

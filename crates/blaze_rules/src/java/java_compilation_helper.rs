@@ -135,6 +135,22 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
         self.rule_context
     }
 
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:128 JavaCompilationHelper.getAnalysisEnvironment
+    fn get_analysis_environment(
+        &self,
+    ) -> &'a std::sync::Arc<blaze_analysis::rule::analysis_environment::CachingAnalysisEnvironment>
+    {
+        self.rule_context.get_analysis_environment()
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:132 JavaCompilationHelper.getConfiguration
+    fn get_configuration(
+        &self,
+    ) -> &'a std::sync::Arc<blaze_build_config::build_configuration_value::BuildConfigurationValue>
+    {
+        self.rule_context.get_configuration()
+    }
+
     // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:142 JavaCompilationHelper.getJavaConfiguration
     fn get_java_configuration(&self) -> &'a JavaConfiguration {
         self.rule_context
@@ -143,7 +159,7 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
     }
 
     fn is_sibling_repository_layout(&self) -> bool {
-        config_util::is_sibling_repository_layout(self.rule_context.get_configuration())
+        config_util::is_sibling_repository_layout(self.get_configuration())
     }
 
     // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:146 JavaCompilationHelper.createCompileAction
@@ -510,15 +526,13 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
 
     // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:415 JavaCompilationHelper.turbineOutput
     fn turbine_output(&self, class_jar: &Artifact, new_extension: &str) -> Artifact {
-        self.rule_context
-            .get_analysis_environment()
-            .get_derived_artifact(
-                &replace_extension(
-                    &class_jar.get_output_dir_relative_path(self.is_sibling_repository_layout()),
-                    new_extension,
-                ),
-                class_jar.get_root(),
-            )
+        self.get_analysis_environment().get_derived_artifact(
+            &replace_extension(
+                &class_jar.get_output_dir_relative_path(self.is_sibling_repository_layout()),
+                new_extension,
+            ),
+            class_jar.get_root(),
+        )
     }
 
     /// Creates the Action that compiles ijars from source.

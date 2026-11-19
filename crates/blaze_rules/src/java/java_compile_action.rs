@@ -93,6 +93,28 @@ impl CompilationType {
     }
 }
 
+/// `JavaCompileAction.ReducedClasspath`: the reduced jars and the lengths of the reduced and
+/// full classpaths.
+// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:207 JavaCompileAction.ReducedClasspath
+#[allow(dead_code)]
+pub struct ReducedClasspath {
+    pub reduced_jars: NestedSet<Artifact>,
+    pub reduced_length: usize,
+    pub full_length: usize,
+}
+
+impl ReducedClasspath {
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:212 JavaCompileAction.ReducedClasspath.<init>
+    pub fn new(reduced_jars: Vec<Artifact>, full_length: usize) -> ReducedClasspath {
+        let reduced_length = reduced_jars.len();
+        ReducedClasspath {
+            reduced_jars: NestedSetBuilder::wrap(Order::STABLE_ORDER, reduced_jars),
+            reduced_length,
+            full_length,
+        }
+    }
+}
+
 /// The progress message of a Java compilation (`JavaCompileAction.ProgressMessage` with the
 /// prefix of its subclass).
 // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:431 JavaCompileAction.ProgressMessage
@@ -106,6 +128,11 @@ pub struct ProgressMessage {
 }
 
 impl ProgressMessage {
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:449 JavaCompileAction.ProgressMessage.prefix
+    pub fn prefix(&self) -> &'static str {
+        self.prefix
+    }
+
     // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:438 JavaCompileAction.ProgressMessage.<init>
     pub fn new(
         prefix: &'static str,
@@ -260,6 +287,30 @@ pub(crate) fn merge_maps(
 }
 
 impl JavaCompileAction {
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:628 JavaCompileAction.getIncompleteEnvironmentForTesting
+    pub fn get_incomplete_environment_for_testing(&self) -> IndexMap<String, String> {
+        self.get_environment().get_fixed_env()
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:634 JavaCompileAction.getPossibleInputsForTesting
+    pub fn get_possible_inputs_for_testing(&self) -> Option<NestedSet<Artifact>> {
+        None
+    }
+
+    /// `getExtraActionInfo(actionKeyContext)`: the `ExtraActionInfo` of extra actions, extended
+    /// with the `JavaCompileInfo` of the action's `ExtraActionInfoSupplier`.
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:503 JavaCompileAction.getExtraActionInfo
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:204 JavaCompileAction.ExtraActionInfoSupplier.extend
+    pub fn get_extra_action_info(&self) -> ! {
+        // PORT: extra actions (`extra_action`, `action_listener`, the `ExtraActionInfo` /
+        // `JavaCompileInfo` protos of extra_actions_base.proto) are not ported; the supplier's
+        // data is not kept (see JavaCompileActionBuilder.JavaCompileExtraActionInfoSupplier).
+        blaze_util::unported!(
+            "JavaCompileAction.getExtraActionInfo",
+            "extra actions (ExtraActionInfo) are not ported"
+        )
+    }
+
     // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:132 JavaCompileAction.<init>
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -451,7 +502,14 @@ impl JavaCompileAction {
     }
 
     /// Builds the `JavaSpawn` of `expanded` command lines over `inputs`.
+    ///
+    /// PORT: `JavaSpawn` is a `SimpleSpawn` whose fields hold what Java's overrides return:
+    /// `getInputFiles` (inputs plus the param files), `isMandatoryOutput` (the mandatory output
+    /// set: only `onlyMandatoryOutput` when it is set) and `getPathMapper`.
     // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:523 JavaCompileAction.JavaSpawn.<init>
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:545 JavaCompileAction.JavaSpawn.getInputFiles
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:550 JavaCompileAction.JavaSpawn.isMandatoryOutput
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:555 JavaCompileAction.JavaSpawn.getPathMapper
     fn java_spawn(
         &self,
         command_lines: &CommandLines,
@@ -902,6 +960,30 @@ impl Action for JavaCompileAction {
         Some(self)
     }
 
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:616 JavaCompileAction.getStarlarkArgs
+    fn get_starlark_args(
+        &self,
+    ) -> Option<Vec<blaze_actions::analysis::starlark::args::RegisteredArgs>> {
+        // PORT: Java ImmutableSet (first occurrence order, no duplicates).
+        let mut directory_inputs: indexmap::IndexSet<Artifact> = indexmap::IndexSet::new();
+        for a in self.get_inputs().to_list().iter() {
+            if a.is_directory() {
+                directory_inputs.insert(a.clone());
+            }
+        }
+        let mut result = Vec::new();
+        for command_line in self.get_command_lines().unpack() {
+            result.push(
+                blaze_actions::analysis::starlark::args::RegisteredArgs::for_registered_action(
+                    command_line.command_line,
+                    command_line.param_file_info,
+                    directory_inputs.iter().cloned().collect(),
+                ),
+            );
+        }
+        Some(result)
+    }
+
     // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:586 JavaCompileAction.getStarlarkArgv
     fn get_starlark_argv(&self) -> Result<Option<Vec<String>>, ActionApiError> {
         // Java: a CommandLineExpansionException becomes `new EvalException(ex)`.
@@ -1023,16 +1105,9 @@ impl ExecutableAction for JavaCompileAction {
 }
 
 /// `actionExecutionContext.getOutputMetadataStore().resetOutputs(action.getOutputs())`.
-fn reset_outputs(action: &JavaCompileAction, _ctx: &dyn ActionExecutionContext) {
-    // PORT: the execution context has no accessor for its output metadata store
-    // (`ActionExecutionContext.getOutputMetadataStore`), which the reduced-classpath fallback
-    // must clear before the second spawn.
-    blaze_util::unported!(
-        "JavaCompileAction.execute",
-        "ActionExecutionContext.getOutputMetadataStore().resetOutputs before the \
-         reduced-classpath fallback of {}",
-        action.describe()
-    );
+fn reset_outputs(action: &JavaCompileAction, ctx: &dyn ActionExecutionContext) {
+    let outputs: Vec<ActionInputRef> = action.get_outputs().iter().map(artifact_input).collect();
+    ctx.reset_outputs(&outputs);
 }
 
 /// `ActionExecutionException.fromExecException(e, this)`, with a spawn failure as Java's

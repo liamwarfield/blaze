@@ -323,10 +323,58 @@ impl fmt::Debug for T {
 impl Key for T {
     type Value = String;
     const FUNCTION: SkyFunctionName = SkyFunctionName("TEST");
+    /// Java: `GraphTester.NODE_TYPE = SkyFunctionName.FOR_TESTING`, created with
+    /// `SkyFunctionName.createHermetic("FOR_TESTING")` (SkyFunctionName.java:32). Java's
+    /// non-hermetic test key is `GraphTester.NonHermeticKey` (`FOR_TESTING_NONHERMETIC`).
+    const HERMETICITY: Option<FunctionHermeticity> = Some(FunctionHermeticity::Hermetic);
+    /// Java: `GraphTester.StringValue.equals` compares the strings.
+    // Java: src/test/java/com/google/devtools/build/skyframe/GraphTester.java:451 StringValue.equals
+    fn values_equal(old: &String, new: &String) -> bool {
+        old == new
+    }
+}
+
+/// Java: `GraphTester.NonHermeticKey`, a key of the non-hermetic function
+/// `FOR_TESTING_NONHERMETIC`, served by the same test function as [`T`].
+// Java: src/test/java/com/google/devtools/build/skyframe/GraphTester.java:556 GraphTester.NonHermeticKey
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct N(&'static str);
+impl fmt::Debug for N {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0)
+    }
+}
+impl Key for N {
+    type Value = String;
+    const FUNCTION: SkyFunctionName = SkyFunctionName("TEST_NONHERMETIC");
+    // Java: src/test/java/com/google/devtools/build/skyframe/GraphTester.java:584 GraphTester.FOR_TESTING_NONHERMETIC
+    const HERMETICITY: Option<FunctionHermeticity> = Some(FunctionHermeticity::Nonhermetic);
+    // Java: src/test/java/com/google/devtools/build/skyframe/GraphTester.java:451 StringValue.equals
+    fn values_equal(old: &String, new: &String) -> bool {
+        old == new
+    }
 }
 
 fn k(name: &'static str) -> SkyKey {
     SkyKey::new(T(name))
+}
+
+/// Java: `GraphTester.nonHermeticKey(name)`.
+fn nk(name: &'static str) -> SkyKey {
+    SkyKey::new(N(name))
+}
+
+/// The name of a test key ([`T`] or [`N`]).
+fn name_of(key: &SkyKey) -> &'static str {
+    if let Some(t) = key.downcast::<T>() {
+        t.0
+    } else if let Some(n) = key.downcast::<N>() {
+        n.0
+    } else if let Some(n) = key.downcast::<NotComparableKey>() {
+        n.0
+    } else {
+        panic!("not a test key: {key:?}")
+    }
 }
 
 /// Java: SomeErrorException.
@@ -346,38 +394,89 @@ type ComputeResultT = Result<Option<String>, ComputeError>;
 #[derive(Default, Clone)]
 struct Spec {
     /// (dep, value to use if the dep throws SomeErrorException).
-    deps: Vec<(&'static str, Option<&'static str>)>,
+    deps: Vec<(SkyKey, Option<&'static str>)>,
     has_error: bool,
     has_transient_error: bool,
     value: Option<String>,
     warning: Option<String>,
     progress: Option<String>,
     error_event: Option<String>,
+    /// Java: TestFunction.postable.
+    postable: Option<Arc<dyn blaze_events::Postable>>,
     /// Request all deps as one batch (getValuesAndExceptions) instead of one by one.
     batch: bool,
+    /// The function the node runs (Java: `setBuilder`). It gets the key as a [`T`] of the same
+    /// name, also for a [`N`] key.
     builder: Option<Builder>,
     /// Java: TestFunction.tag (extractTag).
     tag: Option<String>,
 }
 
+/// Java: `GraphTester`: the functions of the test keys, by key.
 #[derive(Default)]
 struct Tester {
-    specs: Mutex<HashMap<&'static str, Spec>>,
+    specs: Mutex<HashMap<SkyKey, Spec>>,
+    /// Java: `GraphTester.modifiedValues`.
+    modified_values: Mutex<indexmap::IndexSet<SkyKey>>,
 }
 
+#[allow(dead_code)] // the whole of Java's GraphTester API, for the ports still to come
 impl Tester {
     fn with(&self, name: &'static str, f: impl FnOnce(&mut Spec)) -> &Self {
-        f(self.specs.lock().entry(name).or_default());
+        self.with_key(k(name), f)
+    }
+    /// Java: `getOrCreate(key)` and a change to the returned `TestFunction`.
+    fn with_key(&self, key: SkyKey, f: impl FnOnce(&mut Spec)) -> &Self {
+        f(self.specs.lock().entry(key).or_default());
+        self
+    }
+    /// Java: `getOrCreate(key, markAsModified)`: creates the function if there is none, else
+    /// records the key as modified if asked.
+    // Java: src/test/java/com/google/devtools/build/skyframe/GraphTester.java:79 GraphTester.getOrCreate
+    fn get_or_create(&self, key: SkyKey, mark_as_modified: bool) -> &Self {
+        let mut specs = self.specs.lock();
+        if let std::collections::hash_map::Entry::Vacant(e) = specs.entry(key.clone()) {
+            e.insert(Spec::default());
+        } else if mark_as_modified {
+            self.modified_values.lock().insert(key);
+        }
         self
     }
     fn add_dependency(&self, name: &'static str, dep: &'static str) -> &Self {
-        self.with(name, |s| s.deps.push((dep, None)))
+        self.add_dependency_key(k(name), k(dep))
     }
+    // Java: src/test/java/com/google/devtools/build/skyframe/GraphTester.java:273 TestFunction.addDependency
+    fn add_dependency_key(&self, key: SkyKey, dep: SkyKey) -> &Self {
+        self.with_key(key, |s| {
+            if !s.deps.iter().any(|(d, alt)| *d == dep && alt.is_none()) {
+                s.deps.push((dep, None))
+            }
+        })
+    }
+    // Java: src/test/java/com/google/devtools/build/skyframe/GraphTester.java:284 TestFunction.removeDependency
+    fn remove_dependency_key(&self, key: SkyKey, dep: &SkyKey) -> &Self {
+        self.with_key(key, |s| {
+            s.deps.retain(|(d, alt)| !(d == dep && alt.is_none()))
+        })
+    }
+    /// Java: `GraphTester.set(key, value)`: `getOrCreate(key, true).setConstantValue(value)`.
     fn set(&self, name: &'static str, value: &str) -> &Self {
-        self.with(name, |s| s.value = Some(value.to_string()))
+        self.set_key(k(name), value)
+    }
+    // Java: src/test/java/com/google/devtools/build/skyframe/GraphTester.java:97 GraphTester.set
+    fn set_key(&self, key: SkyKey, value: &str) -> &Self {
+        self.get_or_create(key.clone(), true);
+        self.with_key(key, |s| s.value = Some(value.to_string()))
+    }
+    // Java: src/test/java/com/google/devtools/build/skyframe/GraphTester.java:311 TestFunction.unsetConstantValue
+    fn unset_constant_value(&self, key: SkyKey) -> &Self {
+        self.with_key(key, |s| s.value = None)
     }
     fn set_has_error(&self, name: &'static str, has_error: bool) -> &Self {
         self.with(name, |s| s.has_error = has_error)
+    }
+    fn set_has_error_key(&self, key: SkyKey, has_error: bool) -> &Self {
+        self.with_key(key, |s| s.has_error = has_error)
     }
     /// Java: TestFunction.addErrorDependency.
     fn add_error_dependency(
@@ -386,16 +485,29 @@ impl Tester {
         dep: &'static str,
         alt: &'static str,
     ) -> &Self {
-        self.with(name, |s| s.deps.push((dep, Some(alt))))
+        self.with(name, |s| s.deps.push((k(dep), Some(alt))))
+    }
+    fn add_error_dependency_key(&self, key: SkyKey, dep: SkyKey, alt: &'static str) -> &Self {
+        self.with_key(key, |s| s.deps.push((dep, Some(alt))))
     }
     fn set_has_transient_error(&self, name: &'static str, has_error: bool) -> &Self {
         self.with(name, |s| s.has_transient_error = has_error)
     }
+    fn set_has_transient_error_key(&self, key: SkyKey, has_error: bool) -> &Self {
+        self.with_key(key, |s| s.has_transient_error = has_error)
+    }
     fn set_warning(&self, name: &'static str, warning: &str) -> &Self {
         self.with(name, |s| s.warning = Some(warning.to_string()))
     }
+    fn set_warning_key(&self, key: SkyKey, warning: &str) -> &Self {
+        self.with_key(key, |s| s.warning = Some(warning.to_string()))
+    }
     fn set_progress(&self, name: &'static str, progress: &str) -> &Self {
         self.with(name, |s| s.progress = Some(progress.to_string()))
+    }
+    /// Java: TestFunction.setErrorEvent.
+    fn set_error_event_key(&self, key: SkyKey, error: &str) -> &Self {
+        self.with_key(key, |s| s.error_event = Some(error.to_string()))
     }
     /// Java: TestFunction.setBuilder(ChainedFunction).
     fn set_chained(&self, name: &'static str, f: Chained) -> &Self {
@@ -406,15 +518,42 @@ impl Tester {
         name: &'static str,
         f: impl Fn(&T, &mut Environment<'_>) -> ComputeResultT + Send + Sync + 'static,
     ) -> &Self {
-        self.with(name, |s| s.builder = Some(Arc::new(f)))
+        self.set_builder_key(k(name), f)
     }
-    fn spec(&self, name: &str) -> Spec {
+    fn set_builder_key(
+        &self,
+        key: SkyKey,
+        f: impl Fn(&T, &mut Environment<'_>) -> ComputeResultT + Send + Sync + 'static,
+    ) -> &Self {
+        self.with_key(key, |s| s.builder = Some(Arc::new(f)))
+    }
+    fn spec(&self, name: &'static str) -> Spec {
+        self.spec_of(&k(name))
+    }
+    fn spec_of(&self, key: &SkyKey) -> Spec {
         self.specs
             .lock()
-            .get(name)
+            .get(key)
             .cloned()
-            .unwrap_or_else(|| panic!("No TestFunction for {name}"))
+            .unwrap_or_else(|| panic!("No TestFunction for {key:?}"))
     }
+    // Java: src/test/java/com/google/devtools/build/skyframe/GraphTester.java:101 GraphTester.getModifiedValues
+    fn get_modified_values(&self) -> Vec<SkyKey> {
+        self.modified_values.lock().iter().cloned().collect()
+    }
+    // Java: src/test/java/com/google/devtools/build/skyframe/GraphTester.java:105 GraphTester.clearModifiedValues
+    fn clear_modified_values(&self) {
+        self.modified_values.lock().clear();
+    }
+}
+
+/// A dep's value as a string, or the alternative value if it threw `SomeErrorException`.
+fn dep_string(v: Option<SkyValue>) -> Option<String> {
+    v.map(|v| {
+        v.downcast_ref::<String>()
+            .expect("test values are strings")
+            .clone()
+    })
 }
 
 struct TestFunction;
@@ -422,11 +561,11 @@ struct TestFunction;
 impl SkyFunction for TestFunction {
     // Java: src/test/java/com/google/devtools/build/skyframe/GraphTester.java:110 GraphTester.compute
     fn compute(&self, key: &SkyKey, env: &mut Environment<'_>) -> ComputeResult {
-        let t = key.downcast::<T>().expect("T");
+        let t = T(name_of(key));
         let tester = env.client::<Tester>().expect("tester");
-        let spec = tester.spec(t.0);
+        let spec = tester.spec_of(key);
         if let Some(b) = &spec.builder {
-            return Ok(b(t, env)?.map(|v| Arc::new(v) as SkyValue));
+            return Ok(b(&t, env)?.map(|v| Arc::new(v) as SkyValue));
         }
         if let Some(w) = &spec.warning {
             env.listener().handle(&Event::warn(w.clone()));
@@ -437,15 +576,18 @@ impl SkyFunction for TestFunction {
         if let Some(e) = &spec.error_event {
             env.listener().handle(&Event::error(e.clone()));
         }
+        if let Some(p) = &spec.postable {
+            env.listener().post(p.clone());
+        }
         let mut deps = vec![];
         if spec.batch {
-            let keys: Vec<SkyKey> = spec.deps.iter().map(|(d, _)| k(d)).collect();
+            let keys: Vec<SkyKey> = spec.deps.iter().map(|(d, _)| d.clone()).collect();
             let result = env.get_values_and_exceptions(&keys)?;
             for (d, alt) in &spec.deps {
                 let v = match alt {
-                    None => result.get_typed(&T(d)).map(|v| (*v).clone()),
-                    Some(alt) => match result.get_or_throw_typed::<T, SomeErrorException>(&T(d)) {
-                        Ok(v) => v.map(|v| (*v).clone()),
+                    None => dep_string(result.get(d)),
+                    Some(alt) => match result.get_or_throw::<SomeErrorException>(d) {
+                        Ok(v) => dep_string(v),
                         Err(_) => Some(alt.to_string()),
                     },
                 };
@@ -457,9 +599,9 @@ impl SkyFunction for TestFunction {
             let mut one_missing = false;
             for (d, alt) in &spec.deps {
                 let v = match alt {
-                    None => env.get_value(T(d))?.map(|v| (*v).clone()),
-                    Some(alt) => match env.get_value_or_throw::<T, SomeErrorException>(T(d))? {
-                        Ok(v) => v.map(|v| (*v).clone()),
+                    None => dep_string(env.get_value_dyn(d)?),
+                    Some(alt) => match env.get_value_or_throw_dyn::<SomeErrorException>(d)? {
+                        Ok(v) => dep_string(v),
                         Err(_) => Some(alt.to_string()),
                     },
                 };
@@ -467,7 +609,7 @@ impl SkyFunction for TestFunction {
                     None => one_missing = true,
                     Some(v) => deps.push(v),
                 }
-                assert_eq!(one_missing, env.values_missing(), "{d} {one_missing}");
+                assert_eq!(one_missing, env.values_missing(), "{d:?} {one_missing}");
             }
         }
         if env.values_missing() {
@@ -505,7 +647,7 @@ impl SkyFunction for TaggingTestFunction {
         TestFunction.compute(key, env)
     }
     fn extract_tag(&self, key: &SkyKey) -> Option<String> {
-        self.0.spec(key.downcast::<T>().expect("T").0).tag
+        self.0.spec_of(key).tag
     }
 }
 
@@ -545,6 +687,10 @@ impl Latch {
             count: Mutex::new(count),
             cv: parking_lot::Condvar::new(),
         })
+    }
+    /// Java: `CountDownLatch.getCount()`.
+    fn get_count(&self) -> usize {
+        *self.count.lock()
     }
     fn count_down(&self) {
         let mut c = self.count.lock();
@@ -625,6 +771,7 @@ fn tester_evaluator(tester: Arc<Tester>) -> Evaluator {
     EvaluatorBuilder::new()
         .client(tester)
         .function(T::FUNCTION, TestFunction)
+        .function(N::FUNCTION, TestFunction)
         .build()
 }
 
@@ -1184,12 +1331,21 @@ fn no_keep_going_reports_one_bubbled_root_and_drops_aborted_roots() {
         "the real error is reported"
     );
     assert!(r.values.is_empty());
-    // Only the committed leaf error stays in the graph; bubbled and aborted nodes are dropped.
+    // Only the committed leaf error is done in the graph; bubbled and aborted nodes are not
+    // committed. They stay in flight until the next evaluation deletes them
+    // (AbstractInMemoryMemoizingEvaluator.java:134).
     assert!(ev.get_existing_error_for_testing(&k("err")).is_some());
     for dropped in ["p1", "p2", "slow", "waits_for_slow"] {
         assert!(
-            !ev.get_all_keys_for_testing().contains(&k(dropped)),
+            ev.committed_entry(&k(dropped)).is_none(),
             "{dropped} was memoized"
+        );
+    }
+    eval(&ev, false, 4, &[k("err")]);
+    for dropped in ["p1", "p2", "slow", "waits_for_slow"] {
+        assert!(
+            !ev.get_all_keys_for_testing().contains(&k(dropped)),
+            "{dropped} was not deleted by the next evaluation"
         );
     }
     let _ = started;
@@ -1822,8 +1978,196 @@ fn get_value_or_throw_with_catches_several_types() {
     assert_eq!(*r.get(&Multi).unwrap(), "bad: bad number 13");
 }
 
+// ---------------------------------------------------------------------------------------------
+// Java: MemoizingEvaluatorTest.MemoizingEvaluatorTester.
+
+/// Java: `GraphTester.NonHermeticKey` whose values are `NotComparableStringValue`s.
+///
+/// PORT: Java's `NotComparableStringValue` is a value class (`NotComparableSkyValue`); value
+/// equality is the key's here (`Key::values_equal`, docs/decisions.md D10), so a not comparable
+/// value has its own key type, served by the same test function.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct NotComparableKey(&'static str);
+impl fmt::Debug for NotComparableKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0)
+    }
+}
+impl Key for NotComparableKey {
+    type Value = String;
+    const FUNCTION: SkyFunctionName = SkyFunctionName("TEST_NONHERMETIC_NOT_COMPARABLE");
+    const HERMETICITY: Option<FunctionHermeticity> = Some(FunctionHermeticity::Nonhermetic);
+}
+
+/// Java: `MemoizingEvaluatorTest.MemoizingEvaluatorTester`: a [`Tester`] (its `GraphTester`
+/// part, reached through `Deref`), the evaluator built on it with a `TrackingProgressReceiver`
+/// and `EventFilter.FULL_STORAGE`, and the event collector of the test (`eventCollector`).
+// Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5880 MemoizingEvaluatorTester
+struct MemoizingTester {
+    tester: Arc<Tester>,
+    progress_receiver: Arc<tracking_progress_receiver::TrackingProgressReceiver>,
+    evaluator: Evaluator,
+    /// Java: `eventCollector`, replaced by `initializeReporter()`.
+    event_collector: Mutex<Arc<StoredEventHandler>>,
+}
+
+impl std::ops::Deref for MemoizingTester {
+    type Target = Tester;
+    fn deref(&self) -> &Tester {
+        &self.tester
+    }
+}
+
+impl MemoizingTester {
+    /// Java: `initializeTester()` + `initializeReporter()`.
+    fn new() -> Self {
+        Self::with_progress_receiver(Arc::new(
+            tracking_progress_receiver::TrackingProgressReceiver::new(
+                /* check_evaluation_results= */ true,
+            ),
+        ))
+    }
+
+    /// Java: `initializeTester(customProgressReceiver)` + `initializeReporter()`.
+    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5890 MemoizingEvaluatorTester.initialize
+    fn with_progress_receiver(
+        progress_receiver: Arc<tracking_progress_receiver::TrackingProgressReceiver>,
+    ) -> Self {
+        Self::with_options(progress_receiver, Arc::new(<dyn EventFilter>::FULL_STORAGE))
+    }
+
+    fn with_options(
+        progress_receiver: Arc<tracking_progress_receiver::TrackingProgressReceiver>,
+        event_filter: Arc<dyn EventFilter>,
+    ) -> Self {
+        let tester = new_tester();
+        let evaluator = EvaluatorBuilder::new()
+            .client(tester.clone())
+            .function(T::FUNCTION, TestFunction)
+            .function(N::FUNCTION, TestFunction)
+            .function(NotComparableKey::FUNCTION, TestFunction)
+            .progress_receiver(progress_receiver.clone())
+            .event_filter(event_filter)
+            .build();
+        let t = MemoizingTester {
+            tester,
+            progress_receiver,
+            evaluator,
+            event_collector: Mutex::new(Arc::new(StoredEventHandler::new())),
+        };
+        t.initialize_reporter();
+        t
+    }
+
+    /// Java: `initializeReporter()`: a new event collector, and the played events forgotten.
+    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:166 MemoizingEvaluatorTest.initializeReporter
+    fn initialize_reporter(&self) {
+        *self.event_collector.lock() = Arc::new(StoredEventHandler::new());
+        self.reset_played_events();
+    }
+
+    /// The messages of the events collected so far, in order.
+    fn events(&self) -> Vec<String> {
+        messages(&self.event_collector.lock())
+    }
+
+    /// Java: `eventCollector.clear()`.
+    fn clear_events(&self) {
+        *self.event_collector.lock() = Arc::new(StoredEventHandler::new());
+    }
+
+    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5930 MemoizingEvaluatorTester.invalidate
+    fn invalidate(&self) {
+        self.evaluator.invalidate(self.get_modified_values());
+        self.clear_modified_values();
+        self.progress_receiver.clear();
+    }
+
+    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5937 MemoizingEvaluatorTester.invalidateTransientErrors
+    fn invalidate_transient_errors(&self) {
+        self.evaluator.invalidate_transient_errors();
+    }
+
+    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5941 MemoizingEvaluatorTester.delete
+    fn delete(&self, key: &'static str) {
+        let key = k(key);
+        self.evaluator.delete(move |k, _| *k == key);
+    }
+
+    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5945 MemoizingEvaluatorTester.resetPlayedEvents
+    fn reset_played_events(&self) {
+        self.evaluator.emitted_event_state().clear();
+    }
+
+    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5949 MemoizingEvaluatorTester.getDirtyKeys
+    fn get_dirty_keys(&self) -> HashSet<SkyKey> {
+        self.progress_receiver.dirty.lock().clone()
+    }
+
+    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5953 MemoizingEvaluatorTester.getDeletedKeys
+    fn get_deleted_keys(&self) -> HashSet<SkyKey> {
+        self.progress_receiver.deleted.lock().clone()
+    }
+
+    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5957 MemoizingEvaluatorTester.getEnqueuedValues
+    fn get_enqueued_values(&self) -> HashSet<SkyKey> {
+        self.progress_receiver.enqueued.lock().clone()
+    }
+
+    /// Java: `tester.eval(keepGoing, keys)` (100 threads; here 8), or the interrupt.
+    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:5961 MemoizingEvaluatorTester.eval
+    fn try_eval(&self, keep_going: bool, keys: &[SkyKey]) -> Result<EvaluationResult, Interrupted> {
+        assert!(self.get_modified_values().is_empty());
+        let ctx = EvaluationContext {
+            event_handler: self.event_collector.lock().clone(),
+            ..ctx(keep_going, 8)
+        };
+        self.evaluator.evaluate(keys, &ctx)
+    }
+
+    fn eval(&self, keep_going: bool, keys: &[SkyKey]) -> EvaluationResult {
+        self.try_eval(keep_going, keys).expect("not interrupted")
+    }
+
+    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:6010 MemoizingEvaluatorTester.evalAndGet
+    fn eval_and_get(&self, keep_going: bool, key: &SkyKey) -> String {
+        let r = self.eval(keep_going, std::slice::from_ref(key));
+        r.get_dyn(key)
+            .unwrap_or_else(|| panic!("{r:?}"))
+            .downcast_ref::<String>()
+            .expect("a string")
+            .clone()
+    }
+
+    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:6017 MemoizingEvaluatorTester.evalAndGetError
+    fn eval_and_get_error(&self, keep_going: bool, key: &SkyKey) -> ErrorInfo {
+        let r = self.eval(keep_going, std::slice::from_ref(key));
+        r.get_error(key)
+            .unwrap_or_else(|| panic!("no error entry for {key:?}: {r:?}"))
+            .clone()
+    }
+
+    /// Java: `tester.getExistingValue(key)`.
+    fn get_existing_value(&self, key: &SkyKey) -> Option<String> {
+        self.evaluator
+            .get_existing_value(key)
+            .map(|v| v.downcast_ref::<String>().expect("a string").clone())
+    }
+}
+
+mod eager_invalidator_test;
 mod engine_test;
+mod graph_test;
 mod grouped_deps_test;
+mod in_memory_graph_test;
+mod in_memory_node_entry_test;
+mod incremental_in_memory_node_entry_test;
+mod invalidation_progress_receiver;
 mod memoizing_evaluator_test;
+mod model;
+mod non_incremental_in_memory_node_entry_test;
 mod not_ported;
 mod parallel_evaluator_test;
+mod progress_receiver_test;
+mod reverse_deps_utility_test;
+mod tracking_progress_receiver;

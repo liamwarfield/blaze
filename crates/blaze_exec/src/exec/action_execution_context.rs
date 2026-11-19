@@ -229,6 +229,17 @@ pub trait ActionExecutionContext: ActionContextRegistry {
         let stat = path.stat_with(blaze_vfs::Symlinks::Follow)?;
         crate::actions::FileArtifactValue::create_from_stat(&path, &stat)
     }
+
+    /// `getOutputMetadataStore().resetOutputs(outputs)`: forgets the metadata recorded for
+    /// `outputs` (an action that re-runs its spawn, e.g. `JavaCompileAction`'s reduced-classpath
+    /// fallback).
+    // Java: com/google/devtools/build/lib/actions/cache/OutputMetadataStore.java:92 OutputMetadataStore.resetOutputs
+    fn reset_outputs(&self, _outputs: &[crate::actions::ActionInputRef]) {
+        blaze_util::unported!(
+            "ActionExecutionContext.getOutputMetadataStore",
+            "this execution context has no output metadata store"
+        )
+    }
 }
 
 /// A `BulkTransferException` of the [`ActionInputPrefetcher`], as the execution layer sees it

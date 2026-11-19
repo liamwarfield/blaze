@@ -3,7 +3,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use regex::Regex;
+use blaze_util::java_regex::Pattern;
 
 /// An output filter for warnings. Port of `OutputFilter`.
 // Java: com/google/devtools/build/lib/events/OutputFilter.java:21 OutputFilter
@@ -35,23 +35,24 @@ pub fn output_nothing() -> Arc<dyn OutputFilter> {
 
 /// An output filter using regular expression matching. Port of `OutputFilter.RegexOutputFilter`.
 ///
-/// PORT: Java uses `java.util.regex.Pattern`; Rust uses the `regex` crate, whose syntax differs
-/// for look-around and back-references (rejected at compile time with an error).
+/// `java.util.regex.Pattern` is `blaze_util::java_regex::Pattern` (Java's dialect on the `regex`
+/// crate; its module docs list what is `unported!`).
 // Java: com/google/devtools/build/lib/events/OutputFilter.java:33 OutputFilter.RegexOutputFilter
 pub struct RegexOutputFilter {
-    pattern: Regex,
+    pattern: Pattern,
 }
 
 impl RegexOutputFilter {
     /// Returns an output filter for the given regex (by compiling it).
     // Java: com/google/devtools/build/lib/events/OutputFilter.java:35 RegexOutputFilter.forRegex
-    pub fn for_regex(regex: &str) -> Result<Arc<dyn OutputFilter>, regex::Error> {
-        Ok(RegexOutputFilter::for_pattern(Regex::new(regex)?))
+    /// The error is `PatternSyntaxException.getMessage()`.
+    pub fn for_regex(regex: &str) -> Result<Arc<dyn OutputFilter>, String> {
+        Ok(RegexOutputFilter::for_pattern(Pattern::compile(regex, 0)?))
     }
 
     /// Returns an output filter for the given pattern.
     // Java: com/google/devtools/build/lib/events/OutputFilter.java:40 RegexOutputFilter.forPattern
-    pub fn for_pattern(pattern: Regex) -> Arc<dyn OutputFilter> {
+    pub fn for_pattern(pattern: Pattern) -> Arc<dyn OutputFilter> {
         Arc::new(RegexOutputFilter { pattern })
     }
 }

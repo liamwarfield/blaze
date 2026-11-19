@@ -2,23 +2,39 @@
 //! `ParallelEvaluator` and `AbstractParallelEvaluator`, reshaped for blocking evaluation (see the
 //! crate docs).
 
-use crate::environment::{BubbleErrorInfo, EnvState, Environment};
+use crate::differencer::{
+    Delta, Diff, Differencer, Injectable, RecordingDifferencer, SequencedRecordingDifferencer,
+};
+use crate::environment::{BubbleErrorInfo, EnvState, Environment, PendingDep};
 use crate::evaluation_result::EvaluationResult;
+use crate::event_filter::EventFilter;
+use crate::in_memory_graph::InMemoryGraphImpl;
+pub(crate) use crate::in_memory_graph::{DoneEntry, DoneKind, Node};
+use crate::invalidation::{DeletingInvalidationState, EagerInvalidator, InvalidationState};
+use crate::node_entry::{DependencyState, LifecycleState, NodeEntry};
+use crate::progress::{
+    DirtyAndInflightTrackingProgressReceiver, EvaluationProgressReceiver, EvaluationState,
+    InflightTrackingProgressReceiver, NodeState,
+};
+use crate::reverse_deps_utility::java_list;
 use crate::simple_cycle_detector::SimpleCycleDetector;
+use crate::value_with_metadata::{StoredReportable, ValueWithMetadata};
+use crate::version::{IntVersion, Version};
 use crate::{
     ComputeError, ComputeResult, ErrorInfo, GroupedDeps, Interrupted, Key, SkyFunction,
     SkyFunctionException, SkyFunctionName, SkyKey, SkyValue, typed,
 };
-use blaze_events::{Event, EventHandler, EventKind, ExtendedEventHandler, Postable};
+use blaze_collect::{NestedSet, NestedSetNode, NestedSetVisitor, NestedSetVisitorVisitedState};
+use blaze_events::{Event, EventHandler, EventKind, ExtendedEventHandler, Postable, Reportable};
 use blaze_shell::ThreadInterrupt;
 use blaze_util::{check_argument, check_state};
+use indexmap::{IndexMap, IndexSet};
 use parking_lot::{Condvar, Mutex};
 use std::any::Any;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::fmt::Write as _;
-use std::hash::{Hash, Hasher};
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -47,6 +63,9 @@ impl Key for ErrorTransienceKey {
     type Value = ErrorTransienceValue;
     // Java: com/google/devtools/build/skyframe/ErrorTransienceValue.java:24 FUNCTION_NAME
     const FUNCTION: SkyFunctionName = SkyFunctionName("ERROR_TRANSIENCE");
+    // Java: com/google/devtools/build/skyframe/ErrorTransienceValue.java:25 SkyFunctionName.createNonHermetic("ERROR_TRANSIENCE")
+    const HERMETICITY: Option<crate::FunctionHermeticity> =
+        Some(crate::FunctionHermeticity::Nonhermetic);
 }
 
 /// A value that represents "error transience", i.e. anything which may have caused an unexpected
@@ -58,158 +77,6 @@ pub struct ErrorTransienceValue;
 /// `ErrorTransienceValue.KEY` as a [`SkyKey`].
 pub static ERROR_TRANSIENCE_KEY: LazyLock<SkyKey> =
     LazyLock::new(|| SkyKey::new(ErrorTransienceKey));
-
-/// How a node finished in one evaluation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DoneKind {
-    /// Java: the node is done in the graph (value and/or error). Memoized.
-    Committed,
-    /// Java: an entry of `bubbleErrorInfo`, the error `ParallelEvaluator.bubbleErrorUp` built for
-    /// a node on the bubbling path. It is never written to the graph: such entries live only in
-    /// the map that `bubble_error_up` returns.
-    Bubbled,
-    /// Java: the node was still in flight when the evaluation aborted (no keep_going error,
-    /// catastrophe, crash), or it found a dep in error without keep_going and so cannot finish.
-    /// Parents see it as not done. Dropped after the evaluation.
-    Aborted,
-    /// Java: the evaluation was interrupted. Dropped after the evaluation.
-    Interrupted,
-    /// Java: the node is in or above a cycle and never finished. The cycle detector commits it
-    /// (keep_going) or it is dropped after the evaluation.
-    InCycle,
-}
-
-/// A finished node: Java's `NodeEntry` once done (`ValueWithMetadata` plus direct deps).
-pub(crate) struct DoneEntry {
-    pub(crate) kind: DoneKind,
-    pub(crate) value: Option<SkyValue>,
-    pub(crate) error: Option<Arc<ErrorInfo>>,
-    pub(crate) deps: GroupedDeps,
-    /// For a node that is not done: its function returned null because of a dep that was not
-    /// available. Java then registers the node as a reverse dep of the deps it declared
-    /// (`enqueueChild`, or the edge to the child in error) and the node waits. False when the
-    /// function threw an exception that was ignored (not the first error), was interrupted, or
-    /// never ran: Java registers nothing for those.
-    pub(crate) awaits_deps: bool,
-}
-
-impl DoneEntry {
-    pub(crate) fn undone(kind: DoneKind, deps: GroupedDeps) -> DoneEntry {
-        DoneEntry {
-            kind,
-            value: None,
-            error: None,
-            deps,
-            awaits_deps: false,
-        }
-    }
-
-    /// An undone node whose function returned null (see `awaits_deps`).
-    fn awaiting_deps(kind: DoneKind, deps: GroupedDeps) -> DoneEntry {
-        DoneEntry {
-            awaits_deps: true,
-            ..DoneEntry::undone(kind, deps)
-        }
-    }
-
-    /// Java: `NodeEntry.isDone()` (committed to the graph).
-    pub(crate) fn is_done(&self) -> bool {
-        self.kind == DoneKind::Committed
-    }
-
-    /// Java: the dependency was not done when requested (`NULL_MARKER`).
-    pub(crate) fn is_undone_view(&self) -> bool {
-        matches!(
-            self.kind,
-            DoneKind::Aborted | DoneKind::Interrupted | DoneKind::InCycle
-        )
-    }
-}
-
-impl fmt::Debug for DoneEntry {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NodeEntry")
-            .field("state", &self.kind)
-            .field("hasValue", &self.value.is_some())
-            .field("error", &self.error)
-            .field("directDeps", &self.deps)
-            .finish()
-    }
-}
-
-enum NodeState {
-    InProgress { owner: ThreadId },
-    Done(Arc<DoneEntry>),
-}
-
-pub(crate) struct Node {
-    state: Mutex<NodeState>,
-    done: Condvar,
-    /// Committed nodes that depend on this one, in commit order.
-    rdeps: Mutex<Vec<SkyKey>>,
-    /// Nodes that requested this one during the current evaluation while it was not done, in
-    /// request order. Taken (and so emptied) when the node commits. Lock order: `state`, then
-    /// this.
-    ///
-    /// The flag is true for a request that closed a dependency cycle through this node (the
-    /// requester is below this node and got "not done" back at once).
-    // Java: com/google/devtools/build/skyframe/NodeEntry.java:314 NodeEntry.getInProgressReverseDeps
-    in_progress_rdeps: Mutex<Vec<(SkyKey, bool)>>,
-}
-
-impl Node {
-    fn new(state: NodeState) -> Arc<Node> {
-        Arc::new(Node {
-            state: Mutex::new(state),
-            done: Condvar::new(),
-            rdeps: Mutex::new(vec![]),
-            in_progress_rdeps: Mutex::new(vec![]),
-        })
-    }
-
-    /// Java: `addReverseDepAndCheckIfDone(parent)` on a node that is not done.
-    fn add_in_progress_rdep(&self, requester: Option<&SkyKey>) {
-        if let Some(requester) = requester {
-            self.in_progress_rdeps
-                .lock()
-                .push((requester.clone(), false));
-        }
-    }
-
-    /// Marks the registration of `requester` as one that closed a cycle through this node.
-    fn mark_cycle_rdep(&self, requester: Option<&SkyKey>) {
-        if let Some(requester) = requester
-            && let Some(rdep) = self
-                .in_progress_rdeps
-                .lock()
-                .iter_mut()
-                .rev()
-                .find(|(k, _)| k == requester)
-        {
-            rdep.1 = true;
-        }
-    }
-
-    /// Java: `NodeEntry.getInProgressReverseDeps` of a node that is not done.
-    fn get_in_progress_reverse_deps(&self) -> Vec<SkyKey> {
-        self.in_progress_rdeps
-            .lock()
-            .iter()
-            .map(|(k, _)| k.clone())
-            .collect()
-    }
-
-    pub(crate) fn done_entry(&self) -> Option<Arc<DoneEntry>> {
-        match &*self.state.lock() {
-            NodeState::Done(e) => Some(e.clone()),
-            NodeState::InProgress { .. } => None,
-        }
-    }
-
-    pub(crate) fn rdeps(&self) -> Vec<SkyKey> {
-        self.rdeps.lock().clone()
-    }
-}
 
 /// Counting semaphore for compute permits.
 struct Permits {
@@ -241,63 +108,34 @@ struct WaitGraph {
     waiting: HashMap<ThreadId, Vec<(usize, Vec<SkyKey>)>>,
 }
 
-const SHARDS: usize = 64;
-
-struct Graph {
-    shards: Vec<Mutex<HashMap<SkyKey, Arc<Node>>>>,
-}
-
-impl Graph {
-    fn new() -> Self {
-        Graph {
-            shards: (0..SHARDS).map(|_| Mutex::new(HashMap::new())).collect(),
-        }
-    }
-    fn shard(&self, key: &SkyKey) -> &Mutex<HashMap<SkyKey, Arc<Node>>> {
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        key.hash(&mut h);
-        &self.shards[(h.finish() as usize) % SHARDS]
-    }
-    /// Returns the node and whether this call created it (and so must compute it).
-    fn get_or_claim(&self, key: &SkyKey) -> (Arc<Node>, bool) {
-        let mut shard = self.shard(key).lock();
-        if let Some(n) = shard.get(key) {
-            return (n.clone(), false);
-        }
-        let node = Node::new(NodeState::InProgress {
-            owner: std::thread::current().id(),
-        });
-        shard.insert(key.clone(), node.clone());
-        (node, true)
-    }
-    fn get(&self, key: &SkyKey) -> Option<Arc<Node>> {
-        self.shard(key).lock().get(key).cloned()
-    }
-    fn insert(&self, key: SkyKey, node: Arc<Node>) {
-        self.shard(&key).lock().insert(key, node);
-    }
-    fn remove(&self, key: &SkyKey) -> Option<Arc<Node>> {
-        self.shard(key).lock().remove(key)
-    }
-    fn all_keys(&self) -> Vec<SkyKey> {
-        self.shards
-            .iter()
-            .flat_map(|s| s.lock().keys().cloned().collect::<Vec<_>>())
-            .collect()
-    }
-}
-
-/// Keeps track of warnings for purposes of deduplication.
+/// Keeps track of nested set visitation and warnings for purposes of deduplication.
 ///
-/// PORT: Java also tracks visited event `NestedSet` nodes for replay; events are not stored on
-/// nodes here (one build per process), so only the warning set remains.
+/// PORT: Java's `seenNodes` holds raw `NestedSet` nodes (`Object[]` by identity, elements by
+/// `equals`); here they are [`NestedSetNode`]s, which compare the same way.
 // Java: com/google/devtools/build/skyframe/EmittedEventState.java:29 EmittedEventState
 #[derive(Default)]
-pub(crate) struct EmittedEventState {
+pub struct EmittedEventState {
+    seen_nodes: Mutex<HashSet<NestedSetNode<StoredReportable>>>,
     seen_warnings: Mutex<HashSet<Event>>,
 }
 
 impl EmittedEventState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Clears the seen nodes and warnings.
+    // Java: com/google/devtools/build/skyframe/EmittedEventState.java:35 EmittedEventState.clear
+    pub fn clear(&self) {
+        self.seen_nodes.lock().clear();
+        self.seen_warnings.lock().clear();
+    }
+
+    // Java: com/google/devtools/build/skyframe/EmittedEventState.java:44 EmittedEventState.needToVisit
+    pub(crate) fn need_to_visit(&self, node: &NestedSetNode<StoredReportable>) -> bool {
+        self.seen_nodes.lock().insert(node.clone())
+    }
+
     /// Returns `true` if the given warning was not seen before.
     // Java: com/google/devtools/build/skyframe/EmittedEventState.java:46 EmittedEventState.addWarning
     pub(crate) fn add_warning(&self, warning: &Event) -> bool {
@@ -307,6 +145,12 @@ impl EmittedEventState {
             warning
         );
         self.seen_warnings.lock().insert(warning.clone())
+    }
+}
+
+impl NestedSetVisitorVisitedState<StoredReportable> for &EmittedEventState {
+    fn need_to_visit(&mut self, node: &NestedSetNode<StoredReportable>) -> bool {
+        EmittedEventState::need_to_visit(self, node)
     }
 }
 
@@ -377,11 +221,37 @@ impl fmt::Debug for EvaluationContext {
     }
 }
 
+/// The state `AbstractInMemoryMemoizingEvaluator` keeps between evaluations: the differencer and
+/// what is to be deleted, dirtied and injected at the start of the next one.
+// Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:60 AbstractInMemoryMemoizingEvaluator
+struct IncrementalState {
+    // State related to invalidation and deletion.
+    values_to_delete: IndexSet<SkyKey>,
+    values_to_dirty: IndexSet<SkyKey>,
+    values_to_inject: IndexMap<SkyKey, Delta>,
+    deleter_state: DeletingInvalidationState,
+    differencer: SequencedRecordingDifferencer,
+    // Values that the caller explicitly specified are assumed to be changed -- they will be
+    // re-evaluated even if none of their children are changed.
+    invalidator_state: InvalidationState,
+    /// Null until the first incremental evaluation completes. Always null when not keeping
+    /// edges.
+    last_graph_version: Option<IntVersion>,
+}
+
 /// The memoizing evaluator: functions and the graph.
 // Java: com/google/devtools/build/skyframe/InMemoryMemoizingEvaluator.java:38 InMemoryMemoizingEvaluator
 pub struct Evaluator {
     functions: HashMap<SkyFunctionName, Arc<dyn SkyFunction>>,
-    graph: Graph,
+    pub(crate) graph: InMemoryGraphImpl,
+    /// Whether to store edges in the graph. Can be false to save memory, in which case
+    /// incremental builds are not possible, and all evaluations will be at `Version.constant`.
+    pub(crate) keep_edges: bool,
+    pub(crate) progress_receiver: DirtyAndInflightTrackingProgressReceiver,
+    /// Whether the caller gave a progress receiver (`progress_receiver` then forwards to it).
+    has_user_progress_receiver: bool,
+    event_filter: Arc<dyn EventFilter>,
+    incremental: Mutex<IncrementalState>,
     waits: Mutex<WaitGraph>,
     client: Arc<dyn Any + Send + Sync>,
     computed: AtomicU64,
@@ -408,6 +278,9 @@ pub struct EvaluatorBuilder {
     functions: HashMap<SkyFunctionName, Arc<dyn SkyFunction>>,
     injected: Vec<(SkyKey, SkyValue)>,
     client: Arc<dyn Any + Send + Sync>,
+    keep_edges: bool,
+    progress_receiver: Option<Arc<dyn EvaluationProgressReceiver>>,
+    event_filter: Arc<dyn EventFilter>,
 }
 
 impl Default for EvaluatorBuilder {
@@ -422,6 +295,9 @@ impl EvaluatorBuilder {
             functions: HashMap::new(),
             injected: vec![],
             client: Arc::new(()),
+            keep_edges: true,
+            progress_receiver: None,
+            event_filter: Arc::new(<dyn EventFilter>::NO_STORAGE),
         }
     }
     /// Registers the function for `name`. Panics on duplicates.
@@ -442,6 +318,9 @@ impl EvaluatorBuilder {
         self.function(K::FUNCTION, typed::<K, F>(f))
     }
     /// Injects a precomputed value. Java: `PrecomputedValue` / `Injectable.inject`.
+    ///
+    /// PORT: the value is in the graph when [`EvaluatorBuilder::build`] returns; Java records it
+    /// in the differencer and injects it at the start of the first `evaluate`.
     pub fn inject<K: Key>(mut self, key: K, value: K::Value) -> Self {
         self.injected.push((SkyKey::new(key), Arc::new(value)));
         self
@@ -451,10 +330,49 @@ impl EvaluatorBuilder {
         self.client = client;
         self
     }
+    /// Whether to store edges in the graph (Java's `keepEdges`, default true). Without edges no
+    /// incremental evaluation is possible: every evaluation is at `Version.constant()`.
+    pub fn keep_edges(mut self, keep_edges: bool) -> Self {
+        self.keep_edges = keep_edges;
+        self
+    }
+    /// The receiver of evaluation progress (Java's `EvaluationProgressReceiver`, default
+    /// `NULL`). The evaluator wraps it in a `DirtyAndInflightTrackingProgressReceiver`.
+    pub fn progress_receiver(mut self, receiver: Arc<dyn EvaluationProgressReceiver>) -> Self {
+        self.progress_receiver = Some(receiver);
+        self
+    }
+    /// Which events nodes store for replay (Java's `EventFilter`). The default,
+    /// `EventFilter::NO_STORAGE`, stores none: a node's events are reported when it commits (or
+    /// is re-run in error bubbling) and never replayed.
+    pub fn event_filter(mut self, event_filter: Arc<dyn EventFilter>) -> Self {
+        self.event_filter = event_filter;
+        self
+    }
+    // Java: com/google/devtools/build/skyframe/InMemoryMemoizingEvaluator.java:159 InMemoryMemoizingEvaluator.<init>
     pub fn build(self) -> Evaluator {
+        let has_user_progress_receiver = self.progress_receiver.is_some();
+        let receiver = self
+            .progress_receiver
+            .unwrap_or_else(|| Arc::new(crate::progress::NULL));
         let ev = Evaluator {
             functions: self.functions,
-            graph: Graph::new(),
+            graph: InMemoryGraphImpl::new(self.keep_edges),
+            keep_edges: self.keep_edges,
+            // PORT: Java's InMemoryMemoizingEvaluator.ProgressReceiver also collects statistics
+            // for postLoggingStats (not ported: logging).
+            progress_receiver: DirtyAndInflightTrackingProgressReceiver::new(receiver),
+            has_user_progress_receiver,
+            event_filter: self.event_filter,
+            incremental: Mutex::new(IncrementalState {
+                values_to_delete: IndexSet::new(),
+                values_to_dirty: IndexSet::new(),
+                values_to_inject: IndexMap::new(),
+                deleter_state: DeletingInvalidationState::new(),
+                differencer: SequencedRecordingDifferencer::new(),
+                invalidator_state: InvalidationState::dirtying(),
+                last_graph_version: None,
+            }),
             waits: Mutex::new(WaitGraph::default()),
             client: self.client,
             computed: AtomicU64::new(0),
@@ -469,10 +387,16 @@ impl EvaluatorBuilder {
             #[cfg(test)]
             deterministic_for_testing: AtomicBool::new(false),
         };
-        // Java: ParallelEvaluator.injectErrorTransienceValue
-        ev.insert_value(ERROR_TRANSIENCE_KEY.clone(), Arc::new(ErrorTransienceValue));
-        for (k, v) in self.injected {
-            ev.insert_value(k, v);
+        // PORT: Java's differencer would inject these at the start of the first evaluation, at
+        // its graph version; they are injected now, at that version.
+        if !self.injected.is_empty() {
+            let first_version = ev.get_next_graph_version(None);
+            let map: IndexMap<SkyKey, Delta> = self
+                .injected
+                .into_iter()
+                .map(|(k, v)| (k, Delta::just_new(v)))
+                .collect();
+            ev.inject_values_into_graph(&map, first_version);
         }
         ev
     }
@@ -522,6 +446,29 @@ impl Evaluator {
         &self.client
     }
 
+    pub(crate) fn event_filter(&self) -> &dyn EventFilter {
+        &*self.event_filter
+    }
+
+    /// The state of the replayed and reported events: clear it to have stored events replayed
+    /// again (Java tests: `tester.resetPlayedEvents()`).
+    // Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:88 AbstractInMemoryMemoizingEvaluator.emittedEventState
+    pub fn emitted_event_state(&self) -> &EmittedEventState {
+        &self.emitted_event_state
+    }
+
+    // Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:495 AbstractInMemoryMemoizingEvaluator.getNextGraphVersion
+    fn get_next_graph_version(&self, last_graph_version: Option<IntVersion>) -> Version {
+        if !self.keep_edges {
+            Version::constant()
+        } else {
+            match last_graph_version {
+                None => IntVersion::of(0).into(),
+                Some(v) => v.next().into(),
+            }
+        }
+    }
+
     /// Evaluates `roots` (in parallel) and returns their values and errors.
     // Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:118 AbstractInMemoryMemoizingEvaluator.evaluate
     pub fn evaluate(
@@ -529,94 +476,276 @@ impl Evaluator {
         roots: &[SkyKey],
         ctx: &EvaluationContext,
     ) -> Result<EvaluationResult, Interrupted> {
+        // NOTE: Performance critical code. See bug "Null build performance parity".
+        let graph_version = self.get_next_graph_version(self.incremental.lock().last_graph_version);
         // Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:227 setAndCheckEvaluateState
         check_state!(
             !self.evaluating.swap(true, Ordering::SeqCst),
             "Re-entrant evaluation for request: {:?}",
             roots
         );
-        struct ResetEvaluating<'a>(&'a AtomicBool);
-        impl Drop for ResetEvaluating<'_> {
+        struct Finally<'a> {
+            ev: &'a Evaluator,
+            graph_version: Version,
+        }
+        impl Drop for Finally<'_> {
             fn drop(&mut self) {
-                self.0.store(false, Ordering::SeqCst);
+                if self.ev.keep_edges {
+                    let Version::Int(v) = self.graph_version else {
+                        unreachable!("graph versions are IntVersions when keeping edges")
+                    };
+                    self.ev.incremental.lock().last_graph_version = Some(v);
+                }
+                self.ev.evaluating.store(false, Ordering::SeqCst);
             }
         }
-        let _reset = ResetEvaluating(&self.evaluating);
-        // PORT: incremental bookkeeping (graph versions, diffs, deleting in-flight nodes) is
-        // replaced by dropping uncommitted nodes at the end of each call (Run::cleanup).
+        let _finally = Finally {
+            ev: self,
+            graph_version,
+        };
+
+        // PORT: Skyfocus (rememberTopLevelEvaluations) is not ported.
+        {
+            let mut inc = self.incremental.lock();
+            let inc = &mut *inc;
+            // Mark for removal any nodes from the previous evaluation that were still inflight
+            // or were rewound but did not complete successfully. When the invalidator runs, it
+            // will delete the reverse transitive closure.
+            inc.values_to_delete
+                .extend(self.progress_receiver.get_and_clear_inflight_keys());
+            inc.values_to_delete.extend(
+                self.progress_receiver
+                    .get_and_clear_unsuccessfully_rewound_keys(),
+            );
+            // The RecordingDifferencer implementation is not quite working as it should be at
+            // this point. It clears the internal data structures after getDiff is called and will
+            // not return diffs for historical versions. This makes the following code sensitive
+            // to interrupts. Ideally we would simply not update lastGraphVersion if an interrupt
+            // occurs.
+            let diff = inc
+                .differencer
+                .get_diff(inc.last_graph_version.map(Version::from), graph_version);
+            if !diff.is_empty()
+                || !inc.values_to_inject.is_empty()
+                || !inc.values_to_delete.is_empty()
+            {
+                for (k, d) in diff.changed_keys_with_new_values() {
+                    inc.values_to_inject.insert(k.clone(), d.clone());
+                }
+                inc.values_to_dirty
+                    .extend(diff.changed_keys_without_new_values().iter().cloned());
+                self.prune_injected_values(inc);
+                let inject_keys: Vec<SkyKey> = inc.values_to_inject.keys().cloned().collect();
+                inc.values_to_dirty.extend(inject_keys);
+
+                self.perform_invalidation(inc);
+                self.inject_values(inc, graph_version);
+            }
+        }
         if self.interrupted.load(Ordering::SeqCst) {
             return Err(Interrupted);
         }
+        let run = Run::new(self, ctx, graph_version);
+        run.eval(roots)
+    }
 
-        // Java: com/google/devtools/build/skyframe/ParallelEvaluator.java:641 ParallelEvaluator.eval
-        let mut seen = HashSet::new();
-        let roots: Vec<SkyKey> = roots
-            .iter()
-            .filter(|k| seen.insert((*k).clone()))
-            .cloned()
-            .collect();
-        let run = Run::new(self, ctx);
-        // Whatever way this call ends (result, interrupt, crash), the nodes Java would not have
-        // committed leave the graph.
-        struct Cleanup<'a, 'e>(&'a Run<'e>);
-        impl Drop for Cleanup<'_, '_> {
-            fn drop(&mut self) {
-                self.0.cleanup();
+    /// Removes entries in `values_to_inject` whose values are equal to the present values in the
+    /// graph.
+    // Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:432 AbstractInMemoryMemoizingEvaluator.pruneInjectedValues
+    fn prune_injected_values(&self, inc: &mut IncrementalState) {
+        let mut to_remove: Vec<SkyKey> = vec![];
+        for (key, delta) in &inc.values_to_inject {
+            let new_value = &delta.new_value;
+            let Some(prev_entry) = self.graph.get_if_present(key) else {
+                continue;
+            };
+            let state = prev_entry.lock();
+            if !state.entry.is_done() {
+                continue;
+            }
+            // PORT: max transitive source versions are not ported; both are null.
+            let new_mtsv = delta.new_max_transitive_source_version;
+            let old_mtsv = state.entry.get_max_transitive_source_version();
+            if self.keep_edges {
+                if !state.entry.has_at_least_one_dep() {
+                    // Java: newValue.equals(prevEntry.getValue()). PORT: SkyValue equality is the
+                    // key's (Key::values_equal, docs/decisions.md D10).
+                    let equal = state
+                        .entry
+                        .get_value()
+                        .is_some_and(|prev| key.argument().dyn_values_equal(&prev, new_value));
+                    if equal
+                        && !inc.values_to_dirty.contains(key)
+                        && !inc.values_to_delete.contains(key)
+                        && new_mtsv == old_mtsv
+                    {
+                        to_remove.push(key.clone());
+                    }
+                } else {
+                    // Rare situation of an injected dep that depends on another node. Usually the
+                    // dep is the error transience node. When working with external repositories,
+                    // it can also be an external workspace file. Don't bother injecting it, just
+                    // invalidate it. We'll wastefully evaluate the node freshly during
+                    // evaluation, but this happens very rarely.
+                    inc.values_to_dirty.insert(key.clone());
+                    to_remove.push(key.clone());
+                }
+            } else {
+                // No incrementality. Just delete the old value from the graph. The new value is
+                // about to be injected.
+                drop(state);
+                self.graph.remove(key);
             }
         }
-        let _cleanup = Cleanup(&run);
-
-        // Optimization: if all required node values are already present in the cache, return them
-        // directly without launching the heavy machinery, spawning threads, etc.
-        if roots.iter().all(|k| self.is_done(k)) {
-            // Note that the 'catastrophe' parameter doesn't really matter here (it's only used
-            // for checking).
-            return Ok(run.construct_result(&roots, None, /* catastrophe= */ false));
+        for key in to_remove {
+            inc.values_to_inject.shift_remove(&key);
         }
+    }
 
-        if !ctx.keep_going {
-            let cached_error_keys: Vec<SkyKey> = roots
-                .iter()
-                .filter(|k| {
-                    self.done_entry(k)
-                        .is_some_and(|e| e.is_done() && e.error.is_some())
-                })
-                .cloned()
-                .collect();
-            // Errors, even cached ones, should halt evaluations not in keepGoing mode.
-            if !cached_error_keys.is_empty() {
-                return Ok(run.construct_result(
-                    &cached_error_keys,
-                    None,
-                    /* catastrophe= */ false,
-                ));
-            }
+    /// Injects values in `values_to_inject` into the graph.
+    // Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:468 AbstractInMemoryMemoizingEvaluator.injectValues
+    fn inject_values(&self, inc: &mut IncrementalState, version: Version) {
+        if inc.values_to_inject.is_empty() {
+            return;
         }
+        self.inject_values_into_graph(&inc.values_to_inject, version);
+        // Start with a new map to avoid bloat since clear() does not downsize the map.
+        inc.values_to_inject = IndexMap::new();
+    }
 
-        run.evaluate_roots(&roots);
-
-        // Java: com/google/devtools/build/skyframe/ParallelEvaluator.java:206 ParallelEvaluator.waitForCompletionAndConstructResult
-        run.propagate_crash_if_any();
-        if run.saw_interrupt.load(Ordering::SeqCst) || self.interrupted.load(Ordering::SeqCst) {
-            return Err(Interrupted);
-        }
-        let mut bubble_error_info: Option<BubbleErrorInfo> = None;
-        let mut catastrophe = false;
-        let failure = run.failure.lock().take();
-        if let Some(e) = failure {
-            bubble_error_info = run.bubble_error_up_on_evaluator_thread(&e, &roots);
-            run.propagate_crash_if_any();
-            if ctx.keep_going {
+    // Java: com/google/devtools/build/skyframe/ParallelEvaluator.java:599 ParallelEvaluator.injectValues
+    fn inject_values_into_graph(&self, injection_map: &IndexMap<SkyKey, Delta>, version: Version) {
+        let prev_node_entries = self.graph.create_if_absent_batch(injection_map.keys());
+        for ((key, delta), node) in injection_map.iter().zip(prev_node_entries) {
+            let value = delta.new_value.clone();
+            {
+                let mut state = node.lock();
+                let prev_entry = &mut state.entry;
+                let new_state = prev_entry.add_reverse_dep_and_check_if_done(None);
                 check_state!(
-                    e.error_info.is_catastrophic(),
-                    "Scheduler exception only thrown for catastrophe in keep_going evaluation: \
-                     {:?}",
-                    e
+                    new_state != DependencyState::AlreadyEvaluating,
+                    "{:?} {:?}",
+                    key,
+                    prev_entry
                 );
-                catastrophe = true;
+                if prev_entry.is_dirty() {
+                    // Get the node in the state where it is able to accept a value.
+                    check_state!(
+                        new_state == DependencyState::NeedsScheduling,
+                        "{:?} {:?}",
+                        key,
+                        prev_entry
+                    );
+                    // If there was a node in the graph before, check that the previous node has
+                    // no dependencies. Overwriting a value with deps with an injected value
+                    // (which is by definition deps-free) needs a little additional bookkeeping
+                    // (removing reverse deps from the dependencies), but more importantly it's
+                    // something that we want to avoid, because it indicates confusion of input
+                    // values and derived values.
+                    check_state!(
+                        prev_entry.no_deps_last_build(),
+                        "existing entry for {:?} has deps: {:?}",
+                        key,
+                        prev_entry
+                    );
+                }
+                prev_entry.mark_rebuilding();
+                let max_transitive_source_version = delta.new_max_transitive_source_version;
+                prev_entry.set_value(
+                    ValueWithMetadata::normal(
+                        Some(value),
+                        None,
+                        crate::value_with_metadata::no_events(),
+                    ),
+                    version,
+                    max_transitive_source_version,
+                );
+                state.refresh_snapshot();
+                state.outcome = state.snapshot.clone();
             }
+            // Now that this key's injected value is set, it is no longer dirty.
+            self.progress_receiver.injected(key);
         }
-        Ok(run.construct_result(&roots, bubble_error_info.as_ref(), catastrophe))
+    }
+
+    // Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:480 AbstractInMemoryMemoizingEvaluator.performInvalidation
+    fn perform_invalidation(&self, inc: &mut IncrementalState) {
+        let values_to_delete = std::mem::take(&mut inc.values_to_delete);
+        EagerInvalidator::delete(
+            &self.graph,
+            values_to_delete,
+            &self.progress_receiver,
+            &mut inc.deleter_state,
+            self.keep_edges,
+        );
+        // Note that clearing the valuesToDelete would not do an internal resizing. Therefore, if
+        // any build has a large set of dirty values, subsequent operations (even clearing) will
+        // be slower. Instead, just start afresh with a new LinkedHashSet.
+        let values_to_dirty = std::mem::take(&mut inc.values_to_dirty);
+        EagerInvalidator::invalidate(
+            &self.graph,
+            values_to_dirty,
+            &self.progress_receiver,
+            &mut inc.invalidator_state,
+        );
+    }
+
+    /// Marks for deletion, at the start of the next evaluation, every node for which `predicate`
+    /// is true (it gets the key and the node's value; `None` for a node in error without a
+    /// value) and every node that is not done, with their reverse transitive closure.
+    // Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:212 AbstractInMemoryMemoizingEvaluator.delete
+    pub fn delete(&self, delete_predicate: impl Fn(&SkyKey, Option<&SkyValue>) -> bool) {
+        let mut to_delete: Vec<SkyKey> = vec![];
+        self.graph.parallel_for_each(|key, node| {
+            let state = node.lock();
+            // Java: e.isDirty() || deletePredicate.test(e.getKey(), e.getValue()).
+            if state.entry.is_dirty() || delete_predicate(key, state.entry.get_value().as_ref()) {
+                to_delete.push(key.clone());
+            }
+        });
+        self.incremental.lock().values_to_delete.extend(to_delete);
+    }
+
+    /// Marks for deletion, at the start of the next evaluation, the dirty nodes that were not
+    /// evaluated since they were dirtied and whose version is at most the last graph version
+    /// minus `version_age_limit`.
+    // Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:243 AbstractInMemoryMemoizingEvaluator.deleteDirty
+    pub fn delete_dirty(&self, version_age_limit: i64) {
+        check_argument!(version_age_limit >= 0, "{}", version_age_limit);
+        let mut inc = self.incremental.lock();
+        let last = check_not_null!(inc.last_graph_version);
+        let threshold: Version = IntVersion::of(last.get_val() - version_age_limit).into();
+        let to_delete: Vec<SkyKey> = self
+            .progress_receiver
+            .get_unenqueued_dirty_keys()
+            .into_iter()
+            .filter(|sky_key| {
+                let node = check_not_null!(self.graph.get_if_present(sky_key), "{:?}", sky_key);
+                let state = node.lock();
+                check_state!(state.entry.is_dirty(), "{:?}", sky_key);
+                state.entry.get_version().at_most(&threshold)
+            })
+            .collect();
+        inc.values_to_delete.extend(to_delete);
+    }
+
+    /// Marks `keys` changed: at the start of the next evaluation they and their reverse
+    /// transitive closure are dirtied. Java: `RecordingDifferencer.invalidate`.
+    // Java: com/google/devtools/build/skyframe/SequencedRecordingDifferencer.java:47 SequencedRecordingDifferencer.invalidate
+    pub fn invalidate(&self, keys: impl IntoIterator<Item = SkyKey>) {
+        self.incremental.lock().differencer.invalidate(keys);
+    }
+
+    /// The values of every node: done values and the last built values of dirty nodes.
+    // Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:258 AbstractInMemoryMemoizingEvaluator.getValues
+    pub fn get_values(&self) -> HashMap<SkyKey, SkyValue> {
+        self.graph.get_values().into_iter().collect()
+    }
+
+    /// The values of the done nodes.
+    // Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:263 AbstractInMemoryMemoizingEvaluator.getDoneValues
+    pub fn get_done_values(&self) -> HashMap<SkyKey, SkyValue> {
+        self.graph.get_done_values().into_iter().collect()
     }
 
     /// Returns the value of a done node (also one that has an error with a value).
@@ -631,111 +760,59 @@ impl Evaluator {
             .and_then(|e| e.error.as_deref().cloned())
     }
 
-    /// All keys in the graph.
+    /// All keys in the graph, done or not.
     // Java: com/google/devtools/build/skyframe/WalkableGraph.java:106 WalkableGraph.getAllKeysForTesting
     pub fn get_all_keys_for_testing(&self) -> Vec<SkyKey> {
-        self.graph.all_keys()
+        self.graph
+            .get_all_node_entries()
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect()
     }
 
-    /// Injects a value between evaluations, invalidating the reverse transitive closure of an
-    /// existing node for the key. Java: `Injectable.inject` applied at the next `evaluate`.
-    ///
-    /// PORT: Java skips an injection whose value equals the existing one
-    /// (`pruneInjectedValues`); values here have no equality, so dependents are always
-    /// re-evaluated.
+    /// Injects a value: at the start of the next evaluation the node for `key` gets `value` and
+    /// the nodes that depend on it are dirtied, unless the value equals the node's
+    /// ([`Key::values_equal`]). Java: `Injectable.inject` on the evaluator's differencer.
+    // Java: com/google/devtools/build/skyframe/SequencedRecordingDifferencer.java:57 SequencedRecordingDifferencer.inject
     pub fn inject<K: Key>(&self, key: K, value: K::Value) {
-        check_state!(
-            !self.evaluating.load(Ordering::SeqCst),
-            "inject during evaluation"
-        );
-        let key = SkyKey::new(key);
-        if self.graph.get(&key).is_some() {
-            self.delete_reverse_transitive_closure(vec![key.clone()]);
-        }
-        self.insert_value(key, Arc::new(value));
+        self.inject_dyn(SkyKey::new(key), Arc::new(value));
+    }
+
+    /// Untyped [`Evaluator::inject`].
+    pub fn inject_dyn(&self, key: SkyKey, value: SkyValue) {
+        self.incremental
+            .lock()
+            .differencer
+            .inject(key, Delta::just_new(value));
     }
 
     /// Re-evaluates, on the next `evaluate`, every node whose error was transient, and their
     /// dependents. Bazel does this at the start of every command.
     // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:475 SequencedSkyframeExecutor.invalidateTransientErrors
+    // Java: com/google/devtools/build/skyframe/RecordingDifferencer.java:33 RecordingDifferencer.invalidateTransientErrors
     pub fn invalidate_transient_errors(&self) {
-        check_state!(
-            !self.evaluating.load(Ordering::SeqCst),
-            "invalidate during evaluation"
-        );
-        let Some(node) = self.graph.get(&ERROR_TRANSIENCE_KEY) else {
-            return;
-        };
-        let rdeps = std::mem::take(&mut *node.rdeps.lock());
-        self.delete_reverse_transitive_closure(rdeps);
+        self.incremental
+            .lock()
+            .differencer
+            .invalidate_transient_errors();
     }
 
-    fn insert_value(&self, key: SkyKey, value: SkyValue) {
-        let entry = Arc::new(DoneEntry {
-            kind: DoneKind::Committed,
-            value: Some(value),
-            error: None,
-            deps: GroupedDeps::new(),
-            awaits_deps: false,
-        });
-        self.graph.insert(key, Node::new(NodeState::Done(entry)));
-    }
-
-    /// Deletes `start` and every node that transitively depends on them.
-    // PORT: Java dirties these nodes (InvalidatingNodeVisitor); without versions or change
-    // pruning, deleting them is equivalent.
-    fn delete_reverse_transitive_closure(&self, start: Vec<SkyKey>) {
-        let mut doomed: HashSet<SkyKey> = HashSet::new();
-        let mut stack = start;
-        while let Some(k) = stack.pop() {
-            if !doomed.insert(k.clone()) {
-                continue;
-            }
-            if let Some(node) = self.graph.get(&k) {
-                stack.extend(node.rdeps());
-            }
-        }
-        for k in &doomed {
-            let Some(node) = self.graph.remove(k) else {
-                continue;
-            };
-            if let Some(entry) = node.done_entry() {
-                for dep in entry.deps.get_all_elements_as_iterable() {
-                    if doomed.contains(dep) {
-                        continue;
-                    }
-                    if let Some(dep_node) = self.graph.get(dep) {
-                        dep_node.rdeps.lock().retain(|r| r != k);
-                    }
-                }
-            }
-        }
-    }
-
-    /// The finished entry of `key`, whatever its kind.
+    /// The snapshot or this evaluation's outcome of `key`.
     pub(crate) fn done_entry(&self, key: &SkyKey) -> Option<Arc<DoneEntry>> {
-        self.graph.get(key).and_then(|n| n.done_entry())
+        self.graph.get_if_present(key).and_then(|n| n.done_entry())
     }
 
     /// The entry of `key` if it is done in the graph (Java `NodeEntry.isDone()`).
     pub(crate) fn committed_entry(&self, key: &SkyKey) -> Option<Arc<DoneEntry>> {
-        self.done_entry(key).filter(|e| e.is_done())
+        self.graph.get_if_present(key).and_then(|n| n.snapshot())
     }
 
     pub(crate) fn node(&self, key: &SkyKey) -> Option<Arc<Node>> {
-        self.graph.get(key)
+        self.graph.get_if_present(key)
     }
 
     fn is_done(&self, key: &SkyKey) -> bool {
         self.committed_entry(key).is_some()
-    }
-
-    fn register_rdeps(&self, key: &SkyKey, deps: &GroupedDeps) {
-        for dep in deps.get_all_elements_as_iterable() {
-            if let Some(n) = self.graph.get(dep) {
-                n.rdeps.lock().push(key.clone());
-            }
-        }
     }
 
     /// Reserves up to `wanted` thread slots under `cap`; returns how many were reserved.
@@ -845,11 +922,29 @@ enum Ret {
     Abandoned,
 }
 
+/// Java: `AbstractParallelEvaluator.DirtyOutcome`, with the outcome of a node that is
+/// `ALREADY_PROCESSED` (done, or not finishing in this evaluation).
+enum DirtyOutcome {
+    AlreadyProcessed(Arc<DoneEntry>),
+    NeedsEvaluation,
+}
+
+/// The node that requests a dep: its key, its node, and the deps of its last build that it has
+/// not re-registered for yet (Java's `oldDeps`: a request for one of them re-registers with
+/// `checkIfDoneForDirtyReverseDep`).
+pub(crate) struct Requester<'a> {
+    pub(crate) key: &'a SkyKey,
+    pub(crate) node: &'a Arc<Node>,
+    pub(crate) old_deps: &'a IndexSet<SkyKey>,
+}
+
 /// State of one `evaluate` call. Java: `ParallelEvaluatorContext` plus the visitor's
 /// error/abort state.
 pub(crate) struct Run<'e> {
     pub(crate) ev: &'e Evaluator,
     pub(crate) ctx: &'e EvaluationContext,
+    /// Java: `ParallelEvaluatorContext.getGraphVersion()`.
+    pub(crate) graph_version: Version,
     permits: Permits,
     /// Java: `NodeEntryVisitor.preventNewEvaluations` (first error without keep_going, or a
     /// catastrophe, or a crash).
@@ -863,13 +958,12 @@ pub(crate) struct Run<'e> {
     /// Root workers still running, for the evaluating thread to wait on.
     running_root_workers: Mutex<usize>,
     root_workers_done: Condvar,
-    uncommitted: Mutex<Vec<SkyKey>>,
     /// The deps that were not done when a node that asked for them committed (a function that
     /// threw although a dep was missing). See [`Run::never_evaluated`].
     undone_deps_of_committed: Mutex<Vec<SkyKey>>,
     crash: Mutex<Option<Box<dyn Any + Send>>>,
     /// The failure that stopped the evaluation: Java's first `SchedulerException.ofError`, which
-    /// `waitForCompletion` rethrows. Lock order: this, then a node's `state`.
+    /// `waitForCompletion` rethrows. Lock order: this, then a node's lock.
     failure: Mutex<Option<SchedulerError>>,
 }
 
@@ -886,33 +980,25 @@ struct SchedulerError {
 pub(crate) struct Requested {
     pub(crate) entry: Arc<DoneEntry>,
     /// The node was done when it was asked for (Java: `graph.get` during `compute` returns its
-    /// value). False when the request computed it or waited for it (Java: `compute` got null,
-    /// returned null, and the node waits to be restarted when the dep is done).
+    /// value, or `addReverseDepAndCheckIfDone` returns `DONE`). False when the request computed
+    /// it or waited for it (Java: `compute` got null, returned null, and the node waits to be
+    /// restarted when the dep is done).
     pub(crate) was_done: bool,
 }
 
-/// How a function's node finishes.
-struct Resolved {
-    entry: DoneEntry,
-    /// Java: `shouldFailFast` after the error was committed: throw
-    /// `SchedulerException.ofError(errorInfo, skyKey, rdepsToBubbleUpTo)`.
-    fail_fast: bool,
-}
-
-impl From<DoneEntry> for Resolved {
-    fn from(entry: DoneEntry) -> Self {
-        Resolved {
-            entry,
-            fail_fast: false,
-        }
-    }
+/// Java's `checkState` for a Guava lenient format with more arguments than `%s` placeholders:
+/// the extra ones are appended in square brackets.
+fn lenient_extra(extra: &[&dyn fmt::Debug]) -> String {
+    let parts: Vec<String> = extra.iter().map(|a| format!("{a:?}")).collect();
+    format!(" [{}]", parts.join(", "))
 }
 
 impl<'e> Run<'e> {
-    fn new(ev: &'e Evaluator, ctx: &'e EvaluationContext) -> Self {
+    fn new(ev: &'e Evaluator, ctx: &'e EvaluationContext, graph_version: Version) -> Self {
         Run {
             ev,
             ctx,
+            graph_version,
             permits: Permits {
                 available: Mutex::new(ctx.parallelism.max(1)),
                 cv: Condvar::new(),
@@ -923,11 +1009,155 @@ impl<'e> Run<'e> {
             interrupt_delivered: AtomicBool::new(false),
             running_root_workers: Mutex::new(0),
             root_workers_done: Condvar::new(),
-            uncommitted: Mutex::new(vec![]),
             undone_deps_of_committed: Mutex::new(vec![]),
             crash: Mutex::new(None),
             failure: Mutex::new(None),
         }
+    }
+
+    fn progress(&self) -> &DirtyAndInflightTrackingProgressReceiver {
+        &self.ev.progress_receiver
+    }
+
+    /// Evaluates a set of values.
+    // Java: com/google/devtools/build/skyframe/ParallelEvaluator.java:641 ParallelEvaluator.eval
+    fn eval(&self, roots: &[SkyKey]) -> Result<EvaluationResult, Interrupted> {
+        let mut seen = HashSet::new();
+        let roots: Vec<SkyKey> = roots
+            .iter()
+            .filter(|k| seen.insert((*k).clone()))
+            .cloned()
+            .collect();
+        let done_before_evaluation: Vec<Option<Arc<DoneEntry>>> =
+            roots.iter().map(|k| self.ev.committed_entry(k)).collect();
+
+        // Optimization: if all required node values are already present in the cache, return them
+        // directly without launching the heavy machinery, spawning threads, etc.
+        // Inform progressReceiver that these nodes are done to be consistent with the main code
+        // path.
+        if done_before_evaluation.iter().all(Option::is_some) {
+            for (key, entry) in roots.iter().zip(&done_before_evaluation) {
+                self.inform_progress_receiver_that_value_is_done(
+                    key,
+                    entry.as_ref().expect("all done"),
+                );
+            }
+            // Note that the 'catastrophe' parameter doesn't really matter here (it's only used
+            // for checking).
+            return Ok(self.construct_result(&roots, None, /* catastrophe= */ false));
+        }
+
+        // PORT: Java collects the cached error keys in a HashSet; they are kept in the order of
+        // the roots.
+        let mut cached_error_keys: Vec<SkyKey> = vec![];
+        if !self.ctx.keep_going {
+            for (key, entry) in roots.iter().zip(&done_before_evaluation) {
+                if let Some(entry) = entry
+                    && entry.error.is_some()
+                {
+                    self.inform_progress_receiver_that_value_is_done(key, entry);
+                    cached_error_keys.push(key.clone());
+                }
+            }
+        }
+        // Errors, even cached ones, should halt evaluations not in keepGoing mode.
+        if !cached_error_keys.is_empty() {
+            // Note that the 'catastrophe' parameter doesn't really matter here (it's only used
+            // for checking).
+            return Ok(self.construct_result(
+                &cached_error_keys,
+                None,
+                /* catastrophe= */ false,
+            ));
+        }
+
+        // PORT: SkyKeyComputeState is not ported (unnecessaryTemporaryStateDropperReceiver).
+        self.do_mutating_evaluation(&roots, &done_before_evaluation)
+    }
+
+    // Java: com/google/devtools/build/skyframe/ParallelEvaluator.java:135 ParallelEvaluator.doMutatingEvaluation
+    fn do_mutating_evaluation(
+        &self,
+        roots: &[SkyKey],
+        done_before_evaluation: &[Option<Arc<DoneEntry>>],
+    ) -> Result<EvaluationResult, Interrupted> {
+        self.inject_error_transience_value();
+        self.evaluate_roots(roots, done_before_evaluation);
+        self.wait_for_completion_and_construct_result(roots)
+    }
+
+    // Java: com/google/devtools/build/skyframe/ParallelEvaluator.java:187 ParallelEvaluator.injectErrorTransienceValue
+    fn inject_error_transience_value(&self) {
+        // We unconditionally add the ErrorTransienceValue here, to ensure that it will be
+        // created, and in the graph, by the time that it is needed. Creating it on demand in a
+        // parallel context sets up a race condition, because there is no way to atomically create
+        // a node and set its value.
+        let error_transience_entry = self.ev.graph.create_if_absent(&ERROR_TRANSIENCE_KEY);
+        let done = error_transience_entry.lock().entry.is_done();
+        if !done {
+            let map: IndexMap<SkyKey, Delta> = IndexMap::from([(
+                ERROR_TRANSIENCE_KEY.clone(),
+                Delta::just_new(Arc::new(ErrorTransienceValue)),
+            )]);
+            self.ev.inject_values_into_graph(&map, self.graph_version);
+        }
+    }
+
+    // Java: com/google/devtools/build/skyframe/ParallelEvaluator.java:206 ParallelEvaluator.waitForCompletionAndConstructResult
+    fn wait_for_completion_and_construct_result(
+        &self,
+        roots: &[SkyKey],
+    ) -> Result<EvaluationResult, Interrupted> {
+        self.propagate_crash_if_any();
+        if self.saw_interrupt.load(Ordering::SeqCst) || self.ev.interrupted.load(Ordering::SeqCst) {
+            return Err(Interrupted);
+        }
+        let mut bubble_error_info: Option<BubbleErrorInfo> = None;
+        let mut catastrophe = false;
+        let failure = self.failure.lock().take();
+        if let Some(e) = failure {
+            bubble_error_info = self.bubble_error_up_on_evaluator_thread(&e, roots);
+            self.propagate_crash_if_any();
+            if self.ctx.keep_going {
+                check_state!(
+                    e.error_info.is_catastrophic(),
+                    "Scheduler exception only thrown for catastrophe in keep_going evaluation: \
+                     {:?}",
+                    e
+                );
+                catastrophe = true;
+            }
+        }
+        Ok(self.construct_result(roots, bubble_error_info.as_ref(), catastrophe))
+    }
+
+    // Java: com/google/devtools/build/skyframe/ParallelEvaluator.java:96 ParallelEvaluator.informProgressReceiverThatValueIsDone
+    fn inform_progress_receiver_that_value_is_done(&self, key: &SkyKey, entry: &DoneEntry) {
+        check_state!(entry.is_done(), "{:?}", entry);
+        let value = entry.value.as_ref();
+        let value_version = entry.version;
+        check_state!(
+            value_version.at_most(&self.graph_version),
+            "{:?} should be at most {:?} in the version partial ordering",
+            value_version,
+            self.graph_version
+        );
+
+        self.replay(&entry.get_events());
+        let error = entry.error.as_deref();
+
+        // For most nodes we do not inform the progress receiver if they were already done when
+        // we retrieve them, but top-level nodes are presumably of more interest.
+        // If valueVersion is not equal to graphVersion, it must be less than it (by the
+        // Preconditions check above), and so the node is clean.
+        let changed = value_version == self.graph_version;
+        self.progress().evaluated(
+            key,
+            EvaluationState::get(value, changed),
+            if changed { value } else { None },
+            if changed { error } else { None },
+            None,
+        );
     }
 
     /// Java: `AbstractQueueVisitor.getExceptionLatchForTestingOnly()` is released: the visitor
@@ -950,6 +1180,14 @@ impl<'e> Run<'e> {
         self.crash.lock().get_or_insert(payload);
         self.aborting.store(true, Ordering::SeqCst);
         self.stop_in_flight_jobs();
+    }
+
+    /// Java: `NodeEntryVisitor.preventNewEvaluations()`: true for the caller that set it.
+    // Java: com/google/devtools/build/skyframe/NodeEntryVisitor.java:190 NodeEntryVisitor.preventNewEvaluations
+    fn prevent_new_evaluations(&self) -> bool {
+        self.aborting
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
     }
 
     /// The evaluation stops (`jobsMustBeStopped`): the evaluating thread leaves
@@ -991,11 +1229,19 @@ impl<'e> Run<'e> {
             .stack_size(self.ctx.thread_stack_size)
     }
 
-    /// Evaluates the roots on up to `parallelism` worker threads.
-    fn evaluate_roots(&self, roots: &[SkyKey]) {
+    /// Evaluates the roots on up to `parallelism` worker threads. A root that is done is reported
+    /// to the progress receiver if it was done before the evaluation (Java's loop over the roots
+    /// in `doMutatingEvaluation`).
+    fn evaluate_roots(&self, roots: &[SkyKey], done_before_evaluation: &[Option<Arc<DoneEntry>>]) {
         let workers = roots.len().min(self.parallelism()).max(1);
         self.ev.force_reserve_threads(workers);
-        let queue = Mutex::new(roots.iter().cloned().collect::<VecDeque<_>>());
+        let queue = Mutex::new(
+            roots
+                .iter()
+                .cloned()
+                .zip(done_before_evaluation.iter().map(Option::is_some))
+                .collect::<VecDeque<_>>(),
+        );
         /// Counts a root worker as finished however it ends.
         struct RootWorker<'a, 'e>(&'a Run<'e>);
         impl Drop for RootWorker<'_, '_> {
@@ -1016,10 +1262,16 @@ impl<'e> Run<'e> {
                     let _done = RootWorker(self);
                     self.permits.acquire();
                     loop {
-                        let Some(k) = queue.lock().pop_front() else {
+                        let Some((k, done_before)) = queue.lock().pop_front() else {
                             break;
                         };
-                        self.eval_key(&k, None);
+                        let r = self.eval_dep(&k, None);
+                        // Scheduling above starts concurrent evaluation, so a key that is a
+                        // dependency of an earlier key may have become done while this loop was
+                        // running. Avoid reporting it twice.
+                        if r.was_done && r.entry.is_done() && done_before {
+                            self.inform_progress_receiver_that_value_is_done(&k, &r.entry);
+                        }
                     }
                     self.ev.unregister_thread();
                     self.permits.release();
@@ -1064,45 +1316,85 @@ impl<'e> Run<'e> {
         self.ev.release_threads(workers);
     }
 
-    /// Computes or waits for `key` on the current thread (which holds a permit). `requester` is
-    /// the node whose function asked for `key` (`None` for a top-level key): it is registered as
-    /// a reverse dep of `key` unless `key` is already done, as Java's `enqueueChild` does.
-    pub(crate) fn eval_key(&self, key: &SkyKey, requester: Option<&SkyKey>) -> Arc<DoneEntry> {
-        self.eval_dep(key, requester).entry
+    /// Computes or waits for `key` on the current thread (which holds a permit), and tells
+    /// whether the key was done when it was asked for. `requester` is the node whose function
+    /// asked for `key` (`None` for a top-level key): it is registered as a reverse dep of `key`
+    /// (Java: `enqueueChild`), and signals itself if `key` is done (Java: `signalDep` on
+    /// `DONE`).
+    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:171 Evaluate.enqueueChild
+    pub(crate) fn eval_dep(&self, key: &SkyKey, requester: Option<&Requester<'_>>) -> Requested {
+        let node = self.ev.graph.create_if_absent(key);
+        let mut state = node.lock();
+        let dependency_state = match requester {
+            None => state.entry.add_reverse_dep_and_check_if_done(None),
+            Some(r) if r.old_deps.contains(key) => state
+                .entry
+                .check_if_done_for_dirty_reverse_dep(r.key.clone()),
+            Some(r) => state
+                .entry
+                .add_reverse_dep_and_check_if_done(Some(r.key.clone())),
+        };
+        match dependency_state {
+            DependencyState::Done => {
+                let snapshot = state.snapshot.clone().expect("done entry has a snapshot");
+                drop(state);
+                if let Some(r) = requester {
+                    let mut parent = r.node.lock();
+                    parent.entry.signal_dep(snapshot.version, Some(key));
+                }
+                Requested {
+                    entry: snapshot,
+                    was_done: true,
+                }
+            }
+            DependencyState::NeedsScheduling => {
+                state.owner = Some(std::thread::current().id());
+                state.outcome = None;
+                drop(state);
+                self.enqueue_evaluation(key);
+                let entry = if DEPTH.with(Cell::get) >= self.ctx.max_inline_depth {
+                    self.compute_on_fresh_thread(key, &node)
+                } else {
+                    self.compute_claimed(key, &node)
+                };
+                Requested {
+                    entry,
+                    was_done: false,
+                }
+            }
+            DependencyState::AlreadyEvaluating => {
+                if let Some(outcome) = &state.outcome {
+                    // It ended in this evaluation without finishing.
+                    return Requested {
+                        entry: outcome.clone(),
+                        was_done: false,
+                    };
+                }
+                check_state!(
+                    state.owner.is_some(),
+                    "node in flight from an earlier evaluation: {:?} {:?}",
+                    key,
+                    state.entry
+                );
+                drop(state);
+                Requested {
+                    entry: self.wait_for(key, &node, requester.map(|r| r.key)),
+                    was_done: false,
+                }
+            }
+        }
     }
 
-    /// [`Run::eval_key`], also telling whether the key was done when it was asked for.
-    fn eval_dep(&self, key: &SkyKey, requester: Option<&SkyKey>) -> Requested {
-        let (node, claimed) = self.ev.graph.get_or_claim(key);
-        if claimed {
-            node.add_in_progress_rdep(requester);
-            let entry = if DEPTH.with(Cell::get) >= self.ctx.max_inline_depth {
-                self.compute_on_fresh_thread(key, &node)
-            } else {
-                self.compute_claimed(key, &node)
-            };
-            return Requested {
-                entry,
-                was_done: false,
-            };
+    /// Java: `NodeEntryVisitor.enqueueEvaluation`'s progress bookkeeping.
+    // Java: com/google/devtools/build/skyframe/NodeEntryVisitor.java:233 NodeEntryVisitor.innerEnqueueEvaluation
+    fn enqueue_evaluation(&self, key: &SkyKey) {
+        if self.aborting.load(Ordering::SeqCst) {
+            // If an error happens in nokeep_going mode, we still want to mark these nodes as
+            // inflight, otherwise cleanup will not happen properly.
+            self.progress().enqueue_after_error(key);
+            return;
         }
-        {
-            let state = node.state.lock();
-            if let NodeState::Done(r) = &*state {
-                if !r.is_done() {
-                    node.add_in_progress_rdep(requester);
-                }
-                return Requested {
-                    entry: r.clone(),
-                    was_done: true,
-                };
-            }
-            node.add_in_progress_rdep(requester);
-        }
-        Requested {
-            entry: self.wait_for(key, &node, requester),
-            was_done: false,
-        }
+        self.progress().enqueueing(key);
     }
 
     /// Computes a key this thread claimed on a new thread, so that inline recursion depth stays
@@ -1132,11 +1424,9 @@ impl<'e> Run<'e> {
                     self.note_crash(Box::new(format!(
                         "OutOfMemoryError: unable to create evaluator thread for {key:?}: {e}"
                     )));
-                    self.finish(
-                        key,
-                        node,
-                        DoneEntry::undone(DoneKind::Aborted, GroupedDeps::new()).into(),
-                    )
+                    let outcome = Arc::new(DoneEntry::undone(DoneKind::Aborted));
+                    node.publish_outcome(outcome.clone());
+                    outcome
                 }
             }
         });
@@ -1152,21 +1442,21 @@ impl<'e> Run<'e> {
         {
             let mut w = self.ev.waits.lock();
             // The claiming thread may have handed the key to this thread (depth guard).
-            *node.state.lock() = NodeState::InProgress { owner: me };
+            node.lock().owner = Some(me);
             w.stacks.entry(me).or_default().push(key.clone());
         }
         // Java: WrappedRunnable.run: addJob, then blockNewActions, so that a thread racing to
         // interrupt the in-flight work either finds this job or this job sees the abort.
         let job = self.ev.add_job();
-        let entry: Resolved = if self.ev.interrupted.load(Ordering::SeqCst) {
+        let outcome: Arc<DoneEntry> = if self.ev.interrupted.load(Ordering::SeqCst) {
             self.saw_interrupt.store(true, Ordering::SeqCst);
-            DoneEntry::undone(DoneKind::Interrupted, GroupedDeps::new()).into()
+            Arc::new(DoneEntry::undone(DoneKind::Interrupted))
         } else if self.aborting.load(Ordering::SeqCst) {
             // Java: no new evaluations start once the visitor prevents them.
-            DoneEntry::undone(DoneKind::Aborted, GroupedDeps::new()).into()
+            Arc::new(DoneEntry::undone(DoneKind::Aborted))
         } else {
             DEPTH.with(|d| d.set(d.get() + 1));
-            let r = catch_unwind(AssertUnwindSafe(|| self.run_function(key)));
+            let r = catch_unwind(AssertUnwindSafe(|| self.evaluate_node(key, node)));
             DEPTH.with(|d| d.set(d.get() - 1));
             match r {
                 Ok(e) => e,
@@ -1175,10 +1465,21 @@ impl<'e> Run<'e> {
                     // Programmer error (most likely NPE or a failed precondition in a
                     // SkyFunction). Output some context together with the exception.
                     // Stop new work, let waiters finish, and rethrow from `evaluate`.
-                    let reverse_deps = node.get_in_progress_reverse_deps();
+                    let reverse_deps: Vec<SkyKey> = {
+                        let state = node.lock();
+                        if state.entry.is_done() {
+                            vec![]
+                        } else {
+                            state
+                                .entry
+                                .get_in_progress_reverse_deps()
+                                .into_iter()
+                                .collect()
+                        }
+                    };
                     let msg = prepare_crash_message(key, &reverse_deps);
                     self.note_crash(wrap_crash(msg, payload));
-                    DoneEntry::undone(DoneKind::Aborted, GroupedDeps::new()).into()
+                    Arc::new(DoneEntry::undone(DoneKind::Aborted))
                 }
             }
         };
@@ -1186,29 +1487,314 @@ impl<'e> Run<'e> {
         if let Some(s) = self.ev.waits.lock().stacks.get_mut(&me) {
             s.pop();
         }
-        self.finish(key, node, entry)
+        node.publish_outcome(outcome.clone());
+        outcome
     }
 
-    fn function_for(&self, key: &SkyKey, node_state: &str) -> Arc<dyn SkyFunction> {
+    fn function_for(&self, key: &SkyKey, node: &Node) -> Arc<dyn SkyFunction> {
         let function_name = key.function_name();
         // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:457
-        // PORT: Java also prints the NodeEntry's toString; the node here is simply in progress.
         let Some(function) = self.ev.functions.get(&function_name).cloned() else {
+            let entry = format!("{:?}", node.lock().entry);
             panic!(
                 "NullPointerException: Unable to find SkyFunction '{function_name}' for node with \
-                 key {key:?}, NodeEntry{{state={node_state}}}"
+                 key {key:?}, {entry}"
             );
         };
         function
     }
 
+    /// An action that evaluates a value: the owning thread's run of a node it claimed.
     // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:415 Evaluate.run
-    fn run_function(&self, key: &SkyKey) -> Resolved {
-        let function = self.function_for(key, "EVALUATING");
+    fn evaluate_node(&self, key: &SkyKey, node: &Arc<Node>) -> Arc<DoneEntry> {
+        // PORT: Java's `!nodeEntry.isReadyToEvaluate()` check is for partial reevaluation (not
+        // ported): a node is claimed here once, ready.
+        let dirty_outcome = {
+            let _state = StateGuard::new(self.progress(), key, NodeState::CheckDirty);
+            let outcome = self.maybe_handle_dirty_node(key, node);
+            if let DirtyOutcome::AlreadyProcessed(_) = &outcome
+                && node.lock().entry.get_lifecycle_state() == LifecycleState::Done
+            {
+                self.progress().change_pruned(key);
+            }
+            outcome
+        };
+        if let DirtyOutcome::AlreadyProcessed(outcome) = dirty_outcome {
+            return outcome;
+        }
+
+        let old_deps: IndexSet<SkyKey> = node.lock().entry.get_all_remaining_dirty_direct_deps();
+        let function = self.function_for(key, node);
+        let mut env = {
+            let _state = StateGuard::new(self.progress(), key, NodeState::InitializingEnvironment);
+            let previously_requested_deps = {
+                let mut state = node.lock();
+                let deps = state.entry.get_temporary_direct_deps();
+                if deps.is_empty() {
+                    GroupedDeps::new()
+                } else {
+                    deps.clone()
+                }
+            };
+            Environment::create(
+                self,
+                key,
+                node,
+                &*function,
+                previously_requested_deps,
+                old_deps,
+            )
+        };
         self.ev.computed.fetch_add(1, Ordering::Relaxed);
-        let mut env = Environment::new(self, key, &*function);
-        let r = function.compute(key, &mut env);
-        self.resolve(key, env, r)
+        let r = {
+            let _state = StateGuard::new(self.progress(), key, NodeState::Compute);
+            function.compute(key, &mut env)
+        };
+        self.resolve(key, node, env, r)
+    }
+
+    /// Returns true if this depGroup consists of the error transience value and the error
+    /// transience value is newer than the entry, meaning that the entry must be re-evaluated.
+    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:221 Evaluate.invalidatedByErrorTransience
+    fn invalidated_by_error_transience(
+        &self,
+        dep_group: &[SkyKey],
+        entry_version: Version,
+    ) -> bool {
+        dep_group.len() == 1
+            && dep_group[0] == *ERROR_TRANSIENCE_KEY
+            && !self
+                .ev
+                .graph
+                .get_if_present(&ERROR_TRANSIENCE_KEY)
+                .expect("ErrorTransienceValue.KEY is in the graph")
+                .lock()
+                .entry
+                .get_version()
+                .at_most(&entry_version)
+    }
+
+    /// PORT: where Java enqueues the deps of a group that are not done and returns (the node is
+    /// re-enqueued when the last one signals), the group is evaluated here with the code path of
+    /// a function's requests; a dep that is not done afterwards never will be in this
+    /// evaluation, and the node ends with that dep's kind (still dirty, in flight).
+    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:233 Evaluate.maybeHandleDirtyNode
+    fn maybe_handle_dirty_node(&self, sky_key: &SkyKey, node: &Arc<Node>) -> DirtyOutcome {
+        while node.lock().entry.get_lifecycle_state() == LifecycleState::CheckDependencies {
+            // Evaluating a dirty node for the first time, and checking its children to see if any
+            // of them have changed. Note that there must be dirty children for this to happen.
+
+            // Check the children group by group -- we don't want to evaluate a value that is no
+            // longer needed because an earlier dependency changed. For example, //foo:foo depends
+            // on target //bar:bar and is built. Then foo/BUILD is modified to remove the
+            // dependence on bar, and bar/BUILD is deleted. Reloading //bar:bar would incorrectly
+            // throw an exception. To avoid this, we must reload foo/BUILD first, at which point
+            // we will discover that it has changed, and re-evaluate target //foo:foo from
+            // scratch. On the other hand, when an action requests all of its inputs, we can
+            // safely check all of them in parallel on a subsequent build. So we allow checking an
+            // entire group in parallel here, if the node builder requested a group last build.
+            // Note: every dep returned here must either have this node re-registered for it
+            // (using checkIfDoneForDirtyReverseDep) and be registered as a direct dep of this
+            // node, or have its reverse dep on this node removed. Failing to do either one of
+            // these would result in a graph inconsistency, where the child had a reverse dep on
+            // this node, but this node had no kind of dependency on the child.
+            let (direct_deps_to_check, entry_version) = {
+                let mut state = node.lock();
+                let deps = state.entry.get_next_dirty_direct_deps();
+                (deps, state.entry.get_version())
+            };
+
+            if self.invalidated_by_error_transience(&direct_deps_to_check, entry_version) {
+                // If this dep is the ErrorTransienceValue and the ErrorTransienceValue has been
+                // updated then we need to force a rebuild. We would like to just signal the entry
+                // as usual, but we can't, because then the ErrorTransienceValue would remain as a
+                // dep, which would be incorrect if, for instance, the value re-evaluated to a
+                // non-error.
+                node.lock().entry.force_rebuild();
+                self.ev
+                    .graph
+                    .get_if_present(&ERROR_TRANSIENCE_KEY)
+                    .expect("ErrorTransienceValue.KEY is in the graph")
+                    .lock()
+                    .entry
+                    .remove_reverse_dep(sky_key.clone());
+                return DirtyOutcome::NeedsEvaluation;
+            }
+            if !self.ctx.keep_going {
+                // This check ensures that we maintain the invariant that if a node with an error
+                // is reached during a no-keep-going build, none of its currently building parents
+                // finishes building. If the child isn't done building yet, it will detect on its
+                // own that it has an error (see the VERIFIED_CLEAN case below). On the other
+                // hand, if it is done, then it is the parent's responsibility to notice that,
+                // which we do here. We check the deps for errors so that we don't continue
+                // building this node if it has a child error.
+                let entries_to_check: Vec<Arc<Node>> = direct_deps_to_check
+                    .iter()
+                    .map(|k| {
+                        self.ev
+                            .graph
+                            .get_if_present(k)
+                            .unwrap_or_else(|| panic!("NullPointerException: {k:?}"))
+                    })
+                    .collect();
+                for (key_to_check, node_entry_to_check) in
+                    direct_deps_to_check.iter().zip(&entries_to_check)
+                {
+                    let maybe_error_info = {
+                        let state = node_entry_to_check.lock();
+                        // Java: getValueMaybeWithMetadata() (null: not done), then
+                        // ValueWithMetadata.getMaybeErrorInfo.
+                        match state.entry.get_value_maybe_with_metadata() {
+                            Some(ValueWithMetadata::ErrorInfoValue { error_info, .. }) => {
+                                error_info.clone()
+                            }
+                            _ => continue,
+                        }
+                    };
+                    // This child has an error. We add a dep from this node to it and throw an
+                    // exception coming from it.
+                    node.lock()
+                        .entry
+                        .add_singleton_temporary_direct_dep(key_to_check.clone());
+                    node_entry_to_check
+                        .lock()
+                        .entry
+                        .check_if_done_for_dirty_reverse_dep(sky_key.clone());
+                    // Perform the necessary bookkeeping for any deps that are not being used.
+                    for (dep_key, dep_node) in direct_deps_to_check.iter().zip(&entries_to_check) {
+                        if dep_key != key_to_check {
+                            dep_node.lock().entry.remove_reverse_dep(sky_key.clone());
+                        }
+                    }
+                    if !self.prevent_new_evaluations() {
+                        // An error was already thrown in the evaluator. Don't do anything here.
+                        return DirtyOutcome::AlreadyProcessed(Arc::new(DoneEntry::undone(
+                            DoneKind::Aborted,
+                        )));
+                    }
+                    // Java: throw SchedulerException.ofError(maybeErrorInfo, keyToCheck,
+                    // ImmutableSet.of(skyKey)).
+                    self.failure.lock().get_or_insert_with(|| SchedulerError {
+                        error_info: maybe_error_info,
+                        failed_value: key_to_check.clone(),
+                        rdeps_to_bubble_up_to: vec![sky_key.clone()],
+                    });
+                    self.stop_in_flight_jobs();
+                    return DirtyOutcome::AlreadyProcessed(Arc::new(DoneEntry::awaiting_deps(
+                        DoneKind::Aborted,
+                    )));
+                }
+            }
+            // It is safe to add these deps back to the node -- even if one of them has changed,
+            // the contract of pruning is that the node will request these deps again when it
+            // rebuilds. We must add these deps before enqueuing them, so that the node knows that
+            // it depends on them. If one of these deps is the error transience node, the check we
+            // did above in #invalidatedByErrorTransience means that the error transience node is
+            // not newer than this node, so we are going to mark it clean (since the error
+            // transience node is always the last dep).
+            node.lock()
+                .entry
+                .add_temporary_direct_dep_group(direct_deps_to_check.clone());
+            // PORT: graph.analyzeDepsDoneness is DepsReport.NO_INFORMATION for the in-memory
+            // graph: no dep is signalled with the minimal version.
+            // Java: handleKnownChildrenForDirtyNode (enqueueChild with depAlreadyExists = true).
+            let all_old: IndexSet<SkyKey> = direct_deps_to_check.iter().cloned().collect();
+            let requester = Requester {
+                key: sky_key,
+                node,
+                old_deps: &all_old,
+            };
+            let results = self.eval_keys(&direct_deps_to_check, Some(&requester));
+            let mut kind: Option<DoneKind> = None;
+            for r in results {
+                let entry = self.entry_seen_in_normal_evaluation(r);
+                if entry.is_undone_view() {
+                    kind = Some(match (kind, entry.kind) {
+                        (Some(DoneKind::Interrupted), _) | (_, DoneKind::Interrupted) => {
+                            DoneKind::Interrupted
+                        }
+                        (Some(DoneKind::Aborted), _) | (_, DoneKind::Aborted) => DoneKind::Aborted,
+                        _ => DoneKind::InCycle,
+                    });
+                }
+            }
+            if kind == Some(DoneKind::Interrupted) {
+                self.saw_interrupt.store(true, Ordering::SeqCst);
+                return DirtyOutcome::AlreadyProcessed(Arc::new(DoneEntry::undone(
+                    DoneKind::Interrupted,
+                )));
+            }
+            if let Some(kind) = kind {
+                // The node waits for a dep that will not signal in this evaluation.
+                return DirtyOutcome::AlreadyProcessed(Arc::new(DoneEntry::awaiting_deps(kind)));
+            }
+            if self.aborting.load(Ordering::SeqCst) {
+                return DirtyOutcome::AlreadyProcessed(Arc::new(DoneEntry::awaiting_deps(
+                    DoneKind::Aborted,
+                )));
+            }
+            // If we're here, then we may proceed to the rest of the method and continue
+            // processing the node intra-thread.
+            let ready = node.lock().entry.is_ready_to_evaluate();
+            check_state!(
+                ready,
+                "Dirty node not ready after its deps signalled: {:?} {:?}",
+                sky_key,
+                node.lock().entry
+            );
+        }
+        let lifecycle_state = node.lock().entry.get_lifecycle_state();
+        match lifecycle_state {
+            LifecycleState::VerifiedClean => {
+                // No child has a changed value. This node can be marked done and its parents
+                // signaled without any re-evaluation.
+                let (node_value_and_rdeps, error, version) = {
+                    let mut state = node.lock();
+                    let r = state.entry.mark_clean();
+                    state.refresh_snapshot();
+                    let error = state.entry.get_error_info().cloned();
+                    (r, error, state.entry.get_version())
+                };
+                let r_deps_to_signal = node_value_and_rdeps.get_rdeps_to_signal();
+                let value_maybe_with_metadata = node_value_and_rdeps.get_value();
+                // Replay events once change-pruned.
+                self.replay(&ValueWithMetadata::get_events(value_maybe_with_metadata));
+                // Tell the receiver that the value was not actually changed this run.
+                self.progress().evaluated(
+                    sky_key,
+                    EvaluationState::get(value_maybe_with_metadata.get_value(), false),
+                    None,
+                    None,
+                    None,
+                );
+                let snapshot = node.snapshot().expect("marked clean");
+                if !self.ctx.keep_going && error.is_some() {
+                    if !self.prevent_new_evaluations() {
+                        return DirtyOutcome::AlreadyProcessed(snapshot);
+                    }
+                    // Java: throw SchedulerException.ofError(nodeEntry.getErrorInfo(), skyKey,
+                    // rDepsToSignal).
+                    self.failure.lock().get_or_insert_with(|| SchedulerError {
+                        error_info: snapshot.error.clone().expect("checked above"),
+                        failed_value: sky_key.clone(),
+                        rdeps_to_bubble_up_to: r_deps_to_signal.iter().cloned().collect(),
+                    });
+                    self.stop_in_flight_jobs();
+                    return DirtyOutcome::AlreadyProcessed(snapshot);
+                }
+                self.signal_parents_and_enqueue_if_ready(sky_key, r_deps_to_signal, version);
+                DirtyOutcome::AlreadyProcessed(snapshot)
+            }
+            LifecycleState::NeedsRebuilding => {
+                node.lock().entry.mark_rebuilding();
+                DirtyOutcome::NeedsEvaluation
+            }
+            LifecycleState::Rebuilding => DirtyOutcome::NeedsEvaluation,
+            _ => {
+                let entry = format!("{:?}", node.lock().entry);
+                panic!("IllegalStateException: key: {sky_key:?}, entry: {entry}")
+            }
+        }
     }
 
     /// What a dependency request shows to a function in normal evaluation.
@@ -1229,25 +1815,179 @@ impl<'e> Run<'e> {
     pub(crate) fn entry_seen_in_normal_evaluation(&self, requested: Requested) -> Arc<DoneEntry> {
         if !requested.was_done && requested.entry.is_done() && self.aborting.load(Ordering::SeqCst)
         {
-            return Arc::new(DoneEntry::undone(DoneKind::Aborted, GroupedDeps::new()));
+            return Arc::new(DoneEntry::undone(DoneKind::Aborted));
         }
         requested.entry
     }
 
+    /// Registers the deps requested by the function that have not been registered yet (Java:
+    /// `env.addTemporaryDirectDepsTo(entry)` and `enqueueChild` for each, or
+    /// `maybeHandleRegisteringNewlyDiscoveredDepsForDoneEntry`): adds their groups to the
+    /// entry's temporary direct deps, registers the node as a reverse dep of each (they are all
+    /// done) and signals the node with each one's version. Returns whether the last signal made
+    /// the node ready (Java: `DEP_DONE_SELF_SIGNALLED`).
+    ///
+    /// PORT: Java registers a function's new deps when the function returns (null, a value or an
+    /// error); a request that blocks registers them before it waits (see
+    /// [`Environment`]'s requests), so this registers only those requested since then.
+    pub(crate) fn register_pending_deps(
+        &self,
+        requester: &Requester<'_>,
+        pending: &mut Vec<PendingDep>,
+        pending_group_sizes: &mut Vec<usize>,
+    ) -> bool {
+        if pending.is_empty() {
+            return false;
+        }
+        {
+            let mut state = requester.node.lock();
+            let mut it = pending.iter();
+            for &size in pending_group_sizes.iter() {
+                let group: Vec<SkyKey> = it.by_ref().take(size).map(|p| p.key.clone()).collect();
+                state.entry.add_temporary_direct_dep_group(group);
+            }
+        }
+        let self_signalled = self.register_done_deps(requester, pending);
+        pending.clear();
+        pending_group_sizes.clear();
+        self_signalled
+    }
+
+    /// Registers the node as a reverse dep of each of `deps`, which are done, and signals the
+    /// node with each one's version (Java: `enqueueChild` / `maybeHandleUndoneDepForDoneEntry`
+    /// on `DONE`). Returns whether the last signal made the node ready.
+    pub(crate) fn register_done_deps(
+        &self,
+        requester: &Requester<'_>,
+        deps: &[PendingDep],
+    ) -> bool {
+        if deps.is_empty() {
+            return false;
+        }
+        let pending = deps;
+        let mut versions: Vec<Version> = Vec::with_capacity(pending.len());
+        for dep in pending.iter() {
+            let mut dep_state = dep.node.lock();
+            let tri_state = if requester.old_deps.contains(&dep.key) {
+                dep_state
+                    .entry
+                    .check_if_done_for_dirty_reverse_dep(requester.key.clone())
+            } else {
+                dep_state
+                    .entry
+                    .add_reverse_dep_and_check_if_done(Some(requester.key.clone()))
+            };
+            if tri_state != DependencyState::Done {
+                // Java: maybeHandleUndoneDepForDoneEntry notes the inconsistency with the
+                // GraphInconsistencyReceiver, THROWING by default.
+                panic!(
+                    "IllegalStateException: Unexpected inconsistency: {:?}, [{:?}], \
+                     BUILDING_PARENT_FOUND_UNDONE_CHILD",
+                    requester.key, dep.key
+                );
+            }
+            versions.push(dep_state.entry.get_version());
+        }
+        let mut self_signalled = false;
+        {
+            let mut state = requester.node.lock();
+            for (dep, version) in pending.iter().zip(versions) {
+                self_signalled = state.entry.signal_dep(version, Some(&dep.key));
+            }
+        }
+        self_signalled
+    }
+
+    /// Removes from the node the deps the function requested that were not done when it read
+    /// them (Java: `SkyFunctionEnvironment.removeUndoneNewlyRequestedDeps`).
+    ///
+    /// PORT: Java never registered such a dep (it removes it before registering); a request here
+    /// registered it before it waited (see [`Environment`]'s requests), so the registration is
+    /// taken back: the dep leaves the node's temporary direct deps, and the node leaves the dep's
+    /// reverse deps (for a dep of the last build, `commitAndGetParents` does that, as in Java).
+    /// A dep that is done by now (the evaluation is aborting) signalled the node and stays.
+    ///
+    /// Returns the deps taken back (for [`Run::never_evaluated`], if the node commits).
+    // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:853 SkyFunctionEnvironment.removeUndoneNewlyRequestedDeps
+    fn remove_undone_newly_requested_deps(
+        &self,
+        sky_key: &SkyKey,
+        node: &Arc<Node>,
+        st: &mut EnvState,
+    ) -> HashSet<SkyKey> {
+        let undone: Vec<SkyKey> = {
+            let requested = st.requested.lock();
+            st.deps
+                .get_all_elements_as_iterable()
+                .filter(|k| requested.get(*k).is_some_and(|e| e.is_undone_view()))
+                .cloned()
+                .collect()
+        };
+        if undone.is_empty() {
+            return HashSet::new();
+        }
+        let mut removed: HashSet<SkyKey> = HashSet::new();
+        for dep in &undone {
+            let Some(dep_node) = self.ev.graph.get_if_present(dep) else {
+                continue;
+            };
+            let mut dep_state = dep_node.lock();
+            if dep_state.entry.is_done() {
+                continue;
+            }
+            if !st.old_deps.contains(dep) {
+                dep_state.entry.remove_reverse_dep(sky_key.clone());
+            }
+            removed.insert(dep.clone());
+        }
+        node.lock().entry.remove_unfinished_deps(&removed);
+        st.deps.remove(&removed);
+        removed
+    }
+
+    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:966 AbstractParallelEvaluator.maybeHandleRegisteringNewlyDiscoveredDepsForDoneEntry
+    ///
+    /// PORT: Java's first step, `if (!keepGoing) env.removeUndoneNewlyRequestedDeps()`, is
+    /// [`Run::remove_undone_newly_requested_deps`], called by the caller first.
+    fn maybe_handle_registering_newly_discovered_deps_for_done_entry(
+        &self,
+        sky_key: &SkyKey,
+        node: &Arc<Node>,
+        st: &mut EnvState,
+    ) -> bool {
+        if st.pending.is_empty() {
+            return false;
+        }
+        let requester = Requester {
+            key: sky_key,
+            node,
+            old_deps: &st.old_deps,
+        };
+        let self_signalled =
+            self.register_pending_deps(&requester, &mut st.pending, &mut st.pending_group_sizes);
+        check_state!(self_signalled, "{:?} {:?}", sky_key, node.lock().entry);
+        !self_signalled
+    }
+
     /// Decides how a node finishes from what its function returned and what it saw of its deps.
-    /// Ports the part of `AbstractParallelEvaluator.Evaluate.run` after `compute` returns, and
-    /// `SkyFunctionEnvironment.commitAndGetParents`' error construction.
+    /// Ports the part of `AbstractParallelEvaluator.Evaluate.run` after `compute` returns.
     ///
     /// PORT: where Java enqueues the not-done deps and restarts the function when they are done,
     /// the deps here were computed by the requests themselves. A dep that is still not done
     /// afterwards (the evaluation is aborting, it is in a cycle, it was interrupted) never will
-    /// be in this evaluation, and neither will this node: it finishes "undone" with the deps it
-    /// declared, which is the in-flight `NodeEntry` Java leaves behind for error bubbling and
-    /// cycle detection.
+    /// be in this evaluation, and neither will this node: it ends "undone", in flight with the
+    /// deps it registered, which is the in-flight `NodeEntry` Java leaves behind for error
+    /// bubbling, cycle detection and deletion at the next evaluation.
     // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:473 Evaluate.run
-    fn resolve(&self, key: &SkyKey, env: Environment<'_>, r: ComputeResult) -> Resolved {
+    fn resolve(
+        &self,
+        key: &SkyKey,
+        node: &Arc<Node>,
+        env: Environment<'_>,
+        r: ComputeResult,
+    ) -> Arc<DoneEntry> {
         let keep_going = self.ctx.keep_going;
-        let (st, values_missing, listener) = env.into_parts();
+        let (mut st, values_missing, listener) = env.into_parts();
         let ret = match r {
             Ok(Some(v)) => Ret::Value(v),
             Ok(None) => Ret::Null,
@@ -1257,14 +1997,14 @@ impl<'e> Run<'e> {
                     || !self.aborting.load(Ordering::SeqCst)
                 {
                     self.saw_interrupt.store(true, Ordering::SeqCst);
-                    return DoneEntry::undone(DoneKind::Interrupted, st.deps).into();
+                    return Arc::new(DoneEntry::undone(DoneKind::Interrupted));
                 }
                 Ret::Abandoned
             }
         };
         if st.interrupted_dep {
             self.saw_interrupt.store(true, Ordering::SeqCst);
-            return DoneEntry::undone(DoneKind::Interrupted, st.deps).into();
+            return Arc::new(DoneEntry::undone(DoneKind::Interrupted));
         }
 
         // In keep-going mode, we do not let SkyFunctions complete with a thrown error if they
@@ -1276,76 +2016,185 @@ impl<'e> Run<'e> {
             && (!keep_going || !values_missing)
         {
             let should_fail_fast = !keep_going || builder_exception.is_catastrophic();
+            if should_fail_fast && self.aborting.load(Ordering::SeqCst) {
+                // PORT: not the first error. Java registers the function's new deps
+                // (maybeHandleRegisteringNewlyDiscoveredDepsForDoneEntry, which first drops those
+                // that were not done) and then finds that the evaluation already failed. Here
+                // the deps that were not done were registered by the requests that waited for
+                // them, and the registrations stay: in Java this function would have thrown
+                // before such a dep was evaluated, and been the first error; error bubbling goes
+                // through this node instead (`Run::bubble_error_up`). The done deps are
+                // registered as in Java.
+                let requester = Requester {
+                    key,
+                    node,
+                    old_deps: &st.old_deps,
+                };
+                self.register_pending_deps(
+                    &requester,
+                    &mut st.pending,
+                    &mut st.pending_group_sizes,
+                );
+                return Arc::new(DoneEntry::undone(DoneKind::Aborted));
+            }
+            // PORT: `nodeEntry.hasUnsignaledDeps()` is only true with partial reevaluation.
+            let taken_back = if !keep_going && values_missing {
+                self.remove_undone_newly_requested_deps(key, node, &mut st)
+            } else {
+                HashSet::new()
+            };
+            if self
+                .maybe_handle_registering_newly_discovered_deps_for_done_entry(key, node, &mut st)
+            {
+                // A newly requested dep transitioned from done to dirty before this node
+                // finished. (Not reached: nothing dirties a node during an evaluation.)
+                return Arc::new(DoneEntry::undone(DoneKind::Aborted));
+            }
             if should_fail_fast {
                 // After we commit this error to the graph but before the doMutatingEvaluation
                 // call completes with the error there is a race-like opportunity for the error to
                 // be used, either by an in-flight computation or by a future computation.
-                // Java: preventNewEvaluations()
-                if self
-                    .aborting
-                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_err()
-                {
+                if !self.prevent_new_evaluations() {
                     // This is not the first error encountered, so we ignore it so that we can
                     // terminate with the first error.
-                    return DoneEntry::undone(DoneKind::Aborted, st.deps).into();
+                    return Arc::new(DoneEntry::undone(DoneKind::Aborted));
                 }
             }
+            self.undone_deps_of_committed.lock().extend(taken_back);
             // Java: isAnyDirectDepErrorTransitivelyTransient ||
             // isAnyNewlyRequestedDepErrorTransitivelyTransient
             let is_transitively_transient = builder_exception.is_transient()
-                || st
-                    .child_error_infos
-                    .iter()
-                    .any(|e| e.is_transitively_transient());
+                || st.requested.lock().values().any(|e| {
+                    e.error
+                        .as_ref()
+                        .is_some_and(|e| e.is_transitively_transient())
+                });
             let error_info =
                 ErrorInfo::from_exception(builder_exception, is_transitively_transient);
-            listener.flush();
-            return Resolved {
-                entry: self.committed(key, None, Some(error_info), st),
-                fail_fast: should_fail_fast,
-            };
+            // The failure is recorded before any waiter can see the node done
+            // (`entry_seen_in_normal_evaluation`). Lock order: failure, then nodes.
+            let failure = should_fail_fast.then(|| self.failure.lock());
+            self.set_error(key, node, &error_info, &st.old_deps);
+            let events = listener.report_events_for_commit(node, &st.requested);
+            let (rdeps_to_bubble_up_to, snapshot) = self.commit_and_get_parents(
+                key,
+                node,
+                None,
+                Some(error_info),
+                &[],
+                events,
+                &st.old_deps,
+            );
+            if let Some(mut failure) = failure {
+                self.signal_parents_on_abort(key, &rdeps_to_bubble_up_to, snapshot.version);
+                // PORT: without the requesters whose request closed a cycle through this node.
+                // They are below it: in Java they would have been evaluated only after this
+                // node's function returned null, and then it could not have committed. (Reached
+                // by a function that throws although a dep is missing; Java commits that error
+                // without ever evaluating what is below.)
+                let cycle_rdeps = node.lock().cycle_rdeps.clone();
+                failure.get_or_insert_with(|| SchedulerError {
+                    error_info: snapshot.error.clone().expect("fail fast with an error"),
+                    failed_value: key.clone(),
+                    rdeps_to_bubble_up_to: rdeps_to_bubble_up_to
+                        .iter()
+                        .filter(|k| !cycle_rdeps.contains(k))
+                        .cloned()
+                        .collect(),
+                });
+                drop(failure);
+                self.stop_in_flight_jobs();
+                return snapshot;
+            }
+            self.signal_parents_and_enqueue_if_ready(key, &rdeps_to_bubble_up_to, snapshot.version);
+            return snapshot;
         }
 
         if let Ret::Value(value) = ret {
+            // PORT: `nodeEntry.hasUnsignaledDeps()` is only true with partial reevaluation.
             check_state!(
                 !values_missing,
                 "Evaluation of {:?} returned non-null value but requested dependencies that \
                  weren't computed yet (one of {:?}), NodeEntry: {:?}",
                 key,
                 st.deps,
-                "EVALUATING"
+                node.lock().entry
             );
-            // Java: ErrorInfoManager.UseChildErrorInfoIfNecessary.getErrorInfoToUse
-            let error_info = if st.child_error_infos.is_empty() {
-                None
-            } else {
-                Some(ErrorInfo::with_value(&ErrorInfo::from_child_errors(
-                    key,
-                    st.child_error_infos.iter().map(|e| &**e),
-                )))
-            };
-            listener.flush();
-            return self.committed(key, Some(value), error_info, st).into();
+            let _state = StateGuard::new(self.progress(), key, NodeState::Commit);
+            // We don't expect any unfinished deps in a keep-going build. (Values are not missing
+            // here, checked above.)
+            if self
+                .maybe_handle_registering_newly_discovered_deps_for_done_entry(key, node, &mut st)
+            {
+                // A newly requested dep transitioned from done to dirty before this node
+                // finished. This node will be signalled again, and so we should return.
+                return Arc::new(DoneEntry::undone(DoneKind::Aborted));
+            }
+            let events = listener.report_events_for_commit(node, &st.requested);
+            let (reverse_deps, snapshot) = self.commit_and_get_parents(
+                key,
+                node,
+                Some(value),
+                None,
+                &st.child_error_infos,
+                events,
+                &st.old_deps,
+            );
+            self.signal_parents_and_enqueue_if_ready(key, &reverse_deps, snapshot.version);
+            return snapshot;
         }
 
         // The function stopped with `Interrupted` because the evaluation is aborting. Java: the
         // InterruptedException leaves the node as it was: nothing is committed, nothing is
         // registered with its deps (SchedulerException.ofInterruption).
         if matches!(ret, Ret::Abandoned) {
-            return DoneEntry::undone(DoneKind::Aborted, st.deps).into();
+            return Arc::new(DoneEntry::undone(DoneKind::Aborted));
         }
         // From here on the function returned null (in keep_going also: threw with deps missing).
 
-        if let Some((child_error_key, child_error_info)) = &st.dep_error {
-            check_state!(!keep_going, "{:?} {:?}", key, child_error_key);
+        if let Some((child_error_key, child_error_info)) = st.dep_error.clone() {
+            check_state!(
+                !keep_going,
+                "{:?} {:?} {:?}",
+                key,
+                node.lock().entry,
+                child_error_key
+            );
             // We encountered a child error in noKeepGoing mode, so we want to fail fast. But we
             // first need to add the edge between the current node and the child error it
             // requested so that error bubbling can occur. Note that this edge will subsequently
             // be removed during graph cleaning (since the current node will never be committed to
             // the graph).
-            // PORT: the edge is the dep this run declared; the node finishes undone with it.
-            self.aborting.store(true, Ordering::SeqCst);
+            if let Some(i) = st.pending.iter().position(|p| p.key == child_error_key) {
+                // Add this dep if it was just requested. In certain rare race conditions (see
+                // MemoizingEvaluatorTest.cachedErrorCausesRestart) this dep may have already been
+                // requested.
+                let child_error_entry = st.pending[i].node.clone();
+                node.lock()
+                    .entry
+                    .add_singleton_temporary_direct_dep(child_error_key.clone());
+                let child_error_state = {
+                    let mut state = child_error_entry.lock();
+                    if st.old_deps.contains(&child_error_key) {
+                        state.entry.check_if_done_for_dirty_reverse_dep(key.clone())
+                    } else {
+                        state
+                            .entry
+                            .add_reverse_dep_and_check_if_done(Some(key.clone()))
+                    }
+                };
+                if child_error_state != DependencyState::Done {
+                    // The child in error may have transitioned from done to dirty between when
+                    // this node discovered the error and now. Java notifies the graph
+                    // inconsistency receiver, THROWING by default.
+                    panic!(
+                        "IllegalStateException: Unexpected inconsistency: {:?}, [{:?}], \
+                         BUILDING_PARENT_FOUND_UNDONE_CHILD",
+                        key, child_error_key
+                    );
+                }
+            }
+            self.prevent_new_evaluations();
             // Java: throw SchedulerException.ofError(childErrorInfo, childErrorKey,
             // ImmutableSet.of(skyKey)); the visitor keeps the first exception thrown.
             self.failure.lock().get_or_insert_with(|| SchedulerError {
@@ -1354,7 +2203,19 @@ impl<'e> Run<'e> {
                 rdeps_to_bubble_up_to: vec![key.clone()],
             });
             self.stop_in_flight_jobs();
-            return DoneEntry::awaiting_deps(DoneKind::Aborted, st.deps).into();
+            return Arc::new(DoneEntry::awaiting_deps(DoneKind::Aborted));
+        }
+
+        // Add all the newly requested dependencies to the temporary direct deps. Note that
+        // newDirectDeps does not contain any elements in common with the already existing
+        // temporary direct deps.
+        {
+            let requester = Requester {
+                key,
+                node,
+                old_deps: &st.old_deps,
+            };
+            self.register_pending_deps(&requester, &mut st.pending, &mut st.pending_group_sizes);
         }
 
         // Java enqueues the deps that are not done and returns; the node is restarted when they
@@ -1365,9 +2226,12 @@ impl<'e> Run<'e> {
             } else {
                 DoneKind::InCycle
             };
-            return DoneEntry::awaiting_deps(kind, st.deps).into();
+            return Arc::new(DoneEntry::awaiting_deps(kind));
         }
 
+        // PORT: every dep the function requested is done; Java restarts the function, which
+        // requests no new dep and returns null again (`newDeps.isEmpty()`). The blocking engine
+        // does not run it again.
         // If there were no newly requested dependencies, then at least one of them was in error
         // or there is a bug in the SkyFunction implementation. The environment has collected its
         // errors, so we just order it to be built.
@@ -1375,133 +2239,252 @@ impl<'e> Run<'e> {
             !st.child_error_infos.is_empty(),
             "Evaluation of SkyKey failed and no dependencies were requested: {:?} {:?}",
             key,
-            st.deps
+            node.lock().entry
         );
         // If the child error was catastrophic, committing this parent to the graph is not
         // necessary, but since we don't do error bubbling in catastrophes, it doesn't violate any
         // invariants either.
-        let error_info =
-            ErrorInfo::from_child_errors(key, st.child_error_infos.iter().map(|e| &**e));
-        listener.flush();
-        self.committed(key, None, Some(error_info), st).into()
+        let events = listener.report_events_for_commit(node, &st.requested);
+        let (reverse_deps, snapshot) = self.commit_and_get_parents(
+            key,
+            node,
+            None,
+            None,
+            &st.child_error_infos,
+            events,
+            &st.old_deps,
+        );
+        self.signal_parents_and_enqueue_if_ready(key, &reverse_deps, snapshot.version);
+        snapshot
     }
 
-    /// A node committed to the graph. Deps that were not done when requested are not recorded
-    /// (Java: `SkyFunctionEnvironment.removeUndoneNewlyRequestedDeps`), and a directly transient
-    /// error adds a dependency on `ErrorTransienceValue.KEY`, always the last dep
-    /// (`SkyFunctionEnvironment.setError`).
-    ///
-    /// PORT: Java registers a node as a reverse dep of the deps it requested only after its
-    /// function returns null (`enqueueChild`), so a node that commits (a function that threw with
-    /// deps missing) never registered on its undone deps. Here the request itself registered it;
-    /// that is taken back.
-    fn committed(
+    /// Set this node to be in error. The node's value must not have already been set. However,
+    /// all dependencies of this node *must* already have been registered, since this method may
+    /// register a dependence on the error transience node, which should always be the last dep.
+    // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:423 SkyFunctionEnvironment.setError
+    pub(crate) fn set_error(
         &self,
-        key: &SkyKey,
-        value: Option<SkyValue>,
-        error: Option<ErrorInfo>,
-        st: EnvState,
-    ) -> DoneEntry {
-        let undone: HashSet<SkyKey> = st
-            .requested
-            .lock()
-            .iter()
-            .filter(|(_, e)| e.is_undone_view())
-            .map(|(k, _)| k.clone())
-            .collect();
-        if !undone.is_empty() {
-            self.undone_deps_of_committed
-                .lock()
-                .extend(undone.iter().cloned());
-        }
-        for dep in &undone {
-            if let Some(dep_node) = self.ev.node(dep) {
-                dep_node.in_progress_rdeps.lock().retain(|(r, _)| r != key);
-            }
-        }
-        let mut deps = st.deps;
-        deps.remove(&undone);
-        if error.as_ref().is_some_and(|e| e.is_directly_transient()) {
-            deps.append_singleton(ERROR_TRANSIENCE_KEY.clone());
-        }
-        DoneEntry {
-            kind: DoneKind::Committed,
-            value,
-            error: error.map(Arc::new),
-            deps,
-            awaits_deps: false,
+        sky_key: &SkyKey,
+        node: &Arc<Node>,
+        error_info: &ErrorInfo,
+        old_deps: &IndexSet<SkyKey>,
+    ) {
+        if error_info.is_directly_transient() {
+            let error_transience_node = check_not_null!(
+                self.ev.graph.get_if_present(&ERROR_TRANSIENCE_KEY),
+                "Null error value? {:?}",
+                sky_key
+            );
+            let tri_state = {
+                let mut state = error_transience_node.lock();
+                if old_deps.contains(&*ERROR_TRANSIENCE_KEY) {
+                    state
+                        .entry
+                        .check_if_done_for_dirty_reverse_dep(sky_key.clone())
+                } else {
+                    state
+                        .entry
+                        .add_reverse_dep_and_check_if_done(Some(sky_key.clone()))
+                }
+            };
+            check_state!(
+                tri_state == DependencyState::Done,
+                "{:?} {:?} {:?}",
+                sky_key,
+                tri_state,
+                error_info
+            );
+            let mut state = node.lock();
+            state
+                .entry
+                .add_singleton_temporary_direct_dep(ERROR_TRANSIENCE_KEY.clone());
+            state
+                .entry
+                .signal_dep(self.graph_version, Some(&ERROR_TRANSIENCE_KEY));
         }
     }
 
-    fn finish(&self, key: &SkyKey, node: &Node, resolved: Resolved) -> Arc<DoneEntry> {
-        let entry = Arc::new(resolved.entry);
-        if entry.is_done() {
-            self.ev.register_rdeps(key, &entry.deps);
-        } else {
-            self.uncommitted.lock().push(key.clone());
-        }
-        // Java: `NodeEntry.setValue` returns the reverse deps registered while the node was in
-        // progress (`commitAndGetParents`); a parent that asks later finds the node done.
-        //
-        // PORT: without the requesters whose request closed a cycle through this node. They are
-        // below it: in Java they would have been evaluated only after this node's function
-        // returned null, and then it could not have committed. (Reached by a function that
-        // throws although a dep is missing; Java commits that error without ever evaluating what
-        // is below.)
-        let set_value = || -> Vec<SkyKey> {
-            let mut state = node.state.lock();
-            *state = NodeState::Done(entry.clone());
-            if entry.is_done() {
-                std::mem::take(&mut *node.in_progress_rdeps.lock())
-                    .into_iter()
-                    .filter(|(_, closed_cycle)| !closed_cycle)
-                    .map(|(k, _)| k)
-                    .collect()
-            } else {
-                vec![]
+    /// Applies the change to the graph (mostly) atomically and returns parents to potentially
+    /// signal and enqueue, with the node's new snapshot.
+    ///
+    /// `error_info` is the error set with `setError`, if any; `events` is what
+    /// `reportEventsAndGetEventsToStore` returned (the caller calls it first: it reads only the
+    /// environment and the node's deps, as `getErrorInfoToUse` does).
+    // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:916 SkyFunctionEnvironment.commitAndGetParents
+    pub(crate) fn commit_and_get_parents(
+        &self,
+        sky_key: &SkyKey,
+        node: &Arc<Node>,
+        value: Option<SkyValue>,
+        error_info: Option<ErrorInfo>,
+        child_error_infos: &[Arc<ErrorInfo>],
+        events: NestedSet<StoredReportable>,
+        old_deps: &IndexSet<SkyKey>,
+    ) -> (IndexSet<SkyKey>, Arc<DoneEntry>) {
+        // Construct the definitive error info, if there is one.
+        let error_info = match error_info {
+            Some(e) => Some(e),
+            // Java: com/google/devtools/build/skyframe/ErrorInfoManager.java:55 UseChildErrorInfoIfNecessary.getErrorInfoToUse
+            None if child_error_infos.is_empty() => None,
+            None => {
+                let error_info =
+                    ErrorInfo::from_child_errors(sky_key, child_error_infos.iter().map(|e| &**e));
+                Some(if value.is_some() {
+                    ErrorInfo::with_value(&error_info)
+                } else {
+                    error_info
+                })
             }
         };
-        if resolved.fail_fast {
-            // Java: throw SchedulerException.ofError(errorInfo, skyKey, rdepsToBubbleUpTo). The
-            // failure is recorded before any waiter can see the node done
-            // (`entry_seen_in_normal_evaluation`).
-            let mut failure = self.failure.lock();
-            let rdeps_to_bubble_up_to = set_value();
-            failure.get_or_insert_with(|| SchedulerError {
-                error_info: entry.error.clone().expect("fail fast with an error"),
-                failed_value: key.clone(),
-                rdeps_to_bubble_up_to,
-            });
-            drop(failure);
-            node.done.notify_all();
-            self.stop_in_flight_jobs();
-            return entry;
-        } else {
-            set_value();
+
+        // We have the following implications:
+        // errorInfo == null => value != null => enqueueParents.
+        // All these implications are strict:
+        // (1) errorInfo != null && value != null happens for values with recoverable errors.
+        // (2) value == null && enqueueParents happens for values that are found to have errors
+        // during a --keep_going build.
+        let value_with_metadata = match &value {
+            None => {
+                let error_info = check_not_null!(error_info.clone(), "{:?}", sky_key);
+                ValueWithMetadata::error(error_info, events)
+            }
+            Some(v) => ValueWithMetadata::normal(Some(v.clone()), error_info.clone(), events),
+        };
+        let (deps_to_remove, deps_for_receiver) = {
+            let mut state = node.lock();
+            let temporary_direct_deps = state.entry.get_temporary_direct_deps();
+            let deps_for_receiver = self
+                .ev
+                .has_user_progress_receiver
+                .then(|| temporary_direct_deps.clone());
+            // PORT: reset deps (getResetDirectDeps) are always empty: resets are not ported.
+            let deps_to_remove: Vec<SkyKey> = if old_deps.is_empty() {
+                vec![]
+            } else {
+                // Remove the rdep on this entry for each of 1) its old deps from a prior
+                // evaluation that are no longer direct deps and 2) reset deps that were not
+                // requested again post-restart.
+                let temporary_set = temporary_direct_deps.to_set();
+                old_deps
+                    .iter()
+                    .filter(|k| !temporary_set.contains(*k))
+                    .cloned()
+                    .collect()
+            };
+            (deps_to_remove, deps_for_receiver)
+        };
+        for key in &deps_to_remove {
+            let old_dep_entry = check_not_null!(self.ev.graph.get_if_present(key), "{:?}", key);
+            old_dep_entry
+                .lock()
+                .entry
+                .remove_reverse_dep(sky_key.clone());
         }
-        node.done.notify_all();
-        entry
+
+        // If this entry is dirty, setValue may not actually change it, if it determines that the
+        // data being written now is the same as the data already present in the entry. We detect
+        // this case by comparing versions before and after setting the value.
+        let (reverse_deps, snapshot, changed) = {
+            let mut state = node.lock();
+            let previous_version = state.entry.get_version();
+            let reverse_deps = state
+                .entry
+                .set_value(value_with_metadata, self.graph_version, None);
+            let current_version = state.entry.get_version();
+            state.refresh_snapshot();
+            (
+                reverse_deps,
+                state
+                    .snapshot
+                    .clone()
+                    .expect("set_value made the node done"),
+                current_version != previous_version,
+            )
+        };
+
+        // Tell the receiver that this value was built. If currentVersion.equals(evaluationVersion),
+        // it was evaluated this run, and so was changed. Otherwise, it is less than
+        // evaluationVersion, by the Preconditions check above, and was not actually changed this
+        // run -- when it was written above, its version stayed below this update's version, so
+        // its value remains the same.
+        self.progress().evaluated(
+            sky_key,
+            EvaluationState::get(value.as_ref(), changed),
+            if changed { value.as_ref() } else { None },
+            if changed { error_info.as_ref() } else { None },
+            // PORT: the deps are only copied for a receiver the caller gave; the receiver the
+            // evaluator wraps by default ignores them.
+            Some(deps_for_receiver.as_ref().unwrap_or(&GroupedDeps::new())),
+        );
+
+        (reverse_deps, snapshot)
     }
 
-    /// Commits an error the cycle detector built (Java: `env.setError` +
-    /// `commitAndGetParents` in `SimpleCycleDetector`).
-    pub(crate) fn commit_cycle_error(&self, key: &SkyKey, error: ErrorInfo, deps: GroupedDeps) {
-        let node = self.ev.node(key).expect("node in graph");
-        let entry = Arc::new(DoneEntry {
-            kind: DoneKind::Committed,
-            value: None,
-            error: Some(Arc::new(error)),
-            deps,
-            awaits_deps: false,
-        });
-        self.ev.register_rdeps(key, &entry.deps);
-        let mut state = node.state.lock();
-        *state = NodeState::Done(entry);
-        node.in_progress_rdeps.lock().clear();
+    /// Java: `ParallelEvaluatorContext.signalParentsAndEnqueueIfReady`.
+    ///
+    /// PORT: the parents are blocked in their requests for this node and wake up when its
+    /// outcome is published (after this), which is Java's re-enqueueing.
+    // Java: com/google/devtools/build/skyframe/ParallelEvaluatorContext.java:120 ParallelEvaluatorContext.signalParentsAndEnqueueIfReady
+    fn signal_parents_and_enqueue_if_ready(
+        &self,
+        sky_key: &SkyKey,
+        parents: &IndexSet<SkyKey>,
+        version: Version,
+    ) {
+        for parent in parents {
+            let entry = check_not_null!(self.ev.graph.get_if_present(parent), "{:?}", parent);
+            entry.lock().entry.signal_dep(version, Some(sky_key));
+        }
     }
 
-    /// Blocks until `node` is done, detecting cycles first. Releases the permit while blocked.
-    /// Returns an "in cycle" entry when waiting would close a cycle.
+    // Java: com/google/devtools/build/skyframe/ParallelEvaluatorContext.java:108 ParallelEvaluatorContext.signalParentsOnAbort
+    pub(crate) fn signal_parents_on_abort(
+        &self,
+        sky_key: &SkyKey,
+        parents: &IndexSet<SkyKey>,
+        version: Version,
+    ) {
+        for parent in parents {
+            let entry = check_not_null!(self.ev.graph.get_if_present(parent), "{:?}", parent);
+            let mut state = entry.lock();
+            if !state.entry.is_done() {
+                // In cycles, we can have parents that are already done.
+                state.entry.signal_dep(version, Some(sky_key));
+            }
+        }
+    }
+
+    /// Java: `replay(transitiveEvents)`: reports the events not reported yet.
+    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:833 AbstractParallelEvaluator.replay
+    pub(crate) fn replay(&self, transitive_events: &NestedSet<StoredReportable>) {
+        // Replaying actions is done on a small number of nodes, but potentially over a large
+        // dependency graph. Under those conditions, using the regular NestedSet flattening with
+        // .toList() is more efficient than using NestedSetVisitor's custom traversal logic.
+        if transitive_events.is_empty() {
+            return;
+        }
+        let reporter = &*self.ctx.event_handler;
+        let list = transitive_events.to_list();
+        NestedSetVisitor::new(
+            |e: &StoredReportable| report_stored(e, reporter),
+            &self.ev.emitted_event_state,
+        )
+        .visit_collection(list.iter());
+    }
+
+    /// Java: `getReplayingNestedSetEventVisitor().visit(events)`.
+    // Java: com/google/devtools/build/skyframe/ParallelEvaluatorContext.java:91 ParallelEvaluatorContext.replayingNestedSetEventVisitor
+    pub(crate) fn replay_visit(&self, events: &NestedSet<StoredReportable>) {
+        let reporter = &*self.ctx.event_handler;
+        NestedSetVisitor::new(
+            |e: &StoredReportable| report_stored(e, reporter),
+            &self.ev.emitted_event_state,
+        )
+        .visit(events);
+    }
+
+    /// Blocks until `node` has an outcome in this evaluation, detecting cycles first. Releases
+    /// the permit while blocked. Returns an "in cycle" entry when waiting would close a cycle.
     fn wait_for(
         &self,
         key: &SkyKey,
@@ -1521,25 +2504,28 @@ impl<'e> Run<'e> {
                     v.pop();
                 }
                 drop(w);
-                return match &*node.state.lock() {
-                    NodeState::Done(r) => r.clone(),
-                    NodeState::InProgress { .. } => {
-                        node.mark_cycle_rdep(requester);
-                        Arc::new(DoneEntry::undone(DoneKind::InCycle, GroupedDeps::new()))
+                let mut state = node.lock();
+                if let Some(outcome) = &state.outcome {
+                    return outcome.clone();
+                }
+                if !state.entry.is_done() {
+                    if let Some(requester) = requester {
+                        state.cycle_rdeps.push(requester.clone());
                     }
-                };
+                    return Arc::new(DoneEntry::undone(DoneKind::InCycle));
+                }
+                // Done, its owner is signalling its parents: wait for the outcome.
+                drop(state);
+                let mut w = self.ev.waits.lock();
+                let frames = w.stacks.get(&me).map_or(0, Vec::len);
+                w.waiting
+                    .entry(me)
+                    .or_default()
+                    .push((frames, vec![key.clone()]));
             }
         }
         self.permits.release();
-        let result = {
-            let mut state = node.state.lock();
-            loop {
-                if let NodeState::Done(r) = &*state {
-                    break r.clone();
-                }
-                node.done.wait(&mut state);
-            }
-        };
+        let result = node.wait_for_outcome();
         self.permits.acquire();
         if let Some(v) = self.ev.waits.lock().waiting.get_mut(&me) {
             v.pop();
@@ -1552,11 +2538,8 @@ impl<'e> Run<'e> {
         // Walk (thread, stack index) states: "the key at this index of this thread's stack
         // cannot finish until the thread's waits that block that index finish".
         fn owner_and_index(ev: &Evaluator, w: &WaitGraph, k: &SkyKey) -> Option<(ThreadId, usize)> {
-            let node = ev.graph.get(k)?;
-            let owner = match &*node.state.lock() {
-                NodeState::InProgress { owner } => *owner,
-                NodeState::Done(_) => return None,
-            };
+            let node = ev.graph.get_if_present(k)?;
+            let owner = node.lock().owner?;
             let index = w.stacks.get(&owner)?.iter().position(|s| s == k)?;
             Some((owner, index))
         }
@@ -1596,22 +2579,20 @@ impl<'e> Run<'e> {
     }
 
     /// Computes several keys, spreading unstarted ones over helper threads. `requester` as in
-    /// [`Run::eval_key`].
-    pub(crate) fn eval_keys(&self, keys: &[SkyKey], requester: Option<&SkyKey>) -> Vec<Requested> {
+    /// [`Run::eval_dep`].
+    pub(crate) fn eval_keys(
+        &self,
+        keys: &[SkyKey],
+        requester: Option<&Requester<'_>>,
+    ) -> Vec<Requested> {
         if keys.len() <= 1 || self.parallelism() <= 1 {
             return keys.iter().map(|k| self.eval_dep(k, requester)).collect();
         }
         // Already-done keys need no thread.
-        let mut results: Vec<Option<Requested>> = keys
-            .iter()
-            .map(|k| {
-                self.ev.committed_entry(k).map(|entry| Requested {
-                    entry,
-                    was_done: true,
-                })
-            })
+        let mut results: Vec<Option<Requested>> = keys.iter().map(|_| None).collect();
+        let pending: Vec<usize> = (0..keys.len())
+            .filter(|&i| !self.ev.is_done(&keys[i]))
             .collect();
-        let pending: Vec<usize> = (0..keys.len()).filter(|&i| results[i].is_none()).collect();
         let helper_count = if pending.len() <= 1 {
             0
         } else {
@@ -1622,10 +2603,16 @@ impl<'e> Run<'e> {
         };
         if helper_count == 0 {
             // One key, or the thread cap is reached: evaluate inline, in order.
-            for i in pending {
-                results[i] = Some(self.eval_dep(&keys[i], requester));
+            for (i, r) in results.iter_mut().enumerate() {
+                *r = Some(self.eval_dep(&keys[i], requester));
             }
             return results.into_iter().map(|r| r.expect("filled")).collect();
+        }
+        // Done keys are registered (and signal the requester) on this thread, in order.
+        for (i, r) in results.iter_mut().enumerate() {
+            if !pending.contains(&i) {
+                *r = Some(self.eval_dep(&keys[i], requester));
+            }
         }
         // The current thread computes the first pending key itself; helpers and the current
         // thread then take the rest from a queue.
@@ -1792,10 +2779,9 @@ impl<'e> Run<'e> {
     /// PORT: runs after every evaluator thread of the normal evaluation has finished, as in Java
     /// (`waitForCompletion`). In case (2) the parent was blocked in its dependency request, not
     /// waiting to be enqueued: its run resumed, found the dep missing and finished undone
-    /// (`Run::resolve`), so it is unfinished here as well. "Not done" nodes are those that did
-    /// not commit; their recorded deps are Java's temporary direct deps. The interrupt bit Java
-    /// sets and clears around each re-run is per environment
-    /// (`Environment::check_interrupted`), so there is nothing to clear or restore.
+    /// (`Run::resolve`), so it is unfinished here as well. The interrupt bit Java sets and clears
+    /// around each re-run is per environment (`Environment::check_interrupted`), so there is
+    /// nothing to clear or restore.
     // Java: com/google/devtools/build/skyframe/ParallelEvaluator.java:290 ParallelEvaluator.bubbleErrorUp
     fn bubble_error_up(&self, e: &SchedulerError, roots: &[SkyKey]) -> Option<BubbleErrorInfo> {
         let leaf_failure = &e.error_info;
@@ -1812,10 +2798,15 @@ impl<'e> Run<'e> {
                 .ev
                 .node(&error_key)
                 .unwrap_or_else(|| panic!("NullPointerException: {error_key:?}"));
-            let error_entry = error_node
-                .done_entry()
-                .unwrap_or_else(|| panic!("NullPointerException: {error_key:?}"));
-            let mut all_reverse_deps: Vec<SkyKey> = if error_entry.is_done() {
+            let (error_entry_done, error_entry_debug, error_entry_snapshot) = {
+                let state = error_node.lock();
+                (
+                    state.entry.is_done(),
+                    format!("{:?}", state.entry),
+                    state.snapshot.clone(),
+                )
+            };
+            let mut all_reverse_deps: Vec<SkyKey> = if error_entry_done {
                 check_state!(
                     first_iteration,
                     "Non-leaf done node reached: {:?} {:?} {:?} {:?} {:?}",
@@ -1829,15 +2820,20 @@ impl<'e> Run<'e> {
             } else {
                 check_state!(
                     !first_iteration,
-                    "undone first iteration: {:?} {:?} {:?} {:?} {:?} {:?}",
+                    "undone first iteration: {:?} {} {:?} {:?} {:?} {:?}",
                     error_key,
-                    error_entry,
+                    error_entry_debug,
                     leaf_failure,
                     roots,
                     rdeps_to_bubble_up_to,
                     bubble_error_info
                 );
-                error_node.get_in_progress_reverse_deps()
+                error_node
+                    .lock()
+                    .entry
+                    .get_in_progress_reverse_deps()
+                    .into_iter()
+                    .collect()
             };
             // PORT: nodes Java never evaluated registered nothing (`Run::never_evaluated`).
             all_reverse_deps.retain(|parent| !never_evaluated.contains(parent));
@@ -1877,8 +2873,9 @@ impl<'e> Run<'e> {
                     error_key,
                     root_values
                 );
-                // PORT: replaying the stored events of a done top-level node is skipped (one
-                // build per process, events are reported once when the node commits).
+                if let Some(value_maybe_with_metadata) = &error_entry_snapshot {
+                    self.replay(&value_maybe_with_metadata.get_events());
+                }
                 break;
             }
             let parent = reverse_deps[0].clone();
@@ -1887,45 +2884,90 @@ impl<'e> Run<'e> {
                 // kick in.
                 return None;
             }
-            let parent_entry = self.ev.done_entry(&parent).unwrap_or_else(|| {
+            let parent_node = self.ev.node(&parent).unwrap_or_else(|| {
                 panic!("NullPointerException: parent {parent:?} of {error_key:?} not in graph")
             });
+            let (parent_done, parent_entry_debug, parent_declared_dep, previously_requested_deps) = {
+                let mut state = parent_node.lock();
+                let done = state.entry.is_done();
+                let debug = format!("{:?}", state.entry);
+                if done {
+                    (true, debug, false, GroupedDeps::new())
+                } else {
+                    let deps = state.entry.get_temporary_direct_deps().clone();
+                    (false, debug, deps.contains(&error_key), deps)
+                }
+            };
             check_state!(
-                !parent_entry.is_done(),
+                !parent_done,
                 "We cannot bubble into a done node entry: a done node cannot depend on a not-done \
-                 node, and the first errorParent was not done: {:?} {:?} {:?} {:?} {:?} {:?} {:?} \
+                 node, and the first errorParent was not done: {:?} {} {:?} {} {:?} {:?} {:?} \
                  {:?}",
                 error_key,
-                error_entry,
+                error_entry_debug,
                 parent,
-                parent_entry,
+                parent_entry_debug,
                 leaf_failure,
                 roots,
                 rdeps_to_bubble_up_to,
                 bubble_error_info
             );
-            // PORT: "In-progress reverse deps can only include in-flight nodes" has no
-            // counterpart: a node that is not done is in flight.
+            // Expected 6 args, but got 8.
             check_state!(
-                parent_entry.deps.contains(&error_key),
-                "In-progress reverse deps can only include nodes that have declared a dep: {:?} \
-                 {:?} {:?} {:?} {:?} {:?}",
+                self.progress().is_inflight(&parent),
+                "In-progress reverse deps can only include in-flight nodes: {:?} {} {:?} {} {:?} \
+                 {:?}{}",
                 error_key,
-                error_entry,
+                error_entry_debug,
                 parent,
-                parent_entry,
+                parent_entry_debug,
                 leaf_failure,
-                roots
+                roots,
+                lenient_extra(&[rdeps_to_bubble_up_to, &bubble_error_info])
             );
-            let sky_function = self.function_for(&parent, "EVALUATING");
-            // PORT: dirty-node handling skipped, incremental.
+            // Expected 6 args, but got 8.
+            check_state!(
+                parent_declared_dep,
+                "In-progress reverse deps can only include nodes that have declared a dep: {:?} \
+                 {} {:?} {} {:?} {:?}{}",
+                error_key,
+                error_entry_debug,
+                parent,
+                parent_entry_debug,
+                leaf_failure,
+                roots,
+                lenient_extra(&[rdeps_to_bubble_up_to, &bubble_error_info])
+            );
+            let sky_function = self.function_for(&parent, &parent_node);
+            {
+                let mut state = parent_node.lock();
+                if state.entry.is_dirty() {
+                    match state.entry.get_lifecycle_state() {
+                        LifecycleState::CheckDependencies => {
+                            // If this value's child was bubbled up to, it did not signal this
+                            // value, and so we must manually make it ready to build.
+                            state.entry.signal_dep(self.graph_version, Some(&error_key));
+                            // Fall through to NEEDS_REBUILDING, since state is now
+                            // NEEDS_REBUILDING.
+                            maybe_mark_rebuilding(&mut state.entry);
+                        }
+                        LifecycleState::NeedsRebuilding => maybe_mark_rebuilding(&mut state.entry),
+                        LifecycleState::Rebuilding => {}
+                        _ => panic!(
+                            "AssertionError: {parent:?} not in valid dirty state: {:?}",
+                            state.entry
+                        ),
+                    }
+                }
+            }
             error_key = parent;
-            let env = {
+            let (env_events, value_with_metadata) = {
                 let mut env = Environment::create_for_error(
                     self,
                     &error_key,
+                    &parent_node,
                     &*sky_function,
-                    parent_entry.deps.clone(),
+                    previously_requested_deps,
                     &bubble_error_info,
                 );
                 // This build is only to check if the parent node can give us a better error. We
@@ -1946,24 +2988,23 @@ impl<'e> Run<'e> {
                         ));
                     }
                 }
-                env
+                // Builder didn't throw its own exception, so just propagate this one up. (Or it
+                // did, and `error` is now that exception.)
+                let events = env.report_events_and_get_events_to_store_for_error();
+                (
+                    events.clone(),
+                    ValueWithMetadata::error(
+                        ErrorInfo::from_child_errors(&error_key, [&*error]),
+                        events,
+                    ),
+                )
             };
-            // Builder didn't throw its own exception, so just propagate this one up. (Or it did,
-            // and `error` is now that exception.)
-            let (_, _, listener) = env.into_parts();
-            // Java: env.reportEventsAndGetEventsToStore(parentEntry, /*expectDoneDeps=*/ false)
-            listener.flush();
-            let value_with_metadata = Arc::new(DoneEntry {
+            self.replay(&env_events);
+            let entry = Arc::new(DoneEntry {
                 kind: DoneKind::Bubbled,
-                value: None,
-                error: Some(Arc::new(ErrorInfo::from_child_errors(
-                    &error_key,
-                    [&*error],
-                ))),
-                deps: GroupedDeps::new(),
-                awaits_deps: false,
+                ..DoneEntry::from_value(&value_with_metadata, Version::minimal())
             });
-            bubble_error_info.insert(error_key.clone(), value_with_metadata);
+            bubble_error_info.insert(error_key.clone(), entry);
         }
         Some(bubble_error_info)
     }
@@ -1982,18 +3023,26 @@ impl<'e> Run<'e> {
     ///
     /// A node is in the set if it is unfinished, reachable from such a missing dep through the
     /// deps unfinished nodes declared, not a top-level key, and requested by nodes of the set
-    /// only (the thrower's own request was taken back when it committed, `Run::committed`).
+    /// only (the thrower's own request was taken back when it committed,
+    /// `Run::remove_undone_newly_requested_deps`).
     fn never_evaluated(&self, root_values: &HashSet<&SkyKey>) -> HashSet<SkyKey> {
         let mut to_visit: Vec<SkyKey> = std::mem::take(&mut *self.undone_deps_of_committed.lock());
         let mut candidates: HashSet<SkyKey> = HashSet::new();
         while let Some(key) = to_visit.pop() {
-            let Some(entry) = self.ev.done_entry(&key) else {
+            let Some(node) = self.ev.node(&key) else {
                 continue;
             };
-            if entry.is_done() || !candidates.insert(key) {
+            let mut state = node.lock();
+            if state.entry.is_done() || !candidates.insert(key) {
                 continue;
             }
-            to_visit.extend(entry.deps.get_all_elements_as_iterable().cloned());
+            to_visit.extend(
+                state
+                    .entry
+                    .get_temporary_direct_deps()
+                    .get_all_elements_as_iterable()
+                    .cloned(),
+            );
         }
         // Take out what something else asked for, until nothing changes.
         loop {
@@ -2002,9 +3051,13 @@ impl<'e> Run<'e> {
                 .filter(|key| {
                     root_values.contains(key)
                         || self.ev.node(key).is_some_and(|node| {
-                            node.get_in_progress_reverse_deps()
-                                .iter()
-                                .any(|requester| !candidates.contains(requester))
+                            let state = node.lock();
+                            !state.entry.is_done()
+                                && state
+                                    .entry
+                                    .get_in_progress_reverse_deps()
+                                    .iter()
+                                    .any(|requester| !candidates.contains(requester))
                         })
                 })
                 .cloned()
@@ -2100,19 +3153,50 @@ impl<'e> Run<'e> {
         );
         result.build()
     }
+}
 
-    /// Drops every node that Java would not have committed to the graph.
-    fn cleanup(&self) {
-        let keys = std::mem::take(&mut *self.uncommitted.lock());
-        for key in keys {
-            let Some(node) = self.ev.graph.get(&key) else {
-                continue;
-            };
-            let drop_it = node.done_entry().is_some_and(|e| !e.is_done());
-            if drop_it {
-                self.ev.graph.remove(&key);
-            }
+/// If the entry is dirty and not already rebuilding, puts it in a state so that it can rebuild.
+// Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:147 AbstractParallelEvaluator.maybeMarkRebuilding
+pub(crate) fn maybe_mark_rebuilding(entry: &mut crate::in_memory_node_entry::InMemoryNodeEntry) {
+    if entry.is_dirty() && entry.get_lifecycle_state() != LifecycleState::Rebuilding {
+        entry.mark_rebuilding();
+    }
+}
+
+/// Java's `try { progressReceiver.stateStarting(...); ... } finally { stateEnding(...) }`.
+struct StateGuard<'a> {
+    receiver: &'a DirtyAndInflightTrackingProgressReceiver,
+    key: &'a SkyKey,
+    state: NodeState,
+}
+
+impl<'a> StateGuard<'a> {
+    fn new(
+        receiver: &'a DirtyAndInflightTrackingProgressReceiver,
+        key: &'a SkyKey,
+        state: NodeState,
+    ) -> Self {
+        receiver.state_starting(key, state);
+        StateGuard {
+            receiver,
+            key,
+            state,
         }
+    }
+}
+
+impl Drop for StateGuard<'_> {
+    fn drop(&mut self) {
+        self.receiver.state_ending(self.key, self.state);
+    }
+}
+
+/// Java: `NestedSetEventReceiver.accept`: `event.reportTo(reporter)`.
+// Java: com/google/devtools/build/skyframe/ParallelEvaluatorContext.java:203 NestedSetEventReceiver.accept
+pub(crate) fn report_stored(event: &StoredReportable, reporter: &dyn ExtendedEventHandler) {
+    match event {
+        StoredReportable::Event(e) => e.report_to(reporter),
+        StoredReportable::Post(p) => p.report_to(reporter),
     }
 }
 
@@ -2151,3 +3235,6 @@ fn wrap_crash(msg: String, payload: Box<dyn Any + Send>) -> Box<dyn Any + Send> 
     };
     Box::new(format!("{msg}\nCaused by: {cause}"))
 }
+
+#[allow(unused_imports)]
+use java_list as _;

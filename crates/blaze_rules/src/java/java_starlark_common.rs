@@ -81,6 +81,8 @@ impl<'v> StarlarkValue<'v> for JavaStarlarkCommon {
     }
 
     // Java: com/google/devtools/build/lib/starlarkbuildapi/java/JavaCommonApi.java:602 JavaCommonApi.getJavaToolchainProvider
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/java/JavaCommonApi.java:614 JavaCommonApi.getJavaRuntimeProvider
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/java/JavaCommonApi.java:623 JavaCommonApi.getBootClassPathInfo
     fn get_attr(&self, attribute: &str, _heap: Heap<'v>) -> Option<Value<'v>> {
         match attribute {
             // Java: the default methods of JavaCommonApi throw UnsupportedOperationException

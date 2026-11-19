@@ -24,6 +24,12 @@ pub fn struct_get_value<'v>(underlying: Value<'v>, key: &str, heap: Heap<'v>) ->
     underlying.get_attr(key, heap).ok().flatten()
 }
 
+/// `noneIfNull(value)`: Starlark `None` for a missing field.
+// Java: com/google/devtools/build/lib/rules/java/StarlarkInfoWrapper.java:64 StarlarkInfoWrapper.noneIfNull
+pub fn none_if_null<'v>(value: Option<Value<'v>>) -> Value<'v> {
+    value.unwrap_or_else(Value::new_none)
+}
+
 /// The Java class name `Starlark.classType` reports for the field types the wrappers read.
 fn class_type(want: &str) -> &str {
     want

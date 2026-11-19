@@ -1,0 +1,200 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/int-bin/ui-wave/blaze-after-2
+# sha256 315c21471b3926d83d023ee7d369f28dc47b9bbc1ff173fbd59aa00a019c68fe
+# tree 400c6982f00fca9e791fc241153cdf89fbf409fa (dirty)
+# date 2026-11-19T14:33:50
+=== 1: run build //:slow --curses=no
+exit 0
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:slow (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:slow up-to-date:
+  bazel-bin/slow.out
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 1 internal, 1 linux-sandbox.
+INFO: Build completed successfully, 2 total actions
+=== 2: run build //:chain --curses=yes --color=yes
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:chain (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+Target //:chain up-to-date:
+  bazel-bin/chain.out
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 3 processes: 1 internal, 2 linux-sandbox.
+INFO: Build completed successfully, 3 total actions
+=== 3: run build //:slow //:chain --curses=no --show_progress_rate_limit=0
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (5 packages loaded, 9 targets configured).
+INFO: Found 2 targets...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 3 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 4: run build //:chain --noshow_progress
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:chain (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+Target //:chain up-to-date:
+  bazel-bin/chain.out
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 2 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 5: run build //:slow --experimental_stats_summary
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:slow (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:slow up-to-date:
+  bazel-bin/slow.out
+INFO: 1 process: 1 action cache hit, 1 internal.
+INFO: Total action wall time <DUR>
+INFO: Execution critical path <DUR> (setup <DUR>, action wall time <DUR>)
+INFO: Elapsed time <DUR> (preparation <DUR>, execution <DUR>)
+INFO: Build completed successfully
+=== 6: run build //:fails //:slow --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).
+INFO: Found 2 targets...
+ERROR: <WS>/BUILD.bazel:19:8: Action fails.out failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:fails) /bin/bash -c 'echo failing action of fails >&2; exit 1'
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+failing action of fails
+INFO: Build succeeded for only 1 of 2 top-level targets
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 1 action cache hit, 2 internal.
+ERROR: Build did NOT complete successfully
+=== 7: run build //:fails //:slow --keep_going --show_result=0
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).
+INFO: Found 2 targets...
+ERROR: <WS>/BUILD.bazel:19:8: Action fails.out failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:fails) /bin/bash -c 'echo failing action of fails >&2; exit 1'
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+failing action of fails
+INFO: Build succeeded for only 1 of 2 top-level targets
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 1 action cache hit, 2 internal.
+ERROR: Build did NOT complete successfully
+=== 8: run test //:pass_test //:fail_test --test_summary=detailed
+exit 3
+--- stdout
+//:pass_test                                                             PASSED in <DUR>
+    PASSED  .pass_test.sh (<DUR>)
+//:fail_test                                                             FAILED in <DUR>
+    ERROR   .fail_test.sh (<DUR>)
+Test cases: finished with 1 passing, 0 skipped and 1 failing out of 2 test cases
+
+Executed 2 out of 2 tests: 1 test passes and 1 fails locally.
+There were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (80 packages loaded, 836 targets configured).
+INFO: Found 2 test targets...
+FAIL: //:fail_test (Exit 1) (see <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/test.log)
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 13 processes: 11 internal, 4 linux-sandbox.
+INFO: Build completed, 1 test FAILED, 13 total actions
+=== 9: run test //:fail_test --runs_per_test=2
+exit 3
+--- stdout
+//:fail_test                                                             FAILED in 2 out of 2 in <DUR>
+  Stats over 2 runs: max = <DUR>, min = <DUR>, avg = <DUR>, dev = <DUR>
+  <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/run_1_of_2/test.log
+  <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/run_2_of_2/test.log
+
+Executed 1 out of 1 test: 1 fails locally.
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:fail_test (80 packages loaded, 835 targets configured).
+INFO: Found 1 test target...
+FAIL: //:fail_test (run 1 of 2) (Exit 1) (see <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/run_1_of_2/test.log)
+FAIL: //:fail_test (run 2 of 2) (Exit 1) (see <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/run_2_of_2/test.log)
+FAILED: //:fail_test (Summary)
+      <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/run_1_of_2/test.log
+      <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/run_2_of_2/test.log
+Target //:fail_test up-to-date:
+  bazel-bin/fail_test.sh
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 3 processes: 5 action cache hit, 1 internal, 4 linux-sandbox.
+INFO: Build completed, 1 test FAILED, 3 total actions
+=== 10: run test //:fail_test --flaky_test_attempts=2
+exit 3
+--- stdout
+//:fail_test                                                             FAILED in 2 out of 2 in <DUR>
+  Stats over 2 runs: max = <DUR>, min = <DUR>, avg = <DUR>, dev = <DUR>
+  <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/test.log
+  <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/test_attempts/attempt_1.log
+
+Executed 1 out of 1 test: 1 fails locally.
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:fail_test (80 packages loaded, 835 targets configured).
+INFO: Found 1 test target...
+FAIL: //:fail_test (Exit 1) (see <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/test_attempts/attempt_1.log)
+FAIL: //:fail_test (Exit 1) (see <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/test.log)
+FAILED: //:fail_test (Summary)
+      <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/test.log
+      <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/test_attempts/attempt_1.log
+Target //:fail_test up-to-date:
+  bazel-bin/fail_test.sh
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 5 action cache hit, 1 internal, 4 linux-sandbox.
+INFO: Build completed, 1 test FAILED, 2 total actions
+=== 11: run test //:timeout_test --test_timeout=1
+exit 3
+--- stdout
+//:timeout_test                                                         TIMEOUT in <DUR>
+  <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/timeout_test/test.log
+
+Executed 1 out of 1 test: 1 fails locally.
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:timeout_test (80 packages loaded, 835 targets configured).
+INFO: Found 1 test target...
+TIMEOUT: //:timeout_test (Summary)
+      <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/timeout_test/test.log
+Target //:timeout_test up-to-date:
+  bazel-bin/timeout_test.sh
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 7 processes: 6 internal, 2 linux-sandbox.
+INFO: Build completed, 1 test FAILED, 7 total actions
+=== 12: run test //:pass_test //:fail_test //:timeout_test --test_timeout=1 --keep_going --curses=yes
+exit 3
+--- stdout
+//:pass_test                                                             PASSED in <DUR>
+//:timeout_test                                                         TIMEOUT in <DUR>
+  <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/timeout_test/test.log
+//:fail_test                                                             FAILED in <DUR>
+  <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/test.log
+
+Executed 3 out of 3 tests: 1 test passes and 2 fail locally.
+There were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 3 targets (80 packages loaded, 837 targets configured).
+INFO: Found 3 test targets...
+FAIL: //:fail_test (Exit 1) (see <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/test.log)
+TIMEOUT: //:timeout_test (Summary)
+      <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/timeout_test/test.log
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 4 processes: 15 action cache hit, 1 internal, 6 linux-sandbox.
+INFO: Build completed, 2 tests FAILED, 4 total actions

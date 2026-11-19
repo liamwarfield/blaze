@@ -1,5 +1,6 @@
 //! Port of `WalkableGraph` (`DelegatingWalkableGraph` over the evaluator's graph).
 
+use crate::node_entry::NodeEntry;
 use crate::{Evaluator, SkyError, SkyKey, SkyValue};
 use blaze_util::check_state;
 
@@ -88,18 +89,23 @@ impl WalkableGraph for Evaluator {
 
     // Java: com/google/devtools/build/skyframe/DelegatingWalkableGraph.java:122 DelegatingWalkableGraph.getDirectDeps
     fn get_direct_deps(&self, key: &SkyKey) -> Vec<SkyKey> {
-        let entry = self.done_entry(key);
-        check_state!(entry.is_some(), "{:?}", key);
-        let entry = entry.expect("checked");
+        let node = self.node(key);
+        check_state!(node.is_some(), "{:?}", key);
+        let node = node.expect("checked");
+        let state = node.lock();
+        // Note that the situation described in #getReverseDeps doesn't apply here. If the node
+        // for `key` is done, then its direct deps must be done too.
         check_state!(
-            entry.is_done(),
+            state.entry.is_done(),
             "Node {:?} (with key {:?}) isn't done yet.",
-            entry,
+            state.entry,
             key
         );
-        entry.deps.get_all_elements_as_iterable().cloned().collect()
+        state.entry.get_direct_deps()
     }
 
+    /// PORT: the reverse deps are the node entry's (`getReverseDepsForDoneEntry`): every node
+    /// that registered as a reverse dep, in registration order, compacted as the entry does.
     // Java: com/google/devtools/build/skyframe/DelegatingWalkableGraph.java:133 DelegatingWalkableGraph.getReverseDeps
     fn get_reverse_deps(&self, keys: &[SkyKey]) -> Vec<(SkyKey, Vec<SkyKey>)> {
         let mut result = vec![];
@@ -107,8 +113,14 @@ impl WalkableGraph for Evaluator {
             let Some(node) = self.node(key) else {
                 continue;
             };
-            if node.done_entry().is_some_and(|e| e.is_done()) {
-                result.push((key.clone(), node.rdeps()));
+            let mut state = node.lock();
+            // SkyQuery may be operating on a Skyframe graph that contains more nodes and edges
+            // than its universe. In this situation, Blaze's eager invalidation strategy may mean
+            // here we can observe a rdep edge from a not-done node (because that node may have
+            // been invalidated but not re-evaluated). Therefore, we tolerate this case
+            // gracefully.
+            if state.entry.is_done() {
+                result.push((key.clone(), state.entry.get_reverse_deps_for_done_entry()));
             }
         }
         result

@@ -16,11 +16,15 @@ fn persistent(msg: impl Into<String>) -> ComputeError {
     SkyFunctionException::persistent(SomeErrorException(msg.into())).into()
 }
 
-/// The keys left in the graph, without `ErrorTransienceValue.KEY`.
+/// The keys done in the graph (committed), without `ErrorTransienceValue.KEY`.
+///
+/// Nodes still in flight when an evaluation ends stay in the graph, not done, until the next
+/// evaluation deletes them (AbstractInMemoryMemoizingEvaluator.java:134); only done nodes are
+/// what an evaluation committed.
 fn graph_keys(ev: &Evaluator) -> HashSet<SkyKey> {
     ev.get_all_keys_for_testing()
         .into_iter()
-        .filter(|key| *key != *ERROR_TRANSIENCE_KEY)
+        .filter(|key| *key != *ERROR_TRANSIENCE_KEY && ev.committed_entry(key).is_some())
         .collect()
 }
 
@@ -726,4 +730,35 @@ fn no_keep_going_walk_skips_everything_only_the_throwers_missing_dep_requested()
         assert_eq!(exception_message(error), "Y's own");
         assert!(error.get_cycle_info().is_empty());
     }
+}
+
+// Java: an InMemoryMemoizingEvaluator with keepEdges = false (EdgelessInMemoryGraphImpl, every
+// evaluation at Version.constant()): values are memoized; an injection over a done node removes
+// it first (AbstractInMemoryMemoizingEvaluator.pruneInjectedValues, "No incrementality"); a node
+// that depended on it keeps its value, as nothing records the edge.
+#[test]
+fn keep_edges_false_memoizes_and_injects_without_edges() {
+    let tester = new_tester();
+    tester.add_dependency_key(k("top"), nk("leaf"));
+    let ev = EvaluatorBuilder::new()
+        .client(tester.clone())
+        .function(T::FUNCTION, TestFunction)
+        .function(N::FUNCTION, TestFunction)
+        .keep_edges(false)
+        .inject(N("leaf"), "leaf".to_string())
+        .build();
+    let r = eval(&ev, false, 2, &[k("top")]);
+    assert_eq!(*r.get(&T("top")).unwrap(), "leaf");
+    let computed = ev.computed_count();
+    let r = eval(&ev, false, 2, &[k("top")]);
+    assert_eq!(*r.get(&T("top")).unwrap(), "leaf");
+    assert_eq!(ev.computed_count(), computed);
+
+    ev.inject(N("leaf"), "other".to_string());
+    let r = eval(&ev, false, 2, &[nk("leaf"), k("top")]);
+    assert_eq!(*r.get(&N("leaf")).unwrap(), "other");
+    assert_eq!(*r.get(&T("top")).unwrap(), "leaf");
+    // Java: DelegatingWalkableGraph.getDirectDeps on a node that keeps no edges.
+    let deps = catch_unwind(AssertUnwindSafe(|| ev.get_direct_deps(&k("top"))));
+    assert!(deps.is_err());
 }

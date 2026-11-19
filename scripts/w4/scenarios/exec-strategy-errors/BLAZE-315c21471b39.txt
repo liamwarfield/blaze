@@ -1,8 +1,8 @@
 # probe transcript of Blaze (scripts/w4/probe compare)
-# binary /home/liamwarfield/.cache/blaze/work/blaze-after-errors
+# binary /home/liamwarfield/.cache/blaze/int-bin/ui-wave/blaze-after-2
 # sha256 315c21471b3926d83d023ee7d369f28dc47b9bbc1ff173fbd59aa00a019c68fe
-# tree 8d77c3e706978b8cb7b94ce79c93d9e1b01a9883 (dirty)
-# date 2026-11-19T14:18:11
+# tree 2166769a09c6a45416302aa0512574c75d1d59fc (dirty)
+# date 2026-11-19T14:18:57
 === 1: run build --spawn_strategy=bogus //:one
 exit 2
 --- stdout

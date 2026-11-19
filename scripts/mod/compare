@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -13,7 +14,9 @@ sys.dont_write_bytecode = True
 
 USAGE = """\
 usage: scripts/mod/compare [--project brotli|re2|brotli-tidy|brotli-tidy-fail]... [--case GLOB]... [--blaze BIN]
-                           [--side oracle|blaze|both] [--list] [--show NAME]
+                           [--side oracle|blaze|both|none] [--list] [--show NAME]
+                           [--json FILE]
+       scripts/mod/compare selftest
        scripts/mod/compare help
 
 Runs a fixed list of `mod` invocations (dump_repo_mapping, show_repo, graph, deps, all_paths,
@@ -48,14 +51,33 @@ difference is in stderr and disappears without the UI's timing-dependent " no ac
 progress lines and the newline UiEventHandler.completeBuild adds after stdout that did not end
 in one; both are UI code outside `mod`), a summary line; the captured
 files are in ~/.cache/blaze/work/mod-compare/results/<side>/<project>/<case>.{rc,out,err,module}.
---show NAME prints a unified diff of one case (project/case). Exit 0 when all selected cases
-match, 1 otherwise.
+--show NAME prints a unified diff of one case (project/case).
+
+Guards (scripts/lib/compare_common.py): every command runs under a supervisor in the scope that
+records how it really ended (`exit N`, `signal NAME`, `oom-kill`, `timeout` after 3600 s), kept
+in <case>.term; the comparison uses it (<case>.rc is for reading only; a capture without .term
+never matches). The oracle must be the pinned one (UPSTREAM.json). Each oracle capture has
+<case>.key (oracle sha256, this tool's sha256, the argv and environment, the digest of the corpus
+checkout, the project and the cases before it); --side blaze and --side none refuse a stored
+oracle capture whose key differs from this run's. Classes: IDENTICAL (MATCH; the oracle exited
+0, or DECLARED_EXIT names the case with that exit code), DIFFERENT (DIFF and DIFF-UI),
+BOTH-FAILED (equal failures not declared), NOT-PORTED, ORACLE-UNEXPECTED, SKIPPED (MISSING). The
+output starts with the repository HEAD and dirty flag and both binaries' paths and sha256, and
+ends with the denominator; --json writes the report. Exit 0 only when at least one case was
+compared and every selected case is IDENTICAL; 1 otherwise (an empty selection included); 2 on
+a refusal.
 """
 
 HOME = os.path.expanduser("~")
 CACHE = os.path.join(HOME, ".cache", "blaze")
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(ROOT, "scripts", "lib"))
+import compare_common as cc  # noqa: E402
+
 ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+# Cases ("<project>/<case>") whose non-zero exit is the behaviour under test, with the oracle's
+# exit code. Equal failures of a case not listed here are BOTH-FAILED. Left to the case owner.
+DECLARED_EXIT = {}
 REPO_CACHE = os.path.join(CACHE, "repo-cache")
 WORK = os.path.join(CACHE, "work", "mod-compare")
 
@@ -209,19 +231,37 @@ def sync_workspace(project, ws):
             f.write(cfg["module_append"])
 
 
-def run(binary, side, project, args):
-    ws, our = side_paths(side, project)
-    cmd = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "-p", "MemoryMax=12G",
-           "-p", "MemorySwapMax=0", "env", "-i", "HOME=" + HOME, "PATH=/usr/bin:/bin",
-           binary, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc"]
+def mod_argv(binary, our, args):
+    cmd = [binary, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc"]
     if args:
         cmd += ["mod", args[0], "--repository_cache=" + REPO_CACHE, "--color=no",
                 "--curses=no"] + args[1:]
     else:
         cmd += ["mod", "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"]
-    p = subprocess.run(cmd, cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                       stdin=subprocess.DEVNULL, timeout=3600)
-    return p.returncode, p.stdout, p.stderr
+    return cmd
+
+
+def run(binary, side, project, args):
+    """(compare_common.Termination, stdout, stderr) of one `mod` command in a --scope unit."""
+    ws, our = side_paths(side, project)
+    p = cc.run(mod_argv(binary, our, args), ws, timeout=3600, mode="scope", tag="mod-compare")
+    return p.term, p.out, p.err
+
+
+_digests = {}
+
+
+def oracle_key(project, args, before):
+    cfg = PROJECTS[project]
+    base = cfg.get("base", project)
+    if base not in _digests:
+        _digests[base] = cc.tree_digest(os.path.join(CACHE, "corpus", base))
+    _, our = side_paths("oracle", project)
+    # Raw captures: this tool's sha256 is not part of the key (overlays are in PROJECTS).
+    return cc.cache_key(None, cc.pinned_sha256(),
+                        mod_argv(cc.PINNED_ORACLE, our, args), cc.clean_env(), _digests[base],
+                        extra={"project": project, "cases_before": before,
+                               "overlay": {k: v for k, v in cfg.items() if k != "cases"}})
 
 
 def normalise(data, side, project):
@@ -259,12 +299,11 @@ def result_dir(side, project):
 
 def shutdown(project):
     ws, our = side_paths("oracle", project)
-    subprocess.run(["env", "-i", "HOME=" + HOME, "PATH=/usr/bin:/bin", ORACLE,
-                    "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc",
-                    "shutdown"], cwd=ws, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    cc.run([ORACLE, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc", "shutdown"],
+           ws, timeout=600, mode="scope", tag="mod-shutdown")
 
 
-def capture(binary, side, project, name, args):
+def capture(binary, side, project, name, args, before=()):
     ws, _ = side_paths(side, project)
     if side == "oracle":
         # Every case starts a new server: Blaze has none, and a server that already evaluated
@@ -272,9 +311,12 @@ def capture(binary, side, project, name, args):
         shutdown(project)
     if args and args[0] == "tidy":
         sync_workspace(project, ws)
-    rc, out, err = run(binary, side, project, args)
+    term, out, err = run(binary, side, project, args)
     d = result_dir(side, project)
-    files = {"rc": str(rc).encode() + b"\n", "out": out, "err": err}
+    files = {"rc": str(term.exit_code_like()).encode() + b"\n", "out": out, "err": err,
+             "term": json.dumps(term.to_dict()).encode()}
+    if side == "oracle":
+        cc.write_key(os.path.join(d, name + ".key"), oracle_key(project, args, list(before)))
     if args and args[0] == "tidy":
         with open(os.path.join(ws, "MODULE.bazel"), "rb") as f:
             files["module"] = f.read()
@@ -288,7 +330,7 @@ def capture(binary, side, project, name, args):
 def load(side, project, name):
     d = result_dir(side, project)
     res = {}
-    for ext in ("rc", "out", "err", "module"):
+    for ext in ("rc", "out", "err", "module", "term"):
         p = os.path.join(d, name + "." + ext)
         if os.path.exists(p):
             with open(p, "rb") as f:
@@ -301,7 +343,11 @@ def compare(project, name):
     if not o or not b:
         return "MISSING", []
     diffs, raw, ui_only = [], True, True
-    for ext in ("rc", "out", "err", "module"):
+    ot, bt = term_of(o), term_of(b)
+    if ot is None or ot != bt:
+        diffs.append("termination")
+        raw = ui_only = False
+    for ext in ("out", "err", "module"):
         if ext not in o and ext not in b:
             continue
         ov, bv = o.get(ext, b""), b.get(ext, b"")
@@ -315,6 +361,28 @@ def compare(project, name):
     if diffs:
         return ("DIFF-UI" if ui_only else "DIFF"), diffs
     return ("MATCH (raw)" if raw else "MATCH"), []
+
+
+def term_of(res):
+    try:
+        return cc.Termination.from_dict(json.loads(res["term"]))
+    except (KeyError, ValueError):
+        return None
+
+
+def judge(project, name, status, diffs):
+    """compare_common class of one case from compare()'s status."""
+    if status == "MISSING":
+        return cc.SKIPPED, "no capture on one side"
+    o, b = load("oracle", project, name), load("blaze", project, name)
+    cls, detail = cc.judge(term_of(o), term_of(b), [d for d in diffs if d != "termination"],
+                           declared_exit=DECLARED_EXIT.get("%s/%s" % (project, name)),
+                           blaze_unported=cc.unported_message(b.get("err", b"")))
+    if status == "DIFF-UI" and cls == cc.DIFFERENT:
+        detail += " (UI lines only)"
+    if status == "MATCH (raw)" and cls == cc.IDENTICAL:
+        detail = (detail + "; " if detail else "") + "raw bytes identical"
+    return cls, detail
 
 
 def show(spec):
@@ -334,6 +402,8 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] in ("help", "--help", "-h"):
         print(USAGE, end="")
         return 0
+    if len(sys.argv) > 1 and sys.argv[1] == "selftest":
+        return selftest()
     ap = argparse.ArgumentParser(add_help=False)
     ap.add_argument("--project", action="append", choices=sorted(PROJECTS))
     ap.add_argument("--case", action="append")
@@ -341,6 +411,7 @@ def main():
     ap.add_argument("--side", default="both", choices=["oracle", "blaze", "both", "none"])
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--show")
+    ap.add_argument("--json")
     a = ap.parse_args()
     if a.show:
         show(a.show)
@@ -348,37 +419,117 @@ def main():
     import fnmatch
     projects = a.project or list(PROJECTS)
     sides = {"both": ["oracle", "blaze"], "none": []}.get(a.side, [a.side])
-    binaries = {"oracle": ORACLE, "blaze": os.path.abspath(a.blaze)}
-    all_ok, counts = True, {}
-    print("blaze binary: %s (sha256 %s)" % (
-        binaries["blaze"], hashlib.sha256(open(binaries["blaze"], "rb").read()).hexdigest()[:12]
-        if os.path.exists(binaries["blaze"]) else "missing"))
+    selected = {}
     for project in projects:
         cfg = PROJECTS[project]
-        cases = [(n, [x.format(**cfg) for x in args]) for n, args in cfg["cases"]
-                 if not a.case or any(fnmatch.fnmatch(n, g) for g in a.case)]
-        if a.list:
+        selected[project] = [(n, [x.format(**cfg) for x in args]) for n, args in cfg["cases"]
+                             if not a.case or any(fnmatch.fnmatch(n, g) for g in a.case)]
+    if a.list:
+        for project in projects:
+            for n, args in selected[project]:
+                print("%s/%s: mod %s" % (project, n, " ".join(
+                    repr(x) if x == "" or " " in x else x for x in args)))
+        return 0
+    if not any(selected.values()):
+        return cc.empty_selection_error("mod/compare")
+    try:
+        oracle, oracle_sha = cc.require_oracle(ORACLE)
+        if "blaze" in sides:
+            blaze = cc.blaze_identity(a.blaze)
+        else:
+            # Re-comparing stored captures: name the binary that made them, not --blaze.
+            made = set()
+            for project in projects:
+                try:
+                    with open(os.path.join(result_dir("blaze", project), "binary.json")) as f:
+                        made.add(json.dumps(json.load(f), sort_keys=True))
+                except (OSError, ValueError):
+                    made.add(json.dumps({"path": "unknown (captured before 2026-11-19)",
+                                         "sha256": None}))
+            blaze = json.loads(made.pop()) if len(made) == 1 else {
+                "path": "several binaries: %s" % "; ".join(sorted(made)), "sha256": None}
+    except cc.Refusal as e:
+        return cc.refuse("mod/compare", e)
+    binaries = {"oracle": oracle, "blaze": blaze["path"]}
+    report = cc.Report("mod/compare", blaze=blaze, oracle={"path": oracle, "sha256": oracle_sha},
+                       selection="projects %s, %d cases, side %s" % (
+                           ",".join(projects), sum(len(v) for v in selected.values()), a.side),
+                       tool_files=[os.path.abspath(__file__)])
+    report.print_header()
+    for project in projects:
+        cases = selected[project]
+        stale = {}
+        if "oracle" not in sides:
+            before = []
             for n, args in cases:
-                print("%s/%s: mod %s" % (project, n, " ".join(repr(x) if x == "" or " " in x else x for x in args)))
-            continue
+                reason = cc.check_key(os.path.join(result_dir("oracle", project), n + ".key"),
+                                      oracle_key(project, args, list(before)))
+                if reason:
+                    stale[n] = reason
+                before.append(n)
+            if stale and "blaze" in sides:
+                for n, r in sorted(stale.items())[:5]:
+                    print("refused: %s/%s: %s" % (project, n, r), file=sys.stderr)
+                return cc.refuse("mod/compare", "%d stored oracle captures of %s are stale or "
+                                 "unkeyed; run with --side both" % (len(stale), project))
         for side in sides:
             ws, _ = side_paths(side, project)
             sync_workspace(project, ws)
             run(binaries[side], side, project, ["graph"])  # warm-up, discarded
+            before = []
             for n, args in cases:
-                capture(binaries[side], side, project, n, args)
+                capture(binaries[side], side, project, n, args, before)
+                before.append(n)
+            if side == "blaze":
+                with open(os.path.join(result_dir("blaze", project), "binary.json"), "w") as f:
+                    json.dump({"path": blaze["path"], "sha256": blaze["sha256"]}, f)
         for n, _ in cases:
-            status, diffs = compare(project, n)
-            counts[status.split()[0]] = counts.get(status.split()[0], 0) + 1
-            if status not in ("MATCH", "MATCH (raw)"):
-                all_ok = False
-            print("%-8s %-28s %s%s" % (project, n, status, (" " + ",".join(diffs)) if diffs else ""))
+            if n in stale:
+                cls, detail = cc.SKIPPED, "stale oracle capture: " + stale[n]
+            else:
+                status, diffs = compare(project, n)
+                cls, detail = judge(project, n, status, diffs)
+            report.add("%s/%s" % (project, n), cls, detail)
+            print("%-8s %-28s %s %s" % (project, n, cls, detail))
     if "oracle" in sides:
         for project in projects:
             shutdown(project)
-    if not a.list:
-        print("summary: " + ", ".join("%s %d" % kv for kv in sorted(counts.items())))
-    return 0 if all_ok else 1
+    print()
+    report.print_footer()
+    if a.json:
+        report.write_json(a.json)
+    return report.exit_code()
+
+
+def selftest():
+    def run_pair(ofake, bfake, wd):
+        cc.require_oracle(ofake)
+        res = {}
+        for side, fake in (("oracle", ofake), ("blaze", bfake)):
+            p = cc.run(mod_argv(fake, os.path.join(wd, "our"), ["graph"]), wd, mode="scope",
+                       tag="selftest")
+            res[side] = (p.term, p.out, p.err)
+        (ot, oo, oe), (bt, bo, be) = res["oracle"], res["blaze"]
+        return cc.judge(ot, bt, [n for n, x, y in (("out", oo, bo), ("err", oe, be)) if x != y],
+                        blaze_unported=cc.unported_message(be))
+
+    def empty_selection():
+        old_argv = sys.argv
+        sys.argv = ["compare", "--case", "no-such-case", "--side", "none"]
+        with open(os.devnull, "w") as null:
+            old = sys.stderr
+            sys.stderr = null
+            try:
+                return main()
+            finally:
+                sys.stderr = old
+                sys.argv = old_argv
+
+    def extra(st):
+        st.check("a capture without .term has no termination", term_of({"rc": b"0\n"}) is None)
+
+    return cc.selftest("mod/compare", run_pair=run_pair, empty_selection=empty_selection,
+                       extra=extra, mode="scope")
 
 
 if __name__ == "__main__":

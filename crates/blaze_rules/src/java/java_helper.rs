@@ -1,5 +1,8 @@
 //! `rules/java/JavaHelper.java`: utility methods for use by Java-related parts of Bazel.
 
+// PORT: `private JavaHelper() {}` only prevents instantiation; the Rust module has no type.
+// Java: com/google/devtools/build/lib/rules/java/JavaHelper.java:35 JavaHelper.<init>
+
 use blaze_actions::Artifact;
 use blaze_analysis::rule::RuleContext;
 use blaze_analysis::rule::config_util;

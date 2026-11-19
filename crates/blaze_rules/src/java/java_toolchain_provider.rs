@@ -31,7 +31,8 @@ use crate::cpp::util::errorf;
 const BZL: &str = "java/common/rules:java_toolchain.bzl";
 
 /// `JavaToolchainProvider.PROVIDER.getKey()`.
-// Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:323 JavaToolchainProvider.Provider.<init>
+// Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:321 JavaToolchainProvider.Provider.<init>
+// Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:329 JavaToolchainProvider.Provider.<init>
 pub fn provider_key() -> ProviderKey {
     rules_java_provider_key(BZL, "JavaToolchainInfo")
 }
@@ -73,13 +74,57 @@ impl<'v> JavaToolchainProvider<'v> {
     }
 
     /// Returns the Java Toolchain associated with the rule being analyzed or `None`.
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:96 JavaToolchainProvider.from
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:94 JavaToolchainProvider.from
     pub fn from_rule_context(
         rule_context: &RuleContext,
-        heap: Heap<'v>,
-        toolchain_info: Option<Value<'v>>,
+        eval: &starlark::eval::Evaluator<'v, '_, '_>,
     ) -> Option<JavaToolchainProvider<'v>> {
-        Self::from(toolchain_info, Some(rule_context), heap)
+        let label = blaze_analysis::configuredtargets::get_label(
+            &rule_context
+                .get_prerequisite("$java_toolchain_type")
+                .unwrap_or_else(|| panic!("NullPointerException: $java_toolchain_type")),
+        );
+        let toolchain_info = rule_context
+            .get_toolchain_info(&label)
+            .map(|i| eval.heap().access_owned_frozen_value(&i));
+        Self::from(toolchain_info, Some(rule_context), eval.heap())
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:102 JavaToolchainProvider.from
+    pub fn from_provider_collection(
+        collection: &blaze_analysis::configured_target::ConfiguredTarget,
+        eval: &starlark::eval::Evaluator<'v, '_, '_>,
+    ) -> Option<JavaToolchainProvider<'v>> {
+        let toolchain_info = blaze_analysis::configuredtargets::get_info(
+            collection,
+            &blaze_packages::starlark_defs::platform_common::TOOLCHAIN_INFO.key(),
+        )
+        .map(|i| eval.heap().access_owned_frozen_value(&i));
+        Self::from(toolchain_info, None, eval.heap())
+    }
+
+    /// StructImpl.hashcode() is too expensive, just the label should be enough.
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:73 JavaToolchainProvider.hashCode
+    pub fn hash_code(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let label = self
+            .get_toolchain_label()
+            .unwrap_or_else(|e| panic!("IllegalStateException: {e}"));
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        label.hash(&mut h);
+        h.finish()
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:83 JavaToolchainProvider.equals
+    pub fn equals(&self, other: &JavaToolchainProvider<'v>) -> bool {
+        // Java: underlying.equals(other.underlying) (StructImpl equality: same provider and
+        // equal fields), Starlark equality here.
+        self.wrapper.underlying.ptr_eq(other.wrapper.underlying)
+            || self
+                .wrapper
+                .underlying
+                .equals(other.wrapper.underlying)
+                .unwrap_or(false)
     }
 
     // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:110 JavaToolchainProvider.from

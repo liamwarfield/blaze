@@ -23,3 +23,4 @@ pub mod runtime;
 pub mod sandbox;
 pub mod standalone;
 pub mod util;
+pub mod worker;

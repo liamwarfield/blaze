@@ -99,6 +99,7 @@ pub struct JavaCompileOutputsBuilder {
 }
 
 impl JavaCompileOutputsBuilder {
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileOutputs.java:62 JavaCompileOutputs.Builder.output
     pub fn output(&mut self, artifact: Artifact) -> &mut Self {
         self.output = Some(artifact);
         self
@@ -106,26 +107,31 @@ impl JavaCompileOutputsBuilder {
 
     /// PORT: AutoValue rejects a null `manifestProto` at `build()` (the property is not
     /// `@Nullable`); `None` here fails there the same way.
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileOutputs.java:64 JavaCompileOutputs.Builder.manifestProto
     pub fn manifest_proto(&mut self, artifact: Option<Artifact>) -> &mut Self {
         self.manifest_proto = artifact;
         self
     }
 
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileOutputs.java:66 JavaCompileOutputs.Builder.depsProto
     pub fn deps_proto(&mut self, artifact: Option<Artifact>) -> &mut Self {
         self.deps_proto = artifact;
         self
     }
 
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileOutputs.java:68 JavaCompileOutputs.Builder.genClass
     pub fn gen_class(&mut self, artifact: Option<Artifact>) -> &mut Self {
         self.gen_class = artifact;
         self
     }
 
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileOutputs.java:70 JavaCompileOutputs.Builder.genSource
     pub fn gen_source(&mut self, artifact: Option<Artifact>) -> &mut Self {
         self.gen_source = artifact;
         self
     }
 
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileOutputs.java:72 JavaCompileOutputs.Builder.nativeHeader
     pub fn native_header(&mut self, artifact: Option<Artifact>) -> &mut Self {
         self.native_header = artifact;
         self
@@ -210,6 +216,18 @@ impl JavaOutput {
     // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:110 JavaOutput.getJdeps
     pub fn get_jdeps(&self) -> Option<&Artifact> {
         self.jdeps.as_ref()
+    }
+
+    /// Immutable and Starlark-hashable.
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:143 JavaOutput.isImmutable
+    pub fn is_immutable(&self) -> bool {
+        true
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:167 JavaOutput.getSrcJarsStarlark
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/java/JavaOutputApi.java:126 JavaOutputApi.getSrcJarsStarlark
+    pub fn get_src_jars_starlark(&self) -> starlark::values::OwnedFrozenValue {
+        blaze_analysis::rule::depsets::artifacts_to_depset(&self.source_jars)
     }
 
     // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:150 JavaOutput.getIJar
@@ -332,6 +350,69 @@ pub struct JavaOutputBuilder {
 }
 
 impl JavaOutputBuilder {
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:206 JavaOutput.Builder.setClassJar
+    pub fn set_class_jar(&mut self, value: Option<Artifact>) -> &mut Self {
+        self.class_jar = value;
+        self
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:208 JavaOutput.Builder.setCompileJar
+    pub fn set_compile_jar(&mut self, value: Option<Artifact>) -> &mut Self {
+        self.compile_jar = value;
+        self
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:210 JavaOutput.Builder.setHeaderCompilationJar
+    pub fn set_header_compilation_jar(&mut self, value: Option<Artifact>) -> &mut Self {
+        self.header_compilation_jar = value;
+        self
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:212 JavaOutput.Builder.setCompileJdeps
+    pub fn set_compile_jdeps(&mut self, value: Option<Artifact>) -> &mut Self {
+        self.compile_jdeps = value;
+        self
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:214 JavaOutput.Builder.setGeneratedClassJar
+    pub fn set_generated_class_jar(&mut self, value: Option<Artifact>) -> &mut Self {
+        self.generated_class_jar = value;
+        self
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:216 JavaOutput.Builder.setGeneratedSourceJar
+    pub fn set_generated_source_jar(&mut self, value: Option<Artifact>) -> &mut Self {
+        self.generated_source_jar = value;
+        self
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:218 JavaOutput.Builder.setNativeHeadersJar
+    pub fn set_native_headers_jar(&mut self, value: Option<Artifact>) -> &mut Self {
+        self.native_headers_jar = value;
+        self
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:220 JavaOutput.Builder.setManifestProto
+    pub fn set_manifest_proto(&mut self, value: Option<Artifact>) -> &mut Self {
+        self.manifest_proto = value;
+        self
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:222 JavaOutput.Builder.setJdeps
+    pub fn set_jdeps(&mut self, value: Option<Artifact>) -> &mut Self {
+        self.jdeps = value;
+        self
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:225 JavaOutput.Builder.setSourceJars
+    #[allow(dead_code)]
+    fn set_source_jars(&mut self, value: &NestedSet<Artifact>) -> &mut Self {
+        let mut b = NestedSetBuilder::stable_order();
+        b.add_transitive(value);
+        self.source_jars_builder = Some(b);
+        self
+    }
+
     fn source_jars_builder(&mut self) -> &mut NestedSetBuilder<Artifact> {
         self.source_jars_builder
             .get_or_insert_with(NestedSetBuilder::stable_order)

@@ -194,6 +194,17 @@ pub struct BuildViewUpdateOptions {
 
 /// The BuildView is Bazel's main analysis entry point.
 // Java: com/google/devtools/build/lib/analysis/BuildView.java:216 BuildView.update
+/// `eventBus.post(topLevelConfig.toBuildEvent())` of `BuildView.update`: the top-level
+/// configuration, whose build event the command's build event stream builds
+/// (`BuildConfigurationValue.toBuildEvent`).
+// Java: com/google/devtools/build/lib/analysis/BuildView.java:350 BuildView.update
+#[derive(Clone, Debug)]
+pub struct TopLevelConfigurationEvent {
+    pub configuration: Arc<BuildConfigurationValue>,
+}
+
+impl blaze_events::Postable for TopLevelConfigurationEvent {}
+
 pub fn update(
     skyframe_executor: &SkyframeExecutor,
     loading_result: &TargetPatternPhaseValue,
@@ -246,9 +257,12 @@ pub fn update_with_aspects_parameters(
         .map_err(BuildViewError::InvalidConfiguration)?;
     // PORT: getTopLevelConfigurationTrimmedOfTestOptions only feeds TopLevelConfigRequestedEvent
     // (the `config` command's collector) and remote analysis caching, neither ported.
-    // MakeEnvironmentEvent is not posted (no port of the event). The configuration's build
-    // event (`topLevelConfig.toBuildEvent()`) is posted by the command from the analysis result
-    // (blaze_runtime commands/bep.rs, `analysis_complete`), not here.
+    // MakeEnvironmentEvent is not posted (no port of the event).
+    // eventBus.post(topLevelConfig.toBuildEvent()): the build event stream converts it.
+    // Java: com/google/devtools/build/lib/analysis/BuildView.java:350 BuildView.update
+    event_handler.post(Arc::new(TopLevelConfigurationEvent {
+        configuration: top_level_config.clone(),
+    }));
     // Java: SkyframeBuildView.setConfiguration
     if let Some(services) = skyframe_executor.get_analysis_services() {
         services

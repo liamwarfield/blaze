@@ -25,7 +25,12 @@ use blaze_sky_exec::events::{
 use parking_lot::Mutex;
 
 use crate::runtime::test_summary::TestSummary;
-use crate::runtime::ui_state_tracker::UiStateTracker;
+use crate::runtime::ui_state_tracker::{
+    AnalysisProgress, ExecutionProgress, PackageProgress, TransportId, UiStateTracker,
+};
+use blaze_actions::ActionLookupData;
+use blaze_actions::actions::action::ActionRef;
+use blaze_cmdline::{Label, RepositoryMapping};
 
 /// `TEST_STATUS_TO_IGNORE_FOR_NEW_INFORMATION`.
 // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:108 UiEventHandler.TEST_STATUS_TO_IGNORE_FOR_NEW_INFORMATION
@@ -92,6 +97,202 @@ impl UiEventSubscriber {
         for event in deferred {
             self.dispatch(&event);
         }
+    }
+
+    /// `@Subscribe loadingStarted(LoadingPhaseStartedEvent)`: the event's package progress
+    /// receiver.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:666 UiEventHandler.loadingStarted
+    pub fn loading_started(&self, package_progress_receiver: Option<Arc<dyn PackageProgress>>) {
+        self.handler.maybe_add_date();
+        self.tracker.loading_started(package_progress_receiver);
+        // As a new phase started, inform immediately.
+        self.handler.ignore_refresh_limit_once();
+        self.handler.refresh_progress();
+        self.handler.start_update_thread();
+    }
+
+    /// `@Subscribe configurationStarted(ConfigurationPhaseStartedEvent)`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:676 UiEventHandler.configurationStarted
+    pub fn configuration_started(
+        &self,
+        analysis_progress_receiver: Option<Arc<dyn AnalysisProgress>>,
+    ) {
+        self.handler.maybe_add_date();
+        self.tracker
+            .configuration_started(analysis_progress_receiver);
+        // As a new phase started, inform immediately.
+        self.handler.ignore_refresh_limit_once();
+        self.handler.refresh_progress();
+        self.handler.start_update_thread();
+    }
+
+    /// `@Subscribe loadingComplete(LoadingPhaseCompleteEvent)`: the event's labels and main
+    /// repository mapping.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:686 UiEventHandler.loadingComplete
+    pub fn loading_complete(
+        &self,
+        labels: &[Label],
+        main_repository_mapping: Option<RepositoryMapping>,
+    ) {
+        self.tracker
+            .loading_complete(labels, main_repository_mapping);
+        self.handler.refresh_progress();
+    }
+
+    /// `@Subscribe executionPhaseStarted(SomeExecutionStartedEvent)`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:698 UiEventHandler.executionPhaseStarted
+    pub fn execution_phase_started(&self, counted_in_execution_time: bool) {
+        if counted_in_execution_time {
+            self.tracker.execution_phase_started();
+            self.handler.refresh_progress();
+        }
+    }
+
+    /// `@Subscribe progressReceiverAvailable(ExecutionProgressReceiverAvailableEvent)`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:706 UiEventHandler.progressReceiverAvailable
+    pub fn progress_receiver_available(&self, receiver: Arc<dyn ExecutionProgress>) {
+        self.tracker.progress_receiver_available(receiver);
+        // As this is the first time we have a progress message, update immediately.
+        self.handler.ignore_refresh_limit_once();
+        self.handler.start_update_thread();
+    }
+
+    /// `@Subscribe downloadProgress(FetchProgress)`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:807 UiEventHandler.downloadProgress
+    pub fn download_progress(&self, resource_identifier: &str, progress: &str, finished: bool) {
+        self.handler.maybe_add_date();
+        self.tracker
+            .download_progress(resource_identifier, progress, finished);
+        if !finished {
+            self.handler.refresh_progress();
+        } else {
+            self.handler.check_activities();
+        }
+    }
+
+    /// `@Subscribe scanningAction(ScanningActionEvent)`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:826 UiEventHandler.scanningAction
+    pub fn scanning_action(&self, action: &ActionRef) {
+        self.tracker.scanning_action(action);
+        self.handler.refresh_progress();
+    }
+
+    /// `@Subscribe stopScanningAction(StoppedScanningActionEvent)`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:833 UiEventHandler.stopScanningAction
+    pub fn stop_scanning_action(&self, action: &ActionRef) {
+        self.tracker.stop_scanning_action(action);
+        self.handler.refresh_progress();
+    }
+
+    /// `@Subscribe checkingActionCache(CachingActionEvent)`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:840 UiEventHandler.checkingActionCache
+    pub fn checking_action_cache(&self, action: &ActionRef, strategy: &str) {
+        self.tracker.caching_action(action, strategy);
+        self.handler.refresh_progress();
+    }
+
+    /// `@Subscribe schedulingAction(SchedulingActionEvent)`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:847 UiEventHandler.schedulingAction
+    pub fn scheduling_action(&self, action: &ActionRef, strategy: &str) {
+        self.tracker.scheduling_action(action, strategy);
+        self.handler.refresh_progress();
+    }
+
+    /// `@Subscribe runningAction(RunningActionEvent)`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:854 UiEventHandler.runningAction
+    pub fn running_action(&self, action: &ActionRef, strategy: &str) {
+        self.tracker.running_action(action, strategy);
+        self.handler.refresh_progress();
+    }
+
+    /// `@Subscribe actionProgress(ActionProgressEvent)`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:861 UiEventHandler.actionProgress
+    pub fn action_progress(
+        &self,
+        action: &ActionRef,
+        progress_id: &str,
+        progress: &str,
+        finished: bool,
+    ) {
+        self.tracker
+            .action_progress(action, progress_id, progress, finished);
+        self.handler.refresh_soon();
+    }
+
+    /// `@Subscribe actionCompletion(ActionScanningCompletedEvent)`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:868 UiEventHandler.actionCompletion
+    pub fn action_scanning_completed(
+        &self,
+        action: &ActionRef,
+        action_lookup_data: &ActionLookupData,
+    ) {
+        self.tracker
+            .action_scanning_completed(action, action_lookup_data);
+        self.handler.refresh_soon();
+    }
+
+    /// `@Subscribe crash(CrashEvent)`: Java posts the tracker's `InflightActionInfo` on the
+    /// event bus; here it is returned (the count and the most frequent mnemonics).
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:882 UiEventHandler.crash
+    pub fn crash(&self) -> (i32, Vec<(String, i32)>) {
+        self.tracker.log_and_get_inflight_actions()
+    }
+
+    /// `@Subscribe actionUploadStarted(ActionUploadStartedEvent)`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:899 UiEventHandler.actionUploadStarted
+    pub fn action_upload_started(&self) {
+        self.tracker.action_upload_started();
+        self.handler.refresh_soon();
+    }
+
+    /// `@Subscribe actionUploadFinished(ActionUploadFinishedEvent)`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:906 UiEventHandler.actionUploadFinished
+    pub fn action_upload_finished(&self) {
+        self.tracker.action_upload_finished();
+        self.handler.check_activities();
+    }
+
+    /// `@Subscribe testFilteringComplete(TestFilteringCompleteEvent)`: the labels of the
+    /// event's test targets.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:912 UiEventHandler.testFilteringComplete
+    pub fn test_filtering_complete(&self, test_targets: Option<&[Option<Label>]>) {
+        self.tracker.test_filtering_complete(test_targets);
+        self.handler.refresh_progress();
+    }
+
+    /// `@Subscribe buildEventTransportsAnnounced(AnnounceBuildEventTransportsEvent)`.
+    ///
+    /// PORT: `--experimental_ui_debug_all_events`'s "Transports announced:" line is the
+    /// handler's debug output, written through its `handle`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:969 UiEventHandler.buildEventTransportsAnnounced
+    pub fn build_event_transports_announced(
+        &self,
+        transports: &[TransportId],
+        debug_all_events: bool,
+    ) {
+        self.tracker.build_event_transports_announced(transports);
+        if debug_all_events {
+            let mut message = String::from("Transports announced:");
+            for transport in transports {
+                message.push(' ');
+                message.push_str(&transport.name);
+            }
+            blaze_events::EventHandler::handle(&*self.handler, &blaze_events::Event::info(message));
+        }
+    }
+
+    /// `@Subscribe buildEventTransportClosed(BuildEventTransportClosedEvent)`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:981 UiEventHandler.buildEventTransportClosed
+    pub fn build_event_transport_closed(&self, transport: &TransportId, debug_all_events: bool) {
+        self.tracker.build_event_transport_closed(transport);
+        if debug_all_events {
+            blaze_events::EventHandler::handle(
+                &*self.handler,
+                &blaze_events::Event::info(format!("Transport {} closed", transport.name)),
+            );
+        }
+
+        self.handler.check_activities();
     }
 
     fn dispatch(&self, event: &Arc<dyn Postable>) {

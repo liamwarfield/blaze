@@ -9,19 +9,12 @@ use crate::query_expression::QueryExpression;
 use crate::query_expression_context::QueryExpressionContext;
 use crate::query_task_future::{QueryEnvironmentFutures, QueryTaskFuture};
 
-/// Java `Pattern.compile(pattern)`.
-///
-/// PORT: `java.util.regex` is emulated with the `regex` crate (as blaze_options'
-/// `RegexPatternOption` does). Pattern and inputs are internal strings, as in Java: `é` in a
-/// pattern is the two chars U+00C3 U+00A9 and matches the same two chars of a label. Known
-/// differences, which now also reach the Latin-1 chars U+0080..U+00FF of internal strings:
-/// Java-only constructs (backreferences,
-/// lookaround, possessive quantifiers) fail to compile here; `\w`, `\d`, `\s` and `\b` are
-/// Unicode-aware here but ASCII-only in Java; Java's `.` also excludes `\r`, `\u0085`, ` `
-/// and ` `; syntax errors carry the `regex` crate's text, not
-/// `PatternSyntaxException.getMessage()`.
-pub fn compile_java_pattern(pattern: &str) -> Result<regex::Regex, regex::Error> {
-    regex::Regex::new(pattern)
+/// Java `Pattern.compile(pattern)`: `blaze_util::java_regex` (Java's dialect on the `regex`
+/// crate; its module docs list what is `unported!`). The error is
+/// `PatternSyntaxException.getMessage()`. Pattern and inputs are internal strings, as in Java: `é`
+/// in a pattern is the two chars U+00C3 U+00A9 and matches the same two chars of a label.
+pub fn compile_java_pattern(pattern: &str) -> Result<blaze_util::java_regex::Pattern, String> {
+    blaze_util::java_regex::Pattern::compile(pattern, 0)
 }
 
 /// An abstract class that provides generic regex filter expression. Actual expression are

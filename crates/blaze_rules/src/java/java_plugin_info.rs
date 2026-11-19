@@ -23,9 +23,28 @@ use crate::cpp::util::errorf;
 pub const PROVIDER_NAME: &str = "JavaPluginInfo";
 
 /// `JavaPluginInfo.PROVIDER.getKey()`.
-// Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:83 JavaPluginInfo.Provider.<init>
+// Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:89 JavaPluginInfo.Provider.<init>
+// Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:96 JavaPluginInfo.Provider.<init>
 pub fn provider_key() -> ProviderKey {
     rules_java_provider_key("java/private:java_info.bzl", PROVIDER_NAME)
+}
+
+/// `JavaPluginInfo.Provider.isExported()`.
+// Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:101 JavaPluginInfo.Provider.isExported
+pub fn provider_is_exported() -> bool {
+    true
+}
+
+/// `JavaPluginInfo.Provider.getPrintableName()`.
+// Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:106 JavaPluginInfo.Provider.getPrintableName
+pub fn provider_get_printable_name() -> &'static str {
+    PROVIDER_NAME
+}
+
+/// `JavaPluginInfo.Provider.getLocation()`: `Location.BUILTIN`.
+// Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:111 JavaPluginInfo.Provider.getLocation
+pub fn provider_get_location() -> blaze_starlark::error::Location {
+    blaze_starlark::error::Location::builtin()
 }
 
 /// `JavaPluginInfo.RULES_JAVA_PROVIDER.getKey()`.
@@ -202,6 +221,22 @@ impl JavaPluginInfo {
             "got element of type {}, want JavaPluginInfo",
             starlark_type(info)
         )))
+    }
+
+    /// `target.get(PROVIDER)`: we just use the single type that is checked for in tests.
+    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:69 JavaPluginInfo.get
+    pub fn get(
+        target: &blaze_analysis::configured_target::ConfiguredTarget,
+    ) -> starlark::Result<Option<JavaPluginInfo>> {
+        let Some(info) = blaze_analysis::configuredtargets::get_info(target, &provider_key())
+        else {
+            return Ok(None);
+        };
+        starlark::environment::Module::with_temp_heap(|module| {
+            // SAFETY: `info` keeps its frozen heap alive for the duration of the closure.
+            let value = unsafe { info.unchecked_frozen_value() }.to_value();
+            JavaPluginInfo::wrap(value, module.heap()).map(Some)
+        })
     }
 
     // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:243 JavaPluginInfo.mergeWithoutJavaOutputs

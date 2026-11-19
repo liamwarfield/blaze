@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use std::marker::PhantomData;
 use std::time::Duration;
 
+use blaze_util::java_regex;
 use blaze_util::string_encoding::{internal_to_unicode, unicode_to_internal};
 use regex::Regex;
 
@@ -569,24 +570,14 @@ impl Converter for StringSetConverter {
 // Java: com/google/devtools/common/options/RegexPatternOption.java:34 RegexPatternOption
 /// A compiled regex option. Equality is based solely on the pattern string.
 ///
-/// PORT: `java.util.regex.Pattern` is emulated with the `regex` crate. [`RegexPatternOption::compile`]
+/// `java.util.regex.Pattern` is `blaze_util::java_regex::Pattern` (Java's dialect translated to
+/// the `regex` crate; its module docs list what is `unported!`). [`RegexPatternOption::compile`]
 /// takes the pattern and the `Pattern.compile` flags the Java caller passes (the converter passes
-/// `Pattern.DOTALL`, see [`RegexPatternConverter`]). Known differences from Java, none of which the
-/// options transcribed so far rely on:
-/// - Java-only syntax fails to compile: lookahead/lookbehind (`(?=`, `(?!`, `(?<=`, `(?<!`),
-///   backreferences (`\1`, `\k<name>`), atomic groups (`(?>`), possessive quantifiers (`*+`,
-///   `++`, `?+`), `\Q...\E` quoting.
-/// - `\w`, `\d`, `\s` and `\b` are Unicode-aware in the `regex` crate but ASCII-only in Java
-///   (without `UNICODE_CHARACTER_CLASS`).
-/// - Without `DOTALL`, Java's `.` excludes all line terminators (`\n`, `\r`, `\u0085`,
-///   `\u2028`, `\u2029`); the `regex` crate's `.` excludes only `\n`. Without `MULTILINE`, Java's
-///   `$` also matches before a final line terminator; the `regex` crate's `$` only at the end.
-/// - Syntax errors carry the `regex` crate's text, not `PatternSyntaxException.getMessage()`.
+/// `Pattern.DOTALL`, see [`RegexPatternConverter`]); a syntax error is
+/// `PatternSyntaxException.getMessage()`.
 #[derive(Clone, Debug)]
 pub struct RegexPatternOption {
-    pattern: String,
-    regex: Regex,
-    full_match: Regex,
+    regex: java_regex::Pattern,
     matcher: MatchingPredicate,
 }
 
@@ -602,27 +593,31 @@ enum MatchingPredicate {
     /// `s -> s.endsWith(literalSuffix)` (an internal suffix).
     EndsWith(String),
     /// `s -> compiled.matcher(internalToUnicode(s)).find()`.
-    Find(Regex),
+    Find(java_regex::Pattern),
 }
 
 // Java: com/google/devtools/build/lib/util/regex/RegexUtil.java:27 RegexUtil.LITERAL_PATTERN_WITH_DOT_UNESCAPED
-static LITERAL_PATTERN_WITH_DOT_UNESCAPED: std::sync::LazyLock<Regex> =
-    std::sync::LazyLock::new(|| Regex::new(r"^(?:[^\[\](){}^$|*+?.\\]|\\\.)*$").unwrap());
+static LITERAL_PATTERN_WITH_DOT_UNESCAPED: std::sync::LazyLock<java_regex::Pattern> =
+    std::sync::LazyLock::new(|| {
+        java_regex::Pattern::compile("(?:[^\\[\\](){}^$|*+?.\\\\]|\\\\\\.)*", 0).unwrap()
+    });
 
 // Java: com/google/devtools/build/lib/util/regex/RegexUtil.java:33 RegexUtil.EXTRACT_SUFFIX_MATCH
-// Java's `.` (no DOTALL) excludes the line terminators \n, \r, U+0085, U+2028 and U+2029.
+// `Matcher.matches()` with the named group `suffix`: the translation anchored at both ends.
 static EXTRACT_SUFFIX_MATCH: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-    Regex::new(r"^(?:\^|\\A)*\.\*(?P<suffix>[^?+][^\n\r\x{85}\x{2028}\x{2029}]*)?$").unwrap()
+    let translated =
+        java_regex::translate("(?:\\^|\\\\A)*\\.\\*(?<suffix>[^?+].*)?", 0).unwrap();
+    Regex::new(&format!(r"\A(?:{translated})\z")).unwrap()
 });
 
 // Java: com/google/devtools/build/lib/util/regex/RegexUtil.java:42 RegexUtil.asOptimizedMatchingPredicate
-fn as_optimized_matching_predicate(pattern: &str) -> Result<MatchingPredicate, regex::Error> {
+fn as_optimized_matching_predicate(pattern: &str) -> Result<MatchingPredicate, String> {
     if pattern.contains('|') || pattern.contains("\\Q") {
         // Alternations make it so that appending "$" may not force a match to the end.
         return Ok(MatchingPredicate::Matches);
     }
     // If the pattern matches a literal string, optimize to an equals call.
-    if LITERAL_PATTERN_WITH_DOT_UNESCAPED.is_match(pattern) {
+    if LITERAL_PATTERN_WITH_DOT_UNESCAPED.matches(pattern) {
         return Ok(MatchingPredicate::Equals(
             unicode_to_internal(&pattern.replace("\\.", ".")).into_owned(),
         ));
@@ -638,67 +633,53 @@ fn as_optimized_matching_predicate(pattern: &str) -> Result<MatchingPredicate, r
     };
     let suffix_pattern = suffix_pattern.as_str();
     // If the pattern matches a literal suffix, optimize to a string suffix match.
-    if LITERAL_PATTERN_WITH_DOT_UNESCAPED.is_match(suffix_pattern) {
+    if LITERAL_PATTERN_WITH_DOT_UNESCAPED.matches(suffix_pattern) {
         return Ok(MatchingPredicate::EndsWith(
             unicode_to_internal(&suffix_pattern.replace("\\.", ".")).into_owned(),
         ));
     }
     // Turn the "match" pattern into an equivalent "find" pattern.
-    Ok(MatchingPredicate::Find(Regex::new(&format!(
-        "(?s){}\\z",
-        suffix_pattern
-    ))?))
+    Ok(MatchingPredicate::Find(java_regex::Pattern::compile(
+        &format!("{suffix_pattern}\\z"),
+        java_regex::DOTALL,
+    )?))
 }
 
 impl RegexPatternOption {
     /// `java.util.regex.Pattern.DOTALL`.
-    pub const DOTALL: i32 = 0x20;
+    pub const DOTALL: i32 = java_regex::DOTALL;
 
     // Java: com/google/devtools/common/options/RegexPatternOption.java:35 RegexPatternOption.create
     /// `RegexPatternOption.create(Pattern.compile(pattern, flags))`: `pattern` is a Unicode
-    /// string (Java compiles `StringEncoding.internalToUnicode` of the option value). Of the
-    /// `Pattern` flags only [`Self::DOTALL`] is ported; any other flag fails loudly.
-    pub fn compile(pattern: &str, flags: i32) -> Result<Self, regex::Error> {
-        if flags & !Self::DOTALL != 0 {
-            crate::unported!("Pattern.compile flags other than DOTALL");
-        }
-        let prefix = if flags & Self::DOTALL != 0 {
-            "(?s)"
-        } else {
-            ""
-        };
-        let regex = Regex::new(&format!("{}{}", prefix, pattern))?;
-        let full_match = Regex::new(&format!("{}^(?:{})$", prefix, pattern))?;
+    /// string (Java compiles `StringEncoding.internalToUnicode` of the option value). The error is
+    /// `PatternSyntaxException.getMessage()`.
+    pub fn compile(pattern: &str, flags: i32) -> Result<Self, String> {
+        let regex = java_regex::Pattern::compile(pattern, flags)?;
         let matcher = as_optimized_matching_predicate(pattern)?;
-        Ok(RegexPatternOption {
-            pattern: pattern.to_string(),
-            regex,
-            full_match,
-            matcher,
-        })
+        Ok(RegexPatternOption { regex, matcher })
     }
 
     /// `regexPattern().pattern()` (a Unicode string).
     pub fn pattern(&self) -> &str {
-        &self.pattern
+        self.regex.pattern()
     }
 
     /// `regexPattern()`, compiled with the flags given to [`Self::compile`]. Like Java's
     /// `Pattern`, it matches Unicode strings: convert an internal string with
     /// `internal_to_unicode` first.
-    pub fn regex_pattern(&self) -> &Regex {
+    pub fn regex_pattern(&self) -> &java_regex::Pattern {
         &self.regex
     }
 
     /// `regexPattern().matcher(s).matches()`: `s` as given (no conversion).
     pub fn pattern_matches(&self, s: &str) -> bool {
-        self.full_match.is_match(s)
+        self.regex.matches(s)
     }
 
     /// `matcher().test(s)`: matches the entire internal string `s` against the pattern.
     pub fn matches(&self, s: &str) -> bool {
         match &self.matcher {
-            MatchingPredicate::Matches => self.full_match.is_match(&internal_to_unicode(s)),
+            MatchingPredicate::Matches => self.regex.matches(&internal_to_unicode(s)),
             MatchingPredicate::Equals(literal) => literal == s,
             MatchingPredicate::Any => true,
             MatchingPredicate::EndsWith(suffix) => s.ends_with(suffix.as_str()),
@@ -709,14 +690,14 @@ impl RegexPatternOption {
 
 impl PartialEq for RegexPatternOption {
     fn eq(&self, other: &Self) -> bool {
-        self.pattern == other.pattern
+        self.pattern() == other.pattern()
     }
 }
 
 impl OptionScalar for RegexPatternOption {
     fn java_to_string(&self) -> String {
         // AutoValue toString; the predicate's toString is not reproducible.
-        format!("RegexPatternOption{{regexPattern={}}}", self.pattern)
+        format!("RegexPatternOption{{regexPattern={}}}", self.pattern())
     }
 }
 crate::option_field_type!(
@@ -735,7 +716,7 @@ impl Converter for RegexPatternConverter {
         let input = non_null(input);
         match RegexPatternOption::compile(&internal_to_unicode(input), RegexPatternOption::DOTALL) {
             Ok(r) => Ok(Some(Value::new(r))),
-            // Java prints PatternSyntaxException.getMessage(); the regex crate's text differs.
+            // PatternSyntaxException.getMessage().
             Err(e) => Err(OptionsParsingException::new(format!(
                 "Not a valid regular expression: {}",
                 e

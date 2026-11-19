@@ -1,8 +1,10 @@
 //! Port of `lib/actions/ResourceSet.java` and `ResourceSetOrBuilder.java`.
 
 use std::fmt;
+use std::sync::Arc;
 
 use super::exec_exception::ExecException;
+use crate::worker::worker_key::WorkerKey;
 use indexmap::IndexMap;
 
 /// Resources needed to execute a spawn locally.
@@ -11,8 +13,8 @@ use indexmap::IndexMap;
 pub struct ResourceSet {
     resources: IndexMap<String, f64>,
     local_test_count: i32,
-    // PORT: WorkerKey is not ported (persistent workers are out of scope); always None in Java
-    // for non-worker spawns.
+    /// The workerKey of used worker. Null if no worker is used.
+    worker_key: Option<Arc<WorkerKey>>,
 }
 
 impl ResourceSet {
@@ -49,7 +51,28 @@ impl ResourceSet {
         ResourceSet {
             resources,
             local_test_count,
+            worker_key: None,
         }
+    }
+
+    /// `create(ImmutableMap resources, localTestCount, workerKey)`.
+    // Java: com/google/devtools/build/lib/actions/ResourceSet.java:71 ResourceSet.create
+    pub fn create_with_worker_key(
+        resources: IndexMap<String, f64>,
+        local_test_count: i32,
+        worker_key: Option<Arc<WorkerKey>>,
+    ) -> ResourceSet {
+        ResourceSet {
+            resources,
+            local_test_count,
+            worker_key,
+        }
+    }
+
+    /// Returns the workerKey of worker. If there is no worker requested, then returns `None`.
+    // Java: com/google/devtools/build/lib/actions/ResourceSet.java:119 ResourceSet.getWorkerKey
+    pub fn get_worker_key(&self) -> Option<&Arc<WorkerKey>> {
+        self.worker_key.as_ref()
     }
 
     /// `withResourceOverrides(overrides...)`.
@@ -63,7 +86,7 @@ impl ResourceSet {
                 m.insert(k.clone(), *v);
             }
         }
-        ResourceSet::create_from_map(m, self.local_test_count)
+        ResourceSet::create_with_worker_key(m, self.local_test_count, self.worker_key.clone())
     }
 
     /// `get(resource)`.

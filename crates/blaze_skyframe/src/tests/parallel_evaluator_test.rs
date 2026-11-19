@@ -1624,3 +1624,265 @@ fn test_dep_on_cached_node_that_itself_depends_on_both_cycle_and_error() {
         assert!(exception_message(error).contains("error"));
     }
 }
+
+/// An evaluator on `tester` with the extract-tag function, `EventFilter.FULL_STORAGE` and the
+/// given progress receiver (Java: `makeEvaluator(graph, ..., EventFilter.FULL_STORAGE)`).
+fn full_storage_evaluator(
+    tester: Arc<Tester>,
+    progress_receiver: Option<Arc<dyn EvaluationProgressReceiver>>,
+) -> Evaluator {
+    let mut b = EvaluatorBuilder::new()
+        .client(tester.clone())
+        .function(T::FUNCTION, TaggingTestFunction(tester))
+        .event_filter(Arc::new(<dyn EventFilter>::FULL_STORAGE));
+    if let Some(r) = progress_receiver {
+        b = b.progress_receiver(r);
+    }
+    b.build()
+}
+
+// Java: ParallelEvaluatorTest.fullEventStorage_unstoredEvent_reportedImmediately_notReplayed
+// PORT: Java makes a new ParallelEvaluator, with a new EmittedEventState, per evaluation; the
+// evaluator's state is cleared here.
+#[test]
+fn full_event_storage_unstored_event_reported_immediately_not_replayed() {
+    for event_type in [SkyframeEventType::Event, SkyframeEventType::Post] {
+        let reported_events = Arc::new(StoredEventHandler::new());
+        let evaluated = Arc::new(AtomicBool::new(false));
+        let unstored_event = event_type.create_unstored();
+        let tester = new_tester();
+        {
+            let (evaluated, unstored_event, reported_events) = (
+                evaluated.clone(),
+                unstored_event.clone(),
+                reported_events.clone(),
+            );
+            tester.set_builder("key", move |_, env| {
+                evaluated.store(true, Ordering::SeqCst);
+                unstored_event.report_to(env.listener());
+                event_type.assert_results(&reported_events, &[&unstored_event]);
+                Ok(Some("value".into()))
+            });
+        }
+        let ev = full_storage_evaluator(tester, None);
+        ev.evaluate(&[k("key")], &ctx_p(reported_events.clone(), false, 2))
+            .unwrap();
+        assert!(evaluated.load(Ordering::SeqCst));
+        event_type.assert_results(&reported_events, &[&unstored_event]);
+
+        reported_events.clear();
+        evaluated.store(false, Ordering::SeqCst);
+        ev.emitted_event_state().clear();
+        ev.evaluate(&[k("key")], &ctx_p(reported_events.clone(), false, 2))
+            .unwrap();
+        assert!(!evaluated.load(Ordering::SeqCst));
+        event_type.assert_results(&reported_events, &[]);
+    }
+}
+
+// Java: ParallelEvaluatorTest.fullEventStorage_storedEvent_reportedAfterSkyFunctionCompletes_replayed
+// PORT: a new EmittedEventState per evaluation, as above.
+#[test]
+fn full_event_storage_stored_event_reported_after_sky_function_completes_replayed() {
+    for event_type in [SkyframeEventType::Event, SkyframeEventType::Post] {
+        let reported_events = Arc::new(StoredEventHandler::new());
+        let tag = "this is the tag";
+        let evaluated_mid = Arc::new(AtomicBool::new(false));
+        let stored_event = event_type.create_stored();
+        let tagged_event = stored_event.with_tag(tag);
+        let tester = new_tester();
+        {
+            let (tagged_event, reported_events) = (tagged_event.clone(), reported_events.clone());
+            tester.set_builder("top", move |_, env| {
+                if env.get_value(T("mid"))?.is_none() {
+                    return Ok(None);
+                }
+                event_type.assert_results(&reported_events, &[&tagged_event]);
+                Ok(Some("topValue".into()))
+            });
+        }
+        {
+            let (evaluated_mid, stored_event, reported_events) = (
+                evaluated_mid.clone(),
+                stored_event.clone(),
+                reported_events.clone(),
+            );
+            tester
+                .set_builder("mid", move |_, env| {
+                    evaluated_mid.store(true, Ordering::SeqCst);
+                    stored_event.report_to(env.listener());
+                    event_type.assert_results(&reported_events, &[]);
+                    if env.get_value(T("bottom"))?.is_none() {
+                        return Ok(None);
+                    }
+                    Ok(Some("midValue".into()))
+                })
+                .with("mid", |s| s.tag = Some(tag.to_string()))
+                .set("bottom", "depValue");
+        }
+        let ev = full_storage_evaluator(tester, None);
+        ev.evaluate(&[k("top")], &ctx_p(reported_events.clone(), false, 2))
+            .unwrap();
+        assert!(evaluated_mid.load(Ordering::SeqCst));
+        event_type.assert_results(&reported_events, &[&tagged_event]);
+
+        reported_events.clear();
+        evaluated_mid.store(false, Ordering::SeqCst);
+        ev.emitted_event_state().clear();
+        ev.evaluate(&[k("top")], &ctx_p(reported_events.clone(), false, 2))
+            .unwrap();
+        assert!(!evaluated_mid.load(Ordering::SeqCst));
+        event_type.assert_results(&reported_events, &[&tagged_event]);
+    }
+}
+
+/// An `EvaluationProgressReceiver` that records the keys given to `enqueueing` and `evaluated`.
+#[derive(Default)]
+struct RecordingReceiver {
+    enqueued: Mutex<HashSet<SkyKey>>,
+    evaluated: Mutex<HashMap<SkyKey, usize>>,
+}
+
+impl EvaluationProgressReceiver for RecordingReceiver {
+    fn enqueueing(&self, sky_key: &SkyKey) {
+        self.enqueued.lock().insert(sky_key.clone());
+    }
+    fn evaluated(
+        &self,
+        sky_key: &SkyKey,
+        _state: EvaluationState,
+        _new_value: Option<&SkyValue>,
+        _new_error: Option<&ErrorInfo>,
+        _direct_deps: Option<&GroupedDeps>,
+    ) {
+        *self.evaluated.lock().entry(sky_key.clone()).or_default() += 1;
+    }
+}
+
+impl RecordingReceiver {
+    fn evaluated_keys(&self) -> HashSet<SkyKey> {
+        self.evaluated.lock().keys().cloned().collect()
+    }
+    fn clear(&self) {
+        self.enqueued.lock().clear();
+        self.evaluated.lock().clear();
+    }
+}
+
+// Java: ParallelEvaluatorTest.signalValueEnqueuedAndEvaluated
+#[test]
+fn signal_value_enqueued_and_evaluated() {
+    let receiver = Arc::new(RecordingReceiver::default());
+    let tester = new_tester();
+    tester
+        .add_dependency("top1", "d1")
+        .add_dependency("top1", "d2")
+        .add_dependency("top2", "d3")
+        .with("top3", |_| {});
+    let ev = EvaluatorBuilder::new()
+        .client(tester.clone())
+        .function(T::FUNCTION, TestFunction)
+        .progress_receiver(receiver.clone())
+        .build();
+    assert!(receiver.enqueued.lock().is_empty());
+    assert!(receiver.evaluated.lock().is_empty());
+
+    tester.set("d1", "1").set("d2", "2").set("d3", "3");
+
+    let set = |keys: &[&'static str]| -> HashSet<SkyKey> { keys.iter().map(|n| k(n)).collect() };
+    eval(&ev, false, 200, &[k("top1")]);
+    assert_eq!(*receiver.enqueued.lock(), set(&["top1", "d1", "d2"]));
+    assert_eq!(receiver.evaluated_keys(), set(&["top1", "d1", "d2"]));
+    receiver.clear();
+
+    eval(&ev, false, 200, &[k("top2")]);
+    assert_eq!(*receiver.enqueued.lock(), set(&["top2", "d3"]));
+    assert_eq!(receiver.evaluated_keys(), set(&["top2", "d3"]));
+    receiver.clear();
+
+    eval(&ev, false, 200, &[k("top1")]);
+    assert!(receiver.enqueued.lock().is_empty());
+    assert_eq!(receiver.evaluated_keys(), set(&["top1"]));
+}
+
+// Java: ParallelEvaluatorTest.topLevelKeyBuiltAsDepOfAnotherTopLevelKey_reportedToProgressReceiverOnce
+// PORT: Java's direct executor evaluates "parent" inline, so "child" is built by the time the loop
+// over the roots reaches it; one root worker does the same here.
+#[test]
+fn top_level_key_built_as_dep_of_another_top_level_key_reported_to_progress_receiver_once() {
+    let tester = new_tester();
+    tester
+        .set("child", "child")
+        .add_dependency("parent", "child");
+    let receiver = Arc::new(RecordingReceiver::default());
+    let ev = full_storage_evaluator(tester, Some(receiver.clone()));
+
+    let r = eval(&ev, false, 1, &[k("parent"), k("child")]);
+    assert!(!r.has_error());
+    assert_eq!(receiver.evaluated.lock()[&k("child")], 1);
+    assert_eq!(receiver.evaluated.lock()[&k("parent")], 1);
+
+    // Nodes that were done before the evaluation began are still reported.
+    let r = eval(&ev, false, 1, &[k("parent"), k("child")]);
+    assert!(!r.has_error());
+    assert_eq!(receiver.evaluated.lock()[&k("child")], 2);
+    assert_eq!(receiver.evaluated.lock()[&k("parent")], 2);
+}
+
+// Java: ParallelEvaluatorTest.runPartialResultOnInterruption
+// PORT: Java's latch counts two runs of "fast" (it restarts once for "leaf"); it runs once here.
+#[test]
+fn run_partial_result_on_interruption() {
+    for build_fast_first in [false, true] {
+        // One run for fastKey's builder and one for the start of waitKey's builder.
+        let all_values_ready = Latch::new(2);
+        let tester = new_tester();
+        {
+            let all_values_ready = all_values_ready.clone();
+            tester.set_builder("wait", move |_, env| {
+                all_values_ready.count_down();
+                // Java: Thread.sleep(10000), interrupted.
+                let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
+                while std::time::Instant::now() < deadline {
+                    env.check_interrupted()?;
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                panic!("Should have been interrupted");
+            });
+        }
+        tester
+            .set_chained(
+                "fast",
+                Chained {
+                    notify_finish: Some(all_values_ready.clone()),
+                    value: Some("fast"),
+                    deps: vec!["leaf"],
+                    ..Chained::default()
+                },
+            )
+            .set("leaf", "leaf");
+        let receiver = Arc::new(RecordingReceiver::default());
+        let ev = Arc::new(full_storage_evaluator(tester, Some(receiver.clone())));
+        if build_fast_first {
+            eval(&ev, false, 4, &[k("fast")]);
+            receiver.clear();
+        }
+        let ev2 = ev.clone();
+        let eval_thread =
+            std::thread::spawn(move || ev2.evaluate(&[k("wait"), k("fast")], &ctx(true, 4)).err());
+        all_values_ready.wait("values not ready");
+        ev.interrupt();
+        assert_eq!(eval_thread.join().unwrap(), Some(Interrupted));
+        ev.clear_interrupt();
+        if build_fast_first {
+            // If leafKey was already built, it is not reported to the receiver.
+            assert_eq!(receiver.evaluated_keys(), HashSet::from([k("fast")]));
+        } else {
+            // On first time being built, leafKey is registered too.
+            assert_eq!(
+                receiver.evaluated_keys(),
+                HashSet::from([k("fast"), k("leaf")])
+            );
+        }
+    }
+}

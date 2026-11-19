@@ -224,16 +224,18 @@ pub fn guarded_symbol_errors(
 // PORT: Java `Resolver.Module.Undefined`; see third_party/starlark-rust
 // starlark/src/eval/compiler/scope.rs `ScopeError`.
 pub fn undefined_variable_name(message: &str) -> Option<&str> {
-    let rest = message.strip_prefix("Variable `")?;
-    let (name, rest) = rest.split_once("` not found")?;
-    if name.is_empty() || name.contains('`') {
+    // The vendored interpreter now raises Java's text (patch 0050):
+    // "name 'x' is not defined" with an optional " (did you mean 'y'?)".
+    let rest = message.strip_prefix("name '")?;
+    let (name, rest) = rest.split_once("' is not defined")?;
+    if name.is_empty() || name.contains('\'') {
         return None;
     }
     if rest.is_empty() {
         return Some(name);
     }
-    let suggestion = rest.strip_prefix(", did you mean `")?.strip_suffix("`?")?;
-    if suggestion.is_empty() || suggestion.contains('`') {
+    let suggestion = rest.strip_prefix(" (did you mean '")?.strip_suffix("'?)")?;
+    if suggestion.is_empty() || suggestion.contains('\'') {
         return None;
     }
     Some(name)
@@ -459,24 +461,24 @@ mod guarded_symbol_tests {
     #[test]
     fn undefined_variable_name_reads_starlark_rusts_scope_errors() {
         assert_eq!(
-            undefined_variable_name("Variable `CcInfo` not found"),
+            undefined_variable_name("name 'CcInfo' is not defined"),
             Some("CcInfo")
         );
         assert_eq!(
-            undefined_variable_name("Variable `CcInfo` not found, did you mean `DefaultInfo`?"),
+            undefined_variable_name("name 'CcInfo' is not defined (did you mean 'DefaultInfo'?)"),
             Some("CcInfo")
         );
-        assert_eq!(undefined_variable_name("Variable `` not found"), None);
+        assert_eq!(undefined_variable_name("name '' is not defined"), None);
         assert_eq!(
-            undefined_variable_name("Variable `x` not found and more"),
+            undefined_variable_name("name 'x' is not defined and more"),
             None
         );
         assert_eq!(
-            undefined_variable_name("Error: Variable `x` not found"),
+            undefined_variable_name("Error: name 'x' is not defined"),
             None
         );
         assert_eq!(
-            undefined_variable_name("Local variable `x` referenced before assignment"),
+            undefined_variable_name("local variable 'x' is referenced before assignment."),
             None
         );
     }

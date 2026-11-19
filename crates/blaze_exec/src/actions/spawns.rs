@@ -98,6 +98,44 @@ pub fn get_worker_key_mnemonic(spawn: &dyn Spawn) -> String {
         .unwrap_or_else(|| spawn.get_mnemonic())
 }
 
+/// `supportsWorkerCancellation(Spawn)`.
+// Java: com/google/devtools/build/lib/actions/Spawns.java:107 Spawns.supportsWorkerCancellation
+pub fn supports_worker_cancellation(spawn: &dyn Spawn) -> bool {
+    spawn
+        .get_execution_info()
+        .get(er::SUPPORTS_WORKER_CANCELLATION)
+        .map(String::as_str)
+        == Some("1")
+}
+
+/// Returns whether the spawn supports sandboxing for multiplex workers through the
+/// `WorkRequest.sandbox_dir` field.
+// Java: com/google/devtools/build/lib/actions/Spawns.java:116 Spawns.supportsMultiplexSandboxing
+pub fn supports_multiplex_sandboxing(spawn: &dyn Spawn) -> bool {
+    spawn
+        .get_execution_info()
+        .get(er::SUPPORTS_MULTIPLEX_SANDBOXING)
+        .map(String::as_str)
+        == Some("1")
+}
+
+/// Returns which worker protocol format a Spawn claims a persistent worker uses. Defaults to
+/// proto if the protocol format is not specified. The `Err` is Java's `IOException` message.
+// Java: com/google/devtools/build/lib/actions/Spawns.java:125 Spawns.getWorkerProtocolFormat
+pub fn get_worker_protocol_format(spawn: &dyn Spawn) -> Result<er::WorkerProtocolFormat, String> {
+    match spawn.get_execution_info().get(er::REQUIRES_WORKER_PROTOCOL) {
+        Some(protocol_format) => match protocol_format.as_str() {
+            "json" => Ok(er::WorkerProtocolFormat::Json),
+            "proto" => Ok(er::WorkerProtocolFormat::Proto),
+            _ => Err(
+                "requires-worker-protocol must be set to a valid worker protocol format: json or proto"
+                    .to_string(),
+            ),
+        },
+        None => Ok(er::WorkerProtocolFormat::Proto),
+    }
+}
+
 /// `getTimeout(Spawn)`.
 pub fn get_timeout(spawn: &dyn Spawn) -> Result<Duration, ExecException> {
     get_timeout_with_default(spawn, Some(Duration::ZERO))

@@ -3,55 +3,47 @@
 use std::hash::{Hash, Hasher};
 
 use blaze_options::{
-    ConversionContext, Converter, OptionScalar, OptionsParsingException, RegexPatternOption, Value,
+    ConversionContext, Converter, OptionScalar, OptionsParsingException, Value,
     converter::non_null, option_field_type,
 };
+use blaze_util::java_regex;
 
 use crate::fragment::fragment_options::java_string_compare;
 
 type ConvResult = Result<Option<Value>, OptionsParsingException>;
 
 /// A compiled `java.util.regex.Pattern` (no flags): the Java pattern string plus a compiled
-/// matcher.
-///
-/// PORT: Java regex is emulated with the `regex` crate (through `blaze_options`'
-/// `RegexPatternOption`, compiled without flags; its docs list the `regex` crate's limits). Atomic
-/// groups `(?>...)` (unsupported by the `regex` crate) are compiled as non-capturing groups: for
-/// `find()`/`matches()` of a whole alternative they accept the same inputs.
+/// matcher (`blaze_util::java_regex`, Java's dialect on the `regex` crate; its module docs list
+/// what is `unported!`). The atomic groups of [`RegexFilter::take_union_of_regexes`]
+/// (`(?:(?>a)|(?>b))`) end the pattern, so they are exact for `find()` (`isIncluded`); under
+/// `matches()` they are `unported!`.
 #[derive(Clone, Debug)]
 pub struct JavaPattern {
-    pattern: String,
-    compiled: RegexPatternOption,
+    compiled: java_regex::Pattern,
 }
 
 impl JavaPattern {
-    /// `Pattern.compile(pattern)`; the error is the syntax error's message.
+    /// `Pattern.compile(pattern)`; the error is `PatternSyntaxException.getMessage()`.
     pub fn compile(pattern: &str) -> Result<JavaPattern, String> {
-        let translated = pattern.replace("(?>", "(?:");
         // Pattern.compile(pattern): no flags.
-        let compiled = RegexPatternOption::compile(&translated, 0).map_err(|e| {
-            // The regex crate's message; Java prints PatternSyntaxException.getMessage().
-            e.to_string()
-        })?;
         Ok(JavaPattern {
-            pattern: pattern.to_string(),
-            compiled,
+            compiled: java_regex::Pattern::compile(pattern, 0)?,
         })
     }
 
     /// `Pattern.pattern()`.
     pub fn pattern(&self) -> &str {
-        &self.pattern
+        self.compiled.pattern()
     }
 
     /// `pattern.matcher(s).find()`.
     pub fn find(&self, s: &str) -> bool {
-        self.compiled.regex_pattern().is_match(s)
+        self.compiled.is_match(s)
     }
 
     /// `pattern.matcher(s).matches()`.
     pub fn matches(&self, s: &str) -> bool {
-        self.compiled.pattern_matches(s)
+        self.compiled.matches(s)
     }
 }
 

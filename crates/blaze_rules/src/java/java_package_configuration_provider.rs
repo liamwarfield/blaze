@@ -14,7 +14,8 @@ use super::starlark_info_wrapper::StarlarkInfoWrapper;
 use crate::cpp::util::errorf;
 
 /// `JavaPackageConfigurationProvider.PROVIDER.getKey()`.
-// Java: com/google/devtools/build/lib/rules/java/JavaPackageConfigurationProvider.java:111 JavaPackageConfigurationProvider.Provider.<init>
+// Java: com/google/devtools/build/lib/rules/java/JavaPackageConfigurationProvider.java:107 JavaPackageConfigurationProvider.Provider.<init>
+// Java: com/google/devtools/build/lib/rules/java/JavaPackageConfigurationProvider.java:115 JavaPackageConfigurationProvider.Provider.<init>
 pub fn provider_key() -> ProviderKey {
     rules_java_provider_key(
         "java/common/rules:java_package_configuration.bzl",
@@ -30,6 +31,20 @@ pub struct JavaPackageConfigurationProvider<'v> {
 }
 
 impl<'v> JavaPackageConfigurationProvider<'v> {
+    /// `target.get(PROVIDER)`: the wrapped provider of `target`, `None` if it has none.
+    // Java: com/google/devtools/build/lib/rules/java/JavaPackageConfigurationProvider.java:53 JavaPackageConfigurationProvider.get
+    pub fn get(
+        target: &blaze_analysis::configured_target::ConfiguredTarget,
+        eval: &starlark::eval::Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<Option<Self>> {
+        match blaze_analysis::configuredtargets::get_info(target, &provider_key()) {
+            None => Ok(None),
+            Some(info) => {
+                Self::wrap(eval.heap().access_owned_frozen_value(&info), eval.heap()).map(Some)
+            }
+        }
+    }
+
     /// `PROVIDER.wrap(value)`.
     // Java: com/google/devtools/build/lib/rules/java/JavaPackageConfigurationProvider.java:124 JavaPackageConfigurationProvider.Provider.wrap
     pub fn wrap(value: Value<'v>, heap: Heap<'v>) -> starlark::Result<Self> {

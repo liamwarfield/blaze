@@ -1,6 +1,9 @@
 //! `rules/java/JavaUtil.java`: utility methods for use by Java-related parts of the build
 //! system.
 
+// PORT: `private JavaUtil() {}` only prevents instantiation; the Rust module has no type.
+// Java: com/google/devtools/build/lib/rules/java/JavaUtil.java:25 JavaUtil.<init>
+
 use blaze_vfs::PathFragment;
 
 /// Java source roots, used to relativize resource paths and infer main_class values.

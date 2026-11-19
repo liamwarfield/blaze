@@ -693,6 +693,11 @@ fn run_build_with_bep(
         Some((validator, _)) => build_tool.with_target_validator(*validator),
         None => build_tool,
     };
+    // The build event stream's loading and analysis posting points.
+    let build_tool = match bep {
+        Some(bep) => build_tool.with_build_event_hooks(bep.as_ref()),
+        None => build_tool,
+    };
     // BuildTool.buildTargets: BuildStartingEvent. Its subscriber OutputFilteringModule sets the
     // reporter's output filter.
     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:288 BuildTool.buildTargets
@@ -1794,13 +1799,8 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             .expect("IllegalStateException: the executor was created without execution");
         let reporter = self.reporter.clone();
 
-        // PORT: the loading and analysis BEP events (TargetParsingCompleteEvent, ExecRootEvent,
-        // the top-level configuration, TargetConfiguredEvents) and the analysis metrics are
-        // posted here, from the loading and analysis results, instead of while BuildTool's
-        // loading and analysis run; the streamer orders events by their announcements.
-        if let Some(bep) = &self.bep {
-            bep.analysis_complete(request, skyframe_executor, loading_result, analysis_result);
-        }
+        // The loading and analysis BEP events are posted by BuildTool's hooks
+        // (blaze_sky_top BuildEventHooks, crate::commands::bep).
 
         // ExecutionTool.prepareForExecution: plant the symlink forest of the exec root.
         // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:296 ExecutionTool.prepareForExecution

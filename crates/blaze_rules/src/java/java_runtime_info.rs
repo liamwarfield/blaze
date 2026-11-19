@@ -18,7 +18,8 @@ use crate::cpp::util::errorf;
 const BZL: &str = "java/common/rules:java_runtime.bzl";
 
 /// `JavaRuntimeInfo.PROVIDER.getKey()`.
-// Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:143 JavaRuntimeInfo.Provider.<init>
+// Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:139 JavaRuntimeInfo.Provider.<init>
+// Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:147 JavaRuntimeInfo.Provider.<init>
 pub fn provider_key() -> ProviderKey {
     rules_java_provider_key(BZL, "JavaRuntimeInfo")
 }
@@ -37,6 +38,82 @@ pub struct JavaRuntimeInfo<'v> {
 }
 
 impl<'v> JavaRuntimeInfo<'v> {
+    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:50 JavaRuntimeInfo.forHost
+    pub fn for_host(
+        rule_context: &blaze_analysis::rule::RuleContext,
+        eval: &starlark::eval::Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<JavaRuntimeInfo<'v>> {
+        super::java_toolchain_provider::JavaToolchainProvider::from_rule_context(rule_context, eval)
+            .unwrap_or_else(|| panic!("NullPointerException: JavaToolchainProvider.from"))
+            .get_java_runtime()
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:54 JavaRuntimeInfo.from
+    pub fn from_toolchain_type(
+        rule_context: &blaze_analysis::rule::RuleContext,
+        java_runtime_toolchain_type: &blaze_cmdline::Label,
+        eval: &starlark::eval::Evaluator<'v, '_, '_>,
+    ) -> Option<JavaRuntimeInfo<'v>> {
+        let toolchain_info = rule_context
+            .get_toolchain_info(java_runtime_toolchain_type)
+            .map(|i| eval.heap().access_owned_frozen_value(&i));
+        Self::from_toolchain_info(rule_context, toolchain_info, eval.heap())
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:60 JavaRuntimeInfo.from
+    pub fn from_attribute(
+        rule_context: &blaze_analysis::rule::RuleContext,
+        attribute_name: &str,
+        eval: &starlark::eval::Evaluator<'v, '_, '_>,
+    ) -> Option<JavaRuntimeInfo<'v>> {
+        use blaze_packages::attribute::AttributeMap;
+        if !rule_context
+            .attributes()
+            .has_typed(attribute_name, blaze_packages::types::Type::Label)
+        {
+            return None;
+        }
+        let prerequisite = rule_context.get_prerequisite(attribute_name)?;
+        let toolchain_info = blaze_analysis::configuredtargets::get_info(
+            &prerequisite,
+            &blaze_packages::starlark_defs::platform_common::TOOLCHAIN_INFO.key(),
+        )
+        .map(|i| eval.heap().access_owned_frozen_value(&i));
+        Self::from_toolchain_info(rule_context, toolchain_info, eval.heap())
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:74 JavaRuntimeInfo.from
+    fn from_toolchain_info(
+        rule_context: &blaze_analysis::rule::RuleContext,
+        toolchain_info: Option<Value<'v>>,
+        heap: Heap<'v>,
+    ) -> Option<JavaRuntimeInfo<'v>> {
+        use blaze_analysis::rule::rule_error_consumer::RuleErrorConsumer;
+        if let Some(toolchain_info) = toolchain_info {
+            let java_runtime = super::starlark_info_wrapper::struct_get_value(
+                toolchain_info,
+                "java_runtime",
+                heap,
+            );
+            let result = match java_runtime {
+                Some(v) if !v.is_none() => Self::wrap(v, heap),
+                _ => panic!("NullPointerException: ToolchainInfo.java_runtime"),
+            };
+            match result {
+                Ok(r) => return Some(r),
+                Err(e) => {
+                    rule_context.rule_error(&format!(
+                        "There was an error reading the Java runtime: {}",
+                        e
+                    ));
+                    return None;
+                }
+            }
+        }
+        rule_context.rule_error("The selected Java runtime is not a JavaRuntimeInfo");
+        None
+    }
+
     // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:98 JavaRuntimeInfo.wrap
     pub fn wrap(info: Value<'v>, heap: Heap<'v>) -> starlark::Result<JavaRuntimeInfo<'v>> {
         let key = info_key(info);

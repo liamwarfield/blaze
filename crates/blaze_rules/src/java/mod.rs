@@ -32,6 +32,21 @@ pub mod starlark_info_wrapper;
 
 pub use java_starlark_common::java_common_internal_value;
 
+// PORT: not ported, dead in Bazel 9.3.2. These starlarkbuildapi/java interfaces describe the
+// Java-native JavaInfo family that moved to Starlark (rules_java). No class under src/main/java
+// implements any of them (checked with `grep -rl` over src/main/java at the pin): they are only
+// referenced by each other and by JavaCommonApi's documentation-only default methods; their
+// implementations (JavaInfo, JavaGenJarsProvider, JavaCompilationInfoProvider,
+// JavaRuleOutputJarsProvider, JavaModuleFlagsProvider) live in src/test/java only, and
+// JavaRuntimeInfoApi and JavaToolchainStarlarkApiProviderApi have no implementation at all.
+//   com/google/devtools/build/lib/starlarkbuildapi/java/JavaInfoApi.java
+//   com/google/devtools/build/lib/starlarkbuildapi/java/JavaAnnotationProcessingApi.java
+//   com/google/devtools/build/lib/starlarkbuildapi/java/JavaCompilationInfoProviderApi.java
+//   com/google/devtools/build/lib/starlarkbuildapi/java/JavaRuleOutputJarsProviderApi.java
+//   com/google/devtools/build/lib/starlarkbuildapi/java/JavaRuntimeInfoApi.java
+//   com/google/devtools/build/lib/starlarkbuildapi/java/JavaToolchainStarlarkApiProviderApi.java
+//   com/google/devtools/build/lib/starlarkbuildapi/java/JavaModuleFlagsProviderApi.java
+
 use std::sync::Arc;
 
 use blaze_analysis::configured_rule_class_provider::ConfiguredRuleClassProviderBuilder;

@@ -238,6 +238,7 @@ impl<'v> StarlarkValue<'v> for JavaPluginDataValue {
         ]
     }
 
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/java/JavaPluginInfoApi.java:75 JavaPluginInfoApi.JavaPluginDataApi.isImmutable
     fn provide(&'v self, demand: &mut Demand<'_, 'v>) {
         demand.provide_value(StructureMarker { native_info: false });
         demand.provide_value(DeeplyImmutable);

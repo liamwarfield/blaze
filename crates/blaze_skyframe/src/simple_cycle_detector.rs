@@ -1,9 +1,12 @@
 //! Port of `SimpleCycleDetector`.
 
+use crate::environment::{DepValue, report_events_and_get_events_to_store};
 use crate::evaluation_result::EvaluationResultBuilder;
-use crate::evaluator::{DoneEntry, Run};
-use crate::{CycleInfo, ErrorInfo, GroupedDeps, SkyKey};
+use crate::evaluator::{DoneEntry, Node, Run, maybe_mark_rebuilding};
+use crate::node_entry::{LifecycleState, NodeEntry};
+use crate::{CycleInfo, ErrorInfo, SkyKey};
 use blaze_util::check_state;
+use indexmap::IndexSet;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -22,10 +25,8 @@ enum Visit {
 /// Depth-first implementation of cycle detection after an evaluation has completed with at least
 /// one root unfinished.
 ///
-/// PORT: "not done" nodes are the ones that did not commit in the blocking engine (their
-/// function returned null on a dep that was in a cycle, or the evaluation aborted); their
-/// recorded deps stand in for Java's temporary direct deps. Dirty-node handling is skipped
-/// (incremental).
+/// PORT: "not done" nodes are the ones still in flight in the blocking engine (their function
+/// returned null on a dep that was in a cycle, or the evaluation aborted).
 // Java: com/google/devtools/build/skyframe/SimpleCycleDetector.java:41 SimpleCycleDetector
 pub(crate) struct SimpleCycleDetector {
     store_exact_cycles: bool,
@@ -97,17 +98,17 @@ impl SimpleCycleDetector {
         // of its children must be finished, and so we can build the definitive error info for
         // the node, popping it off the graph path.
         while let Some(visit) = to_visit.pop() {
-            let (key, entry) = match visit {
+            let (key, node) = match visit {
                 Visit::ChildrenFinished => {
                     // We have reached the marker node - that means all children of a node have
                     // been visited. Since all nodes have errors, we must have found errors in the
                     // children at this point.
                     let key = graph_path.pop().expect("path");
-                    let entry = get_entry(ctx, &key);
+                    let node = get_node(ctx, &key);
                     path_set.remove(&key);
                     // Skip this node if it was first/last node of a cycle, and so has already
                     // been processed.
-                    if entry.is_done() {
+                    if node.lock().entry.is_done() {
                         continue;
                     }
                     if !keep_going {
@@ -116,34 +117,55 @@ impl SimpleCycleDetector {
                         // this node; skip further evaluation
                         continue;
                     }
-                    let mut direct_deps = entry.deps.clone();
                     let mut removed_deps: HashSet<SkyKey> = HashSet::new();
                     if cycles_found < MAX_CYCLES_TO_STORE || !self.store_exact_cycles {
                         // Value must be ready, because all of its children have finished, so we
                         // can build its error.
+                        let state = node.lock();
                         check_state!(
-                            !has_unsignaled_deps(ctx, &direct_deps),
+                            !state.entry.has_unsignaled_deps(),
                             "{:?} has unsignaled deps. ValueEntry: {:?}",
                             key,
-                            entry
+                            state.entry
                         );
-                    } else if has_unsignaled_deps(ctx, &direct_deps) {
-                        let all: Vec<SkyKey> = direct_deps
+                    } else if node.lock().entry.has_unsignaled_deps() {
+                        let children: Vec<SkyKey> = node
+                            .lock()
+                            .entry
+                            .get_temporary_direct_deps()
                             .get_all_elements_as_iterable()
                             .cloned()
                             .collect();
-                        removed_deps = remove_incomplete_children_for_cycle(ctx, &all);
-                        direct_deps.remove(&removed_deps);
+                        removed_deps =
+                            remove_incomplete_children_for_cycle(&key, &node, &children, ctx);
                     }
-                    // PORT: maybeHandleVerifiedCleanNode and maybeMarkRebuilding skipped,
-                    // incremental.
+                    if maybe_handle_verified_clean_node(&key, &node, ctx, &graph_path) {
+                        continue;
+                    }
+                    let (direct_deps, old_deps) = {
+                        let mut state = node.lock();
+                        maybe_mark_rebuilding(&mut state.entry);
+                        let old_deps: IndexSet<SkyKey> = state
+                            .entry
+                            .get_all_remaining_dirty_direct_deps()
+                            .into_iter()
+                            .filter(|k| !removed_deps.contains(k))
+                            .collect();
+                        let direct_deps: Vec<SkyKey> = state
+                            .entry
+                            .get_temporary_direct_deps()
+                            .get_all_elements_as_iterable()
+                            .cloned()
+                            .collect();
+                        (direct_deps, old_deps)
+                    };
                     // Find out which children have errors. Similar logic to that in
                     // Evaluate#run().
                     let error_deps = get_children_errors_for_cycle(
-                        ctx,
                         &key,
                         &direct_deps,
-                        &entry,
+                        &node,
+                        ctx,
                         &removed_deps,
                     );
                     check_state!(
@@ -151,23 +173,29 @@ impl SimpleCycleDetector {
                         "Node {:?} was not successfully evaluated, but had no child errors. \
                          NodeEntry: {:?}",
                         key,
-                        entry
+                        node.lock().entry
                     );
-                    ctx.commit_cycle_error(
+                    // Java: SkyFunctionEnvironment.create(key, directDeps, oldDeps, ...); the
+                    // previously requested deps are all done (UndonePreviouslyRequestedDeps
+                    // "Previously requested deps not done" cannot happen here).
+                    commit_cycle_node(
+                        ctx,
                         &key,
+                        &node,
                         ErrorInfo::from_child_errors(&key, error_deps.iter().map(|e| &**e)),
-                        direct_deps,
+                        &old_deps,
+                        None,
                     );
                     continue;
                 }
                 Visit::Key(key) => {
-                    let entry = get_entry(ctx, &key);
-                    (key, entry)
+                    let node = get_node(ctx, &key);
+                    (key, node)
                 }
             };
 
             // Nothing to be done for this node if it already has an entry.
-            if entry.is_done() {
+            if node.lock().entry.is_done() {
                 continue;
             }
             if cycles_found >= MAX_CYCLES_TO_STORE && self.store_exact_cycles {
@@ -181,7 +209,29 @@ impl SimpleCycleDetector {
                 // Found a cycle!
                 cycles_found += 1;
                 let cycle: Vec<SkyKey> = graph_path[cycle_start..].to_vec();
-                // PORT: entry.isDirty() handling skipped, incremental.
+                // Put this node into a consistent state for building if it is dirty.
+                if node.lock().entry.is_dirty() {
+                    // If this loop runs more than once, we are in the peculiar position of entry
+                    // not needing rebuilding even though it was signaled with the graph version.
+                    // This can happen when the entry was previously evaluated at this version,
+                    // but then invalidated anyway, even though nothing changed.
+                    let graph_version = ctx.graph_version;
+                    let lifecycle_state = {
+                        let mut state = node.lock();
+                        while state.entry.get_lifecycle_state() == LifecycleState::CheckDependencies
+                        {
+                            state.entry.signal_dep(graph_version, None);
+                        }
+                        // PORT: Java reports a BugReport (not a crash) when this loop ran more
+                        // than once without the graph version; bug reports are not ported.
+                        state.entry.get_lifecycle_state()
+                    };
+                    if lifecycle_state == LifecycleState::NeedsRebuilding {
+                        node.lock().entry.mark_rebuilding();
+                    } else if maybe_handle_verified_clean_node(&key, &node, ctx, &graph_path) {
+                        continue;
+                    }
+                }
                 if keep_going {
                     // Any children of this node that we haven't already visited are not worth
                     // visiting, since this node is about to be done. Thus, the only child worth
@@ -189,22 +239,36 @@ impl SimpleCycleDetector {
                     // cycle is a self-edge).
                     let cycle_child = select_cycle_child(&key, &graph_path, cycle_start);
                     let removed_deps = remove_descendants_of_cycle_value(
-                        ctx,
                         &key,
-                        &entry,
+                        &node,
                         &cycle_child,
                         &mut to_visit,
                         graph_path.len() - cycle_start,
+                        ctx,
                     );
-                    let mut direct_deps = entry.deps.clone();
-                    direct_deps.remove(&removed_deps);
+                    let (direct_deps, old_deps) = {
+                        let mut state = node.lock();
+                        let old_deps: IndexSet<SkyKey> = state
+                            .entry
+                            .get_all_remaining_dirty_direct_deps()
+                            .into_iter()
+                            .filter(|k| !removed_deps.contains(k))
+                            .collect();
+                        let direct_deps: Vec<SkyKey> = state
+                            .entry
+                            .get_temporary_direct_deps()
+                            .get_all_elements_as_iterable()
+                            .cloned()
+                            .collect();
+                        (direct_deps, old_deps)
+                    };
 
                     // Construct full error info for this node. Get errors from children, which
                     // are all done except possibly for the cycleChild.
                     let mut all_errors = self.get_children_errors_for_cycle_checking(
-                        ctx,
                         &direct_deps,
                         &cycle_child,
+                        ctx,
                     );
                     let cycle_info = if self.store_exact_cycles {
                         CycleInfo::create_cycle_info_without_path(cycle)
@@ -213,10 +277,15 @@ impl SimpleCycleDetector {
                     };
                     // Add in this cycle.
                     all_errors.push(Arc::new(ErrorInfo::from_cycle(cycle_info)));
-                    ctx.commit_cycle_error(
+                    // Java: SkyFunctionEnvironment.createForError(key, temporary direct deps,
+                    // {cycleChild: dummyValue}, oldDeps, ...).
+                    commit_cycle_node(
+                        ctx,
                         &key,
+                        &node,
                         ErrorInfo::from_child_errors(&key, all_errors.iter().map(|e| &**e)),
-                        direct_deps,
+                        &old_deps,
+                        Some(&cycle_child),
                     );
                     continue;
                 } else {
@@ -227,7 +296,7 @@ impl SimpleCycleDetector {
                         "{:?} not reached from {:?}. ValueEntry: {:?}",
                         key,
                         root,
-                        entry
+                        node.lock().entry
                     );
                     return Some(ErrorInfo::from_cycle(CycleInfo::create_cycle_info(
                         graph_path[..cycle_start].to_vec(),
@@ -237,8 +306,14 @@ impl SimpleCycleDetector {
             }
 
             // This node is not yet known to be in a cycle. So process its children.
-            let temporary_direct_deps = &entry.deps;
-            if temporary_direct_deps.is_empty() {
+            let children: Vec<SkyKey> = node
+                .lock()
+                .entry
+                .get_temporary_direct_deps()
+                .get_all_elements_as_iterable()
+                .cloned()
+                .collect();
+            if children.is_empty() {
                 continue;
             }
             // This marker flag will tell us when all this node's children have been processed.
@@ -246,21 +321,22 @@ impl SimpleCycleDetector {
             // This node is now part of the path through the graph.
             graph_path.push(key.clone());
             path_set.insert(key.clone());
-            for child_key in temporary_direct_deps.get_all_elements_as_iterable() {
-                let child_entry = ctx.ev.done_entry(child_key).unwrap_or_else(|| {
+            for child_key in children {
+                let child_node = ctx.ev.node(&child_key).unwrap_or_else(|| {
                     panic!(
                         "NullPointerException: Missing already declared dep {:?} (parent={:?})",
                         child_key, key
                     )
                 });
-                if !child_entry.is_done() {
-                    to_visit.push(Visit::Key(child_key.clone()));
+                if !child_node.lock().entry.is_done() {
+                    to_visit.push(Visit::Key(child_key));
                 }
             }
         }
         if keep_going {
-            let entry = check_done(ctx, root);
-            Some((**entry.error.as_ref().expect("root in error")).clone())
+            let node = check_done(ctx, root);
+            let state = node.lock();
+            Some(state.entry.get_error_info().expect("root in error").clone())
         } else {
             None
         }
@@ -270,12 +346,12 @@ impl SimpleCycleDetector {
     // Java: com/google/devtools/build/skyframe/SimpleCycleDetector.java:419 SimpleCycleDetector.getChildrenErrorsForCycleChecking
     fn get_children_errors_for_cycle_checking(
         &self,
-        ctx: &Run<'_>,
-        children: &GroupedDeps,
+        children: &[SkyKey],
         unfinished_child: &SkyKey,
+        ctx: &Run<'_>,
     ) -> Vec<Arc<ErrorInfo>> {
         let mut all_errors = vec![];
-        for child_key in children.get_all_elements_as_iterable() {
+        for child_key in children {
             let error_info = get_error_maybe(ctx, child_key, child_key == unfinished_child);
             if let Some(error_info) = error_info {
                 // Drop child cycle error if not storing cycles, as these will be redundant with
@@ -291,16 +367,78 @@ impl SimpleCycleDetector {
     }
 }
 
-fn get_entry(ctx: &Run<'_>, key: &SkyKey) -> Arc<DoneEntry> {
-    ctx.ev
-        .done_entry(key)
-        .unwrap_or_else(|| panic!("NullPointerException: {key:?}"))
+/// Java: `env.setError(entry, error)`, `env.commitAndGetParents(entry, /*expectDoneDeps=*/
+/// true)` and `signalParentsOnAbort` for a node the cycle detector finishes. `cycle_child` is the
+/// key `createForError` maps to a dummy value (none for `SkyFunctionEnvironment.create`).
+fn commit_cycle_node(
+    ctx: &Run<'_>,
+    key: &SkyKey,
+    node: &Arc<Node>,
+    error_info: ErrorInfo,
+    old_deps: &IndexSet<SkyKey>,
+    cycle_child: Option<&SkyKey>,
+) {
+    ctx.set_error(key, node, &error_info, old_deps);
+    // The function never ran: no event to report, but the deps' events are collected.
+    let events = report_events_and_get_events_to_store(
+        ctx,
+        key,
+        || None,
+        vec![],
+        node,
+        /* expect_done_deps= */ true,
+        &|dep| {
+            if Some(dep) == cycle_child {
+                // Java: ValueWithMetadata.wrapWithMetadata(new SkyValue() {}): no events.
+                return DepValue::Value(Arc::new(DoneEntry::undone(
+                    crate::evaluator::DoneKind::Bubbled,
+                )));
+            }
+            match ctx.ev.committed_entry(dep) {
+                Some(v) => DepValue::Value(v),
+                None => DepValue::NullMarker,
+            }
+        },
+    );
+    let (reverse_deps, snapshot) =
+        ctx.commit_and_get_parents(key, node, None, Some(error_info), &[], events, old_deps);
+    ctx.signal_parents_on_abort(key, &reverse_deps, snapshot.version);
+    node.publish_outcome(snapshot);
 }
 
-/// Whether some dep is not done (Java: `NodeEntry.hasUnsignaledDeps`).
-fn has_unsignaled_deps(ctx: &Run<'_>, deps: &GroupedDeps) -> bool {
-    deps.get_all_elements_as_iterable()
-        .any(|d| !get_entry(ctx, d).is_done())
+/// Fully process `entry` if it is dirty but verified to be clean. This can only happen in rare
+/// circumstances where a node with a cycle is invalidated at the same version. Returns true if
+/// the entry was successfully processed, meaning that its value has been set and all reverse
+/// deps signaled.
+// Java: com/google/devtools/build/skyframe/SimpleCycleDetector.java:330 SimpleCycleDetector.maybeHandleVerifiedCleanNode
+fn maybe_handle_verified_clean_node(
+    key: &SkyKey,
+    node: &Arc<Node>,
+    ctx: &Run<'_>,
+    _graph_path_for_debugging: &[SkyKey],
+) -> bool {
+    let (rdeps, version) = {
+        let mut state = node.lock();
+        if state.entry.get_lifecycle_state() != LifecycleState::VerifiedClean {
+            return false;
+        }
+        let rdeps = state.entry.mark_clean().get_rdeps_to_signal().clone();
+        state.refresh_snapshot();
+        (rdeps, state.entry.get_version())
+    };
+    ctx.signal_parents_on_abort(key, &rdeps, version);
+    // PORT: Java reports a BugReport (not a crash) when the error has no cycle ("Entry was
+    // unchanged from last build, but cycle was found this time and not last time"); bug reports
+    // are not ported.
+    let snapshot = node.snapshot().expect("marked clean");
+    node.publish_outcome(snapshot);
+    true
+}
+
+fn get_node(ctx: &Run<'_>, key: &SkyKey) -> Arc<Node> {
+    ctx.ev
+        .node(key)
+        .unwrap_or_else(|| panic!("NullPointerException: {key:?}"))
 }
 
 /// Returns the child of this node that is in the cycle that was just found. If the cycle is a
@@ -317,26 +455,36 @@ fn select_cycle_child(key: &SkyKey, graph_path: &[SkyKey], cycle_start: usize) -
 /// Get all the errors of child nodes. There must be at least one cycle amongst them.
 // Java: com/google/devtools/build/skyframe/SimpleCycleDetector.java:374 SimpleCycleDetector.getChildrenErrorsForCycle
 fn get_children_errors_for_cycle(
-    ctx: &Run<'_>,
     parent: &SkyKey,
-    children: &GroupedDeps,
-    entry_for_debugging: &DoneEntry,
+    children: &[SkyKey],
+    entry_for_debugging: &Node,
+    ctx: &Run<'_>,
     removed_deps_for_debugging: &HashSet<SkyKey>,
 ) -> Vec<Arc<ErrorInfo>> {
     let mut all_errors = vec![];
     let mut found_cycle = false;
-    for child_key in children.get_all_elements_as_iterable() {
-        let child_entry = check_done(ctx, child_key);
-        if let Some(error_info) = &child_entry.error {
+    for child_key in children {
+        let child_node = ctx.ev.node(child_key).unwrap_or_else(|| {
+            panic!(
+                "NullPointerException: Missing already declared dep {child_key:?} \
+                 (parent={parent:?})"
+            )
+        });
+        let error_info = {
+            let state = child_node.lock();
+            check_state!(state.entry.is_done(), "{:?} {:?}", child_key, state.entry);
+            state.snapshot.as_ref().and_then(|s| s.error.clone())
+        };
+        if let Some(error_info) = error_info {
             found_cycle |= !error_info.get_cycle_info().is_empty();
-            all_errors.push(error_info.clone());
+            all_errors.push(error_info);
         }
     }
     check_state!(
         found_cycle,
         "Key {:?} with entry {:?} had no cycle beneath it: {:?}; Removed deps: {:?}",
         parent,
-        entry_for_debugging,
+        entry_for_debugging.lock().entry,
         all_errors,
         removed_deps_for_debugging
     );
@@ -345,15 +493,12 @@ fn get_children_errors_for_cycle(
 
 // Java: com/google/devtools/build/skyframe/SimpleCycleDetector.java:443 SimpleCycleDetector.getErrorMaybe
 fn get_error_maybe(ctx: &Run<'_>, key: &SkyKey, allow_unfinished: bool) -> Option<Arc<ErrorInfo>> {
+    let node = get_node(ctx, key);
+    let state = node.lock();
     if !allow_unfinished {
-        return check_done(ctx, key).error.clone();
+        check_state!(state.entry.is_done(), "{:?} {:?}", key, state.entry);
     }
-    let entry = get_entry(ctx, key);
-    if entry.is_done() {
-        entry.error.clone()
-    } else {
-        None
-    }
+    state.snapshot.as_ref().and_then(|s| s.error.clone())
 }
 
 /// Removes direct children of key from toVisit and from the entry itself, and makes the entry
@@ -363,24 +508,45 @@ fn get_error_maybe(ctx: &Run<'_>, key: &SkyKey, allow_unfinished: bool) -> Optio
 /// graph with a cycle".
 // Java: com/google/devtools/build/skyframe/SimpleCycleDetector.java:462 SimpleCycleDetector.removeDescendantsOfCycleValue
 fn remove_descendants_of_cycle_value(
-    ctx: &Run<'_>,
     key: &SkyKey,
-    entry: &DoneEntry,
+    node: &Arc<Node>,
     cycle_child: &SkyKey,
     to_visit: &mut Vec<Visit>,
     mut cycle_length: usize,
+    ctx: &Run<'_>,
 ) -> HashSet<SkyKey> {
-    let mut unvisited_deps: Vec<SkyKey> = vec![];
-    for d in entry.deps.get_all_elements_as_iterable() {
-        if d != cycle_child {
-            unvisited_deps.push(d.clone());
-        }
-    }
+    let unvisited_deps: Vec<SkyKey> = {
+        let mut state = node.lock();
+        let mut seen = HashSet::new();
+        state
+            .entry
+            .get_temporary_direct_deps()
+            .get_all_elements_as_iterable()
+            .filter(|d| *d != cycle_child && seen.insert((*d).clone()))
+            .cloned()
+            .collect()
+    };
     // Remove any children from this node that are not part of the cycle we just found. They are
     // irrelevant to the node as it stands, and if they are deleted from the graph because they
     // are not built by the end of cycle-checking, we would have dangling references.
-    let removed_deps = remove_incomplete_children_for_cycle(ctx, &unvisited_deps);
-    // PORT: signalDep / maybeMarkRebuilding have no equivalent (no restarts).
+    let removed_deps = remove_incomplete_children_for_cycle(key, node, &unvisited_deps, ctx);
+    {
+        let mut state = node.lock();
+        if state.entry.has_unsignaled_deps() {
+            // The entry has at most one undone dep now, its cycleChild. Signal to make entry
+            // ready. Note that the entry can conceivably be ready if its cycleChild already found
+            // a different cycle and was built.
+            state.entry.signal_dep(ctx.graph_version, Some(cycle_child));
+        }
+        maybe_mark_rebuilding(&mut state.entry);
+        check_state!(
+            !state.entry.has_unsignaled_deps(),
+            "{:?} {:?} {:?}",
+            key,
+            cycle_child,
+            state.entry
+        );
+    }
     let unvisited: HashSet<&SkyKey> = unvisited_deps.iter().collect();
     // Iterate from the top of the stack.
     let mut i = to_visit.len();
@@ -406,7 +572,7 @@ fn remove_descendants_of_cycle_value(
                         key,
                         descendant,
                         cycle_child,
-                        entry
+                        node.lock().entry
                     );
                     to_visit.remove(i);
                 }
@@ -420,20 +586,46 @@ fn remove_descendants_of_cycle_value(
     );
 }
 
-/// Returns the children that are not done (Java also removes the parent from their reverse deps;
-/// reverse deps here are only recorded on commit).
 // Java: com/google/devtools/build/skyframe/SimpleCycleDetector.java:516 SimpleCycleDetector.removeIncompleteChildrenForCycle
-fn remove_incomplete_children_for_cycle(ctx: &Run<'_>, children: &[SkyKey]) -> HashSet<SkyKey> {
-    children
-        .iter()
-        .filter(|child| !get_entry(ctx, child).is_done())
-        .cloned()
-        .collect()
+fn remove_incomplete_children_for_cycle(
+    key: &SkyKey,
+    node: &Arc<Node>,
+    children: &[SkyKey],
+    ctx: &Run<'_>,
+) -> HashSet<SkyKey> {
+    let mut unfinished_deps: HashSet<SkyKey> = HashSet::new();
+    for child in children {
+        if remove_incomplete_child_for_cycle(key, child, ctx) {
+            unfinished_deps.insert(child.clone());
+        }
+    }
+    node.lock().entry.remove_unfinished_deps(&unfinished_deps);
+    unfinished_deps
 }
 
 // Java: com/google/devtools/build/skyframe/SimpleCycleDetector.java:531 SimpleCycleDetector.checkDone
-fn check_done(ctx: &Run<'_>, key: &SkyKey) -> Arc<DoneEntry> {
-    let entry = get_entry(ctx, key);
-    check_state!(entry.is_done(), "{:?} {:?}", key, entry);
-    entry
+fn check_done(ctx: &Run<'_>, key: &SkyKey) -> Arc<Node> {
+    let node = get_node(ctx, key);
+    {
+        let state = node.lock();
+        check_state!(state.entry.is_done(), "{:?} {:?}", key, state.entry);
+    }
+    node
+}
+
+/// If child is not done, removes `in_progress_parent` from `child`'s reverse deps. Returns
+/// whether child should be removed from inProgressParent's entry's direct deps.
+// Java: com/google/devtools/build/skyframe/SimpleCycleDetector.java:543 SimpleCycleDetector.removeIncompleteChildForCycle
+fn remove_incomplete_child_for_cycle(
+    in_progress_parent: &SkyKey,
+    child: &SkyKey,
+    ctx: &Run<'_>,
+) -> bool {
+    let child_node = get_node(ctx, child);
+    let mut state = child_node.lock();
+    if !state.entry.is_done() {
+        state.entry.remove_reverse_dep(in_progress_parent.clone());
+        return true;
+    }
+    false
 }

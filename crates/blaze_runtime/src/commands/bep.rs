@@ -118,8 +118,10 @@ use blaze_sky_exec::events::{
     TopLevelTargetPendingExecutionEvent, downcast_event,
 };
 use blaze_sky_top::analysis_failure_event::{AnalysisFailureEvent, AnalysisRootCause};
-use blaze_sky_top::build_tool::BuildRequest;
-use blaze_sky_top::build_view::{AnalysisResult, construct_label_to_target_map};
+use blaze_sky_top::build_tool::{BuildEventHooks, BuildRequest};
+use blaze_sky_top::build_view::{
+    AnalysisResult, TopLevelConfigurationEvent, construct_label_to_target_map,
+};
 use blaze_sky_top::execution_seam::configured_target_views;
 use blaze_sky_top::pattern_expanding_error::PatternExpandingError;
 use blaze_sky_top::skyframe_executor::SkyframeExecutor;
@@ -331,6 +333,13 @@ impl EventBus for BepSubscriber {
                     vec![build_event_id_util::build_metrics()],
                 ),
             ));
+            return;
+        }
+        if let Some(e) = downcast_event::<TopLevelConfigurationEvent>(&event) {
+            // Java: com/google/devtools/build/lib/analysis/BuildView.java:350 BuildView.update
+            shared
+                .streamer
+                .build_event(configuration_event(&e.configuration));
             return;
         }
         if let Some(e) = downcast_event::<PatternExpandingError>(&event) {
@@ -1339,44 +1348,6 @@ impl BepCommandSupport {
         self.post(Arc::new(BuildStartingEvent::create(data)));
     }
 
-    /// The BEP events of loading and analysis, posted once the analysis result is known:
-    /// `TargetParsingCompleteEvent` (`TargetPatternPhaseFunction`), `ExecRootEvent` and the
-    /// release of the tentative canonical command line (`BuildTool.buildTargets`), the analysis
-    /// metrics (`AnalysisPhaseRunner`), the top-level configuration (`BuildView.update`) and a
-    /// `TargetConfiguredEvent` per top-level target (`SkyframeExecutor.configureTargets`).
-    ///
-    /// PORT: Java posts these while loading and analysis run; Blaze's `BuildTool` hands the
-    /// loading and analysis results to the execution phase, which calls this first. The
-    /// streamer orders the events by their announcements, not by posting time. When analysis
-    /// fails, the execution phase is not reached and these events are not posted.
-    pub fn analysis_complete(
-        &self,
-        request: &BuildRequest,
-        skyframe_executor: &SkyframeExecutor,
-        loading_result: &TargetPatternPhaseValue,
-        analysis_result: &AnalysisResult,
-    ) {
-        self.post_target_parsing_complete(request, skyframe_executor, loading_result);
-
-        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:313 BuildTool.buildTargets
-        self.post(Arc::new(ExecRootEvent::new(self.exec_root.clone())));
-        // No PROJECT.scl flag updates. Release the original CanonicalCommandLineEvent for
-        // posting.
-        // PORT: PROJECT.scl evaluation is not ported, so there is never a replacement.
-        self.post(Arc::new(ReleaseReplaceableBuildEvent::new(
-            build_event_id_util::structured_commandline_id(CanonicalCommandLineEvent::LABEL),
-        )));
-
-        self.analysis_metrics(analysis_result);
-
-        // Java: com/google/devtools/build/lib/analysis/BuildView.java:350 BuildView.update
-        self.post(Arc::new(BuildEventPost(configuration_event(
-            analysis_result.get_configuration(),
-        ))));
-
-        self.post_targets_configured(skyframe_executor, analysis_result);
-    }
-
     /// `TargetPatternPhaseFunction.compute`: the `TargetParsingCompleteEvent`.
     // Java: com/google/devtools/build/lib/skyframe/TargetPatternPhaseFunction.java:76 TargetPatternPhaseFunction.compute
     fn post_target_parsing_complete(
@@ -1799,6 +1770,46 @@ impl Drop for BepCommandSupport {
                 self.shared.streamer.close_on_abort(AbortReason::Internal);
             }));
         }
+    }
+}
+
+/// The posting points of loading and analysis (`blaze_sky_top`'s `BuildTool` calls them where
+/// Java posts the events, so they are posted whether or not analysis succeeds or anything
+/// executes).
+impl BuildEventHooks for BepCommandSupport {
+    // Java: com/google/devtools/build/lib/skyframe/TargetPatternPhaseFunction.java:76 TargetPatternPhaseFunction.compute
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:311 BuildTool.buildTargets
+    fn target_patterns_evaluated(
+        &self,
+        request: &BuildRequest,
+        skyframe_executor: &SkyframeExecutor,
+        target_pattern_phase_value: &TargetPatternPhaseValue,
+    ) {
+        self.post_target_parsing_complete(request, skyframe_executor, target_pattern_phase_value);
+        self.post(Arc::new(ExecRootEvent::new(self.exec_root.clone())));
+    }
+
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:343 BuildTool.buildTargets
+    fn project_evaluated(&self) {
+        // No PROJECT.scl flag updates. Release the original CanonicalCommandLineEvent for
+        // posting.
+        // PORT: PROJECT.scl evaluation is not ported, so there is never a replacement.
+        self.post(Arc::new(ReleaseReplaceableBuildEvent::new(
+            build_event_id_util::structured_commandline_id(CanonicalCommandLineEvent::LABEL),
+        )));
+    }
+
+    /// The analysis metrics (`AnalysisPhaseRunner`) and a `TargetConfiguredEvent` per top-level
+    /// target (`SkyframeExecutor.configureTargets`).
+    fn analysis_complete(
+        &self,
+        _request: &BuildRequest,
+        skyframe_executor: &SkyframeExecutor,
+        _target_pattern_phase_value: &TargetPatternPhaseValue,
+        analysis_result: &AnalysisResult,
+    ) {
+        self.analysis_metrics(analysis_result);
+        self.post_targets_configured(skyframe_executor, analysis_result);
     }
 }
 

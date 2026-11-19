@@ -21,8 +21,8 @@
 //! - **Repositories.** Every module of the mock is a built-in module with a local path override
 //!   (Java `BazelAnalysisMock.getBuiltinModules`), installed through
 //!   [`SkyframeExecutor::create_with_builtin_modules`]; repositories are fetched by the real
-//!   repository functions with the mock's `local_repository` rule. The registry is an empty
-//!   directory under the test directory (Java's `FakeRegistry`): no network.
+//!   repository functions with the mock's `local_repository` rule. The registry is a local
+//!   index registry at `moduleRoot` (Java's `FakeRegistry`, see `fake_registry.rs`): no network.
 //! - **Rule class provider.** Bazel's (`BazelRuleClassProvider`), as the binary uses. Java's
 //!   `TestRuleClassProvider` adds test-only native rules (`testing_dummy_rule`,
 //!   `rule_with_*`, ...) and native test aspects; tests that use them stay ignored ("needs
@@ -33,9 +33,12 @@
 //!   handler. Here it records the first error event it receives; every harness call that
 //!   evaluates checks it afterwards and panics with the event (so a test that expects errors
 //!   removes it first, `reporter.remove_handler(&fail_fast_handler)`, as in Java).
-//! - **Starlark flags** in `use_configuration` (`--//pkg:flag=value`) need
-//!   `StarlarkOptionsParser`, which lives in `blaze_runtime` (downstream of this crate): they
-//!   fail with `unported!` (see the report's requests).
+//! - **Starlark flags** in `use_configuration` (`--//pkg:flag=value`) are parsed by PARSED_FLAGS
+//!   (Java `createBuildOptionsForTesting`) in an executor with the native options; the
+//!   configurations are then created by a new executor with the parsed options. In
+//!   `AnalysisTestCase.useConfiguration` (Java: `StarlarkOptionsParser` with
+//!   `SkyframeExecutorTargetLoader`, in `blaze_runtime`) and `createConfiguration(args)` they
+//!   still fail with `unported!`.
 //! - **Top-level aspects** (`update` with aspects): `BuildView.createTopLevelAspectKeys` is not
 //!   ported; `update` passes them through and the product fails loudly.
 //! - `getConfiguredTarget` evaluates the `ConfiguredTargetKey` directly and wraps the value with
@@ -89,6 +92,7 @@ use crate::skyframe_executor::{
 use crate::testing::analysis_mock::{
     BazelAnalysisMock, PRODUCT_SPECIFIC_BUILD_LANG_OPTIONS, PRODUCT_SPECIFIC_FLAGS,
 };
+use crate::testing::fake_registry::FakeRegistry;
 use crate::testing::mock_tools_config::MockToolsConfig;
 use crate::testing::scratch::{Scratch, TestDirectory};
 
@@ -344,18 +348,30 @@ impl BuildViewTestCase {
         test_case
     }
 
+    /// `registry`: the fake registry at [`Self::module_root`] (see `fake_registry.rs`).
+    pub fn registry(&self) -> FakeRegistry<'_> {
+        FakeRegistry::new(&self.scratch, &self.module_root)
+    }
+
     /// The file system of the test.
     pub fn file_system(&self) -> &blaze_vfs::FileSystemRef {
         &self.directory.fs
     }
 
-    /// A string of a Java test with Java's workspace directory (`/workspace`) replaced by this
-    /// test's.
+    /// A string of a Java test with Java's workspace directory (`/workspace`) and output base
+    /// replaced by this test's.
     ///
     /// PORT: Java's tests run in `/workspace` of an in-memory file system; event locations here
     /// carry the temporary directory (module documentation).
     pub fn ws(&self, java_string: &str) -> String {
-        java_string.replace("/workspace", self.root_directory.get_path_string())
+        // Java's output base (`FoundationTestCase.outputBase`) is
+        // `/usr/local/google/_blaze_jrluser/FAKEMD5`; here it is under the temporary directory.
+        java_string
+            .replace(
+                "/usr/local/google/_blaze_jrluser/FAKEMD5",
+                self.output_base.get_path_string(),
+            )
+            .replace("/workspace", self.root_directory.get_path_string())
     }
 
     // -----------------------------------------------------------------------------------------
@@ -710,14 +726,124 @@ impl BuildViewTestCase {
         if !self.starlark_options.is_empty() {
             parser.set_starlark_options(self.starlark_options.clone());
         }
+        parser
+    }
+
+    /// Fails loudly for Starlark flags where the harness does not parse them.
+    fn check_no_starlark_flags(parser: &OptionsParser) {
         if !parser.get_skipped_args().is_empty() {
             blaze_util::unported!(
                 "StarlarkOptionsParser.parse",
-                "Starlark flags in useConfiguration: {:?}",
+                "Starlark flags in AnalysisTestCase.useConfiguration / createConfiguration: {:?}",
                 parser.get_skipped_args()
             );
         }
-        parser
+    }
+
+    /// A new executor whose baseline is `build_options`, with the main repository mapping
+    /// evaluated (Java `createBuildOptionsForTesting` evaluates it first).
+    fn new_executor(
+        &self,
+        options: &Arc<OptionsParser>,
+        build_options: &Arc<BuildOptions>,
+    ) -> SkyframeExecutor {
+        let inputs = SkyframeExecutorInputs {
+            workspace: self.root_directory.clone(),
+            working_directory: self.root_directory.clone(),
+            output_base: self.output_base.clone(),
+            // ServerDirectories(rootDirectory, outputBase, outputBase): the install base is the
+            // workspace.
+            install_base: self.root_directory.clone(),
+            exec_root_base: self.output_base.get_child("execroot"),
+            product_name: self.analysis_mock.get_product_name().to_string(),
+            workspace_name: "_main".to_string(),
+            options: options.clone(),
+            reporter: self.event_handler(),
+            client_env: IndexMap::new(),
+            repo_env: IndexMap::new(),
+            nonstrict_repo_env: IndexMap::new(),
+            repo_precomputed: Default::default(),
+            keep_going: false,
+            top_level_build_options: Some((**build_options).clone()),
+            execution: None,
+        };
+        let executor = SkyframeExecutor::create_with_builtin_modules(
+            inputs,
+            None,
+            Some(self.analysis_mock.get_builtin_modules(&self.root_directory)),
+        )
+        .unwrap_or_else(|e| panic!("cannot create the SkyframeExecutor: {e}"));
+        // Java: createBuildOptionsForTesting evaluates the main repository mapping.
+        if let Err(e) =
+            executor.get_main_repo_mapping(false, LOADING_PHASE_THREADS, self.event_handler())
+        {
+            panic!("InvalidConfigurationException: Cannot find main repository mapping: {e:?}");
+        }
+        executor
+    }
+
+    /// `SkyframeExecutor.createBuildOptionsForTesting(reporter, args)`: the build options of
+    /// `args` (native and Starlark flags) parsed by PARSED_FLAGS in `executor`.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1837 SkyframeExecutor.createBuildOptionsForTesting
+    fn create_build_options_for_testing(
+        &self,
+        executor: &SkyframeExecutor,
+        args: Vec<String>,
+    ) -> Result<BuildOptions, blaze_build_config::fragment::InvalidConfigurationException> {
+        use blaze_build_config::fragment::InvalidConfigurationException;
+        use blaze_build_config::parsed_flags::ParsedFlagsKey;
+        let main_repository_mapping = executor
+            .get_main_repo_mapping(false, LOADING_PHASE_THREADS, self.event_handler())
+            .map_err(|e| {
+                InvalidConfigurationException::with_code(
+                    format!("Cannot find main repository mapping: {e:?}"),
+                    "INVALID_BUILD_OPTIONS",
+                )
+            })?;
+        let flag_alias_mappings: Vec<(String, Label)> = args
+            .iter()
+            .filter_map(|arg| arg.strip_prefix("--flag_alias="))
+            .map(|arg| {
+                let pair: Vec<&str> = arg.split('=').collect();
+                (
+                    pair[0].to_string(),
+                    Label::parse_canonical_unchecked(pair[1]),
+                )
+            })
+            .collect();
+        // Parse the options.
+        let root_package = blaze_cmdline::LabelPackageContext::of(
+            &blaze_cmdline::PackageIdentifier::create_root_package(
+                blaze_cmdline::repository_name::MAIN.clone(),
+            ),
+            main_repository_mapping,
+        );
+        let parsed_flags_key = ParsedFlagsKey::create(args, root_package, flag_alias_mappings);
+        let result = executor
+            .evaluate(
+                &[SkyKey::new(parsed_flags_key.clone())],
+                false,
+                LOADING_PHASE_THREADS,
+                self.event_handler(),
+            )
+            .unwrap_or_else(|_| panic!("InterruptedException"));
+        if let Some((_, error)) = result.error_map().first() {
+            if let Some(e) = error.get_exception() {
+                return Err(InvalidConfigurationException::with_code(
+                    e.to_string(),
+                    "INVALID_BUILD_OPTIONS",
+                ));
+            }
+            return Err(InvalidConfigurationException::with_code(
+                "cannot load build configuration key because of this cycle",
+                "CYCLE",
+            ));
+        }
+        let parsed_flags_value = result.get(&parsed_flags_key).expect("PARSED_FLAGS value");
+        Ok(BuildOptions::of(
+            BazelRuleClassProvider::create().get_options_classes(),
+            parsed_flags_value.parsing_result(),
+        ))
     }
 
     /// Builds the executor and the configurations of the current state if there is none or a
@@ -741,41 +867,25 @@ impl BuildViewTestCase {
         }
         let options = Arc::new(self.parse_options());
         // Java: createBuildOptions (createBuildOptionsForTesting).
-        let build_options = Arc::new(blaze_build_config::top_level::create_build_options(
+        let mut build_options = Arc::new(blaze_build_config::top_level::create_build_options(
             &BazelRuleClassProvider::create(),
             &options,
         ));
-        let inputs = SkyframeExecutorInputs {
-            workspace: self.root_directory.clone(),
-            working_directory: self.root_directory.clone(),
-            output_base: self.output_base.clone(),
-            // ServerDirectories(rootDirectory, outputBase, outputBase): the install base is the
-            // workspace.
-            install_base: self.root_directory.clone(),
-            exec_root_base: self.output_base.get_child("execroot"),
-            product_name: self.analysis_mock.get_product_name().to_string(),
-            workspace_name: "_main".to_string(),
-            options: options.clone(),
-            reporter: self.event_handler(),
-            client_env: IndexMap::new(),
-            repo_env: IndexMap::new(),
-            nonstrict_repo_env: IndexMap::new(),
-            repo_precomputed: Default::default(),
-            keep_going: false,
-            top_level_build_options: Some((*build_options).clone()),
-            execution: None,
-        };
-        let executor = SkyframeExecutor::create_with_builtin_modules(
-            inputs,
-            None,
-            Some(self.analysis_mock.get_builtin_modules(&self.root_directory)),
-        )
-        .unwrap_or_else(|e| panic!("cannot create the SkyframeExecutor: {e}"));
-        // Java: createBuildOptionsForTesting evaluates the main repository mapping.
-        if let Err(e) =
-            executor.get_main_repo_mapping(false, LOADING_PHASE_THREADS, self.event_handler())
-        {
-            panic!("InvalidConfigurationException: Cannot find main repository mapping: {e:?}");
+        let mut executor = self.new_executor(&options, &build_options);
+        if !options.get_skipped_args().is_empty() {
+            if self.kind != TestCaseKind::BuildView {
+                Self::check_no_starlark_flags(&options);
+            }
+            // Java BuildViewTestCase.useConfiguration parses every argument with
+            // createBuildOptionsForTesting (PARSED_FLAGS), which loads the Starlark build settings.
+            // PORT: the executor's baseline is fixed at construction (module documentation), so
+            // the build settings are loaded by an executor with the native options, and the
+            // configurations are created by a new one with the parsed options.
+            let mut args = self.get_defaults_for_configuration();
+            args.extend(self.configuration_args.iter().cloned());
+            build_options = Arc::new(self.create_build_options_for_testing(&executor, args)?);
+            executor.after_command();
+            executor = self.new_executor(&options, &build_options);
         }
         // Java: createConfiguration.
         let target_config =
@@ -854,6 +964,7 @@ impl BuildViewTestCase {
             args.iter().map(|s| s.to_string()).collect(),
         );
         let options = self.parse_options();
+        Self::check_no_starlark_flags(&options);
         self.configuration_args = saved;
         let build_options = Arc::new(blaze_build_config::top_level::create_build_options(
             &BazelRuleClassProvider::create(),

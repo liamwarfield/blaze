@@ -1,9 +1,13 @@
 //! Port of `SkyFunction.Environment` (`SkyFunctionEnvironment`) and `SkyframeLookupResult`.
 
-use crate::evaluator::{DoneEntry, DoneKind, ERROR_TRANSIENCE_KEY, Run};
+use crate::evaluator::{DoneEntry, DoneKind, ERROR_TRANSIENCE_KEY, Node, Requester, Run};
+use crate::node_entry::NodeEntry;
+use crate::value_with_metadata::{StoredReportable, no_events};
 use crate::{ErrorInfo, GroupedDeps, Interrupted, Key, SkyError, SkyFunction, SkyKey, SkyValue};
+use blaze_collect::{NestedSet, NestedSetBuilder};
 use blaze_events::{Event, EventHandler, EventKind, ExtendedEventHandler, Postable, Reportable};
 use blaze_util::{check_argument, check_state};
+use indexmap::IndexSet;
 use parking_lot::Mutex;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -23,12 +27,32 @@ pub(crate) type BubbleErrorInfo = HashMap<SkyKey, Arc<DoneEntry>>;
 /// [`SkyframeLookupResult`]s of the environment, which in Java are the environment itself.
 pub(crate) type RequestedDeps = Arc<Mutex<HashMap<SkyKey, Arc<DoneEntry>>>>;
 
+/// A dep the function requested, done when it was read, that is not registered with the node
+/// yet (Java: an entry of `newlyRequestedDepsValues` with a value).
+pub(crate) struct PendingDep {
+    pub(crate) key: SkyKey,
+    pub(crate) node: Arc<Node>,
+}
+
 /// What the environment learned about the node's dependencies.
 pub(crate) struct EnvState {
-    /// Direct deps in request order. Java: `newlyRequestedDepsValues` plus group sizes.
+    /// In normal evaluation, the previously requested deps followed by the deps requested by
+    /// this run, in request order (Java: `previouslyRequestedDeps`, then
+    /// `newlyRequestedDepsValues` with its group sizes; here not reset by restarts, as there are
+    /// none).
     pub(crate) deps: GroupedDeps,
-    /// The entry each dep had when requested.
+    /// The entry each dep had when requested, previously requested deps included.
     pub(crate) requested: RequestedDeps,
+    /// Requested deps not registered with the node yet, and the sizes of their groups.
+    ///
+    /// PORT: Java registers a run's new deps when the function returns. A request that finds a
+    /// dep not done blocks here until the dep is evaluated; before it does, the deps requested
+    /// so far are registered (they are what Java registers when the function returns null
+    /// there), so this holds only deps requested since the last request that blocked, all done.
+    pub(crate) pending: Vec<PendingDep>,
+    pub(crate) pending_group_sizes: Vec<usize>,
+    /// Java: `oldDeps`: the deps of the last build not checked before the function ran.
+    pub(crate) old_deps: IndexSet<SkyKey>,
     /// Java: `childErrorInfos` (a `LinkedHashSet`).
     pub(crate) child_error_infos: Vec<Arc<ErrorInfo>>,
     /// Java: `depErrorKey` — the first dep in error, without keep_going (with its error).
@@ -43,6 +67,7 @@ pub(crate) struct EnvState {
 pub struct Environment<'a> {
     run: &'a Run<'a>,
     key: &'a SkyKey,
+    node: &'a Arc<Node>,
     st: EnvState,
     values_missing: Arc<AtomicBool>,
     listener: EnvListener<'a>,
@@ -50,22 +75,34 @@ pub struct Environment<'a> {
     /// are used over values from the graph for keys present in this map.
     // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:110 bubbleErrorInfo
     bubble_error_info: Option<&'a BubbleErrorInfo>,
-    /// Java: `previouslyRequestedDeps` of an environment made by `createForError`: the deps the
-    /// node declared during normal evaluation. Empty outside error bubbling.
+    /// Java: `previouslyRequestedDeps`: the deps of the groups the node registered before the
+    /// function ran (a dirty node's checked groups), or, during error bubbling, the deps the
+    /// node declared during normal evaluation.
     previously_requested_deps: GroupedDeps,
     // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:112 encounteredErrorDuringBubbling
     encountered_error_during_bubbling: bool,
 }
 
 impl<'a> Environment<'a> {
-    // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:164 SkyFunctionEnvironment.create
-    pub(crate) fn new(run: &'a Run<'a>, key: &'a SkyKey, function: &'a dyn SkyFunction) -> Self {
+    fn new(
+        run: &'a Run<'a>,
+        key: &'a SkyKey,
+        node: &'a Arc<Node>,
+        function: &'a dyn SkyFunction,
+        previously_requested_deps: GroupedDeps,
+        old_deps: IndexSet<SkyKey>,
+        bubble_error_info: Option<&'a BubbleErrorInfo>,
+    ) -> Self {
         Environment {
             run,
             key,
+            node,
             st: EnvState {
                 deps: GroupedDeps::new(),
                 requested: Arc::new(Mutex::new(HashMap::new())),
+                pending: vec![],
+                pending_group_sizes: vec![],
+                old_deps,
                 child_error_infos: vec![],
                 dep_error: None,
                 aborted_dep: false,
@@ -79,10 +116,37 @@ impl<'a> Environment<'a> {
                 function,
                 events_to_report: Mutex::new(vec![]),
             },
-            bubble_error_info: None,
-            previously_requested_deps: GroupedDeps::new(),
+            bubble_error_info,
+            previously_requested_deps,
             encountered_error_during_bubbling: false,
         }
+    }
+
+    /// The environment of a node's function in normal evaluation. The previously requested
+    /// deps (a dirty node's checked groups) are done: their values are read now (Java:
+    /// `batchPrefetch`).
+    // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:168 SkyFunctionEnvironment.create
+    pub(crate) fn create(
+        run: &'a Run<'a>,
+        key: &'a SkyKey,
+        node: &'a Arc<Node>,
+        function: &'a dyn SkyFunction,
+        previously_requested_deps: GroupedDeps,
+        old_deps: IndexSet<SkyKey>,
+    ) -> Self {
+        let mut env = Environment::new(
+            run,
+            key,
+            node,
+            function,
+            previously_requested_deps,
+            old_deps,
+            None,
+        );
+        env.batch_prefetch();
+        // The deps this run requests follow the previously requested ones.
+        env.st.deps = env.previously_requested_deps.clone();
+        env
     }
 
     /// The environment a node on the error-bubbling path is re-run with: dependency requests
@@ -92,15 +156,52 @@ impl<'a> Environment<'a> {
     pub(crate) fn create_for_error(
         run: &'a Run<'a>,
         key: &'a SkyKey,
+        node: &'a Arc<Node>,
         function: &'a dyn SkyFunction,
         previously_requested_deps: GroupedDeps,
         bubble_error_info: &'a BubbleErrorInfo,
     ) -> Self {
-        Environment {
-            bubble_error_info: Some(bubble_error_info),
+        Environment::new(
+            run,
+            key,
+            node,
+            function,
             previously_requested_deps,
-            ..Environment::new(run, key, function)
+            IndexSet::new(),
+            Some(bubble_error_info),
+        )
+    }
+
+    /// Reads the values of the previously requested deps.
+    ///
+    /// PORT: in normal evaluation they are the groups a dirty node checked, all done (a node does
+    /// not run before its registered deps signalled, and nothing dirties a node during an
+    /// evaluation). Java's `UndonePreviouslyRequestedDeps` (rewinding) cannot happen; a dep
+    /// missing or not done is the graph inconsistency Java's `THROWING` receiver reports.
+    // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:234 SkyFunctionEnvironment.batchPrefetch
+    fn batch_prefetch(&self) {
+        if self.previously_requested_deps.is_empty() {
+            return;
         }
+        let mut requested = self.st.requested.lock();
+        for dep_key in self
+            .previously_requested_deps
+            .get_all_elements_as_iterable()
+        {
+            let snapshot = self.run.ev.committed_entry(dep_key).unwrap_or_else(|| {
+                panic!(
+                    "IllegalStateException: Unexpected inconsistency: {:?}, [{:?}], \
+                         BUILDING_PARENT_FOUND_UNDONE_CHILD",
+                    self.key, dep_key
+                )
+            });
+            requested.insert(dep_key.clone(), snapshot);
+        }
+        check_state!(
+            !requested.contains_key(&*ERROR_TRANSIENCE_KEY),
+            "{:?} cannot have a dep on ErrorTransienceValue during building",
+            self.key
+        );
     }
 
     pub(crate) fn into_parts(self) -> (EnvState, bool, EnvListener<'a>) {
@@ -177,11 +278,12 @@ impl<'a> Environment<'a> {
         Ok(())
     }
 
-    /// The deps requested so far, in request order. During error bubbling: the deps the node
-    /// declared during normal evaluation.
+    /// The deps requested before this run, in request order: a dirty node's groups checked
+    /// before the function ran; during error bubbling, the deps the node declared during normal
+    /// evaluation.
     ///
-    /// PORT: Java returns the deps of earlier restarts. There are no restarts here, so normal
-    /// evaluation returns what this (only) run has requested so far.
+    /// PORT: Java's restarts add the deps of earlier runs. There are no restarts here, so in
+    /// normal evaluation the deps this (only) run has requested so far follow.
     // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:811 SkyFunctionEnvironment.getTemporaryDirectDeps
     pub fn get_temporary_direct_deps(&self) -> &GroupedDeps {
         if self.bubble_error_info.is_some() {
@@ -321,7 +423,6 @@ impl<'a> Environment<'a> {
                 requested.insert(k.clone(), e);
             }
         }
-        self.st.deps.append_group(missing_keys);
         let mut processed: HashSet<&SkyKey> = HashSet::new();
         for k in dep_keys {
             if !processed.insert(k) {
@@ -367,35 +468,95 @@ impl<'a> Environment<'a> {
         );
     }
 
-    /// Fetches deps this environment has not requested before.
+    /// Fetches deps this environment has not requested before, as one group.
     ///
-    /// Normal evaluation: computes them (or waits for them), Java's `graph.get` after the restarts
-    /// that made the deps done. Error bubbling: nothing is computed. A dep is its entry in
-    /// `bubbleErrorInfo`, else its done value in the graph, else missing (`NULL_MARKER`).
+    /// Normal evaluation: a done dep is read (Java's `graph.get` + `getValueMaybeWithMetadata`)
+    /// and registered with the node later; a dep that is not done is evaluated (or waited for),
+    /// which is what Java's restarts achieve. Error bubbling: nothing is computed. A dep is its
+    /// entry in `bubbleErrorInfo`, else its done value in the graph, else missing (`NULL_MARKER`).
     // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:494 SkyFunctionEnvironment.lookupRequestedDep
     // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:601 SkyFunctionEnvironment.processDepEntry
-    fn lookup(&self, keys: &[SkyKey]) -> Vec<Arc<DoneEntry>> {
-        match self.bubble_error_info {
-            Some(bubble_error_info) => keys
+    fn lookup(&mut self, keys: &[SkyKey]) -> Vec<Arc<DoneEntry>> {
+        if let Some(bubble_error_info) = self.bubble_error_info {
+            self.st.deps.append_group(keys.to_vec());
+            return keys
                 .iter()
                 .map(|k| {
                     bubble_error_info
                         .get(k)
                         .cloned()
                         .or_else(|| self.run.ev.committed_entry(k))
-                        .unwrap_or_else(|| {
-                            Arc::new(DoneEntry::undone(DoneKind::Aborted, GroupedDeps::new()))
-                        })
+                        .unwrap_or_else(|| Arc::new(DoneEntry::undone(DoneKind::Aborted)))
                 })
-                .collect(),
-            None => {
-                let entries = self.run.eval_keys(keys, Some(self.key));
-                entries
-                    .into_iter()
-                    .map(|requested| self.run.entry_seen_in_normal_evaluation(requested))
-                    .collect()
+                .collect();
+        }
+        if keys.is_empty() {
+            return vec![];
+        }
+        let mut entries: Vec<Option<Arc<DoneEntry>>> = Vec::with_capacity(keys.len());
+        let mut nodes: Vec<Arc<Node>> = Vec::with_capacity(keys.len());
+        let mut undone: Vec<usize> = vec![];
+        for (i, k) in keys.iter().enumerate() {
+            match self.run.ev.graph.get_if_present(k) {
+                Some(node) => {
+                    let snapshot = node.snapshot();
+                    if snapshot.is_none() {
+                        undone.push(i);
+                    }
+                    entries.push(snapshot);
+                    nodes.push(node);
+                }
+                None => {
+                    undone.push(i);
+                    entries.push(None);
+                    nodes.push(self.run.ev.graph.create_if_absent(k));
+                }
             }
         }
+        self.st.deps.append_group(keys.to_vec());
+        if undone.is_empty() {
+            self.st.pending_group_sizes.push(keys.len());
+            self.st.pending.extend(
+                keys.iter()
+                    .cloned()
+                    .zip(nodes)
+                    .map(|(key, node)| PendingDep { key, node }),
+            );
+            return entries.into_iter().map(|e| e.expect("done")).collect();
+        }
+        // A dep is not done. Java's function gets null for it and returns null, and the deps it
+        // requested are registered (`addTemporaryDirectDepsTo`, `enqueueChild`): the earlier
+        // ones, and the done ones of this group, now; the others when they are evaluated.
+        let requester = Requester {
+            key: self.key,
+            node: self.node,
+            old_deps: &self.st.old_deps,
+        };
+        self.run.register_pending_deps(
+            &requester,
+            &mut self.st.pending,
+            &mut self.st.pending_group_sizes,
+        );
+        {
+            let mut state = self.node.lock();
+            state.entry.add_temporary_direct_dep_group(keys.to_vec());
+        }
+        let mut done_in_group: Vec<PendingDep> = vec![];
+        for (i, k) in keys.iter().enumerate() {
+            if entries[i].is_some() {
+                done_in_group.push(PendingDep {
+                    key: k.clone(),
+                    node: nodes[i].clone(),
+                });
+            }
+        }
+        self.run.register_done_deps(&requester, &done_in_group);
+        let undone_keys: Vec<SkyKey> = undone.iter().map(|&i| keys[i].clone()).collect();
+        let results = self.run.eval_keys(&undone_keys, Some(&requester));
+        for (&i, r) in undone.iter().zip(results) {
+            entries[i] = Some(self.run.entry_seen_in_normal_evaluation(r));
+        }
+        entries.into_iter().map(|e| e.expect("filled")).collect()
     }
 
     /// Java: `lookupRequestedDep` + `processDepEntry`/`processDepValue` for a single key.
@@ -411,7 +572,6 @@ impl<'a> Environment<'a> {
                     .pop()
                     .expect("one entry per key");
                 self.st.requested.lock().insert(key.clone(), e.clone());
-                self.st.deps.append_singleton(key.clone());
                 e
             }
         };
@@ -481,6 +641,56 @@ impl<'a> Environment<'a> {
                 self.st.dep_error = Some((dep_key.clone(), error_info.clone()));
             }
         }
+    }
+
+    /// `reportEventsAndGetEventsToStore(parentEntry, /*expectDoneDeps=*/ false)` of an
+    /// error-bubbling run.
+    pub(crate) fn report_events_and_get_events_to_store_for_error(
+        &self,
+    ) -> NestedSet<StoredReportable> {
+        let previously_requested = &self.previously_requested_deps;
+        let bubble = self.bubble_error_info;
+        let requested = self.st.requested.lock().clone();
+        let run = self.run;
+        self.listener.report_events_and_get_events_to_store(
+            self.node,
+            /* expect_done_deps= */ false,
+            &|key| {
+                if let Some(v) = bubble.and_then(|b| b.get(key)) {
+                    return DepValue::Value(v.clone());
+                }
+                if let Some(v) = requested.get(key) {
+                    return dep_value_of(v);
+                }
+                // Java: previouslyRequestedDepsValues, prefetched when the environment was made
+                // (a value or NULL_MARKER).
+                if previously_requested.contains(key) {
+                    return match run.ev.committed_entry(key) {
+                        Some(v) => DepValue::Value(v),
+                        None => DepValue::NullMarker,
+                    };
+                }
+                DepValue::Missing
+            },
+        )
+    }
+}
+
+/// What `maybeGetValueFromErrorOrDeps` finds for a dep.
+pub(crate) enum DepValue {
+    /// A value (maybe with metadata).
+    Value(Arc<DoneEntry>),
+    /// Java's `NULL_MARKER`: the dep was not done when read.
+    NullMarker,
+    /// Java's `null`: the dep was never requested.
+    Missing,
+}
+
+pub(crate) fn dep_value_of(entry: &Arc<DoneEntry>) -> DepValue {
+    if entry.is_undone_view() {
+        DepValue::NullMarker
+    } else {
+        DepValue::Value(entry.clone())
     }
 }
 
@@ -623,20 +833,6 @@ impl SkyframeLookupResult {
     }
 }
 
-enum StoredReportable {
-    Event(Event),
-    Post(Arc<dyn Postable>),
-}
-
-impl StoredReportable {
-    fn store_for_replay(&self) -> bool {
-        match self {
-            StoredReportable::Event(e) => e.store_for_replay(),
-            StoredReportable::Post(p) => p.store_for_replay(),
-        }
-    }
-}
-
 /// The environment as an event handler (Java: `SkyFunctionEnvironment implements
 /// ExtendedEventHandler`).
 pub(crate) struct EnvListener<'a> {
@@ -666,28 +862,140 @@ impl EnvListener<'_> {
         }
     }
 
-    /// Reports the events stored while the node computed, tagged. Called when the node commits,
-    /// and after its error-bubbling run (`bubbleErrorUp` reports the events of each function it
-    /// re-runs). Events of a run in normal evaluation that ends with missing deps are dropped, as
-    /// in Java, where only the run that completes reports them.
+    /// Reports events which were temporarily stored in this environment per the specification
+    /// of `SkyFunction.Environment#getListener`. Returns events that should be stored for
+    /// potential replay on a future evaluation.
     ///
-    /// PORT: Java also stores the events on the node to replay them on later builds; one build
-    /// per process needs no replay.
+    /// Called when the node commits, and after its error-bubbling run (`bubbleErrorUp` reports
+    /// the events of each function it re-runs). Events of a run in normal evaluation that ends
+    /// with missing deps are dropped, as in Java, where only the run that completes reports
+    /// them.
+    ///
+    /// `dep_value` is `maybeGetValueFromErrorOrDeps`.
     // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:300 SkyFunctionEnvironment.reportEventsAndGetEventsToStore
-    pub(crate) fn flush(&self) {
-        let events = std::mem::take(&mut *self.events_to_report.lock());
-        if events.is_empty() {
-            return;
+    pub(crate) fn report_events_and_get_events_to_store(
+        &self,
+        node: &Node,
+        expect_done_deps: bool,
+        dep_value: &dyn Fn(&SkyKey) -> DepValue,
+    ) -> NestedSet<StoredReportable> {
+        let events_to_report = std::mem::take(&mut *self.events_to_report.lock());
+        report_events_and_get_events_to_store(
+            self.run,
+            self.key,
+            || self.get_tag_from_key(),
+            events_to_report,
+            node,
+            expect_done_deps,
+            dep_value,
+        )
+    }
+
+    /// [`EnvListener::report_events_and_get_events_to_store`] at a commit in normal evaluation,
+    /// where a dep is one the environment requested.
+    pub(crate) fn report_events_for_commit(
+        &self,
+        node: &Node,
+        requested: &RequestedDeps,
+    ) -> NestedSet<StoredReportable> {
+        if !self.run.ev.event_filter().store_events() {
+            return self.report_events_and_get_events_to_store(node, true, &|_| DepValue::Missing);
         }
-        let tag = self.get_tag_from_key();
-        let reporter = &*self.run.ctx.event_handler;
-        for event in events {
-            match event {
-                StoredReportable::Event(e) => e.with_tag(tag.as_deref()).report_to(reporter),
-                // Postables have no tag ("No tag-based filtering").
-                StoredReportable::Post(p) => p.report_to(reporter),
+        let requested = requested.lock().clone();
+        self.report_events_and_get_events_to_store(node, true, &|key| match requested.get(key) {
+            Some(v) => dep_value_of(v),
+            None => DepValue::Missing,
+        })
+    }
+}
+
+/// The body of `SkyFunctionEnvironment.reportEventsAndGetEventsToStore`, for an environment
+/// (`events_to_report` and the key's tag) and the node's dep values (`dep_value`).
+// Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:300 SkyFunctionEnvironment.reportEventsAndGetEventsToStore
+pub(crate) fn report_events_and_get_events_to_store(
+    run: &Run<'_>,
+    sky_key: &SkyKey,
+    get_tag_from_key: impl FnOnce() -> Option<String>,
+    events_to_report: Vec<StoredReportable>,
+    node: &Node,
+    expect_done_deps: bool,
+    dep_value: &dyn Fn(&SkyKey) -> DepValue,
+) -> NestedSet<StoredReportable> {
+    let event_filter = run.ev.event_filter();
+    if !event_filter.store_events() {
+        if !events_to_report.is_empty() {
+            let tag = get_tag_from_key();
+            let reporter = &*run.ctx.event_handler;
+            for event in events_to_report {
+                with_tag(event, tag.as_deref()).report_to_handler(reporter);
             }
         }
+        return no_events();
+    }
+
+    let dep_keys: Vec<SkyKey> = node
+        .lock()
+        .entry
+        .get_temporary_direct_deps()
+        .get_all_elements_as_iterable()
+        .cloned()
+        .collect();
+    if events_to_report.is_empty() && dep_keys.is_empty() {
+        return no_events();
+    }
+
+    let mut event_builder: NestedSetBuilder<StoredReportable> = NestedSetBuilder::stable_order();
+    if !events_to_report.is_empty() {
+        let tag = get_tag_from_key();
+        event_builder.add_all(
+            events_to_report
+                .into_iter()
+                .map(|event| with_tag(event, tag.as_deref())),
+        );
+    }
+
+    // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:355 SkyFunctionEnvironment.addTransitiveEventsFromDepValuesForDoneNode
+    for key in dep_keys
+        .iter()
+        .filter(|dep_key| event_filter.should_propagate(dep_key, sky_key))
+    {
+        match dep_value(key) {
+            DepValue::Missing => {
+                if *key == *ERROR_TRANSIENCE_KEY {
+                    continue;
+                }
+                // PORT: registerDependencies (MANUALLY_REGISTERED_MARKER) is not ported, so a
+                // declared dep is always a requested one.
+                panic!(
+                    "IllegalStateException: Missing already declared dep {key:?} (parent={sky_key:?})"
+                );
+            }
+            DepValue::NullMarker => {
+                check_state!(!expect_done_deps, "{:?} had not done {:?}", sky_key, key);
+            }
+            DepValue::Value(value) => {
+                event_builder.add_transitive(&value.get_events());
+            }
+        }
+    }
+
+    let events = event_builder.build_interruptibly();
+    run.replay_visit(&events);
+    events
+}
+
+/// Java: `Reportable.withTag(tag)`: an event with the tag; a post is unchanged ("No tag-based
+/// filtering").
+fn with_tag(event: StoredReportable, tag: Option<&str>) -> StoredReportable {
+    match event {
+        StoredReportable::Event(e) => StoredReportable::Event(e.with_tag(tag)),
+        post => post,
+    }
+}
+
+impl StoredReportable {
+    fn report_to_handler(&self, reporter: &dyn ExtendedEventHandler) {
+        crate::evaluator::report_stored(self, reporter);
     }
 }
 
@@ -715,3 +1023,6 @@ impl ExtendedEventHandler for EnvListener<'_> {
         self.report_event(StoredReportable::Post(obj));
     }
 }
+
+#[allow(unused_imports)]
+use Reportable as _;

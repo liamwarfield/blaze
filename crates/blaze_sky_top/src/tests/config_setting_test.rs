@@ -2284,7 +2284,6 @@ string_flag(
 
 // Java: ConfigSettingTest.buildsettings_matchesFromCommandLine
 #[test]
-#[ignore = "needs Starlark flags in useConfiguration (StarlarkOptionsParser in the harness: --//test:cheese=gouda)"]
 fn buildsettings_matches_from_command_line() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(
@@ -2359,7 +2358,6 @@ bool_flag(
 
 // Java: ConfigSettingTest.buildsettings_doesntMatch
 #[test]
-#[ignore = "needs Starlark flags in useConfiguration (StarlarkOptionsParser in the harness: --//test:cheese=gouda)"]
 fn buildsettings_doesnt_match() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(
@@ -2432,7 +2430,6 @@ int_flag(
 
 // Java: ConfigSettingTest.buildsettings_allowMultipleWorks
 #[test]
-#[ignore = "needs Starlark flags in useConfiguration (StarlarkOptionsParser in the harness: --//test:cheese=pepperjack)"]
 fn buildsettings_allow_multiple_works() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(
@@ -2472,7 +2469,6 @@ string_flag(
 
 // Java: ConfigSettingTest.buildsettings_repeatableWorks
 #[test]
-#[ignore = "needs Starlark flags in useConfiguration (StarlarkOptionsParser in the harness: --//test:cheese=pepperjack)"]
 fn buildsettings_repeatable_works() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(
@@ -3092,7 +3088,6 @@ fn rule_licenses_used() {
 
 // Java: ConfigSettingTest.aliasedStarlarkFlag
 #[test]
-#[ignore = "needs Starlark flags in useConfiguration (StarlarkOptionsParser in the harness: --//test:flag=specified)"]
 fn aliased_starlark_flag() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(
@@ -3852,7 +3847,6 @@ fn string_set_single_value_works_flag_default_true() {
 
 // Java: ConfigSettingTest.stringSet_singleValue_works (flagDefault = false)
 #[test]
-#[ignore = "needs Starlark flags in useConfiguration (StarlarkOptionsParser in the harness: --//test:my_flag=cmd_val)"]
 fn string_set_single_value_works_flag_default_false() {
     string_set_single_value_works(false);
 }
@@ -3948,14 +3942,12 @@ fn string_set_multiple_values_works_default() {
 
 // Java: ConfigSettingTest.stringSet_multipleValues_works (valuesSrc = "multiple")
 #[test]
-#[ignore = "needs Starlark flags in useConfiguration (StarlarkOptionsParser in the harness: --//test:my_flag=v2,v1,v3)"]
 fn string_set_multiple_values_works_multiple() {
     string_set_multiple_values_works("multiple");
 }
 
 // Java: ConfigSettingTest.stringSet_multipleValues_works (valuesSrc = "repeatable")
 #[test]
-#[ignore = "needs Starlark flags in useConfiguration (StarlarkOptionsParser in the harness: --//test:my_flag=v3)"]
 fn string_set_multiple_values_works_repeatable() {
     string_set_multiple_values_works("repeatable");
 }

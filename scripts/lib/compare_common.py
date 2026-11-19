@@ -148,10 +148,10 @@ def repo_state():
 
 
 def tool_sha256(*paths):
-    """sha256 over the given tool files and this module (a normaliser change invalidates every
-    cached output)."""
+    """sha256 over the given tool files (their normalisers decide what a stored normalised
+    output is). Tools that store raw outputs pass None as the key's tool_sha instead."""
     h = hashlib.sha256()
-    for p in list(paths) + [THIS]:
+    for p in paths:
         h.update(os.path.basename(p).encode() + b"\0" + sha256_file(p).encode() + b"\n")
     return h.hexdigest()
 
@@ -511,6 +511,7 @@ class Report:
         self.prov = {
             "tool": tool,
             "tool_sha256": tool_sha256(*tool_files) if tool_files else None,
+            "compare_common_sha256": sha256_file(THIS),
             "date": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
             "repo": repo_state(),
             "blaze": blaze,
@@ -652,7 +653,8 @@ SCENARIOS = [
     ("both-sigpipe", dict(out=b"same\n", sig="PIPE"), dict(out=b"same\n", sig="PIPE"),
      {BOTH_FAILED}),
     ("blaze-unported", dict(out=b"same\n"),
-     dict(out=b"same\n", err=b"blaze: not ported yet: Foo.bar\n", code=37), {NOT_PORTED}),
+     dict(out=b"same\n", err=b"blaze: not ported yet: Foo.bar\n", code=37),
+     {NOT_PORTED, DIFFERENT}),  # DIFFERENT for a tool without a not-ported class
 ]
 
 

@@ -139,3 +139,57 @@ java_library(
     srcs = ["src/probe/app/UsesApi.java"],
     deps = [":api_annotated"],
 )
+
+# Reduced classpath fallback (--experimental_java_classpath=bazel): A's reduced classpath has B
+# and what B's header compilation used (C), but javac also needs C's supertype D.
+java_library(
+    name = "fb_d",
+    srcs = ["src/probe/fb/D.java"],
+)
+
+java_library(
+    name = "fb_c",
+    srcs = ["src/probe/fb/C.java"],
+    deps = [":fb_d"],
+)
+
+java_library(
+    name = "fb_b",
+    srcs = ["src/probe/fb/B.java"],
+    deps = [":fb_c"],
+)
+
+java_library(
+    name = "fb_a",
+    srcs = ["src/probe/fb/A.java"],
+    deps = [":fb_b"],
+)
+
+# Imported jars have no .jdeps: E's reduced classpath has C's jar but not D's, which javac needs
+# for C's supertype, so JavaBuilder asks for the full-classpath fallback.
+filegroup(
+    name = "fb_d_jar",
+    srcs = [":fb_d"],
+)
+
+filegroup(
+    name = "fb_c_jar",
+    srcs = [":fb_c"],
+)
+
+java_import(
+    name = "imp_d",
+    jars = [":fb_d_jar"],
+)
+
+java_import(
+    name = "imp_c",
+    jars = [":fb_c_jar"],
+    deps = [":imp_d"],
+)
+
+java_library(
+    name = "fb_e",
+    srcs = ["src/probe/fb/E.java"],
+    deps = [":imp_c"],
+)

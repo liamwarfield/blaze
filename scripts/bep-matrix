@@ -101,9 +101,16 @@ my_test(
     tags = ["no-sandbox", "external"],
 )
 my_test(
-    name = "incompatible_test",
+    name = "unresolvable_test",
     script = "#!/bin/sh\\nexit 0\\n",
     target_compatible_with = ["@platforms//:incompatible"],
+)
+constraint_setting(name = "never_setting")
+constraint_value(name = "never", constraint_setting = ":never_setting")
+my_test(
+    name = "incompatible_test",
+    script = "#!/bin/sh\\nexit 0\\n",
+    target_compatible_with = [":never"],
 )
 ''',
 }
@@ -114,7 +121,11 @@ SCENARIOS = [
     ("build_fail", ["build", "//pkg:ok2", "//pkg:bad"]),
     ("build_keep_going", ["build", "--keep_going", "//pkg:ok2", "//pkg:bad"]),
     ("build_loading_error", ["build", "//pkg:does_not_exist"]),
+    ("build_analysis_failure", ["build", "//pkg:ok", "//pkg:unresolvable_test"]),
     ("build_incompatible", ["build", "//pkg:ok", "//pkg:incompatible_test"]),
+    ("build_incompatible_skipped", ["build", "--skip_incompatible_explicit_targets", "//pkg:ok",
+                                    "//pkg:incompatible_test"]),
+    ("build_nobuild", ["build", "--nobuild", "//pkg:ok"]),
     ("build_all_actions", ["build", "--build_event_publish_all_actions", "//pkg:ok2"]),
     ("build_aspect", ["build", "--aspects=//pkg:defs.bzl%my_aspect", "--output_groups=aout",
                       "//pkg:ok"]),
@@ -145,6 +156,12 @@ def write_workspace(ws):
 
 
 def oc_remove(path):
+    # Deleting rule (AGENTS.md): only this tool's own per-run directories, by full path.
+    real = os.path.realpath(path)
+    allowed = (os.path.join(os.path.realpath(oc.WORK), "bep-matrix-"),
+               os.path.join(os.path.realpath(oc.OUTPUT_ROOTS), "bep-matrix-"))
+    if not path or not any(real.startswith(a) and len(real) > len(a) for a in allowed):
+        raise SystemExit("bep-matrix: refusing to delete %r (not a bep-matrix work directory)" % path)
     if os.path.lexists(path):
         subprocess.run(["chmod", "-R", "u+w", path], stderr=subprocess.DEVNULL)
         shutil.rmtree(path, ignore_errors=True)

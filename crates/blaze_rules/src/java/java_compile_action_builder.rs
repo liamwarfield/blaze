@@ -63,6 +63,37 @@ pub struct JavaCompileExtraActionInfoSupplier {
     javac_opts: Vec<String>,
 }
 
+impl JavaCompileExtraActionInfoSupplier {
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:110 JavaCompileActionBuilder.JavaCompileExtraActionInfoSupplier.extend
+    pub fn extend(&self) -> ! {
+        // PORT: the `JavaCompileInfo` extension of `ExtraActionInfo` (extra_actions_base.proto)
+        // is not ported; extra actions are not ported.
+        blaze_util::unported!(
+            "JavaCompileActionBuilder.JavaCompileExtraActionInfoSupplier.extend",
+            "extra actions (ExtraActionInfo.JavaCompileInfo) are not ported"
+        )
+    }
+}
+
+/// `new JavaCompileProgressMessage(output, sourceFiles, sourceJars, plugins)`: a
+/// `ProgressMessage` with the prefix "Building".
+// Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:504 JavaCompileActionBuilder.JavaCompileProgressMessage.<init>
+// Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:513 JavaCompileActionBuilder.JavaCompileProgressMessage.prefix
+fn java_compile_progress_message(
+    output: &Artifact,
+    source_files: &IndexSet<Artifact>,
+    source_jars: &[Artifact],
+    plugins: &JavaPluginData,
+) -> ProgressMessage {
+    ProgressMessage::new(
+        PROGRESS_MESSAGE_PREFIX,
+        output,
+        source_files.len(),
+        source_jars.len(),
+        plugins,
+    )
+}
+
 /// Java compilation action builder.
 // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:52 JavaCompileActionBuilder
 pub struct JavaCompileActionBuilder<'a, 'v> {
@@ -247,11 +278,10 @@ impl<'a, 'v> JavaCompileActionBuilder<'a, 'v> {
             owner,
             tools,
             /* progress_message= */
-            ProgressMessage::new(
-                PROGRESS_MESSAGE_PREFIX,
+            java_compile_progress_message(
                 outputs.output(),
-                self.source_files.len(),
-                self.source_jars.len(),
+                &self.source_files,
+                &self.source_jars,
                 &self.plugins,
             ),
             mandatory_inputs,

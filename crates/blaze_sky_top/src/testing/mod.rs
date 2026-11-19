@@ -8,10 +8,12 @@
 pub mod analysis_mock;
 pub mod build_view_test_case;
 pub mod configuration_test_case;
+pub mod fake_registry;
 pub mod mock_tools_config;
 pub mod scratch;
 
 pub use configuration_test_case::ConfigurationTestCase;
+pub use fake_registry::{FakeRegistry, create_module_key};
 
 pub use build_view_test_case::{
     AnalysisTestCase, BuildViewTestCase, Flag, FlagBuilder, assert_contains_exactly,

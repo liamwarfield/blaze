@@ -20,3 +20,10 @@ section 5 (crate list, DAG, cycle breaks). Changes from that plan, decided by ro
   `encode`. Map fields are `Vec<Entry>` in Java insertion order.
 - `blaze_repo_fetch`: repository cache, downloader, decompressors, PatchUtil (not in 06's list).
 - `blaze_bzlmod_model`: Starlark-free Bzlmod (versions, selection, discovery, registry, lockfile).
+- `blaze_server`: `lib/server` (GrpcServerImpl, CommandManager, ServerWatcherRunnable,
+  PidFileWatcher, ShutdownHooks, TerminalSizeMonitor, idle task manager) lives in its own crate
+  below `blaze_runtime`, not in `blaze_runtime` as 06 §5 says (decision 2026-11-19, D3). It also
+  owns `CommandDispatcher` (with `LockingMode`, `UiVerbosity`) and `BlazeCommandResult` from
+  `lib/runtime`, re-exported by `blaze_runtime`. Depends on protos, util, vfs, events, shell;
+  never on `blaze_runtime` or anything above it. The gRPC stack is tonic on tokio, as in
+  `blaze_remote`; the client side of the protocol is in `blaze_client`.

@@ -1,0 +1,455 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/int-bin/ui-wave/blaze-after-2
+# sha256 315c21471b3926d83d023ee7d369f28dc47b9bbc1ff173fbd59aa00a019c68fe
+# tree dd732200b777e7e4c396ab46a11cacbe9f7034c2 (dirty)
+# date 2026-11-19T14:27:00
+=== 1: run cquery "config(//:x, deadbeef)"
+exit 1
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: Error doing post analysis query: Evaluation failed: Unknown configuration ID 'deadbeef'.
+config()'s second argument must identify a unique configuration.
+Valid values:
+ 'target' for the default configuration
+ 'null' for source files (which have no configuration)
+ an arbitrary configuration's full or short ID
+A short ID is any prefix of a full ID. cquery shows short IDs. 'bazel config' shows full IDs.
+For more help, see https://bazel.build/docs/cquery.
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 2: run cquery "config(//:x, deadbeef)" --keep_going
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: Error doing post analysis query: Unknown configuration ID 'deadbeef'.
+config()'s second argument must identify a unique configuration.
+Valid values:
+ 'target' for the default configuration
+ 'null' for source files (which have no configuration)
+ an arbitrary configuration's full or short ID
+A short ID is any prefix of a full ID. cquery shows short IDs. 'bazel config' shows full IDs.
+For more help, see https://bazel.build/docs/cquery.
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 3: run cquery "siblings(//:x)"
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: Error doing post analysis query: Evaluation failed: siblings() not supported for post analysis queries
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 4: run cquery "buildfiles(//:x)"
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: Error doing post analysis query: Evaluation failed: buildfiles() doesn't make sense for the configured target graph
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 5: run cquery "visible(//:x, //:y)"
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).
+INFO: Found 2 targets...
+ERROR: Error doing post analysis query: Evaluation failed: visible() is not supported on configured targets
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 6: run aquery "labels(deps, //:x)" --output=jsonproto
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: Error doing post analysis query: Evaluation failed: labels() is not supported for aquery
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 7: run cquery "//nosuchpkg:x"
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+WARNING: Target pattern parsing failed.
+ERROR: Skipping '//nosuchpkg:x': no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ - nosuchpkg
+ERROR: no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ - nosuchpkg
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 8: run cquery "deps(//:nosuchtarget)"
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+WARNING: Target pattern parsing failed.
+ERROR: Skipping '//:nosuchtarget': no such target '//:nosuchtarget': target 'nosuchtarget' not declared in package '' defined by <WS>/BUILD.bazel
+ERROR: no such target '//:nosuchtarget': target 'nosuchtarget' not declared in package '' defined by <WS>/BUILD.bazel
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 9: run cquery "deps(//:nosuchtarget)" --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+WARNING: Target pattern parsing failed.
+ERROR: Skipping '//:nosuchtarget': no such target '//:nosuchtarget': target 'nosuchtarget' not declared in package '' defined by <WS>/BUILD.bazel
+INFO: Analyzed 0 targets (5 packages loaded, 6 targets configured).
+INFO: Found 0 targets...
+ERROR: Evaluation of query "//:nosuchtarget" failed: no such target '//:nosuchtarget': target 'nosuchtarget' not declared in package '' defined by <WS>/BUILD.bazel
+WARNING: --keep_going specified, ignoring errors. Results may be inaccurate
+INFO: Empty query results
+ERROR: command succeeded, but there were errors parsing the target pattern
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 10: run cquery //:x --nodep_deps=false
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: Error doing post analysis query: The following filter(s) are not currently supported by configured query: [NO_NODEP_DEPS, INCLUDE_ASPECTS]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 11: run cquery "deps(//b/...)" --universe_scope=//a:x
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //a:x (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+ERROR: Error doing post analysis query: Evaluation failed: Unable to load package '[<WS>]/[b]' because package is not in scope. Check that all target patterns in query expression are within the --universe_scope of this query.
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 12: run cquery "deps(//b/...)" --universe_scope=//a:x --keep_going
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //a:x (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+ERROR: Error doing post analysis query: Unable to load package '[<WS>]/[b]' because package is not in scope. Check that all target patterns in query expression are within the --universe_scope of this query.
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 13: run aquery "deps(//b/...)" --universe_scope=//a:x --output=jsonproto
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //a:x (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+ERROR: Error doing post analysis query: Evaluation failed: Unable to load package '[<WS>]/[b]' because package is not in scope. Check that all target patterns in query expression are within the --universe_scope of this query.
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 14: run cquery //:x --output=jsonproto --proto:include_synthetic_attribute_hash --noproto:include_configurations
+exit 0
+--- stdout
+{
+  "target": [{
+    "type": "RULE",
+    "rule": {
+      "name": "//:x",
+      "ruleClass": "w",
+      "location": "<WS>/BUILD.bazel:7:2",
+      "attribute": [{
+        "name": "$config_dependencies",
+        "type": "LABEL_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": ":action_listener",
+        "type": "LABEL_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "aspect_hints",
+        "type": "LABEL_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "compatible_with",
+        "type": "LABEL_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "deprecation",
+        "type": "STRING",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "deps",
+        "type": "LABEL_LIST",
+        "stringListValue": ["//:y"],
+        "explicitlySpecified": true,
+        "nodep": false
+      }, {
+        "name": "exec_compatible_with",
+        "type": "LABEL_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "exec_group_compatible_with",
+        "type": "LABEL_LIST_DICT",
+        "explicitlySpecified": false
+      }, {
+        "name": "exec_properties",
+        "type": "STRING_DICT",
+        "explicitlySpecified": false
+      }, {
+        "name": "expect_failure",
+        "type": "STRING",
+        "stringValue": "",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "features",
+        "type": "STRING_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "generator_function",
+        "type": "STRING",
+        "stringValue": "",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "generator_location",
+        "type": "STRING",
+        "stringValue": "",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "generator_name",
+        "type": "STRING",
+        "stringValue": "",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "name",
+        "type": "STRING",
+        "stringValue": "x",
+        "explicitlySpecified": true,
+        "nodep": false
+      }, {
+        "name": "package_metadata",
+        "type": "LABEL_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "restricted_to",
+        "type": "LABEL_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "tags",
+        "type": "STRING_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "target_compatible_with",
+        "type": "LABEL_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "testonly",
+        "type": "BOOLEAN",
+        "intValue": 0,
+        "stringValue": "false",
+        "explicitlySpecified": false,
+        "booleanValue": false
+      }, {
+        "name": "toolchains",
+        "type": "LABEL_LIST",
+        "explicitlySpecified": false,
+        "nodep": false
+      }, {
+        "name": "transitive_configs",
+        "type": "STRING_LIST",
+        "explicitlySpecified": false,
+        "nodep": true
+      }, {
+        "name": "visibility",
+        "type": "STRING_LIST",
+        "explicitlySpecified": false,
+        "nodep": true
+      }, {
+        "name": "$rule_implementation_hash",
+        "type": "STRING",
+        "stringValue": "2ff853b97f06a8ca9169cb6d2e0225eb5d7b07a6e2992e40cee71df8faf16256"
+      }],
+      "ruleInput": ["//:y"]
+    }
+  }]
+}
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 15: run cquery --query_file=q.txt --output=label_kind
+exit 0
+--- stdout
+w rule //:x (a7a71fd)
+w rule //:y (a7a71fd)
+alias rule @bazel_tools//tools:host_platform (3030ed4)
+platform rule @@platforms//host:host (3030ed4)
+constraint_value rule @@platforms//os:linux (3030ed4)
+constraint_value rule @@platforms//cpu:x86_64 (3030ed4)
+constraint_setting rule @@platforms//cpu:cpu (3030ed4)
+constraint_setting rule @@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 16: run cquery --query_file=missing.txt
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+=== 17: run cquery //:x --query_file=q.txt
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+=== 18: run aquery --query_file=q.txt --output=jsonproto --noinclude_artifacts
+exit 0
+--- stdout
+{
+  "actions": [
+    {
+      "targetId": 1,
+      "actionKey": "077fd921393782700ad382a0f90af3fb012092ea950506e2c388e4fd3e94e72f",
+      "mnemonic": "FileWrite",
+      "configurationId": 1,
+      "executionPlatform": "@@platforms//host:host"
+    },
+    {
+      "targetId": 2,
+      "actionKey": "077fd921393782700ad382a0f90af3fb012092ea950506e2c388e4fd3e94e72f",
+      "mnemonic": "FileWrite",
+      "configurationId": 1,
+      "executionPlatform": "@@platforms//host:host"
+    }
+  ],
+  "targets": [
+    {
+      "id": 1,
+      "label": "//:x",
+      "ruleClassId": 1
+    },
+    {
+      "id": 2,
+      "label": "//:y",
+      "ruleClassId": 1
+    }
+  ],
+  "configuration": [
+    {
+      "id": 1,
+      "mnemonic": "k8-fastbuild",
+      "platformName": "k8",
+      "checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18"
+    }
+  ],
+  "ruleClasses": [
+    {
+      "id": 1,
+      "name": "w"
+    }
+  ]
+}
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 19: run cquery //:x --output=nosuchformat
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: Invalid output format 'nosuchformat'. Valid values are: label_kind, label, transitions, proto, streamed_proto, textproto, jsonproto, build, graph, starlark, files
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 20: run aquery //:x --output=nosuchformat
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: Invalid output format 'nosuchformat'. Valid values are: proto, streamed_proto, textproto, jsonproto, text, commands, summary
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 21: run cquery
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+=== 22: run aquery
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+=== 23: run cquery //:x --notrack_incremental_state
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+WARNING: --notrack_incremental_state was specified, but without --nokeep_state_after_build. Inmemory state from this build will not be reusable, but it will not get fully wiped until the beginning of the next build. Use --nokeep_state_after_build to clean up eagerly.
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: Queries based on analysis results are not allowed if incrementality state is not being kept
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 24: run aquery //:x --notrack_incremental_state --output=jsonproto
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+WARNING: --notrack_incremental_state was specified, but without --nokeep_state_after_build. Inmemory state from this build will not be reusable, but it will not get fully wiped until the beginning of the next build. Use --nokeep_state_after_build to clean up eagerly.
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: Queries based on analysis results are not allowed if incrementality state is not being kept
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully

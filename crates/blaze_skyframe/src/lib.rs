@@ -37,16 +37,34 @@
 //! dep; here the dep was evaluated by the request.
 //!
 //! Each `Evaluator::evaluate(roots, ctx)` call takes its own [`EvaluationContext`]
-//! (`keep_going`, parallelism, event handler), like `MemoizingEvaluator.evaluate`. Results that
-//! Java would not have committed to the graph (nodes still in flight when a no-keep-going
-//! evaluation aborted, nodes on the error-bubbling path, nodes in or above a cycle that the cycle
-//! detector did not reach, interrupted nodes) are dropped at the end of the call, however it
-//! ends, and re-evaluated by the next call. Committed values and errors are memoized for the life
-//! of the evaluator.
+//! (`keep_going`, parallelism, event handler), like `MemoizingEvaluator.evaluate`. Committed values
+//! and errors are memoized in the graph. Nodes Java would not have committed (still in flight when
+//! a no-keep-going evaluation aborted, on the error-bubbling path, in or above a cycle that the
+//! cycle detector did not reach, interrupted) stay in the graph, not done, until the next
+//! `evaluate` deletes them with their reverse transitive closure, as Java does.
 //!
-//! A single build per process is assumed (no invalidation of changed files, no change pruning,
-//! no versions). `// PORT: skipped, incremental` marks the Java features this leaves out.
+//! ## Incremental evaluation
 //!
+//! The graph is Java's: each node is an `InMemoryNodeEntry` (`IncrementalInMemoryNodeEntry`, or
+//! `NonIncrementalInMemoryNodeEntry` with [`EvaluatorBuilder::keep_edges`]`(false)`) driven with
+//! Java's calls in Java's order, under graph versions (one per `evaluate`). Between evaluations a
+//! caller records changes, applied at the start of the next `evaluate`
+//! (`AbstractInMemoryMemoizingEvaluator.evaluate`): [`Evaluator::inject`] (an injected value
+//! equal to the node's, by [`Key::values_equal`], changes nothing), [`Evaluator::invalidate`],
+//! [`Evaluator::invalidate_transient_errors`], [`Evaluator::delete`],
+//! [`Evaluator::delete_dirty`]. Changed nodes are marked changed and their reverse transitive
+//! closure dirty; a dirty node that is requested checks the dep groups of its last build in order
+//! and is marked clean if none changed, else re-runs its function; a node that re-evaluates to an
+//! equal value keeps its version (change pruning). A progress receiver
+//! ([`EvaluatorBuilder::progress_receiver`]) is told what Java tells it, and with a storing
+//! [`EventFilter`] ([`EvaluatorBuilder::event_filter`]) nodes store their events, which are
+//! replayed when a node is reused ([`Evaluator::emitted_event_state`]).
+//!
+//! PORT: the blocking engine evaluates a dep where Java enqueues it; a node whose dep does not
+//! finish in this evaluation (abort, cycle, interrupt) ends this evaluation "undone", its entry
+//! still evaluating, which is the in-flight node Java leaves behind. See
+//! `docs/skyframe-incremental.d/engine.md` for the mapping.
+
 //! ## Errors
 //!
 //! * keep_going: every node is computed as far as possible. A function that throws while a
@@ -112,21 +130,21 @@
 //! Engine API of `com.google.devtools.build.skyframe` that has no port here. Where a Java method
 //! has a Rust counterpart to hang it on, calling it fails with `unported!`.
 //!
-//! * `EvaluationProgressReceiver` (enqueueing / stateStarting / evaluated) and
-//!   `InflightTrackingProgressReceiver`.
 //! * `SkyFunction.Environment.getState` / `SkyKeyComputeState` ([`Environment::get_state`]).
 //! * `Environment.registerDependencies` ([`Environment::register_dependencies`]).
 //! * `SkyframeLookupResult.queryDep` ([`SkyframeLookupResult::query_dep`]).
 //! * `Environment.dependOnFuture` and external deps ([`Environment::depend_on_future`]).
-//! * `SkyFunction.Reset`, node rewinding, partial reevaluation.
+//! * `SkyFunction.Reset`, node rewinding (`DirtyType.REWIND`), partial reevaluation.
 //! * The per-key keep_going predicate (`ParallelEvaluatorContext.keepGoing(SkyKey)`): keep_going
 //!   is one flag per evaluation.
-//! * `EventFilter` and events stored on nodes for replay: stored events are reported once, when
-//!   the node commits or is re-run in error bubbling.
 //! * `ShortCircuitingCycleDetector` (`EvaluationContext::detect_cycles == false`).
-//! * `MemoizingEvaluator.delete` / `deleteDirty`, versions, dirtiness, change pruning
-//!   (incremental).
-//!
+//! * `GraphInconsistencyReceiver`: an inconsistency panics with the text of Java's default
+//!   (`THROWING`).
+//! * Max transitive source versions, Skyfocus, graph statistics (`postLoggingStats`), key
+//!   interning.
+//! * Interrupting invalidation: the invalidators run to completion; `evaluate` then sees the
+//!   interrupt.
+
 //! ## Rules for ported SkyFunctions
 //!
 //! * Never hold a lock across `get_value` / `get_values_and_exceptions`: the call may compute
@@ -137,13 +155,45 @@
 
 #![allow(clippy::too_many_arguments, clippy::new_without_default)]
 
+/// Port of Guava `Preconditions.checkNotNull`: the value, or a panic with Java's
+/// `NullPointerException` (and message, when Java gives one).
+macro_rules! check_not_null {
+    ($e:expr) => {
+        match $e {
+            Some(v) => v,
+            None => panic!("NullPointerException"),
+        }
+    };
+    ($e:expr, $($arg:tt)+) => {
+        match $e {
+            Some(v) => v,
+            None => panic!("NullPointerException: {}", format_args!($($arg)+)),
+        }
+    };
+}
+
+mod abstract_in_memory_node_entry;
 mod cycle_info;
+mod differencer;
+mod dirty_building_state;
 mod environment;
 mod error_info;
 mod evaluation_result;
 mod evaluator;
+mod event_filter;
+mod function_hermeticity;
 mod grouped_deps;
+mod in_memory_graph;
+mod in_memory_node_entry;
+mod incremental_in_memory_node_entry;
+mod invalidation;
+mod node_entry;
+mod non_incremental_in_memory_node_entry;
+mod progress;
+mod reverse_deps_utility;
 mod simple_cycle_detector;
+mod value_with_metadata;
+mod version;
 mod walkable_graph;
 
 pub use cycle_info::CycleInfo;
@@ -151,10 +201,18 @@ pub use environment::{Environment, SkyframeLookupResult, ValueOrThrow};
 pub use error_info::ErrorInfo;
 pub use evaluation_result::EvaluationResult;
 pub use evaluator::{
-    ERROR_TRANSIENCE_KEY, ErrorTransienceKey, ErrorTransienceValue, EvaluationContext, Evaluator,
-    EvaluatorBuilder, IN_FLIGHT_INTERRUPT_POLL,
+    ERROR_TRANSIENCE_KEY, EmittedEventState, ErrorTransienceKey, ErrorTransienceValue,
+    EvaluationContext, Evaluator, EvaluatorBuilder, IN_FLIGHT_INTERRUPT_POLL,
 };
+pub use event_filter::EventFilter;
+pub use function_hermeticity::FunctionHermeticity;
 pub use grouped_deps::GroupedDeps;
+pub use node_entry::DirtyType;
+pub use progress::{
+    CompoundEvaluationProgressReceiver, CompoundEvaluationProgressReceiverBase,
+    EvaluationProgressReceiver, EvaluationState, NodeState,
+};
+pub use version::{IntVersion, NodeVersion, Version};
 pub use walkable_graph::WalkableGraph;
 
 use std::any::Any;
@@ -194,19 +252,44 @@ pub trait Key: fmt::Debug + Eq + Hash + Send + Sync + 'static {
     type Value: Send + Sync + 'static;
     /// Java: SkyKey.functionName()
     const FUNCTION: SkyFunctionName;
+    /// Java: `SkyFunctionName.getHermeticity()`. `None`: not declared yet (declared per key in
+    /// package I2); the "hermetic functions cannot be marked changed" check then does not apply.
+    // Java: com/google/devtools/build/skyframe/SkyFunctionName.java:84 SkyFunctionName.getHermeticity
+    const HERMETICITY: Option<FunctionHermeticity> = None;
+
+    /// Java: `SkyValue.equals` as used by `DirtyBuildingState.unchangedFromLastBuild` and
+    /// `AbstractInMemoryMemoizingEvaluator.pruneInjectedValues`. The default is "not comparable"
+    /// (Java identity equality or `NotComparableSkyValue`): never equal.
+    ///
+    /// Java's default `Object.equals` is identity, so in Java a function that returns the very
+    /// same object as last build is change-pruned; a key opts into that here with
+    /// `std::ptr::eq(old, new)`. There is no implicit identity shortcut: it would prune values
+    /// that Java marks `NotComparableSkyValue`.
+    // Java: com/google/devtools/build/skyframe/DirtyBuildingState.java:214 DirtyBuildingState.unchangedFromLastBuild
+    fn values_equal(_old: &Self::Value, _new: &Self::Value) -> bool {
+        false
+    }
 }
 
 /// Object-safe view of a [`Key`].
 pub trait DynKey: fmt::Debug + Send + Sync + 'static {
     fn function_name(&self) -> SkyFunctionName;
+    /// [`Key::HERMETICITY`] of the key's type.
+    fn hermeticity(&self) -> Option<FunctionHermeticity>;
     fn as_any(&self) -> &dyn Any;
     fn dyn_eq(&self, other: &dyn DynKey) -> bool;
     fn dyn_hash(&self, state: &mut dyn Hasher);
+    /// [`Key::values_equal`] on type-erased values: a value of another type than the key's
+    /// `Value` is not equal.
+    fn dyn_values_equal(&self, old: &SkyValue, new: &SkyValue) -> bool;
 }
 
 impl<K: Key> DynKey for K {
     fn function_name(&self) -> SkyFunctionName {
         K::FUNCTION
+    }
+    fn hermeticity(&self) -> Option<FunctionHermeticity> {
+        K::HERMETICITY
     }
     fn as_any(&self) -> &dyn Any {
         self
@@ -217,6 +300,15 @@ impl<K: Key> DynKey for K {
     fn dyn_hash(&self, mut state: &mut dyn Hasher) {
         K::FUNCTION.hash(&mut state);
         self.hash(&mut state);
+    }
+    fn dyn_values_equal(&self, old: &SkyValue, new: &SkyValue) -> bool {
+        match (
+            old.downcast_ref::<K::Value>(),
+            new.downcast_ref::<K::Value>(),
+        ) {
+            (Some(old), Some(new)) => K::values_equal(old, new),
+            _ => false,
+        }
     }
 }
 
@@ -231,6 +323,12 @@ impl SkyKey {
     // Java: com/google/devtools/build/skyframe/SkyKey.java:42 SkyKey.functionName
     pub fn function_name(&self) -> SkyFunctionName {
         self.0.function_name()
+    }
+    /// Java: `skyKey.functionName().getHermeticity()`; `None` while the key type has not
+    /// declared it ([`Key::HERMETICITY`]).
+    // Java: com/google/devtools/build/skyframe/SkyFunctionName.java:84 SkyFunctionName.getHermeticity
+    pub fn hermeticity(&self) -> Option<FunctionHermeticity> {
+        self.0.hermeticity()
     }
     pub fn downcast<K: Key>(&self) -> Option<&K> {
         self.0.as_any().downcast_ref::<K>()

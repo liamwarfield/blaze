@@ -134,6 +134,13 @@ impl Scratch {
         self.file(path_name, lines)
     }
 
+    /// `Scratch.overwriteFile(pathName, byte[] content)`.
+    pub fn overwrite_file_bytes(&self, path_name: &str, content: &[u8]) -> Path {
+        let old_file = self.resolve(path_name);
+        let _ = std::fs::remove_file(os(&old_file));
+        self.file_bytes(path_name, content)
+    }
+
     /// `Scratch.appendFile`.
     // Java: com/google/devtools/build/lib/testutil/Scratch.java:162 Scratch.appendFile
     pub fn append_file(&self, path_name: &str, lines: &[&str]) -> Path {

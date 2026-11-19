@@ -14,6 +14,7 @@ USAGE = """\
 usage: scripts/java/compare --binary <blaze> [--oracle <bazel>] [--label NAME] [--skip-oracle]
                             [--step ID]... [--keep-going]
        scripts/java/compare list
+       scripts/java/compare selftest
        scripts/java/compare help
 
 Runs a fixed list of steps (see `list`) on the probe workspace scripts/java/probe with the oracle
@@ -55,17 +56,36 @@ install base and $HOME by placeholders, scripts/oracle/normalise.py):
              the graph between commands yet, docs/decisions.md D2), so both report the on-disk
              action cache hits
 
-Output: a table on stdout; raw outputs under ~/.cache/blaze/java-compare/<label>/<side>/ and
-results.json there. Exit 0 when every compared field matches, 1 otherwise.
---skip-oracle reuses the oracle outputs of an earlier run with the same --label.
+Guards (scripts/lib/compare_common.py): every command runs under a supervisor in the scope that
+records how it really ended (`exit N`, `signal NAME`, `oom-kill`, `timeout`); `exit` compares
+those. --oracle must be the pinned oracle (UPSTREAM.json). Each step (and `outputs`) is one case:
+IDENTICAL (termination and every compared aspect equal; the oracle exited 0, or DECLARED_EXIT
+names the step with that exit code), DIFFERENT, BOTH-FAILED (equal failures not declared),
+NOT-PORTED, ORACLE-UNEXPECTED, SKIPPED (a selected step missing on one side). An empty
+selection is an error.
+
+Output: a header (repository HEAD and dirty flag, both binaries' paths and sha256), a table, the
+per-step classes and the denominator; raw outputs under ~/.cache/blaze/java-compare/<label>/<side>/
+and results.json there (with provenance and denominator). Exit 0 only when at least one step was
+compared and every selected step is IDENTICAL; 1 otherwise; 2 on a usage error or a refusal.
+--skip-oracle reuses the oracle outputs of an earlier run with the same --label only when
+<label>/oracle/oracle.key (oracle sha256, this tool's sha256, every argv and the environment, the
+digest of the probe, the selected steps) equals this run's key; otherwise it refuses.
 --step limits the run to the named steps (the build step is implied by outputs).
 """
 
 HOME = os.path.expanduser("~")
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.join(REPO_ROOT, "scripts", "oracle"))
 import normalise  # noqa: E402
 import surfaces  # noqa: E402
+sys.path.insert(0, os.path.join(REPO_ROOT, "scripts", "lib"))
+import compare_common as cc  # noqa: E402
+
+# Steps whose non-zero exit is the behaviour under test: {step id: the oracle's exit code}.
+# Equal failures of a step not listed here are BOTH-FAILED. Left to the step list's owner.
+DECLARED_EXIT = {}
 
 CACHE = os.path.join(HOME, ".cache", "blaze")
 ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
@@ -116,20 +136,37 @@ def make_writable_and_remove(path):
         subprocess.run(["rm", "-rf", path])
 
 
+def step_argv(binary, our, args):
+    return [binary, "--output_user_root=" + our, "--nohome_rc",
+            "--nosystem_rc"] + args[:1] + ["--repository_cache=" + REPO_CACHE, "--color=no",
+                                           "--curses=no"] + args[1:]
+
+
 def run_cmd(binary, ws, our, args):
-    cmd = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "-p", "MemoryMax=12G",
-           "-p", "MemorySwapMax=0", "env", "-i", "HOME=" + HOME, "PATH=/usr/bin:/bin",
-           binary, "--output_user_root=" + our, "--nohome_rc",
-           "--nosystem_rc"] + args[:1] + ["--repository_cache=" + REPO_CACHE, "--color=no",
-                                          "--curses=no"] + args[1:]
-    p = subprocess.run(cmd, cwd=ws, stdout=subprocess.PIPE,
-                       stderr=subprocess.PIPE, timeout=TIMEOUT)
-    return p.returncode, p.stdout, p.stderr
+    """(compare_common.Termination, stdout, stderr) of one command in a --scope unit."""
+    r = cc.run(step_argv(binary, our, args), ws, timeout=TIMEOUT, mode="scope",
+               tag="java-compare")
+    return r.term, r.out, r.err
 
 
 def info(binary, ws, our, key):
-    rc, out, _ = run_cmd(binary, ws, our, ["info", key])
-    return out.decode("latin-1").strip() if rc == 0 else ""
+    term, out, _ = run_cmd(binary, ws, our, ["info", key])
+    return out.decode("latin-1").strip() if term.ok else ""
+
+
+def selected_steps(steps):
+    return [(sid, args) for sid, args in STEPS
+            if not steps or sid in steps or (sid == "build" and "outputs" in steps)]
+
+
+def oracle_key(label, steps):
+    ws = os.path.join(CACHE, "work", "java-compare", label, "oracle")
+    our = os.path.join(CACHE, "oracle-out", "java-compare-oracle")
+    # Raw outputs (normalised at comparison): this tool's sha256 is not part of the key.
+    return cc.cache_key(None, cc.pinned_sha256(),
+                        [step_argv(cc.PINNED_ORACLE, our, a) for _s, a in selected_steps(steps)],
+                        cc.clean_env(), cc.tree_digest(PROBE_DIR),
+                        extra={"workspace": ws, "steps": sorted(steps)})
 
 
 def side_run(side, binary, label, steps):
@@ -150,10 +187,11 @@ def side_run(side, binary, label, steps):
             # Both sides start these from a fresh server with the on-disk action cache: Blaze's
             # server does not keep the graph between commands yet (decisions D2), Bazel's does.
             run_cmd(binary, ws, our, ["shutdown"])
-        rc, out, err = run_cmd(binary, ws, our, args)
+        term, out, err = run_cmd(binary, ws, our, args)
         open(os.path.join(outdir, sid + ".stdout"), "wb").write(out)
         open(os.path.join(outdir, sid + ".stderr"), "wb").write(err)
-        results["steps"][sid] = {"exit": rc}
+        results["steps"][sid] = {"exit": term.exit_code_like(), "termination": term.to_dict(),
+                                 "unported": cc.unported_message(err)}
         if sid == "build":
             hashes = {}
             bin_dir = os.path.join(ws, "bazel-bin")
@@ -177,6 +215,8 @@ def side_run(side, binary, label, steps):
     run_cmd(binary, ws, our, ["shutdown"])
     with open(os.path.join(outdir, "results.json"), "w") as f:
         json.dump(results, f, indent=1, sort_keys=True)
+    if side == "oracle":
+        cc.write_key(os.path.join(outdir, "oracle.key"), oracle_key(label, steps))
     return results
 
 
@@ -208,21 +248,29 @@ def aquery_items(ctx, text):
     return {**summary, **surfaces.aquery_order(doc, list(summary))}
 
 
-def compare(label, steps):
+def compare(label, steps, report=None):
     o, odir = load("oracle", label)
     b, bdir = load("blaze", label)
     octx = normalise.Context(o["paths"])
     bctx = normalise.Context(b["paths"])
     rows = []
+    step_of_row = {}
 
     def row(name, ok, detail=""):
         rows.append((name, "MATCH" if ok else "DIFF", detail))
+        step_of_row[len(rows) - 1] = cur[0]
 
-    for sid, _ in STEPS:
+    cur = [None]
+    for sid, _ in selected_steps(steps):
+        cur[0] = sid
         if sid not in o["steps"] or sid not in b["steps"]:
+            if report is not None:
+                report.add(sid, cc.SKIPPED, "not run on the %s side" % (
+                    "oracle" if sid not in o["steps"] else "blaze"))
             continue
-        oe, be = o["steps"][sid]["exit"], b["steps"][sid]["exit"]
-        row(sid + " exit", oe == be, "oracle %d, blaze %d" % (oe, be))
+        ot = cc.Termination.from_dict(o["steps"][sid].get("termination"))
+        bt = cc.Termination.from_dict(b["steps"][sid].get("termination"))
+        row(sid + " exit", ot is not None and ot == bt, "oracle %s, blaze %s" % (ot, bt))
         kind = sid.split("-")[0]
         if kind == "cquery":
             ol = octx.text(read(odir, sid + ".stdout")).splitlines()
@@ -267,25 +315,54 @@ def compare(label, steps):
                 os_ = read(odir, sid + ".stdout")
                 bs = read(bdir, sid + ".stdout")
                 row(sid + " stdout", os_ == bs, repr(bs[:60]))
+    cur[0] = "outputs"
     if "outputs" in o and "outputs" in b:
         oh, bh = o["outputs"], b["outputs"]
         for k in sorted(set(oh) | set(bh)):
             row("sha256 " + k, oh.get(k) == bh.get(k),
                 "" if oh.get(k) == bh.get(k) else "oracle %s, blaze %s" % (
                     (oh.get(k) or "-")[:12], (bh.get(k) or "-")[:12]))
-    ok = all(r[1] == "MATCH" for r in rows)
+    elif (not steps or "outputs" in steps or "build" in steps) and report is not None:
+        report.add("outputs", cc.SKIPPED, "no build outputs recorded on the %s side" % (
+            "oracle" if "outputs" not in o else "blaze"))
     w = max(len(r[0]) for r in rows) if rows else 10
     for name, status, detail in rows:
         print("%-*s  %-5s  %s" % (w, name, status, detail))
-    with open(os.path.join(CACHE, "java-compare", label, "results.json"), "w") as f:
-        json.dump({"rows": rows, "ok": ok}, f, indent=1)
-    return ok
+    if report is not None:
+        judge_steps(o, b, rows, step_of_row, report)
+        report.write_json(os.path.join(CACHE, "java-compare", label, "results.json"),
+                          extra={"rows": rows})
+    return rows
+
+
+def judge_steps(o, b, rows, step_of_row, report):
+    """One compare_common class per step (and `outputs`) from the aspect rows."""
+    order = []
+    for i in range(len(rows)):
+        if step_of_row[i] not in order:
+            order.append(step_of_row[i])
+    for sid in order:
+        mine = [rows[i] for i in range(len(rows)) if step_of_row[i] == sid]
+        differing = [name for name, status, _ in mine
+                     if status == "DIFF" and not name.endswith(" exit")]
+        if sid == "outputs":
+            ot = bt = cc.Termination("exit", 0)  # the build step carries the termination
+            unported = None
+        else:
+            ot = cc.Termination.from_dict(o["steps"][sid].get("termination"))
+            bt = cc.Termination.from_dict(b["steps"][sid].get("termination"))
+            unported = b["steps"][sid].get("unported")
+        cls, detail = cc.judge(ot, bt, differing, declared_exit=DECLARED_EXIT.get(sid),
+                               blaze_unported=unported)
+        report.add(sid, cls, detail)
 
 
 def main(argv):
     if not argv or argv[0] in ("help", "--help", "-h"):
         print(USAGE, end="")
         return 0
+    if argv[0] == "selftest":
+        return selftest()
     if argv[0] == "list":
         for sid, args in STEPS:
             print("%-8s %s" % (sid, " ".join(args)))
@@ -312,10 +389,64 @@ def main(argv):
         print(USAGE, file=sys.stderr)
         return 2
     binary = os.path.abspath(binary)
-    if not skip_oracle:
+    known = {sid for sid, _ in STEPS} | {"outputs"}
+    if [s for s in steps if s not in known] or (steps and not selected_steps(steps)):
+        return cc.empty_selection_error("java/compare", "steps (unknown: %s)" % ", ".join(
+            s for s in steps if s not in known))
+    try:
+        oracle, oracle_sha = cc.require_oracle(oracle)
+        blaze = cc.blaze_identity(binary)
+    except cc.Refusal as e:
+        return cc.refuse("java/compare", e)
+    report = cc.Report("java/compare", blaze=blaze, oracle={"path": oracle, "sha256": oracle_sha},
+                       selection="label %s, steps %s" % (label, ",".join(steps) or "all"),
+                       tool_files=[os.path.abspath(__file__)])
+    report.print_header()
+    if skip_oracle:
+        try:
+            cc.require_fresh(os.path.join(CACHE, "java-compare", label, "oracle", "oracle.key"),
+                             oracle_key(label, steps))
+        except cc.Refusal as e:
+            return cc.refuse("java/compare", e)
+    else:
         side_run("oracle", oracle, label, steps)
-    side_run("blaze", binary, label, steps)
-    return 0 if compare(label, steps) else 1
+    side_run("blaze", blaze["path"], label, steps)
+    compare(label, steps, report)
+    print()
+    report.print_rows()
+    report.print_footer()
+    return report.exit_code()
+
+
+def selftest():
+    def run_pair(ofake, bfake, wd):
+        cc.require_oracle(ofake)
+        sides = {}
+        for side, fake in (("oracle", ofake), ("blaze", bfake)):
+            term, out, err = run_cmd(fake, wd, os.path.join(wd, "our"), ["cquery"])
+            sides[side] = ({"steps": {"cquery": {"termination": term.to_dict(),
+                                                 "unported": cc.unported_message(err)}}},
+                           out.decode("latin-1"))
+        (o, oo), (b, bo) = sides["oracle"], sides["blaze"]
+        rows = [("cquery exit", "MATCH" if cc.Termination.from_dict(
+                    o["steps"]["cquery"]["termination"]) == cc.Termination.from_dict(
+                    b["steps"]["cquery"]["termination"]) else "DIFF", ""),
+                ("cquery stdout", "MATCH" if oo == bo else "DIFF", "")]
+        rep = cc.Report("selftest")
+        judge_steps(o, b, rows, {0: "cquery", 1: "cquery"}, rep)
+        return rep.rows[0]["class"], rep.rows[0]["detail"]
+
+    def empty_selection():
+        with open(os.devnull, "w") as null:
+            old = sys.stderr
+            sys.stderr = null
+            try:
+                return main(["--binary", "/bin/true", "--step", "no-such-step"])
+            finally:
+                sys.stderr = old
+
+    return cc.selftest("java/compare", run_pair=run_pair, empty_selection=empty_selection,
+                       mode="scope")
 
 
 if __name__ == "__main__":

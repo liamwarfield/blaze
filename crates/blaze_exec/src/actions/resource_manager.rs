@@ -28,6 +28,70 @@ use indexmap::IndexMap;
 use parking_lot::{Condvar, Mutex};
 
 use crate::actions::{ActionExecutionMetadata, ExecException, ResourceSet, UserExecException};
+use crate::worker::worker::Worker;
+use crate::worker::worker_pool::{BorrowError, WorkerPool};
+use crate::worker::worker_process_status::Status as WorkerStatus;
+
+/// What acquiring resources throws besides `ExecException`: the `IOException` of borrowing a
+/// worker from the pool.
+#[derive(Debug)]
+pub enum AcquireResourcesError {
+    Exec(ExecException),
+    Io(std::io::Error),
+}
+
+impl From<ExecException> for AcquireResourcesError {
+    fn from(e: ExecException) -> Self {
+        AcquireResourcesError::Exec(e)
+    }
+}
+
+impl From<BorrowError> for AcquireResourcesError {
+    fn from(e: BorrowError) -> Self {
+        match e {
+            BorrowError::Io(e) => AcquireResourcesError::Io(e),
+            BorrowError::Interrupted => AcquireResourcesError::Exec(ExecException::Interrupted),
+        }
+    }
+}
+
+impl AcquireResourcesError {
+    /// For callers whose resource sets have no worker key (no `IOException` is possible): the
+    /// `IOException` as `AbstractSpawnStrategy` reports it.
+    fn into_exec(self) -> ExecException {
+        match self {
+            AcquireResourcesError::Exec(e) => e,
+            AcquireResourcesError::Io(e) => crate::exec::abstract_spawn_strategy::exec_io_exception(&e),
+        }
+    }
+}
+
+/// The worker a [`ResourceLatch`] hands over (`ResourceLatch.worker`), shared between the waiting
+/// thread and the thread that grants its request.
+#[derive(Clone, Default)]
+struct WorkerSlot(Arc<Mutex<Option<Arc<dyn Worker>>>>);
+
+impl std::fmt::Debug for WorkerSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &*self.0.lock() {
+            Some(w) => write!(f, "Some({w})"),
+            None => f.write_str("None"),
+        }
+    }
+}
+
+/// Why a worker is invalidated (`ResourceHandle.invalidateAndClose(Exception e)`).
+#[derive(Debug, Clone)]
+pub enum InvalidateCause {
+    /// `InterruptedException`.
+    Interrupted,
+    /// `IOException`.
+    Io,
+    /// `UserExecException`: its failure detail's worker code, if it has a worker detail.
+    UserExec(Option<blaze_protos::failure_details::worker::Code>),
+    /// Any other exception.
+    Other,
+}
 
 /// Defines the possible priorities of resources. The earlier elements in this enum will get first
 /// chance at grabbing resources.
@@ -152,7 +216,7 @@ impl CountDownLatch {
 #[derive(Debug, Clone)]
 struct ResourceLatch {
     latch: Option<Arc<CountDownLatch>>,
-    // PORT: the worker handed over through the latch is not ported (workers are unported).
+    worker: WorkerSlot,
 }
 
 /// Pair of requested resources and latch represented it for waiting.
@@ -197,18 +261,36 @@ struct State {
 
 /// Schedules local execution against the available resources (`--local_resources`).
 // Java: com/google/devtools/build/lib/actions/ResourceManager.java:80 ResourceManager
-#[derive(Debug)]
 pub struct ResourceManager {
     state: Mutex<State>,
+    /// `workerPool`.
+    worker_pool: parking_lot::RwLock<Option<Arc<dyn WorkerPool>>>,
+}
+
+impl std::fmt::Debug for ResourceManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResourceManager")
+            .field("state", &self.state)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A handle returned by [`ResourceManager::acquire_resources`] that must be closed (or dropped)
 /// in order to free the resources again.
 // Java: com/google/devtools/build/lib/actions/ResourceManager.java:90 ResourceManager.ResourceHandle
-#[derive(Debug)]
 pub struct ResourceHandle {
     manager: Option<Arc<ResourceManager>>,
     request: Option<ResourceRequest>,
+    worker: Option<Arc<dyn Worker>>,
+}
+
+impl std::fmt::Debug for ResourceHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResourceHandle")
+            .field("request", &self.request)
+            .field("worker", &self.worker.as_ref().map(|w| w.to_string()))
+            .finish()
+    }
 }
 
 impl ResourceHandle {
@@ -217,29 +299,82 @@ impl ResourceHandle {
         self.request.as_ref()
     }
 
+    /// `getWorker()`.
+    // Java: com/google/devtools/build/lib/actions/ResourceManager.java:104 ResourceManager.ResourceHandle.getWorker
+    pub fn get_worker(&self) -> Option<&Arc<dyn Worker>> {
+        self.worker.as_ref()
+    }
+
     /// Closing the ResourceHandle releases the resources associated with it.
     // Java: com/google/devtools/build/lib/actions/ResourceManager.java:115 ResourceManager.ResourceHandle.close
     pub fn close(mut self) -> Result<(), ExecException> {
+        let worker = self.worker.take();
         match (self.manager.take(), self.request.take()) {
-            (Some(manager), Some(request)) => manager.release_resources(&request),
+            (Some(manager), Some(request)) => manager.release_resources_with_worker(&request, worker),
             _ => Ok(()),
         }
         // PORT: skipped, profiling.
     }
 
-    /// `getWorker()` / `invalidateAndClose(e)`: persistent workers are not ported.
-    pub fn invalidate_and_close(self) -> Result<(), ExecException> {
-        blaze_util::unported!("ResourceManager.ResourceHandle.invalidateAndClose")
+    // Java: com/google/devtools/build/lib/actions/ResourceManager.java:122 ResourceManager.ResourceHandle.invalidateAndClose
+    pub fn invalidate_and_close(mut self, e: Option<InvalidateCause>) -> Result<(), ExecException> {
+        let worker = self
+            .worker
+            .take()
+            .expect("NullPointerException: invalidateAndClose without a worker");
+        // If there is an exception, we need to set the kill cause before invalidating the object.
+        // This ensures that the worker implementation updates their worker metrics accordingly
+        // if/when it destroys itself.
+        match e {
+            Some(InvalidateCause::Interrupted) => {
+                worker
+                    .get_status()
+                    .maybe_update_status(WorkerStatus::PendingKillDueToInterruptedException);
+            }
+            Some(InvalidateCause::Io) => {
+                worker
+                    .get_status()
+                    .maybe_update_status(WorkerStatus::PendingKillDueToIoException);
+            }
+            Some(InvalidateCause::UserExec(code)) => {
+                if let Some(code) = code {
+                    worker.get_status().maybe_update_status_with_code(
+                        WorkerStatus::PendingKillDueToUserExecException,
+                        code,
+                    );
+                }
+            }
+            Some(InvalidateCause::Other) => {
+                worker
+                    .get_status()
+                    .maybe_update_status(WorkerStatus::PendingKillDueToUserExecException);
+            }
+            None => {
+                worker
+                    .get_status()
+                    .maybe_update_status(WorkerStatus::PendingKillDueToUnknown);
+            }
+        }
+
+        let manager = self.manager.clone().expect("manager");
+        let pool = manager
+            .worker_pool
+            .read()
+            .clone()
+            .expect("NullPointerException: workerPool");
+        pool.invalidate_worker(&worker);
+        self.close()
     }
 }
 
 impl Drop for ResourceHandle {
     fn drop(&mut self) {
+        let worker = self.worker.take();
         if let (Some(manager), Some(request)) = (self.manager.take(), self.request.take()) {
             if std::thread::panicking() {
-                let _ = manager.release_locked_and_unlock_thread(&request);
+                let _ = manager.release_locked_and_unlock_thread(&request, worker);
             } else {
-                let _ = manager.release_resources(&request);
+                let _ = manager.release_resources_with_worker(&request, worker);
             }
         }
     }
@@ -264,7 +399,21 @@ impl ResourceManager {
                 window_request_ids: HashSet::new(),
                 running_actions: 0,
             }),
+            worker_pool: parking_lot::RwLock::new(None),
         })
+    }
+
+    /// Sets worker pool for taking the workers. Must be called before requesting the workers.
+    // Java: com/google/devtools/build/lib/actions/ResourceManager.java:347 ResourceManager.setWorkerPool
+    pub fn set_worker_pool(&self, worker_pool: Arc<dyn WorkerPool>) {
+        *self.worker_pool.write() = Some(worker_pool);
+    }
+
+    fn worker_pool(&self) -> Arc<dyn WorkerPool> {
+        self.worker_pool
+            .read()
+            .clone()
+            .expect("NullPointerException: workerPool")
     }
 
     fn key(&self) -> usize {
@@ -397,6 +546,19 @@ impl ResourceManager {
         resources: &ResourceSet,
         priority: ResourcePriority,
     ) -> Result<ResourceHandle, ExecException> {
+        self.acquire_resources_with_worker(owner, resources, priority)
+            .map_err(AcquireResourcesError::into_exec)
+    }
+
+    /// [`acquire_resources`](Self::acquire_resources) with Java's `IOException` (borrowing a
+    /// worker for a resource set with a worker key) kept apart.
+    // Java: com/google/devtools/build/lib/actions/ResourceManager.java:366 ResourceManager.acquireResources
+    pub fn acquire_resources_with_worker(
+        self: &Arc<Self>,
+        owner: &dyn ActionExecutionMetadata,
+        resources: &ResourceSet,
+        priority: ResourcePriority,
+    ) -> Result<ResourceHandle, AcquireResourcesError> {
         let owner_description = owner.pretty_print();
         blaze_util::check_state!(
             !self.thread_has_resources(),
@@ -422,24 +584,35 @@ impl ResourceManager {
             let mut st = self.state.lock();
             if latch.get_count() == 0 {
                 // Resources already acquired by other side. Release them.
-                let _ = ResourceManager::release_locked(&mut st, &request);
+                let worker = resource_latch.worker.0.lock().take();
+                let _ = self.release_locked(&mut st, &request, worker);
             } else {
                 // Inform other side that resources shouldn't be acquired.
                 latch.count_down();
             }
-            return Err(ExecException::Interrupted);
+            return Err(ExecException::Interrupted.into());
         }
 
         self.set_thread_locked(true);
 
+        let worker = {
+            let _st = self.state.lock();
+            resource_latch.worker.0.lock().take()
+        };
+
         Ok(ResourceHandle {
             manager: Some(self.clone()),
             request: Some(request),
+            worker,
         })
     }
 
     // Java: com/google/devtools/build/lib/actions/ResourceManager.java:423 ResourceManager.incrementResources
-    fn increment_resources(st: &mut State, request: &ResourceRequest) {
+    fn increment_resources(
+        &self,
+        st: &mut State,
+        request: &ResourceRequest,
+    ) -> Result<Option<Arc<dyn Worker>>, AcquireResourcesError> {
         let resources = &request.resource_set;
 
         for (key, value) in resources.get_resources() {
@@ -457,9 +630,12 @@ impl ResourceManager {
             .copied()
             .unwrap_or(0.0);
         st.used_local_test_count += resources.get_local_test_count();
-        // PORT: resources.getWorkerKey() is always null (workers are not ported).
+        if let Some(worker_key) = resources.get_worker_key() {
+            return Ok(Some(self.worker_pool().borrow_worker(worker_key)?));
+        }
 
         st.running_actions += 1;
+        Ok(None)
     }
 
     /// Return true if any resources have been claimed through this manager.
@@ -485,21 +661,32 @@ impl ResourceManager {
     /// NB! This method must be thread-safe!
     // Java: com/google/devtools/build/lib/actions/ResourceManager.java:471 ResourceManager.releaseResources
     pub fn release_resources(&self, request: &ResourceRequest) -> Result<(), ExecException> {
+        self.release_resources_with_worker(request, None)
+    }
+
+    /// `releaseResources(request, worker)`: also returns the worker to the pool.
+    // Java: com/google/devtools/build/lib/actions/ResourceManager.java:471 ResourceManager.releaseResources
+    pub fn release_resources_with_worker(
+        &self,
+        request: &ResourceRequest,
+        worker: Option<Arc<dyn Worker>>,
+    ) -> Result<(), ExecException> {
         blaze_util::check_state!(
             self.thread_has_resources(),
             "releaseResources without resource lock during {}",
             request.owner
         );
-        self.release_locked_and_unlock_thread(request)
+        self.release_locked_and_unlock_thread(request, worker)
     }
 
     fn release_locked_and_unlock_thread(
         &self,
         request: &ResourceRequest,
+        worker: Option<Arc<dyn Worker>>,
     ) -> Result<(), ExecException> {
         let result = {
             let mut st = self.state.lock();
-            ResourceManager::release_locked(&mut st, request)
+            self.release_locked(&mut st, request, worker)
         };
         self.set_thread_locked(false);
         result
@@ -520,16 +707,20 @@ impl ResourceManager {
     /// Returns the latch, which isn't `None` if we could not acquire the resources right now and
     /// need to wait.
     // Java: com/google/devtools/build/lib/actions/ResourceManager.java:503 ResourceManager.acquire
-    fn acquire(&self, request: &ResourceRequest) -> Result<ResourceLatch, ExecException> {
+    fn acquire(&self, request: &ResourceRequest) -> Result<ResourceLatch, AcquireResourcesError> {
         let mut st = self.state.lock();
-        if ResourceManager::are_resources_available_locked(&st, &request.resource_set)? {
-            ResourceManager::increment_resources(&mut st, request);
-            return Ok(ResourceLatch { latch: None });
+        if self.are_resources_available_locked(&st, &request.resource_set)? {
+            let worker = self.increment_resources(&mut st, request)?;
+            return Ok(ResourceLatch {
+                latch: None,
+                worker: WorkerSlot(Arc::new(Mutex::new(worker))),
+            });
         }
         let waiting_request = WaitingRequest {
             resource_request: request.clone(),
             resource_latch: ResourceLatch {
                 latch: Some(Arc::new(CountDownLatch::new(1))),
+                worker: WorkerSlot::default(),
             },
         };
         let resource_latch = waiting_request.resource_latch.clone();
@@ -551,7 +742,17 @@ impl ResourceManager {
 
     /// Release resources and process the queues of waiting threads.
     // Java: com/google/devtools/build/lib/actions/ResourceManager.java:526 ResourceManager.release
-    fn release_locked(st: &mut State, request: &ResourceRequest) -> Result<(), ExecException> {
+    fn release_locked(
+        &self,
+        st: &mut State,
+        request: &ResourceRequest,
+        worker: Option<Arc<dyn Worker>>,
+    ) -> Result<(), ExecException> {
+        if let Some(worker) = worker {
+            self.worker_pool()
+                .return_worker(&worker.get_worker_key().clone(), worker);
+        }
+
         let resources = &request.resource_set;
         st.used_local_test_count -= resources.get_local_test_count();
         // TODO(bazel-team): (2010) rounding error can accumulate and value below can end up being
@@ -579,30 +780,34 @@ impl ResourceManager {
         }
         st.running_actions -= 1;
 
-        ResourceManager::process_all_waiting_requests(st)
+        // PORT: an IOException of borrowing a worker for a waiting request leaves Java's close()
+        // as an IOException; here it is the ExecException AbstractSpawnStrategy makes of one.
+        self.process_all_waiting_requests(st)
+            .map_err(AcquireResourcesError::into_exec)
     }
 
     // Java: com/google/devtools/build/lib/actions/ResourceManager.java:559 ResourceManager.processAllWaitingRequests
-    fn process_all_waiting_requests(st: &mut State) -> Result<(), ExecException> {
+    fn process_all_waiting_requests(&self, st: &mut State) -> Result<(), AcquireResourcesError> {
         let mut local = std::mem::take(&mut st.local_requests);
-        let r = ResourceManager::process_waiting_requests(st, &mut local);
+        let r = self.process_waiting_requests(st, &mut local);
         st.local_requests = local;
         r?;
         let mut worker = std::mem::take(&mut st.dynamic_worker_requests);
-        let r = ResourceManager::process_waiting_requests(st, &mut worker);
+        let r = self.process_waiting_requests(st, &mut worker);
         st.dynamic_worker_requests = worker;
         r?;
         let mut standalone = std::mem::take(&mut st.dynamic_standalone_requests);
-        let r = ResourceManager::process_waiting_requests(st, &mut standalone);
+        let r = self.process_waiting_requests(st, &mut standalone);
         st.dynamic_standalone_requests = standalone;
         r
     }
 
     // Java: com/google/devtools/build/lib/actions/ResourceManager.java:566 ResourceManager.processWaitingRequests
     fn process_waiting_requests(
+        &self,
         st: &mut State,
         requests: &mut VecDeque<WaitingRequest>,
-    ) -> Result<(), ExecException> {
+    ) -> Result<(), AcquireResourcesError> {
         if requests.is_empty() {
             return Ok(());
         }
@@ -615,12 +820,13 @@ impl ResourceManager {
                 .clone()
                 .expect("waiting requests have a latch");
             if latch.get_count() != 0 {
-                if ResourceManager::are_resources_available_locked(
+                if self.are_resources_available_locked(
                     st,
                     &requests[i].resource_request.resource_set,
                 )? {
                     let request = requests[i].resource_request.clone();
-                    ResourceManager::increment_resources(st, &request);
+                    let worker = self.increment_resources(st, &request)?;
+                    *requests[i].resource_latch.worker.0.lock() = worker;
                     latch.count_down();
                     requests.remove(i);
                     continue;
@@ -700,10 +906,11 @@ impl ResourceManager {
     // Java: com/google/devtools/build/lib/actions/ResourceManager.java:646 ResourceManager.areResourcesAvailable
     pub fn are_resources_available(&self, resources: &ResourceSet) -> Result<bool, ExecException> {
         let st = self.state.lock();
-        ResourceManager::are_resources_available_locked(&st, resources)
+        self.are_resources_available_locked(&st, resources)
     }
 
     fn are_resources_available_locked(
+        &self,
         st: &State,
         resources: &ResourceSet,
     ) -> Result<bool, ExecException> {
@@ -714,7 +921,11 @@ impl ResourceManager {
         // Comparison below is robust, since any calculation errors will be fixed
         // by the release() method.
 
-        // PORT: resources.getWorkerKey() is always null (workers are not ported).
+        if let Some(worker_key) = resources.get_worker_key()
+            && !self.worker_pool().has_available_quota(worker_key)
+        {
+            return Ok(false);
+        }
 
         if st.allow_one_action_on_resource_unavailable
             && st.used_resources.is_empty()

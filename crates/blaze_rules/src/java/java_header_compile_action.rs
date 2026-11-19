@@ -401,6 +401,25 @@ impl JavaHeaderCompileAction {
     }
 }
 
+/// `new JavaHeaderCompileProgressMessage(output, sourceFiles, sourceJars, plugins)`: a
+/// `ProgressMessage` with the prefix "Compiling Java headers".
+// Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:648 JavaHeaderCompileAction.Builder.JavaHeaderCompileProgressMessage.<init>
+// Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:657 JavaHeaderCompileAction.Builder.JavaHeaderCompileProgressMessage.prefix
+fn java_header_compile_progress_message(
+    output: &Artifact,
+    source_files: &IndexSet<Artifact>,
+    source_jars: &[Artifact],
+    plugins: &JavaPluginData,
+) -> ProgressMessage {
+    ProgressMessage::new(
+        PROGRESS_MESSAGE_PREFIX,
+        output,
+        source_files.len(),
+        source_jars.len(),
+        plugins,
+    )
+}
+
 /// Builder for `JavaHeaderCompileAction`.
 // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:167 JavaHeaderCompileAction.Builder
 pub struct JavaHeaderCompileActionBuilder<'a> {
@@ -727,11 +746,10 @@ impl<'a> JavaHeaderCompileActionBuilder<'a> {
                 configuration.get_action_environment(),
             ))
             .with_additional_fixed_variables(utf8_environment.clone());
-        let progress_message = ProgressMessage::new(
-            PROGRESS_MESSAGE_PREFIX,
+        let progress_message = java_header_compile_progress_message(
             &output_jar,
-            self.source_files.len(),
-            self.source_jars.len(),
+            &self.source_files,
+            &self.source_jars,
             &self.plugins,
         );
         let mut outputs: IndexSet<Artifact> = IndexSet::new();

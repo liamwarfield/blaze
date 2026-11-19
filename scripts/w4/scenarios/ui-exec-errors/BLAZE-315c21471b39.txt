@@ -1,0 +1,243 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/int-bin/ui-wave/blaze-after-2
+# sha256 315c21471b3926d83d023ee7d369f28dc47b9bbc1ff173fbd59aa00a019c68fe
+# tree 400c6982f00fca9e791fc241153cdf89fbf409fa (dirty)
+# date 2026-11-19T14:32:53
+=== 1: run build //:uses_one
+exit 1
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:uses_one (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: <WS>/BUILD.bazel:15:8: Action one_out.out failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:one_out) /bin/bash -c 'echo failing action of one_out >&2; exit 1'
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+failing action of one_out
+Target //:uses_one failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 2 internal.
+ERROR: Build did NOT complete successfully
+=== 2: run build //:uses_two
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:uses_two (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: <WS>/BUILD.bazel:22:8: Action two_outs.a failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:two_outs) /bin/bash -c 'echo failing action of two_outs >&2; exit 1'
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+failing action of two_outs
+Target //:uses_two failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+ERROR: <WS>/BUILD.bazel:30:7 Action uses_two.cat failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:two_outs) /bin/bash -c 'echo failing action of two_outs >&2; exit 1'
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 2 internal.
+ERROR: Build did NOT complete successfully
+=== 3: run build //:uses_failing_and_missing
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:uses_failing_and_missing (5 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+ERROR: <WS>/BUILD.bazel:35:8: Action failing_dep.out failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:failing_dep) /bin/bash -c 'echo failing action of failing_dep >&2; exit 1'
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+failing action of failing_dep
+Target //:uses_failing_and_missing failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 2 internal.
+ERROR: Build did NOT complete successfully
+=== 4: run build //:kg_fails //:kg_uses_missing //:ok --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 3 targets (5 packages loaded, 10 targets configured).
+INFO: Found 3 targets...
+ERROR: <WS>/BUILD.bazel:47:7: Action kg_uses_missing.cat failed: missing input file '//:kg_missing.txt'
+ERROR: <WS>/BUILD.bazel:47:7: Action kg_uses_missing.cat failed: 1 input file(s) do not exist
+ERROR: <WS>/BUILD.bazel:45:8: Action kg_fails.out failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:kg_fails) /bin/bash -c 'echo failing action of kg_fails >&2; exit 1'
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+failing action of kg_fails
+INFO: Build succeeded for only 1 of 3 top-level targets
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 3 processes: 3 internal.
+ERROR: Build did NOT complete successfully
+=== 5: run build //:bad_analysis //:mixed_fails //:ok2 --keep_going --show_result=5
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:52:15: in analysis_error rule //:bad_analysis:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 44, column 9, in _analysis_error_impl
+		fail("analysis error of " + ctx.label.name)
+Error in fail: analysis error of bad_analysis
+ERROR: <WS>/BUILD.bazel:52:15: Analysis of target '//:bad_analysis' (config: a7a71fd) failed
+WARNING: errors encountered while analyzing target '//:bad_analysis', it will not be built.
+INFO: Analyzed 3 targets (5 packages loaded, 8 targets configured).
+INFO: Found 2 targets...
+ERROR: <WS>/BUILD.bazel:54:8: Action mixed_fails.out failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:mixed_fails) /bin/bash -c 'echo failing action of mixed_fails >&2; exit 1'
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+failing action of mixed_fails
+INFO: Build succeeded for only 1 of 3 top-level targets
+Target //:ok2 up-to-date:
+  bazel-bin/ok2.txt
+Target //:mixed_fails failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 3 processes: 3 internal.
+ERROR: Build did NOT complete successfully
+=== 6: run build //:bad_analysis //:ok2 --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:52:15: in analysis_error rule //:bad_analysis:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 44, column 9, in _analysis_error_impl
+		fail("analysis error of " + ctx.label.name)
+Error in fail: analysis error of bad_analysis
+ERROR: <WS>/BUILD.bazel:52:15: Analysis of target '//:bad_analysis' (config: a7a71fd) failed
+WARNING: errors encountered while analyzing target '//:bad_analysis', it will not be built.
+INFO: Analyzed 2 targets (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+INFO: Build succeeded for only 1 of 2 top-level targets
+Target //:ok2 up-to-date:
+  bazel-bin/ok2.txt
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+ERROR: Build did NOT complete successfully
+=== 7: run build //:nb_fails --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:nb_fails (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+ERROR: <WS>/BUILD.bazel:56:8: Action nb_fails.out failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:nb_fails) /bin/bash -c 'echo failing action of nb_fails >&2; exit 1'
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+failing action of nb_fails
+Target //:nb_fails failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 2 internal.
+ERROR: Build did NOT complete successfully
+=== 8: run build //:ok --experimental_convenience_symlinks=ignore
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:ok (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:ok up-to-date:
+  <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/bin/ok.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 9: stat bazel-bin
+dir 755
+=== 10: run build //:ok --experimental_convenience_symlinks=clean
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:ok (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:ok up-to-date:
+  <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/bin/ok.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 11: stat bazel-bin
+cannot stat: FileNotFoundError
+=== 12: run build //:ok --experimental_convenience_symlinks=log_only
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:ok (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:ok up-to-date:
+  bazel-bin/ok.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 13: stat bazel-bin
+cannot stat: FileNotFoundError
+=== 14: run build //:ok
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:ok (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:ok up-to-date:
+  bazel-bin/ok.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 15: stat bazel-bin
+dir 755
+=== 16: run test //:unbuildable_test //:pass_test --keep_going --show_result=5
+exit 1
+--- stdout
+//:unbuildable_test                                             FAILED TO BUILD
+//:pass_test                                                             PASSED in <DUR>
+
+Executed 1 out of 2 tests: 1 test passes and 1 fails to build.
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (80 packages loaded, 837 targets configured).
+INFO: Found 2 test targets...
+ERROR: <WS>/BUILD.bazel:64:8: Action test_dep_fails.out failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:test_dep_fails) /bin/bash -c 'echo failing action of test_dep_fails >&2; exit 1'
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+failing action of test_dep_fails
+INFO: Build succeeded for only 1 of 2 top-level targets
+Target //:pass_test up-to-date:
+  bazel-bin/pass_test.sh
+Target //:unbuildable_test failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 12 processes: 11 internal, 2 linux-sandbox.
+ERROR: Build did NOT complete successfully
+=== 17: run test //:pass_test --nobuild
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:pass_test (80 packages loaded, 835 targets configured).
+INFO: Found 1 test target...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+ERROR: Couldn't start the build. Unable to run tests
+=== 18: run build //:ok //:ok2 --nobuild --show_result=5
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).
+INFO: Found 2 targets...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 19: run build //:ok --explain=explain.log --show_result=5
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:ok (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+INFO: Writing explanation of rebuilds to 'explain.log'
+Target //:ok up-to-date:
+  bazel-bin/ok.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action

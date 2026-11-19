@@ -12,6 +12,7 @@ USAGE = """\
 usage: scripts/macros/compare --binary <blaze> [--oracle <bazel>] [--case ID]... [--label NAME]
                               [--skip-oracle] [--skip-blaze] [--show]
        scripts/macros/compare list
+       scripts/macros/compare selftest
        scripts/macros/compare help
 
 Runs a fixed list of commands (see `list`) on a work copy of the brotli checkout plus the probe
@@ -34,12 +35,32 @@ hash on each side:
 Output: a table on stdout; raw and normalised outputs under
 ~/.cache/blaze/macros-compare/<label>/<side>/<case>.{stdout,stderr,norm.json} and results.json.
 --skip-oracle reuses the oracle outputs of an earlier run with the same --label; --skip-blaze
-only records the oracle. --show prints the diffs of differing cases. Exit 0 when every compared
-field matches, 1 otherwise.
+only records the oracle. --show prints the diffs of differing cases.
+
+Guards (scripts/lib/compare_common.py): every command runs under a supervisor in the scope that
+records how it really ended (`exit N`, `signal NAME`, `oom-kill`, `timeout`), written to
+<case>.term; `exit` compares those (a recording without <case>.term never matches). --oracle
+must be the pinned oracle (UPSTREAM.json). --skip-oracle refuses unless
+<label>/oracle/oracle.key (oracle sha256, this tool's sha256, every argv and the environment, the
+digest of the prepared work copy, the case sequence) equals this run's key. An empty selection
+is an error. Classes: IDENTICAL (all fields equal; the oracle exited 0, or DECLARED_EXIT names the
+case with that exit code), DIFFERENT, BOTH-FAILED (equal failures not declared), NOT-PORTED,
+ORACLE-UNEXPECTED, SKIPPED. The output and results.json start with the repository HEAD and dirty
+flag and both binaries' paths and sha256, and end with the denominator. Exit 0 only when at
+least one case was compared and every selected case is IDENTICAL; 1 otherwise; 2 on a usage
+error or a refusal. --skip-blaze (recording only, nothing compared) exits 0 when every oracle
+command ended with a recorded termination, 1 otherwise.
 """
 
 HOME = os.path.expanduser("~")
 CACHE = os.path.join(HOME, ".cache", "blaze")
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
+import compare_common as cc  # noqa: E402
+
+# Cases whose non-zero exit is the behaviour under test: {case id: the oracle's exit code}.
+# Equal failures of a case not listed here are BOTH-FAILED. Left to the case list's owner.
+DECLARED_EXIT = {}
 ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
 REPO_CACHE = os.path.join(CACHE, "repo-cache")
 PROBE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe")
@@ -177,8 +198,22 @@ def prepare(side):
     return ws
 
 
+def case_argv(binary, ur, args):
+    return [binary, "--output_user_root=" + ur, "--nohome_rc", "--nosystem_rc", args[0],
+            "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"] + args[1:]
+
+
+def oracle_key(cases, ws_digest):
+    ur = os.path.join(CACHE, "oracle-out", "macros-compare-oracle")
+    # Raw outputs (normalised when loaded): this tool's sha256 is not part of the key.
+    return cc.cache_key(None, cc.pinned_sha256(),
+                        [case_argv(cc.PINNED_ORACLE, ur, a) for _c, _d, a in cases],
+                        cc.clean_env(), ws_digest, extra={"cases": [c[0] for c in cases]})
+
+
 def run_side(side, binary, cases, outdir):
     ws = prepare(side)
+    digest = cc.tree_digest(ws)
     ur = os.path.join(CACHE, "oracle-out", "macros-compare-" + side)
     if os.path.isdir(ur):
         subprocess.run(["chmod", "-R", "u+w", ur])
@@ -188,18 +223,13 @@ def run_side(side, binary, cases, outdir):
     for cid, _desc, args in cases:
         # A fresh server per case: Bazel replays a package's events (print() output) only when
         # it loads the package, and Blaze has no persistent server.
-        subprocess.run([binary, "--output_user_root=" + ur, "--nohome_rc", "--nosystem_rc",
-                        "shutdown"], cwd=ws, capture_output=True,
-                       env={"HOME": HOME, "PATH": "/usr/bin:/bin"})
-        cmd = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "-p", "MemoryMax=12G",
-               "-p", "MemorySwapMax=0", "env", "-i", "HOME=" + HOME, "PATH=/usr/bin:/bin",
-               binary, "--output_user_root=" + ur, "--nohome_rc", "--nosystem_rc", args[0],
-               "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"] + args[1:]
-        try:
-            p = subprocess.run(cmd, cwd=ws, capture_output=True, timeout=1800)
-            code, out, err = p.returncode, p.stdout, p.stderr
-        except subprocess.TimeoutExpired:
-            code, out, err = "timeout", b"", b""
+        cc.run([binary, "--output_user_root=" + ur, "--nohome_rc", "--nosystem_rc", "shutdown"],
+               ws, timeout=600, mode="scope", tag="macros-shutdown")
+        r = cc.run(case_argv(binary, ur, args), ws, timeout=1800, mode="scope",
+                   tag="macros-compare")
+        code, out, err = r.rc, r.out, r.err
+        with open(os.path.join(outdir, cid + ".term"), "w") as fh:
+            json.dump(r.term.to_dict(), fh)
         out = out.decode("latin-1")
         err = err.decode("latin-1")
         with open(os.path.join(outdir, cid + ".stdout"), "w", encoding="latin-1") as fh:
@@ -209,10 +239,11 @@ def run_side(side, binary, cases, outdir):
         with open(os.path.join(outdir, cid + ".exit"), "w") as fh:
             fh.write(str(code))
         results[cid] = normalize(outdir, cid, side)
-        print(f"  {side} {cid}: exit {code}", file=sys.stderr)
-    subprocess.run([binary, "--output_user_root=" + ur, "--nohome_rc", "--nosystem_rc",
-                    "shutdown"], cwd=ws, capture_output=True,
-                   env={"HOME": HOME, "PATH": "/usr/bin:/bin"})
+        print(f"  {side} {cid}: {r.term}", file=sys.stderr)
+    cc.run([binary, "--output_user_root=" + ur, "--nohome_rc", "--nosystem_rc", "shutdown"],
+           ws, timeout=600, mode="scope", tag="macros-shutdown")
+    if side == "oracle":
+        cc.write_key(os.path.join(outdir, "oracle.key"), oracle_key(cases, digest))
     return results
 
 
@@ -222,12 +253,19 @@ def normalize(outdir, cid, side):
     with open(os.path.join(outdir, cid + ".exit")) as fh:
         code = fh.read().strip()
     code = int(code) if code.lstrip("-").isdigit() else code
+    try:
+        with open(os.path.join(outdir, cid + ".term")) as fh:
+            term = json.load(fh)
+    except (OSError, ValueError):
+        term = None  # recorded before 2026-11-19: never matches
     with open(os.path.join(outdir, cid + ".stdout"), encoding="latin-1") as fh:
         out = fh.read()
     with open(os.path.join(outdir, cid + ".stderr"), encoding="latin-1") as fh:
         err = fh.read()
     n = {
-        "exit": code,
+        "exit": term,
+        "rc": code,
+        "unported": cc.unported_message(err),
         "stdout": norm(out, ws, ur).splitlines(),
         "stderr": [l for l in stderr_lines(norm(err, ws, ur)) if not DROP_RE.match(l)],
     }
@@ -244,6 +282,8 @@ def main(argv):
     if not argv or argv[0] in ("help", "--help", "-h"):
         print(USAGE)
         return 0
+    if argv[0] == "selftest":
+        return selftest()
     if argv[0] == "list":
         for cid, desc, args in CASES:
             print(f"{cid:28} {desc}\n{'':28} {' '.join(args)}")
@@ -277,35 +317,103 @@ def main(argv):
         print("--binary is required\n" + USAGE, file=sys.stderr)
         return 2
     cases = [c for c in CASES if not only or c[0] in only]
+    if not cases:
+        return cc.empty_selection_error("macros/compare")
+    try:
+        oracle, oracle_sha = cc.require_oracle(oracle)
+        blaze = None if skip_blaze else cc.blaze_identity(binary)
+    except cc.Refusal as e:
+        return cc.refuse("macros/compare", e)
     base = os.path.join(CACHE, "macros-compare", label)
     odir = os.path.join(base, "oracle")
     bdir = os.path.join(base, "blaze")
-    oracle_res = load_side(odir, cases, "oracle") if skip_oracle else run_side("oracle", oracle, cases, odir)
+    report = cc.Report("macros/compare", blaze=blaze,
+                       oracle={"path": oracle, "sha256": oracle_sha},
+                       selection="label %s, %d cases%s" % (
+                           label, len(cases), " (--case %s)" % ",".join(only) if only else ""),
+                       tool_files=[os.path.abspath(__file__)])
+    report.print_header()
+    if skip_oracle:
+        try:
+            cc.require_fresh(os.path.join(odir, "oracle.key"),
+                             oracle_key(cases, cc.tree_digest(prepare("blaze"))))
+        except cc.Refusal as e:
+            return cc.refuse("macros/compare", e)
+        oracle_res = load_side(odir, cases, "oracle")
+    else:
+        oracle_res = run_side("oracle", oracle, cases, odir)
     if skip_blaze:
-        return 0
-    blaze_res = run_side("blaze", binary, cases, bdir)
+        unrecorded = [c for c, r in oracle_res.items()
+                      if not r["exit"] or r["exit"]["kind"] in ("unrecorded", "not-run")]
+        print("recorded the oracle only; nothing compared%s" % (
+            "; no termination recorded for: " + ", ".join(unrecorded) if unrecorded else ""))
+        return 1 if unrecorded else 0
+    blaze_res = run_side("blaze", blaze["path"], cases, bdir)
     rows = []
-    all_ok = True
     for cid, desc, _a in cases:
         o, b = oracle_res[cid], blaze_res[cid]
-        fields = {f: o[f] == b[f] for f in ("exit", "stdout", "stderr")}
+        cls, detail, fields = judge(cid, o, b)
+        report.add(cid, cls, detail)
         ok = all(fields.values())
-        all_ok &= ok
-        rows.append({"case": cid, "match": ok, "fields": fields,
+        rows.append({"case": cid, "match": ok, "class": cls, "fields": fields,
                      "oracle_exit": o["exit"], "blaze_exit": b["exit"]})
         mark = "MATCH" if ok else "DIFF "
         diffs = ",".join(f for f, v in fields.items() if not v)
-        print(f"{mark} {cid:28} exit {o['exit']}/{b['exit']} {diffs}")
+        print(f"{mark} {cid:28} {cc.Termination.from_dict(o['exit'])}/"
+              f"{cc.Termination.from_dict(b['exit'])} {diffs}  {cls}")
         if show and not ok:
             for f in ("stdout", "stderr"):
                 if not fields[f]:
                     import difflib
                     for l in difflib.unified_diff(o[f], b[f], "oracle", "blaze", lineterm="", n=1):
                         print("    " + l)
-    with open(os.path.join(base, "results.json"), "w") as fh:
-        json.dump(rows, fh, indent=1)
-    print(f"{sum(r['match'] for r in rows)} of {len(rows)} cases match")
-    return 0 if all_ok else 1
+    report.write_json(os.path.join(base, "results.json"), extra={"rows": rows})
+    print()
+    report.print_rows()
+    report.print_footer()
+    return report.exit_code()
+
+
+def judge(cid, o, b):
+    """(class, detail, {field: equal}) of one case; `exit` compares the terminations."""
+    ot, bt = cc.Termination.from_dict(o["exit"]), cc.Termination.from_dict(b["exit"])
+    fields = {"exit": ot is not None and ot == bt,
+              "stdout": o["stdout"] == b["stdout"], "stderr": o["stderr"] == b["stderr"]}
+    cls, detail = cc.judge(ot, bt, [f for f in ("stdout", "stderr") if not fields[f]],
+                           declared_exit=DECLARED_EXIT.get(cid), blaze_unported=b.get("unported"))
+    return cls, detail, fields
+
+
+def selftest():
+    def run_pair(ofake, bfake, wd):
+        cc.require_oracle(ofake)
+        res = {}
+        for side, fake in (("oracle", ofake), ("blaze", bfake)):
+            r = cc.run([fake, "query"], wd, mode="scope", tag="selftest")
+            out, err = r.out.decode("latin-1"), r.err.decode("latin-1")
+            res[side] = {"exit": r.term.to_dict(), "unported": cc.unported_message(err),
+                         "stdout": norm(out, wd, wd).splitlines(),
+                         "stderr": [l for l in stderr_lines(norm(err, wd, wd))
+                                    if not DROP_RE.match(l)]}
+        cls, detail, _ = judge("selftest", res["oracle"], res["blaze"])
+        return cls, detail
+
+    def empty_selection():
+        with open(os.devnull, "w") as null:
+            old = sys.stderr
+            sys.stderr = null
+            try:
+                return main(["--binary", "/bin/true", "--case", "no-such-case"])
+            finally:
+                sys.stderr = old
+
+    def extra(st):
+        legacy = {"exit": None, "stdout": [], "stderr": []}
+        st.check("a legacy record without .term never matches",
+                 judge("x", legacy, dict(legacy))[0] != cc.IDENTICAL)
+
+    return cc.selftest("macros/compare", run_pair=run_pair, empty_selection=empty_selection,
+                       extra=extra, mode="scope")
 
 
 if __name__ == "__main__":

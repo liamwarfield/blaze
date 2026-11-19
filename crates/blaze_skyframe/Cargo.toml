@@ -6,7 +6,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+blaze_collect = { path = "../blaze_collect" }
 blaze_events = { path = "../blaze_events" }
 blaze_shell = { path = "../blaze_shell" }
 blaze_util = { path = "../blaze_util" }
+indexmap.workspace = true
 parking_lot.workspace = true

@@ -3730,6 +3730,13 @@ impl ActionExecutionContext for ActionExecutionContextImpl<'_> {
             }
         }
     }
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:358 ActionExecutionContext.getOutputMetadataStore
+    fn reset_outputs(&self, outputs: &[ActionInputRef]) {
+        let Some(store) = &self.output_metadata_store else {
+            panic!("NullPointerException: no OutputMetadataStore during input discovery");
+        };
+        store.reset_outputs(outputs);
+    }
 }
 
 /// The `blaze_actions` artifact behind an execution-layer input, if any.

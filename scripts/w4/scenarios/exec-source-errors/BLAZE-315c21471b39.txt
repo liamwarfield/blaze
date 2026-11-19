@@ -1,8 +1,8 @@
 # probe transcript of Blaze (scripts/w4/probe compare)
-# binary /home/liamwarfield/.cache/blaze/work/blaze-after-errors
+# binary /home/liamwarfield/.cache/blaze/int-bin/ui-wave/blaze-after-2
 # sha256 315c21471b3926d83d023ee7d369f28dc47b9bbc1ff173fbd59aa00a019c68fe
-# tree 8d77c3e706978b8cb7b94ce79c93d9e1b01a9883 (dirty)
-# date 2026-11-19T14:17:48
+# tree 2166769a09c6a45416302aa0512574c75d1d59fc (dirty)
+# date 2026-11-19T14:18:31
 === 1: run build //p:missing.txt
 exit 1
 --- stdout
@@ -14,7 +14,7 @@ INFO: Found 1 target...
 ERROR: <WS>/p/BUILD.bazel:5:14: //p:missing.txt: missing input file '//p:missing.txt'
 ERROR: <WS>/p/BUILD.bazel:5:14: 1 input file(s) do not exist
 INFO: Elapsed time: <DUR>, Critical Path: <DUR>
-INFO: 1 process: 1 internal.
+INFO: 0 processes.
 ERROR: Build did NOT complete successfully
 === 2: run build //p:existing.txt
 exit 0
@@ -55,7 +55,7 @@ Target //p:uses_missing failed to build
 Use --verbose_failures to see the command lines of failed build steps.
 ERROR: <WS>/p/BUILD.bazel:12:5 Action p/uses_missing.out failed: 1 input file(s) do not exist
 INFO: Elapsed time: <DUR>, Critical Path: <DUR>
-INFO: 1 process: 1 internal.
+INFO: 0 processes.
 ERROR: Build did NOT complete successfully
 === 5: run build //p:uses_two_missing
 exit 1
@@ -110,10 +110,10 @@ exit 1
 Starting local Bazel server (9.3.2) and connecting to it...
 INFO: Analyzed 4 targets (5 packages loaded, 13 targets configured).
 INFO: Found 4 targets...
-WARNING: <WS>/p/BUILD.bazel:5:14: //p:existing_kg.txt is a source file, nothing will be built for it. If you want to build a target that consumes this file, try --compile_one_dependency
 ERROR: <WS>/p/BUILD.bazel:51:5: Action p/uses_missing_kg.out failed: missing input file '//p:missing_input_kg.txt'
-ERROR: <WS>/p/BUILD.bazel:5:14: //p:missing_kg.txt: missing input file '//p:missing_kg.txt'
+WARNING: <WS>/p/BUILD.bazel:5:14: //p:existing_kg.txt is a source file, nothing will be built for it. If you want to build a target that consumes this file, try --compile_one_dependency
 ERROR: <WS>/p/BUILD.bazel:51:5: Action p/uses_missing_kg.out failed: 1 input file(s) do not exist
+ERROR: <WS>/p/BUILD.bazel:5:14: //p:missing_kg.txt: missing input file '//p:missing_kg.txt'
 ERROR: <WS>/p/BUILD.bazel:5:14: 1 input file(s) do not exist
 ERROR: <WS>/p/BUILD.bazel:56:10: //p:fg_kg: missing input file '//p:missing_e.txt'
 ERROR: <WS>/p/BUILD.bazel:56:10: //p:fg_kg: missing input file '//p:missing_f.txt'

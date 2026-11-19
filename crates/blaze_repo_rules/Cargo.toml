@@ -41,3 +41,6 @@ num-bigint.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# The analysis test harness (BuildViewTestCase, FakeRegistry); blaze_sky_top depends on this
+# crate, so only integration tests (tests/) use it.
+blaze_sky_top = { path = "../blaze_sky_top", features = ["testing"] }

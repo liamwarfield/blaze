@@ -136,8 +136,6 @@ gen = rule(implementation = _impl)
 
 // Java: BuildViewTest.testSyntaxErrorInDepPackage
 #[test]
-#[ignore = "starlark-rust's lexer error text differs (accepted divergence, docs/decisions.md): \
-            Blaze reports 'Parse error: invalid input `@`' for Java's 'invalid character: '@''"]
 fn test_syntax_error_in_dep_package() {
     let mut t = new_test();
     // Check that a loading error in a dependency is properly reported.

@@ -650,7 +650,7 @@ impl UiEventHandler {
         {
             let mut st = self.state.lock();
             st.build_running = true;
-            self.maybe_add_date(&mut st);
+            self.maybe_add_date_locked(&mut st);
         }
         self.state_tracker("UiStateTracker.mainRepoMappingComputationStarted")
             .main_repo_mapping_computation_started();
@@ -663,7 +663,7 @@ impl UiEventHandler {
     /// `@Subscribe buildStarted(BuildStartingEvent)`.
     // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:657 UiEventHandler.buildStarted
     pub fn build_started(&self) {
-        self.maybe_add_date(&mut self.state.lock());
+        self.maybe_add_date_locked(&mut self.state.lock());
         self.state_tracker("UiStateTracker.buildStarted")
             .build_started();
         // As a new phase started, inform immediately.
@@ -861,8 +861,13 @@ impl UiEventHandler {
         did_flush
     }
 
+    /// `maybeAddDate()` for the `@Subscribe` methods that call it outside the monitor.
     // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:368 UiEventHandler.maybeAddDate
-    fn maybe_add_date(&self, st: &mut UiState) {
+    pub fn maybe_add_date(&self) {
+        self.maybe_add_date_locked(&mut self.state.lock());
+    }
+
+    fn maybe_add_date_locked(&self, st: &mut UiState) {
         if !self.show_timestamp || !st.build_running || self.date_shown.swap(true, Ordering::SeqCst)
         {
             return;
@@ -916,7 +921,7 @@ impl UiEventHandler {
         stdout: Option<&[u8]>,
         stderr: Option<&[u8]>,
     ) -> io::Result<()> {
-        self.maybe_add_date(st);
+        self.maybe_add_date_locked(st);
         match event.get_kind() {
             EventKind::Stdout | EventKind::Stderr => {
                 let stream = if event.get_kind() == EventKind::Stdout {
@@ -1304,7 +1309,7 @@ impl UiEventHandler {
     }
 
     // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:1064 UiEventHandler.ignoreRefreshLimitOnce
-    fn ignore_refresh_limit_once(&self) {
+    pub fn ignore_refresh_limit_once(&self) {
         // Set refresh time variables in a state such that the next progress bar
         // update will definitely be written out.
         self.last_refresh_millis.store(
@@ -1314,7 +1319,7 @@ impl UiEventHandler {
     }
 
     // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:1070 UiEventHandler.startUpdateThread
-    fn start_update_thread(&self) {
+    pub fn start_update_thread(&self) {
         let build_running = self.state.lock().build_running;
         self.start_update_thread_with(build_running);
     }

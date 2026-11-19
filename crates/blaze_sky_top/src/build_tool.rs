@@ -369,6 +369,41 @@ pub trait TargetValidator {
     ) -> Result<(), crate::project::LoadingFailedException>;
 }
 
+/// The build events `BuildTool` and the functions it runs post on the command's event bus, at
+/// their points of the build.
+///
+/// PORT: the events are built by the command's build event stream support (blaze_runtime
+/// commands/bep.rs), which reads them from these values; this crate sits below it.
+pub trait BuildEventHooks {
+    /// After the target patterns were evaluated: `TargetParsingCompleteEvent`
+    /// (`TargetPatternPhaseFunction`) and `ExecRootEvent` (`BuildTool.buildTargets`).
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:311 BuildTool.buildTargets
+    fn target_patterns_evaluated(
+        &self,
+        _request: &BuildRequest,
+        _skyframe_executor: &SkyframeExecutor,
+        _target_pattern_phase_value: &crate::target_pattern_phase::TargetPatternPhaseValue,
+    ) {
+    }
+
+    /// After the project file was evaluated: the release of the tentative canonical command
+    /// line (`ReleaseReplaceableBuildEvent`).
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:343 BuildTool.buildTargets
+    fn project_evaluated(&self) {}
+
+    /// After a successful analysis: the analysis metrics (`AnalysisPhaseRunner`) and a
+    /// `TargetConfiguredEvent` per top-level target.
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:431 AnalysisPhaseRunner.execute
+    fn analysis_complete(
+        &self,
+        _request: &BuildRequest,
+        _skyframe_executor: &SkyframeExecutor,
+        _target_pattern_phase_value: &crate::target_pattern_phase::TargetPatternPhaseValue,
+        _analysis_result: &AnalysisResult,
+    ) {
+    }
+}
+
 /// Provides the bulk of the implementation of the 'blaze build' command.
 // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:206 BuildTool
 pub struct BuildTool<'a> {
@@ -379,6 +414,8 @@ pub struct BuildTool<'a> {
     execution_phase: Option<&'a dyn ExecutionPhase>,
     /// The `validator` argument of `processRequest` (`null` but for `run`).
     validator: Option<&'a dyn TargetValidator>,
+    /// The build event stream's posting points (`None` without a build event stream).
+    build_event_hooks: Option<&'a dyn BuildEventHooks>,
 }
 
 impl<'a> BuildTool<'a> {
@@ -396,7 +433,14 @@ impl<'a> BuildTool<'a> {
             analysis_post_processor: post_processor,
             execution_phase: None,
             validator: None,
+            build_event_hooks: None,
         }
+    }
+
+    /// The build event stream's posting points.
+    pub fn with_build_event_hooks(mut self, hooks: &'a dyn BuildEventHooks) -> Self {
+        self.build_event_hooks = Some(hooks);
+        self
     }
 
     /// The target validator `processRequest` passes to `evaluateTargetPatterns` (`run`).
@@ -518,6 +562,13 @@ impl<'a> BuildTool<'a> {
         // the build event stream (blaze_runtime commands/bep.rs); initializeOutputFilter belongs
         // to the UI.
         let target_pattern_phase_value = self.evaluate_target_patterns(request)?;
+        if let Some(hooks) = self.build_event_hooks {
+            hooks.target_patterns_evaluated(
+                request,
+                self.skyframe_executor,
+                &target_pattern_phase_value,
+            );
+        }
 
         // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:315 BuildTool.buildTargets
         let target_patterns_for_project_resolution = match &request.targets_for_project_resolution {
@@ -559,6 +610,9 @@ impl<'a> BuildTool<'a> {
             self.reporter.clone(),
         )
         .map_err(BuildToolError::LoadingFailed)?;
+        if let Some(hooks) = self.build_event_hooks {
+            hooks.project_evaluated();
+        }
 
         // buildTargetsWithoutMergedAnalysisExecution
         // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:496 BuildTool.buildTargetsWithoutMergedAnalysisExecution
@@ -573,6 +627,14 @@ impl<'a> BuildTool<'a> {
         if request.perform_analysis_phase {
             let analysis_result =
                 analysis_result.expect("analysis result of a request that analyzes");
+            if let Some(hooks) = self.build_event_hooks {
+                hooks.analysis_complete(
+                    request,
+                    self.skyframe_executor,
+                    &target_pattern_phase_value,
+                    &analysis_result,
+                );
+            }
             self.analysis_post_processor.process(
                 request,
                 self.skyframe_executor,

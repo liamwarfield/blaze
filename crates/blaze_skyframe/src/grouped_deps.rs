@@ -2,6 +2,7 @@
 
 use crate::SkyKey;
 use blaze_util::check_argument;
+use indexmap::IndexSet;
 use std::collections::HashSet;
 
 /// The direct dependencies of a node, in request order, grouped by request: each
@@ -11,9 +12,20 @@ use std::collections::HashSet;
 /// PORT: Java packs groups into one flat array with size markers; the grouping and order are what
 /// matter, so this is a `Vec` of groups.
 // Java: com/google/devtools/build/skyframe/GroupedDeps.java:52 GroupedDeps
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct GroupedDeps {
     groups: Vec<Vec<SkyKey>>,
+    /// The number of keys in `groups` (Java: the size of its flat array, minus the markers), so
+    /// that `numElements` is constant time: an entry asks for it at every `signalDep`.
+    num_elements: usize,
+}
+
+impl std::fmt::Debug for GroupedDeps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GroupedDeps")
+            .field("groups", &self.groups)
+            .finish()
+    }
 }
 
 /// Two `GroupedDeps` are equal when they have the same groups in the same order; the order of
@@ -55,19 +67,62 @@ impl GroupedDeps {
     // Java: com/google/devtools/build/skyframe/GroupedDeps.java:133 GroupedDeps.appendGroup
     pub fn append_group(&mut self, group: Vec<SkyKey>) {
         if !group.is_empty() {
+            self.num_elements += group.len();
             self.groups.push(group);
         }
     }
 
+    /// Appends the keys of `deps` in iteration order, split into groups of the given sizes. A
+    /// size of 0 adds no group. The sizes must add up to the number of keys.
+    // Java: com/google/devtools/build/skyframe/GroupedDeps.java:149 GroupedDeps.appendGroups
+    pub fn append_groups(&mut self, deps: &IndexSet<SkyKey>, group_sizes: &[i32]) {
+        let mut it = deps.iter();
+        for &size in group_sizes {
+            self.append_next_group(&mut it, size);
+        }
+        check_argument!(
+            it.next().is_none(),
+            "size(deps) != sum(groupSizes) (deps={:?}, groupSizes={:?})",
+            deps,
+            group_sizes
+        );
+    }
+
+    // Java: com/google/devtools/build/skyframe/GroupedDeps.java:164 GroupedDeps.appendNextGroup
+    fn append_next_group<'a>(
+        &mut self,
+        it: &mut impl Iterator<Item = &'a SkyKey>,
+        group_size: i32,
+    ) {
+        if group_size == 0 {
+            return;
+        }
+        // Java: Iterator.next() throws NoSuchElementException when the deps are exhausted.
+        let mut next = || {
+            it.next()
+                .cloned()
+                .unwrap_or_else(|| panic!("NoSuchElementException"))
+        };
+        if group_size == 1 {
+            let key = next();
+            self.append_singleton(key);
+            return;
+        }
+        let group: Vec<SkyKey> = (0..group_size).map(|_| next()).collect();
+        self.num_elements += group.len();
+        self.groups.push(group);
+    }
+
     // Java: com/google/devtools/build/skyframe/GroupedDeps.java:121 GroupedDeps.appendSingleton
     pub fn append_singleton(&mut self, key: SkyKey) {
+        self.num_elements += 1;
         self.groups.push(vec![key]);
     }
 
     /// Number of keys in all groups.
     // Java: com/google/devtools/build/skyframe/GroupedDeps.java:248 GroupedDeps.numElements
     pub fn num_elements(&self) -> usize {
-        self.groups.iter().map(Vec::len).sum()
+        self.num_elements
     }
 
     // Java: com/google/devtools/build/skyframe/GroupedDeps.java:322 GroupedDeps.isEmpty
@@ -134,5 +189,6 @@ impl GroupedDeps {
             self.groups
         );
         self.groups = new_groups;
+        self.num_elements = new_size;
     }
 }

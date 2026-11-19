@@ -606,7 +606,10 @@ impl BlazeServer {
             );
         }
 
-        // PORT: no broken pipe is detected in-process (the server writes to the streams itself).
+        // PORT: in-process, the server writes to this process's stdout and stderr itself; a
+        // broken pipe there is recorded by the listener `blaze_events::io` calls
+        // (`signal_handler::note_broken_pipe`), and `propagate_signal_or_exit` then ends the
+        // process by SIGPIPE, as the C++ does after "Cannot write to standard output".
         final_response.exit_code
     }
 
