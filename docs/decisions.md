@@ -258,3 +258,10 @@ Each entry: date, decision, why, who decided.
   differ only by `--install_md5` (Blaze's own install key: it stays, and the referee will mask
   that one value in its next audited batch) and by `--restart_reason=no_daemon` (correct until
   the persistent server exists). No BEP code change is owed for them. Root.
+- 2026-11-19. Java rules: the seven `starlarkbuildapi/java` interfaces that no class under
+  `src/main/java` implements (JavaInfoApi, JavaAnnotationProcessingApi,
+  JavaCompilationInfoProviderApi, JavaRuleOutputJarsProviderApi, JavaRuntimeInfoApi,
+  JavaToolchainStarlarkApiProviderApi, JavaModuleFlagsProviderApi; implementations exist only
+  under `src/test/java`) are not ported; the coverage map gets a reason class for dead
+  interfaces in its next audited change. Java comparisons hold under
+  `--spawn_strategy=linux-sandbox` until persistent workers are ported. Root.
