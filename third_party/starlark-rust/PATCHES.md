@@ -20,7 +20,7 @@ by adding.
 | 0007 | applied | set semantics (in-place `\|=` `&=` `^=` `-=`, variadic methods, `pop` order, `set()` repr, `isdisjoint` and the `*_update` methods, Java's argument errors) |
 | 0008 | applied | float repr and `%e`/`%f`/`%g` (Java's digits), `%d`/`%o`/`%x`/`%X` on floats and Java's two's complement, exact int/float comparison, "int too large to convert to float", division-by-zero texts |
 | 0009 | applied | builtin `type()` / `repr` names (`builtin_function_or_method`, `<built-in function len>`, `<built-in method m of T value>`, `<function f[ from M]>`); builtins unhashable |
-| 0010 | queued | error texts, only where a test or the oracle needs them |
+| 0010 | superseded | error texts, only where a test or the oracle needs them (now ported in general: 0049–0055, docs/decisions.md 2026-11-19) |
 | 0011 | applied | `%s` and `"{}".format` use `str`, not `repr` |
 | 0012 | applied | per-thread heap chunk size overflow |
 | 0013 | applied | per-type unknown-attribute message (`StarlarkValue::get_attr_error_message`) |
@@ -59,6 +59,13 @@ by adding.
 | 0046 | applied | `strip`/`lstrip`/`rstrip` accept `chars = None` |
 | 0047 | applied | under type syntax `...` only inside a type annotation |
 | 0048 | applied | under type syntax `cast(...)` / `isinstance(...)` in call arguments are cast/isinstance expressions; neither is a load name |
+| 0049 | applied | Bazel's spelling suggestions: Java `SpellChecker` and `java.util.HashSet` iteration order (`errors::spell_checker`) |
+| 0050 | applied | name resolution texts: "name 'x' is not defined" with Java's suggestion; "local/global variable 'x' is referenced before assignment." |
+| 0051 | applied | value and builtin error texts (operators, comparison, indexing, slicing, unpacking, hashing, attributes, mutation during iteration, `%`, `str.format`, `float()`, `range()`, list/dict/str/set methods) as Java's; Java's semantics where the text depends on it (`list += list` only, sequence comparison tests equality first, `range` sizes in 64 bits, shift counts) |
+| 0052 | applied | call argument errors in Java's order and wording (`StarlarkFunction` / `BuiltinFunction`), parameter type errors, Java's parameter names for the core builtins |
+| 0053 | applied | lexer texts and positions (invalid character, indentation error, forbidden keywords, malformed number literals) |
+| 0054 | applied | parser texts: "syntax error at 'TOKEN': expected KIND" and Java's context messages (list/dict/comprehension, call arguments, load, conditional, generator, implicit concatenation) |
+| 0055 | applied | static-check texts as Java's Resolver/Parser (call argument order, parameter order, top-level `for`/`if`, `break`/`continue`/`return`, `load` placement, `...`, type annotations, assignment targets, trailing comma) |
 
 Conformance (Bazel ScriptTest, `starlark_conformance run`; strict = Java ScriptTest semantics,
 resilient = aborted chunks re-run statement by statement):
@@ -84,6 +91,8 @@ so it is the column that matters; `ScriptTest` runs with the flag off.
 | + 0032–0036, blaze_starlark `json.decode` bytes (same) | ScriptTest_Latin1 | 38/95 | 2495 | 2569/2773 | 0 |
 | + 0037–0048, probe harness `fail` (working tree of 2026-11-19 on `3ab3b35`, other agents' uncommitted changes included) | ScriptTest | 37/95 | 2515 | 2588/2773 | 0 |
 | + 0037–0048 (same) | ScriptTest_Latin1 | 38/95 | 2516 | 2590/2773 | 0 |
+| + 0049–0055 (working tree of 2026-11-19 on `4f92912`, other agents' uncommitted changes included) | ScriptTest | 88/95 | 2608 | 2753/2777 | 0 |
+| + 0049–0055 (same) | ScriptTest_Latin1 | 89/95 | 2682 | 2756/2778 | 0 |
 
 Known gap left by 0002: GC tracing, freezing and equality of very deep values still recurse on
 the native stack; Blaze runs evaluation on threads with large stacks
@@ -813,3 +822,150 @@ the native stack; Blaze runs evaluation on threads with large stacks
   identifier path only when `at_type_keyword()` is `None`.
 - Test: `patch_0048_type_keywords_in_arguments`; interp-diff cases lex_cast_argument,
   lex_cast_named_argument (.bzl packages).
+
+## 0049 — Bazel's spelling suggestions
+
+Task: Starlark core-language error texts (docs/decisions.md 2026-11-19: ported where Bazel's tests
+and users read them).
+
+- Gap: starlark-rust's `did_you_mean` used strsim Levenshtein with a 1/2 distance limit, case
+  sensitive, and the first minimum in its own order. Java `SpellChecker.suggest`
+  (net/starlark/java/spelling/SpellChecker.java:89) lowers both sides (`String.toLowerCase`),
+  limits the distance to `min(5, (len+1)/2)`, keeps the first strictly better candidate in the
+  order it is given, and Resolver.use passes a `HashSet` (Resolver.java:1266 getAllSymbols), so
+  ties go to the first in Java's hash-set order.
+- Fix: new module `starlark::errors::spell_checker`: `edit_distance`, `suggest`, `did_you_mean`
+  (Java's), `java_string_hash_code`, `java_hash_set_order` (bucket = spread hash & (capacity-1),
+  capacity 16 doubled above 3/4 full, insertion order within a bucket; a bucket of 8+ that Java
+  turns into a tree is not modelled).
+- Users: 0050, 0051 (attributes), 0052 (keyword arguments).
+- Test: `patch_0049_spell_checker` (Java SpellCheckerTest's cases); the module's unit tests.
+
+## 0050 — name resolution texts
+
+- Gap: "Variable `x` not found[, did you mean `y`?]" (Java: "name 'x' is not defined" and
+  " (did you mean 'y'?)", Module.java:256, Resolver.java:950); "Local variable `x` referenced
+  before assignment" for locals and globals (Java: "%s variable '%s' is referenced before
+  assignment.", Eval.java:825, scope `local`/`global`).
+- Fix: `eval/compiler/scope.rs` `ScopeError::NameNotDefined`, candidates in Java's order
+  (locals, globals/predeclared/universe, file globals) through `java_hash_set_order`;
+  `eval/runtime/evaluator.rs` `EvaluatorError::VariableReferencedBeforeAssignment`. Java says
+  `cell`/`free` for a captured variable; starlark-rust's slots do not record it (`local`).
+- Users: blaze_packages `builtins::env::undefined_variable_name` parses this text (it still
+  expects the old one: see the task report).
+- Test: `patch_0050_name_errors`; interp cases err_res_undefined*, err_res_*_before_assign.
+
+## 0051 — value and builtin error texts
+
+- Gap: starlark-rust's texts for every failing operation ("Operation `+` not supported for types
+  `int` and `string`", "Index `5` is out of bound", "Key `"b"` was not found", "Value of type `list`
+  is not hashable", "Object of type `int` has no attribute `foo`", "Unpacked 2 values but
+  expected 3", "This operation mutates an iterable for an iterator while iterating.", ...).
+- Fix (Java site at each change):
+  - `values/error.rs`: `ValueError::Bazel(String)`; `unsupported_owned` maps its operation names
+    to Java's texts (EvalUtils.binaryOp/unaryOp/index, Starlark.compareUnchecked/slice/
+    toIterable/getStarlarkCallable, setField, `len`'s parameter check);
+    `ValueError::bazel_no_attr` ("'T' value has no field or method 'x'" + suggestion over the
+    sorted `dir`), used by `get_attr_error`, the compiled `.` and `getattr`;
+    `ControlError::NotHashableValue` "unhashable type: 'T'".
+  - `values/index.rs`: `java_to_int` (Starlark.toInt: "got T for WHAT, want int", "got N for
+    WHAT, want value in signed 32-bit range"), `java_sequence_index` (EvalUtils.getSequenceIndex);
+    sequence/string/list indices, slice bounds and step use Java's names.
+  - `eval/bc/instr_impl.rs` sequence assignment (Eval.assignSequence; strings are not
+    iterable here), `eval/compiler/expr.rs` duplicate dict key.
+  - Mutation during iteration: "T value is temporarily immutable due to active for-loop
+    iteration" (list, dict, set).
+  - `dict[k]` of an unhashable key is "key [] not found in dictionary" (Dict.getIndex).
+  - `values/types/string/interpolation.rs` `percent`: Java's Printer.formatWithList (its order
+    of checks and texts); `dot_format.rs` `format`: Java's FormatParser.
+  - Builtins: `float()` (MethodLibrary.floatForStarlark with Java's `Double.parseDouble`
+    grammar: whitespace, `d`/`f` suffixes, hex floats), `range()` (Java's size check, `step
+    cannot be 0`; `Range::length` in 64-bit arithmetic as RangeList), `min`/`max`, list
+    `index`/`remove`/`pop`, dict `pop`/`popitem`/`update`/`dict()` (Dict.update's texts), str
+    `index`/`rindex`/`partition`/`rpartition`, shifts (`toInt("shift count")`, "negative shift
+    count: N", checks before the zero shortcut), repeat counts (`toInt("repeat")`).
+  - Semantics the texts depend on: `list += x` extends only for a list (Eval.inplaceBinaryOp;
+    otherwise the binary `+` and its error); list/tuple comparison tests element equality first
+    (Sequence.compare), so `(None,) < (None,)` is False.
+- Not done: Java's TimSort comparison order in `sorted` (which pair fails first), `RangeList`
+  slices in 64-bit arithmetic (range.star:41-49), "cell"/"free" scopes.
+- Test: `patch_0051_value_errors`; interp cases err_op_*, err_ix_*, err_hash_*, err_mut_*,
+  err_call_* (java_recorded_interp).
+
+## 0052 — call argument errors
+
+- Gap: one argument binder with its own texts ("Missing parameter `b` for call to `f`", "Found 1
+  extra positional argument(s) for call to ...", "Argument `a` occurs more than once", "Wrong
+  number of positional arguments, expected 1, got 2", "Type of parameter `x` doesn't match,
+  expected `str`, actual `int (repr: 1)`"); parameter names of the core builtins differed from
+  Java's (`len(a)`, `int(a)`, `list.append(el)`, `range(a1, a2)`, `str.find(needle)`, ...).
+- Fix:
+  - `eval/runtime/params/spec.rs`: `ParametersSpec::java_argument_error` replays Java's argument
+    processing (Eval.evalCall order: positional, named, `*args`, `**kwargs`; then the callee's
+    `call`) for a failed call and returns Java's first error, in StarlarkFunction's wording for
+    a `def`/`lambda` (`java_def_name`, set by `InstrDefImpl`) and BuiltinFunction's otherwise;
+    `*args`/`**kwargs` value errors (Eval.java:735-754).
+  - `__derive_refs/parse_args.rs` + starlark_derive `render/fun.rs`: the positional-only fast
+    path of `#[starlark_module]` functions reports through the same diagnosis.
+  - `values/unpack.rs` `BazelParamTypeError`: "in call to F(), parameter 'P' got value of type
+    'T', want 'W'" (the function filled in by `NativeFunc::invoke` / `NativeMeth::invoke`);
+    `java_allowed_types` gives `W` from the parameter's type (Java's order for the core
+    builtins whose order differs; otherwise `NoneType` last); an int beyond int32 is Java's
+    `toInt` text; `java_check_iterable` for the parameters Java declares `StarlarkIterable`
+    (`all`, `any`, `sorted`, `reversed`, `list`, `tuple`, `set`, `list.extend`, `str.join`);
+    `str.join` element text; `startswith`/`endswith` element text (Sequence.cast); `key=None`
+    accepted by `sorted`/`min`/`max` (Java: callable or NoneType); `range`'s parameters.
+  - Java's parameter names for the core builtins (each renamed parameter is bound to its old
+    variable name on the first line of the body).
+- Not done: Java checks a builtin's argument types while binding (before arity errors);
+  starlark-rust after; `print(sep=)`; the `callable` type check of `key`; a positional argument
+  from `*args` that rebinds a named one is accepted by Java (StarlarkFunction.addPositionalArg)
+  and rejected here.
+- Test: `patch_0052_argument_errors`; interp cases err_def_*, err_call_*.
+
+## 0053 — lexer texts
+
+- Gap: "Parse error: invalid input `$`", "Parse error: incorrect indentation" (at the previous
+  line's end), "Parse error: cannot use reserved keyword `import`", `0x`/`1e`/`0o9` lexed as two
+  tokens.
+- Fix: `starlark_syntax/src/lexer.rs`: Java's texts (Lexer.java:876 "invalid character: 'c'",
+  :256 "indentation error" at the last char of the indentation, Parser.java:425 forbidden
+  keywords); `Token::BlazeBadNumber` for the number literals Java's lexer rejects ("invalid hex
+  literal", "invalid binary literal", "invalid base-8 integer literal: 0o9", "invalid float
+  literal"), at the literal's start.
+- Test: `patch_0053_lexer_errors`; interp cases err_lex_*, lex_*.
+
+## 0054 — parser texts
+
+- Gap: "Parse error: unexpected X, expected Y".
+- Fix: `starlark_syntax/src/syntax/parser_rd.rs`: `error_expected` prints Java's
+  `syntax error at 'TOKEN': expected KIND` (Parser.java:334; `tokenString`: a string literal's
+  value in double quotes, identifiers and numbers by value, `Double.toString` for floats, else
+  TokenKind's text; "indentation error" at an unexpected indent); `expect_java`/`error_java` for
+  Java's context messages: list (`expected ',', 'for' or ']'`), comprehensions (`expected ']',
+  'for' or 'if'`), call arguments (`expected ,`), load (`expected at least one symbol to load`,
+  `expected string`, `expected either a literal string or an identifier`), conditional (`missing
+  else clause ...` at the expression), generator expressions, implicit string concatenation,
+  `expected an indented block`, non-associative comparisons.
+- Limitation: Java's parser recovers and reports every syntax error of a file (plus the
+  resolver's errors on the recovered tree, e.g. "contains syntax errors"); starlark-rust's stops
+  at the first. Porting it means porting Java's Parser recovery (syncTo/syncPast, error
+  expressions) into parser_rd.rs and resolving the partial tree. The first error equals Java's
+  in every recorded case but four (a lone backslash twice, an f-string, `x ==` at end of file:
+  tests/data/interp/KNOWN_DIFFERENCES).
+- Test: `patch_0054_parser_errors`; interp cases err_parse_*.
+
+## 0055 — static-check texts
+
+- Gap: starlark-rust's texts for checks Java's Resolver/Parser make ("positional argument after
+  non positional", "repeated named argument", "Parameter after kwargs", "`for` cannot be used
+  outside `def` in this dialect", "left-hand-side of assignment must take the form ...",
+  "unparenthesized tuple with trailing comma", "type annotations are not allowed in this
+  dialect", ...).
+- Fix: `syntax/call.rs` (Resolver.java:708 visit(CallExpression), Java's order), `syntax/def.rs`
+  (Resolver.java:1049 parameter order and duplicates, bare `*`), `syntax/validate.rs` (top-level
+  `for`/`if`, `break`/`continue`, `return`, `load` placement, `...`), `syntax/grammar_util.rs`
+  ("cannot assign to 'EXPR'" with the source text standing in for Java's NodePrinter, augmented
+  assignment at the operator, trailing comma at the next token, "syntax error at ':': type
+  annotations are disallowed" at the `:`/`->`).
+- Test: `patch_0055_static_errors`; interp cases err_res_*, err_parse_*.

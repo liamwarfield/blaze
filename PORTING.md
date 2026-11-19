@@ -114,9 +114,10 @@ same option names, defaults, converters, tags and help text.
   `NativeRegistry` to contribute natives per file kind, `EvalError` for Bazel tracebacks.
 - Each Java `@StarlarkMethod` group becomes one `#[starlark_module]` in the crate that ports the
   Java class, with Bazel's exact method and parameter names, positional/named rules and defaults.
-- Error text: match Bazel's where Blaze raises the error; starlark-rust's own core-language error
-  text is accepted (decisions.md). Fixes to core types go in the vendored crate's patch queue
-  (`third_party/starlark-rust/PATCHES.md`), never as workarounds.
+- Error text: Bazel's, everywhere, including the core language (decisions.md 2026-11-19;
+  patches 0049-0055 port the texts of Java's `eval` and `syntax` packages; the inventory and
+  its open rows are `docs/starlark-errors.tsv`). Fixes to core types and texts go in the
+  vendored crate's patch queue (`third_party/starlark-rust/PATCHES.md`), never as workarounds.
 
 ## Skyframe
 
