@@ -1,0 +1,5 @@
+EVAL unhashable type: 'set'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_hash_set_in_set.star", line 2, column 6, in <toplevel>
+TRACE \x09\x09s.add(set())
+TRACE Error in add: unhashable type: 'set'

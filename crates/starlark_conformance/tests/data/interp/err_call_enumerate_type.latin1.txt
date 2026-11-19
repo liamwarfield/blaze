@@ -1,0 +1,5 @@
+EVAL type 'int' is not iterable
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_enumerate_type.star", line 1, column 10, in <toplevel>
+TRACE \x09\x09enumerate(1)
+TRACE Error in enumerate: type 'int' is not iterable

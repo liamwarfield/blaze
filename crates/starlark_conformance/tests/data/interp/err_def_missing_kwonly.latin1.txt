@@ -1,0 +1,7 @@
+EVAL f() missing 2 required keyword-only arguments: a, b
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_def_missing_kwonly.star", line 3, column 2, in <toplevel>
+TRACE \x09\x09f()
+TRACE \x09File "err_def_missing_kwonly.star", line 1, column 5, in f
+TRACE \x09\x09def f(*, a, b):
+TRACE Error: f() missing 2 required keyword-only arguments: a, b

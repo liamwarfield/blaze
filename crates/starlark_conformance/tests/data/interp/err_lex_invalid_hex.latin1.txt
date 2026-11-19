@@ -1,0 +1,2 @@
+SYNTAX err_lex_invalid_hex.star:1:5: invalid hex literal
+SYNTAX err_lex_invalid_hex.star:1:5: invalid base-16 integer literal: 0x

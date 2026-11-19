@@ -3,10 +3,11 @@
 //! `buildtool/AnalysisPhaseRunner.evaluateProjectFile` that decides whether a build has project
 //! files.
 //!
-//! PORT: finding the project files of a build is ported. Reading them (`ProjectFunction`,
-//! `ProjectValue`, aliases, `Project.applySclConfig`, `FlagSetFunction`, the active directories
-//! matcher) is not: a build whose targets resolve to a project file fails with `unported!`. A
-//! build without project files goes on unchanged, as in Java.
+//! PORT: PROJECT_FILES_LOOKUP and PROJECT (`ProjectFunction`, `ProjectValue`) are ported in
+//! `blaze_sky_loading::project_function` (BUILD_OPTIONS_SCOPE needs them below this crate).
+//! Applying a project's configuration to a build (`Project.applySclConfig`, `FlagSetFunction`)
+//! is not: a build whose targets resolve to a project file fails with `unported!`. A build
+//! without project files goes on unchanged, as in Java.
 
 use std::fmt;
 use std::sync::Arc;
@@ -31,157 +32,10 @@ use indexmap::IndexSet;
 
 use crate::skyframe_executor::{DEFAULT_THREAD_COUNT, SkyframeExecutor};
 
-/// Name of project metadata files. See `Project`.
-// Java: com/google/devtools/build/lib/skyframe/ProjectFilesLookupFunction.java:35 ProjectFilesLookupFunction.PROJECT_FILE_NAME
-pub const PROJECT_FILE_NAME: &str = "PROJECT.scl";
-
-/// `SkyFunctions.PROJECT_FILES_LOOKUP`.
-// Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:45 SkyFunctions.PROJECT_FILES_LOOKUP
-pub const PROJECT_FILES_LOOKUP: SkyFunctionName = SkyFunctionName("PROJECT_FILES_LOOKUP");
-
-/// The key of a `ProjectFilesLookupValue`: a package.
-// Java: com/google/devtools/build/lib/skyframe/ProjectFilesLookupValue.java:77 ProjectFilesLookupValue.Key
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct ProjectFilesLookupKey(pub PackageIdentifier);
-
-impl ProjectFilesLookupKey {
-    // Java: com/google/devtools/build/lib/skyframe/ProjectFilesLookupValue.java:59 ProjectFilesLookupValue.key
-    pub fn key(id: PackageIdentifier) -> Self {
-        ProjectFilesLookupKey(id)
-    }
-}
-
-impl fmt::Debug for ProjectFilesLookupKey {
-    // Java: com/google/devtools/build/skyframe/AbstractSkyKey.java:59 AbstractSkyKey.toString
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", PROJECT_FILES_LOOKUP, self.0)
-    }
-}
-
-impl Key for ProjectFilesLookupKey {
-    type Value = ProjectFilesLookupValue;
-    const FUNCTION: SkyFunctionName = PROJECT_FILES_LOOKUP;
-}
-
-/// The project files of a package: every `PROJECT.scl` in the package and in the packages above
-/// it.
-// Java: com/google/devtools/build/lib/skyframe/ProjectFilesLookupValue.java:33 ProjectFilesLookupValue
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProjectFilesLookupValue {
-    project_files: Vec<Label>,
-}
-
-impl ProjectFilesLookupValue {
-    /// Returns the project files for the corresponding key's package.
-    ///
-    /// Order is innermost to outermost: if both `a/PROJECT.scl` and `a/b/c/PROJECT.scl` are
-    /// included, `a/b/c/PROJECT.scl` appears first.
-    // Java: com/google/devtools/build/lib/skyframe/ProjectFilesLookupValue.java:49 ProjectFilesLookupValue.getProjectFiles
-    pub fn get_project_files(&self) -> &[Label] {
-        &self.project_files
-    }
-}
-
-/// A project file exists but isn't a file.
-// Java: com/google/devtools/build/lib/skyframe/ProjectFilesLookupFunction.java:118 ProjectFilesLookupFunction.UnexpectedProjectFileTypeException
-#[derive(Clone, Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct UnexpectedProjectFileTypeException(pub String);
-
-/// `SkyFunction` for `ProjectFilesLookupValue`.
-///
-/// PORT: Java keeps the directory being examined and the files found so far in a
-/// `SkyKeyComputeState`, to go on where it stopped after a restart. A dependency request blocks
-/// here, so the loop runs through; a second run (error bubbling) starts again from the key's
-/// package and asks for the same dependencies.
-// Java: com/google/devtools/build/lib/skyframe/ProjectFilesLookupFunction.java:46 ProjectFilesLookupFunction.compute
-fn project_files_lookup_function(
-    key: &ProjectFilesLookupKey,
-    env: &mut Environment<'_>,
-) -> Result<Option<ProjectFilesLookupValue>, ComputeError> {
-    // Which project files have we discovered so far?
-    let mut project_files: Vec<Label> = Vec::new();
-    // Tracks the current directory we're checking for BUILD and PROJECT.scl files. According to
-    // the ProjectFilesLookupValue API contract, the original value from the skykey should be a
-    // package (i.e. has a BUILD file). But this code doesn't require that: if the directory
-    // doesn't have a BUILD file the code still gracefully finds the nearest enclosing package.
-    // This is especially important when walking up the directory path, since the parent directory
-    // of a package isn't necessarily another package.
-    let mut current_dir: PackageIdentifier = key.0.clone();
-    loop {
-        let Some(innermost_pkg_lookup_value) =
-            env.get_value(ContainingPackageLookupKey(current_dir.clone()))?
-        else {
-            return Ok(None);
-        };
-        if !innermost_pkg_lookup_value.has_containing_package() {
-            // We've reached the root directory: nothing left. This list may be empty but that's
-            // okay. That just means the input package has no associated project files.
-            return Ok(Some(ProjectFilesLookupValue { project_files }));
-        }
-
-        // Now that we've found a BUILD file, determine the project file path to look for.
-        let innermost_pkg_id = innermost_pkg_lookup_value
-            .get_containing_package_name()
-            .clone();
-        let project_file_label =
-            match Label::create_in_package(&innermost_pkg_id, PROJECT_FILE_NAME) {
-                Ok(label) => label,
-                Err(e) => panic!(
-                    "IllegalStateException: Unexpected failure parsing {}: {}",
-                    PROJECT_FILE_NAME, e
-                ),
-            };
-
-        // Lookup the project file.
-        let project_file_path = innermost_pkg_id
-            .get_package_fragment()
-            .get_relative_str(PROJECT_FILE_NAME);
-        let file_sky_key = FileKey::key(RootedPath::to_rooted_path(
-            innermost_pkg_lookup_value
-                .get_containing_package_root()
-                .clone(),
-            &project_file_path,
-        ));
-        let file_value: Option<Arc<FileValue>> =
-            match env.get_value_or_throw::<FileKey, IOException>(file_sky_key)? {
-                Ok(v) => v,
-                // ProjectFilesLookupException(IOException)
-                Err(e) => return Err(SkyFunctionException::persistent(e).into()),
-            };
-        let Some(file_value) = file_value else {
-            return Ok(None);
-        };
-
-        if file_value.is_file() {
-            project_files.push(project_file_label);
-        } else if file_value.exists() {
-            // ProjectFilesLookupException(UnexpectedProjectFileTypeException)
-            return Err(
-                SkyFunctionException::persistent(UnexpectedProjectFileTypeException(format!(
-                    "{} isn't a file",
-                    project_file_path.get_path_string()
-                )))
-                .into(),
-            );
-        }
-
-        let Some(parent_dir) = innermost_pkg_id
-            .get_package_fragment()
-            .get_parent_directory()
-        else {
-            // Hit the root directory. Returns the results we've collected.
-            return Ok(Some(ProjectFilesLookupValue { project_files }));
-        };
-        current_dir = PackageIdentifier::create(current_dir.get_repository().clone(), parent_dir);
-    }
-}
-
-/// Registers `PROJECT_FILES_LOOKUP`.
-// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:760 SkyframeExecutor.skyFunctions
-pub fn register(builder: EvaluatorBuilder) -> EvaluatorBuilder {
-    builder.typed_function::<ProjectFilesLookupKey, _>(project_files_lookup_function)
-}
+pub use blaze_sky_loading::project_function::{
+    PROJECT_FILE_NAME, PROJECT_FILES_LOOKUP, ProjectFilesLookupKey, ProjectFilesLookupValue,
+    UnexpectedProjectFileTypeException, register,
+};
 
 /// Thrown when project data can't be read.
 // Java: com/google/devtools/build/lib/analysis/Project.java:80 Project.ProjectResolutionException

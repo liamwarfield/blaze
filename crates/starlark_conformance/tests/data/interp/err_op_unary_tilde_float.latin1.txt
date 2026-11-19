@@ -1,0 +1,5 @@
+EVAL unsupported unary operation: ~float
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_op_unary_tilde_float.star", line 1, column 5, in <toplevel>
+TRACE \x09\x09x = ~1.0
+TRACE Error: unsupported unary operation: ~float

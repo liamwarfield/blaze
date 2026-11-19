@@ -313,21 +313,7 @@ pub(crate) fn target_parsing_exception_of(
 fn util_detailed_exit_code(
     detailed_exit_code: &blaze_packages::exceptions::DetailedExitCode,
 ) -> blaze_util::DetailedExitCode {
-    use blaze_packages::exceptions::FailureCode;
-    use blaze_protos::failure_details::failure_detail::Category;
-    use blaze_protos::failure_details::{FailureDetail, PackageLoading};
-    match &detailed_exit_code.code {
-        FailureCode::PackageLoading(code) => blaze_util::DetailedExitCode::of(FailureDetail {
-            message: detailed_exit_code.message.clone(),
-            category: Some(Category::PackageLoading(PackageLoading {
-                code: *code as i32,
-            })),
-        }),
-        FailureCode::Other(name) => blaze_util::unported!(
-            "TargetParsingException with a non-PackageLoading DetailedExitCode",
-            "{name}"
-        ),
-    }
+    detailed_exit_code.to_util()
 }
 
 /// A [`RecursivePackageProvider`] over a Skyframe environment.

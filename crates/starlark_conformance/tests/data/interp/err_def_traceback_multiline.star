@@ -1,0 +1,6 @@
+def f(
+    a):
+  return a + \
+    "x"
+f(
+  1)

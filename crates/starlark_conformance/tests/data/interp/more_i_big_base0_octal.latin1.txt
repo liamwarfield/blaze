@@ -1,1 +1,5 @@
 EVAL invalid base-8 literal: "0o8"
+TRACE Traceback (most recent call last):
+TRACE \x09File "more_i_big_base0_octal.star", line 1, column 10, in <toplevel>
+TRACE \x09\x09print(int("0o8", 0))
+TRACE Error in int: invalid base-8 literal: "0o8"

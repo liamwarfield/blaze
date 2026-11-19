@@ -72,6 +72,35 @@ impl DetailedExitCode {
             code: FailureCode::PackageLoading(code),
         }
     }
+
+    /// The lib/util `DetailedExitCode` this reduction stands for (Java keeps only that one):
+    /// its `FailureDetail` has this message and the category and code named by [`FailureCode`].
+    ///
+    /// Panics (Java: `IllegalArgumentException` of `Enum.valueOf`) when an `Other` name is not a
+    /// `<Category>[.<CODE>]` of failure_details.proto: that is a bug at the site that made it.
+    // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:86 DetailedExitCode.of
+    pub fn to_util(&self) -> blaze_util::DetailedExitCode {
+        match &self.code {
+            FailureCode::PackageLoading(code) => blaze_util::DetailedExitCode::of_category_value(
+                self.message.clone(),
+                "PackageLoading",
+                *code as i32,
+            ),
+            FailureCode::Other(name) => {
+                let (category, code) = match name.split_once('.') {
+                    Some((category, code)) => (category, Some(code)),
+                    None => (name.as_str(), None),
+                };
+                blaze_util::DetailedExitCode::of_category_name(self.message.clone(), category, code)
+            }
+        }
+        .unwrap_or_else(|| {
+            panic!(
+                "IllegalArgumentException: no FailureDetail code {:?}",
+                self.code
+            )
+        })
+    }
 }
 
 /// The Java subclass of a [`NoSuchPackageException`].

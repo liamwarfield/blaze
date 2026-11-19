@@ -1,1 +1,5 @@
 EVAL in call to count(), parameter 'start' got value of type 'string', want 'int or NoneType'
+TRACE Traceback (most recent call last):
+TRACE \x09File "more_s_count_str_start.star", line 1, column 18, in <toplevel>
+TRACE \x09\x09print("abc".count("a", "1"))
+TRACE Error in count: in call to count(), parameter 'start' got value of type 'string', want 'int or NoneType'

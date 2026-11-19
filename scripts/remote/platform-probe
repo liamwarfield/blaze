@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import sys
 
+import unitstatus
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE = os.path.expanduser("~/.cache/blaze")
 ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
@@ -65,6 +67,9 @@ in place of the action/command/argv0 lines (use a tag of its own; no second buil
 `compare <a> <b>` prints both result.txt per case and SAME/DIFFERENT; exit 0 iff all equal.
 `cases` lists the cases with their flags.
 
+The exit code is recorded inside the unit by scripts/remote/unit-supervisor (a death by
+signal N is 128+N, its name in the step's `signal` file); systemd-run's own status is 0
+after SIGPIPE, SIGHUP, SIGINT or SIGTERM.
 Every Bazel/Blaze call runs in `systemd-run --user --collect --wait -p MemoryMax=12G
 -p MemorySwapMax=0` with HOME and PATH=/usr/bin:/bin only, startup options
 --output_user_root=<above> --nohome_rc --nosystem_rc, and --repository_cache=~/.cache/blaze/
@@ -231,12 +236,8 @@ def write_ws(ws, name):
 def run_binary(binary, our, ws, step, args):
     full = [binary, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc", args[0],
             "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"] + args[1:]
-    unit = ["systemd-run", "--user", "--collect", "--wait", "--pipe", "--quiet", "--same-dir",
-            "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0", "env", "-i",
-            "HOME=" + os.environ["HOME"], "PATH=/usr/bin:/bin"]
-    with open(os.path.join(step, "stdout"), "wb") as so, \
-            open(os.path.join(step, "stderr"), "wb") as se:
-        return subprocess.run(unit + full, cwd=ws, stdout=so, stderr=se).returncode
+    return unitstatus.run(os.path.join(step, ".unit-status"), full, ws,
+                          os.path.join(step, "stdout"), os.path.join(step, "stderr"))[0]
 
 
 # --- minimal protobuf wire decoding (Action, Command, Platform) ---

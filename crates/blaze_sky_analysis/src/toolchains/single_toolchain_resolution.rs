@@ -20,6 +20,7 @@ use blaze_skyframe::{
 };
 use indexmap::IndexMap;
 
+use crate::toolchains::debug_printers::SingleToolchainResolutionDebugPrinter;
 use crate::toolchains::lookup_error::catch_toolchain_exception;
 use crate::toolchains::platform_lookup_util;
 use crate::toolchains::registered_toolchains::RegisteredToolchainsKey;
@@ -178,20 +179,27 @@ pub fn single_toolchain_resolution_function(
         return Ok(None);
     };
 
-    // PORT: SingleToolchainResolutionDebugPrinter is not ported. Without debugging every call on
-    // it is a no-op, so with `--toolchain_resolution_debug` matching this target or toolchain
-    // type the function stops here, and the debugPrinter calls below are left out.
-    if debug {
-        blaze_util::unported!("SingleToolchainResolutionDebugPrinter.create");
-    }
+    let mut debug_printer = SingleToolchainResolutionDebugPrinter::create(debug);
     let target_platform = platforms[key.target_platform_key()].clone();
+    debug_printer.start_toolchain_resolution(
+        &key.toolchain_type().toolchain_type,
+        target_platform.label(),
+    );
 
     // Describe rejected toolchains if any are present.
-    // (debugPrinter.describeRejectedToolchains: `toolchains.rejected_toolchains` is null unless
-    // debugging.)
+    // Optional.ofNullable(rejectedToolchains).map(t -> t.row(toolchainType)): an absent row is
+    // an empty map.
+    if let Some(rejected_toolchains) = &toolchains.rejected_toolchains {
+        let row = rejected_toolchains
+            .get(&key.toolchain_type().toolchain_type)
+            .cloned()
+            .unwrap_or_default();
+        debug_printer.describe_rejected_toolchains(&row);
+    }
 
     // Find the right one.
     let toolchain_resolution = resolve_constraints(
+        &mut debug_printer,
         key.toolchain_type(),
         key.toolchain_type_info(),
         key.available_execution_platform_keys(),
@@ -199,6 +207,8 @@ pub fn single_toolchain_resolution_function(
         &target_platform,
         &toolchains.registered_toolchains,
     );
+
+    debug_printer.finish_debugging(env.listener());
 
     Ok(Some(toolchain_resolution))
 }
@@ -226,6 +236,7 @@ fn get_platforms(
 /// platform.
 // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionFunction.java:149 SingleToolchainResolutionFunction.resolveConstraints
 fn resolve_constraints(
+    debug_printer: &mut SingleToolchainResolutionDebugPrinter,
     toolchain_type: &ToolchainTypeRequirement,
     toolchain_type_info: &ToolchainTypeInfo,
     available_execution_platform_keys: &[ConfiguredTargetKey],
@@ -251,10 +262,22 @@ fn resolve_constraints(
         // Make sure the target platform matches. A toolchain with use_target_platform_constraints
         // matches any target platform.
         if !toolchain.has_target_to_exec_constraints()
-            && !check_constraints(toolchain.target_constraints(), target_platform)
+            && !check_constraints(
+                debug_printer,
+                toolchain.target_constraints(),
+                /* is_target_platform= */ true,
+                target_platform,
+                toolchain.target_label(),
+                toolchain.resolved_toolchain_label(),
+            )
         {
             continue;
         }
+
+        debug_printer.report_compatible_target_platform(
+            toolchain.target_label(),
+            toolchain.resolved_toolchain_label(),
+        );
 
         let mut done = true;
 
@@ -262,6 +285,8 @@ fn resolve_constraints(
         for execution_platform_key in available_execution_platform_keys {
             // Only check the toolchains if this is a new platform.
             if platform_keys_seen.contains(execution_platform_key) {
+                debug_printer
+                    .report_skipped_execution_platform_seen(execution_platform_key.get_label());
                 continue;
             }
 
@@ -273,6 +298,11 @@ fn resolve_constraints(
                     .allowed_toolchain_types()
                     .contains(&toolchain_type.toolchain_type)
             {
+                debug_printer.report_skipped_execution_platform_disallowed(
+                    execution_platform_key.get_label(),
+                    &toolchain_type.toolchain_type,
+                );
+
                 // Keep looking for a valid toolchain for this exec platform
                 done = false;
                 continue;
@@ -284,12 +314,20 @@ fn resolve_constraints(
             } else {
                 toolchain.exec_constraints()
             };
-            if !check_constraints(exec_constraints, execution_platform) {
+            if !check_constraints(
+                debug_printer,
+                exec_constraints,
+                /* is_target_platform= */ false,
+                execution_platform,
+                toolchain.target_label(),
+                toolchain.resolved_toolchain_label(),
+            ) {
                 // Keep looking for a valid toolchain for this exec platform
                 done = false;
                 continue;
             }
 
+            debug_printer.report_compatible_execution_platform(execution_platform_key.get_label());
             if builder.contains_key(execution_platform_key) {
                 // Java: ImmutableMap.Builder.buildOrThrow on a duplicate key.
                 panic!(
@@ -304,9 +342,16 @@ fn resolve_constraints(
         }
 
         if done {
+            debug_printer.report_done(&toolchain_type.toolchain_type);
             break;
         }
     }
+
+    debug_printer.report_resolved_toolchains(
+        &builder,
+        target_platform.label(),
+        &toolchain_type.toolchain_type,
+    );
 
     SingleToolchainResolutionValue::create(toolchain_type_info.clone(), builder)
 }
@@ -314,8 +359,12 @@ fn resolve_constraints(
 /// Returns `true` iff all constraints set by the toolchain and in the [`PlatformInfo`] match.
 // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionFunction.java:250 SingleToolchainResolutionFunction.checkConstraints
 fn check_constraints(
+    debug_printer: &mut SingleToolchainResolutionDebugPrinter,
     toolchain_constraints: &ConstraintCollection,
+    is_target_platform: bool,
     platform: &PlatformInfo,
+    target_label: &Label,
+    resolved_toolchain_label: &Label,
 ) -> bool {
     // Check every constraint_setting in either the toolchain or the platform.
     let mismatch_settings = toolchain_constraints.diff(platform.constraints());
@@ -328,10 +377,19 @@ fn check_constraints(
     // To allow combining rulesets with their own toolchains in a single top-level
     // workspace, toolchains that do not reference a constraint_setting should not
     // be forced to match with it.
-    let mismatch_settings_with_default: Vec<_> = mismatch_settings
+    let mismatch_settings_with_default: indexmap::IndexSet<_> = mismatch_settings
         .into_iter()
         .filter(|s| toolchain_constraints.has_without_default(s))
         .collect();
+
+    debug_printer.report_mismatched_settings(
+        toolchain_constraints,
+        is_target_platform,
+        platform,
+        target_label,
+        resolved_toolchain_label,
+        &mismatch_settings_with_default,
+    );
 
     mismatch_settings_with_default.is_empty()
 }

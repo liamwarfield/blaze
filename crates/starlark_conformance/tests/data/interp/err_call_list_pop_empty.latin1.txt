@@ -1,0 +1,5 @@
+EVAL index out of range (index is -1, but sequence has 0 elements)
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_list_pop_empty.star", line 1, column 7, in <toplevel>
+TRACE \x09\x09[].pop()
+TRACE Error in pop: index out of range (index is -1, but sequence has 0 elements)

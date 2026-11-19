@@ -16,8 +16,8 @@ use blaze_bzlmod_model::ExternalDepsException;
 use blaze_cmdline::Label;
 use blaze_events::{Event, ExtendedEventHandler};
 use blaze_packages::exceptions::{
-    DetailedExitCode as PackagesDetailedExitCode, FailureCode, NoSuchPackageException,
-    NoSuchTargetException, NoSuchThingException,
+    DetailedExitCode as PackagesDetailedExitCode, NoSuchPackageException, NoSuchTargetException,
+    NoSuchThingException,
 };
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail::Category};
 use blaze_sky_analysis::aspect_function::AspectFunctionException;
@@ -302,47 +302,11 @@ fn classify<'a>(exception: &'a (dyn std::error::Error + 'static)) -> AnalysisExc
 /// PORT: blaze_packages keeps a `DetailedExitCode` as a message and `<Category>.<CODE>`; the
 /// categories the loading and analysis functions produce are rebuilt here.
 pub fn packages_failure_detail(detailed_exit_code: &PackagesDetailedExitCode) -> FailureDetail {
-    let category = match &detailed_exit_code.code {
-        FailureCode::PackageLoading(code) => {
-            Category::PackageLoading(failure_details::PackageLoading { code: *code as i32 })
-        }
-        FailureCode::Other(name) => match name.split_once('.') {
-            Some(("Analysis", code)) => Category::Analysis(failure_details::Analysis {
-                code: failure_details::analysis::Code::from_str_name(code)
-                    .unwrap_or_else(|| panic!("IllegalArgumentException: Analysis.Code {code}"))
-                    as i32,
-            }),
-            Some(("Toolchain", code)) => Category::Toolchain(failure_details::Toolchain {
-                code: failure_details::toolchain::Code::from_str_name(code)
-                    .unwrap_or_else(|| panic!("IllegalArgumentException: Toolchain.Code {code}"))
-                    as i32,
-            }),
-            Some(("StarlarkLoading", code)) => {
-                Category::StarlarkLoading(failure_details::StarlarkLoading {
-                    code: failure_details::starlark_loading::Code::from_str_name(code)
-                        .unwrap_or_else(|| {
-                            panic!("IllegalArgumentException: StarlarkLoading.Code {code}")
-                        }) as i32,
-                })
-            }
-            Some(("ExternalRepository", code)) => {
-                Category::ExternalRepository(failure_details::ExternalRepository {
-                    code: failure_details::external_repository::Code::from_str_name(code)
-                        .unwrap_or_else(|| {
-                            panic!("IllegalArgumentException: ExternalRepository.Code {code}")
-                        }) as i32,
-                })
-            }
-            _ => blaze_util::unported!(
-                "DetailedExitCode.getFailureDetail",
-                "FailureDetail of the category of {name}"
-            ),
-        },
-    };
-    FailureDetail {
-        message: detailed_exit_code.message.clone(),
-        category: Some(category),
-    }
+    detailed_exit_code
+        .to_util()
+        .get_failure_detail()
+        .expect("a DetailedExitCode of a FailureDetail")
+        .clone()
 }
 
 /// `ExternalDepsException.getDetailedExitCode().getFailureDetail()`.

@@ -1,0 +1,2 @@
+SYNTAX err_parse_dot_ident.star:1:6: syntax error at '0.1': expected newline
+SYNTAX err_parse_dot_ident.star:1:5: name 'a' is not defined

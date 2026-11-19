@@ -1,0 +1,304 @@
+#!/usr/bin/env python3
+"""Compare configuration behaviour between the oracle (Bazel 9.3.2) and Blaze. See `help`."""
+
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+USAGE = """\
+usage: scripts/config/compare --binary <blaze> [--oracle <bazel>] [--case ID]... [--label NAME]
+                              [--skip-oracle]
+       scripts/config/compare list
+       scripts/config/compare help
+
+Runs a fixed list of commands (see `list`) on the probe workspace scripts/config/probe with the
+oracle and with Blaze. Each side has its own copy of the workspace
+(~/.cache/blaze/work/config-compare/<side>, rsync of the probe; a case may replace files of the
+copy, see `files` in the case list, and they are restored after the case) and its own output
+user root (~/.cache/blaze/oracle-out/config-compare-<side>), a clean environment (HOME,
+PATH=/usr/bin:/bin), --nohome_rc --nosystem_rc, the shared repository cache, --color=no
+--curses=no, under systemd-run --user --scope -p MemoryMax=12G -p MemorySwapMax=0. Both sides
+run the same cases in the same order from a fresh output root. The oracle keeps its server
+between cases; its "discarding analysis cache" warning has no counterpart in Blaze (one command
+per process) and is dropped before comparing.
+
+Compared per case (after normalising the workspace path, the output user root and the output
+base hash):
+  exit     the exit code
+  stdout   the command's standard output (cquery, aquery, config output)
+  summary  the stderr lines starting with ERROR:, WARNING:, DEBUG:, "INFO: Build completed",
+           "INFO: Build did NOT", "INFO: ToolchainResolution", "INFO: Target ", with the
+           continuation lines of multi-line ERROR/WARNING/DEBUG/toolchain-resolution events
+
+Output: a table on stdout; raw and normalised outputs under
+~/.cache/blaze/config-compare/<label>/<side>/<case>.{stdout,stderr,norm.json}, and
+results.json. Exit 0 when every compared field matches, 1 otherwise.
+--skip-oracle reuses the oracle outputs of an earlier run with the same --label.
+"""
+
+HOME = os.path.expanduser("~")
+CACHE = os.path.join(HOME, ".cache", "blaze")
+ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+REPO_CACHE = os.path.join(CACHE, "repo-cache")
+PROBE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe")
+TIMEOUT = 1800
+
+CQ = ["cquery", "//pkg:all"]
+LK = ["--output=label_kind"]
+JP = ["--output=jsonproto"]
+
+# (id, description, command args, files {relative path: content or None to delete})
+CASES = [
+    # Platform mappings (PlatformMappingFunction.parse, PlatformMappingValue.computeMapping).
+    ("pm-platforms", "platform mapping platforms: -> flags", CQ + ["--platforms=//plat:p1"] + LK, {}),
+    ("pm-platforms-json", "platform mapping platforms: -> flags (jsonproto)",
+     CQ + ["--platforms=//plat:p1"] + JP, {}),
+    ("pm-flags", "platform mapping flags: -> platform", CQ + ["--//flags:fast"] + LK, {}),
+    ("pm-flags-json", "platform mapping flags: -> platform (jsonproto)",
+     CQ + ["--//flags:fast"] + JP, {}),
+    ("pm-none", "no mapping matches", CQ + LK, {}),
+    ("pm-explicit-missing", "--platform_mappings names a missing file",
+     CQ + ["--platform_mappings=nope"] + LK, {}),
+    ("pm-dir", "--platform_mappings names a directory",
+     CQ + ["--platform_mappings=pkg"] + LK, {}),
+    ("pm-bad-header", "mapping file without platforms:/flags:",
+     CQ + LK, {"platform_mappings": "//plat:p1\n  --cpu=k8\n"}),
+    ("pm-bad-label", "mapping file with a bad platform label",
+     CQ + LK, {"platform_mappings": "platforms:\n  //plat:p1:bad\n    --cpu=k8\n"}),
+    ("pm-no-flags", "mapping file with a platform without flags",
+     CQ + LK, {"platform_mappings": "platforms:\n  //plat:p1\n  //plat:p2\n    --cpu=k8\n"}),
+    ("pm-dup-platform", "mapping file with a duplicate platform",
+     CQ + LK, {"platform_mappings": "platforms:\n  //plat:p1\n    --cpu=k8\n  //plat:p1\n    --cpu=k9\n"}),
+    ("pm-bad-flag", "mapping file with an unknown native flag",
+     CQ + ["--platforms=//plat:p1"] + LK,
+     {"platform_mappings": "platforms:\n  //plat:p1\n    --no_such_flag=1\n"}),
+    ("pm-bad-starlark-flag", "mapping file with an unknown Starlark flag",
+     CQ + ["--platforms=//plat:p1"] + LK,
+     {"platform_mappings": "platforms:\n  //plat:p1\n    --//flags:nope=1\n"}),
+    ("pm-trailing", "mapping file with trailing garbage",
+     CQ + LK, {"platform_mappings": "flags:\n  --cpu=k8\n  //plat:p1\nfoo\n"}),
+    # Platform-based flags (platform(flags = ...), ParsedFlagsValue.mergeWith).
+    ("pf-flags", "platform with flags", CQ + ["--platforms=//plat:p2"] + LK, {}),
+    ("pf-flags-json", "platform with flags (jsonproto)", CQ + ["--platforms=//plat:p2"] + JP, {}),
+    ("pf-reset", "platform flags resetting a Starlark flag to its default",
+     CQ + ["--platforms=//plat:p_default_reset", "--//flags:color=green"] + JP, {}),
+    ("pf-bad-flag", "platform with an unknown flag",
+     CQ + ["--platforms=//plat:p_bad_flag"] + LK, {}),
+    ("pf-transitions", "platform with flags, --transitions=full",
+     ["cquery", "//pkg:b", "--platforms=//plat:p2", "--transitions=full"], {}),
+    # --toolchain_resolution_debug (ToolchainResolutionDebugPrinter,
+    # SingleToolchainResolutionDebugPrinter).
+    ("tcd-red", "toolchain resolution debug, red target platform",
+     ["cquery", "//tc:user", "--platforms=//tc:red_platform", "--toolchain_resolution_debug=.*"]
+     + LK, {}),
+    ("tcd-blue", "toolchain resolution debug, blue target platform (red toolchain rejected)",
+     ["cquery", "//tc:user", "--platforms=//tc:blue_platform",
+      "--toolchain_resolution_debug=//tc:type"] + LK, {}),
+    ("tcd-target", "toolchain resolution debug matching the target",
+     ["cquery", "//tc:user", "--toolchain_resolution_debug=//tc:user"] + LK, {}),
+    ("tcd-exec-constraint", "toolchain resolution debug, an exec platform removed by a constraint",
+     ["cquery", "//tc:user_red_exec", "--toolchain_resolution_debug=.*",
+      "--extra_execution_platforms=//tc:red_platform,//tc:blue_platform"] + LK, {}),
+    # Flag scoping (BuildOptionsScopeFunction.findProjectFiles, ProjectFunction): a transition
+    # sets a project-scoped flag in scope, one out of scope and a universal one.
+    ("scope-transition", "project-scoped flags set by a transition",
+     ["cquery", "deps(//scope/user:top)"] + JP, {}),
+    # --target_environment (TopLevelConstraintSemantics.checkTargetEnvironmentRestrictions).
+    ("env-ok", "--target_environment satisfied",
+     ["build", "//env:all", "--nobuild", "--target_environment=//env:a"], {}),
+    ("env-missing", "--target_environment not supported by some targets",
+     ["build", "//env:all", "--nobuild", "--target_environment=//env:b"], {}),
+    ("env-missing-two", "two --target_environment values",
+     ["build", "//env:all", "--nobuild", "--target_environment=//env:b",
+      "--target_environment=//env:c"], {}),
+    ("env-invalid", "--target_environment names a non-environment",
+     ["build", "//env:all", "--nobuild", "--target_environment=//pkg:a"], {}),
+    ("env-no-target", "--target_environment names a missing target",
+     ["build", "//env:all", "--nobuild", "--target_environment=//env:nope"], {}),
+    ("env-not-enforced", "--target_environment with --noenforce_constraints",
+     ["build", "//env:all", "--nobuild", "--target_environment=//env:b",
+      "--noenforce_constraints"], {}),
+    ("scope-transition-lk", "project-scoped flags set by a transition (label_kind)",
+     ["cquery", "deps(//scope/user:top)"] + LK, {}),
+]
+
+
+def clean_env():
+    return {"HOME": HOME, "PATH": "/usr/bin:/bin"}
+
+
+def make_writable_and_remove(path):
+    if not os.path.lexists(path):
+        return
+    subprocess.run(["chmod", "-R", "u+w", path], stderr=subprocess.DEVNULL)
+    shutil.rmtree(path, ignore_errors=True)
+    if os.path.lexists(path):
+        subprocess.run(["rm", "-rf", path])
+
+
+SUMMARY_RE = re.compile(
+    r"^(ERROR:|WARNING:|DEBUG:|INFO: Build completed|INFO: Build did NOT|INFO: ToolchainResolution|"
+    r"INFO: Target |FAILED:|\s+ToolchainResolution:)")
+
+
+def normaliser(ws, root):
+    output_base = os.path.join(root, hashlib.md5(ws.encode()).hexdigest())
+
+    def norm(text):
+        text = text.replace(output_base, "<OUTPUT_BASE>")
+        text = text.replace(root, "<OUTPUT_USER_ROOT>")
+        text = text.replace(ws, "<WORKSPACE>")
+        return text
+    return norm
+
+
+CONTINUATION_STOP_RE = re.compile(
+    r"^(INFO:|ERROR:|WARNING:|DEBUG:|Loading|Analyzing|Computing|Starting|Extracting|FAILED:)")
+
+
+def summary_lines(stderr):
+    """The summary lines, each with its continuation lines (the lines of a multi-line event up to
+    the next event or progress line)."""
+    out = []
+    in_event = False
+    for line in stderr.splitlines():
+        if SUMMARY_RE.match(line) and "discarding analysis cache" not in line:
+            out.append(line)
+            in_event = line.startswith(("ERROR:", "WARNING:", "DEBUG:", "INFO: ToolchainResolution"))
+        elif in_event and not CONTINUATION_STOP_RE.match(line):
+            out.append(line)
+        else:
+            in_event = False
+    return out
+
+
+def run_side(side, binary, cases, out_dir):
+    ws = os.path.join(CACHE, "work", "config-compare", side)
+    root = os.path.join(CACHE, "oracle-out", "config-compare-" + side)
+    subprocess.run([binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc",
+                    "shutdown"], cwd=HOME, env=clean_env(), stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+    make_writable_and_remove(ws)
+    make_writable_and_remove(os.path.join(root, hashlib.md5(ws.encode()).hexdigest()))
+    os.makedirs(ws)
+    subprocess.run(["rsync", "-a", "--delete", PROBE_DIR + "/", ws + "/"], check=True)
+    norm = normaliser(ws, root)
+    os.makedirs(out_dir, exist_ok=True)
+    results = {}
+    for (cid, _desc, args, files) in cases:
+        saved = {}
+        for rel, content in files.items():
+            path = os.path.join(ws, rel)
+            saved[rel] = open(path, "rb").read() if os.path.exists(path) else None
+            if content is None:
+                if os.path.exists(path):
+                    os.remove(path)
+            else:
+                with open(path, "w") as f:
+                    f.write(content)
+        cmd = [binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc"]
+        cmd += [args[0], "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"]
+        cmd += args[1:]
+        env_args = ["%s=%s" % kv for kv in clean_env().items()]
+        scoped = ["systemd-run", "--user", "--scope", "--collect", "--quiet",
+                  "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0", "--",
+                  "env", "-i"] + env_args + cmd
+        print("[config-compare] %s %s" % (side, cid), flush=True)
+        t0 = time.monotonic()
+        try:
+            p = subprocess.run(scoped, cwd=ws, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               timeout=TIMEOUT)
+            rc, out, err = p.returncode, p.stdout, p.stderr
+        except subprocess.TimeoutExpired as e:
+            rc, out, err = -9, e.stdout or b"", (e.stderr or b"") + b"\n[compare] timed out\n"
+        dur = round(time.monotonic() - t0, 1)
+        for rel, content in saved.items():
+            path = os.path.join(ws, rel)
+            if content is None:
+                if os.path.exists(path):
+                    os.remove(path)
+            else:
+                with open(path, "wb") as f:
+                    f.write(content)
+        with open(os.path.join(out_dir, cid + ".stdout"), "wb") as f:
+            f.write(out)
+        with open(os.path.join(out_dir, cid + ".stderr"), "wb") as f:
+            f.write(err)
+        rec = {
+            "argv": cmd, "duration_s": dur, "exit": rc,
+            "stdout": norm(out.decode("latin-1")),
+            "summary": summary_lines(norm(err.decode("latin-1"))),
+        }
+        results[cid] = rec
+        with open(os.path.join(out_dir, cid + ".norm.json"), "w") as f:
+            json.dump(rec, f, indent=1)
+        print("[config-compare]   exit %d in %.1fs" % (rc, dur), flush=True)
+    subprocess.run([binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc",
+                    "shutdown"], cwd=ws, env=clean_env(), stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+    return results
+
+
+def main(argv):
+    if not argv or argv[0] in ("help", "--help", "-h"):
+        print(USAGE)
+        return 0
+    if argv[0] == "list":
+        for (cid, desc, args, files) in CASES:
+            print("%-22s %s\n%22s   %s%s" % (cid, desc, "", " ".join(args),
+                                              "  files: " + ", ".join(files) if files else ""))
+        return 0
+    binary = None
+    oracle = ORACLE
+    only = []
+    label = "default"
+    skip_oracle = False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--binary":
+            binary = os.path.abspath(argv[i + 1]); i += 2
+        elif a == "--oracle":
+            oracle = os.path.abspath(argv[i + 1]); i += 2
+        elif a == "--case":
+            only.append(argv[i + 1]); i += 2
+        elif a == "--label":
+            label = argv[i + 1]; i += 2
+        elif a == "--skip-oracle":
+            skip_oracle = True; i += 1
+        else:
+            print("unknown argument: " + a, file=sys.stderr)
+            return 2
+    if binary is None:
+        print("--binary is required", file=sys.stderr)
+        return 2
+    cases = [c for c in CASES if not only or c[0] in only]
+    base = os.path.join(CACHE, "config-compare", label)
+    if skip_oracle:
+        oracle_results = json.load(open(os.path.join(base, "results.json")))["oracle"]
+    else:
+        oracle_results = run_side("oracle", oracle, cases, os.path.join(base, "oracle"))
+    blaze_results = run_side("blaze", binary, cases, os.path.join(base, "blaze"))
+    table = {}
+    ok = True
+    for (cid, _d, _a, _f) in cases:
+        o, b = oracle_results.get(cid, {}), blaze_results[cid]
+        row = {f: ("MATCH" if o.get(f) == b.get(f) else "DIFF") for f in ("exit", "stdout", "summary")}
+        ok = ok and all(v == "MATCH" for v in row.values())
+        table[cid] = row
+        print("%-22s %s" % (cid, "  ".join("%s=%s" % kv for kv in row.items())))
+    with open(os.path.join(base, "results.json"), "w") as f:
+        json.dump({"oracle": oracle_results, "blaze": blaze_results, "table": table}, f, indent=1)
+    n = sum(1 for r in table.values() if all(v == "MATCH" for v in r.values()))
+    print("%d of %d cases match" % (n, len(table)))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

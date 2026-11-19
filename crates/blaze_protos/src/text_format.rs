@@ -695,11 +695,11 @@ impl<'a> Tokenizer<'a> {
     /// If the next token is a string, consume it and return its (unescaped) value. Otherwise,
     /// throw a [`ParseException`].
     ///
-    /// PORT: `ByteString.toStringUtf8()` replaces malformed UTF-8 with U+FFFD per maximal
-    /// subpart, as `String::from_utf8_lossy` does.
+    /// `ByteString.toStringUtf8()` is `new String(bytes, UTF_8)`: malformed UTF-8 is replaced
+    /// by the JDK decoder's rules ([`crate::java::new_string_utf8`]).
     // Java: com/google/protobuf/TextFormat.java:1615 TextFormat.Tokenizer.consumeString
     fn consume_string(&mut self) -> Result<String, ParseException> {
-        Ok(String::from_utf8_lossy(&self.consume_byte_string()?).into_owned())
+        Ok(crate::java::new_string_utf8(&self.consume_byte_string()?))
     }
 
     /// If the next token is a string, consume it, unescape it as bytes, and return it.
@@ -1726,7 +1726,8 @@ pub fn unescape_bytes(char_string: &str) -> Result<Vec<u8>, InvalidEscapeSequenc
 /// Like [`unescape_bytes`], but for text: the result as UTF-8 (`ByteString.toStringUtf8`).
 // Java: com/google/protobuf/TextFormat.java:2951 TextFormat.unescapeText
 pub fn unescape_text(input: &str) -> Result<String, InvalidEscapeSequenceException> {
-    Ok(String::from_utf8_lossy(&unescape_bytes(input)?).into_owned())
+    // `ByteString.toStringUtf8()`: `new String(bytes, UTF_8)`.
+    Ok(crate::java::new_string_utf8(&unescape_bytes(input)?))
 }
 
 /// Is this an octal digit?

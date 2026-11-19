@@ -1,0 +1,5 @@
+EVAL for union argument got value of type 'int', want a collection of hashable elements
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_set_union_type.star", line 1, column 12, in <toplevel>
+TRACE \x09\x09set().union(1)
+TRACE Error in union: for union argument got value of type 'int', want a collection of hashable elements

@@ -1,0 +1,5 @@
+EVAL index out of range (index is -3, but sequence has 2 elements)
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_ix_list_neg_out_of_range.star", line 1, column 11, in <toplevel>
+TRACE \x09\x09x = [1, 2][-3]
+TRACE Error: index out of range (index is -3, but sequence has 2 elements)

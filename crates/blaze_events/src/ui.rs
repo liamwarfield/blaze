@@ -2,12 +2,13 @@
 //! `lib/runtime/UiEventHandler`, `lib/runtime/LocationPrinter`, and the `--color=no` stripping
 //! that `BlazeCommandDispatcher` puts in front of the UI.
 //!
-//! The seam: everything that needs the progress bar (`UiStateTracker`, the update thread, the
-//! `@Subscribe` build-event methods, curses redraws) is not ported. Where the Java would consult
-//! the state tracker, the code calls `unported!`, so it fails loudly instead of guessing. With
-//! `--noshow_progress` or without cursor control (the default when not on a tty) the event path
-//! runs completely. [`UiEventHandler::set_build_running`] stands in for the build-event
-//! subscribers that flip `buildRunning` until they are ported.
+//! The progress bar: the state tracker (`UiStateTracker` / `SkymeldUiStateTracker`) lives in
+//! `blaze_buildtool` (it reads actions and test summaries) and is reached through
+//! [`UiStateTrackerView`]; the refresh logic, the update thread, curses redraws and the
+//! `@Subscribe` methods that only touch the handler and the tracker are here. The subscriber that
+//! unpacks the build's events is `blaze_buildtool::runtime::ui_event_subscriber`. A handler made
+//! without a tracker (`UiEventHandler::new`, before `set_state_tracker`) fails loudly where Java
+//! would consult the tracker.
 //!
 //! Formatting facts from the Java:
 //! - An event prints as `<timestamp?><colour>KIND: <reset><location>: <message>` and then a
@@ -22,7 +23,8 @@
 
 use std::io;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::{OnceLock, Weak};
 
 use blaze_util::{check_argument, unported};
 use parking_lot::{Mutex, RwLock};
@@ -32,7 +34,10 @@ use crate::event_kind::{EventKind, EventKindSet};
 use crate::handler::EventHandler;
 use crate::io::{AnsiStrippingOutputStream, ByteArrayOutputStream, OutErr, OutputStream};
 use crate::location::Location;
-use crate::terminal::{AnsiTerminal, Color};
+use crate::terminal::{AnsiTerminal, AnsiTerminalWriter, Color};
+use crate::terminal_writers::{
+    LineCountingAnsiTerminalWriter, LineWrappingAnsiTerminalWriter, LoggingTerminalWriter,
+};
 
 /// Port of `com.google.devtools.build.lib.clock.Clock`.
 ///
@@ -57,9 +62,24 @@ impl Clock for JavaClock {
     }
 
     fn nano_time(&self) -> i64 {
-        static START: std::sync::LazyLock<std::time::Instant> =
-            std::sync::LazyLock::new(std::time::Instant::now);
-        START.elapsed().as_nanos() as i64
+        nano_time_of(std::time::Instant::now())
+    }
+}
+
+/// The origin of [`JavaClock::nano_time`] (Java's `System.nanoTime()` has an arbitrary origin).
+static NANO_TIME_ORIGIN: std::sync::LazyLock<std::time::Instant> =
+    std::sync::LazyLock::new(std::time::Instant::now);
+
+/// The [`JavaClock::nano_time`] value of an `Instant`: events that carry an `Instant` where Java
+/// carries a `BlazeClock.nanoTime()` value convert with this.
+///
+/// PORT: Blaze-only, see [`JavaClock`].
+pub fn nano_time_of(instant: std::time::Instant) -> i64 {
+    let origin = *NANO_TIME_ORIGIN;
+    if instant >= origin {
+        instant.duration_since(origin).as_nanos() as i64
+    } else {
+        -(origin.duration_since(instant).as_nanos() as i64)
     }
 }
 
@@ -368,6 +388,14 @@ pub struct UiEventHandlerOptions {
     /// `UiOptions.getFilteredEventKinds()`.
     pub filtered_event_kinds: EventKindSet,
     pub max_stdout_err_bytes: i32,
+    /// `--show_progress_rate_limit` (seconds).
+    pub show_progress_rate_limit: f64,
+    /// `--terminal_columns`.
+    pub terminal_columns: i32,
+    /// `--progress_in_terminal_title`.
+    pub progress_in_term_title: bool,
+    /// `--ui_actions_shown`.
+    pub ui_actions_shown: i32,
 }
 
 impl Default for UiEventHandlerOptions {
@@ -380,8 +408,63 @@ impl Default for UiEventHandlerOptions {
             attempt_to_print_relative_paths: false,
             filtered_event_kinds: EventKindSet::EMPTY,
             max_stdout_err_bytes: 1048576,
+            show_progress_rate_limit: 0.2,
+            terminal_columns: 80,
+            progress_in_term_title: false,
+            ui_actions_shown: 8,
         }
     }
+}
+
+/// What `UiEventHandler` asks of its state tracker (`UiStateTracker` /
+/// `SkymeldUiStateTracker`, ported in `blaze_buildtool`).
+// Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:84 UiStateTracker
+pub trait UiStateTrackerView: Send + Sync {
+    /// `writeProgressBar(terminalWriter, shortVersion, timestamp)`.
+    fn write_progress_bar(
+        &self,
+        terminal_writer: &mut dyn AnsiTerminalWriter,
+        short_version: bool,
+        timestamp: Option<&str>,
+    ) -> io::Result<()>;
+    /// `hasActivities()`.
+    fn has_activities(&self) -> bool;
+    /// `progressBarTimeDependent()`.
+    fn progress_bar_time_dependent(&self) -> bool;
+    /// `setTargetWidth(targetWidth)`.
+    fn set_target_width(&self, target_width: i32);
+    /// `setBuildComplete()`.
+    fn set_build_complete(&self);
+    /// `buildComplete(event)`; `success` is `event.getResult().getSuccess()`.
+    fn build_complete(&self, success: bool) -> Event;
+    /// `analysisComplete()`.
+    fn analysis_complete(&self) -> String;
+    /// `mainRepoMappingComputationStarted()`.
+    fn main_repo_mapping_computation_started(&self);
+    /// `buildStarted()`.
+    fn build_started(&self);
+}
+
+/// Minimal time between scheduled updates
+// Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:96 UiEventHandler.MINIMAL_UPDATE_INTERVAL_MILLIS
+const MINIMAL_UPDATE_INTERVAL_MILLIS: i64 = 200;
+
+/// Minimal rate limiting (in ms), if the progress bar cannot be updated in place
+// Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:99 UiEventHandler.NO_CURSES_MINIMAL_PROGRESS_RATE_LIMIT
+const NO_CURSES_MINIMAL_PROGRESS_RATE_LIMIT: i64 = 1000;
+
+/// Periodic update interval of a time-dependent progress bar if it can be updated in place
+// Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:102 UiEventHandler.SHORT_REFRESH_MILLIS
+const SHORT_REFRESH_MILLIS: i64 = 1000;
+
+// Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:261 UiEventHandler.normalizeTerminalWidth
+fn normalize_terminal_width(columns: i32) -> i32 {
+    if columns > 0 { columns } else { 80 }
+}
+
+/// Java `Math.round(double)`: floor(x + 0.5).
+fn java_math_round(x: f64) -> i64 {
+    (x + 0.5).floor() as i64
 }
 
 /// An output stream that wraps another output stream and that fully buffers writes until
@@ -418,6 +501,7 @@ struct UiState {
     num_lines_progress_bar: i32,
     stdout_line_buffer: Vec<u8>,
     stderr_line_buffer: Vec<u8>,
+    terminal_width: i32,
 }
 
 /// Presents events to the user in the terminal. Port of the event path of `UiEventHandler`; see
@@ -437,11 +521,25 @@ pub struct UiEventHandler {
     shutdown: AtomicBool,
     max_stdout_err_bytes: i32,
     state: Mutex<UiState>,
+    /// `stateTracker`; `None` until [`UiEventHandler::set_state_tracker`].
+    state_tracker: RwLock<Option<Arc<dyn UiStateTrackerView>>>,
+    progress_in_term_title: bool,
+    progress_rate_limit_millis: i64,
+    minimal_update_interval: i64,
+    last_refresh_millis: AtomicI64,
+    must_refresh_after_millis: AtomicI64,
+    progress_bar_needs_refresh: AtomicBool,
+    update_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    update_lock: Mutex<()>,
+    /// The `Arc` this handler lives in, for the update thread.
+    weak_self: OnceLock<Weak<UiEventHandler>>,
 }
 
 impl UiEventHandler {
-    /// PORT: Java also takes the `EventBus`, skymeld mode, `newStatsSummary` and a
-    /// `TerminalSizeMonitor`; they only feed the progress bar, which is not ported.
+    /// PORT: Java also takes the `EventBus` (only for `crash`), skymeld mode and
+    /// `newStatsSummary`, which choose and configure the state tracker: the caller creates the
+    /// tracker (`blaze_buildtool`) and hands it over with [`UiEventHandler::set_state_tracker`].
+    /// The `TerminalSizeMonitor` is not ported (the terminal width is `--terminal_columns`).
     // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:198 UiEventHandler.UiEventHandler
     pub fn new(
         out_err: OutErr,
@@ -460,9 +558,16 @@ impl UiEventHandler {
                 wrapped: out_err.get_error_stream().clone(),
             }),
         );
-        UiEventHandler {
+        let cursor_control = options.use_cursor_control;
+        let progress_rate_limit_millis = if cursor_control {
+            java_math_round(options.show_progress_rate_limit * 1000.0)
+        } else {
+            java_math_round(options.show_progress_rate_limit * 1000.0)
+                .max(NO_CURSES_MINIMAL_PROGRESS_RATE_LIMIT)
+        };
+        let handler = UiEventHandler {
             quiet,
-            cursor_control: options.use_cursor_control,
+            cursor_control,
             terminal: AnsiTerminal::new(out_err.get_error_stream().clone()),
             show_timestamp: options.show_timestamp,
             clock,
@@ -482,15 +587,215 @@ impl UiEventHandler {
                 num_lines_progress_bar: 0,
                 stdout_line_buffer: Vec::new(),
                 stderr_line_buffer: Vec::new(),
+                terminal_width: normalize_terminal_width(options.terminal_columns),
             }),
+            state_tracker: RwLock::new(None),
+            progress_in_term_title: options.progress_in_term_title && cursor_control,
+            progress_rate_limit_millis,
+            minimal_update_interval: progress_rate_limit_millis.max(MINIMAL_UPDATE_INTERVAL_MILLIS),
+            last_refresh_millis: AtomicI64::new(0),
+            must_refresh_after_millis: AtomicI64::new(0),
+            progress_bar_needs_refresh: AtomicBool::new(false),
+            update_thread: Mutex::new(None),
+            update_lock: Mutex::new(()),
+            weak_self: OnceLock::new(),
+        };
+        // The progress bar has not been updated yet.
+        handler.ignore_refresh_limit_once();
+        handler
+    }
+
+    /// The state tracker of the constructor (`cursorControl ? new ...(clock, targetWidth) : new
+    /// ...(clock)`, `setProgressSampleSize(uiActionsShown)`), made by the caller: the target width
+    /// it must be created with is [`UiEventHandler::get_progress_target_width`] with cursor
+    /// control and 0 without. Also records the `Arc` the handler lives in (the update thread
+    /// needs it).
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:241 UiEventHandler.UiEventHandler
+    pub fn set_state_tracker(self: &Arc<Self>, state_tracker: Arc<dyn UiStateTrackerView>) {
+        let _ = self.weak_self.set(Arc::downgrade(self));
+        *self.state_tracker.write() = Some(state_tracker);
+    }
+
+    fn state_tracker(&self, method: &str) -> Arc<dyn UiStateTrackerView> {
+        match self.state_tracker.read().clone() {
+            Some(tracker) => tracker,
+            None => unported!(method, "UiEventHandler without a UiStateTracker"),
         }
     }
 
-    /// Seam: sets `buildRunning` the way the unported `@Subscribe` methods do
-    /// (`mainRepoMappingComputationStarted`, `noBuild`, `buildComplete`, ...). Remove once those
-    /// methods are ported.
+    /// Whether the progress bar wraps at the terminal width (cursor control).
+    pub fn cursor_control(&self) -> bool {
+        self.cursor_control
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:265 UiEventHandler.getProgressTargetWidth
+    pub fn get_progress_target_width(&self) -> i32 {
+        0.max(self.state.lock().terminal_width - 2)
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:269 UiEventHandler.getWrappingWidth
+    fn get_wrapping_width(&self, st: &UiState) -> i32 {
+        1.max(st.terminal_width - 1)
+    }
+
+    /// Seam: sets `buildRunning` directly (tests, and callers that stand in for an unported
+    /// `@Subscribe` method such as `noBuild`).
     pub fn set_build_running(&self, build_running: bool) {
         self.state.lock().build_running = build_running;
+    }
+
+    /// `@Subscribe mainRepoMappingComputationStarted(MainRepoMappingComputationStartingEvent)`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:644 UiEventHandler.mainRepoMappingComputationStarted
+    pub fn main_repo_mapping_computation_started(&self) {
+        {
+            let mut st = self.state.lock();
+            st.build_running = true;
+            self.maybe_add_date(&mut st);
+        }
+        self.state_tracker("UiStateTracker.mainRepoMappingComputationStarted")
+            .main_repo_mapping_computation_started();
+        // As a new phase started, inform immediately.
+        self.ignore_refresh_limit_once();
+        self.refresh(None);
+        self.start_update_thread();
+    }
+
+    /// `@Subscribe buildStarted(BuildStartingEvent)`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:656 UiEventHandler.buildStarted
+    pub fn build_started(&self) {
+        self.maybe_add_date(&mut self.state.lock());
+        self.state_tracker("UiStateTracker.buildStarted")
+            .build_started();
+        // As a new phase started, inform immediately.
+        self.ignore_refresh_limit_once();
+        self.refresh(None);
+    }
+
+    /// `@Subscribe analysisComplete(AnalysisPhaseCompleteEvent)`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:692 UiEventHandler.analysisComplete
+    pub fn analysis_complete(&self) {
+        let mut st = self.state.lock();
+        let analysis_summary = self
+            .state_tracker("UiStateTracker.analysisComplete")
+            .analysis_complete();
+        self.handle_with_state(&Event::info(analysis_summary), Some(&mut st));
+    }
+
+    /// `@Subscribe buildComplete(BuildCompleteEvent)`; `success` is
+    /// `event.getResult().getSuccess()`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:715 UiEventHandler.buildComplete
+    pub fn build_complete(&self, success: bool) {
+        // The final progress bar will flow into the scroll-back buffer, to if treat
+        // it as an event and add a timestamp, if events are supposed to have a timestamp.
+        let tracker = self.state_tracker("UiStateTracker.buildComplete");
+        let mut done = false;
+        {
+            let mut st = self.state.lock();
+            let event = tracker.build_complete(success);
+            self.handle_internal(&event, Some(&mut st));
+            self.ignore_refresh_limit_once();
+
+            // After a build has completed, only stop updating the UI if there is no more
+            // activities.
+            if !tracker.has_activities() {
+                st.build_running = false;
+                done = true;
+            }
+
+            // Only refresh after we have determined whether we need to keep the progress bar
+            // up.
+            self.refresh(Some(&mut st));
+        }
+        if done {
+            self.stop_update_thread();
+            self.flush_std_out_std_err_buffers(&mut self.state.lock());
+        }
+    }
+
+    /// The scroll-back text of `@Subscribe testSummary(TestSummary)` for a summary that
+    /// provides new information (`testSummaryProvidesNewInformation`): `status` is
+    /// `summary.getStatus()`'s name, `flaky` whether it is `FLAKY`, `failed_logs` the paths of
+    /// `summary.getFailedLogs()`. The caller has told the state tracker (`testSummary`); a
+    /// summary without new information only refreshes ([`UiEventHandler::refresh_progress`]).
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:935 UiEventHandler.testSummary
+    pub fn test_summary_new_information(
+        &self,
+        status: &str,
+        flaky: bool,
+        label: &str,
+        failed_logs: &[String],
+    ) {
+        let mut st = self.state.lock();
+        // For failed test, write the failure to the scroll-back buffer immediately
+        let result = (|| -> io::Result<()> {
+            self.clear_progress_bar(&mut st)?;
+            crlf(&self.terminal)?;
+            set_event_kind_color(
+                &self.terminal,
+                if flaky {
+                    EventKind::Warning
+                } else {
+                    EventKind::Error
+                },
+            )?;
+            self.terminal.write_string(&format!("{status}: "))?;
+            self.terminal.reset_terminal()?;
+            self.terminal.write_string(label)?;
+            self.terminal.write_string(" (Summary)")?;
+            crlf(&self.terminal)?;
+            for log_path in failed_logs {
+                self.terminal.write_string(&format!("      {log_path}"))?;
+                crlf(&self.terminal)?;
+            }
+            if st.show_progress && self.cursor_control {
+                self.add_progress_bar(&mut st)?;
+            }
+            self.terminal.flush()
+        })();
+        // PORT: Java logs "IO Error writing to output stream" at WARNING.
+        let _ = result;
+    }
+
+    /// `refresh()`, for the `@Subscribe` methods whose only effect on the handler is a refresh
+    /// (`loadingComplete`, `executionPhaseStarted`, `actionStarted`, the action phase events,
+    /// `testFilteringComplete`, and `testSummary` without new information).
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:990 UiEventHandler.refresh
+    pub fn refresh_progress(&self) {
+        self.refresh(None);
+    }
+
+    /// `refreshSoon()`, for the `@Subscribe` methods that schedule a refresh (`actionProgress`,
+    /// `actionCompletion`, `singleTestAnalyzed`, `actionUploadStarted`).
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:1030 UiEventHandler.refreshSoon
+    pub fn refresh_soon(&self) {
+        // Schedule an update of the progress bar in the near future, unless there is already
+        // a future update scheduled.
+        let now_millis = self.clock.current_time_millis();
+        let last_refresh_millis = self.last_refresh_millis.load(Ordering::SeqCst);
+        if self.must_refresh_after_millis.load(Ordering::SeqCst) <= last_refresh_millis {
+            self.must_refresh_after_millis.store(
+                (now_millis + 1).max(last_refresh_millis + self.minimal_update_interval),
+                Ordering::SeqCst,
+            );
+        }
+        self.start_update_thread();
+    }
+
+    /// `checkActivities()`, for `downloadProgress` of a finished fetch, `actionUploadFinished`
+    /// and `buildEventTransportClosed`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:868 UiEventHandler.checkActivities
+    pub fn check_activities(&self) {
+        if self
+            .state_tracker("UiStateTracker.hasActivities")
+            .has_activities()
+        {
+            self.refresh_soon();
+        } else {
+            self.stop_update_thread();
+            self.flush_std_out_std_err_buffers(&mut self.state.lock());
+            self.ignore_refresh_limit_once();
+            self.refresh(None);
+        }
     }
 
     // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:772 UiEventHandler.packageLocatorCreated
@@ -682,13 +987,12 @@ impl UiEventHandler {
             | EventKind::Pass
             | EventKind::Timeout
             | EventKind::Depchecker) => {
-                if kind == EventKind::Progress {
-                    // Java: if (stateTracker.progressBarTimeDependent()) refresh();
-                    // PORT: refresh() only redraws when showProgress and buildRunning; otherwise
-                    // the answer cannot affect output.
-                    if st.show_progress && st.build_running {
-                        unported!("UiStateTracker.progressBarTimeDependent");
-                    }
+                if kind == EventKind::Progress
+                    && self
+                        .state_tracker("UiStateTracker.progressBarTimeDependent")
+                        .progress_bar_time_dependent()
+                {
+                    self.refresh(Some(st));
                 }
                 // Fall through.
                 if stdout.is_some() || stderr.is_some() {
@@ -864,14 +1168,204 @@ impl UiEventHandler {
 
     // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:738 UiEventHandler.completeBuild
     fn complete_build(&self) {
+        {
+            let mut st = self.state.lock();
+            if !st.build_running {
+                return;
+            }
+            st.build_running = false;
+            // Have to set this, otherwise there's a lingering "checking cached actions" message
+            // for the `mod` command, which doesn't even run any actions.
+            self.state_tracker("UiStateTracker.setBuildComplete")
+                .set_build_complete();
+        }
+        self.stop_update_thread();
         let mut st = self.state.lock();
-        if !st.build_running {
+        let result = (|| -> io::Result<()> {
+            // If a progress bar is currently present, clean it and redraw it.
+            let progress_bar_present = st.num_lines_progress_bar > 0;
+            if progress_bar_present {
+                self.clear_progress_bar(&mut st)?;
+            }
+            self.terminal.flush()?;
+            let incomplete_line = self.flush_std_out_std_err_buffers(&mut st);
+            if incomplete_line {
+                crlf(&self.terminal)?;
+            }
+            if progress_bar_present {
+                self.add_progress_bar(&mut st)?;
+            }
+            self.terminal.flush()
+        })();
+        // PORT: Java logs "IO Error writing to output stream" at WARNING.
+        let _ = result;
+    }
+
+    /// `@Subscribe noBuild(NoBuildEvent)`; `show_progress` is `event.showProgress()`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:777 UiEventHandler.noBuild
+    pub fn no_build(&self, show_progress: bool) {
+        if show_progress {
+            self.state.lock().build_running = true;
             return;
         }
-        st.build_running = false;
-        // Have to set this, otherwise there's a lingering "checking cached actions" message for
-        // the `mod` command, which doesn't even run any actions.
-        unported!("UiStateTracker.setBuildComplete");
+        self.complete_build();
+    }
+
+    /// `@Subscribe noBuildFinished(NoBuildRequestFinishedEvent)`.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:788 UiEventHandler.noBuildFinished
+    pub fn no_build_finished(&self) {
+        self.complete_build();
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:990 UiEventHandler.refresh
+    fn refresh(&self, held: Option<&mut UiState>) {
+        let show_progress = match &held {
+            Some(st) => st.show_progress,
+            None => self.state.lock().show_progress,
+        };
+        if show_progress {
+            self.progress_bar_needs_refresh
+                .store(true, Ordering::SeqCst);
+            self.do_refresh(held, false);
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:997 UiEventHandler.doRefresh
+    fn do_refresh(&self, held: Option<&mut UiState>, from_update_thread: bool) {
+        let build_running = match &held {
+            Some(st) => st.build_running,
+            None => self.state.lock().build_running,
+        };
+        if !build_running {
+            return;
+        }
+        let now_millis = self.clock.current_time_millis();
+        if self.last_refresh_millis.load(Ordering::SeqCst) + self.progress_rate_limit_millis
+            < now_millis
+        {
+            if let Some(_guard) = self.update_lock.try_lock() {
+                let run = |st: &mut UiState| -> io::Result<()> {
+                    if st.show_progress
+                        && (self.progress_bar_needs_refresh.load(Ordering::SeqCst)
+                            || self.time_based_refresh())
+                    {
+                        self.progress_bar_needs_refresh
+                            .store(false, Ordering::SeqCst);
+                        self.clear_progress_bar(st)?;
+                        self.add_progress_bar(st)?;
+                        self.terminal.flush()?;
+                    }
+                    Ok(())
+                };
+                let result = match held {
+                    Some(st) => run(st),
+                    None => run(&mut self.state.lock()),
+                };
+                // PORT: Java logs "IO Error writing to output stream" at WARNING.
+                let _ = result;
+            }
+        } else {
+            // We skipped an update due to rate limiting. If this however, turned
+            // out to be the last update for a long while, we need to show it in a
+            // timely manner, as it best describes the current state.
+            if !from_update_thread {
+                self.start_update_thread_with(build_running);
+            }
+        }
+    }
+
+    /// Decide whether the progress bar should be redrawn only for the reason that time has
+    /// passed.
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:1042 UiEventHandler.timeBasedRefresh
+    fn time_based_refresh(&self) -> bool {
+        if !self
+            .state_tracker("UiStateTracker.progressBarTimeDependent")
+            .progress_bar_time_dependent()
+        {
+            return false;
+        }
+        // Don't do more updates than are requested through events when there is no cursor
+        // control.
+        if !self.cursor_control {
+            return false;
+        }
+        let now_millis = self.clock.current_time_millis();
+        let last_refresh_millis = self.last_refresh_millis.load(Ordering::SeqCst);
+        let must_refresh_after_millis = self.must_refresh_after_millis.load(Ordering::SeqCst);
+        if last_refresh_millis < must_refresh_after_millis
+            && must_refresh_after_millis < now_millis + self.progress_rate_limit_millis
+        {
+            // Within a small interval from now, an update is scheduled anyway,
+            // so don't do a time-based update of the progress bar now, to avoid
+            // updates too close to each other.
+            return false;
+        }
+        last_refresh_millis + SHORT_REFRESH_MILLIS < now_millis
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:1062 UiEventHandler.ignoreRefreshLimitOnce
+    fn ignore_refresh_limit_once(&self) {
+        // Set refresh time variables in a state such that the next progress bar
+        // update will definitely be written out.
+        self.last_refresh_millis.store(
+            self.clock.current_time_millis() - self.progress_rate_limit_millis - 1,
+            Ordering::SeqCst,
+        );
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:1068 UiEventHandler.startUpdateThread
+    fn start_update_thread(&self) {
+        let build_running = self.state.lock().build_running;
+        self.start_update_thread_with(build_running);
+    }
+
+    /// `startUpdateThread()` with `buildRunning` read by the caller (which may hold the state
+    /// lock; Java's monitor is re-entrant).
+    fn start_update_thread_with(&self, build_running: bool) {
+        // Refuse to start an update thread once the build is complete; such a situation might
+        // arise if the completion of the build is reported (shortly) before the completion of
+        // the last action is reported.
+        let Some(this) = self.weak_self.get().and_then(Weak::upgrade) else {
+            // PORT: a handler that is not in an Arc (no state tracker set) has no update thread;
+            // without a tracker it never draws a progress bar.
+            return;
+        };
+        if !build_running {
+            return;
+        }
+        let mut update_thread = self.update_thread.lock();
+        if update_thread.is_some() {
+            return;
+        }
+        let weak = Arc::downgrade(&this);
+        drop(this);
+        let interval = std::time::Duration::from_millis(self.minimal_update_interval as u64);
+        let thread = std::thread::Builder::new()
+            .name("cli-update-thread".into())
+            .spawn(move || {
+                loop {
+                    std::thread::park_timeout(interval);
+                    let Some(handler) = weak.upgrade() else {
+                        return;
+                    };
+                    if handler.shutdown.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    let last_refresh_millis = handler.last_refresh_millis.load(Ordering::SeqCst);
+                    let must_refresh_after_millis =
+                        handler.must_refresh_after_millis.load(Ordering::SeqCst);
+                    if last_refresh_millis < must_refresh_after_millis
+                        && must_refresh_after_millis < handler.clock.current_time_millis()
+                    {
+                        handler
+                            .progress_bar_needs_refresh
+                            .store(true, Ordering::SeqCst);
+                    }
+                    handler.do_refresh(None, /* from_update_thread= */ true);
+                }
+            })
+            .expect("cli-update-thread");
+        *update_thread = Some(thread);
     }
 
     /// PORT: Java's `@Subscribe afterCommand(AfterCommandEvent)`; the event carries nothing the
@@ -889,13 +1383,23 @@ impl UiEventHandler {
         let _ = result;
     }
 
-    /// Stop the update thread and wait for it to terminate.
+    /// Stop the update thread and wait for it to terminate. As the update thread might have to
+    /// take the handler's state lock between being interrupted and terminating, DO NOT CALL with
+    /// the state lock held, as this will give the opportunity for dead locks.
     ///
-    /// PORT: the update thread only redraws the progress bar and is not ported, so there is no
-    /// thread to join.
+    /// If this is called from the update thread itself, ignore the interrupt/join, as it is
+    /// hopefully handling a FATAL, and should be terminating anyway.
     // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:1112 UiEventHandler.stopUpdateThread
     fn stop_update_thread(&self) {
         self.shutdown.store(true, Ordering::SeqCst);
+        let thread_to_wait_for = self.update_thread.lock().take();
+        // we could be second to wait here, or be the current thread, which would hang
+        if let Some(thread) = thread_to_wait_for
+            && thread.thread().id() != std::thread::current().id()
+        {
+            thread.thread().unpark();
+            let _ = thread.join();
+        }
     }
 
     // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:1122 UiEventHandler.clearProgressBar
@@ -913,11 +1417,49 @@ impl UiEventHandler {
     }
 
     // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:1139 UiEventHandler.addProgressBar
-    fn add_progress_bar(&self, _st: &mut UiState) -> io::Result<()> {
+    fn add_progress_bar(&self, st: &mut UiState) -> io::Result<()> {
         if self.quiet {
             return Ok(());
         }
-        unported!("UiStateTracker.writeProgressBar");
+
+        let tracker = self.state_tracker("UiStateTracker.writeProgressBar");
+        let mut counting_terminal_writer = LineCountingAnsiTerminalWriter::new(&self.terminal);
+        self.last_refresh_millis
+            .store(self.clock.current_time_millis(), Ordering::SeqCst);
+        let timestamp = if self.show_timestamp {
+            Some(format_timestamp(self.clock.current_time_millis()))
+        } else {
+            None
+        };
+        if tracker.has_activities() {
+            if self.cursor_control {
+                let wrapping_width = self.get_wrapping_width(st);
+                let mut terminal_writer = LineWrappingAnsiTerminalWriter::new(
+                    &mut counting_terminal_writer,
+                    wrapping_width,
+                );
+                tracker.write_progress_bar(
+                    &mut terminal_writer,
+                    /* short_version= */ !self.cursor_control,
+                    timestamp.as_deref(),
+                )?;
+                terminal_writer.newline()?;
+            } else {
+                tracker.write_progress_bar(
+                    &mut counting_terminal_writer,
+                    /* short_version= */ !self.cursor_control,
+                    timestamp.as_deref(),
+                )?;
+                counting_terminal_writer.newline()?;
+            }
+        }
+        st.num_lines_progress_bar = counting_terminal_writer.get_written_lines();
+        if self.progress_in_term_title {
+            let mut string_writer = LoggingTerminalWriter::new(true);
+            tracker.write_progress_bar(&mut string_writer, true, None)?;
+            self.terminal.set_title(string_writer.get_transcript())?;
+        }
+        Ok(())
     }
 }
 
@@ -1042,32 +1584,16 @@ mod tests {
     }
 
     // Java: src/test/java/com/google/devtools/build/lib/runtime/UiEventHandlerTest.java StdoutAndStderrTest.buildComplete_outputsBuildFailedOnStderr
-    stdout_and_stderr_test!(
-        #[ignore = "needs UiStateTracker.buildComplete (progress bar UI)"]
-        build_complete_outputs_build_failed_on_stderr,
-        |_| {}
-    );
+    // Moved to blaze_buildtool/tests/ui_event_handler_test.rs (needs the state tracker).
 
     // Java: src/test/java/com/google/devtools/build/lib/runtime/UiEventHandlerTest.java StdoutAndStderrTest.buildComplete_flushesBufferedMessage
-    stdout_and_stderr_test!(
-        #[ignore = "needs UiStateTracker.buildComplete (progress bar UI)"]
-        build_complete_flushes_buffered_message,
-        |_| {}
-    );
+    // Moved to blaze_buildtool/tests/ui_event_handler_test.rs (needs the state tracker).
 
     // Java: src/test/java/com/google/devtools/build/lib/runtime/UiEventHandlerTest.java StdoutAndStderrTest.buildComplete_successfulBuild
-    stdout_and_stderr_test!(
-        #[ignore = "needs UiStateTracker.buildComplete (progress bar UI)"]
-        build_complete_successful_build,
-        |_| {}
-    );
+    // Moved to blaze_buildtool/tests/ui_event_handler_test.rs (needs the state tracker).
 
     // Java: src/test/java/com/google/devtools/build/lib/runtime/UiEventHandlerTest.java StdoutAndStderrTest.buildComplete_emptyBuffer_outputsBuildFailedOnStderr
-    stdout_and_stderr_test!(
-        #[ignore = "needs UiStateTracker.buildComplete (progress bar UI)"]
-        build_complete_empty_buffer_outputs_build_failed_on_stderr,
-        |_| {}
-    );
+    // Moved to blaze_buildtool/tests/ui_event_handler_test.rs (needs the state tracker).
 
     // Java: src/test/java/com/google/devtools/build/lib/runtime/UiEventHandlerTest.java StdoutAndStderrTest.handleOutputEvent_buffersWithoutNewline
     stdout_and_stderr_test!(handle_output_event_buffers_without_newline, |kind| {
@@ -1077,11 +1603,7 @@ mod tests {
     });
 
     // Java: src/test/java/com/google/devtools/build/lib/runtime/UiEventHandlerTest.java StdoutAndStderrTest.handleOutputEvent_concatenatesInBuffer
-    stdout_and_stderr_test!(
-        #[ignore = "needs UiStateTracker.buildComplete (progress bar UI)"]
-        handle_output_event_concatenates_in_buffer,
-        |_| {}
-    );
+    // Moved to blaze_buildtool/tests/ui_event_handler_test.rs (needs the state tracker).
 
     // Java: src/test/java/com/google/devtools/build/lib/runtime/UiEventHandlerTest.java StdoutAndStderrTest.handleOutputEvent_flushesOnNewline
     stdout_and_stderr_test!(handle_output_event_flushes_on_newline, |kind| {
@@ -1126,11 +1648,7 @@ mod tests {
     );
 
     // Java: src/test/java/com/google/devtools/build/lib/runtime/UiEventHandlerTest.java StdoutAndStderrTest.noChangeOnUnflushedWrite
-    stdout_and_stderr_test!(
-        #[ignore = "needs UiStateTracker.writeProgressBar (curses progress bar)"]
-        no_change_on_unflushed_write,
-        |_| {}
-    );
+    // Moved to blaze_buildtool/tests/ui_event_handler_test.rs (needs the state tracker).
 
     // Java: src/test/java/com/google/devtools/build/lib/runtime/UiEventHandlerTest.java StdoutOnlyTest.handleOutputEvent_flushesRemainingLines
     #[test]
@@ -1144,19 +1662,13 @@ mod tests {
     }
 
     // Java: src/test/java/com/google/devtools/build/lib/runtime/UiEventHandlerTest.java StderrOnlyTest.buildCompleteMessageDoesntOverrideError
-    #[test]
-    #[ignore = "needs UiStateTracker (curses progress bar, buildComplete)"]
-    fn build_complete_message_doesnt_override_error() {}
+    // Moved to blaze_buildtool/tests/ui_event_handler_test.rs (needs the state tracker).
 
     // Java: src/test/java/com/google/devtools/build/lib/runtime/UiEventHandlerTest.java StderrOnlyTest.temporarilyDisableProgress
-    #[test]
-    #[ignore = "needs UiStateTracker and action events (progress bar)"]
-    fn temporarily_disable_progress() {}
+    // Moved to blaze_buildtool/tests/ui_event_handler_test.rs (needs the state tracker).
 
     // Java: src/test/java/com/google/devtools/build/lib/runtime/UiEventHandlerTest.java StderrOnlyTest.terminalSizeChangeRefreshesProgressBarWithNewWidth
-    #[test]
-    #[ignore = "needs TerminalSizeMonitor and UiStateTracker (progress bar)"]
-    fn terminal_size_change_refreshes_progress_bar_with_new_width() {}
+    // Moved to blaze_buildtool/tests/ui_event_handler_test.rs (needs the state tracker).
 
     // Java: src/test/java/com/google/devtools/build/lib/runtime/UiEventHandlerTest.java StderrOnlyTest.progressOff_disableProgressReturnsFalse
     #[test]

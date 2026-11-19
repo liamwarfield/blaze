@@ -1,0 +1,5 @@
+EVAL step cannot be 0
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_range_step_zero.star", line 1, column 6, in <toplevel>
+TRACE \x09\x09range(1, 2, 0)
+TRACE Error in range: step cannot be 0

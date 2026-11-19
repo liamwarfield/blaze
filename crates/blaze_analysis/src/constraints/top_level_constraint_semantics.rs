@@ -12,12 +12,20 @@ use blaze_cmdline::Label;
 use blaze_events::{Event, ExtendedEventHandler};
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail::Category};
 use indexmap::IndexSet;
+use std::sync::Arc;
+
+use blaze_packages::target::Target;
+use blaze_packages::target::environment_group::EnvironmentGroup;
 
 use crate::config::incompatible_platform_provider::{
     INCOMPATIBLE_PLATFORM_PROVIDER, IncompatiblePlatformProvider,
 };
 use crate::configured_target::ConfiguredTarget;
+use crate::constraints::environment_collection::EnvironmentCollectionBuilder;
 use crate::constraints::rule_context_constraint_semantics::RuleContextConstraintSemantics;
+use crate::constraints::supported_environments::{
+    RemovedEnvironmentCulprit, SupportedEnvironments,
+};
 use crate::info::downcast_info;
 use crate::platform::constraint_value_info::ConstraintValueInfo;
 
@@ -53,24 +61,84 @@ pub enum PlatformCompatibility {
     INCOMPATIBLE_EXPLICIT,
 }
 
+/// An expected environment a top-level target does not support.
+// Java: com/google/devtools/build/lib/analysis/constraints/TopLevelConstraintSemantics.java:91 TopLevelConstraintSemantics.MissingEnvironment
+#[derive(Clone, Debug)]
+pub struct MissingEnvironment {
+    environment: Label,
+    /// If null, the top-level target just didn't declare a required environment. If not null,
+    /// that means the declaration got "refined" away due to some select() somewhere in its
+    /// deps. See ConstraintSemantics's documentation for an explanation of refinement.
+    culprit: Option<RemovedEnvironmentCulprit>,
+}
+
 /// Tells the compatibility of a ConfiguredTarget with the target environment.
-// Java: com/google/devtools/build/lib/analysis/constraints/TopLevelConstraintSemantics.java:543 TopLevelConstraintSemantics.EnvironmentCompatibility
+// Java: com/google/devtools/build/lib/analysis/constraints/TopLevelConstraintSemantics.java:579 TopLevelConstraintSemantics.EnvironmentCompatibility
 #[derive(Clone, Debug)]
 pub struct EnvironmentCompatibility {
     is_compatible: bool,
+    /// `ImmutableSet<MissingEnvironment>`: `MissingEnvironment` has identity equality, so the
+    /// set keeps every element.
+    severe_missing_environments: Option<Vec<MissingEnvironment>>,
 }
 
 impl EnvironmentCompatibility {
-    // Java: com/google/devtools/build/lib/analysis/constraints/TopLevelConstraintSemantics.java:546 TopLevelConstraintSemantics.EnvironmentCompatibility.compatible
+    // Java: com/google/devtools/build/lib/analysis/constraints/TopLevelConstraintSemantics.java:582 TopLevelConstraintSemantics.EnvironmentCompatibility.compatible
     pub fn compatible() -> EnvironmentCompatibility {
         EnvironmentCompatibility {
             is_compatible: true,
+            severe_missing_environments: None,
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/constraints/TopLevelConstraintSemantics.java:587 TopLevelConstraintSemantics.EnvironmentCompatibility.nonSevereIncompatible
+    pub fn non_severe_incompatible() -> EnvironmentCompatibility {
+        EnvironmentCompatibility {
+            is_compatible: false,
+            severe_missing_environments: None,
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/constraints/TopLevelConstraintSemantics.java:592 TopLevelConstraintSemantics.EnvironmentCompatibility.severeIncompatible
+    pub fn severe_incompatible(
+        severe_missing_environments: Vec<MissingEnvironment>,
+    ) -> EnvironmentCompatibility {
+        EnvironmentCompatibility {
+            is_compatible: false,
+            severe_missing_environments: Some(severe_missing_environments),
         }
     }
 
     pub fn is_compatible(&self) -> bool {
         self.is_compatible
     }
+
+    pub fn severe_missing_environments(&self) -> Option<&[MissingEnvironment]> {
+        self.severe_missing_environments.as_deref()
+    }
+}
+
+/// What `TargetLookup.getTarget` throws (`NoSuchPackageException`, `NoSuchTargetException`):
+/// the message and the failure detail of its `DetailedExitCode`.
+#[derive(Clone, Debug)]
+pub struct TargetLookupException {
+    pub message: String,
+    pub failure_detail: FailureDetail,
+}
+
+/// Looks up a `Target` by its label.
+///
+/// PORT: Java's `getTarget` returns the target, and `ConstraintSemantics.getEnvironmentGroup`
+/// then reads the environment groups of the target's package
+/// (`pkg.getTargets(EnvironmentGroup.class)`). Rust targets do not reach their package, so the
+/// lookup returns the package's environment groups with the target.
+// Java: com/google/devtools/build/lib/analysis/constraints/TopLevelConstraintSemantics.java:633 TopLevelConstraintSemantics.TargetLookup
+pub trait TargetLookup {
+    /// `None` if the implementation involves a Skyframe lookup and the value is missing.
+    fn get_target(
+        &self,
+        label: &Label,
+    ) -> Result<Option<(Target, Vec<Arc<EnvironmentGroup>>)>, TargetLookupException>;
 }
 
 /// For Exceptions that arise during the compatibility checking of a target.
@@ -173,29 +241,63 @@ impl<'a> TopLevelConstraintSemantics<'a> {
     ///
     /// See `checkTargetEnvironmentRestrictions`.
     ///
-    /// PORT: the checks of an environment-restricted build (`--target_environment`:
-    /// `getMissingEnvironments`, `getErrorMessageForTarget`, and with them
-    /// `checkTargetEnvironmentRestrictions`' `TARGETS_MISSING_ENVIRONMENTS` failure) are not
-    /// ported: a configuration that enforces constraints and names target environments fails
-    /// loudly here.
-    // Java: com/google/devtools/build/lib/analysis/constraints/TopLevelConstraintSemantics.java:172 TopLevelConstraintSemantics.compatibilityWithTargetEnvironment
+    /// Returns `None` if the `target_lookup` performs a Skyframe lookup and the value is
+    /// missing.
+    // Java: com/google/devtools/build/lib/analysis/constraints/TopLevelConstraintSemantics.java:173 TopLevelConstraintSemantics.compatibilityWithTargetEnvironment
     pub fn compatibility_with_target_environment(
         configured_target: &ConfiguredTarget,
         build_configuration_value: Option<&BuildConfigurationValue>,
-    ) -> Result<EnvironmentCompatibility, TargetCompatibilityCheckException> {
-        // TODO(bazel-team): support file targets (they should apply package-default constraints).
+        target_lookup: &dyn TargetLookup,
+        event_handler: &dyn ExtendedEventHandler,
+    ) -> Result<Option<EnvironmentCompatibility>, TargetCompatibilityCheckException> {
+        // TODO(bazel-team): support file targets (they should apply package-default
+        // constraints).
         let Some(build_configuration_value) = build_configuration_value else {
-            return Ok(EnvironmentCompatibility::compatible());
+            return Ok(Some(EnvironmentCompatibility::compatible()));
         };
         let core_options = crate::rule::config_util::core_options(build_configuration_value);
         if !core_options.enforce_constraints || core_options.target_environments.is_empty() {
-            return Ok(EnvironmentCompatibility::compatible());
+            return Ok(Some(EnvironmentCompatibility::compatible()));
         }
-        blaze_util::unported!(
-            "TopLevelConstraintSemantics.getMissingEnvironments",
-            "--target_environment checks of top-level target {}",
-            configured_target.get_label()
-        )
+
+        let target = match target_lookup.get_target(&configured_target.get_label()) {
+            Ok(target) => target.expect(
+                "NullPointerException: targetLookup.getTarget(configuredTarget.getLabel())",
+            ),
+            Err(e) => {
+                event_handler.handle(&Event::error(format!(
+                    "Unable to get target from package when checking environment restrictions. {}",
+                    e.message
+                )));
+                return Ok(Some(EnvironmentCompatibility::compatible()));
+            }
+        };
+
+        match target.0.get_associated_rule() {
+            Some(rule) if rule.get_rule_class_object().supports_constraint_checking() => {}
+            _ => return Ok(Some(EnvironmentCompatibility::compatible())),
+        }
+
+        // Check explicitly expected environments.
+        let target_environments: Vec<Label> = core_options
+            .target_environments
+            .iter()
+            .map(|l| l.get().clone())
+            .collect();
+        let Some(severe_missing_environments) =
+            get_missing_environments(configured_target, &target_environments, target_lookup)?
+        else {
+            // Missing value.
+            return Ok(None);
+        };
+
+        if !severe_missing_environments.is_empty() {
+            return Ok(Some(EnvironmentCompatibility::severe_incompatible(
+                severe_missing_environments,
+            )));
+        }
+
+        Ok(Some(EnvironmentCompatibility::compatible()))
     }
 
     /// Checks that the all top-level targets are compatible with the target platform.
@@ -274,15 +376,25 @@ impl<'a> TopLevelConstraintSemantics<'a> {
         configuration_of: &dyn Fn(
             &ConfiguredTarget,
         ) -> Option<std::sync::Arc<BuildConfigurationValue>>,
+        target_lookup: &dyn TargetLookup,
+        event_handler: &dyn ExtendedEventHandler,
     ) -> Result<Vec<ConfiguredTarget>, ViewCreationFailedException> {
         let mut bad_targets: Vec<ConfiguredTarget> = Vec::new();
+        // Maps targets that are missing *explicitly* required environments to the set of
+        // environments they're missing. These targets trigger a ViewCreationFailedException,
+        // which halts the build. Targets with missing *implicitly* required environments don't
+        // belong here, since the build continues while skipping them.
+        let mut exception_inducing_targets: Vec<(ConfiguredTarget, Vec<MissingEnvironment>)> =
+            Vec::new();
         for top_level_target in top_level_targets {
             let configuration = configuration_of(top_level_target);
             let compatibility = match Self::compatibility_with_target_environment(
                 top_level_target,
                 configuration.as_deref(),
+                target_lookup,
+                event_handler,
             ) {
-                Ok(c) => c,
+                Ok(c) => c.expect("NullPointerException: compatibilityWithTargetEnvironment"),
                 Err(e) => {
                     return Err(ViewCreationFailedException {
                         message: e.get_message().to_owned(),
@@ -293,13 +405,248 @@ impl<'a> TopLevelConstraintSemantics<'a> {
             if compatibility.is_compatible() {
                 continue;
             }
-            // PORT: unreachable until getMissingEnvironments is ported
-            // (compatibility_with_target_environment fails loudly instead of returning an
-            // incompatible result).
-            bad_targets.push(top_level_target.clone());
+            if let Some(missing) = compatibility.severe_missing_environments() {
+                // ArrayListMultimap.putAll: an empty collection adds no key.
+                if !missing.is_empty() {
+                    exception_inducing_targets.push((top_level_target.clone(), missing.to_vec()));
+                }
+            }
+            // ImmutableSet.Builder.add
+            if !bad_targets
+                .iter()
+                .any(|t| t.identity() == top_level_target.identity())
+            {
+                bad_targets.push(top_level_target.clone());
+            }
+        }
+
+        if !exception_inducing_targets.is_empty() {
+            let bad_targets_user_message =
+                get_bad_targets_user_message(&exception_inducing_targets);
+            return Err(ViewCreationFailedException {
+                message: bad_targets_user_message.clone(),
+                failure_detail: FailureDetail {
+                    message: bad_targets_user_message,
+                    category: Some(Category::Analysis(failure_details::Analysis {
+                        code: failure_details::analysis::Code::TargetsMissingEnvironments as i32,
+                    })),
+                },
+            });
         }
         Ok(bad_targets)
     }
+}
+
+/// Returns the environment group that owns the given environment. Both must belong to the same
+/// package.
+// Java: com/google/devtools/build/lib/analysis/constraints/ConstraintSemantics.java:136 ConstraintSemantics.getEnvironmentGroup
+fn get_environment_group(
+    env_target: &Target,
+    package_environment_groups: &[Arc<EnvironmentGroup>],
+) -> Result<Arc<EnvironmentGroup>, TargetLookupException> {
+    let is_environment_rule = env_target.as_rule().is_some_and(|rule| {
+        rule.get_rule_class() == crate::platform::constraint_constants::ENVIRONMENT_RULE
+    });
+    if !is_environment_rule {
+        return Err(create_environment_lookup_exception(
+            format!(
+                "{} is not a valid environment definition",
+                env_target.get_label()
+            ),
+            failure_details::analysis::Code::InvalidEnvironment,
+        ));
+    }
+    // TODO(https://github.com/bazelbuild/bazel/issues/23852): support package pieces.
+    for group in package_environment_groups {
+        if group.get_environments().contains(env_target.get_label()) {
+            return Ok(group.clone());
+        }
+    }
+    Err(create_environment_lookup_exception(
+        format!(
+            "cannot find the group for environment {}",
+            env_target.get_label()
+        ),
+        failure_details::analysis::Code::EnvironmentMissingFromGroups,
+    ))
+}
+
+// Java: com/google/devtools/build/lib/analysis/constraints/ConstraintSemantics.java:214 ConstraintSemantics.createEnvironmentLookupException
+fn create_environment_lookup_exception(
+    message: String,
+    code: failure_details::analysis::Code,
+) -> TargetLookupException {
+    TargetLookupException {
+        message: message.clone(),
+        failure_detail: FailureDetail {
+            message,
+            category: Some(Category::Analysis(failure_details::Analysis {
+                code: code as i32,
+            })),
+        },
+    }
+}
+
+/// The target whose providers describe `configured_target`'s environments: the alias-resolved
+/// target, or for an output file its generating rule.
+fn target_with_provider(configured_target: &ConfiguredTarget) -> ConfiguredTarget {
+    // Dereference any aliases that might be present.
+    let actual = configured_target.get_actual();
+    match &actual {
+        ConfiguredTarget::OutputFile(output_file_configured_target) => {
+            ConfiguredTarget::Rule(output_file_configured_target.get_generating_rule().clone())
+        }
+        _ => actual,
+    }
+}
+
+/// Returns the expected environments that the given top-level target doesn't support.
+///
+/// `None` where Java returns null (a missing Skyframe value).
+// Java: com/google/devtools/build/lib/analysis/constraints/TopLevelConstraintSemantics.java:448 TopLevelConstraintSemantics.getMissingEnvironments
+fn get_missing_environments(
+    top_level_target: &ConfiguredTarget,
+    expected_environment_labels: &[Label],
+    target_lookup: &dyn TargetLookup,
+) -> Result<Option<Vec<MissingEnvironment>>, TargetCompatibilityCheckException> {
+    // Convert expected environment labels to actual environments.
+    let mut expected_environments_builder = EnvironmentCollectionBuilder::new();
+    for env_label in expected_environment_labels {
+        let invalid = |e: TargetLookupException| {
+            TargetCompatibilityCheckException::new(
+                format!("invalid target environment: {}", e.message),
+                e.failure_detail,
+            )
+        };
+        let Some((env, groups)) = target_lookup.get_target(env_label).map_err(invalid)? else {
+            // Missing value.
+            return Ok(None);
+        };
+        let group = get_environment_group(&env, &groups).map_err(invalid)?;
+        expected_environments_builder.put(
+            &Arc::new(group.get_environment_labels().clone()),
+            env_label.clone(),
+        );
+    }
+    let expected_environments = expected_environments_builder.build();
+
+    // Now check the target against expected environments.
+    let as_provider = target_with_provider(top_level_target);
+    let provider = as_provider
+        .get_provider::<SupportedEnvironments>()
+        .unwrap_or_else(|| panic!("VerifyException: no SupportedEnvironmentsProvider"));
+    let mut ans: Vec<MissingEnvironment> = Vec::new();
+    for unsupported_env in RuleContextConstraintSemantics::get_unsupported_environments(
+        provider.get_refined_environments(),
+        &expected_environments,
+    ) {
+        // We apply this filter because the target might also not support default environments
+        // in other environment groups. We don't care about those. We only care about the
+        // environments explicitly referenced.
+        if !expected_environment_labels.contains(&unsupported_env) {
+            continue;
+        }
+
+        let mut env_and_fulfillers: Vec<Label> = vec![unsupported_env.clone()];
+        for env_group in provider.get_static_environments().get_groups() {
+            env_and_fulfillers.extend(
+                env_group
+                    .get_fulfillers(&unsupported_env)
+                    .to_list()
+                    .iter()
+                    .cloned(),
+            );
+        }
+        let mut culprit: Option<RemovedEnvironmentCulprit> = None;
+        let mut i = 0;
+        while i < env_and_fulfillers.len() && culprit.is_none() {
+            culprit = provider
+                .get_removed_environment_culprit(&env_and_fulfillers[i])
+                .cloned();
+            i += 1;
+        }
+        // culprit could still be null here. See MissingEnvironment class comments for
+        // implications.
+        ans.push(MissingEnvironment {
+            environment: unsupported_env,
+            culprit,
+        });
+    }
+    Ok(Some(ans))
+}
+
+/// Prepares a user-friendly error message for a list of targets missing support for required
+/// environments.
+// Java: com/google/devtools/build/lib/analysis/constraints/TopLevelConstraintSemantics.java:516 TopLevelConstraintSemantics.getBadTargetsUserMessage
+fn get_bad_targets_user_message(
+    bad_targets: &[(ConfiguredTarget, Vec<MissingEnvironment>)],
+) -> String {
+    let mut msg: Vec<String> = vec!["This is a restricted-environment build.".to_string()];
+    for (target, missing) in bad_targets {
+        msg.push(get_error_message_for_target(target, missing));
+    }
+    msg.push(" ".to_string());
+    msg.join("\n")
+}
+
+// Java: com/google/devtools/build/lib/analysis/constraints/TopLevelConstraintSemantics.java:528 TopLevelConstraintSemantics.getErrorMessageForTarget
+pub fn get_error_message_for_target(
+    configured_target: &ConfiguredTarget,
+    missing_environments: &[MissingEnvironment],
+) -> String {
+    let mut msg: Vec<String> = Vec::new();
+    let target_with_provider = target_with_provider(configured_target);
+    let supported_environments = target_with_provider
+        .get_provider::<SupportedEnvironments>()
+        .expect("NullPointerException: SupportedEnvironmentsProvider");
+    let declared_envs = supported_environments
+        .get_static_environments()
+        .get_environments()
+        .iter()
+        .map(|l| l.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    msg.push(" ".to_string());
+    msg.push(format!(
+        "{} declares compatibility with:",
+        configured_target.get_label()
+    ));
+    msg.push(format!("  [{}]", declared_envs));
+    msg.push("but does not support:".to_string());
+    let mut is_first = true;
+    let mut last_entry_was_multiline = false;
+    for missing_environment in missing_environments {
+        match &missing_environment.culprit {
+            None => {
+                // The target didn't declare support for this environment.
+                if last_entry_was_multiline {
+                    // Pretty-format: if the last environment message was multi-line, make it
+                    // clear this one is a different entry. But we don't want to do that if all
+                    // entries are single-line because that would be pointlessly long.
+                    msg.push(" ".to_string());
+                }
+                msg.push(format!("  {}", missing_environment.environment));
+                last_entry_was_multiline = false;
+            }
+            Some(culprit) => {
+                // The target declared support, but it was refined out by a select() somewhere
+                // in its transitive deps.
+                if !is_first {
+                    msg.push(" ".to_string()); // Pretty-format for clarity.
+                }
+                msg.push(
+                    RuleContextConstraintSemantics::get_missing_environment_culprit_message(
+                        &configured_target.get_label(),
+                        &missing_environment.environment,
+                        culprit,
+                    ),
+                );
+                last_entry_was_multiline = true;
+            }
+        }
+        is_first = false;
+    }
+    msg.join("\n")
 }
 
 // Java: com/google/devtools/build/lib/analysis/constraints/TopLevelConstraintSemantics.java:147 TopLevelConstraintSemantics.getExceptionForExplicitlyRequestedIncompatibleTarget

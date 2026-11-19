@@ -1,0 +1,9 @@
+EVAL function 'f' called recursively
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_ev_recursion.star", line 3, column 2, in <toplevel>
+TRACE \x09\x09f(1)
+TRACE \x09File "err_ev_recursion.star", line 2, column 11, in f
+TRACE \x09\x09return f(n)
+TRACE \x09File "err_ev_recursion.star", line 1, column 5, in f
+TRACE \x09\x09def f(n):
+TRACE Error: function 'f' called recursively

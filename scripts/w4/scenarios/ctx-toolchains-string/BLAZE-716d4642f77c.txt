@@ -1,0 +1,63 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/int-bin/ui-wave/blaze-before-a0242b7
+# sha256 716d4642f77cdfa8239090ecea0b84bb87c6ffa359a04ad9d14fb38705b82299
+# tree 67302dc7fd8c4cc5c3c5fc80289402f9b95daaa6 (dirty)
+# date 2026-11-19T13:38:23
+=== 1: run build //:remote_impl
+exit 0
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:remote_impl (79 packages loaded, 428 targets configured).
+INFO: Found 1 target...
+Target //:remote_impl up-to-date:
+  bazel-bin/remote_impl.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 2: cat bazel-bin/remote_impl.txt
+toolchain: None, in: True
+=== 3: run build //:local_impl
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:local_impl (79 packages loaded, 428 targets configured).
+INFO: Found 1 target...
+Target //:local_impl up-to-date:
+  bazel-bin/local_impl.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 4: cat bazel-bin/local_impl.txt
+toolchain: None, in: True
+=== 5: run build //:local_wrong
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:7:12: in local_wrong rule //:local_wrong:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 26, column 62, in _local_wrong_impl
+		ctx.actions.write(out, "toolchain: %s\n" % ctx.toolchains["//x:type"])
+Error: In local_wrong rule //:local_wrong, toolchain type //x:type was requested but only types [@@rules_a+//x:type] are configured
+ERROR: <WS>/BUILD.bazel:7:12: Analysis of target '//:local_wrong' (config: a7a71fd) failed
+ERROR: Analysis of target '//:local_wrong' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 6: run build //:helper
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:helper (79 packages loaded, 428 targets configured).
+INFO: Found 1 target...
+Target //:helper up-to-date:
+  bazel-bin/helper.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 7: cat bazel-bin/helper.txt
+toolchain: None, in: True

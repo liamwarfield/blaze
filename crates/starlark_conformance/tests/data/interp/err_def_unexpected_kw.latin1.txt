@@ -1,0 +1,7 @@
+EVAL f() got unexpected keyword argument: b
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_def_unexpected_kw.star", line 3, column 2, in <toplevel>
+TRACE \x09\x09f(b = 1)
+TRACE \x09File "err_def_unexpected_kw.star", line 1, column 5, in f
+TRACE \x09\x09def f(a):
+TRACE Error: f() got unexpected keyword argument: b

@@ -1,1 +1,5 @@
 EVAL in call to removeprefix(), parameter 'prefix' got value of type 'int', want 'string'
+TRACE Traceback (most recent call last):
+TRACE \x09File "more_s_removeprefix_int.star", line 1, column 25, in <toplevel>
+TRACE \x09\x09print("abc".removeprefix(1))
+TRACE Error in removeprefix: in call to removeprefix(), parameter 'prefix' got value of type 'int', want 'string'

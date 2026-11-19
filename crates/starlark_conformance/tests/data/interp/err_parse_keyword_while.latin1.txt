@@ -1,0 +1,5 @@
+SYNTAX err_parse_keyword_while.star:1:1: 'while' not supported, use 'for' instead
+SYNTAX err_parse_keyword_while.star:1:1: syntax error at 'while': expected expression
+SYNTAX err_parse_keyword_while.star:2:2: indentation error
+SYNTAX err_parse_keyword_while.star:1:1: name 'while' is not defined
+SYNTAX err_parse_keyword_while.star:2:2: contains syntax errors

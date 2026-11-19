@@ -1,0 +1,5 @@
+EVAL too many values to unpack (got 3, want 2)
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_ev_unpack_many.star", line 1, column 6, in <toplevel>
+TRACE \x09\x09a, b = [1, 2, 3]
+TRACE Error: too many values to unpack (got 3, want 2)

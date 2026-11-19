@@ -1,0 +1,5 @@
+EVAL too few values to unpack (got 1, want 2)
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_ev_unpack_nested.star", line 1, column 11, in <toplevel>
+TRACE \x09\x09a, (b, c) = [1, [2]]
+TRACE Error: too few values to unpack (got 1, want 2)

@@ -1,0 +1,5 @@
+EVAL get() missing 1 required positional argument: key
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_dict_get_noargs.star", line 1, column 7, in <toplevel>
+TRACE \x09\x09{}.get()
+TRACE Error in get: get() missing 1 required positional argument: key

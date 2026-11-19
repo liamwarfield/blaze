@@ -296,8 +296,12 @@ pub fn guava_doubles_try_parse(s: &str) -> Option<f64> {
         }
         _ => {}
     }
-    if unsigned.starts_with("0x") || unsigned.starts_with("0X") {
-        blaze_util::unported!("Doubles.tryParse (hexadecimal floating point)");
+    if let Some(hex) = unsigned
+        .strip_prefix("0x")
+        .or_else(|| unsigned.strip_prefix("0X"))
+    {
+        let v = parse_hex_double(hex)?;
+        return Some(if negative { -v } else { v });
     }
     let body = unsigned
         .strip_suffix(['f', 'F', 'd', 'D'])
@@ -339,6 +343,125 @@ pub fn guava_doubles_try_parse(s: &str) -> Option<f64> {
     }
     let v: f64 = body.parse().ok()?;
     Some(if negative { -v } else { v })
+}
+
+/// The hexadecimal branch of Guava's `FLOATING_POINT_PATTERN`
+/// (`0[xX](?:[0-9a-fA-F]+(?:\.[0-9a-fA-F]*)?|\.[0-9a-fA-F]+)[pP][+-]?\d+[fFdD]?`, the part after
+/// `0x`), then `Double.parseDouble`: the exact value `significand * 2^exponent`, rounded to the
+/// nearest double (ties to even), with overflow to infinity and underflow to zero.
+// Java (Guava 33): com/google/common/primitives/Doubles.java Doubles.fpPattern
+// Java (JDK): jdk/internal/math/FloatingDecimal.java FloatingDecimal.parseHexString
+fn parse_hex_double(hex: &str) -> Option<f64> {
+    let b = hex.as_bytes();
+    let mut i = 0;
+    let mut digits: Vec<u8> = Vec::new();
+    while i < b.len() && b[i].is_ascii_hexdigit() {
+        digits.push((b[i] as char).to_digit(16).unwrap() as u8);
+        i += 1;
+    }
+    let int_digits = digits.len();
+    let mut frac_digits = 0usize;
+    if i < b.len() && b[i] == b'.' {
+        i += 1;
+        while i < b.len() && b[i].is_ascii_hexdigit() {
+            digits.push((b[i] as char).to_digit(16).unwrap() as u8);
+            frac_digits += 1;
+            i += 1;
+        }
+    }
+    if int_digits == 0 && frac_digits == 0 {
+        return None;
+    }
+    if !(i < b.len() && (b[i] == b'p' || b[i] == b'P')) {
+        return None;
+    }
+    i += 1;
+    let exp_negative = i < b.len() && b[i] == b'-';
+    if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+        i += 1;
+    }
+    let exp_start = i;
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == exp_start {
+        return None;
+    }
+    let exp_digits = &hex[exp_start..i];
+    if i < b.len() && matches!(b[i], b'f' | b'F' | b'd' | b'D') {
+        i += 1;
+    }
+    if i != b.len() {
+        return None;
+    }
+
+    // The significand as bits, most significant first, without leading zeros.
+    let mut bits: Vec<bool> = digits
+        .iter()
+        .flat_map(|d| (0..4).rev().map(move |k| (d >> k) & 1 == 1))
+        .collect();
+    let first_one = bits.iter().position(|&x| x);
+    let Some(first_one) = first_one else {
+        return Some(0.0);
+    };
+    bits.drain(..first_one);
+    // value = M * 2^e, M = bits as an integer.
+    // An exponent too large for any double saturates (Java: the exponent overflows an int and
+    // the value becomes infinity or zero).
+    let exp_value: i64 = match exp_digits.parse::<i64>() {
+        Ok(v) if v <= 1 << 40 => {
+            if exp_negative {
+                -v
+            } else {
+                v
+            }
+        }
+        _ => {
+            return Some(if exp_negative { 0.0 } else { f64::INFINITY });
+        }
+    };
+    let e = exp_value - 4 * frac_digits as i64;
+    let n = bits.len() as i64;
+    let lead = n - 1 + e;
+    if lead > 1023 {
+        return Some(f64::INFINITY);
+    }
+    let lsb_exp = (lead - 52).max(-1074);
+    let shift = lsb_exp - e; // low bits of M dropped
+    let bit = |k: i64| -> bool {
+        // bit k of M, counting from the least significant (0)
+        k >= 0 && k < n && bits[(n - 1 - k) as usize]
+    };
+    let mut q: u64 = 0;
+    if shift <= 0 {
+        for k in (0..n).rev() {
+            q = (q << 1) | bit(k) as u64;
+        }
+        q <<= (-shift) as u32;
+    } else {
+        for k in (shift..n).rev() {
+            q = (q << 1) | bit(k) as u64;
+        }
+        let half = bit(shift - 1);
+        let sticky = (0..(shift - 1).min(n)).any(bit);
+        if half && (sticky || q & 1 == 1) {
+            q += 1;
+        }
+    }
+    let mut lsb_exp = lsb_exp;
+    if q == 1 << 53 {
+        q >>= 1;
+        lsb_exp += 1;
+    }
+    if q < 1 << 52 {
+        // Subnormal (lsb_exp is -1074) or zero.
+        return Some(f64::from_bits(q));
+    }
+    let exp_field = lsb_exp + 52 + 1023;
+    if exp_field > 2046 {
+        return Some(f64::INFINITY);
+    }
+    Some(f64::from_bits(((exp_field as u64) << 52) | (q - (1 << 52))))
 }
 
 /// Java `Math.round(double)` (ties towards positive infinity, saturating, NaN is 0).

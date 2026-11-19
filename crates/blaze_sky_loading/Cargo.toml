@@ -18,6 +18,7 @@ blaze_packages = { path = "../blaze_packages" }
 blaze_query_engine = { path = "../blaze_query_engine" }
 blaze_optdefs = { path = "../blaze_optdefs" }
 blaze_config = { path = "../blaze_config" }
+blaze_bzlmod_model = { path = "../blaze_bzlmod_model" }
 starlark.workspace = true
 allocative.workspace = true
 anyhow.workspace = true

@@ -21,9 +21,7 @@ use blaze_skyframe::SkyKey;
 use crate::command::{BlazeCommand, BlazeCommandResult, CommandAnnotation};
 use crate::command_environment::CommandEnvironment;
 use crate::commands::build::{RunBuild, RunBuildOutcome, run_build};
-use crate::commands::query::{
-    AfterCommand, create_skyframe_executor, create_skyframe_executor_with_repo_precomputed,
-};
+use crate::commands::query::{AfterCommand, create_skyframe_executor_with_repo_precomputed};
 use crate::commands::target_patterns_helper;
 use crate::exit_code::DetailedExitCode;
 use crate::options_result::OptionsParsingResult;
@@ -49,14 +47,18 @@ impl BlazeCommand for FetchCommand {
         options: &OptionsParsingResult,
     ) -> BlazeCommandResult {
         if let Some((code, message)) = Self::validate_options(options) {
-            report_main_repo_mapping_events(env);
             return create_failed_blaze_command_result_with_code(env.get_reporter(), code, message);
         }
 
-        // PORT: `env.getEventBus().post(new NoBuildEvent(...))` here and the
-        // `NoBuildRequestFinishedEvent` below only reach the Build Event Protocol, which is
-        // ported for build and test; a BEP file requested for this command fails loudly before it
-        // runs (crate::unported_options).
+        if let Some(bep) = env.get_bep() {
+            bep.post_no_build_event(
+                Some(env.get_command_name().to_string()),
+                Some(env.get_command_start_time()),
+                /* separate_finished_event= */ true,
+                /* show_progress= */ true,
+                Some(env.get_command_id().to_string()),
+            );
+        }
 
         let fetch_options: FetchOptions = options.get_options().expect("FetchOptions");
         let mut repo_precomputed = RepoPrecomputedValues::default();
@@ -82,7 +84,6 @@ impl BlazeCommand for FetchCommand {
         let threads = threads_option.threads.max(1) as usize;
         if !targets.is_empty() {
             if !fetch_options.repos.is_empty() {
-                report_main_repo_mapping_events(env);
                 return create_failed_blaze_command_result(
                     env.get_reporter(),
                     "Target patterns and --repo cannot both be specified",
@@ -96,7 +97,8 @@ impl BlazeCommand for FetchCommand {
                     "--force with target patterns (FORCE_FETCH for the build of TargetFetcher)"
                 );
             }
-            return Self::fetch_target(env, options, targets);
+            let result = Self::fetch_target(env, options, targets);
+            return post_no_build_request_finished_event(env, result);
         }
 
         // The command's Skyframe executor (Java: env.getSkyframeExecutor()), with the precomputed
@@ -107,19 +109,23 @@ impl BlazeCommand for FetchCommand {
                 Err(result) => return result,
             };
         let _after_command = AfterCommand(&skyframe_executor);
-        // PORT: the dispatcher's computation of the main repository mapping on this executor
-        // (see `report_main_repo_mapping_events`); it succeeded in the dispatcher already.
+        // PORT: the dispatcher's computation of the main repository mapping on this executor; it
+        // succeeded in the dispatcher already, which reported its events (crate::dispatcher,
+        // MainRepoMappingEventHandler).
         if let Err(RepositoryMappingResolutionOrInterrupted::Interrupted) = skyframe_executor
             .get_main_repo_mapping(false, DEFAULT_THREAD_COUNT, env.get_reporter().clone())
         {
             return fetch_interrupted(env);
         }
-        if !fetch_options.repos.is_empty() {
+        let result = if !fetch_options.repos.is_empty() {
             Self::fetch_repos(env, &skyframe_executor, threads, &fetch_options.repos)
         } else {
             // --all or just 'fetch' (equivalent) or --configure
             Self::fetch_all(env, &skyframe_executor, threads, fetch_options.configure)
-        }
+        };
+        // PORT: Java returns "Fetch interrupted" from exec without this event; Blaze's fetchRepos
+        // and fetchAll return it as their result, so an interrupted fetch posts it too.
+        post_no_build_request_finished_event(env, result)
     }
 }
 
@@ -245,23 +251,24 @@ impl FetchCommand {
     }
 }
 
-/// Reports the events of computing the main repository mapping, for a path of `exec` that stops
-/// before evaluating anything.
-///
-/// PORT: Java's dispatcher computes the main repository mapping on the command's Skyframe
-/// executor before `exec` and reports its events (e.g. MODULE.bazel warnings) then. Blaze's
-/// dispatcher stores those events and drops them when the command goes on (crate::dispatcher):
-/// the command's own executor reports them when it evaluates. A path that stops before any
-/// evaluation computes the mapping here, so the events come before the error, as in Java.
-fn report_main_repo_mapping_events(env: &CommandEnvironment) {
-    if let Ok(skyframe_executor) = create_skyframe_executor(env, None) {
-        let _after_command = AfterCommand(&skyframe_executor);
-        let _ = skyframe_executor.get_main_repo_mapping(
-            false,
-            DEFAULT_THREAD_COUNT,
-            env.get_reporter().clone(),
+/// `env.getEventBus().post(new NoBuildRequestFinishedEvent(result.getExitCode(), now))`, then
+/// `return result`.
+// Java: com/google/devtools/build/lib/bazel/commands/FetchCommand.java:139 FetchCommand.exec
+fn post_no_build_request_finished_event(
+    env: &CommandEnvironment,
+    result: BlazeCommandResult,
+) -> BlazeCommandResult {
+    if let Some(bep) = env.get_bep() {
+        bep.post_no_build_request_finished_event(
+            blaze_util::ExitCode::for_code(result.get_exit_code().get_numeric_exit_code())
+                .unwrap_or_else(|| panic!("unknown exit code {:?}", result.get_exit_code())),
+            {
+                use blaze_events::Clock as _;
+                blaze_events::JavaClock.current_time_millis()
+            },
         );
     }
+    result
 }
 
 /// `"Fetch interrupted: " + e.getMessage()` (the message of Blaze's interrupts is null).

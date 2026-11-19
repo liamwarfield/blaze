@@ -1,0 +1,5 @@
+EVAL 'function' value has no field or method 'x'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_attr_function.star", line 3, column 6, in <toplevel>
+TRACE \x09\x09x = f.x
+TRACE Error: 'function' value has no field or method 'x'

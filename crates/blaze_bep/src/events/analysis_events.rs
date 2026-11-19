@@ -316,3 +316,74 @@ impl BuildEvent for TestAttempt {
         Some(TestAttempt::posted_after(self))
     }
 }
+
+/// The build event half of `AnalysisFailureEvent` (the event itself is posted by
+/// `blaze_sky_top`): the id of the failed target (or aspect), the ids of its root causes as
+/// children, and an `Aborted` with reason `ANALYSIS_FAILURE`.
+///
+/// PORT: Java computes the id and children from the event's keys and `Cause`s; the caller
+/// passes them computed ([`AnalysisFailureBuildEvent::event_id`]).
+// Java: com/google/devtools/build/lib/analysis/AnalysisFailureEvent.java:42 AnalysisFailureEvent
+#[derive(Clone, Debug)]
+pub struct AnalysisFailureBuildEvent {
+    id: BuildEventId,
+    children: Vec<BuildEventId>,
+}
+
+impl AnalysisFailureBuildEvent {
+    pub fn new(id: BuildEventId, children: Vec<BuildEventId>) -> Self {
+        AnalysisFailureBuildEvent { id, children }
+    }
+
+    /// `getEventId()`: `configuration_checksum` is the failed target's configuration key's
+    /// checksum (`None` for the null key); `aspect` the failed aspect's configuration checksum
+    /// and name.
+    // Java: com/google/devtools/build/lib/analysis/AnalysisFailureEvent.java:127 AnalysisFailureEvent.getEventId
+    pub fn event_id(
+        label: &Label,
+        is_configured: bool,
+        configuration_checksum: Option<&str>,
+        aspect: Option<(Option<&str>, &str)>,
+    ) -> BuildEventId {
+        if !is_configured {
+            return build_event_id_util::target_configured(label);
+        }
+        match aspect {
+            None => build_event_id_util::target_completed(
+                label,
+                &build_event_id_util::configuration_id_for_key(configuration_checksum),
+            ),
+            Some((aspect_configuration_checksum, aspect_name)) => {
+                build_event_id_util::aspect_completed(
+                    label,
+                    &build_event_id_util::configuration_id_for_key(aspect_configuration_checksum),
+                    aspect_name,
+                )
+            }
+        }
+    }
+}
+
+impl BuildEvent for AnalysisFailureBuildEvent {
+    fn get_event_id(&self) -> BuildEventId {
+        self.id.clone()
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/AnalysisFailureEvent.java:141 AnalysisFailureEvent.getChildrenEvents
+    fn get_children_events(&self) -> Vec<BuildEventId> {
+        self.children.clone()
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/AnalysisFailureEvent.java:147 AnalysisFailureEvent.asStreamProto
+    fn as_stream_proto(&self, _: &dyn BuildEventContext) -> Result<bes::BuildEvent, Interrupted> {
+        Ok(proto_chaining_with(
+            self,
+            Payload::Aborted(bes::Aborted {
+                reason: bes::aborted::AbortReason::AnalysisFailure as i32,
+                description: String::new(),
+            }),
+        ))
+    }
+}
+
+impl blaze_events::Postable for AnalysisFailureBuildEvent {}

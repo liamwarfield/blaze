@@ -12,13 +12,19 @@ use blaze_actions::actions::artifact_factory::ArtifactFactory;
 use blaze_exec::actions::action_execution::{ActionContextRef, register_executable_action};
 
 use crate::cpp::cpp_compile_action::CppCompileAction;
+use crate::cpp::cpp_compile_action_template::CppCompileActionTemplate;
 use crate::python::py_builtins::CopyWithoutCachingAction;
 
 /// Registers the `ExecutableAction` implementation of every action class of this crate
-/// (idempotent): `CppCompileAction` and `PyBuiltins.CopyWithoutCachingAction`.
+/// (idempotent): `CppCompileAction` and `PyBuiltins.CopyWithoutCachingAction`; and of its
+/// action templates (`blaze_exec::actions::ActionTemplate`): `CppCompileActionTemplate`.
 pub fn register_executable_actions() {
     register_executable_action::<CppCompileAction>();
     register_executable_action::<CopyWithoutCachingAction>();
+    register_executable_action::<crate::java::java_compile_action::JavaCompileAction>();
+    register_executable_action::<crate::java::java_header_compile_action::JavaHeaderCompileAction>(
+    );
+    blaze_exec::actions::register_action_template::<CppCompileActionTemplate>();
 }
 
 /// The action contexts the C++ actions look up (`CppIncludeExtractionContext` and the
@@ -30,8 +36,11 @@ pub fn executable_action_contexts(
     artifact_factory: Arc<ArtifactFactory>,
     experimental_sibling_repository_layout: bool,
 ) -> Vec<(TypeId, ActionContextRef)> {
-    crate::cpp::cpp_include_extraction_context::cpp_action_contexts(
+    let mut contexts = crate::cpp::cpp_include_extraction_context::cpp_action_contexts(
         artifact_factory,
         experimental_sibling_repository_layout,
-    )
+    );
+    // Java: com/google/devtools/build/lib/bazel/rules/BazelRulesModule.java:979 BazelRulesModule.registerActionContexts
+    contexts.push(crate::java::java_compile_action_context::java_action_context());
+    contexts
 }

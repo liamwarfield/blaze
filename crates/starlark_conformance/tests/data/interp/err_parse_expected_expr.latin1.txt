@@ -1,0 +1,2 @@
+SYNTAX err_parse_expected_expr.star:1:5: syntax error at 'newline': expected expression
+SYNTAX err_parse_expected_expr.star:1:5: contains syntax errors

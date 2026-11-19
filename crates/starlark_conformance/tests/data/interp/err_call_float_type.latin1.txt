@@ -1,0 +1,5 @@
+EVAL in call to float(), parameter 'x' got value of type 'list', want 'string, bool, int, or float'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_float_type.star", line 1, column 6, in <toplevel>
+TRACE \x09\x09float([])
+TRACE Error in float: in call to float(), parameter 'x' got value of type 'list', want 'string, bool, int, or float'

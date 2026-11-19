@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 blaze_client = { path = "../blaze_client" }
+blaze_events = { path = "../blaze_events" }
 blaze_runtime = { path = "../blaze_runtime" }
 blaze_protos = { path = "../blaze_protos" }
 

@@ -28,6 +28,7 @@ pub mod cpp;
 pub mod executable_actions;
 pub mod fragments;
 pub mod generic;
+pub mod java;
 pub mod platform;
 pub mod python;
 pub mod register;

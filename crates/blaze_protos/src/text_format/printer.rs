@@ -200,7 +200,7 @@ impl Printer {
             return false;
         }
         let type_url = match message.get_field(type_url_field) {
-            Some(Value::String(s)) => String::from_utf8_lossy(s).into_owned(),
+            Some(Value::String(s)) => crate::java::new_string_utf8(s),
             _ => String::new(),
         };
         // If type_url is not set, we will not be able to decode the content of the value, so
@@ -301,7 +301,7 @@ impl Printer {
                 } else {
                     // `escapeDoubleQuotesAndBackslashes(value).replace("\n", "\\n")` of the Java
                     // string.
-                    let s = String::from_utf8_lossy(v);
+                    let s = crate::java::new_string_utf8(v);
                     generator.print(&escape_double_quotes_and_backslashes(&s).replace('\n', "\\n"));
                 }
                 generator.print("\"");
@@ -433,10 +433,10 @@ impl<'a> MapEntryAdapter<'a> {
                 (Value::Int(a), Value::Int(b)) => a.cmp(&b),
                 // `String.compareTo`: UTF-16 code units.
                 (Value::String(a), Value::String(b)) => {
-                    let a = String::from_utf8_lossy(&a)
+                    let a = crate::java::new_string_utf8(&a)
                         .encode_utf16()
                         .collect::<Vec<_>>();
-                    let b = String::from_utf8_lossy(&b)
+                    let b = crate::java::new_string_utf8(&b)
                         .encode_utf16()
                         .collect::<Vec<_>>();
                     a.cmp(&b)

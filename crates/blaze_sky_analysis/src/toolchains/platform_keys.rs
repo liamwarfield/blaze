@@ -15,6 +15,7 @@ use blaze_skyframe::Environment;
 use indexmap::{IndexMap, IndexSet};
 
 use crate::toolchains::constraint_value_lookup_util;
+use crate::toolchains::debug_printers::ToolchainResolutionDebugPrinter;
 use crate::toolchains::lookup_error::{ToolchainLookupError, catch_toolchain_exception};
 use crate::toolchains::platform_lookup_util;
 use crate::toolchains::registered_execution_platforms::RegisteredExecutionPlatformsKey;
@@ -43,6 +44,7 @@ pub struct PlatformKeys {
 struct Builder<'e, 'a> {
     // Input data.
     environment: &'e mut Environment<'a>,
+    debug_printer: ToolchainResolutionDebugPrinter,
     configuration_key: BuildConfigurationKey,
 
     // Internal state used during loading.
@@ -57,11 +59,13 @@ impl<'e, 'a> Builder<'e, 'a> {
     // Java: com/google/devtools/build/lib/skyframe/toolchains/PlatformKeys.java:63 PlatformKeys.Builder.<init>
     fn new(
         environment: &'e mut Environment<'a>,
+        debug_printer: ToolchainResolutionDebugPrinter,
         configuration_key: BuildConfigurationKey,
         platform_configuration: &PlatformConfiguration,
     ) -> Self {
         Builder {
             environment,
+            debug_printer,
             configuration_key,
             host_platform_label: platform_configuration.get_host_platform().clone(),
             target_platform_label: platform_configuration.get_target_platform().clone(),
@@ -137,10 +141,10 @@ impl<'e, 'a> Builder<'e, 'a> {
     fn find_execution_platform_keys(&mut self) -> Result<Option<()>, ToolchainLookupError> {
         // Find the registered execution platforms.
         let registered_execution_platforms = match self.environment.get_value_or_throw_with(
-            // PORT: debugPrinter.debugEnabled() is false here: with debugging
-            // ToolchainResolutionFunction.compute stops at
-            // `unported!("ToolchainResolutionDebugPrinter.create")` before PlatformKeys.load.
-            RegisteredExecutionPlatformsKey::key(self.configuration_key.clone(), false),
+            RegisteredExecutionPlatformsKey::key(
+                self.configuration_key.clone(),
+                self.debug_printer.debug_enabled(),
+            ),
             catch_toolchain_exception(&[
                 ToolchainExceptionKind::InvalidPlatform,
                 ToolchainExceptionKind::InvalidExecutionPlatformLabel,
@@ -152,8 +156,14 @@ impl<'e, 'a> Builder<'e, 'a> {
         };
 
         // If debugging, describe rejected execution platforms.
-        // (debugPrinter.reportRejectedExecutionPlatforms: `rejected_platforms` is null unless
-        // debugging, which is unported, see above.)
+        if let Some(rejected_platforms) = &registered_execution_platforms.rejected_platforms
+            && !rejected_platforms.is_empty()
+        {
+            self.debug_printer.report_rejected_execution_platforms(
+                self.environment.listener(),
+                rejected_platforms,
+            );
+        }
 
         // A given execution platform may be registered multiple times, but only the earliest
         // registration is meaningful in practice. To avoid unnecessary reprocessing a
@@ -247,7 +257,12 @@ impl<'e, 'a> Builder<'e, 'a> {
                         .platform_infos
                         .get(*key)
                         .expect("NullPointerException: platform info");
-                    filter_platform(platform_info, &constraints)
+                    filter_platform(
+                        self.debug_printer,
+                        self.environment.listener(),
+                        platform_info,
+                        &constraints,
+                    )
                 })
                 .cloned()
                 .collect(),
@@ -258,12 +273,17 @@ impl<'e, 'a> Builder<'e, 'a> {
 /// Returns `true` if the given platform has all of the constraints.
 // Java: com/google/devtools/build/lib/skyframe/toolchains/PlatformKeys.java:229 PlatformKeys.Builder.filterPlatform
 fn filter_platform(
+    debug_printer: ToolchainResolutionDebugPrinter,
+    event_handler: &dyn blaze_events::EventHandler,
     platform_info: &PlatformInfo,
     constraints: &[blaze_analysis::platform::ConstraintValueInfo],
 ) -> bool {
     let missing_constraints = platform_info.constraints().find_missing(constraints);
-    // (debugPrinter.reportRemovedExecutionPlatform is a no-op without debugging; debugging is
-    // unported, see findExecutionPlatformKeys.)
+    debug_printer.report_removed_execution_platform(
+        event_handler,
+        platform_info.label(),
+        &missing_constraints,
+    );
     missing_constraints.is_empty()
 }
 
@@ -271,12 +291,18 @@ impl PlatformKeys {
     // Java: com/google/devtools/build/lib/skyframe/toolchains/PlatformKeys.java:239 PlatformKeys.load
     pub fn load(
         environment: &mut Environment<'_>,
+        debug_printer: ToolchainResolutionDebugPrinter,
         configuration_key: BuildConfigurationKey,
         platform_configuration: &PlatformConfiguration,
         exec_constraint_labels: &[Label],
     ) -> Result<Option<PlatformKeys>, ToolchainLookupError> {
-        Builder::new(environment, configuration_key, platform_configuration)
-            .build(exec_constraint_labels)
+        Builder::new(
+            environment,
+            debug_printer,
+            configuration_key,
+            platform_configuration,
+        )
+        .build(exec_constraint_labels)
     }
 
     pub fn target_platform_key(&self) -> &ConfiguredTargetKey {

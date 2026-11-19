@@ -1,0 +1,1 @@
+SYNTAX err_res_kw_after_star.star:3:8: keyword argument x may not follow *args

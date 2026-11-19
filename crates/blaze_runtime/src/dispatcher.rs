@@ -12,6 +12,8 @@ use blaze_options::rc::handler::{
     HandlerEvent, OptionsParseFailure, StoredEventHandler,
 };
 use blaze_options::{OptionsParser, OptionsParsingException, PriorityCategory};
+use blaze_options::invocation_policy::OptionAndRawValue;
+use blaze_protos::blaze::invocation_policy::InvocationPolicy;
 use blaze_protos::failure_details::{self, FailureDetail};
 use blaze_sky_loading::package_manager::RepositoryMappingResolutionOrInterrupted;
 use parking_lot::Mutex;
@@ -78,8 +80,7 @@ impl BlazeCommandDispatcher {
 
     /// Executes a single command.
     ///
-    /// PORT: a non-empty invocation policy fails loudly where the runtime receives it
-    /// (`BlazeRuntime::batch_main`, `server_main_single_command`). PORT: skipped, incremental:
+    /// PORT: skipped, incremental:
     /// the idle tasks run between the commands of a server. Command extensions belong to the
     /// gRPC request, which the in-process server does not have. The terminal size monitor only
     /// serves the cursor-control UI. `firstContactTimeMillis` is the time the environment is
@@ -87,6 +88,7 @@ impl BlazeCommandDispatcher {
     // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:192 BlazeCommandDispatcher.exec
     pub fn exec(
         &self,
+        invocation_policy: InvocationPolicy,
         args: Vec<String>,
         out_err: OutErr,
         locking_mode: LockingMode,
@@ -171,17 +173,37 @@ impl BlazeCommandDispatcher {
             let result = loop {
                 attempt_number += 1;
                 *self.remote_cache_transient_error.lock() = false;
-                let result = self.exec_exclusively(
-                    &args,
-                    out_err.clone(),
-                    ui_verbosity == UiVerbosity::QUIET,
-                    &command_name,
-                    command.clone(),
-                    wait_time_in_ms,
-                    startup_options_tagged_with_bazel_rc.clone(),
-                    attempt_number,
-                    attempted_commands,
-                );
+                // Java: execExclusively's `catch (Throwable e)` (BlazeCommandDispatcher.java:862):
+                // a crash is handled and the command ends with the crash's exit code.
+                // PORT: caught here, around the call; the panic unwinds out of the command (no
+                // afterCommand, as Java's `needToCallAfterCommand = false`). Java's try starts
+                // after the CommandEnvironment is created; a crash before that reaches
+                // BlazeRuntime.main, whose handling prints and exits the same way.
+                let exec = crate::bugreport::catch_crash(&args, || {
+                    self.exec_exclusively(
+                        &invocation_policy,
+                        &args,
+                        out_err.clone(),
+                        ui_verbosity == UiVerbosity::QUIET,
+                        &command_name,
+                        command.clone(),
+                        wait_time_in_ms,
+                        startup_options_tagged_with_bazel_rc.clone(),
+                        attempt_number,
+                        attempted_commands,
+                    )
+                });
+                let result = match exec {
+                    Ok(result) => result,
+                    Err(result) => {
+                        // We are crashing: the command's environment is gone.
+                        self.runtime.clear_env();
+                        // Swallow IOException, as we are already in a finally clause
+                        let _ = out_err.get_output_stream().flush();
+                        let _ = out_err.get_error_stream().flush();
+                        result
+                    }
+                };
                 // catch (RemoteCacheTransientErrorException e)
                 if std::mem::take(&mut *self.remote_cache_transient_error.lock()) {
                     attempted_commands += 1;
@@ -217,6 +239,7 @@ impl BlazeCommandDispatcher {
     // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:363 BlazeCommandDispatcher.execExclusively
     fn exec_exclusively(
         &self,
+        invocation_policy: &InvocationPolicy,
         args: &[String],
         out_err: OutErr,
         quiet: bool,
@@ -241,25 +264,29 @@ impl BlazeCommandDispatcher {
             Some(self.check_cwd_in_workspace(command.as_ref(), &mut stored_event_handler));
         let rcfile_notes: Vec<String>;
         {
+            let edit_command = command.clone();
             let mut option_handler = BlazeOptionHandler::new(
                 self.runtime.get_product_name(),
                 &command_annotation.rc,
                 valid_commands,
                 all_options_classes,
                 &mut options_parser,
+            )
+            .with_invocation_policy(
+                self.runtime.get_module_invocation_policy(),
+                invocation_policy.clone(),
+                // Allow the command to edit the options (Java: inside parseOptionsInternal,
+                // after parseArgsAndConfigs succeeded, before the policy is enforced).
+                Box::new(move |parser: &mut OptionsParser| edit_command.edit_options(parser)),
             );
             if early_exit_code.as_ref().unwrap().is_success() {
+                // `invocationPolicyFlagListBuilder= ImmutableList.builder()`: the first pass's
+                // list is dropped.
                 let (result, _config_definitions) = option_handler
                     .parse_options_and_get_config_definitions(args, &mut stored_event_handler);
                 early_exit_code = Some(options_parse_result_exit_code(result));
             }
             rcfile_notes = option_handler.get_rcfile_notes().to_vec();
-        }
-        // Allow the command to edit the options (Java: inside parseOptionsInternal, after
-        // parseArgsAndConfigs succeeded).
-        if early_exit_code.as_ref().unwrap().is_success() {
-            command.edit_options(&mut options_parser);
-            // PORT: InvocationPolicyEnforcer.enforce (no invocation policy is ported).
         }
         let options = Arc::new(options_parser);
 
@@ -269,6 +296,7 @@ impl BlazeCommandDispatcher {
             workspace.clone(),
             command_annotation,
             options.clone(),
+            invocation_policy.clone(),
             &mut command_env_warnings,
         );
         env.set_client_command_line(args.to_vec(), startup_options_tagged_with_bazel_rc.clone());
@@ -316,7 +344,7 @@ impl BlazeCommandDispatcher {
         // CommandLogModule's, and of it the part that runs with the default options: unlinking
         // the command log of a previous build. Writing the log (--write_command_log) fails
         // loudly in crate::unported_options; BuildEventServiceModule's listener (stdout/stderr
-        // in the BEP's progress events) is with the BEP (crate::commands::bep).
+        // in the BEP's progress events) is teed in below.
         // Java: com/google/devtools/build/lib/runtime/CommandLogModule.java:52 CommandLogModule.getOutputListener
         if !common_options.redirect_local_instrumentation_output_writes {
             // When instrumentation output are locally written, we need to unlink old local
@@ -329,6 +357,18 @@ impl BlazeCommandDispatcher {
                 )));
             }
         }
+
+        // The BES module's output listener (the BEP's progress events).
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:979 BlazeCommandDispatcher.tee
+        let out_err = match env.get_bep() {
+            Some(bep) => {
+                let result = blaze_events::io::DelegatingOutErr::new();
+                result.add_sink(&out_err);
+                result.add_sink(bep.get_output_listener());
+                result.as_out_err()
+            }
+            None => out_err,
+        };
 
         let early_exit_code = early_exit_code.unwrap();
         // Early exit. We need to guarantee that the ErrOut and Reporter setup below never error
@@ -370,7 +410,25 @@ impl BlazeCommandDispatcher {
                 .get_workspace()
                 .map(|w| w.get_path_string().to_string()),
         ));
-        reporter.add_handler(handler.clone());
+        // UiEventHandler.<init>: the state tracker. The build commands replace it with a
+        // SkymeldUiStateTracker when they merge analysis and execution
+        // (env.withMergedAnalysisAndExecutionSourceOfTruth(), decided in build.rs).
+        // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:241 UiEventHandler.UiEventHandler
+        // newStatsSummary: ExecutionOptions.statsSummary.
+        let new_stats_summary = options
+            .get_options::<blaze_optdefs::command::execution_options::ExecutionOptions>()
+            .is_some_and(|o| o.stats_summary);
+        handler.set_state_tracker(Arc::new(new_ui_state_tracker(
+            &handler,
+            &event_handler_options,
+            false,
+            new_stats_summary,
+        )));
+        // PORT: the UI handler is registered behind a filter that drops the events of the main
+        // repository mapping once when the command's own evaluation reports them again (see
+        // MainRepoMappingEventHandler).
+        let ui_filter = Arc::new(ReportedOnceFilter::new(handler.clone()));
+        reporter.add_handler(ui_filter.clone());
         env.set_ui_event_handler(handler.clone());
         // PORT: the ANSI-allowing handler for --color=no (registerAnsiAllowingHandler) is only
         // switched to by the `run` command (Reporter.switchToAnsiAllowingHandler), whose `exec`
@@ -442,10 +500,14 @@ impl BlazeCommandDispatcher {
             // (`crate::commands::query::create_skyframe_executor`), which reports its own errors.
             // The commands create their own executor again in `exec`.
             // PORT: Java computes the main repository mapping on the executor the command then
-            // uses, so its events (MODULE.bazel warnings, fetches) are reported once. Blaze's
-            // command creates a new executor that evaluates them again; this one stores its
-            // events and reports them only if the command stops here.
-            let stored_events = Arc::new(blaze_events::StoredEventHandler::new());
+            // uses, so its events (MODULE.bazel warnings, fetches) are reported once, here.
+            // Blaze's command creates a new executor that evaluates them again; this handler
+            // reports the events now and has the UI filter drop them once when the command
+            // reports them again (see MainRepoMappingEventHandler).
+            let stored_events = Arc::new(MainRepoMappingEventHandler::new(
+                reporter.clone(),
+                ui_filter.clone(),
+            ));
             let skyframe_executor =
                 match crate::commands::query::create_skyframe_executor_reporting_to(
                     &env,
@@ -546,11 +608,11 @@ impl BlazeCommandDispatcher {
             }
             let mut options_parser = options_parser.expect("the options parser was rebuilt");
             // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:739 BlazeCommandDispatcher.execExclusively
-            // PORT: skipped, profiling: the profiler task. A non-empty invocation policy fails
-            // loudly where the runtime receives it, so there are no policy flags to re-apply.
+            // PORT: skipped, profiling: the profiler task.
             let mut stored_second_pass_event_handler = StoredEventHandler::default();
-            let early_exit_code = self.parse_options(
-                command.as_ref(),
+            let (early_exit_code, invocation_policy_flags) = self.parse_options(
+                &command,
+                invocation_policy,
                 args,
                 &mut options_parser,
                 &mut stored_second_pass_event_handler,
@@ -559,6 +621,9 @@ impl BlazeCommandDispatcher {
                 for event in stored_second_pass_event_handler.get_events() {
                     reporter.handle(&to_event(event));
                 }
+            }
+            env.set_invocation_policy_flags(invocation_policy_flags);
+            if !early_exit_code.is_success() {
                 post_no_build_event(&env);
                 let result = BlazeCommandResult::detailed_exit_code(early_exit_code);
                 return self.after_command(&mut env, result, &out_err);
@@ -590,12 +655,16 @@ impl BlazeCommandDispatcher {
             // parse; the command gets this one.
             options = Arc::new(options_parser);
         }
+        // From here on the events of the main repository mapping were reported (Java: the
+        // command's evaluations find those nodes done and report nothing for them).
+        ui_filter.start_dropping();
 
-        // PORT: the command-line BEP events (OriginalUnstructuredCommandLineEvent,
-        // OriginalCommandLineEvent, CanonicalCommandLineEvent, the tool command line) are posted
-        // by the commands that produce a Build Event Protocol (build and test:
-        // crate::commands::bep::BepCommandSupport::before_command); for the other commands a
-        // requested BEP fails loudly in crate::unported_options.
+        // Log the command line now that the modules have all had a change to register their
+        // listeners to the event bus, and the flags have been re-parsed.
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:779 BlazeCommandDispatcher.execExclusively
+        if let Some(bep) = env.get_bep() {
+            bep.post_command_line_events(&env, &options);
+        }
 
         // PORT: the options of module hooks that are not ported fail loudly here, where the
         // options are final (see crate::unported_options).
@@ -603,10 +672,9 @@ impl BlazeCommandDispatcher {
 
         // Run the command.
         let result = command.exec(&mut env, &options);
-        // PORT: env.precompleteCommand posts the CommandPrecompleteEvent, whose only subscriber
-        // with an effect in Bazel is the MetricsCollector (the BuildMetricsEvent); build and test
-        // run it with their BEP (crate::commands::build::run_build). No module returns an exit
-        // code from it.
+        // The CommandPrecompleteEvent is posted at the start of after_command (BlazeRuntime
+        // .afterCommand); the commands that build post it earlier, before their remote module's
+        // afterCommand (crate::commands::build::run_build).
         let new_result = self.after_command(&mut env, result, &out_err);
         // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:851 BlazeCommandDispatcher.execExclusively
         if new_result.get_exit_code() == ExitCode::REMOTE_CACHE_EVICTED {
@@ -622,9 +690,8 @@ impl BlazeCommandDispatcher {
     }
 
     /// `CommandEnvironment.beforeCommand`.
-    /// PORT: throws the pending module exception and runs the runtime hook. BuildMetadataEvent
-    /// and GotOptionsEvent are posted with the BEP of build and test
-    /// (crate::commands::bep::BepCommandSupport::before_command). No Bazel module provides an
+    /// PORT: posts BuildMetadataEvent and GotOptionsEvent (whose only subscriber is the BEP's
+    /// streamer), throws the pending module exception and runs the runtime hook. No Bazel module provides an
     /// output service besides the remote module's (the remote output service fails loudly in
     /// crate::unported_options). PORT: skipped, incremental: the timestamp granularity monitor,
     /// the client environment and package path synced into the server's SkyframeExecutor
@@ -634,10 +701,13 @@ impl BlazeCommandDispatcher {
         &self,
         env: &mut CommandEnvironment,
     ) -> Result<(), crate::module::AbruptExitException> {
+        if let Some(bep) = env.get_bep() {
+            bep.post_before_command_events(env);
+        }
         if let Some(e) = env.take_pending_exception() {
             return Err(e);
         }
-        self.runtime.before_command();
+        self.runtime.before_command(env);
         // RemoteModule.beforeCommand for the commands that do not set the remote module up
         // themselves (crate::commands::build::build_remote::dispatcher_before_command).
         crate::commands::build::build_remote::dispatcher_before_command(env)?;
@@ -652,7 +722,17 @@ impl BlazeCommandDispatcher {
         command_result: BlazeCommandResult,
         out_err: &OutErr,
     ) -> BlazeCommandResult {
+        // this.env = null
+        self.runtime.clear_env();
         let mut module_exit_code: Option<DetailedExitCode> = None;
+        // Ensure deterministic ordering of doing the metrics upload before everything else that
+        // happens when BuildCompleteEvent is posted.
+        // env.getEventBus().post(new CommandPrecompleteEvent()): its only subscriber with an
+        // effect is the MetricsCollector, which lives with the BEP.
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:772 BlazeRuntime.afterCommand
+        if let Some(bep) = env.get_bep() {
+            bep.command_precomplete();
+        }
         // RemoteModule.afterCommand of a command set up by env_before_command
         // (crate::commands::build::build_remote::dispatcher_after_command).
         if let Some(e) = crate::commands::build::build_remote::dispatcher_after_command() {
@@ -754,38 +834,40 @@ impl BlazeCommandDispatcher {
     }
 
     /// `BlazeOptionHandler.parseOptions` (the second pass of commands that analyze), with the
-    /// steps of its `parseOptionsInternal` that Blaze runs in the runtime: `checkCwdInWorkspace`
-    /// and `command.editOptions`.
-    /// PORT: InvocationPolicyEnforcer.enforce (no invocation policy is ported).
+    /// step of its `parseOptionsInternal` that Blaze runs in the runtime: `checkCwdInWorkspace`.
+    /// Returns the exit code and the flags the invocation policy applied.
     // Java: com/google/devtools/build/lib/runtime/BlazeOptionHandler.java:466 BlazeOptionHandler.parseOptions
     fn parse_options(
         &self,
-        command: &dyn BlazeCommand,
+        command: &Arc<dyn BlazeCommand>,
+        invocation_policy: &InvocationPolicy,
         args: &[String],
         options_parser: &mut OptionsParser,
         event_handler: &mut StoredEventHandler,
-    ) -> DetailedExitCode {
+    ) -> (DetailedExitCode, Vec<OptionAndRawValue>) {
         // Java: com/google/devtools/build/lib/runtime/BlazeOptionHandler.java:496 BlazeOptionHandler.parseOptionsInternal
-        let early_exit_code = self.check_cwd_in_workspace(command, event_handler);
+        let early_exit_code = self.check_cwd_in_workspace(command.as_ref(), event_handler);
         if !early_exit_code.is_success() {
             options_parser.set_error();
-            return early_exit_code;
+            return (early_exit_code, Vec::new());
         }
-        let result = {
-            let mut option_handler = BlazeOptionHandler::new(
-                self.runtime.get_product_name(),
-                &command.annotation().rc,
-                self.runtime.get_command_map().keys().cloned(),
-                self.runtime.get_all_command_options_classes(),
-                options_parser,
-            );
-            option_handler.parse_options(args, event_handler)
-        };
-        if result.is_ok() {
+        let edit_command = command.clone();
+        let mut option_handler = BlazeOptionHandler::new(
+            self.runtime.get_product_name(),
+            &command.annotation().rc,
+            self.runtime.get_command_map().keys().cloned(),
+            self.runtime.get_all_command_options_classes(),
+            options_parser,
+        )
+        .with_invocation_policy(
+            self.runtime.get_module_invocation_policy(),
+            invocation_policy.clone(),
             // Allow the command to edit the options.
-            command.edit_options(options_parser);
-        }
-        options_parse_result_exit_code(result)
+            Box::new(move |parser: &mut OptionsParser| edit_command.edit_options(parser)),
+        );
+        let result = option_handler.parse_options(args, event_handler);
+        let invocation_policy_flags = option_handler.get_invocation_policy_flags().to_vec();
+        (options_parse_result_exit_code(result), invocation_policy_flags)
     }
 
     // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:323 BlazeCommandDispatcher.setShutdownReason
@@ -799,6 +881,33 @@ impl BlazeCommandDispatcher {
 
 // Java: com/google/devtools/build/lib/analysis/config/CoreOptionConverters.java:67 CoreOptionConverters.BLAZE_ALIASING_FLAG
 const BLAZE_ALIASING_FLAG: &str = "flag_alias";
+
+/// The state tracker `UiEventHandler.<init>` creates: `cursorControl ? new ...(clock,
+/// getProgressTargetWidth()) : new ...(clock)`, then `setProgressSampleSize(uiActionsShown)` and
+/// `setNewStatsSummary(newStatsSummary)` (`--experimental_stats_summary`).
+// Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:241 UiEventHandler.UiEventHandler
+pub(crate) fn new_ui_state_tracker(
+    handler: &UiEventHandler,
+    options: &UiOptions,
+    skymeld_mode: bool,
+    new_stats_summary: bool,
+) -> blaze_buildtool::runtime::ui_state_tracker::UiStateTracker {
+    use blaze_buildtool::runtime::ui_state_tracker::UiStateTracker;
+    let clock: Arc<dyn blaze_events::Clock> = Arc::new(blaze_events::ui::JavaClock);
+    let target_width = if handler.cursor_control() {
+        handler.get_progress_target_width()
+    } else {
+        0
+    };
+    let tracker = if skymeld_mode {
+        UiStateTracker::new_skymeld(clock, target_width)
+    } else {
+        UiStateTracker::new(clock, target_width)
+    };
+    tracker.set_progress_sample_size(options.ui_actions_shown);
+    tracker.set_new_stats_summary(new_stats_summary);
+    tracker
+}
 
 /// The `UiEventHandler` settings read from `UiOptions`.
 fn ui_event_handler_options(options: &UiOptions) -> UiEventHandlerOptions {
@@ -816,6 +925,10 @@ fn ui_event_handler_options(options: &UiOptions) -> UiEventHandlerOptions {
         attempt_to_print_relative_paths: options.attempt_to_print_relative_paths,
         filtered_event_kinds: filtered,
         max_stdout_err_bytes: options.max_stdout_err_bytes,
+        show_progress_rate_limit: options.show_progress_rate_limit,
+        terminal_columns: options.terminal_columns,
+        progress_in_term_title: options.progress_in_term_title,
+        ui_actions_shown: options.ui_actions_shown,
     }
 }
 
@@ -866,7 +979,7 @@ fn boolean_option_value(options_parser: &OptionsParser, name: &str) -> bool {
 fn parse_starlark_options(
     env: &CommandEnvironment,
     skyframe_executor: &blaze_sky_top::skyframe_executor::SkyframeExecutor,
-    stored_events: &Arc<blaze_events::StoredEventHandler>,
+    stored_events: &Arc<MainRepoMappingEventHandler>,
     options_parser: &mut OptionsParser,
     args: &[String],
 ) -> DetailedExitCode {
@@ -910,8 +1023,8 @@ fn parse_starlark_options(
                     }
                 }
             }
-            // PORT: the events of loading the build settings (stored, see the call) come before
-            // the error, as they do when Java reports them while loading.
+            // PORT: the events of loading the build settings were reported while loading (see
+            // the call); only the stored posts are replayed.
             stored_events.replay_on(env.get_reporter().as_ref());
             process_options_parsing_exception(
                 env.get_reporter().as_ref(),
@@ -956,23 +1069,20 @@ fn process_options_parsing_exception(
 }
 
 // Java: com/google/devtools/build/lib/util/InterruptedFailureDetails.java:30 InterruptedFailureDetails.detailedExitCode
-/// `env.getEventBus().post(new NoBuildEvent(...))` of a command that stops before it runs: the
-/// Build Event Protocol of such a command consists of the events posted so far and this one.
-///
-/// PORT: Blaze's BEP support starts inside `build` and `test` (crate::commands::bep), after the
-/// dispatcher's early exits, so a command that requested BEP files and stops here would leave
-/// none; that fails loudly. Without BEP files the event has no subscriber.
+/// `env.getEventBus().post(new NoBuildEvent(commandName, firstContactTime, false, true,
+/// env.getCommandId().toString()))` of a command that stops before it runs: the Build Event
+/// Protocol of such a command consists of the events posted so far and this one.
 // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:516 BlazeCommandDispatcher.execExclusively
 fn post_no_build_event(env: &CommandEnvironment) {
-    use blaze_optdefs::misc::build_event_stream_options::BuildEventStreamOptions;
-    if let Some(o) = env.get_options().get_options::<BuildEventStreamOptions>()
-        && (!o.build_event_text_file.is_empty()
-            || !o.build_event_binary_file.is_empty()
-            || !o.build_event_json_file.is_empty())
-    {
-        blaze_util::unported!(
-            "NoBuildEvent",
-            "the Build Event Protocol (--build_event_*_file) of a command that stops before it runs"
+    // PORT: the only subscriber with an effect is the BEP's streamer (the UI's noBuild only
+    // stops its progress bar, which has not started).
+    if let Some(bep) = env.get_bep() {
+        bep.post_no_build_event(
+            Some(env.get_command_name().to_string()),
+            Some(env.get_command_start_time()),
+            false,
+            true,
+            Some(env.get_command_id().to_string()),
         );
     }
 }
@@ -1064,4 +1174,99 @@ fn create_options_detailed_exit_code(
             },
         )),
     })
+}
+
+/// The event handler of the dispatcher's computation of the main repository mapping and of
+/// loading the build settings of Starlark options.
+///
+/// PORT: Java computes the main repository mapping on the command's Skyframe executor
+/// (`env.getSkyframeExecutor().getMainRepoMapping(reporter)`), so its events reach the reporter
+/// at once and the command's later evaluations find those nodes done and report nothing for
+/// them. Blaze's commands create their own executor, which evaluates the same nodes again. This
+/// handler reports each event at once, as Java does, and records it in the [`ReportedOnceFilter`]
+/// in front of the UI handler, which drops it once when the command's evaluation reports it
+/// again. Posts are stored and posted only if the command stops before `exec` (otherwise the
+/// command's executor posts them).
+pub(crate) struct MainRepoMappingEventHandler {
+    reporter: Arc<blaze_events::Reporter>,
+    filter: Arc<ReportedOnceFilter>,
+    posts: blaze_events::StoredEventHandler,
+}
+
+impl MainRepoMappingEventHandler {
+    fn new(reporter: Arc<blaze_events::Reporter>, filter: Arc<ReportedOnceFilter>) -> Self {
+        MainRepoMappingEventHandler {
+            reporter,
+            filter,
+            posts: blaze_events::StoredEventHandler::new(),
+        }
+    }
+
+    /// Posts the stored posts on `event_handler` (the events were reported already).
+    fn replay_on(&self, event_handler: &dyn blaze_events::ExtendedEventHandler) {
+        self.posts.replay_on(event_handler);
+    }
+}
+
+impl EventHandler for MainRepoMappingEventHandler {
+    fn handle(&self, event: &Event) {
+        self.filter.record(event);
+        self.reporter.handle(event);
+    }
+
+    fn as_extended_event_handler(&self) -> Option<&dyn blaze_events::ExtendedEventHandler> {
+        Some(self)
+    }
+}
+
+impl blaze_events::ExtendedEventHandler for MainRepoMappingEventHandler {
+    fn post(&self, obj: Arc<dyn blaze_events::Postable>) {
+        blaze_events::ExtendedEventHandler::post(&self.posts, obj);
+    }
+}
+
+/// PORT: stands in front of the UI handler and, once the dispatcher has started the command,
+/// drops each event that [`MainRepoMappingEventHandler`] reported, once (see there).
+pub(crate) struct ReportedOnceFilter {
+    delegate: Arc<dyn EventHandler>,
+    reported: Mutex<Vec<Event>>,
+    dropping: std::sync::atomic::AtomicBool,
+}
+
+impl ReportedOnceFilter {
+    fn new(delegate: Arc<dyn EventHandler>) -> Self {
+        ReportedOnceFilter {
+            delegate,
+            reported: Mutex::new(Vec::new()),
+            dropping: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn record(&self, event: &Event) {
+        if !self.dropping.load(std::sync::atomic::Ordering::SeqCst) {
+            self.reported.lock().push(event.clone());
+        }
+    }
+
+    fn start_dropping(&self) {
+        self.dropping
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl EventHandler for ReportedOnceFilter {
+    fn handle(&self, event: &Event) {
+        if self.dropping.load(std::sync::atomic::Ordering::SeqCst) {
+            let mut reported = self.reported.lock();
+            if let Some(i) = reported.iter().position(|e| e == event) {
+                reported.remove(i);
+                return;
+            }
+        }
+        self.delegate.handle(event);
+    }
+
+    fn as_extended_event_handler(&self) -> Option<&dyn blaze_events::ExtendedEventHandler> {
+        self.delegate.as_extended_event_handler()
+    }
 }

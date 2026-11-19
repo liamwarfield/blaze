@@ -224,6 +224,75 @@ impl BuildEvent for ConvenienceSymlinksIdentifiedEvent {
 
 impl blaze_events::Postable for ConvenienceSymlinksIdentifiedEvent {}
 
+/// The `ExecRequest` that `run` returns to the client, as a build event.
+///
+/// PORT: Java holds the `ExecRequest` proto; the event reads its working directory, environment,
+/// variables to clear and `should_exec`, and takes the argv it reports separately
+/// (`redactedArgv`).
+// Java: com/google/devtools/build/lib/buildtool/buildevent/ExecRequestEvent.java:34 ExecRequestEvent
+#[derive(Clone, Debug)]
+pub struct ExecRequestEvent {
+    working_directory: Vec<u8>,
+    /// (name, value) of each `environment_variable`.
+    environment_variable: Vec<(Vec<u8>, Vec<u8>)>,
+    environment_variable_to_clear: Vec<Vec<u8>>,
+    should_exec: bool,
+    redacted_argv: Vec<Vec<u8>>,
+}
+
+impl ExecRequestEvent {
+    // Java: com/google/devtools/build/lib/buildtool/buildevent/ExecRequestEvent.java:39 ExecRequestEvent.<init>
+    pub fn new(
+        working_directory: Vec<u8>,
+        environment_variable: Vec<(Vec<u8>, Vec<u8>)>,
+        environment_variable_to_clear: Vec<Vec<u8>>,
+        should_exec: bool,
+        redacted_argv: Vec<Vec<u8>>,
+    ) -> Self {
+        ExecRequestEvent {
+            working_directory,
+            environment_variable,
+            environment_variable_to_clear,
+            should_exec,
+            redacted_argv,
+        }
+    }
+}
+
+impl BuildEvent for ExecRequestEvent {
+    // Java: com/google/devtools/build/lib/buildtool/buildevent/ExecRequestEvent.java:66 ExecRequestEvent.getEventId
+    fn get_event_id(&self) -> BuildEventId {
+        build_event_id_util::exec_request_id()
+    }
+
+    // Java: com/google/devtools/build/lib/buildtool/buildevent/ExecRequestEvent.java:71 ExecRequestEvent.getChildrenEvents
+    fn get_children_events(&self) -> Vec<BuildEventId> {
+        Vec::new()
+    }
+
+    // Java: com/google/devtools/build/lib/buildtool/buildevent/ExecRequestEvent.java:45 ExecRequestEvent.asStreamProto
+    fn as_stream_proto(&self, _: &dyn BuildEventContext) -> Result<bes::BuildEvent, Interrupted> {
+        let builder = bes::ExecRequestConstructed {
+            working_directory: self.working_directory.clone(),
+            environment_variable: self
+                .environment_variable
+                .iter()
+                .map(|(name, value)| bes::EnvironmentVariable {
+                    name: name.clone(),
+                    value: value.clone(),
+                })
+                .collect(),
+            environment_variable_to_clear: self.environment_variable_to_clear.clone(),
+            should_exec: self.should_exec,
+            // Use the event's redacted argv instead of the ExecRequest's argv.
+            argv: self.redacted_argv.clone(),
+        };
+        Ok(proto_chaining_with(self, Payload::ExecRequest(builder)))
+    }
+}
+
+impl blaze_events::Postable for ExecRequestEvent {}
+
 /// `BuildInterruptedEvent`: the build was interrupted (the streamer records USER_INTERRUPTED).
 // Java: com/google/devtools/build/lib/buildtool/buildevent/BuildInterruptedEvent.java:21 BuildInterruptedEvent
 #[derive(Clone, Copy, Debug, Default)]

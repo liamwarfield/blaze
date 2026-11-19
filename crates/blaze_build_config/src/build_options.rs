@@ -894,6 +894,19 @@ impl BuildOptionsBuilder {
             .map(|(_, o)| o.as_any_mut().downcast_mut::<T>().expect("class matches"))
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/BuildOptions.java:417 BuildOptions.Builder.getFragmentOptions
+    /// `getFragmentOptions(Class)` with the class given by the `TypeId` of its Rust options
+    /// struct (`OptionDefinition.getDeclaringClass`).
+    pub fn get_fragment_options_by_type_id(
+        &mut self,
+        type_id: std::any::TypeId,
+    ) -> Option<&mut dyn OptionsBase> {
+        self.fragment_options
+            .iter_mut()
+            .find(|(c, _)| c.type_id() == type_id)
+            .map(|(_, o)| o.as_mut())
+    }
+
     // Java: com/google/devtools/build/lib/analysis/config/BuildOptions.java:423 BuildOptions.Builder.removeFragmentOptions
     /// Removes the value for the `FragmentOptions` with the given FragmentOptions class.
     pub fn remove_fragment_options(&mut self, key: FragmentOptionsClass) -> &mut Self {

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Records how protobuf-java decodes malformed UTF-8 in `string` values, as Bazel 9.3.2 links it.
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+usage: scripts/protobuf-utf8/run
+       scripts/protobuf-utf8/run help
+
+Compiles scripts/protobuf-utf8/ProtobufUtf8Vectors.java with a host JDK 25 compiler ($HOST_JAVA, default
+/usr/lib/jvm/java-25-openjdk/bin/java, run as `-m jdk.compiler/...`; class files for Java 25)
+against the oracle's A-server.jar (Bazel 9.3.2's server jar, which holds protobuf-java 33.4 and
+Bazel's generated protos) and runs it on the oracle's embedded JDK with the same jar, for every
+byte sequence of scripts/protobuf-utf8/cases.txt. For each it records: TextFormat parse of
+`path: "<octal escapes>"` into build.bazel.remote.execution.v2.OutputFile (Tokenizer
+.consumeString), TextFormat.printer() output of that message with and without escapingNonAscii,
+TextFormat.unescapeText, DynamicMessage.parseFrom of a proto2 string (blaze_query.License
+license_type) and of a proto3 string (OutputFile.path). Writes
+crates/blaze_protos/tests/data/protobuf_utf8_vectors.txt, which
+crates/blaze_protos/tests/protobuf_utf8_test.rs reads.
+USAGE
+}
+
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+if [[ $# -ne 0 ]]; then
+  usage
+  exit 2
+fi
+
+here="$(cd "$(dirname "$0")" && pwd)"
+repo="$(cd "$here/../.." && pwd)"
+install="$HOME/.cache/blaze/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9"
+java="$install/embedded_tools/jdk/bin/java"
+jar="$install/A-server.jar"
+build="$(mktemp -d)"
+trap 'rm -rf "$build"' EXIT
+"${HOST_JAVA:-/usr/lib/jvm/java-25-openjdk/bin/java}" -m jdk.compiler/com.sun.tools.javac.Main -cp "$jar" -d "$build" "$here/ProtobufUtf8Vectors.java"
+"$java" -version 2>&1 | head -1 >&2
+out="$repo/crates/blaze_protos/tests/data/protobuf_utf8_vectors.txt"
+"$java" -cp "$build:$jar" ProtobufUtf8Vectors < "$here/cases.txt" > "$out.tmp"
+mv "$out.tmp" "$out"
+echo "wrote $out ($(grep -vc '^#' "$out") vectors)" >&2

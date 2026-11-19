@@ -39,3 +39,5 @@ blaze_analysis = { path = "../blaze_analysis" }
 blaze_cc_features = { path = "../blaze_cc_features" }
 regex.workspace = true
 blaze_sky_loading = { path = "../blaze_sky_loading" }
+# Java: the .jdeps proto (src/main/protobuf/deps.proto) read by JavaCompileAction.
+prost.workspace = true

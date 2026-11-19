@@ -1,0 +1,86 @@
+accept c1
+request 01-c1 GET http://origin.example/f HTTP/1.1
+response 01-c1 HTTP/1.1 407 Proxy Authentication Required
+close c1 by client
+accept c2
+request 02-c2 GET http://origin.example/f HTTP/1.1
+response 02-c2 HTTP/1.1 200 OK
+request 03-c2 GET http://origin.example/g HTTP/1.1
+response 03-c2 HTTP/1.1 407 Proxy Authentication Required
+close c2 by client
+accept c3
+request 04-c3 GET http://origin.example/g HTTP/1.1
+response 04-c3 HTTP/1.1 407 Proxy Authentication Required
+accept c4
+request 05-c4 GET http://origin.example/g HTTP/1.1
+close c3 by client
+response 05-c4 HTTP/1.1 407 Proxy Authentication Required
+close c4 by client
+accept c5
+request 06-c5 GET http://origin.example/g HTTP/1.1
+response 06-c5 HTTP/1.1 407 Proxy Authentication Required
+close c5 by client
+accept c6
+request 07-c6 GET http://origin.example/g HTTP/1.1
+response 07-c6 HTTP/1.1 407 Proxy Authentication Required
+accept c7
+request 08-c7 GET http://origin.example/g HTTP/1.1
+response 08-c7 HTTP/1.1 407 Proxy Authentication Required
+accept c8
+request 09-c8 GET http://origin.example/g HTTP/1.1
+response 09-c8 HTTP/1.1 407 Proxy Authentication Required
+close c8 by client
+close c6 by client
+close c7 by client
+accept c9
+request 10-c9 GET http://origin.example/g HTTP/1.1
+response 10-c9 HTTP/1.1 407 Proxy Authentication Required
+accept c10
+request 11-c10 GET http://origin.example/g HTTP/1.1
+response 11-c10 HTTP/1.1 407 Proxy Authentication Required
+close c9 by client
+accept c11
+request 12-c11 GET http://origin.example/g HTTP/1.1
+response 12-c11 HTTP/1.1 407 Proxy Authentication Required
+close c10 by client
+close c11 by client
+accept c12
+request 13-c12 GET http://origin.example/g HTTP/1.1
+response 13-c12 HTTP/1.1 407 Proxy Authentication Required
+accept c13
+request 14-c13 GET http://origin.example/g HTTP/1.1
+response 14-c13 HTTP/1.1 407 Proxy Authentication Required
+close c12 by client
+close c13 by client
+accept c14
+request 15-c14 GET http://origin.example/g HTTP/1.1
+response 15-c14 HTTP/1.1 407 Proxy Authentication Required
+close c14 by client
+accept c15
+request 16-c15 GET http://origin.example/g HTTP/1.1
+response 16-c15 HTTP/1.1 407 Proxy Authentication Required
+accept c16
+request 17-c16 GET http://origin.example/g HTTP/1.1
+response 17-c16 HTTP/1.1 407 Proxy Authentication Required
+close c15 by client
+close c16 by client
+accept c17
+request 18-c17 GET http://origin.example/g HTTP/1.1
+response 18-c17 HTTP/1.1 407 Proxy Authentication Required
+close c17 by client
+accept c18
+request 19-c18 GET http://origin.example/g HTTP/1.1
+response 19-c18 HTTP/1.1 407 Proxy Authentication Required
+close c18 by client
+accept c19
+request 20-c19 GET http://origin.example/g HTTP/1.1
+response 20-c19 HTTP/1.1 407 Proxy Authentication Required
+close c19 by client
+accept c20
+request 21-c20 GET http://origin.example/g HTTP/1.1
+response 21-c20 HTTP/1.1 407 Proxy Authentication Required
+accept c21
+request 22-c21 GET http://origin.example/g HTTP/1.1
+response 22-c21 HTTP/1.1 407 Proxy Authentication Required
+close c21 by client
+close c20 by client

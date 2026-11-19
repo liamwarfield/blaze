@@ -23,11 +23,14 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicI32;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Instant;
 
 use blaze_bep::bep_module::{
     BepCommandContext, BepStreamer, BuildEventPost, BuildEventStreamerBuilder,
+};
+use blaze_bep::buildeventstream::artifact_uploader::{
+    BuildEventArtifactUploader, LocalFilesArtifactUploader, PathConverterFuture,
 };
 use blaze_bep::buildeventstream::build_event_id_util;
 use blaze_bep::buildeventstream::{
@@ -37,17 +40,23 @@ use blaze_bep::buildeventstream::{
 use blaze_bep::events::actions_events::{
     ActionExecutedEvent, ActionFailure, ErrorTiming, ExecutedActionInfo, ExecutedActionOwner,
 };
+use blaze_bep::events::analysis_events::AnalysisFailureBuildEvent;
 use blaze_bep::events::analysis_events::{
-    BuildInfoEvent, ConfiguredTargetInfo, PackagesTestSize, TargetConfiguredEvent,
+    BuildInfoEvent, ConfiguredTargetInfo, NoBuildEvent, PackagesTestSize, TargetConfiguredEvent,
 };
 use blaze_bep::events::buildtool_events::{
     BuildResultData, BuildStartingData, BuildStartingEvent, ConvenienceSymlinksIdentifiedEvent,
     build_complete_event, testing_complete_event,
 };
 use blaze_bep::events::completion_context::{CompletionContext, ImportantInputMap};
-use blaze_bep::events::pkgcache_events::{TargetParsingCompleteEvent, ThinTarget};
+use blaze_bep::events::pkgcache_events::{
+    PatternExpandingErrorEvent, TargetParsingCompleteEvent, ThinTarget,
+};
 use blaze_bep::events::target_complete_event::{
     ArtifactsInOutputGroup, Cause, CompletedTargetData, TargetCompleteEvent,
+};
+use blaze_bep::events::target_complete_event::{
+    AspectCompleteBuildEvent, AspectConfiguredBuildEvent,
 };
 use blaze_bep::metrics::metrics_collector::{
     AnalysisPhaseCompleteInfo, BuildMetricsFinishInputs, JvmMemoryFacts, MetricsCollector,
@@ -55,13 +64,17 @@ use blaze_bep::metrics::metrics_collector::{
 };
 use blaze_bep::runtime::BuildEventArtifactUploaderFactoryMap;
 use blaze_bep::runtime::ReleaseReplaceableBuildEvent;
+use blaze_bep::runtime::build_event_artifact_uploader_factory::BuildEventArtifactUploaderFactory;
 use blaze_bep::runtime::command_line_event::{
     CanonicalCommandLineEvent, OriginalCommandLineEvent, OriginalUnstructuredCommandLineEvent,
     ToolCommandLineEvent,
 };
 use blaze_bep::runtime::got_options_event::GotOptionsEvent;
 use blaze_bep::runtime::runtime_events::{BuildMetadataEvent, ExecRootEvent};
-use blaze_bep::runtime::test_summary_event::TestSummaryEvent;
+use blaze_bep::runtime::target_summary_publisher::{
+    TargetSummaryKey, TargetSummaryPublisher, TargetSummarySink, TargetSummaryTarget,
+};
+use blaze_bep::runtime::test_summary_event::{TargetSummaryEvent, TestSummaryEvent};
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_buildtool::buildtool::build_result::{self as tool_build_result, BuildResult};
 use blaze_buildtool::buildtool::execution_tool::ExecutionEventCollector;
@@ -84,7 +97,10 @@ use blaze_optdefs::command::ui_options::UiOptions;
 use blaze_optdefs::common::test_size::TestSize;
 use blaze_optdefs::common::test_timeout::TestTimeout;
 use blaze_optdefs::fragment::test_configuration::TestConfigurationTestOptions;
+use blaze_bep::runtime::synchronized_output_stream::SynchronizedOutputStream;
+use blaze_events::OutErr;
 use blaze_optdefs::misc::build_event_protocol_options::BuildEventProtocolOptions;
+use blaze_optdefs::misc::build_event_service_options::BuildEventServiceOptions;
 use blaze_optdefs::misc::build_event_stream_options::BuildEventStreamOptions;
 use blaze_optdefs::misc::metrics_module::MetricsModuleOptions;
 use blaze_optdefs::misc::package_metrics_module::PackageMetricsModuleOptions;
@@ -92,20 +108,22 @@ use blaze_packages::attribute::{AttributeMap, RawAttributeMapper};
 use blaze_packages::target::Target;
 use blaze_packages::target::target_utils;
 use blaze_packages::types::{AttrValue, Type};
-use blaze_protos::blaze::invocation_policy::InvocationPolicy;
 use blaze_protos::build_event_stream::aborted::AbortReason;
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail};
 use blaze_shell::util::shell_escaper::ShellEscaper;
 use blaze_sky_exec::events::{
     ActionCompletionEvent, ActionExecutedEvent as SkyActionExecutedEvent,
-    ActionResultReceivedEvent, CompletionRootCause, ErrorTiming as SkyErrorTiming,
-    TargetCompleteEvent as SkyTargetCompleteEvent, TopLevelTargetPendingExecutionEvent,
-    downcast_event,
+    ActionResultReceivedEvent, AspectCompleteEvent as SkyAspectCompleteEvent, CompletionRootCause,
+    ErrorTiming as SkyErrorTiming, TargetCompleteEvent as SkyTargetCompleteEvent,
+    TopLevelTargetPendingExecutionEvent, downcast_event,
 };
+use blaze_sky_top::analysis_failure_event::{AnalysisFailureEvent, AnalysisRootCause};
 use blaze_sky_top::build_tool::BuildRequest;
 use blaze_sky_top::build_view::{AnalysisResult, construct_label_to_target_map};
 use blaze_sky_top::execution_seam::configured_target_views;
+use blaze_sky_top::pattern_expanding_error::PatternExpandingError;
 use blaze_sky_top::skyframe_executor::SkyframeExecutor;
+use blaze_sky_top::skyframe_executor::{AspectConfiguredEvent, ToplevelAspectsIdentifiedEvent};
 use blaze_sky_top::target_pattern_phase::{
     TargetPatternPhaseValue, TestsForTargetPatternKey, TestsForTargetPatternValue,
 };
@@ -172,6 +190,8 @@ struct Shared {
     /// The completion facts of each top-level configured target, by (label, configuration
     /// checksum).
     targets: Mutex<IndexMap<(Label, Option<String>), CompletedTargetFacts>>,
+    /// The `TargetSummaryPublisher` registered on the event bus (`--experimental_bep_target_summary`).
+    target_summary_publisher: Option<Arc<TargetSummaryPublisher>>,
     /// `skyframeActionExecutor.publishTargetSummaries()`
     /// (`BuildEventProtocolOptions.publishTargetSummary`).
     announce_target_summary: bool,
@@ -217,9 +237,36 @@ impl EventBus for BepSubscriber {
             shared.metrics.log_action_cache_statistics(e);
             return;
         }
-        if downcast_event::<TopLevelTargetPendingExecutionEvent>(&event).is_some() {
+        if let Some(e) =
+            downcast_event::<blaze_bep::metrics::criticalpath::CriticalPathEvent>(&event)
+        {
+            // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:318 MetricsCollector.onCriticalPath
+            shared
+                .metrics
+                .on_critical_path(e.get_critical_path().get_aggregated_elapsed_time());
+            return;
+        }
+        if let Some(e) = downcast_event::<TopLevelTargetPendingExecutionEvent>(&event) {
             // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:213 MetricsCollector.handleExecutionPhaseStart
             shared.metrics.handle_execution_phase_start();
+            if let Some(publisher) = &shared.target_summary_publisher {
+                publisher.populate_target(&shared.summary_target(&e.label), e.is_test);
+            }
+            return;
+        }
+        if let Some(e) = downcast_event::<ToplevelAspectsIdentifiedEvent>(&event) {
+            if let Some(publisher) = &shared.target_summary_publisher {
+                publisher.toplevel_aspects_identified(
+                    TargetSummaryKey {
+                        label: e.configured_target_key.get_label().clone(),
+                        configuration_checksum: e
+                            .configured_target_key
+                            .get_configuration_key()
+                            .map(|k| k.get_options_checksum().to_string()),
+                    },
+                    e.aspect_count,
+                );
+            }
             return;
         }
         // The build events whose Rust type is not the blaze_bep one.
@@ -227,6 +274,16 @@ impl EventBus for BepSubscriber {
             shared
                 .streamer
                 .build_event(Arc::new(convert_target_complete(shared, e)));
+            // Java: com/google/devtools/build/lib/runtime/TargetSummaryPublisher.java:229 TargetSummaryPublisher.targetComplete
+            if let Some(publisher) = &shared.target_summary_publisher {
+                publisher.target_complete(
+                    &TargetSummaryKey {
+                        label: e.label.clone(),
+                        configuration_checksum: e.configuration_checksum.clone(),
+                    },
+                    e.failed(),
+                );
+            }
             return;
         }
         if let Some(e) = downcast_event::<ExecBuildInfoEvent>(&event) {
@@ -245,6 +302,16 @@ impl EventBus for BepSubscriber {
             shared
                 .streamer
                 .build_event(Arc::new(convert_test_summary(summary)));
+            // Java: com/google/devtools/build/lib/runtime/TargetSummaryPublisher.java:262 TargetSummaryPublisher.testSummaryEvent
+            if let Some(publisher) = &shared.target_summary_publisher {
+                publisher.test_summary_event(
+                    &TargetSummaryKey {
+                        label: summary.get_target().get_label(),
+                        configuration_checksum: summary.get_target().get_configuration_checksum(),
+                    },
+                    summary.get_status(),
+                );
+            }
             return;
         }
         if let Some(e) = downcast_event::<ToolTestingCompleteEvent>(&event) {
@@ -264,6 +331,55 @@ impl EventBus for BepSubscriber {
                     vec![build_event_id_util::build_metrics()],
                 ),
             ));
+            return;
+        }
+        if let Some(e) = downcast_event::<PatternExpandingError>(&event) {
+            shared
+                .streamer
+                .build_event(Arc::new(PatternExpandingErrorEvent::new(
+                    e.get_pattern().to_vec(),
+                    e.get_message().to_string(),
+                    e.is_skipped(),
+                )));
+            return;
+        }
+        if let Some(e) = downcast_event::<AnalysisFailureEvent>(&event) {
+            shared
+                .streamer
+                .build_event(Arc::new(convert_analysis_failure(e)));
+            return;
+        }
+        if let Some(e) = downcast_event::<AspectConfiguredEvent>(&event) {
+            // Java: com/google/devtools/build/lib/analysis/AspectConfiguredEvent.java:28 AspectConfiguredEvent
+            let configuration = e.get_configuration();
+            shared
+                .streamer
+                .build_event(Arc::new(AspectConfiguredBuildEvent::new(
+                    e.get_target().clone(),
+                    e.get_aspect_class_name().to_string(),
+                    e.get_aspect_description().to_string(),
+                    configuration.map(|c| c.checksum().to_string()),
+                    configuration.map(|c| configuration_event(c)),
+                )));
+            return;
+        }
+        if let Some(e) = downcast_event::<SkyAspectCompleteEvent>(&event) {
+            let converted = convert_aspect_complete(shared, e);
+            let failed = converted.failed();
+            shared.streamer.build_event(Arc::new(converted));
+            // Java: com/google/devtools/build/lib/runtime/TargetSummaryPublisher.java:238 TargetSummaryPublisher.aspectComplete
+            if let Some(publisher) = &shared.target_summary_publisher {
+                let base = aspect_key_of(&e.aspect_key).get_base_configured_target_key();
+                publisher.aspect_complete(
+                    &TargetSummaryKey {
+                        label: base.get_label().clone(),
+                        configuration_checksum: base
+                            .get_configuration_key()
+                            .map(|k| k.get_options_checksum().to_string()),
+                    },
+                    failed,
+                );
+            }
             return;
         }
         if let Some(e) = downcast_event::<SkyActionExecutedEvent>(&event) {
@@ -344,34 +460,7 @@ fn convert_target_complete(shared: &Shared, e: &SkyTargetCompleteEvent) -> Targe
         },
     };
     if e.failed() {
-        let root_causes: Vec<Cause> = e
-            .root_cause_details
-            .iter()
-            .map(|cause| match cause {
-                // Java: com/google/devtools/build/lib/causes/ActionFailed.java:71 ActionFailed.getIdProto
-                CompletionRootCause::ActionFailed {
-                    exec_path,
-                    label,
-                    configuration_checksum,
-                    failure_detail,
-                } => Cause {
-                    id_proto: build_event_id_util::action_completed_with(
-                        exec_path,
-                        label.as_ref(),
-                        configuration_checksum.as_deref(),
-                    ),
-                    detailed_exit_code: blaze_util::DetailedExitCode::of(failure_detail.clone()),
-                },
-                // Java: com/google/devtools/build/lib/causes/LabelCause.java:55 LabelCause.getIdProto
-                CompletionRootCause::Label {
-                    label,
-                    failure_detail,
-                } => Cause {
-                    id_proto: build_event_id_util::unconfigured_label_id(label),
-                    detailed_exit_code: blaze_util::DetailedExitCode::of(failure_detail.clone()),
-                },
-            })
-            .collect();
+        let root_causes: Vec<Cause> = e.root_cause_details.iter().map(completion_cause).collect();
         TargetCompleteEvent::create_failed(
             data,
             ctx,
@@ -389,6 +478,181 @@ fn convert_target_complete(shared: &Shared, e: &SkyTargetCompleteEvent) -> Targe
     } else {
         TargetCompleteEvent::successful_build(data, ctx, outputs, shared.announce_target_summary)
     }
+}
+
+/// `Cause.getIdProto()` of an analysis root cause.
+// Java: com/google/devtools/build/lib/causes/AnalysisFailedCause.java:70 AnalysisFailedCause.getIdProto
+// Java: com/google/devtools/build/lib/causes/LoadingFailedCause.java:52 LoadingFailedCause.getIdProto
+// Java: com/google/devtools/build/lib/causes/LabelCause.java:55 LabelCause.getIdProto
+fn analysis_root_cause_id(
+    cause: &AnalysisRootCause,
+) -> blaze_protos::build_event_stream::BuildEventId {
+    use blaze_sky_analysis::producers::errors::Cause as SkyCause;
+    match cause {
+        AnalysisRootCause::Cause(SkyCause::AnalysisFailed {
+            label,
+            configuration,
+            ..
+        })
+        | AnalysisRootCause::AnalysisFailed {
+            label,
+            configuration,
+            ..
+        } => build_event_id_util::configured_label_id(
+            label,
+            build_event_id_util::configuration_id_message(configuration),
+        ),
+        AnalysisRootCause::Cause(SkyCause::LoadingFailed { label, .. })
+        | AnalysisRootCause::Cause(SkyCause::Label { label, .. })
+        | AnalysisRootCause::Label { label, .. } => {
+            build_event_id_util::unconfigured_label_id(label)
+        }
+    }
+}
+
+/// `AnalysisFailureEvent` as the build event it is in Java.
+// Java: com/google/devtools/build/lib/analysis/AnalysisFailureEvent.java:127 AnalysisFailureEvent.getEventId
+fn convert_analysis_failure(e: &AnalysisFailureEvent) -> AnalysisFailureBuildEvent {
+    let failed_target = e.get_failed_target();
+    let checksum = failed_target
+        .get_configuration_key()
+        .map(|k| k.get_options_checksum().to_string());
+    let aspect = e.get_failed_aspect().map(|aspect| {
+        (
+            aspect
+                .get_configuration_key()
+                .map(|k| k.get_options_checksum().to_string()),
+            aspect.get_aspect_name(),
+        )
+    });
+    let id = AnalysisFailureBuildEvent::event_id(
+        failed_target.get_label(),
+        e.is_configured(),
+        checksum.as_deref(),
+        aspect
+            .as_ref()
+            .map(|(c, name)| (c.as_deref(), name.as_str())),
+    );
+    AnalysisFailureBuildEvent::new(
+        id,
+        e.get_root_causes()
+            .iter()
+            .map(analysis_root_cause_id)
+            .collect(),
+    )
+}
+
+/// `Cause.getIdProto()` and the exit code of a completion's root cause.
+fn completion_cause(cause: &CompletionRootCause) -> Cause {
+    match cause {
+        // Java: com/google/devtools/build/lib/causes/ActionFailed.java:71 ActionFailed.getIdProto
+        CompletionRootCause::ActionFailed {
+            exec_path,
+            label,
+            configuration_checksum,
+            failure_detail,
+        } => Cause {
+            id_proto: build_event_id_util::action_completed_with(
+                exec_path,
+                label.as_ref(),
+                configuration_checksum.as_deref(),
+            ),
+            detailed_exit_code: blaze_util::DetailedExitCode::of(failure_detail.clone()),
+        },
+        // Java: com/google/devtools/build/lib/causes/LabelCause.java:55 LabelCause.getIdProto
+        CompletionRootCause::Label {
+            label,
+            failure_detail,
+        } => Cause {
+            id_proto: build_event_id_util::unconfigured_label_id(label),
+            detailed_exit_code: blaze_util::DetailedExitCode::of(failure_detail.clone()),
+        },
+    }
+}
+
+/// The `AspectKey` behind an aspect completion's lookup key.
+fn aspect_key_of(
+    key: &blaze_actions::ActionLookupKeyRef,
+) -> &blaze_analysis::aspect_key_creator::AspectKey {
+    key.as_any()
+        .downcast_ref::<blaze_analysis::aspect_key_creator::AspectKey>()
+        .unwrap_or_else(|| panic!("ClassCastException: {key} is not an AspectKey"))
+}
+
+/// The sink of the `TargetSummaryPublisher`: `eventBus.post(event)`, whose subscriber is the
+/// streamer.
+struct StreamerSink(Arc<blaze_bep::runtime::build_event_streamer::BuildEventStreamer>);
+
+impl TargetSummarySink for StreamerSink {
+    fn post(&self, event: TargetSummaryEvent) {
+        self.0.build_event(Arc::new(event));
+    }
+}
+
+impl Shared {
+    /// `TopLevelTargetPendingExecutionEvent.configuredTarget()` as the publisher sees it: the
+    /// configured top-level target with this (dependency) label.
+    fn summary_target(&self, label: &Label) -> TargetSummaryTarget {
+        let targets = self.targets.lock();
+        let ((label, checksum), facts) = targets
+            .iter()
+            .find(|((l, _), _)| l == label)
+            .unwrap_or_else(|| panic!("IllegalStateException: no top-level target {label}"));
+        TargetSummaryTarget {
+            key: TargetSummaryKey {
+                label: label.clone(),
+                configuration_checksum: checksum.clone(),
+            },
+            original_label: facts.original_label.clone(),
+            // AliasProvider.isAlias: the configured target of an alias carries the alias as its
+            // original label.
+            is_alias: &facts.original_label != label,
+        }
+    }
+}
+
+/// `AspectCompletor.createSucceeded` / `createFailed`: the `AspectCompleteEvent` of a completed
+/// top-level aspect.
+// Java: com/google/devtools/build/lib/skyframe/AspectCompletor.java:78 AspectCompletor.createSucceeded
+// Java: com/google/devtools/build/lib/skyframe/AspectCompletor.java:61 AspectCompletor.createFailed
+fn convert_aspect_complete(
+    shared: &Shared,
+    e: &SkyAspectCompleteEvent,
+) -> AspectCompleteBuildEvent {
+    let aspect_key = aspect_key_of(&e.aspect_key);
+    let mut important_input_map = ImportantInputMap::new();
+    for (artifact, metadata) in &e.important_input_map {
+        important_input_map.put(artifact.clone(), metadata.clone());
+    }
+    for (tree, metadata, children) in &e.important_tree_artifacts {
+        important_input_map.put_tree_artifact(tree.clone(), metadata.clone(), children.clone());
+    }
+    let ctx = Arc::new(CompletionContext::new(
+        important_input_map,
+        shared.expand_filesets,
+    ));
+    let outputs: IndexMap<String, ArtifactsInOutputGroup> = e
+        .artifacts_by_output_group
+        .iter()
+        .map(|(name, group)| {
+            (
+                name.clone(),
+                ArtifactsInOutputGroup::new(
+                    group.artifacts.clone(),
+                    group.important,
+                    group.incomplete,
+                ),
+            )
+        })
+        .collect();
+    AspectCompleteBuildEvent::new(
+        e.label.clone(),
+        e.aspect_key.get_configuration_checksum(),
+        aspect_key.get_aspect_descriptor().get_description(),
+        e.root_cause_details.iter().map(completion_cause).collect(),
+        ctx,
+        outputs,
+    )
 }
 
 /// `TestSummary` as the build event it is in Java (`TestSummary implements
@@ -499,6 +763,73 @@ pub struct BepCommandSupport {
     /// `BuildTool.shouldStopOnFailure(request)`.
     stop_on_first_failure: bool,
     publish_package_metrics_in_bep: bool,
+    /// The uploader factory map of the file transports with path conversion.
+    uploader_factory_map: Arc<DeferredUploaderFactory>,
+    /// `getOutputListener()`: the command's stdout and stderr for the progress events.
+    output_listener: OutErr,
+    /// Whether `CommandPrecompleteEvent` was handled (see [`BepCommandSupport::command_precomplete`]).
+    precompleted: AtomicBool,
+    /// Whether afterCommand ran (see [`BepCommandSupport::after_command`]).
+    after_command_done: AtomicBool,
+}
+
+/// `BazelBuildEventServiceModule.ALLOWED_COMMANDS`: the commands that stream build events.
+// Java: com/google/devtools/build/lib/buildeventservice/BazelBuildEventServiceModule.java:189 BazelBuildEventServiceModule.ALLOWED_COMMANDS
+pub(crate) const ALLOWED_COMMANDS: &[&str] = &[
+    "fetch",
+    "build",
+    "test",
+    "run",
+    "query",
+    "aquery",
+    "cquery",
+    "coverage",
+    "mobile-install",
+];
+
+/// `registerOutAndErrOutputStreams`: the module's stdout and stderr streams, whose contents the
+/// streamer reads into its progress events.
+// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:425 BuildEventServiceModule.registerOutAndErrOutputStreams
+fn register_out_and_err_output_streams(
+    streamer: &Arc<blaze_bep::runtime::build_event_streamer::BuildEventStreamer>,
+    bes_options: &BuildEventServiceOptions,
+) -> OutErr {
+    let buffer_size = bes_options.bes_outerr_buffer_size;
+    let chunk_size = bes_options.bes_outerr_chunk_size;
+    let out = Arc::new(SynchronizedOutputStream::new(
+        buffer_size,
+        chunk_size,
+        /* is_stderr= */ false,
+    ));
+    let err = Arc::new(SynchronizedOutputStream::new(
+        buffer_size,
+        chunk_size,
+        /* is_stderr= */ true,
+    ));
+    let out_err = OutErr::create(out.clone(), err.clone());
+    streamer.register_out_err_provider(Arc::new(SynchronizedOutErrProvider {
+        out: out.clone(),
+        err: err.clone(),
+    }));
+    err.register_streamer(streamer.clone());
+    out.register_streamer(streamer.clone());
+    out_err
+}
+
+/// The `OutErrProvider` of [`register_out_and_err_output_streams`].
+struct SynchronizedOutErrProvider {
+    out: Arc<SynchronizedOutputStream>,
+    err: Arc<SynchronizedOutputStream>,
+}
+
+impl blaze_bep::runtime::build_event_streamer::OutErrProvider for SynchronizedOutErrProvider {
+    fn get_out(&self) -> Option<Vec<String>> {
+        Some(self.out.read_and_reset())
+    }
+
+    fn get_err(&self) -> Option<Vec<String>> {
+        Some(self.err.read_and_reset())
+    }
 }
 
 /// `CommandEnvironment.makeMapFromMapEntries`: a `TreeMap`, later entries winning.
@@ -673,28 +1004,30 @@ fn transport_close_exception(e: &TransportCloseError) -> AbruptExitException {
 
 impl BepCommandSupport {
     /// `BuildEventServiceModule.beforeCommand` (the BEP part: file transports and streamer, its
-    /// registration on the event bus) and `MetricsModule.beforeCommand`; then the events Java
-    /// posts before the command runs: `CommandEnvironment.beforeCommand`'s `BuildMetadataEvent`
-    /// and `GotOptionsEvent`, and `BlazeCommandDispatcher.execExclusively`'s command-line
-    /// events. Returns `None` when no `--build_event_*_file` is given.
+    /// registration on the event bus) and `MetricsModule.beforeCommand`, run by the dispatcher in
+    /// module order (`crate::bazel_modules::BazelBuildEventServiceModule`) for every command.
+    /// Returns `None` when the command does not stream build events (`allowedCommands`) or no
+    /// transport was requested.
     ///
-    /// `options` is the command's final options (`execExclusively`'s `options`, after the
-    /// "module resolution" `--flag_alias` options); `env.get_options()` is the first parse, which
-    /// the modules and `GotOptionsEvent` see.
+    /// The events Java posts before the command runs are posted by the dispatcher at their own
+    /// points: [`BepCommandSupport::post_before_command_events`] (`CommandEnvironment.beforeCommand`),
+    /// [`BepCommandSupport::post_command_line_events`] and
+    /// [`BepCommandSupport::post_no_build_event`] (`BlazeCommandDispatcher.execExclusively`).
     ///
-    /// PORT: Java runs these in the dispatcher before `command.exec`; the build command calls
-    /// this first thing in `exec`. The stream's order does not depend on it: every event posted
-    /// here waits for `BuildStartingEvent` (`postedAfter`).
+    /// The uploader of the file transports with path conversion comes from the runtime's
+    /// `BuildEventArtifactUploaderFactoryMap`, selected by
+    /// `--experimental_build_event_upload_strategy`; see [`DeferredUploaderFactory`] for when the
+    /// remote module's entry is known.
     // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:337 BuildEventServiceModule.beforeCommand
-    ///
-    /// `uploader_factory_map` is the runtime's `BuildEventArtifactUploaderFactoryMap`, from which
-    /// `--experimental_build_event_upload_strategy` selects the uploader of the file transports
-    /// with path conversion.
-    pub fn before_command(
-        env: &CommandEnvironment,
-        options: &OptionsParsingResult,
-        uploader_factory_map: &BuildEventArtifactUploaderFactoryMap,
-    ) -> Option<Arc<BepCommandSupport>> {
+    pub fn module_before_command(env: &CommandEnvironment) -> Option<Arc<BepCommandSupport>> {
+        // Exit early if the running command isn't supported.
+        // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:383 BuildEventServiceModule.beforeCommand
+        if !ALLOWED_COMMANDS.contains(&env.get_command_name()) {
+            return None;
+        }
+        let uploader_factory_map = DeferredUploaderFactory::new(
+            crate::commands::build::build_remote::build_event_artifact_uploader_factory_map(None),
+        );
         let parsing_result = env.get_options();
         let bep_options: BuildEventProtocolOptions = parsing_result
             .get_options()
@@ -723,8 +1056,9 @@ impl BepCommandSupport {
         // The connectivity status (ConnectivityStatusProvider) is always OK in Bazel, so the
         // strategy is --experimental_build_event_upload_strategy.
         // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:366 BuildEventServiceModule.beforeCommand
-        let uploader_factory =
-            uploader_factory_map.select(bep_options.build_event_upload_strategy.as_deref());
+        uploader_factory_map.set_strategy(bep_options.build_event_upload_strategy.clone());
+        let uploader_factory: Arc<dyn BuildEventArtifactUploaderFactory> =
+            uploader_factory_map.clone();
         let (streamer, errors) = BuildEventStreamerBuilder::from_options_with_uploader_factory(
             &bep_options,
             &bes_stream_options,
@@ -741,9 +1075,12 @@ impl BepCommandSupport {
         }
         let streamer = streamer?;
 
-        if bep_options.publish_target_summary {
-            blaze_util::unported!("TargetSummaryPublisher");
-        }
+        // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:417 BuildEventServiceModule.beforeCommand
+        let target_summary_publisher = bep_options.publish_target_summary.then(|| {
+            Arc::new(TargetSummaryPublisher::new(Arc::new(StreamerSink(
+                streamer.streamer().clone(),
+            ))))
+        });
 
         // MetricsModule.beforeCommand: MetricsCollector.installInEnv(env, numAnalyses,
         // numBuilds).
@@ -766,6 +1103,7 @@ impl BepCommandSupport {
             metrics,
             targets: Mutex::new(IndexMap::new()),
             announce_target_summary: bep_options.publish_target_summary,
+            target_summary_publisher,
             expand_filesets: bep_options.expand_filesets,
             publish_all_actions: bes_stream_options.publish_all_actions,
             clock,
@@ -774,9 +1112,14 @@ impl BepCommandSupport {
         env.get_event_bus().register(Arc::new(BepSubscriber {
             shared: shared.clone(),
         }));
-        // PORT: registerOutAndErrOutputStreams (the module's OutErr, teed by the dispatcher into
-        // the command's output) is not ported: progress events carry no stdout/stderr.
+        let output_listener = register_out_and_err_output_streams(
+            shared.streamer.streamer(),
+            &parsing_result
+                .get_options::<BuildEventServiceOptions>()
+                .unwrap_or_else(|| panic!("NullPointerException: BuildEventServiceOptions")),
+        );
 
+        let options = env.get_options();
         let keep_going = options
             .get_options::<KeepGoingOption>()
             .map(|o| o.keep_going)
@@ -804,11 +1147,74 @@ impl BepCommandSupport {
             // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1127 BuildTool.shouldStopOnFailure
             stop_on_first_failure: !(keep_going && test_keep_going),
             publish_package_metrics_in_bep,
+            uploader_factory_map,
+            output_listener,
+            precompleted: AtomicBool::new(false),
+            after_command_done: AtomicBool::new(false),
         });
-
-        support.post_before_command_events(env);
-        support.post_command_line_events(env, options);
         Some(support)
+    }
+
+    /// `BuildEventServiceModule.getOutputListener()`: the dispatcher tees the command's output
+    /// into it (`BlazeCommandDispatcher.tee`).
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:448 BuildEventServiceModule.getOutputListener
+    pub(crate) fn get_output_listener(&self) -> &OutErr {
+        &self.output_listener
+    }
+
+    /// `BuildEventArtifactUploaderFactoryDelegate.init(...)` of the command's remote module: the
+    /// factory map with the command's `RemoteModule` entry. Called by the commands that set the
+    /// remote module up themselves (`crate::commands::build::run_build`).
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1351 BuildEventArtifactUploaderFactoryDelegate.init
+    pub(crate) fn set_uploader_factory_map(&self, map: BuildEventArtifactUploaderFactoryMap) {
+        self.uploader_factory_map.set_map(map);
+    }
+
+    /// The `NoBuildEvent` of a command that stops before it runs
+    /// (`new NoBuildEvent(commandName, firstContactTime, false, true, commandId)`), and of the
+    /// commands that do not build (`separate_finished_event`: followed by a
+    /// `NoBuildRequestFinishedEvent`).
+    // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:520 BlazeCommandDispatcher.execExclusively
+    pub(crate) fn post_no_build_event(
+        &self,
+        command: Option<String>,
+        start_time_millis: Option<i64>,
+        separate_finished_event: bool,
+        show_progress: bool,
+        id: Option<String>,
+    ) {
+        self.post(Arc::new(BuildEventPost(Arc::new(NoBuildEvent::new(
+            command,
+            start_time_millis,
+            separate_finished_event,
+            show_progress,
+            id,
+            BlazeVersionInfo::instance().get_version(),
+            std::process::id() as i64,
+        )))));
+    }
+
+    /// `env.getEventBus().post(event)` of a build event (a `BuildEvent` the streamer
+    /// subscribes to).
+    pub(crate) fn post_build_event(&self, event: Arc<dyn BuildEvent>) {
+        self.post(Arc::new(BuildEventPost(event)));
+    }
+
+    /// `NoBuildRequestFinishedEvent(exitCode, finishTimeMillis)`: a `BuildCompletingEvent` with
+    /// no children.
+    // Java: com/google/devtools/build/lib/analysis/NoBuildRequestFinishedEvent.java:22 NoBuildRequestFinishedEvent.<init>
+    pub(crate) fn post_no_build_request_finished_event(
+        &self,
+        exit_code: blaze_util::ExitCode,
+        finish_time_millis: i64,
+    ) {
+        self.post(Arc::new(BuildEventPost(Arc::new(
+            blaze_bep::buildeventstream::BuildCompletingEvent::new(
+                exit_code,
+                finish_time_millis,
+                Vec::new(),
+            ),
+        ))));
     }
 
     fn post(&self, event: Arc<dyn Postable>) {
@@ -817,7 +1223,7 @@ impl BepCommandSupport {
 
     /// `CommandEnvironment.beforeCommand`: the build metadata and the parsed options.
     // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:919 CommandEnvironment.beforeCommand
-    fn post_before_command_events(&self, env: &CommandEnvironment) {
+    pub(crate) fn post_before_command_events(&self, env: &CommandEnvironment) {
         let common_options: CommonCommandOptions = env
             .get_options()
             .get_options()
@@ -825,18 +1231,20 @@ impl BepCommandSupport {
         self.post(Arc::new(BuildMetadataEvent::new(
             make_map_from_map_entries(&common_options.build_metadata),
         )));
-        // PORT: invocation policies are not ported (a non-empty one fails loudly before the
-        // command runs), so the policy is the empty one.
         self.post(Arc::new(GotOptionsEvent::new(
             env.get_runtime().get_startup_options_provider_arc(),
             env.get_options().clone(),
-            InvocationPolicy::default(),
+            env.get_invocation_policy().clone(),
         )));
     }
 
     /// The command-line events of `BlazeCommandDispatcher.execExclusively`.
     // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:779 BlazeCommandDispatcher.execExclusively
-    fn post_command_line_events(&self, env: &CommandEnvironment, options: &OptionsParsingResult) {
+    pub(crate) fn post_command_line_events(
+        &self,
+        env: &CommandEnvironment,
+        options: &OptionsParsingResult,
+    ) {
         let runtime = env.get_runtime();
         let command_name = env.get_command_name();
         let include_residue_in_run_bep_event = env
@@ -901,6 +1309,14 @@ impl BepCommandSupport {
         start_time_millis: i64,
         host: String,
     ) {
+        // Java: com/google/devtools/build/lib/runtime/TargetSummaryPublisher.java:80 TargetSummaryPublisher.buildStarting
+        if let Some(publisher) = &self.shared.target_summary_publisher {
+            publisher.build_starting(
+                options
+                    .get_options::<BuildRequestOptions>()
+                    .is_some_and(|o| !o.aspects.is_empty()),
+            );
+        }
         let data = BuildStartingData {
             uuid: env.get_command_id().to_string(),
             start_time_millis,
@@ -1107,6 +1523,14 @@ impl BepCommandSupport {
         }
     }
 
+    /// `env.withMergedAnalysisAndExecutionSourceOfTruth()` once `SkymeldModule` decided it (the
+    /// `TargetSummaryPublisher`'s supplier).
+    pub(crate) fn set_merged_analysis_and_execution(&self, value: bool) {
+        if let Some(publisher) = &self.shared.target_summary_publisher {
+            publisher.set_merged_skyframe_analysis_execution(value);
+        }
+    }
+
     /// `ExecutionTool.handleConvenienceSymlinks`: the `ConvenienceSymlinksIdentifiedEvent`.
     // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:705 ExecutionTool.handleConvenienceSymlinks
     pub fn convenience_symlinks_identified(
@@ -1147,10 +1571,14 @@ impl BepCommandSupport {
         build_result
             .get_build_tool_log_collection()
             .add_direct_value("elapsed time", format!("{elapsed_seconds:.6}").as_bytes());
-        // PORT: skipped, profiling: critical path profiling (CriticalPathComputer) is not ported,
-        // so the "critical path" value (AggregatedCriticalPath.toString()) is not added; the
-        // profiler does not run, so there is no profile file ("command.profile.gz",
-        // ProfilerStartedEvent.getProfile().publish) to list either.
+        // criticalPath.toString(), when executorInit registered a CriticalPathComputer.
+        if let Some(critical_path) = collector.critical_path_tool_log() {
+            build_result
+                .get_build_tool_log_collection()
+                .add_direct_value("critical path", critical_path.as_bytes());
+        }
+        // PORT: the profiler does not run, so there is no profile file ("command.profile.gz",
+        // ProfilerStartedEvent.getProfile().publish) to list.
         let spawn_summary_string =
             SpawnStats::convert_summary_to_string(&collector.spawn_stats.get_summary());
         build_result
@@ -1179,6 +1607,41 @@ impl BepCommandSupport {
                 ],
             ),
         ))));
+        // TargetSummaryPublisher.buildCompleteEvent (a subscriber of the BuildCompleteEvent; its
+        // TargetSummaryEvents reach the streamer after the BuildCompleteEvent).
+        // Java: com/google/devtools/build/lib/runtime/TargetSummaryPublisher.java:185 TargetSummaryPublisher.buildCompleteEvent
+        if let Some(publisher) = &self.shared.target_summary_publisher {
+            let key_of = |t: &blaze_buildtool::buildtool::build_result::ConfiguredTargetRef| {
+                TargetSummaryKey {
+                    label: t.get_label(),
+                    configuration_checksum: t.get_configuration_checksum(),
+                }
+            };
+            let actual: Option<Vec<TargetSummaryKey>> = build_result
+                .get_actual_targets()
+                .map(|ts| ts.iter().map(key_of).collect());
+            let successful: Option<Vec<TargetSummaryKey>> = build_result
+                .get_successful_targets()
+                .map(|ts| ts.iter().map(key_of).collect());
+            let aspects: Vec<TargetSummaryKey> = build_result
+                .get_successful_aspects()
+                .map(|aspects| {
+                    aspects
+                        .iter()
+                        .map(|key| {
+                            let base = aspect_key_of(key).get_base_configured_target_key();
+                            TargetSummaryKey {
+                                label: base.get_label().clone(),
+                                configuration_checksum: base
+                                    .get_configuration_key()
+                                    .map(|k| k.get_options_checksum().to_string()),
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            publisher.build_complete_event(actual.as_deref(), successful.as_deref(), &aspects);
+        }
         // Post the build tool logs event; the corresponding local files may be contributed from
         // modules, and this has to happen after posting the BuildCompleteEvent because that's
         // when modules add their data to the collection.
@@ -1249,6 +1712,12 @@ impl BepCommandSupport {
     /// `BuildMetricsEvent`.
     // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:313 MetricsCollector.onCommandPrecompleteEvent
     pub fn command_precomplete(&self) {
+        // PORT: `run_build` precompletes before its remote module's afterCommand (Java's order:
+        // precompleteCommand, then the modules' afterCommand); the dispatcher's call for the
+        // other commands is then a no-op.
+        if self.precompleted.swap(true, Ordering::SeqCst) {
+            return;
+        }
         let event = self
             .shared
             .metrics
@@ -1278,6 +1747,12 @@ impl BepCommandSupport {
     /// is the module's `AbruptExitException`.
     // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:662 BuildEventServiceModule.afterCommand
     pub fn after_command(&self) -> Result<(), AbruptExitException> {
+        // PORT: the commands that build run the module's afterCommand themselves, between their
+        // remote module's and the dispatcher's (see crate::commands::build::run_build); the
+        // dispatcher's call is then a no-op.
+        if self.after_command_done.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
         let streamer = &self.shared.streamer;
         if !streamer.is_closed() {
             // This should not occur, but close with an internal error if a {@link
@@ -1303,6 +1778,26 @@ impl BepCommandSupport {
     }
 }
 
+/// `BuildEventServiceModule.blazeShutdownOnCrash` (`forceShutdownBuildEventStreamer`): a crash
+/// that unwinds out of the command closes the streamer with `AbortReason.INTERNAL`.
+///
+/// PORT: Java closes the streamer from `BugReport.handleCrash` (via
+/// `BlazeRuntime.cleanUpForCrash`) after printing the crash; Blaze's streamer belongs to the
+/// command, so it is closed while the panic unwinds out of the command, before the dispatcher
+/// prints the crash. The transports close synchronously (see `after_command`).
+// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:500 BuildEventServiceModule.blazeShutdownOnCrash
+impl Drop for BepCommandSupport {
+    fn drop(&mut self) {
+        if std::thread::panicking() && !self.shared.streamer.is_closed() {
+            // Nothing may panic here (a panic while unwinding aborts the process).
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                // forceShutdownBuildEventStreamer(AbortReason.INTERNAL)
+                self.shared.streamer.close_on_abort(AbortReason::Internal);
+            }));
+        }
+    }
+}
+
 /// The target of `label` (an alias's actual target), or `original` when it is that target.
 fn actual_target(skyframe_executor: &SkyframeExecutor, label: &Label, original: &Target) -> Target {
     if original.get_label() == label {
@@ -1312,6 +1807,162 @@ fn actual_target(skyframe_executor: &SkyframeExecutor, label: &Label, original: 
         .get_existing_package(label.get_package_identifier())
         .and_then(|p| p.get_targets().get(label.get_name()).cloned())
         .unwrap_or_else(|| panic!("NullPointerException: target {label}"))
+}
+
+/// The build events of a command that does not build (`QueryEnvironmentBasedCommand.exec`,
+/// `FetchCommand.exec`, `ModCommand.exec`): `NoBuildEvent(commandName, commandStartTime,
+/// separateFinishedEvent=true, showProgress=true, id=null)` before the command's work and
+/// `NoBuildRequestFinishedEvent(exitCode, now)` after it.
+// Java: com/google/devtools/build/lib/runtime/commands/QueryEnvironmentBasedCommand.java:80 QueryEnvironmentBasedCommand.exec
+pub(crate) fn exec_with_no_build_events(
+    env: &mut CommandEnvironment,
+    exec_internal: impl FnOnce(&mut CommandEnvironment) -> crate::command::BlazeCommandResult,
+) -> crate::command::BlazeCommandResult {
+    if let Some(bep) = env.get_bep() {
+        bep.post_no_build_event(
+            Some(env.get_command_name().to_string()),
+            Some(env.get_command_start_time()),
+            true,
+            true,
+            None,
+        );
+    }
+    let result = exec_internal(env);
+    // PORT: skipped, profiling: Profiler.markPhase(ProfilePhase.FINISH).
+    if let Some(bep) = env.get_bep() {
+        bep.post_no_build_request_finished_event(
+            blaze_util::ExitCode::for_code(result.get_exit_code().get_numeric_exit_code())
+                .unwrap_or_else(|| panic!("unknown exit code")),
+            JavaClock.current_time_millis(),
+        );
+    }
+    result
+}
+
+/// The runtime's `BuildEventArtifactUploaderFactoryMap` as `BuildEventServiceModule.beforeCommand`
+/// selects from it.
+///
+/// PORT: in Java the map's "remote" entry is `RemoteModule`'s factory delegate, which
+/// `RemoteModule.beforeCommand` initialises before the BES module's `beforeCommand` runs (module
+/// order). Blaze sets the remote module up inside the commands that build
+/// (`crate::commands::build::run_build`), after the BES module created its transports, so the map
+/// is replaceable ([`DeferredUploaderFactory::set_map`]) until the first upload, and the uploader
+/// the transports hold ([`DeferredUploader`]) is created from the map at that first upload. The
+/// events posted before a command's remote module is set up (options, command lines, metadata,
+/// `NoBuildEvent`) reference no local files.
+pub(crate) struct DeferredUploaderFactory {
+    state: Arc<DeferredUploaderState>,
+}
+
+/// The map and strategy a [`DeferredUploaderFactory`] and its uploaders share.
+struct DeferredUploaderState {
+    map: Mutex<BuildEventArtifactUploaderFactoryMap>,
+    /// `--experimental_build_event_upload_strategy`.
+    strategy: Mutex<Option<String>>,
+}
+
+impl DeferredUploaderState {
+    /// `getBuildEventArtifactUploaderFactoryMap().select(buildEventUploadStrategy)`.
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:390 BuildEventServiceModule.beforeCommand
+    fn select(&self) -> Arc<dyn BuildEventArtifactUploaderFactory> {
+        let strategy = self.strategy.lock().clone();
+        self.map.lock().select(strategy.as_deref())
+    }
+}
+
+impl DeferredUploaderFactory {
+    fn new(map: BuildEventArtifactUploaderFactoryMap) -> Arc<Self> {
+        Arc::new(DeferredUploaderFactory {
+            state: Arc::new(DeferredUploaderState {
+                map: Mutex::new(map),
+                strategy: Mutex::new(None),
+            }),
+        })
+    }
+
+    fn set_strategy(&self, strategy: Option<String>) {
+        *self.state.strategy.lock() = strategy;
+    }
+
+    fn set_map(&self, map: BuildEventArtifactUploaderFactoryMap) {
+        *self.state.map.lock() = map;
+    }
+}
+
+impl BuildEventArtifactUploaderFactory for DeferredUploaderFactory {
+    fn create(&self) -> Arc<dyn BuildEventArtifactUploader> {
+        Arc::new(DeferredUploader {
+            state: self.state.clone(),
+            delegate: Mutex::new(None),
+            pending_retains: Mutex::new(0),
+        })
+    }
+}
+
+/// The uploader [`DeferredUploaderFactory`] creates: the selected factory's uploader, created at
+/// the first upload of a file (see there).
+pub(crate) struct DeferredUploader {
+    state: Arc<DeferredUploaderState>,
+    delegate: Mutex<Option<Arc<dyn BuildEventArtifactUploader>>>,
+    /// `retain()` calls before the delegate exists.
+    pending_retains: Mutex<i32>,
+}
+
+impl DeferredUploader {
+    fn delegate(&self) -> Arc<dyn BuildEventArtifactUploader> {
+        let mut delegate = self.delegate.lock();
+        if let Some(d) = &*delegate {
+            return d.clone();
+        }
+        let created = self.state.select().create();
+        for _ in 0..std::mem::take(&mut *self.pending_retains.lock()) {
+            created.retain();
+        }
+        *delegate = Some(created.clone());
+        created
+    }
+}
+
+impl BuildEventArtifactUploader for DeferredUploader {
+    fn upload(
+        &self,
+        files: std::collections::HashMap<Path, blaze_bep::buildeventstream::LocalFile>,
+    ) -> PathConverterFuture {
+        if files.is_empty() && self.delegate.lock().is_none() {
+            // Nothing to upload: no uploader is needed yet (Java's would answer the same way).
+            return LocalFilesArtifactUploader.upload(files);
+        }
+        self.delegate().upload(files)
+    }
+
+    fn may_be_slow(&self) -> bool {
+        match &*self.delegate.lock() {
+            Some(d) => d.may_be_slow(),
+            // PORT: before the first upload the remote module may not be set up yet (see
+            // DeferredUploaderFactory); the events sent until then reference no files.
+            None => false,
+        }
+    }
+
+    fn retain(&self) {
+        match &*self.delegate.lock() {
+            Some(d) => d.retain(),
+            None => *self.pending_retains.lock() += 1,
+        }
+    }
+
+    fn release(&self) {
+        let delegate = self.delegate.lock().clone();
+        match delegate {
+            Some(d) => d.release(),
+            None => {
+                let mut pending = self.pending_retains.lock();
+                if *pending > 0 {
+                    *pending -= 1;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

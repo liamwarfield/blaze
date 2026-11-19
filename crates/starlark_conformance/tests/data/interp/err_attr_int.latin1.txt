@@ -1,0 +1,5 @@
+EVAL 'int' value has no field or method 'foo'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_attr_int.star", line 1, column 8, in <toplevel>
+TRACE \x09\x09x = (1).foo
+TRACE Error: 'int' value has no field or method 'foo'

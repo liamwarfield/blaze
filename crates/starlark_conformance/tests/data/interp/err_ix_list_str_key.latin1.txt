@@ -1,0 +1,5 @@
+EVAL got string for sequence index, want int
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_ix_list_str_key.star", line 1, column 8, in <toplevel>
+TRACE \x09\x09x = [1]["a"]
+TRACE Error: got string for sequence index, want int

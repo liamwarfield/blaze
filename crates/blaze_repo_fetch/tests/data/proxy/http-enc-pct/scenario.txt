@@ -1,0 +1,1 @@
+http://origin.example/f HTTP_PROXY=http://%C3%A9%40x:p%3Aw%25@127.0.0.1:PORT ok

@@ -1,0 +1,4 @@
+SYNTAX err_res_star_after_kwargs.star:1:8: *args may not follow **kwargs
+SYNTAX err_res_star_after_kwargs.star:1:1: name 'f' is not defined
+SYNTAX err_res_star_after_kwargs.star:1:5: name 'a' is not defined
+SYNTAX err_res_star_after_kwargs.star:1:9: name 'b' is not defined

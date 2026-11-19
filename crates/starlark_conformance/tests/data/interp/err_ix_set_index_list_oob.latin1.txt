@@ -1,0 +1,5 @@
+EVAL index out of range (index is 3, but sequence has 1 elements)
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_ix_set_index_list_oob.star", line 2, column 6, in <toplevel>
+TRACE \x09\x09l[3] = 1
+TRACE Error: index out of range (index is 3, but sequence has 1 elements)

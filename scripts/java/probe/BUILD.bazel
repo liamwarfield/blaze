@@ -1,0 +1,23 @@
+load("@rules_java//java:java_binary.bzl", "java_binary")
+load("@rules_java//java:java_library.bzl", "java_library")
+load("@rules_java//java:java_test.bzl", "java_test")
+
+java_library(
+    name = "greeter",
+    srcs = ["src/probe/Greeter.java"],
+)
+
+java_binary(
+    name = "hello",
+    srcs = ["src/probe/Hello.java"],
+    main_class = "probe.Hello",
+    deps = [":greeter"],
+)
+
+java_test(
+    name = "greeter_test",
+    srcs = ["src/probe/GreeterTest.java"],
+    main_class = "probe.GreeterTest",
+    use_testrunner = False,
+    deps = [":greeter"],
+)

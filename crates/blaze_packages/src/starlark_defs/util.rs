@@ -322,8 +322,13 @@ pub fn call_stack(eval: &Evaluator) -> Vec<StackEntry> {
     let frames = eval.call_stack().frames;
     let mut stack = Vec::with_capacity(frames.len() + 1);
     let mut caller = "<toplevel>".to_owned();
-    for frame in &frames {
-        stack.push(stack_entry(&caller, frame.location.as_ref()));
+    for (i, frame) in frames.iter().enumerate() {
+        // A function called from native code (a symbolic macro's implementation, a module
+        // extension) is the outermost frame and has no call site: Java's thread starts at that
+        // function, without a `<toplevel>` frame (as in `EvalError::from_starlark`).
+        if i > 0 || frame.location.is_some() {
+            stack.push(stack_entry(&caller, frame.location.as_ref()));
+        }
         caller = frame.name.clone();
     }
     if !frames.is_empty() {

@@ -1,0 +1,7 @@
+EVAL set value is temporarily immutable due to active for-loop iteration
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_mut_set_during_iter.star", line 5, column 2, in <toplevel>
+TRACE \x09\x09f()
+TRACE \x09File "err_mut_set_during_iter.star", line 4, column 10, in f
+TRACE \x09\x09s.add(3)
+TRACE Error in add: set value is temporarily immutable due to active for-loop iteration

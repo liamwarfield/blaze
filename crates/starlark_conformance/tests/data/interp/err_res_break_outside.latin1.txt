@@ -1,0 +1,1 @@
+SYNTAX err_res_break_outside.star:2:3: break statement must be inside a for loop

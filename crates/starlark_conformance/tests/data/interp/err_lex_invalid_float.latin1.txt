@@ -1,0 +1,1 @@
+SYNTAX err_lex_invalid_float.star:1:5: invalid float literal

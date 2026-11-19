@@ -1,0 +1,5 @@
+EVAL unhashable type: 'list'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_hash_tuple_with_list.star", line 1, column 13, in <toplevel>
+TRACE \x09\x09x = {(1, []): 1}
+TRACE Error: unhashable type: 'list'

@@ -1,0 +1,5 @@
+EVAL index out of range (index is 3, but sequence has 1 elements)
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_list_pop_oob.star", line 1, column 8, in <toplevel>
+TRACE \x09\x09[1].pop(3)
+TRACE Error in pop: index out of range (index is 3, but sequence has 1 elements)

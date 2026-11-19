@@ -1,0 +1,5 @@
+EVAL popitem: empty dictionary
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_dict_popitem_empty.star", line 1, column 11, in <toplevel>
+TRACE \x09\x09{}.popitem()
+TRACE Error in popitem: popitem: empty dictionary

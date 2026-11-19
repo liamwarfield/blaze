@@ -67,6 +67,10 @@ impl cc::Artifact for CcArtifact {
             && other.get_exec_path() == *self.artifact.get_exec_path()
     }
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn artifact_hash(&self) -> u64 {
         self.hash
     }
@@ -98,11 +102,17 @@ impl cc::PathMapper for CcPathMapper<'_> {
 pub struct CcInputMetadataProvider<'a>(pub &'a dyn blaze_actions::InputMetadataProvider);
 
 impl cc::InputMetadataProvider for CcInputMetadataProvider<'_> {
-    fn get_tree_metadata(&self, _artifact: &cc::ArtifactRef) -> Option<Vec<cc::ArtifactRef>> {
-        // PORT: the cc artifact handle cannot be turned back into the real artifact without a
-        // downcast the stand-in trait does not offer; tree artifacts in link variables
-        // (ObjectFileGroupInfo) are not reached by brotli or re2.
-        blaze_util::unported!("InputMetadataProvider.getTreeMetadata (cc artifact adapter)")
+    // Java: com/google/devtools/build/lib/actions/InputMetadataProvider.java:56 InputMetadataProvider.getTreeMetadata
+    fn get_tree_metadata(&self, artifact: &cc::ArtifactRef) -> Option<Vec<cc::ArtifactRef>> {
+        let artifact = artifact
+            .0
+            .as_any()
+            .and_then(|a| a.downcast_ref::<CcArtifact>())
+            .unwrap_or_else(|| panic!("ClassCastException: {:?} is not an Artifact", artifact.0))
+            .artifact();
+        // TreeArtifactValue.getChildren()
+        let children = self.0.get_tree_children(artifact)?;
+        Some(children.iter().map(to_cc_artifact).collect())
     }
 }
 

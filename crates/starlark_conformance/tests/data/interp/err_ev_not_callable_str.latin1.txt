@@ -1,0 +1,5 @@
+EVAL 'string' object is not callable
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_ev_not_callable_str.star", line 1, column 1, in <toplevel>
+TRACE \x09\x09"abc"()
+TRACE Error: 'string' object is not callable

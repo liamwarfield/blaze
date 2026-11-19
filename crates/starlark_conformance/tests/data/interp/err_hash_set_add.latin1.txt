@@ -1,0 +1,5 @@
+EVAL unhashable type: 'dict'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_hash_set_add.star", line 2, column 6, in <toplevel>
+TRACE \x09\x09s.add({})
+TRACE Error in add: unhashable type: 'dict'

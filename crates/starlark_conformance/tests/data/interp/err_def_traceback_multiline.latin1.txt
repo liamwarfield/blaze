@@ -1,0 +1,7 @@
+EVAL unsupported binary operation: int + string
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_def_traceback_multiline.star", line 5, column 2, in <toplevel>
+TRACE \x09\x09f(
+TRACE \x09File "err_def_traceback_multiline.star", line 3, column 12, in f
+TRACE \x09\x09return a + \\
+TRACE Error: unsupported binary operation: int + string

@@ -1,0 +1,5 @@
+EVAL unhashable type: 'list'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_hash_dict_get.star", line 1, column 11, in <toplevel>
+TRACE \x09\x09x = {}.get([])
+TRACE Error in get: unhashable type: 'list'

@@ -1,0 +1,2 @@
+WARNING: Download from https://origin.example/f failed: class javax.net.ssl.SSLHandshakeException Remote host terminated the handshake
+Error in download: java.io.IOException: Error downloading [https://origin.example/f] to <output_base>/external/+dl+r/f0: Remote host terminated the handshake

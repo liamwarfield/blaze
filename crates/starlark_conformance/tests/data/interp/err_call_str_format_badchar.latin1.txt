@@ -1,0 +1,5 @@
+EVAL Missing argument '0:d'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_str_format_badchar.star", line 1, column 15, in <toplevel>
+TRACE \x09\x09"{0:d}".format(1)
+TRACE Error in format: Missing argument '0:d'

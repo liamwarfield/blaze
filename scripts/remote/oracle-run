@@ -9,8 +9,9 @@ import importlib.util
 import json
 import os
 import shutil
-import subprocess
 import sys
+
+import unitstatus
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -41,7 +42,9 @@ after `--` (for example --disk_cache=DIR, --remote_cache=grpc://localhost:PORT,
 --remote_grpc_log=FILE). `{step}` in an extra option is replaced by the step directory.
 Environment: HOME and PATH=/usr/bin:/bin only. Everything runs inside
 `systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0`; the Bazel server dies
-with the unit, so every call starts a new server.
+with the unit, so every call starts a new server. In the unit, scripts/remote/unit-supervisor
+starts the command and records its real status (systemd-run itself returns 0 after a death by
+SIGPIPE, SIGHUP, SIGINT or SIGTERM).
 
   --fresh     delete the workspace copy and the output user root first (cold output base)
   --clean     run `bazel clean` (same startup options) before the command: same output base and
@@ -49,7 +52,9 @@ with the unit, so every call starts a new server.
   --binary    another Bazel-compatible binary (default: the oracle)
   --command   override the project's command (one string, split on spaces)
 
-Prints the step directory and the exit code; exits with Bazel's exit code.
+Prints the step directory and the exit code (`exit code: N`, or `exit code: 141 (killed by
+SIGPIPE)` after a death by signal); writes it to <step>/exit (128+N after signal N; the signal's
+name then also to <step>/signal) and exits with it.
 """
 
 
@@ -63,12 +68,8 @@ def load_record_module():
     return mod
 
 
-def systemd(cmd, cwd, stdout_path, stderr_path):
-    env_cmd = ["env", "-i", "HOME=" + os.environ["HOME"], "PATH=/usr/bin:/bin"]
-    full = ["systemd-run", "--user", "--collect", "--wait", "--pipe", "--quiet", "--same-dir",
-            "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0"] + env_cmd + cmd
-    with open(stdout_path, "wb") as so, open(stderr_path, "wb") as se:
-        return subprocess.run(full, cwd=cwd, stdout=so, stderr=se).returncode
+def systemd(cmd, cwd, stdout_path, stderr_path, status_path, exit_dir=None):
+    return unitstatus.run(status_path, cmd, cwd, stdout_path, stderr_path, exit_dir)
 
 
 def main():
@@ -132,16 +133,18 @@ def main():
     startup = [binary, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc"]
     if clean:
         systemd(startup + ["clean", "--color=no", "--curses=no"], ws,
-                os.path.join(step, "clean.stdout"), os.path.join(step, "clean.stderr"))
+                os.path.join(step, "clean.stdout"), os.path.join(step, "clean.stderr"),
+                os.path.join(step, ".unit-status.clean"))
     cmd = startup + [command[0],
                      "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no",
                      "--execution_log_json_file=" + os.path.join(step, "execlog.json"),
                      "--execution_log_sort"]
     cmd += [e.replace("{step}", step) for e in extra] + command[1:]
     json.dump({"cmd": cmd, "cwd": ws}, open(os.path.join(step, "command.json"), "w"), indent=1)
-    code = systemd(cmd, ws, os.path.join(step, "stdout"), os.path.join(step, "stderr"))
+    code, sig = systemd(cmd, ws, os.path.join(step, "stdout"), os.path.join(step, "stderr"),
+                        os.path.join(step, ".unit-status"), step)
     print("step: " + step)
-    print("exit code: %d" % code)
+    print("exit code: " + unitstatus.describe(code, sig))
     return code
 
 

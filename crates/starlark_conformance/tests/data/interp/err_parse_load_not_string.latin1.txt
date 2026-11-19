@@ -1,0 +1,1 @@
+SYNTAX err_parse_load_not_string.star:1:6: syntax error at 'x': expected string literal

@@ -1,0 +1,5 @@
+EVAL startswith() missing 1 required positional argument: sub
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_str_method_noargs.star", line 1, column 15, in <toplevel>
+TRACE \x09\x09"a".startswith()
+TRACE Error in startswith: startswith() missing 1 required positional argument: sub

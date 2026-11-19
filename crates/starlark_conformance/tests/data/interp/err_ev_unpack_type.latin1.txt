@@ -1,0 +1,5 @@
+EVAL got 'int' in sequence assignment (want 2-element sequence)
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_ev_unpack_type.star", line 1, column 6, in <toplevel>
+TRACE \x09\x09a, b = 1
+TRACE Error: got 'int' in sequence assignment (want 2-element sequence)

@@ -1,0 +1,1 @@
+SYNTAX err_res_return_toplevel.star:1:1: return statements must be inside a function

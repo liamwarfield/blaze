@@ -1,1 +1,5 @@
 EVAL in call to split(), parameter 'maxsplit' got value of type 'NoneType', want 'int'
+TRACE Traceback (most recent call last):
+TRACE \x09File "str_split_none.star", line 1, column 18, in <toplevel>
+TRACE \x09\x09print("a b".split(" ", None))
+TRACE Error in split: in call to split(), parameter 'maxsplit' got value of type 'NoneType', want 'int'

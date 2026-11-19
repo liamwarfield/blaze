@@ -1,0 +1,5 @@
+EVAL Nested replacement fields are not supported
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_str_format_nested2.star", line 1, column 16, in <toplevel>
+TRACE \x09\x09"{a{b}}".format()
+TRACE Error in format: Nested replacement fields are not supported

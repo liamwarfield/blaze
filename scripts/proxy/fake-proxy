@@ -24,13 +24,14 @@ the NN-th <response> of the list; the last one repeats. A <response> is one of:
                 connection is closed when the client stops sending (2 s).
                 Other methods: "HTTP/1.1 200 OK" with the 6-byte body "hello\\n".
   407:<schemes> "HTTP/1.1 407 Proxy Authentication Required" with one Proxy-Authenticate header
-                per scheme; <schemes> is a '+'-separated list of the names basic, digest,
+                per scheme; <schemes> is a '+'-separated list of the names basic, basicutf8, digest,
                 digest256, negotiate, ntlm (for example 407:digest+basic). Content-Length: 0, the connection
                 stays open (Connection/Proxy-Connection: keep-alive) for the client's next try.
   407close:<schemes>  the same with "Connection: close"; the proxy closes after the answer.
 
 The Proxy-Authenticate values are:
   basic      Basic realm="blaze-proxy"
+  basicutf8  Basic realm="blaze-proxy", charset="UTF-8"
   digest     Digest realm="blaze-proxy", nonce="0123456789abcdef", qop="auth", algorithm=MD5
   digest256  Digest realm="blaze-proxy", nonce="0123456789abcdef", qop="auth", algorithm=SHA-256
   negotiate  Negotiate
@@ -42,6 +43,7 @@ The Proxy-Authenticate values are:
 SCHEMES = {
     "basic": 'Basic realm="blaze-proxy"',
     "digest": 'Digest realm="blaze-proxy", nonce="0123456789abcdef", qop="auth", algorithm=MD5',
+    "basicutf8": 'Basic realm="blaze-proxy", charset="UTF-8"',
     "digest256": 'Digest realm="blaze-proxy", nonce="0123456789abcdef", qop="auth", algorithm=SHA-256',
     "negotiate": "Negotiate",
     "ntlm": "NTLM",

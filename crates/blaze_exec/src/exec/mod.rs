@@ -27,6 +27,7 @@ pub mod standalone_test_strategy;
 pub mod symlink_tree_helper;
 pub mod symlink_tree_strategy;
 pub mod test_log_helper;
+pub mod test_xml_output_parser;
 pub mod test_policy;
 pub mod tree_deleter;
 

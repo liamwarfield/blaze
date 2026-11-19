@@ -237,8 +237,45 @@ impl fmt::Display for EvalError {
     }
 }
 
+/// An evaluation error whose call stack is already set (Java: an `EvalException` whose stack was
+/// set by another thread, or by `withCallStack`). Java's `EvalException.ensureStack` keeps a
+/// stack that is already there, so [`EvalError::from_starlark`] returns this error unchanged when
+/// it crosses outer frames (e.g. a symbolic macro's implementation runs in its own thread and
+/// its errors carry that thread's stack, MacroClass.executeMacroImplementation).
+// Java: net/starlark/java/eval/EvalException.java:127 EvalException.ensureStack
+#[derive(Debug, Clone)]
+pub struct EvalErrorWithStack(pub EvalError);
+
+impl fmt::Display for EvalErrorWithStack {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0.message)
+    }
+}
+
+impl std::error::Error for EvalErrorWithStack {}
+
+impl EvalErrorWithStack {
+    /// The error as a starlark-rust error that keeps this stack.
+    pub fn into_starlark(self) -> starlark::Error {
+        starlark::Error::new_other(anyhow::Error::new(self))
+    }
+
+    /// The preset error carried by `e`, if any.
+    pub fn of(e: &starlark::Error) -> Option<&EvalError> {
+        match e.kind() {
+            starlark::ErrorKind::Other(a) | starlark::ErrorKind::Native(a) => {
+                a.downcast_ref::<EvalErrorWithStack>().map(|p| &p.0)
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Message of a starlark-rust error without location or stack (Java `getMessage`).
 pub fn bare_message(e: &starlark::Error) -> String {
+    if let Some(preset) = EvalErrorWithStack::of(e) {
+        return preset.message.clone();
+    }
     match e.kind() {
         // Java: net/starlark/java/eval/MethodLibrary.java:888 MethodLibrary.fail: the message is
         // the printed arguments as they are. Blaze's `fail` marks its message; stock `fail`
@@ -257,18 +294,50 @@ pub fn bare_message(e: &starlark::Error) -> String {
     }
 }
 
-fn source_line(span: &FileSpan, line: usize) -> Option<String> {
-    if line == 0 {
-        return None;
-    }
+/// Java `EvalException.SourceReader`: returns a single line of source code (sans newline), or
+/// `None` if unavailable.
+// Java: net/starlark/java/eval/EvalException.java:162 EvalException.SourceReader
+pub type SourceReader = dyn Fn(&Location) -> Option<String> + Send + Sync;
+
+static SOURCE_READER: std::sync::RwLock<Option<std::sync::Arc<SourceReader>>> =
+    std::sync::RwLock::new(None);
+
+/// Sets the function used to obtain the source line of a stack frame when an error's call
+/// stack is formatted (Bazel: `BlazeRuntime.newRuntime` installs a reader of the server's file
+/// system, so a frame whose file is not on disk, such as the `/virtual_builtins_bzl/...` files
+/// of `@_builtins`, prints no source line).
+///
+/// PORT: Java takes a `Supplier<SourceReader>`; the supplier only makes a fresh reader per
+/// formatting, so the reader itself is stored.
+// Java: net/starlark/java/eval/EvalException.java:173 EvalException.setSourceReaderSupplier
+pub fn set_source_reader_supplier(f: std::sync::Arc<SourceReader>) {
+    *SOURCE_READER.write().unwrap_or_else(|e| e.into_inner()) = Some(f);
+}
+
+/// The source line of a stack frame at `loc`, trimmed.
+///
+/// PORT: Java reads the line when it formats the stack (`formatCallStack`), Blaze when it
+/// converts the error; the stack is formatted from the same files in the same command. Without
+/// an installed reader (unit tests, tools), the line is read from the source the error came
+/// from; Java's default reader reads `loc.file()` from the file system as UTF-8.
+// Java: net/starlark/java/eval/EvalException.java:228 EvalException.formatCallStack
+fn source_line(span: &FileSpan, loc: &Location) -> Option<String> {
+    let reader = SOURCE_READER
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let line = match reader {
+        Some(reader) => reader(loc)?,
+        None => {
+            if loc.line == 0 {
+                return None;
+            }
+            span.file.source_line(loc.line - 1).to_owned()
+        }
+    };
     // Java: EvalException.java:229 `line.trim()` (String.trim: chars <= U+0020 only; a line of
     // an internal string may end in U+0085 or U+00A0, which are UTF-8 continuation bytes).
-    Some(
-        span.file
-            .source_line(line - 1)
-            .trim_matches(|c: char| c <= ' ')
-            .to_owned(),
-    )
+    Some(line.trim_matches(|c: char| c <= ' ').to_owned())
 }
 
 impl EvalError {
@@ -289,6 +358,9 @@ impl EvalError {
     /// (frames[i-1].name, frames[i].location). The innermost callee is a builtin iff the error
     /// carries no span of its own beyond that call site.
     pub fn from_starlark(e: &starlark::Error) -> EvalError {
+        if let Some(preset) = EvalErrorWithStack::of(e) {
+            return preset.clone();
+        }
         let kind = match e.kind() {
             starlark::ErrorKind::StackOverflow(_) => EvalErrorKind::StackOverflow,
             starlark::ErrorKind::Parser(_) => EvalErrorKind::Syntax(Vec::new()),
@@ -308,7 +380,7 @@ impl EvalError {
         let entry = |name: &str, span: Option<&FileSpan>| match span {
             Some(s) => {
                 let loc = Location::bazel_position(s);
-                let line = source_line(s, loc.line);
+                let line = source_line(s, &loc);
                 StackEntry {
                     name: name.to_owned(),
                     location: Some(loc),
@@ -379,6 +451,53 @@ impl EvalError {
                 .iter()
                 .rev()
                 .find_map(|e| e.location.as_ref()),
+        }
+    }
+
+    /// Reads the source line of each frame that has a location but no source line, as Java's
+    /// default `EvalException.SourceReader` does when it formats the stack (the file read as
+    /// UTF-8, its `line`th line; nothing if the file cannot be read). Used for stacks Blaze
+    /// assembles from recorded call stacks (e.g. a symbolic macro's instantiation stack).
+    // PORT: Java reads the lines when formatting; they are read when the stack is assembled.
+    // Java: net/starlark/java/eval/EvalException.java:182 EvalException.sourceReaderSupplier
+    pub fn read_missing_source_lines(&mut self) {
+        for entry in &mut self.callstack {
+            if entry.source_line.is_some() {
+                continue;
+            }
+            let Some(loc) = &entry.location else {
+                continue;
+            };
+            if loc.line == 0 {
+                continue;
+            }
+            // Java formats with the installed reader (EvalException.setSourceReaderSupplier).
+            let reader = SOURCE_READER
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            if let Some(reader) = reader {
+                entry.source_line =
+                    reader(loc).map(|l| l.trim_matches(|c: char| c <= ' ').to_owned());
+                continue;
+            }
+            // The file name is an internal string (one char per byte): its bytes are the
+            // platform path (blaze_util::string_encoding::internal_to_platform).
+            let path: Vec<u8> = loc
+                .file
+                .chars()
+                .map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?'))
+                .collect();
+            let path = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&path);
+            let Ok(bytes) = std::fs::read(path) else {
+                continue;
+            };
+            // Java: Files.asCharSource(file, UTF_8).read(), split on "\n", then trim().
+            let content = String::from_utf8_lossy(&bytes);
+            entry.source_line = content
+                .split('\n')
+                .nth(loc.line - 1)
+                .map(|l| l.trim_matches(|c: char| c <= ' ').to_owned());
         }
     }
 

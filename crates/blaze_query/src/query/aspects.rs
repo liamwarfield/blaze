@@ -69,6 +69,20 @@ pub fn label_deps_from_all_attributes_of_aspect(
     result
 }
 
+/// Java `aspect.getDefinition().getAttributes().isEmpty()`.
+// Java: com/google/devtools/build/lib/packages/AspectDefinition.java:160 AspectDefinition.getAttributes
+pub fn aspect_definition_attributes_is_empty(aspect: &AspectDetails) -> bool {
+    match aspect {
+        AspectDetails::Starlark { info, .. } => info.aspect_attributes.is_empty(),
+        AspectDetails::Native {
+            aspect_class_name, ..
+        } => blaze_util::unported!(
+            "AspectDefinition.getAttributes",
+            "definition of native aspect {aspect_class_name}"
+        ),
+    }
+}
+
 /// Java `AspectDefinition.satisfies(aspect, advertisedProviders)`: the aspect definition's
 /// required providers (`aspect(required_providers = ...)`; Java `AspectDefinition.Builder
 /// .requireStarlarkProviderSets` skips empty sets) are satisfied by `advertised`.

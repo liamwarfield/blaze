@@ -1,0 +1,107 @@
+# Probe package for scripts/tests/compare: copied into the work copy of the corpus project as
+# //blaze_tests_probe. Identical input for the oracle and for Blaze.
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
+load(":defs.bzl", "sh_test")
+
+cc_test(name = "pass", size = "small", srcs = ["probe_test.c"], args = ["pass"])
+
+cc_test(name = "pass_medium", size = "medium", srcs = ["probe_test.c"], args = ["pass"])
+
+cc_test(name = "fail", size = "small", srcs = ["probe_test.c"], args = ["fail"])
+
+cc_test(
+    name = "flaky_attr",
+    size = "small",
+    srcs = ["probe_test.c"],
+    args = ["fail"],
+    flaky = True,
+)
+
+cc_test(
+    name = "large_long",
+    size = "large",
+    timeout = "long",
+    srcs = ["probe_test.c"],
+    args = ["pass"],
+)
+
+cc_test(
+    name = "enormous",
+    size = "enormous",
+    srcs = ["probe_test.c"],
+    args = ["pass"],
+)
+
+cc_test(
+    name = "sleepy",
+    size = "small",
+    srcs = ["probe_test.c"],
+    args = ["sleep", "5"],
+)
+
+cc_test(
+    name = "sharded",
+    size = "small",
+    srcs = ["probe_test.c"],
+    args = ["shard"],
+    shard_count = 2,
+)
+
+cc_test(name = "xml_pass", size = "small", srcs = ["probe_test.c"], args = ["xml-pass"])
+
+cc_test(name = "xml_fail", size = "small", srcs = ["probe_test.c"], args = ["xml-fail"])
+
+cc_test(name = "lines", size = "small", srcs = ["probe_test.c"], args = ["lines"])
+
+cc_test(
+    name = "excl_a",
+    size = "small",
+    srcs = ["probe_test.c"],
+    args = ["sleep", "1"],
+    tags = ["exclusive"],
+)
+
+cc_test(
+    name = "excl_b",
+    size = "small",
+    srcs = ["probe_test.c"],
+    args = ["fail"],
+    tags = ["exclusive"],
+)
+
+cc_test(
+    name = "excl_if_local",
+    size = "small",
+    srcs = ["probe_test.c"],
+    args = ["pass"],
+    tags = ["exclusive-if-local"],
+)
+
+cc_test(
+    name = "excl_if_local_local",
+    size = "small",
+    srcs = ["probe_test.c"],
+    args = ["pass"],
+    tags = [
+        "exclusive-if-local",
+        "local",
+    ],
+)
+
+sh_test(name = "sh_pass", size = "small", cmd = "echo sh pass")
+
+sh_test(name = "sh_fail", size = "medium", cmd = "echo sh fail; exit 1")
+
+sh_test(
+    name = "sh_excl",
+    size = "small",
+    cmd = "echo sh exclusive",
+    tags = ["exclusive"],
+)
+
+cc_test(
+    name = "excl_broken",
+    size = "small",
+    srcs = ["broken.c"],
+    tags = ["exclusive"],
+)

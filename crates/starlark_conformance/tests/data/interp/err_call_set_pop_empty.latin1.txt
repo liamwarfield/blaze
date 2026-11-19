@@ -1,0 +1,5 @@
+EVAL set is empty
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_set_pop_empty.star", line 1, column 10, in <toplevel>
+TRACE \x09\x09set().pop()
+TRACE Error in pop: set is empty

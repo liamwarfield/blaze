@@ -1,0 +1,1 @@
+SYNTAX err_call_isinstance.star:1:1: name 'isinstance' is not defined

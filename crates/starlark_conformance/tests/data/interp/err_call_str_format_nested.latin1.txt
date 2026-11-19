@@ -1,0 +1,5 @@
+EVAL Found '}' without matching '{'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_str_format_nested.star", line 1, column 14, in <toplevel>
+TRACE \x09\x09"{{0}".format(1)
+TRACE Error in format: Found '}' without matching '{'

@@ -1,0 +1,2 @@
+SYNTAX err_parse_comprehension_close.star:1:19: syntax error at ':': expected ']', 'for' or 'if'
+SYNTAX err_parse_comprehension_close.star:1:5: contains syntax errors

@@ -9,6 +9,8 @@
 //!   `initializer_failsSettingPrivateAttribute_outsideBuiltins`,
 //!   `initializer_settingPrivateAttribute_insideBuiltins`, `initializer_failsCreatingAnotherRule`,
 //!   `initializer_failsWithExistingRules`, `initializer_nativeModule`.
+//! - The `testSymbolicMacro_*` tests (except `macroFunctionApi`) are in
+//!   `crates/blaze_sky_loading/src/tests/starlark_rule_class_functions_test.rs`.
 //! - `tests.rs` next to this file: the .bzl-only tests ported with the module-level harness
 //!   (`testFunctionAsAttrDefault` among them).
 
@@ -22,74 +24,22 @@ fn built_in_attributes_are_not_starlark_defined() {}
 #[ignore = "inspects the RuleClass behind ev.lookup (getRuleClass); portable with the .bzl harness of starlark_defs/tests.rs (get_rule_class), not ported yet"]
 fn test_implicit_args_attribute() {}
 
-// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_failsWithoutFlag
-#[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
-fn test_symbolic_macro_fails_without_flag() {}
 
-// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_instantiationRegistersOnPackage
-#[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
-fn test_symbolic_macro_instantiation_registers_on_package() {}
 
-// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_instantiationRequiresExport
-#[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
-fn test_symbolic_macro_instantiation_requires_export() {}
 
-// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_cannotInstantiateInBzlThread
-#[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
-fn test_symbolic_macro_cannot_instantiate_in_bzl_thread() {}
 
-// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_requiresNameAttribute
-#[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
-fn test_symbolic_macro_requires_name_attribute() {}
 
-// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_prohibitsPositionalArgs
-#[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
-fn test_symbolic_macro_prohibits_positional_args() {}
 
-// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacroCanAcceptAttributes
-#[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
-fn test_symbolic_macro_can_accept_attributes() {}
 
-// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_rejectsUnknownAttribute
-#[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
-fn test_symbolic_macro_rejects_unknown_attribute() {}
 
-// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_rejectsReservedAttributeName
-#[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
-fn test_symbolic_macro_rejects_reserved_attribute_name() {}
 
-// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_requiresMandatoryAttribute
-#[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
-fn test_symbolic_macro_requires_mandatory_attribute() {}
 
-// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_cannotOverrideImplicitAttribute
-#[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
-fn test_symbolic_macro_cannot_override_implicit_attribute() {}
 
-// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_doesNotSupportComputedDefaults
-#[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
-fn test_symbolic_macro_does_not_support_computed_defaults() {}
 
-// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_doesNotSupportLateBoundDefaults
-#[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
-fn test_symbolic_macro_does_not_support_late_bound_defaults() {}
 
 // Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_macroFunctionApi
 #[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
+#[ignore = "inspects the MacroFunction object behind ev.lookup (getName, getDocumentation, getMacroClass attributes); portable with the .bzl harness of starlark_defs/tests.rs, not ported yet"]
 fn test_symbolic_macro_macro_function_api() {}
 
 // Java: StarlarkRuleClassFunctionsTest.testAttrEquality
@@ -429,12 +379,12 @@ fn rule_definition_environment_digest_unaffected_by_target_attr_value_change() {
 
 // Java: StarlarkRuleClassFunctionsTest.ruleDefinitionEnvironmentDigest_accountsForFunctionWhenCreatingRuleWithAMacro
 #[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
+#[ignore = "needs an analysis test harness (Java getConfiguredTarget / createRuleContext on a BuildViewTestCase); the macro involved is a legacy macro"]
 fn rule_definition_environment_digest_accounts_for_function_when_creating_rule_with_a_macro() {}
 
 // Java: StarlarkRuleClassFunctionsTest.ruleDefinitionEnvironmentDigest_accountsForAttrsWhenCreatingRuleWithMacro
 #[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
+#[ignore = "needs an analysis test harness (Java getConfiguredTarget / createRuleContext on a BuildViewTestCase); the macro involved is a legacy macro"]
 fn rule_definition_environment_digest_accounts_for_attrs_when_creating_rule_with_macro() {}
 
 // Java: StarlarkRuleClassFunctionsTest.testAttrWithAspectRequiringAspects_requiredNativeAspect_getsParamsFromBaseRules
@@ -684,12 +634,12 @@ fn extend_rule_cfg_on_child_and_from_parent() {}
 
 // Java: StarlarkRuleClassFunctionsTest.testAnalysisTest
 #[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
+#[ignore = "needs an analysis test harness (Java getConfiguredTarget / createRuleContext on a BuildViewTestCase); the macro involved is a legacy macro"]
 fn test_analysis_test() {}
 
 // Java: StarlarkRuleClassFunctionsTest.testAnalysisTestAttrs
 #[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
+#[ignore = "needs an analysis test harness (Java getConfiguredTarget / createRuleContext on a BuildViewTestCase); the macro involved is a legacy macro"]
 fn test_analysis_test_attrs() {}
 
 // Java: StarlarkRuleClassFunctionsTest.testAnalysisTestDuplicateName_samePackage
@@ -704,22 +654,22 @@ fn test_analysis_test_duplicate_name_different_attrs_different_package() {}
 
 // Java: StarlarkRuleClassFunctionsTest.testAnalysisTestBadName
 #[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
+#[ignore = "needs an analysis test harness (Java getConfiguredTarget / createRuleContext on a BuildViewTestCase); the macro involved is a legacy macro"]
 fn test_analysis_test_bad_name() {}
 
 // Java: StarlarkRuleClassFunctionsTest.testAnalysisTestBadArgs
 #[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
+#[ignore = "needs an analysis test harness (Java getConfiguredTarget / createRuleContext on a BuildViewTestCase); the macro involved is a legacy macro"]
 fn test_analysis_test_bad_args() {}
 
 // Java: StarlarkRuleClassFunctionsTest.testAnalysisTestErrorOnExport
 #[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
+#[ignore = "needs an analysis test harness (Java getConfiguredTarget / createRuleContext on a BuildViewTestCase); the macro involved is a legacy macro"]
 fn test_analysis_test_error_on_export() {}
 
 // Java: StarlarkRuleClassFunctionsTest.testAnalysisTestErrorOverridingName
 #[test]
-#[ignore = "symbolic macros are not ported (MacroClass.instantiateAndAddMacro)"]
+#[ignore = "needs an analysis test harness (Java getConfiguredTarget / createRuleContext on a BuildViewTestCase); the macro involved is a legacy macro"]
 fn test_analysis_test_error_overriding_name() {}
 
 // Java: StarlarkRuleClassFunctionsTest.testLabelWithStrictVisibility

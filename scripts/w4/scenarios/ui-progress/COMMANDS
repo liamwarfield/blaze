@@ -1,0 +1,18 @@
+# UiEventHandler / UiStateTracker progress output with a slow action, without and with cursor
+# control (the progress lines themselves are dropped by the probe's normalisation, see `masks`);
+# BuildSummaryStatsModule's "Elapsed time ..., Critical Path: ..." line after a chain of actions.
+run build //:slow --curses=no
+run build //:chain --curses=yes --color=yes
+run build //:slow //:chain --curses=no --show_progress_rate_limit=0
+run build //:chain --noshow_progress
+run build //:slow --experimental_stats_summary
+# The failed-target summary of BuildResultPrinter beside a successful slow target.
+run build //:fails //:slow --keep_going
+run build //:fails //:slow --keep_going --show_result=0
+# The test summary block (TestSummaryPrinter) and UiEventHandler.testSummary's "(Summary)" lines
+# for tests with several logs and for a timeout.
+run test //:pass_test //:fail_test --test_summary=detailed
+run test //:fail_test --runs_per_test=2
+run test //:fail_test --flaky_test_attempts=2
+run test //:timeout_test --test_timeout=1
+run test //:pass_test //:fail_test //:timeout_test --test_timeout=1 --keep_going --curses=yes

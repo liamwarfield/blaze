@@ -1,0 +1,5 @@
+EVAL expected at least one item
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_max_empty.star", line 1, column 4, in <toplevel>
+TRACE \x09\x09max([])
+TRACE Error in max: expected at least one item

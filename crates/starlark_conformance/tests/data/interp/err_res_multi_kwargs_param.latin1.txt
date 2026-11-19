@@ -1,0 +1,1 @@
+SYNTAX err_res_multi_kwargs_param.star:1:12: multiple ** parameters not allowed

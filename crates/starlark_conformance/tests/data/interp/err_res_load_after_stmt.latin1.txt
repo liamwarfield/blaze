@@ -1,0 +1,2 @@
+SYNTAX err_res_load_after_stmt.star:2:1: load statements must appear before any other statement
+SYNTAX err_res_load_after_stmt.star:1:1: \x09first non-load statement appears here

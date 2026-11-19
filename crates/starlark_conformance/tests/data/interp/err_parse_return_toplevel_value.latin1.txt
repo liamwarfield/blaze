@@ -1,0 +1,1 @@
+SYNTAX err_parse_return_toplevel_value.star:1:1: return statements must be inside a function

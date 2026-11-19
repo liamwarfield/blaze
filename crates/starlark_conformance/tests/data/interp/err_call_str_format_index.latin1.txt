@@ -1,0 +1,5 @@
+EVAL No replacement found for index 1
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_str_format_index.star", line 1, column 13, in <toplevel>
+TRACE \x09\x09"{1}".format(1)
+TRACE Error in format: No replacement found for index 1

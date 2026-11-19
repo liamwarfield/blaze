@@ -1,0 +1,5 @@
+EVAL nesting depth limit exceeded
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_json_decode_deep.star", line 1, column 12, in <toplevel>
+TRACE \x09\x09json.decode("[" * 10000)
+TRACE Error in decode: nesting depth limit exceeded

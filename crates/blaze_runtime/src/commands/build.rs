@@ -222,12 +222,16 @@ pub(crate) fn run_build(
             return BlazeCommandResult::detailed_exit_code(abrupt_exit_detailed_exit_code(e));
         }
     };
-    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:337 BuildEventServiceModule.beforeCommand
-    let bep = BepCommandSupport::before_command(
-        env,
-        options,
-        &build_remote::build_event_artifact_uploader_factory_map(remote.as_ref()),
-    );
+    // The command's BEP, set up by BuildEventServiceModule.beforeCommand in the dispatcher;
+    // the remote module's uploader factory is known from here on
+    // (BuildEventArtifactUploaderFactoryDelegate.init).
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1351 BuildEventArtifactUploaderFactoryDelegate.init
+    let bep: Option<Arc<BepCommandSupport>> = env.get_bep().cloned();
+    if let Some(bep) = &bep {
+        bep.set_uploader_factory_map(build_remote::build_event_artifact_uploader_factory_map(
+            remote.as_ref(),
+        ));
+    }
     let result = run_build_with_bep(env, options, run_tests, bep.as_ref(), remote.as_ref(), run);
     // BlazeRuntime.afterCommand: CommandPrecompleteEvent, then each module's afterCommand in
     // module order; each AbruptExitException is reported as `ERROR: <message>` and the more
@@ -281,7 +285,8 @@ pub(crate) fn run_build(
             Some(abrupt_exit_detailed_exit_code(e)),
         );
     }
-    // BuildEventServiceModule.afterCommand.
+    // BuildEventServiceModule.afterCommand (the dispatcher's call of the module's afterCommand
+    // then finds it done).
     if let Some(bep) = &bep
         && let Err(e) = bep.after_command()
     {
@@ -329,14 +334,6 @@ fn run_build_with_bep(
         .unwrap_or(false);
 
     // Flags whose implementation is not ported: fail before anything runs.
-    if execution_options.stats_summary {
-        // The other summary of BuildSummaryStatsModule.buildComplete (total action wall time,
-        // preparation and execution times).
-        blaze_util::unported!(
-            "BuildSummaryStatsModule.buildComplete",
-            "--experimental_stats_summary"
-        );
-    }
     if build_request_options
         .aquery_dump_after_build_format
         .is_some()
@@ -378,6 +375,8 @@ fn run_build_with_bep(
 
     // The modules subscribed to the command's event bus.
     let collector = Arc::new(ExecutionEventCollector::new());
+    // BuildSummaryStatsModule.beforeCommand: commandStartMillis = env.getCommandStartTime().
+    collector.set_command_start_millis(start_time_millis);
     env.get_event_bus().register(collector.clone());
     let ui_test_summaries = Arc::new(UiTestSummaryCounter::default());
     env.get_event_bus().register(ui_test_summaries.clone());
@@ -469,6 +468,7 @@ fn run_build_with_bep(
             .map(|n| n.get())
             .unwrap_or(1)
     };
+    check_strategy_policy_is_default(env);
     let config = ExecutionToolConfig {
         file_system: file_system.clone(),
         output_base: env.get_output_base().clone(),
@@ -608,8 +608,35 @@ fn run_build_with_bep(
             .len(),
     );
     request.set_merged_analysis_and_execution(merged_analysis_and_execution);
+    if let Some(bep) = bep {
+        bep.set_merged_analysis_and_execution(merged_analysis_and_execution);
+    }
+    // BlazeCommandDispatcher.createEventHandler: `new UiEventHandler(...,
+    // env.withMergedAnalysisAndExecutionSourceOfTruth(), newStatsSummary)` picks the
+    // SkymeldUiStateTracker; its @Subscribe methods are the UI subscriber on the event bus.
+    // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:1037 BlazeCommandDispatcher.createEventHandler
+    let ui_subscriber = env.get_ui_event_handler().cloned().map(|handler| {
+        let tracker = Arc::new(crate::dispatcher::new_ui_state_tracker(
+            &handler,
+            &ui_options,
+            merged_analysis_and_execution,
+            execution_options.stats_summary,
+        ));
+        handler.set_state_tracker(tracker.clone());
+        let subscriber = Arc::new(
+            blaze_buildtool::runtime::ui_event_subscriber::UiEventSubscriber::new(
+                handler, tracker,
+            ),
+        );
+        env.get_event_bus().register(subscriber.clone());
+        subscriber
+    });
 
     let execution_phase = RuntimeExecutionPhase {
+        expand_filesets: options
+            .get_options::<blaze_optdefs::misc::build_event_protocol_options::BuildEventProtocolOptions>()
+            .map(|o| o.expand_filesets)
+            .unwrap_or(false),
         reporter: reporter.clone(),
         directories: directories.clone(),
         workspace: workspace.clone(),
@@ -622,6 +649,7 @@ fn run_build_with_bep(
             .get_options::<blaze_optdefs::command::analysis_options::AnalysisOptions>()
             .map(|o| o.extra_action_top_level_only)
             .unwrap_or(false),
+        sibling_repository_layout: build_language_options.experimental_sibling_repository_layout,
         collector: collector.clone(),
         event_reporter: env.get_reporter().clone(),
         explanation: build_request_options
@@ -758,6 +786,27 @@ fn run_build_with_bep(
             &generating_rule_lookup,
         );
     }
+    // The Skymeld path constructs the ExecutionTool (and with it BuildSummaryStatsModule
+    // .executorInit) as soon as the target patterns are evaluated, before the analysis; Blaze's
+    // ExecutionToolConstruction runs after the analysis, so a failed analysis initializes it
+    // here. The ExecutionFinishedEvent of ExecutionTool.unconditionalExecutionPhaseFinalizations
+    // is posted whenever the ExecutionTool exists.
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:613 BuildTool.buildTargetsWithMergedAnalysisExecution
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:601 ExecutionTool.unconditionalExecutionPhaseFinalizations
+    if merged_analysis_and_execution
+        && !collector.executor_initialized()
+        && target_patterns_were_evaluated(
+            &skyframe_executor,
+            &request,
+            env.get_relative_working_directory(),
+        )
+        && let Some(state) = skyframe_executor.get_execution()
+    {
+        executor_init_build_summary_stats(&collector, &execution_options, state);
+    }
+    if collector.executor_initialized() {
+        collector.execution_phase_finish();
+    }
     build_result.set_detailed_exit_code(Arc::new(to_util_detailed_exit_code(&detailed_exit_code)));
     // The stop time has to be captured before we send the BuildCompleteEvent.
     build_result.set_stop_time(JavaClock.current_time_millis());
@@ -771,6 +820,9 @@ fn run_build_with_bep(
     let failed_tests = ui_test_summaries
         .failed_tests
         .load(std::sync::atomic::Ordering::SeqCst);
+    if let Some(ui_subscriber) = &ui_subscriber {
+        ui_subscriber.begin_build_complete();
+    }
     if let Some(test_support) = &test_support {
         test_support.build_complete_event(&build_result);
     }
@@ -782,12 +834,17 @@ fn run_build_with_bep(
         reporter.as_ref(),
         &collector,
         build_result.get_elapsed_seconds(),
+        build_result.get_stop_time(),
     );
-    reporter.handle(&build_complete_event(
-        build_result.get_success(),
-        failed_tests,
-        &collector,
-    ));
+    // UiEventHandler.buildComplete (UiStateTracker.buildComplete's line, written by the UI only).
+    match &ui_subscriber {
+        Some(ui_subscriber) => ui_subscriber.build_complete(build_result.get_success()),
+        None => reporter.handle(&build_complete_event(
+            build_result.get_success(),
+            failed_tests,
+            &collector,
+        )),
+    }
     // The BuildCompleteEvent's BEP subscribers (BuildSummaryStatsModule's tool logs, the UI's
     // progress bar while the transports are open, the streamer), then the BuildToolLogs event.
     if let Some(bep) = bep {
@@ -895,7 +952,12 @@ pub(crate) fn stop_request_without_execution(
     result.set_stop_time(JavaClock.current_time_millis());
     // No action ran: the counters of BuildSummaryStatsModule and of the UI are zero.
     let collector = ExecutionEventCollector::new();
-    report_build_summary_stats(reporter.as_ref(), &collector, result.get_elapsed_seconds());
+    report_build_summary_stats(
+        reporter.as_ref(),
+        &collector,
+        result.get_elapsed_seconds(),
+        result.get_stop_time(),
+    );
     // BuildResult.getSuccess()
     reporter.handle(&build_complete_event(
         detailed_exit_code.is_success(),
@@ -929,6 +991,22 @@ fn to_util_detailed_exit_code(code: &DetailedExitCode) -> blaze_util::DetailedEx
 /// PORT: blaze_sky_top's `BuildTool` has no hook between the target patterns and the analysis;
 /// with Skymeld, an analysis error that Java never reaches (the exception comes first) is
 /// reported instead.
+/// `BuildSummaryStatsModule.executorInit` of the build's `ExecutionTool`.
+// Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:91 BuildSummaryStatsModule.executorInit
+fn executor_init_build_summary_stats(
+    collector: &ExecutionEventCollector,
+    execution_options: &ExecutionOptions,
+    state: &blaze_sky_top::execution_phase::ExecutionState,
+) {
+    collector.executor_init(
+        execution_options.enable_critical_path_profiling,
+        execution_options.stats_summary,
+        blaze_buildtool::buildtool::execution_tool::can_be_shared_with_executor(
+            state.prepared.executor.clone(),
+        ),
+    );
+}
+
 // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:520 BuildTool.buildTargetsWithoutMergedAnalysisExecution
 // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:613 BuildTool.buildTargetsWithMergedAnalysisExecution
 struct ExecutionToolConstruction<'a> {
@@ -945,6 +1023,14 @@ impl AnalysisPostProcessor for ExecutionToolConstruction<'_> {
         let state = skyframe_executor
             .get_execution()
             .expect("IllegalStateException: the executor was created without execution");
+        // ExecutionTool.<init>: each module's executorInit (BuildSummaryStatsModule's registers
+        // the CriticalPathComputer) runs before the spawn strategy registry is built.
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:171 ExecutionTool.<init>
+        executor_init_build_summary_stats(
+            &self.execution_phase.collector,
+            &self.execution_phase.execution_options,
+            state,
+        );
         if let Err(e) = state.prepared.check_execution_tool_created() {
             // catch (AbruptExitException e): result.setCatastrophe().
             // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:999 BuildTool.processRequest
@@ -1307,6 +1393,8 @@ struct RuntimeExecutionPhase {
     execution_options: ExecutionOptions,
     /// `--experimental_extra_action_top_level_only` (`AnalysisOptions`).
     extra_action_top_level_only: bool,
+    /// `request.getOptions(BuildLanguageOptions.class).experimentalSiblingRepositoryLayout`.
+    sibling_repository_layout: bool,
     collector: Arc<ExecutionEventCollector>,
     /// `env.getReporter()`, for `Reporter.addHandler`.
     event_reporter: Arc<blaze_events::Reporter>,
@@ -1329,6 +1417,9 @@ struct RuntimeExecutionPhase {
     bep: Option<Arc<BepCommandSupport>>,
     /// The command's `RemoteModule` (`None` without any remote option).
     remote: Option<Arc<build_remote::RemoteSupport>>,
+    /// `TopLevelArtifactContext.expandFilesets()` (`BuildEventProtocolOptions.expandFilesets`),
+    /// a component of the hash code of the build's `BuildDriverKey`s.
+    expand_filesets: bool,
 }
 
 /// What the exclusive-test phase leaves to the error processing of the build.
@@ -1365,6 +1456,7 @@ impl RuntimeExecutionPhase {
         config: &blaze_buildtool::buildtool::execution_tool::ExecutionToolConfig,
         reporter: Arc<dyn ExtendedEventHandler>,
         merged: bool,
+        for_run_command: bool,
         keep_going: bool,
         keys_to_execute: &[BuildDriverKey],
         main_evaluation_result: &blaze_skyframe::EvaluationResult,
@@ -1372,13 +1464,51 @@ impl RuntimeExecutionPhase {
         let mut outcome = ExclusiveTestsOutcome::default();
         let exclusive_tests_to_run: indexmap::IndexSet<&BuildDriverKey> = if merged {
             // The exclusive tests whose analysis succeeded i.e. those that can be run.
+            // PORT: java-hash-order. `evaluationResult.values()` iterates the HashMap of the
+            // result (crate::commands::exclusive_test_order).
             // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1103 SkyframeBuildView.getExclusiveTests
-            keys_to_execute
-                .iter()
-                .filter(|key| {
-                    main_evaluation_result
-                        .get(*key)
-                        .is_some_and(|value| value.exclusive_test)
+            let flags = super::exclusive_test_order::TopLevelArtifactContextFlags {
+                run_tests_exclusively: self.execution_options.test_strategy == "exclusive",
+                expand_filesets: self.expand_filesets,
+                for_run_command,
+            };
+            let mut exclusive: Vec<(usize, i32, &BuildDriverKey)> = Vec::new();
+            for (index, (sky_key, value)) in main_evaluation_result.values.iter().enumerate() {
+                let Some(key) = sky_key.downcast::<BuildDriverKey>() else {
+                    continue;
+                };
+                let is_exclusive = value
+                    .clone()
+                    .downcast::<blaze_sky_exec::build_driver_function::BuildDriverValue>()
+                    .is_ok_and(|value| value.exclusive_test);
+                if !is_exclusive {
+                    continue;
+                }
+                let key = keys_to_execute
+                    .iter()
+                    .find(|k| *k == key)
+                    .expect("an evaluated BuildDriverKey is a key to execute");
+                let hash_code =
+                    super::exclusive_test_order::build_driver_key_hash_code(key, &flags)
+                        .expect("an exclusive test's key is a ConfiguredTargetKey");
+                exclusive.push((index, hash_code, key));
+            }
+            let distinct_keys: std::collections::HashSet<&blaze_skyframe::SkyKey> =
+                main_evaluation_result.values.iter().map(|(k, _)| k).collect();
+            let order = super::exclusive_test_order::evaluation_result_values_order(
+                distinct_keys.len(),
+                exclusive
+                    .iter()
+                    .map(|(index, hash_code, _)| (*index, *hash_code)),
+            );
+            order
+                .into_iter()
+                .map(|index| {
+                    exclusive
+                        .iter()
+                        .find(|(i, _, _)| *i == index)
+                        .map(|(_, _, key)| *key)
+                        .expect("an ordered index")
                 })
                 .collect()
         } else {
@@ -1674,10 +1804,11 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:296 ExecutionTool.prepareForExecution
         let exec_root = state.config.exec_root.clone();
         let planted = exec_root.create_directory_and_parents().and_then(|_| {
-            SymlinkForest::new(
+            SymlinkForest::with_sibling_repository_layout(
                 skyframe_executor.get_package_roots(),
                 exec_root.clone(),
                 &self.product_name,
+                self.sibling_repository_layout,
             )
             .plant_symlink_forest()
         });
@@ -1909,6 +2040,7 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                 &state.config,
                 reporter.clone(),
                 request.with_merged_analysis_and_execution_source_of_truth(),
+                request.command_name == "run",
                 request.keep_going,
                 &keys_to_execute,
                 &evaluation,
@@ -2580,5 +2712,34 @@ mod tests {
         };
         assert!(matches!(process_execution_errors(&result, true), Ok(None)));
         assert!(matches!(process_execution_errors(&result, false), Ok(None)));
+    }
+}
+
+/// `SpawnStrategyRegistry.builder(env.getInvocationPolicy().getStrategyPolicy())` in
+/// `ExecutionTool`'s constructor. blaze_exec builds the registry with the policy
+/// (`executor_setup::build_spawn_strategy_registry_with_policy`), but blaze_buildtool's
+/// `ExecutionToolConfig` does not carry it from the command environment yet, so the registry is
+/// built with the default policy. That is the same registry when every `MnemonicPolicy` of the
+/// strategy policy is empty (`SpawnStrategyPolicy.create`: "Empty proto policy implies everything
+/// allowed"); any other strategy policy fails loudly.
+// Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:166 ExecutionTool.<init>
+pub(crate) fn check_strategy_policy_is_default(env: &CommandEnvironment) {
+    use blaze_protos::blaze::strategy_policy::MnemonicPolicy;
+    let Some(strategy_policy) = &env.get_invocation_policy().strategy_policy else {
+        return;
+    };
+    let allows_all = [
+        &strategy_policy.mnemonic_policy,
+        &strategy_policy.dynamic_remote_policy,
+        &strategy_policy.dynamic_local_policy,
+    ]
+    .iter()
+    .all(|p| (*p).clone().unwrap_or_default() == MnemonicPolicy::default());
+    if !allows_all {
+        blaze_util::unported!(
+            "ExecutionTool.<init>",
+            "SpawnStrategyRegistry.builder(env.getInvocationPolicy().getStrategyPolicy()) with a \
+             strategy policy (ExecutionToolConfig does not carry it to blaze_exec)"
+        );
     }
 }

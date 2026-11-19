@@ -1,0 +1,306 @@
+#!/usr/bin/env python3
+"""Compare symbolic macros, subrules and lazy macro expansion between the oracle and Blaze."""
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+USAGE = """\
+usage: scripts/macros/compare --binary <blaze> [--oracle <bazel>] [--case ID]... [--label NAME]
+                              [--skip-oracle] [--skip-blaze] [--show]
+       scripts/macros/compare list
+       scripts/macros/compare help
+
+Runs a fixed list of commands (see `list`) on a work copy of the brotli checkout plus the probe
+packages of scripts/macros/probe (macro_probe/... as //macro_probe/..., and probe_ext as the
+local module @probe_ext, added to MODULE.bazel with local_path_override), once with the oracle
+(Bazel 9.3.2) and once with Blaze. Each side has its own work copy
+(~/.cache/blaze/work/macros-compare/<side>) and output user root
+(~/.cache/blaze/oracle-out/macros-compare-<side>); commands run with a clean environment
+(HOME, PATH=/usr/bin:/bin), --nohome_rc --nosystem_rc, the shared repository cache,
+--color=no --curses=no, under systemd-run --user --scope -p MemoryMax=12G -p MemorySwapMax=0,
+in the order listed.
+
+Compared per case, after replacing the work copy path, the output user root and the output base
+hash on each side:
+  exit     the exit code
+  stdout   standard output (query/cquery/aquery results)
+  stderr   the lines starting with ERROR:, WARNING:, DEBUG:, FAIL, plus the indented lines that
+           follow them (tracebacks), with "INFO: Elapsed time"/timing noise dropped
+
+Output: a table on stdout; raw and normalised outputs under
+~/.cache/blaze/macros-compare/<label>/<side>/<case>.{stdout,stderr,norm.json} and results.json.
+--skip-oracle reuses the oracle outputs of an earlier run with the same --label; --skip-blaze
+only records the oracle. --show prints the diffs of differing cases. Exit 0 when every compared
+field matches, 1 otherwise.
+"""
+
+HOME = os.path.expanduser("~")
+CACHE = os.path.join(HOME, ".cache", "blaze")
+ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+REPO_CACHE = os.path.join(CACHE, "repo-cache")
+PROBE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe")
+CHECKOUT = os.path.join(CACHE, "corpus", "brotli")
+
+P = "//macro_probe"
+LAZY = "--experimental_lazy_macro_expansion_packages=" + P + "/lazy," + P + "/ok"
+
+ERR_PKGS = [
+    "err_unknown_attr", "err_implicit", "err_missing_name", "err_mandatory", "err_return",
+    "err_recursion", "err_fail", "err_naming", "err_conflict", "err_finalizer_in_macro",
+    "err_existing_rules", "err_glob", "err_bad_type", "err_unexported", "err_kwargs",
+    "err_attr_name", "err_computed_default", "err_macro_in_build", "err_inherit_none",
+]
+
+# (id, description, command args)
+CASES = [
+    ("q-ok-label-kind", "query label_kind of the macro package",
+     ["query", P + "/ok:all", "--output=label_kind"]),
+    ("q-all-label-kind", "query label_kind of every probe package that loads",
+     ["query", P + "/ok/... + " + P + "/defs/... + " + P + "/vis/... + " + P + "/sub/... + "
+      + P + "/lazy/...", "--output=label_kind"]),
+    ("q-ok-build", "query --output=build (generator attributes)",
+     ["query", P + "/ok:all", "--output=build"]),
+    ("q-lazy-build", "query --output=build of a package with finalizers",
+     ["query", P + "/lazy:all", "--output=build"]),
+    ("q-ok-jsonproto", "query --output=streamed_jsonproto",
+     ["query", P + "/ok:all", "--output=streamed_jsonproto"]),
+    ("q-ok-xml", "query --output=xml", ["query", P + "/ok:all", "--output=xml"]),
+    ("q-deps", "query deps through macro-declared targets",
+     ["query", "deps(" + P + "/vis:consumer)", "--output=label"]),
+    ("q-buildfiles", "query buildfiles (macro .bzl files)",
+     ["query", "buildfiles(" + P + "/ok:all)", "--output=label"]),
+    ("q-ext-repo", "query a package using a macro from another repository",
+     ["query", "attr(generator_function, ext_macro, " + P + "/ok:all)", "--output=label_kind"]),
+    ("q-violator", "query a target violating macro naming rules",
+     ["query", P + "/err_naming:all", "--output=label_kind"]),
+    ("q-violator-dep", "query deps on a violating target",
+     ["query", "deps(" + P + "/err_naming:uses_violator)", "--output=label"]),
+    ("cquery-ok", "cquery of the macro package",
+     ["cquery", P + "/ok:all + " + P + "/vis:consumer"]),
+    ("cquery-opt", "cquery with a select() branch chosen",
+     ["cquery", "-c", "opt", "deps(" + P + "/ok:c2)"]),
+    ("aquery-ok", "aquery of macro-declared targets",
+     ["aquery", "mnemonic(FileWrite, " + P + "/ok:s1 + " + P + "/ok:c1)",
+      "--output=text"]),
+    ("build-ok", "build the macro package and the consumer",
+     ["build", P + "/ok:all", P + "/vis:consumer"]),
+    ("build-vis-bad", "visibility error on a private macro-declared target",
+     ["build", "--nobuild", P + "/vis:bad_consumer"]),
+    ("build-vis-bad2", "visibility error on an undeclared-visibility macro target",
+     ["build", "--nobuild", P + "/vis:bad_consumer2"]),
+    ("build-vis-bad3", "dependency on a nested macro's private target",
+     ["build", "--nobuild", P + "/err_vis_dep:x"]),
+    ("build-violator", "build a target depending on a naming violator",
+     ["build", "--nobuild", P + "/err_naming:uses_violator"]),
+    ("build-sub", "build a rule with subrules", ["build", P + "/sub:w"]),
+    ("aquery-sub", "aquery a rule with subrules",
+     ["aquery", P + "/sub:w", "--output=text"]),
+    ("build-sub-bad", "a rule calling an undeclared subrule",
+     ["build", "--nobuild", P + "/sub:bad"]),
+] + [
+    ("q-" + pkg, "error case " + pkg, ["query", P + "/" + pkg + ":all", "--output=label_kind"])
+    for pkg in ERR_PKGS
+] + [
+    ("lazy-q-label-kind", "lazy expansion: query label_kind",
+     ["query", P + "/lazy:all + " + P + "/ok:all", "--output=label_kind", LAZY]),
+    ("lazy-q-build", "lazy expansion: query --output=build",
+     ["query", P + "/lazy:all", "--output=build", LAZY]),
+    ("lazy-q-target", "lazy expansion: query one macro-declared target",
+     ["query", P + "/ok:o1_b_inner_priv", "--output=label_kind", LAZY]),
+    ("lazy-q-deps", "lazy expansion: deps through macro targets",
+     ["query", "deps(" + P + "/vis:consumer)", "--output=label", LAZY]),
+    ("lazy-build", "lazy expansion: build", ["build", P + "/lazy:all", P + "/ok:all", LAZY]),
+    ("lazy-cquery", "lazy expansion: cquery", ["cquery", P + "/lazy:all", LAZY]),
+    ("lazy-only-q", "lazy expansion of one package: query label_kind",
+     ["query", P + "/lazy:all", "--output=label_kind",
+      "--experimental_lazy_macro_expansion_packages=" + P + "/lazy"]),
+    ("lazy-only-target", "lazy expansion of one package: one macro-declared target",
+     ["query", P + "/lazy:ls_helper", "--output=label_kind",
+      "--experimental_lazy_macro_expansion_packages=" + P + "/lazy"]),
+]
+
+KEEP_RE = re.compile(r"^(ERROR:|WARNING:|DEBUG:|FAIL)")
+DROP_RE = re.compile(r"^(INFO: Elapsed time|INFO: \d+ processes|INFO: Build completed"
+                     r"|INFO: Found|INFO: Analyzed)")
+
+
+def norm(text, ws, ur):
+    text = text.replace(ws, "<WS>").replace(ur, "<UR>")
+    text = re.sub(r"<UR>/[0-9a-f]{32}", "<UR>/<HASH>", text)
+    return text
+
+
+def stderr_lines(stderr):
+    out = []
+    keep = False
+    for line in stderr.splitlines():
+        if KEEP_RE.match(line):
+            keep = True
+            out.append(line)
+        elif keep and (line.startswith("\t") or line.startswith("  ") or line.startswith("Traceback")
+                       or line.startswith("Error")):
+            out.append(line)
+        else:
+            keep = False
+    return out
+
+
+def prepare(side):
+    ws = os.path.join(CACHE, "work", "macros-compare", side)
+    if os.path.isdir(ws):
+        shutil.rmtree(ws)
+    os.makedirs(ws)
+    subprocess.run(["rsync", "-a", "--exclude", "/bazel-*", "--exclude", "/.git",
+                    CHECKOUT + "/", ws + "/"], check=True)
+    # Restore files the checkout may have modified (the lockfile) to git HEAD.
+    for f in subprocess.run(["git", "-C", CHECKOUT, "diff", "--name-only"], check=True,
+                            capture_output=True, text=True).stdout.split():
+        blob = subprocess.run(["git", "-C", CHECKOUT, "show", "HEAD:" + f], check=True,
+                              capture_output=True).stdout
+        with open(os.path.join(ws, f), "wb") as fh:
+            fh.write(blob)
+    shutil.copytree(os.path.join(PROBE, "macro_probe"), os.path.join(ws, "macro_probe"))
+    shutil.copytree(os.path.join(PROBE, "probe_ext"), os.path.join(ws, "probe_ext"))
+    with open(os.path.join(ws, "MODULE.bazel"), "a") as fh:
+        fh.write('\nbazel_dep(name = "probe_ext", version = "0")\n'
+                 'local_path_override(module_name = "probe_ext", path = "probe_ext")\n')
+    return ws
+
+
+def run_side(side, binary, cases, outdir):
+    ws = prepare(side)
+    ur = os.path.join(CACHE, "oracle-out", "macros-compare-" + side)
+    if os.path.isdir(ur):
+        subprocess.run(["chmod", "-R", "u+w", ur])
+        shutil.rmtree(ur, ignore_errors=True)
+    os.makedirs(outdir, exist_ok=True)
+    results = {}
+    for cid, _desc, args in cases:
+        # A fresh server per case: Bazel replays a package's events (print() output) only when
+        # it loads the package, and Blaze has no persistent server.
+        subprocess.run([binary, "--output_user_root=" + ur, "--nohome_rc", "--nosystem_rc",
+                        "shutdown"], cwd=ws, capture_output=True,
+                       env={"HOME": HOME, "PATH": "/usr/bin:/bin"})
+        cmd = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "-p", "MemoryMax=12G",
+               "-p", "MemorySwapMax=0", "env", "-i", "HOME=" + HOME, "PATH=/usr/bin:/bin",
+               binary, "--output_user_root=" + ur, "--nohome_rc", "--nosystem_rc", args[0],
+               "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"] + args[1:]
+        try:
+            p = subprocess.run(cmd, cwd=ws, capture_output=True, timeout=1800)
+            code, out, err = p.returncode, p.stdout, p.stderr
+        except subprocess.TimeoutExpired:
+            code, out, err = "timeout", b"", b""
+        out = out.decode("latin-1")
+        err = err.decode("latin-1")
+        with open(os.path.join(outdir, cid + ".stdout"), "w", encoding="latin-1") as fh:
+            fh.write(out)
+        with open(os.path.join(outdir, cid + ".stderr"), "w", encoding="latin-1") as fh:
+            fh.write(err)
+        with open(os.path.join(outdir, cid + ".exit"), "w") as fh:
+            fh.write(str(code))
+        results[cid] = normalize(outdir, cid, side)
+        print(f"  {side} {cid}: exit {code}", file=sys.stderr)
+    subprocess.run([binary, "--output_user_root=" + ur, "--nohome_rc", "--nosystem_rc",
+                    "shutdown"], cwd=ws, capture_output=True,
+                   env={"HOME": HOME, "PATH": "/usr/bin:/bin"})
+    return results
+
+
+def normalize(outdir, cid, side):
+    ws = os.path.join(CACHE, "work", "macros-compare", side)
+    ur = os.path.join(CACHE, "oracle-out", "macros-compare-" + side)
+    with open(os.path.join(outdir, cid + ".exit")) as fh:
+        code = fh.read().strip()
+    code = int(code) if code.lstrip("-").isdigit() else code
+    with open(os.path.join(outdir, cid + ".stdout"), encoding="latin-1") as fh:
+        out = fh.read()
+    with open(os.path.join(outdir, cid + ".stderr"), encoding="latin-1") as fh:
+        err = fh.read()
+    n = {
+        "exit": code,
+        "stdout": norm(out, ws, ur).splitlines(),
+        "stderr": [l for l in stderr_lines(norm(err, ws, ur)) if not DROP_RE.match(l)],
+    }
+    with open(os.path.join(outdir, cid + ".norm.json"), "w") as fh:
+        json.dump(n, fh, indent=1)
+    return n
+
+
+def load_side(outdir, cases, side):
+    return {cid: normalize(outdir, cid, side) for cid, _d, _a in cases}
+
+
+def main(argv):
+    if not argv or argv[0] in ("help", "--help", "-h"):
+        print(USAGE)
+        return 0
+    if argv[0] == "list":
+        for cid, desc, args in CASES:
+            print(f"{cid:28} {desc}\n{'':28} {' '.join(args)}")
+        return 0
+    binary = None
+    oracle = ORACLE
+    only = []
+    label = "default"
+    skip_oracle = skip_blaze = show = False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--binary":
+            binary = os.path.abspath(argv[i + 1]); i += 2
+        elif a == "--oracle":
+            oracle = argv[i + 1]; i += 2
+        elif a == "--case":
+            only.append(argv[i + 1]); i += 2
+        elif a == "--label":
+            label = argv[i + 1]; i += 2
+        elif a == "--skip-oracle":
+            skip_oracle = True; i += 1
+        elif a == "--skip-blaze":
+            skip_blaze = True; i += 1
+        elif a == "--show":
+            show = True; i += 1
+        else:
+            print("unknown argument " + a + "\n" + USAGE, file=sys.stderr)
+            return 2
+    if binary is None and not skip_blaze:
+        print("--binary is required\n" + USAGE, file=sys.stderr)
+        return 2
+    cases = [c for c in CASES if not only or c[0] in only]
+    base = os.path.join(CACHE, "macros-compare", label)
+    odir = os.path.join(base, "oracle")
+    bdir = os.path.join(base, "blaze")
+    oracle_res = load_side(odir, cases, "oracle") if skip_oracle else run_side("oracle", oracle, cases, odir)
+    if skip_blaze:
+        return 0
+    blaze_res = run_side("blaze", binary, cases, bdir)
+    rows = []
+    all_ok = True
+    for cid, desc, _a in cases:
+        o, b = oracle_res[cid], blaze_res[cid]
+        fields = {f: o[f] == b[f] for f in ("exit", "stdout", "stderr")}
+        ok = all(fields.values())
+        all_ok &= ok
+        rows.append({"case": cid, "match": ok, "fields": fields,
+                     "oracle_exit": o["exit"], "blaze_exit": b["exit"]})
+        mark = "MATCH" if ok else "DIFF "
+        diffs = ",".join(f for f, v in fields.items() if not v)
+        print(f"{mark} {cid:28} exit {o['exit']}/{b['exit']} {diffs}")
+        if show and not ok:
+            for f in ("stdout", "stderr"):
+                if not fields[f]:
+                    import difflib
+                    for l in difflib.unified_diff(o[f], b[f], "oracle", "blaze", lineterm="", n=1):
+                        print("    " + l)
+    with open(os.path.join(base, "results.json"), "w") as fh:
+        json.dump(rows, fh, indent=1)
+    print(f"{sum(r['match'] for r in rows)} of {len(rows)} cases match")
+    return 0 if all_ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

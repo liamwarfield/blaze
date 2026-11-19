@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use blaze_actions::Artifact;
-use blaze_events::{EventHandler, ExtendedEventHandler};
+use blaze_events::ExtendedEventHandler;
 use blaze_sky_exec::keys::BuildDriverKey;
 use blaze_skyframe::{Evaluator, Interrupted};
 
@@ -43,13 +43,14 @@ pub fn execute_top_level_targets(
 /// The `BuildCompleteEvent` subscribers' lines: elapsed time, process counts, and
 /// `Build completed successfully, N total actions`.
 pub fn report_build_complete(
-    reporter: &dyn EventHandler,
+    reporter: &dyn ExtendedEventHandler,
     collector: &ExecutionEventCollector,
     result: &ExecutionPhaseResult,
     elapsed_seconds: f64,
+    stop_time_millis: i64,
     failed_tests: i32,
 ) {
-    report_build_summary_stats(reporter, collector, elapsed_seconds);
+    report_build_summary_stats(reporter, collector, elapsed_seconds, stop_time_millis);
     reporter.handle(&build_complete_event(
         !result.evaluation.has_error(),
         failed_tests,

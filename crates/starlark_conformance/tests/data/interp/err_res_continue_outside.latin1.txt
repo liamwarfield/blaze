@@ -1,0 +1,1 @@
+SYNTAX err_res_continue_outside.star:2:3: continue statement must be inside a for loop

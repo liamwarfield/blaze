@@ -71,6 +71,106 @@ pub fn get_abrupt_exit_file_path(output_base: &Path) -> Path {
     output_base.get_relative("exit_code_to_use_on_abrupt_exit")
 }
 
+// Java: src/main/cpp/blaze_util.cc:149 LogWait
+fn log_wait(elapsed_seconds: u32, wait_seconds: u32) {
+    crate::signal_handler::sig_print(
+        format!(
+            "WARNING: Waiting for server process to terminate (waited {} seconds, waiting at \
+             most {})\n",
+            elapsed_seconds, wait_seconds
+        )
+        .as_bytes(),
+    );
+}
+
+// Java: src/main/cpp/blaze_util.cc:157 SignalHandlerGuard
+/// Install a signal handler and restore the previous handler after the scope ends.
+struct SignalHandlerGuard {
+    sig: libc::c_int,
+    previous_handler: libc::sighandler_t,
+}
+
+impl SignalHandlerGuard {
+    fn new(sig: libc::c_int, handler: extern "C" fn(libc::c_int)) -> Self {
+        // SAFETY: installs an async-signal-safe handler (it stores to an atomic).
+        let previous_handler = unsafe { libc::signal(sig, handler as libc::sighandler_t) };
+        SignalHandlerGuard {
+            sig,
+            previous_handler,
+        }
+    }
+}
+
+impl Drop for SignalHandlerGuard {
+    fn drop(&mut self) {
+        // SAFETY: restores the handler signal() returned.
+        unsafe { libc::signal(self.sig, self.previous_handler) };
+    }
+}
+
+// Java: src/main/cpp/blaze_util.cc:172 interrupted_during_await_termination
+static INTERRUPTED_DURING_AWAIT_TERMINATION: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+// Java: src/main/cpp/blaze_util.cc:174 SignalHandlerDuringAwaitTermination
+extern "C" fn signal_handler_during_await_termination(_signal: libc::c_int) {
+    INTERRUPTED_DURING_AWAIT_TERMINATION.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+// Java: src/main/cpp/blaze_util.cc:178 AwaitServerProcessTermination
+/// Wait for the specified process to terminate (polling `VerifyServerProcess`) for at most
+/// `wait_seconds`. Returns true if the process terminated.
+pub fn await_server_process_termination(pid: i32, output_base: &Path, wait_seconds: u32) -> bool {
+    let st = get_milliseconds_monotonic();
+    let first_seconds: u32 = 5;
+    let mut logged_first = false;
+    let second_seconds: u32 = 10;
+    let mut logged_second = false;
+    let third_seconds: u32 = 30;
+    let mut logged_third = false;
+
+    // b/428029833: Install signal handlers to make sure the server process is killed upon
+    // interruption.
+    INTERRUPTED_DURING_AWAIT_TERMINATION.store(false, std::sync::atomic::Ordering::SeqCst);
+    let _sigint_handler_guard =
+        SignalHandlerGuard::new(libc::SIGINT, signal_handler_during_await_termination);
+    let _sigterm_handler_guard =
+        SignalHandlerGuard::new(libc::SIGTERM, signal_handler_during_await_termination);
+    let _sigquit_handler_guard =
+        SignalHandlerGuard::new(libc::SIGQUIT, signal_handler_during_await_termination);
+
+    while verify_server_process(pid, output_base) {
+        if INTERRUPTED_DURING_AWAIT_TERMINATION.load(std::sync::atomic::Ordering::SeqCst) {
+            return false;
+        }
+        try_sleep(100);
+        let elapsed_millis = get_milliseconds_monotonic() - st;
+        if !logged_first && elapsed_millis > first_seconds as u64 * 1000 {
+            log_wait(first_seconds, wait_seconds);
+            logged_first = true;
+        }
+        if !logged_second && elapsed_millis > second_seconds as u64 * 1000 {
+            log_wait(second_seconds, wait_seconds);
+            logged_second = true;
+        }
+        if !logged_third && elapsed_millis > third_seconds as u64 * 1000 {
+            log_wait(third_seconds, wait_seconds);
+            logged_third = true;
+        }
+        if elapsed_millis > wait_seconds as u64 * 1000 {
+            crate::signal_handler::sig_print(
+                format!(
+                    "INFO: Waited {} seconds for server process (pid={}) to terminate.\n",
+                    wait_seconds, pid
+                )
+                .as_bytes(),
+            );
+            return false;
+        }
+    }
+    true
+}
+
 // Java: src/main/cpp/blaze_util.h:111 EnvVarAction
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnvVarAction {
@@ -94,6 +194,53 @@ impl EnvVarValue {
             action,
             value: value.into(),
         }
+    }
+}
+
+// Java: src/main/cpp/blaze_util.h:131 WithEnvVars
+/// While this object is alive, the environment variables are set (or unset) as given; the
+/// previous values are restored when it is dropped.
+pub struct WithEnvVars {
+    old_values: std::collections::BTreeMap<String, EnvVarValue>,
+}
+
+impl WithEnvVars {
+    // Java: src/main/cpp/blaze_util.cc:264 WithEnvVars::SetEnvVars
+    fn set_env_vars(vars: &std::collections::BTreeMap<String, EnvVarValue>) {
+        for (name, value) in vars {
+            // SAFETY: the client calls this on its main thread before exec'ing the server, as
+            // the C++ does; no other thread reads the environment then.
+            unsafe {
+                match value.action {
+                    EnvVarAction::Unset => unset_env(name),
+                    EnvVarAction::Set => set_env(name, &value.value),
+                }
+            }
+        }
+    }
+
+    // Java: src/main/cpp/blaze_util.cc:281 WithEnvVars::WithEnvVars
+    pub fn new(vars: &std::collections::BTreeMap<String, EnvVarValue>) -> Self {
+        let mut old_values = std::collections::BTreeMap::new();
+        for name in vars.keys() {
+            if exists_env(name) {
+                old_values.insert(
+                    name.clone(),
+                    EnvVarValue::new(EnvVarAction::Set, get_env(name)),
+                );
+            } else {
+                old_values.insert(name.clone(), EnvVarValue::new(EnvVarAction::Unset, ""));
+            }
+        }
+        Self::set_env_vars(vars);
+        WithEnvVars { old_values }
+    }
+}
+
+impl Drop for WithEnvVars {
+    // Java: src/main/cpp/blaze_util.cc:293 WithEnvVars::~WithEnvVars
+    fn drop(&mut self) {
+        Self::set_env_vars(&self.old_values);
     }
 }
 
@@ -350,6 +497,343 @@ pub fn execute_run_request(exe: &Path, run_request_args: &[String]) -> ! {
     execute_program(exe, run_request_args, /* run_in_user_cgroup= */ false)
 }
 
+// Java: src/main/cpp/blaze_util_posix.cc:343 ExecuteServerJvm
+/// Replaces the current process with the server (`exec-server`, `RunServerMode`).
+pub fn execute_server_jvm(exe: &Path, server_jvm_args: &[String], run_in_user_cgroup: bool) -> ! {
+    execute_program(exe, server_jvm_args, run_in_user_cgroup)
+}
+
+// Java: src/main/cpp/blaze_util_platform.h:183 BlazeServerStartup
+// Java: src/main/cpp/blaze_util_posix.cc:367 SocketBlazeServerStartup
+/// Notifies the client about the death of the server process by keeping a socket open in the
+/// server. If the server dies for any reason, the socket will be closed, which can be detected
+/// by the client.
+pub struct SocketBlazeServerStartup {
+    fd: libc::c_int,
+}
+
+impl SocketBlazeServerStartup {
+    // Java: src/main/cpp/blaze_util_posix.cc:376 SocketBlazeServerStartup::SocketBlazeServerStartup
+    fn new(fd: libc::c_int) -> Self {
+        SocketBlazeServerStartup { fd }
+    }
+
+    // Java: src/main/cpp/blaze_util_posix.cc:380 SocketBlazeServerStartup::IsStillAlive
+    pub fn is_still_alive(&self) -> bool {
+        let mut pfd = libc::pollfd {
+            fd: self.fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let mut result;
+        loop {
+            // SAFETY: one valid pollfd, timeout 0.
+            result = unsafe { libc::poll(&mut pfd, 1, 0) };
+            if !(result < 0 && errno() == libc::EINTR) {
+                break;
+            }
+        }
+        // Timeout (0): server is still alive. Whether it's an error or pfd.revents & POLLHUP > 0,
+        // we assume child is dead.
+        result == 0
+    }
+}
+
+impl Drop for SocketBlazeServerStartup {
+    // Java: src/main/cpp/blaze_util_posix.cc:378 SocketBlazeServerStartup::~SocketBlazeServerStartup
+    fn drop(&mut self) {
+        // SAFETY: fd is the socket this object owns.
+        unsafe { libc::close(self.fd) };
+    }
+}
+
+/// `CharPP(const vector<string>&)`: a NULL-terminated array of C strings.
+struct CharPP {
+    _strings: Vec<std::ffi::CString>,
+    ptrs: Vec<*mut libc::c_char>,
+}
+
+impl CharPP {
+    // Java: src/main/cpp/blaze_util_posix.cc:269 CharPP::CharPP
+    fn from_args(args: &[String]) -> Self {
+        let strings: Vec<std::ffi::CString> = args.iter().map(|a| cstr(a)).collect();
+        Self::from_cstrings(strings)
+    }
+
+    // Java: src/main/cpp/blaze_util_posix.cc:279 CharPP::CharPP
+    fn from_env(env: &std::collections::BTreeMap<String, EnvVarValue>) -> Self {
+        let mut strings = Vec::new();
+        for (var, value) in env {
+            match value.action {
+                EnvVarAction::Set => strings.push(cstr(&format!("{}={}", var, value.value))),
+                EnvVarAction::Unset => {}
+            }
+        }
+        Self::from_cstrings(strings)
+    }
+
+    fn from_cstrings(strings: Vec<std::ffi::CString>) -> Self {
+        let mut ptrs: Vec<*mut libc::c_char> = strings
+            .iter()
+            .map(|s| s.as_ptr() as *mut libc::c_char)
+            .collect();
+        ptrs.push(std::ptr::null_mut());
+        CharPP {
+            _strings: strings,
+            ptrs,
+        }
+    }
+
+    // Java: src/main/cpp/blaze_util_posix.cc:309 CharPP::get
+    fn get(&self) -> *const *mut libc::c_char {
+        self.ptrs.as_ptr()
+    }
+}
+
+// Java: src/main/cpp/blaze_util_linux.cc:183 ConfigureDaemonProcess
+/// Sets platform-specific attributes for the creation of the daemon process. Returns zero on
+/// success or -1 on error.
+fn configure_daemon_process(
+    _attrp: &mut libc::posix_spawnattr_t,
+    _options: &crate::startup_options::StartupOptions,
+) -> i32 {
+    // No interesting platform-specific details to configure on this platform.
+    0
+}
+
+// Java: src/main/cpp/blaze_util_linux.cc:189 WriteSystemSpecificProcessIdentifier
+pub fn write_system_specific_process_identifier(server_dir: &Path, server_pid: i32) {
+    let pid_string = server_pid.to_string();
+
+    let Some(start_time) = get_start_time(&pid_string) else {
+        bazel_die(
+            exit_code::LOCAL_ENVIRONMENTAL_ERROR,
+            BLAZE_UTIL_LINUX_CC,
+            195,
+            format!(
+                "Cannot get start time of process {}: {}",
+                pid_string,
+                get_last_error_string()
+            ),
+        );
+    };
+
+    let start_time_file = server_dir.get_relative("server.starttime");
+    if !crate::util::file::write_file_path(&latin1_encode(&start_time), &start_time_file, 0o644) {
+        bazel_die(
+            exit_code::LOCAL_ENVIRONMENTAL_ERROR,
+            BLAZE_UTIL_LINUX_CC,
+            202,
+            format!(
+                "Cannot write start time in server dir {}: {}",
+                server_dir.as_printable_path(),
+                get_last_error_string()
+            ),
+        );
+    }
+}
+
+// Java: src/main/cpp/blaze_util_posix.cc:408 ExecuteDaemon
+/// Starts the server process as a daemon through `<binaries_dir>/daemonize`. Returns the server's
+/// pid and the object that tells whether the server is still alive.
+pub fn execute_daemon(
+    exe: &Path,
+    args_vector: &[String],
+    env: &std::collections::BTreeMap<String, EnvVarValue>,
+    daemon_output: &Path,
+    daemon_output_append: bool,
+    binaries_dir: &Path,
+    server_dir: &Path,
+    options: &crate::startup_options::StartupOptions,
+) -> (i32, SocketBlazeServerStartup) {
+    let pid_file = server_dir.get_relative(K_SERVER_PID_FILE);
+    let daemonize = binaries_dir.get_relative("daemonize").as_native_path();
+
+    let mut daemonize_args: Vec<String> = vec![
+        "daemonize".to_string(),
+        "-l".to_string(),
+        daemon_output.as_native_path(),
+        "-p".to_string(),
+        pid_file.as_native_path(),
+    ];
+    if daemon_output_append {
+        daemonize_args.push("-a".to_string());
+    }
+    if !options.cgroup_parent.is_empty() {
+        daemonize_args.push("-c".to_string());
+        daemonize_args.push(options.cgroup_parent.clone());
+    }
+    if options.run_in_user_cgroup {
+        daemonize_args.push("-s".to_string());
+        daemonize_args.push(
+            server_dir
+                .get_relative("systemd-wrapper.sh")
+                .as_native_path(),
+        );
+    }
+    daemonize_args.push("--".to_string());
+    daemonize_args.push(exe.as_native_path());
+    daemonize_args.extend(args_vector.iter().cloned());
+
+    let mut fds: [libc::c_int; 2] = [-1, -1];
+    // SAFETY: fds is a valid array of two ints.
+    if unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) } != 0 {
+        bazel_die(
+            exit_code::INTERNAL_ERROR,
+            BLAZE_UTIL_POSIX_CC,
+            442,
+            format!("socket creation failed: {}", get_last_error_string()),
+        );
+    }
+
+    // SAFETY: the posix_spawn objects are initialized before use and destroyed after.
+    unsafe {
+        let mut file_actions: libc::posix_spawn_file_actions_t = std::mem::zeroed();
+        if libc::posix_spawn_file_actions_init(&mut file_actions) != 0 {
+            bazel_die(
+                exit_code::INTERNAL_ERROR,
+                BLAZE_UTIL_POSIX_CC,
+                448,
+                format!(
+                    "Failed to create posix_spawn_file_actions: {}",
+                    get_last_error_string()
+                ),
+            );
+        }
+        if libc::posix_spawn_file_actions_addclose(&mut file_actions, fds[0]) != 0 {
+            bazel_die(
+                exit_code::INTERNAL_ERROR,
+                BLAZE_UTIL_POSIX_CC,
+                453,
+                format!(
+                    "Failed to modify posix_spawn_file_actions: {}",
+                    get_last_error_string()
+                ),
+            );
+        }
+
+        let mut attrp: libc::posix_spawnattr_t = std::mem::zeroed();
+        if libc::posix_spawnattr_init(&mut attrp) != 0 {
+            bazel_die(
+                exit_code::INTERNAL_ERROR,
+                BLAZE_UTIL_POSIX_CC,
+                460,
+                format!(
+                    "Failed to create posix_spawnattr: {}",
+                    get_last_error_string()
+                ),
+            );
+        }
+        if configure_daemon_process(&mut attrp, options) == -1 {
+            bazel_die(
+                exit_code::INTERNAL_ERROR,
+                BLAZE_UTIL_POSIX_CC,
+                464,
+                format!(
+                    "Failed to modify posix_spawnattr: {}",
+                    get_last_error_string()
+                ),
+            );
+        }
+
+        let mut transient_pid: libc::pid_t = 0;
+        let daemonize_c = cstr(&daemonize);
+        let argv = CharPP::from_args(&daemonize_args);
+        let envp = CharPP::from_env(env);
+        if libc::posix_spawn(
+            &mut transient_pid,
+            daemonize_c.as_ptr(),
+            &file_actions,
+            &attrp,
+            argv.get(),
+            envp.get(),
+        ) != 0
+        {
+            bazel_die(
+                exit_code::INTERNAL_ERROR,
+                BLAZE_UTIL_POSIX_CC,
+                471,
+                format!(
+                    "Failed to execute JVM via {}: {}",
+                    daemonize,
+                    get_last_error_string()
+                ),
+            );
+        }
+        libc::close(fds[1]);
+
+        libc::posix_spawnattr_destroy(&mut attrp);
+        libc::posix_spawn_file_actions_destroy(&mut file_actions);
+
+        // Wait for daemonize to exit. This guarantees that the pid file exists.
+        let mut status: libc::c_int = 0;
+        if libc::waitpid(transient_pid, &mut status, 0) == -1 {
+            bazel_die(
+                exit_code::INTERNAL_ERROR,
+                BLAZE_UTIL_POSIX_CC,
+                483,
+                format!("waitpid failed: {}", get_last_error_string()),
+            );
+        }
+        if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != libc::EXIT_SUCCESS {
+            bazel_die(
+                exit_code::INTERNAL_ERROR,
+                BLAZE_UTIL_POSIX_CC,
+                487,
+                format!("daemonize didn't exit cleanly: {}", get_last_error_string()),
+            );
+        }
+    }
+
+    // std::ifstream pid_reader(pid_file); pid_reader >> server_pid;
+    let Some(contents) = read_file(&pid_file.as_native_path(), 0) else {
+        let err = get_last_error_string();
+        bazel_die(
+            exit_code::INTERNAL_ERROR,
+            BLAZE_UTIL_POSIX_CC,
+            494,
+            format!("Failed to open {}: {}", pid_file.as_printable_path(), err),
+        );
+    };
+    let Some(server_pid) = istream_read_int(&contents) else {
+        bazel_die(
+            exit_code::INTERNAL_ERROR,
+            BLAZE_UTIL_POSIX_CC,
+            500,
+            format!("Failed to read pid from: {}", pid_file.as_printable_path()),
+        );
+    };
+
+    write_system_specific_process_identifier(server_dir, server_pid);
+
+    (server_pid, SocketBlazeServerStartup::new(fds[0]))
+}
+
+/// `std::istream >> int`: skips leading whitespace, reads an optionally signed decimal number;
+/// fails if there is none or it does not fit an `int`.
+fn istream_read_int(bytes: &[u8]) -> Option<i32> {
+    let mut i = 0;
+    // isspace() in the "C" locale: space, \t, \n, \v, \f, \r.
+    while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r') {
+        i += 1;
+    }
+    let start = i;
+    if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
+        i += 1;
+    }
+    let digits_start = i;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == digits_start {
+        return None;
+    }
+    std::str::from_utf8(&bytes[start..i])
+        .ok()?
+        .parse::<i32>()
+        .ok()
+}
+
 // Java: src/main/cpp/blaze_util_posix.cc:580 WarnIfStartedFromDesktop
 pub fn warn_if_started_from_desktop() -> bool {
     false
@@ -357,8 +841,19 @@ pub fn warn_if_started_from_desktop() -> bool {
 
 // Java: src/main/cpp/blaze_util_posix.cc:582 SetupStdStreams
 pub fn setup_std_streams() {
-    // PORT: setvbuf(stdout/stderr, _IONBF) has no Rust equivalent: Rust's stderr is unbuffered
-    // and its stdout is line-buffered; client output is flushed explicitly where it matters.
+    // Set non-buffered output mode for stderr/stdout. The server already line-buffers messages
+    // where it makes sense, so there's no need to do set line-buffering here. On the other hand
+    // the server sometimes sends binary output (when for example a query returns results as
+    // proto), in which case we must not perform line buffering on the client side. So turn off
+    // buffering here completely.
+    // These are C stdio's streams, through which the server's output is written
+    // (WriteToStdOutErr). PORT: Rust's own stdout (used by the client for its few direct
+    // outputs, and by the in-process server) stays line-buffered and is flushed explicitly where
+    // it matters.
+    // SAFETY: setvbuf on glibc's standard streams before any output through them.
+    unsafe {
+        crate::util::file::setvbuf_unbuffered_std_streams();
+    }
 
     // Ensure we have three open fds.  Otherwise we can end up with bizarre things like stdout
     // going to the lock file, etc.
@@ -638,14 +1133,38 @@ pub fn release_lock(lock_handle: LockHandle) {
     unsafe { libc::close(lock_handle) };
 }
 
-// Java: src/main/cpp/blaze_util_posix.cc:763 KillServerProcess
-pub fn kill_server_process(pid: i32, _output_base: &Path) -> bool {
-    // PORT: not ported on purpose, and no longer called by the client. The in-process server
-    // never leaves a server process behind, so a live process found through server.pid.txt is
-    // another tool's server (a real Bazel server sharing the output base). The C++ kills it
-    // (killpg(pid, SIGKILL), then AwaitServerProcessTermination); Blaze refuses to run instead
-    // (blaze.rs, find_live_foreign_server).
-    ::blaze_util::unported!("KillServerProcess", "pid={}", pid)
+// Java: src/main/cpp/blaze_util_posix.cc:764 KillServerProcess
+/// Kills the server's process group with SIGKILL and waits for it to die. Returns true (the C++
+/// dies instead of returning false).
+pub fn kill_server_process(pid: i32, output_base: &Path) -> bool {
+    // Kill the process and make sure it's dead before proceeding.
+    crate::util::errors::set_errno(0);
+    // SAFETY: plain system call.
+    if unsafe { libc::killpg(pid, libc::SIGKILL) } == -1 {
+        bazel_die(
+            exit_code::LOCAL_ENVIRONMENTAL_ERROR,
+            BLAZE_UTIL_POSIX_CC,
+            768,
+            format!(
+                "Attempted to kill stale server process (pid={}) using SIGKILL: {}",
+                pid,
+                get_last_error_string()
+            ),
+        );
+    }
+    if !await_server_process_termination(pid, output_base, K_POST_KILL_GRACE_PERIOD_SECONDS) {
+        bazel_die(
+            exit_code::LOCAL_ENVIRONMENTAL_ERROR,
+            BLAZE_UTIL_POSIX_CC,
+            774,
+            format!(
+                "Attempted to kill stale server process (pid={}) using SIGKILL, but it did not \
+                 die in a timely fashion.",
+                pid
+            ),
+        );
+    }
+    true
 }
 
 // Java: src/main/cpp/blaze_util_posix.cc:782 TrySleep
@@ -935,6 +1454,30 @@ pub fn set_scheduling(batch_cpu_scheduling: bool, io_nice_level: i32) {
             );
         }
     }
+}
+
+// Java: src/main/cpp/blaze_util_linux.cc:116 GetProcessCWD
+/// The working directory of process `pid` (`readlink /proc/<pid>/cwd`), or `None` if it cannot
+/// be read.
+pub fn get_process_cwd(pid: i32) -> Option<Path> {
+    let link = cstr(&format!("/proc/{}/cwd", pid));
+    let mut server_cwd = [0u8; libc::PATH_MAX as usize];
+    // SAFETY: link is NUL-terminated; the buffer is PATH_MAX bytes, as in the C++ (which keeps
+    // the zero-initialized buffer's last byte as terminator only if the link is shorter).
+    let len = unsafe {
+        libc::readlink(
+            link.as_ptr(),
+            server_cwd.as_mut_ptr().cast(),
+            server_cwd.len(),
+        )
+    };
+    if len < 0 {
+        return None;
+    }
+    // string(server_cwd): up to the first NUL.
+    let bytes = &server_cwd[..len as usize];
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    Some(Path::new(&from_platform_bytes(&bytes[..end])))
 }
 
 // Java: src/main/cpp/blaze_util_linux.cc:129 IsSharedLibrary

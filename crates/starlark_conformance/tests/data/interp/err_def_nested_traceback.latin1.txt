@@ -1,0 +1,11 @@
+EVAL index out of range (index is 1, but sequence has 0 elements)
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_def_nested_traceback.star", line 7, column 2, in <toplevel>
+TRACE \x09\x09a()
+TRACE \x09File "err_def_nested_traceback.star", line 2, column 4, in a
+TRACE \x09\x09b()
+TRACE \x09File "err_def_nested_traceback.star", line 4, column 4, in b
+TRACE \x09\x09c()
+TRACE \x09File "err_def_nested_traceback.star", line 6, column 5, in c
+TRACE \x09\x09[][1]
+TRACE Error: index out of range (index is 1, but sequence has 0 elements)

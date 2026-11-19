@@ -1,0 +1,1 @@
+SYNTAX err_lex_invalid_octal_literal.star:1:5: invalid base-8 integer literal: 0o9

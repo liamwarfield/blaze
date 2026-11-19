@@ -309,10 +309,29 @@ impl SkyframePackageManager {
                 }
                 .into());
             }
+            // Java: ExternalDepsException is a DetailedException (getDetailedExitCode: its
+            // message and ExternalDeps code).
+            // Java: com/google/devtools/build/lib/bazel/bzlmod/ExternalDepsException.java:78 ExternalDepsException.getDetailedExitCode
+            if let Some(e) = e.downcast_ref::<blaze_bzlmod_model::ExternalDepsException>() {
+                let code = blaze_protos::failure_details::external_deps::Code::try_from(
+                    e.get_code().number(),
+                )
+                .expect("an ExternalDeps.Code");
+                return Err(RepositoryMappingResolutionException {
+                    detailed_exit_code: DetailedExitCode {
+                        message: e.get_message().to_owned(),
+                        code: FailureCode::Other(format!("ExternalDeps.{}", code.as_str_name())),
+                    },
+                }
+                .into());
+            }
+            // Java: FailureDetails.ExternalRepository.getDefaultInstance().
             return Err(RepositoryMappingResolutionException {
                 detailed_exit_code: DetailedExitCode {
                     message: format!("error during computation of main repo mapping: {}", e),
-                    code: FailureCode::Other("ExternalRepository".to_owned()),
+                    code: FailureCode::Other(
+                        "ExternalRepository.EXTERNAL_REPOSITORY_UNKNOWN".to_owned(),
+                    ),
                 },
             }
             .into());

@@ -1,0 +1,5 @@
+EVAL argument after * must be an iterable, not int
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_ev_star_builtin_not_iterable.star", line 1, column 5, in <toplevel>
+TRACE \x09\x09len(*1)
+TRACE Error: argument after * must be an iterable, not int

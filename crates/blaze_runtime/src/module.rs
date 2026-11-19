@@ -95,6 +95,14 @@ pub trait BlazeModule: Send + Sync {
 
     // Java: com/google/devtools/build/lib/runtime/BlazeModule.java:360 BlazeModule.blazeShutdown
     fn blaze_shutdown(&self) {}
+
+    /// Called when Blaze shuts down due to a crash.
+    ///
+    /// Modules may use this to flush pending state, but they must be careful to only do a
+    /// minimal number of things. Keep in mind that we are crashing so who knows what state we
+    /// are in. Modules rarely need to implement this.
+    // Java: com/google/devtools/build/lib/runtime/BlazeModule.java:369 BlazeModule.blazeShutdownOnCrash
+    fn blaze_shutdown_on_crash(&self, _exit_code: &DetailedExitCode) {}
 }
 
 /// Builder class to create a [`crate::runtime::BlazeRuntime`] instance: the parts modules

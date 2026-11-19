@@ -7,9 +7,9 @@
 //! `BlazeServer::communicate`, Java `blaze.cc`) or, with `--batch`, by `BlazeRuntime.batchMain`
 //! (crate::runtime).
 //!
-//! PORT: `RunBuildCompleteEvent` and `ExecRequestEvent` are build events whose only subscriber is
-//! the `BuildEventStreamer`; the Build Event Protocol of `run` fails loudly
-//! (crate::unported_options), so they are not posted. The output service is Bazel's default
+//! `RunBuildCompleteEvent` and `ExecRequestEvent` are build events whose only subscriber is the
+//! `BuildEventStreamer` (crate::commands::bep): they are posted only when the command streams
+//! build events. The output service is Bazel's default
 //! (`LocalOutputService`: `stagesTopLevelRunfiles()` is false, `flushOutputTree()` does nothing):
 //! the remote output service, the only other one, fails loudly with `run`
 //! (crate::unported_options).
@@ -46,6 +46,10 @@ use blaze_optdefs::fragment::run_under::RunUnder;
 use blaze_options::EnvVar;
 use blaze_packages::target::Target;
 use blaze_packages::target::target_utils;
+use blaze_bep::buildeventstream::build_event_id_util;
+use blaze_bep::events::buildtool_events::{ExecRequestEvent, run_build_complete_event};
+use blaze_events::{Clock as _, JavaClock};
+use blaze_optdefs::misc::build_event_protocol_options::BuildEventProtocolOptions;
 use blaze_protos::command_server::{
     EnvironmentVariable, ExecRequest, PathToReplace, ScriptPath, path_to_replace,
 };
@@ -112,8 +116,7 @@ impl RunCommand {
 // Java: com/google/devtools/build/lib/runtime/commands/RunCommand.java:907 RunCommand.RunCommandException
 struct RunCommandException {
     result: BlazeCommandResult,
-    /// `finishTimeMillis` (the `RunBuildCompleteEvent`'s; see the module comment).
-    #[allow(dead_code)]
+    /// `finishTimeMillis` (the `RunBuildCompleteEvent`'s).
     finish_time_millis: i64,
 }
 
@@ -165,8 +168,12 @@ impl BlazeCommand for RunCommand {
 
         // The user must at the least specify an executable target.
         if target_and_args.is_empty() {
-            // env.getReporter().post(new RunBuildCompleteEvent(COMMAND_LINE_ERROR, ...)): see the
-            // module comment.
+            post_run_build_complete_event(
+                env,
+                blaze_util::ExitCode::COMMAND_LINE_ERROR,
+                JavaClock.current_time_millis(),
+                Vec::new(),
+            );
             return report_and_create_failure_result(
                 env,
                 "Must specify a target to run",
@@ -201,8 +208,15 @@ impl BlazeCommand for RunCommand {
                     run_under.as_ref(),
                 ) {
                     Ok(built_targets) => built_targets,
-                    // env.getReporter().post(new RunBuildCompleteEvent(...)): see the module comment.
-                    Err(e) => return e.result,
+                    Err(e) => {
+                        post_run_build_complete_event(
+                            env,
+                            run_command_exception_exit_code(&e),
+                            e.finish_time_millis,
+                            Vec::new(),
+                        );
+                        return e.result;
+                    }
                 };
                 self.exec_with_built_targets(
                     env,
@@ -229,7 +243,20 @@ impl RunCommand {
         target_and_args: &[String],
         built_targets: &BuiltTargets,
     ) -> BlazeCommandResult {
-        // runCompleteChildrenEvents / RunBuildCompleteEvent(SUCCESS, ...): see the module comment.
+        let mut run_complete_children_events = vec![
+            build_event_id_util::build_tool_logs(),
+            build_event_id_util::build_metrics(),
+        ];
+        if run_options.script_path.is_none() {
+            run_complete_children_events.push(build_event_id_util::exec_request_id());
+        }
+        post_run_build_complete_event(
+            env,
+            // If the build returned non-zero exit code, an error would have already been thrown.
+            blaze_util::ExitCode::SUCCESS,
+            built_targets.stop_time,
+            run_complete_children_events,
+        );
         let args_from_residue: Vec<String> = target_and_args[1..].to_vec();
         let run_command_line = match get_command_line_info(
             env,
@@ -353,9 +380,37 @@ impl RunCommand {
             "{prefix} command line{separator}{command_description}"
         )));
 
-        // env.getReporter().post(new ExecRequestEvent(execRequest, redactedArgv)): see the module
-        // comment (its argv without residue, getArgvWithoutResidue, needs the shell, which
-        // exec_request_builder has already found).
+        if let Some(bep) = env.get_bep().cloned() {
+            let include_residue_in_run_bep_event = options
+                .get_options::<BuildEventProtocolOptions>()
+                .expect("NullPointerException: BuildEventProtocolOptions")
+                .include_residue_in_run_bep_event;
+            let redacted_argv = if include_residue_in_run_bep_event {
+                exec_request.argv.clone()
+            } else {
+                match get_argv(
+                    env,
+                    &run_command_line,
+                    /* include_residue= */ false,
+                    &built_targets.configuration,
+                    built_targets.stop_time,
+                ) {
+                    Ok(argv) => argv,
+                    Err(e) => return e.result,
+                }
+            };
+            bep.post_build_event(Arc::new(ExecRequestEvent::new(
+                exec_request.working_directory.clone(),
+                exec_request
+                    .environment_variable
+                    .iter()
+                    .map(|v| (v.name.clone(), v.value.clone()))
+                    .collect(),
+                exec_request.environment_variable_to_clear.clone(),
+                exec_request.should_exec,
+                redacted_argv,
+            )));
+        }
         BlazeCommandResult::execute(exec_request)
     }
 }
@@ -397,7 +452,17 @@ where
                         .env
                         .get_reporter()
                         .handle(&Event::error("Build failed. Not running target"));
-                    // RunCommandException(detailedExitCode(buildResult.getDetailedExitCode()))
+                    // RunCommandException(detailedExitCode(buildResult.getDetailedExitCode()),
+                    // buildResult.getStopTime()), caught by exec.
+                    post_run_build_complete_event(
+                        outcome.env,
+                        blaze_util::ExitCode::for_code(
+                            outcome.detailed_exit_code.get_exit_code().get_numeric_exit_code(),
+                        )
+                        .unwrap_or_else(|| panic!("unknown exit code")),
+                        outcome.build_result.get_stop_time(),
+                        Vec::new(),
+                    );
                     return BlazeCommandResult::detailed_exit_code(outcome.detailed_exit_code);
                 }
                 // Build succeeded - make sure outputs are available before attempting to use
@@ -410,6 +475,29 @@ where
     // PORT: a failure that the build path returns before BuildTool.processRequest (the command's
     // Skyframe executor or spawn log setup, the main repository mapping) is returned as it is,
     // without "Build failed. Not running target"; in Java those happen outside the build too.
+}
+
+/// `env.getReporter().post(new RunBuildCompleteEvent(exitCode, finishTimeMillis, children))`.
+// Java: com/google/devtools/build/lib/buildtool/buildevent/RunBuildCompleteEvent.java:29 RunBuildCompleteEvent.<init>
+fn post_run_build_complete_event(
+    env: &CommandEnvironment,
+    exit_code: blaze_util::ExitCode,
+    finish_time_millis: i64,
+    children: Vec<blaze_protos::build_event_stream::BuildEventId>,
+) {
+    if let Some(bep) = env.get_bep() {
+        bep.post_build_event(Arc::new(run_build_complete_event(
+            exit_code,
+            finish_time_millis,
+            children,
+        )));
+    }
+}
+
+/// `e.result.getDetailedExitCode().getExitCode()` of a `RunCommandException`.
+fn run_command_exception_exit_code(e: &RunCommandException) -> blaze_util::ExitCode {
+    blaze_util::ExitCode::for_code(e.result.get_exit_code().get_numeric_exit_code())
+        .unwrap_or_else(|| panic!("unknown exit code {:?}", e.result.get_exit_code()))
 }
 
 /// The `ConfiguredTarget` behind one of the build result's views (the same lookup key).

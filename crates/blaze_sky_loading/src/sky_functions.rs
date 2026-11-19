@@ -53,3 +53,12 @@ pub const FILE_SYMLINK_CYCLE_UNIQUENESS: SkyFunctionName =
 // Java: com/google/devtools/build/lib/io/FileSymlinkInfiniteExpansionUniquenessFunction.java:32 FileSymlinkInfiniteExpansionUniquenessFunction.NAME
 pub const FILE_SYMLINK_INFINITE_EXPANSION_UNIQUENESS: SkyFunctionName =
     SkyFunctionName("FILE_SYMLINK_INFINITE_EXPANSION_UNIQUENESS");
+// Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:57 SkyFunctions.PACKAGE_DECLARATIONS
+pub const PACKAGE_DECLARATIONS: SkyFunctionName = SkyFunctionName("PACKAGE_DECLARATIONS");
+// Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:62 SkyFunctions.EVAL_MACRO
+pub const EVAL_MACRO: SkyFunctionName = SkyFunctionName("EVAL_MACRO");
+// Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:63 SkyFunctions.MACRO_INSTANCE
+pub const MACRO_INSTANCE: SkyFunctionName = SkyFunctionName("MACRO_INSTANCE");
+// Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:65 SkyFunctions.NON_FINALIZER_PACKAGE_PIECES
+pub const NON_FINALIZER_PACKAGE_PIECES: SkyFunctionName =
+    SkyFunctionName("NON_FINALIZER_PACKAGE_PIECES");

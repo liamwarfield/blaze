@@ -1,5 +1,8 @@
 //! Port of `query2/cquery/LabelAndConfigurationOutputFormatterCallback.java`.
 
+use std::collections::BTreeSet;
+
+use blaze_analysis::providers::required_config_fragments_provider::RequiredConfigFragmentsProvider;
 use blaze_optdefs::fragment::core_options::CoreOptionsIncludeConfigFragmentsEnum;
 use blaze_packages::target::LabelPrinter;
 use blaze_query_engine::callback::{
@@ -64,14 +67,35 @@ impl Callback<CqueryNode> for LabelAndConfigurationOutputFormatterCallback<'_> {
 /// The required configuration fragments of a node, as `ImmutableSortedSet.toString()`.
 // Java: com/google/devtools/build/lib/query2/cquery/LabelAndConfigurationOutputFormatterCallback.java:77 LabelAndConfigurationOutputFormatterCallback.requiredFragmentStrings
 fn required_fragment_strings(keyed_configured_target: &CqueryNode) -> String {
-    if keyed_configured_target.as_configured_target().is_none() {
+    let Some(configured_target) = keyed_configured_target.as_configured_target() else {
         // ImmutableSortedSet.of()
         return "[]".to_owned();
-    }
-    blaze_util::unported!(
-        "LabelAndConfigurationOutputFormatterCallback.requiredFragmentStrings",
-        "RequiredConfigFragmentsProvider"
-    )
+    };
+
+    let Some(required_fragments) =
+        configured_target.get_provider::<RequiredConfigFragmentsProvider>()
+    else {
+        return "[]".to_owned();
+    };
+
+    // ImmutableSortedSet.naturalOrder(): String.compareTo, duplicates dropped.
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    // ClassName::getSimpleNameWithOuter: the provider keeps the names in that form.
+    names.extend(required_fragments.options_classes().iter().cloned());
+    names.extend(required_fragments.fragment_classes().iter().cloned());
+    names.extend(
+        required_fragments
+            .defines()
+            .iter()
+            .map(|define| format!("--define:{define}")),
+    );
+    names.extend(
+        required_fragments
+            .starlark_options()
+            .iter()
+            .map(|label| label.to_string()),
+    );
+    format!("[{}]", names.into_iter().collect::<Vec<_>>().join(", "))
 }
 
 impl OutputFormatterCallback<CqueryNode> for LabelAndConfigurationOutputFormatterCallback<'_> {

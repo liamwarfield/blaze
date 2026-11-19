@@ -1240,6 +1240,105 @@ fn test_prelude_works_even_when_prelude_package_in_error() {
     pkg.assert_contains_event("FOO");
 }
 
+// Java: PackageFunctionTest.symbolicMacroExpansion_onlyInFullPackages (MONOLITHIC_PACKAGE)
+#[test]
+fn symbolic_macro_expansion_only_in_full_packages() {
+    let t = PackageLoadingTestCase::new();
+    t.scratch_file(
+        "pkg/macro.bzl",
+        &[
+            "def legacy(name, visibility = None, **kwargs):",
+            "    native.filegroup(name = name, visibility = visibility, **kwargs)",
+            "",
+            "symbolic = macro(",
+            "    implementation = legacy,",
+            ")",
+        ],
+    );
+    t.scratch_file(
+        "pkg/BUILD",
+        &[
+            "load(\":macro.bzl\", \"legacy\", \"symbolic\")",
+            "legacy(name = \"target_in_legacy_macro\")",
+            "symbolic(name = \"target_in_symbolic_macro\")",
+        ],
+    );
+    let pkg = t.get_package_without_errors("pkg");
+    assert!(pkg.package.get_targets().contains_key("target_in_legacy_macro"));
+    assert!(pkg.package.get_targets().contains_key("target_in_symbolic_macro"));
+}
+
+// Java: PackageFunctionTest.package_withBadMacroImplementation (MONOLITHIC_PACKAGE)
+#[test]
+fn package_with_bad_macro_implementation() {
+    let t = PackageLoadingTestCase::new();
+    t.scratch_file(
+        "pkg/my_macro.bzl",
+        &[
+            "def _impl(name, visibility):",
+            "    native.filegroup(name = name, visibility = visibility)",
+            "    fail(\"fail fail fail\")",
+            "my_macro = macro(implementation = _impl)",
+        ],
+    );
+    t.scratch_file(
+        "pkg/BUILD",
+        &[
+            "load(\":my_macro.bzl\", \"my_macro\")",
+            "my_macro(name = \"foo\")",
+        ],
+    );
+    let pkg = t.get_package("pkg");
+    assert!(pkg.package.contains_errors());
+    pkg.assert_contains_event(&format!(
+        "Traceback (most recent call last):\n\
+         \tFile \"{build}\", line 2, column 9, in <toplevel>\n\
+         \t\tmy_macro(name = \"foo\")\n\
+         \tFile \"{bzl}\", line 4, column 1, in my_macro\n\
+         \t\tmy_macro = macro(implementation = _impl)\n\
+         \tFile \"{bzl}\", line 3, column 9, in _impl\n\
+         \t\tfail(\"fail fail fail\")\n\
+         Error in fail: fail fail fail",
+        build = t.workspace_path("pkg/BUILD"),
+        bzl = t.workspace_path("pkg/my_macro.bzl"),
+    ));
+    assert_eq!(pkg.error_events().len(), 1, "{:?}", pkg.error_events());
+}
+
+// Java: PackageFunctionTest.package_withMacroNameConflict (MONOLITHIC_PACKAGE, inFinalizer
+// false and true)
+#[test]
+fn package_with_macro_name_conflict() {
+    for in_finalizer in [false, true] {
+        let t = PackageLoadingTestCase::new();
+        t.scratch_file(
+            "pkg/my_macro.bzl",
+            &[
+                "def _impl(name, visibility):",
+                "    native.filegroup(name = name + \"_bar\")",
+                &format!(
+                    "my_macro = macro(implementation = _impl, finalizer = {})",
+                    if in_finalizer { "True" } else { "False" }
+                ),
+            ],
+        );
+        t.scratch_file(
+            "pkg/BUILD",
+            &[
+                "load(\":my_macro.bzl\", \"my_macro\")",
+                "genrule(name = \"foo_bar\", outs = [\"unused\"], cmd = \"touch $@\")",
+                "my_macro(name = \"foo\")  # will try to create another target named \"foo_bar\"",
+            ],
+        );
+        let pkg = t.get_package("pkg");
+        assert!(pkg.package.contains_errors());
+        pkg.assert_contains_event(&format!(
+            "filegroup rule 'foo_bar' conflicts with existing genrule rule, defined at {}:2:8",
+            t.workspace_path("pkg/BUILD")
+        ));
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Not ported yet.
 // ---------------------------------------------------------------------------------------------
@@ -1258,9 +1357,9 @@ ignored! {
     test_invalid_package: "needs a PackageValidator seam: Java mocks PackageValidator.validate to throw InvalidPackageException; LoadingFunctionsConfig has no test hook for the validator",
     test_package_overhead_passed_to_validation_logic: "PackageOverheadEstimator is not ported (Java mocks it and captures the overhead passed to PackageValidator)",
     test_skyframe_executor_cleared_packages_results_in_reload: "needs a PackageValidator seam (Java counts PackageValidator.validate calls as a proxy for loads) and SkyframeExecutor.clearLoadedPackages on a kept evaluator; the harness evaluates from scratch each time",
-    symbolic_macro_expansion_only_in_full_packages: "symbolic macros do not run (MacroClass.instantiateAndAddMacro is unported!)",
-    package_with_bad_macro_implementation: "symbolic macros do not run (MacroClass.instantiateAndAddMacro is unported!)",
-    package_with_macro_name_conflict: "symbolic macros do not run (MacroClass.instantiateAndAddMacro is unported!)",
+    symbolic_macro_expansion_only_in_full_packages_package_piece_modes: "PACKAGE_PIECE_FOR_BUILD_FILE and PACKAGE_FROM_PACKAGE_PIECES computation modes: lazy macro expansion (PackagePiece, PackageFunction.computePackageFromPackagePieces) is not ported",
+    package_with_bad_macro_implementation_package_from_package_pieces: "PACKAGE_FROM_PACKAGE_PIECES computation mode: lazy macro expansion is not ported",
+    package_with_macro_name_conflict_package_from_package_pieces: "PACKAGE_FROM_PACKAGE_PIECES computation mode: lazy macro expansion is not ported",
     test_propagates_filesystem_inconsistencies: "needs a file system that reports inconsistent stats (Java CustomInMemoryFs.stubStat); the harness runs on the real file system",
     test_propagates_filesystem_inconsistencies_globbing: "needs a file system whose stat of a directory disagrees with its parent's listing (Java CustomInMemoryFs.stubStat(bazDir, null)); the harness runs on the real file system",
     test_discrepancy_between_globbing_errors: "needs a file system that turns a directory unreadable after readdir (Java CustomInMemoryFs.scheduleMakeUnreadableAfterReaddir); the harness runs on the real file system",

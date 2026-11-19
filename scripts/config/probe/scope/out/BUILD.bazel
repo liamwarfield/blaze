@@ -1,0 +1,3 @@
+load("//scope:flag.bzl", "sample_flag")
+
+sample_flag(name = "out_flag", scope = "project", build_setting_default = "foo", visibility = ["//visibility:public"])

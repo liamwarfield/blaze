@@ -97,8 +97,12 @@ pub struct LostInputsPolicy {
     /// PORT: Java rewinds here (and creates no `LeaseService` when rewinding is enabled).
     /// Rewinding is not ported and the build then crashes, so nothing saves the action cache
     /// afterwards; without this purge a rerun would trust the same stale remote metadata again.
-    /// `None`: no purge (tests).
-    pub purge_before_unported_rewinding: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// The argument is the executor's own action cache (the instance of this build, `None`
+    /// with `--nouse_action_cache`); the executor runs the purge while no action can write to
+    /// that cache and drops every later write. `None`: no purge (tests).
+    #[allow(clippy::type_complexity)]
+    pub purge_before_unported_rewinding:
+        Option<Arc<dyn Fn(Option<&dyn crate::actions::cache::ActionCache>) + Send + Sync>>,
 }
 
 impl fmt::Debug for LostInputsPolicy {
@@ -169,16 +173,37 @@ pub fn build_spawn_strategy_registry(
 }
 
 /// [`build_spawn_strategy_registry`] with the remote module's contributions.
+///
+/// PORT: the strategy policy is the default one (every strategy allowed). The runtime fails
+/// loudly before it gets here for an invocation policy with any other strategy policy, because
+/// blaze_buildtool's `ExecutionToolConfig` does not carry it yet; see
+/// [`build_spawn_strategy_registry_with_policy`].
 // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:151 ExecutionTool.<init>
 pub fn build_spawn_strategy_registry_with_remote(
     env: &ExecCommandEnvironment,
     sandbox_module: &mut crate::sandbox::sandbox_module::SandboxModule,
     remote: &RemoteModuleContributions,
 ) -> Result<SpawnStrategyRegistry, AbruptExitException> {
-    // PORT: Java uses SpawnStrategyRegistry.builder(env.getInvocationPolicy().getStrategyPolicy());
-    // Blaze has no invocation policy, whose default strategy policy allows every strategy, which
-    // is what builder() does.
-    let mut spawn_strategy_registry_builder = SpawnStrategyRegistry::builder();
+    build_spawn_strategy_registry_with_policy(
+        env,
+        sandbox_module,
+        remote,
+        &blaze_protos::blaze::strategy_policy::StrategyPolicy::default(),
+    )
+}
+
+/// [`build_spawn_strategy_registry_with_remote`] with the strategy policy of the invocation
+/// policy (`env.getInvocationPolicy().getStrategyPolicy()`).
+// Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:151 ExecutionTool.<init>
+pub fn build_spawn_strategy_registry_with_policy(
+    env: &ExecCommandEnvironment,
+    sandbox_module: &mut crate::sandbox::sandbox_module::SandboxModule,
+    remote: &RemoteModuleContributions,
+    strategy_policy: &blaze_protos::blaze::strategy_policy::StrategyPolicy,
+) -> Result<SpawnStrategyRegistry, AbruptExitException> {
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:166 ExecutionTool.<init>
+    let mut spawn_strategy_registry_builder =
+        SpawnStrategyRegistry::builder_with_policy(strategy_policy);
 
     // com.google.devtools.build.lib.remote.RemoteModule
     remote_module_register_spawn_strategies(&mut spawn_strategy_registry_builder, env, remote);

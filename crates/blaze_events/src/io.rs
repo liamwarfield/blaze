@@ -7,7 +7,7 @@
 
 use std::fmt;
 use std::io::{self, Write};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use parking_lot::Mutex;
 
@@ -88,6 +88,48 @@ impl<W: Write + Send> OutputStream for WriteOutputStream<W> {
     }
 }
 
+/// Called when a write to this process's stdout or stderr through [`OutErr::system_out_err`]
+/// fails with EPIPE (set once, by the binary: the client's `signal_handler::note_broken_pipe`).
+static BROKEN_PIPE_LISTENER: OnceLock<fn()> = OnceLock::new();
+
+/// Sets the function called when a write to this process's stdout or stderr through
+/// [`OutErr::system_out_err`] fails with EPIPE.
+///
+/// PORT: in Bazel the server's output goes over the command stream (`RpcOutputStream`) to the
+/// client, whose `fwrite` to its stdout or stderr gets EPIPE and SIGPIPE; the client's handler
+/// records the signal and the client ends by it (`SignalHandler::PropagateSignalOrExit`). With
+/// the server in the client's process these streams are the client's stdout and stderr, so
+/// their EPIPE is reported to the client here.
+pub fn set_broken_pipe_listener(listener: fn()) {
+    let _ = BROKEN_PIPE_LISTENER.set(listener);
+}
+
+/// This process's stdout or stderr: a write or flush that fails with EPIPE calls the
+/// [`set_broken_pipe_listener`] listener and returns the error unchanged.
+struct StdOutErrWriter<W: Write>(W);
+
+impl<W: Write> StdOutErrWriter<W> {
+    fn note<T>(r: io::Result<T>) -> io::Result<T> {
+        if let Err(e) = &r
+            && e.kind() == io::ErrorKind::BrokenPipe
+            && let Some(listener) = BROKEN_PIPE_LISTENER.get()
+        {
+            listener();
+        }
+        r
+    }
+}
+
+impl<W: Write> Write for StdOutErrWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        Self::note(self.0.write(buf))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Self::note(self.0.flush())
+    }
+}
+
 /// A pair of output streams to be used for redirecting the output and error streams of a
 /// subprocess. Port of `OutErr`.
 // Java: com/google/devtools/build/lib/util/io/OutErr.java:27 OutErr
@@ -102,8 +144,8 @@ impl OutErr {
     pub fn system_out_err() -> &'static OutErr {
         static SYSTEM_OUT_ERR: LazyLock<OutErr> = LazyLock::new(|| {
             OutErr::create(
-                Arc::new(WriteOutputStream::new(io::stdout())),
-                Arc::new(WriteOutputStream::new(io::stderr())),
+                Arc::new(WriteOutputStream::new(StdOutErrWriter(io::stdout()))),
+                Arc::new(WriteOutputStream::new(StdOutErrWriter(io::stderr()))),
             )
         });
         &SYSTEM_OUT_ERR
@@ -399,6 +441,45 @@ impl OutputStream for AnsiStrippingOutputStream {
 mod tests {
     use super::*;
 
+    static BROKEN_PIPES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn count_broken_pipe() {
+        BROKEN_PIPES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// A write to a pipe whose reader is gone fails with EPIPE (SIGPIPE is ignored in a Rust
+    /// process) and reaches the listener; the error is returned unchanged. Other errors do not.
+    #[test]
+    fn std_out_err_writer_reports_broken_pipe() {
+        set_broken_pipe_listener(count_broken_pipe);
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let before = BROKEN_PIPES.load(std::sync::atomic::Ordering::SeqCst);
+        let stream = WriteOutputStream::new(StdOutErrWriter(writer));
+        let e = stream.write(b"x").unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(
+            BROKEN_PIPES.load(std::sync::atomic::Ordering::SeqCst),
+            before + 1
+        );
+
+        struct Failing;
+        impl Write for Failing {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let stream = WriteOutputStream::new(StdOutErrWriter(Failing));
+        assert!(stream.write(b"x").is_err());
+        assert_eq!(
+            BROKEN_PIPES.load(std::sync::atomic::Ordering::SeqCst),
+            before + 1
+        );
+    }
+
     const ESCAPE: &str = "\u{1b}[";
 
     // Java: src/test/java/com/google/devtools/build/lib/util/AnsiStrippingOutputStreamTest.java AnsiStrippingOutputStreamTest.getOutput
@@ -467,5 +548,96 @@ mod tests {
     #[test]
     fn handles_two_escape_sequences_correctly() {
         assert_eq!(get_output(&[&format!("{ESCAPE}32m{ESCAPE}1mLove")]), "Love");
+    }
+}
+
+/// An `OutErr` that passes all output to the `OutErr`s that subscribed to it (none: like
+/// `/dev/null`).
+// Java: com/google/devtools/build/lib/util/io/DelegatingOutErr.java:27 DelegatingOutErr
+pub struct DelegatingOutErr {
+    out: Arc<DelegatingOutputStream>,
+    err: Arc<DelegatingOutputStream>,
+}
+
+impl Default for DelegatingOutErr {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DelegatingOutErr {
+    /// Create a new instance to which no sinks have subscribed (basically just like a
+    /// `/dev/null`).
+    // Java: com/google/devtools/build/lib/util/io/DelegatingOutErr.java:33 DelegatingOutErr.<init>
+    pub fn new() -> Self {
+        DelegatingOutErr {
+            out: Arc::new(DelegatingOutputStream::default()),
+            err: Arc::new(DelegatingOutputStream::default()),
+        }
+    }
+
+    /// Add a sink, that is, after calling this method, `out_err_sink` will receive all output /
+    /// errors written to this object.
+    // Java: com/google/devtools/build/lib/util/io/DelegatingOutErr.java:50 DelegatingOutErr.addSink
+    pub fn add_sink(&self, out_err_sink: &OutErr) {
+        self.out.add_sink(out_err_sink.get_output_stream().clone());
+        self.err.add_sink(out_err_sink.get_error_stream().clone());
+    }
+
+    /// This object as the `OutErr` it is in Java.
+    pub fn as_out_err(&self) -> OutErr {
+        OutErr::create(self.out.clone(), self.err.clone())
+    }
+}
+
+// Java: com/google/devtools/build/lib/util/io/DelegatingOutErr.java:64 DelegatingOutErr.DelegatingOutputStream
+#[derive(Default)]
+struct DelegatingOutputStream {
+    sinks: Mutex<Vec<Arc<dyn OutputStream>>>,
+}
+
+impl DelegatingOutputStream {
+    // Java: com/google/devtools/build/lib/util/io/DelegatingOutErr.java:68 DelegatingOutputStream.addSink
+    fn add_sink(&self, sink: Arc<dyn OutputStream>) {
+        self.sinks.lock().push(sink);
+    }
+
+    fn sinks(&self) -> Vec<Arc<dyn OutputStream>> {
+        self.sinks.lock().clone()
+    }
+}
+
+impl OutputStream for DelegatingOutputStream {
+    // Java: com/google/devtools/build/lib/util/io/DelegatingOutErr.java:83 DelegatingOutputStream.write
+    fn write(&self, bytes: &[u8]) -> io::Result<()> {
+        for sink in self.sinks() {
+            sink.write(bytes)?;
+        }
+        Ok(())
+    }
+
+    // Java: com/google/devtools/build/lib/util/io/DelegatingOutErr.java:113 DelegatingOutputStream.flush
+    fn flush(&self) -> io::Result<()> {
+        for sink in self.sinks() {
+            sink.flush()?;
+        }
+        Ok(())
+    }
+
+    // Java: com/google/devtools/build/lib/util/io/DelegatingOutErr.java:97 DelegatingOutputStream.close
+    fn close(&self) -> io::Result<()> {
+        // Ensure that we close all sinks even if one throws.
+        let mut first_exception = None;
+        for sink in self.sinks() {
+            if let Err(e) = sink.close()
+                && first_exception.is_none()
+            {
+                first_exception = Some(e);
+            }
+        }
+        match first_exception {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 }

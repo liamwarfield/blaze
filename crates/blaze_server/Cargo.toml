@@ -7,3 +7,30 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+blaze_util = { path = "../blaze_util" }
+blaze_vfs = { path = "../blaze_vfs" }
+blaze_events = { path = "../blaze_events" }
+blaze_protos = { path = "../blaze_protos" }
+blaze_shell = { path = "../blaze_shell" }
+parking_lot.workspace = true
+libc.workspace = true
+uuid.workspace = true
+prost.workspace = true
+tonic = { workspace = true, features = ["router", "server"] }
+tonic-prost.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+
+[build-dependencies]
+tonic-build.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+# The fixture of scripts/server/interop-server: a server with a fake dispatcher that the real
+# Bazel client starts through --server_javabase.
+[[bin]]
+name = "command_server_probe"
+path = "src/bin/command_server_probe.rs"

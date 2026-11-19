@@ -1,0 +1,5 @@
+SYNTAX err_parse_generator.star:1:9: syntax error at 'for': Starlark does not support Python-style generator expressions
+SYNTAX err_parse_generator.star:1:5: name 'f' is not defined
+SYNTAX err_parse_generator.star:1:7: name 'y' is not defined
+SYNTAX err_parse_generator.star:1:13: name 'y' is not defined
+SYNTAX err_parse_generator.star:1:18: name 'z' is not defined

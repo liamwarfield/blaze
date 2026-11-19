@@ -17,6 +17,7 @@ use blaze_cmdline::Label;
 use blaze_skyframe::{ComputeError, Environment, SkyKey};
 use indexmap::{IndexMap, IndexSet};
 
+use crate::toolchains::debug_printers::ToolchainResolutionDebugPrinter;
 use crate::toolchains::lookup_error::{ToolchainLookupError, catch_toolchain_exception};
 use crate::toolchains::platform_keys::{PlatformKeys, ResolvedToolchainsTable};
 use crate::toolchains::platform_lookup_util;
@@ -80,17 +81,13 @@ fn compute(
     };
     let debug = key.debug_target()
         || platform_configuration.debug_toolchain_resolution(&toolchain_type_labels);
-    // PORT: ToolchainResolutionDebugPrinter is not ported. Without debugging every call on it
-    // is a no-op, so with `--toolchain_resolution_debug` matching this target or one of its
-    // toolchain types the function stops here, and the debugPrinter calls below are left out.
-    if debug {
-        blaze_util::unported!("ToolchainResolutionDebugPrinter.create");
-    }
+    let debug_printer = ToolchainResolutionDebugPrinter::create(debug);
 
     // Create keys for all platforms that will be used, and validate them early.
     // Do this early, to catch platform errors early.
     let platform_keys = PlatformKeys::load(
         env,
+        debug_printer,
         configuration.get_key(),
         platform_configuration,
         key.exec_constraint_labels(),
@@ -132,7 +129,15 @@ fn compute(
     }
 
     let unloaded_toolchain_context = builder.build();
-    // (debugPrinter.reportSelectedToolchains is a no-op without debugging.)
+    {
+        use blaze_analysis::toolchains::ToolchainContext;
+        debug_printer.report_selected_toolchains(
+            env.listener(),
+            unloaded_toolchain_context.target_platform().label(),
+            unloaded_toolchain_context.execution_platform().label(),
+            unloaded_toolchain_context.toolchain_type_to_resolved(),
+        );
+    }
     Ok(Some(unloaded_toolchain_context))
 }
 

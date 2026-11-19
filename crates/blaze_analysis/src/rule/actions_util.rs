@@ -134,6 +134,22 @@ fn verify_generating_action_keys(
 }
 
 /// Assigns `ActionLookupData` keys to the outputs of `actions` (in registration order) and
+/// throws if two actions generate the same output (shared actions are not tolerated).
+// Java: com/google/devtools/build/lib/actions/Actions.java:170 Actions.assignOwnersAndThrowIfConflict
+pub fn assign_owners_and_throw_if_conflict(
+    action_key_context: &ActionKeyContext,
+    actions: &[ActionRef],
+    action_lookup_key: &ActionLookupKeyRef,
+) -> Result<(), AssignOwnersError> {
+    assign_owners_and_throw_if_conflict_maybe_tolerating_shared_actions(
+        action_key_context,
+        actions,
+        action_lookup_key,
+        /* allow_shared_action= */ false,
+    )
+}
+
+/// Assigns `ActionLookupData` keys to the outputs of `actions` (in registration order) and
 /// throws if two actions generate the same output and cannot be shared.
 // Java: com/google/devtools/build/lib/actions/Actions.java:191 Actions.assignOwnersAndThrowIfConflictToleratingSharedActions
 pub fn assign_owners_and_throw_if_conflict_tolerating_shared_actions(

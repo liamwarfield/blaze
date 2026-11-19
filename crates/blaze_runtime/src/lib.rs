@@ -22,8 +22,10 @@
 )]
 
 pub mod blaze_command_utils;
+pub mod bugreport;
 pub mod command;
 pub mod command_environment;
+mod command_name_cache_impl;
 pub mod directories;
 pub mod dispatcher;
 pub mod exit_code;

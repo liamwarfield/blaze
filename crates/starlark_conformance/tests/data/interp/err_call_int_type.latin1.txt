@@ -1,0 +1,5 @@
+EVAL in call to int(), parameter 'x' got value of type 'list', want 'string, bool, int, or float'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_int_type.star", line 1, column 4, in <toplevel>
+TRACE \x09\x09int([])
+TRACE Error in int: in call to int(), parameter 'x' got value of type 'list', want 'string, bool, int, or float'

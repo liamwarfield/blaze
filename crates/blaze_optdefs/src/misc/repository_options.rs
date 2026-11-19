@@ -834,17 +834,32 @@ mod tests {
         );
     }
 
+    // Java: RepositoryOptionsTest.testOverridePathWithTilde (USER_HOME.value() is the JVM's
+    // user.home, as here)
     #[test]
-    #[ignore = "needs StandardSystemProperty.USER_HOME (the JVM's user.home)"]
     fn test_override_path_with_tilde() {
         let actual = override_converter("foo=~/bar").unwrap();
         assert_eq!(actual.repository_name, "foo");
+        assert_eq!(
+            blaze_vfs::PathFragment::create(&actual.path),
+            blaze_vfs::PathFragment::create(&format!(
+                "{}/bar",
+                crate::common::options_utils::user_home()
+            ))
+        );
     }
 
+    // Java: RepositoryOptionsTest.testModuleOverridePathWithTilde
     #[test]
-    #[ignore = "needs StandardSystemProperty.USER_HOME (the JVM's user.home)"]
     fn test_module_override_path_with_tilde() {
-        module_override("foo=~/bar").unwrap();
+        let actual = module_override("foo=~/bar").unwrap();
+        assert_eq!(
+            blaze_vfs::PathFragment::create(&actual.path),
+            blaze_vfs::PathFragment::create(&format!(
+                "{}/bar",
+                crate::common::options_utils::user_home()
+            ))
+        );
     }
 
     #[test]

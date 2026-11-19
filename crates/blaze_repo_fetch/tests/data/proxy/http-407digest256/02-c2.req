@@ -1,0 +1,8 @@
+GET http://origin.example/f HTTP/1.1
+Proxy-Authorization: Digest username="user", realm="blaze-proxy", nonce="0123456789abcdef", nc=00000001, uri="http://origin.example/f", response="af10ba2ba3030b88fe8f547a1c5217a70e22169947a70348d36f76b3066e8f22", algorithm=SHA-256, cnonce="HDDHMNKDGOHAFKHOLDANCPGPDABPIBEOOEOADFAL", qop=auth
+Accept-Encoding: gzip
+User-Agent: Bazel/release 9.3.2
+Host: origin.example
+Accept: */*
+Proxy-Connection: keep-alive
+

@@ -1,0 +1,5 @@
+EVAL shift count too large: 600
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_op_shift_too_large.star", line 1, column 7, in <toplevel>
+TRACE \x09\x09x = 1 << 600
+TRACE Error: shift count too large: 600

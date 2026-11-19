@@ -1,0 +1,3 @@
+module(name = "java_probe")
+
+bazel_dep(name = "rules_java", version = "9.1.0")

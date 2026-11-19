@@ -33,6 +33,7 @@ use crate::actions::{ExecException, UserExecException};
 use crate::exec::action_execution_context::ActionExecutionContext;
 use crate::exec::streamed_test_output::StreamedTestOutput;
 use crate::exec::test_log_helper;
+use crate::exec::test_xml_output_parser::TestXmlOutputParser;
 
 /// `TestStrategy.TEST_TMP_ROOT`.
 // Java: com/google/devtools/build/lib/analysis/test/TestStrategy.java:154 TestStrategy.TEST_TMP_ROOT
@@ -351,7 +352,7 @@ impl TestStrategy {
 
     /// Parse a test result XML file into a `TestCase`.
     // Java: com/google/devtools/build/lib/analysis/test/TestStrategy.java:353 TestStrategy.parseTestResult
-    pub fn parse_test_result(&self, _result_file: &Path) -> Option<TestCase> {
+    pub fn parse_test_result(&self, result_file: &Path) -> Option<TestCase> {
         // xml files. We avoid parsing it unnecessarily, since test results can potentially
         // consume a large amount of memory.
         // Java: TestStrategy.PARSE_TEST_RESULT_FORMATS
@@ -364,7 +365,12 @@ impl TestStrategy {
             return None;
         }
 
-        blaze_util::unported!("TestXmlOutputParser.parseXmlIntoTestResult")
+        let mut file_stream = result_file.get_input_stream().ok()?;
+        // catch (IOException | TestXmlOutputParserException e): return null
+        TestXmlOutputParser::new()
+            .parse_xml_into_test_result(&mut file_stream)
+            .ok()
+            .flatten()
     }
 
     /// Outputs test result to the stdout after test has finished (e.g. for --test_output=all or

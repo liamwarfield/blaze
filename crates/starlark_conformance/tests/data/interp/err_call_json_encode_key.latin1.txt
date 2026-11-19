@@ -1,0 +1,5 @@
+EVAL dict has int key, want string
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_json_encode_key.star", line 1, column 12, in <toplevel>
+TRACE \x09\x09json.encode({1: 2})
+TRACE Error in encode: dict has int key, want string

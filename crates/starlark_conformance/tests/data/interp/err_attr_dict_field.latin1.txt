@@ -1,0 +1,5 @@
+EVAL 'dict' value has no field or method 'a'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_attr_dict_field.star", line 1, column 13, in <toplevel>
+TRACE \x09\x09x = {"a": 1}.a
+TRACE Error: 'dict' value has no field or method 'a'

@@ -1,0 +1,1 @@
+SYNTAX err_res_private_load.star:1:17: symbol '_x' is private and cannot be imported

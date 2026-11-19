@@ -1,42 +1,58 @@
 //! Port of `src/main/cpp/blaze.cc` (and `main.cc`): the client's `Main` and everything it calls
 //! on the Linux path.
 //!
-//! Blaze runs the server in-process ([`InProcessServer`], see `server.rs`): where the client
-//! would exec the server JVM (`--batch`) or start a daemon and talk gRPC to it, it hands the
-//! same arguments / `RunRequest` to the in-process server. There is never a running server to
-//! connect to, so `BlazeServer::Connect` always fails.
+//! By default Blaze runs the server in-process ([`InProcessServer`], see `server.rs`): where the
+//! client would exec the server JVM (`--batch`) or start a daemon and talk gRPC to it, it hands
+//! the same arguments / `RunRequest` to the in-process server. There is never a running server
+//! to connect to, so `BlazeServer::Connect` always fails.
+//!
+//! With `BLAZE_SERVER_MODE=daemon` or `jvm` ([`ServerMode`]) the client is the C++ client: it
+//! starts a server process through `daemonize`, connects to it over gRPC (`command_server.rs`)
+//! and streams the command's output; only `--batch` still runs in-process.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use blaze_options::rc::option_processor::{
     BAZEL_SYSTEM_BAZELRC_PATH, OptionProcessor, RcStartupFlag, StartupFlagRegistry,
 };
-use blaze_protos::command_server::{RunRequest, StartupOption};
+use blaze_protos::command_server::{
+    CancelRequest, PingRequest, RunRequest, RunResponse, ServerInfo, StartupOption,
+    TerminalSizeRequest,
+};
 use blaze_util::string_encoding::{latin1_decode, latin1_encode};
 
 use crate::archive_utils::{
     EmbeddedArchive, LoggingInfo, RestartReason, determine_archive_contents, extract_build_label,
     extract_data, get_server_jar_path,
 };
+use crate::command_server::{CommandServerStub, GrpcStatus, RunReader, StubRuntime, new_stub};
+use crate::cpp_unordered::CppUnorderedMultiset;
 use crate::option_processor::{
     client_environment, parse_options_with_logging, print_startup_options_provenance_message,
 };
 use crate::platform::{
-    DurationMillis, EnvVarAction, EnvVarValue, K_LIST_SEPARATOR, K_SERVER_PID_FILE, LockHandle,
-    LockMode, acquire_lock, create_secure_directory, exclude_path_from_backup, exists_env,
-    get_milliseconds_monotonic, get_oom_file_path, get_process_id_as_string, get_processed_env,
-    get_self_path, get_system_javabase, is_running_within_test, is_shared_library, release_lock,
-    set_debug_log, set_scheduling, setup_std_streams, symlink_directories, unlimit_coredumps,
-    unlimit_resources, verify_server_process, warn_filesystem_type, warn_if_started_from_desktop,
+    DurationMillis, EnvVarAction, EnvVarValue, K_LIST_SEPARATOR,
+    K_POST_SHUTDOWN_GRACE_PERIOD_SECONDS, K_SERVER_PID_FILE, LockHandle, LockMode,
+    SocketBlazeServerStartup, WithEnvVars, acquire_lock, await_server_process_termination,
+    create_secure_directory, exclude_path_from_backup, execute_daemon, execute_server_jvm,
+    exists_env, get_abrupt_exit_file_path, get_milliseconds_monotonic, get_oom_file_path,
+    get_process_cwd, get_process_id_as_string, get_processed_env, get_self_path,
+    get_system_javabase, get_terminal_columns, is_running_within_test, is_shared_library,
+    kill_server_process, release_lock, set_debug_log, set_scheduling, setup_std_streams,
+    symlink_directories, unlimit_coredumps, unlimit_resources, verify_server_process,
+    warn_filesystem_type, warn_if_started_from_desktop,
 };
-use crate::server::{InProcessServer, ServerStartup};
+use crate::server::{InProcessServer, ServerMode, ServerStartup};
+use crate::signal_handler::CancelThreadAction;
 use crate::startup_options::StartupOptions;
 use crate::util::errors::get_last_error_string;
 use crate::util::exit_code;
 use crate::util::file::{
-    can_access_directory_path, change_directory, get_cwd, is_directory_path, make_canonical,
-    make_directories_path, path_exists_path, read_directory_symlink, read_file_path,
-    set_mtime_to_now_if_possible, unlink_path_path, write_file_path,
+    WriteResult, can_access_directory_path, change_directory, get_cwd, is_directory_path,
+    make_canonical, make_directories_path, path_exists_path, read_directory_symlink,
+    read_file_path, set_mtime_to_now_if_possible, unlink_path_path, write_file_path,
+    write_to_std_out_err,
 };
 use crate::util::logging::{
     self, BazelLogHandler, LogLevel, LoggingDetail, bazel_die, bazel_log, set_log_handler,
@@ -103,10 +119,23 @@ fn get_jvm_out_file(output_base: &Path, server_jvm_out: &Path) -> Path {
 pub struct BlazeServer {
     install_base_lock_: Option<LockHandle>,
     output_base_lock_: Option<LockHandle>,
-    /// `client_ != nullptr`: in-process, set once the in-process server "started".
+    /// PORT: Blaze-only. Which server this client talks to (`BLAZE_SERVER_MODE`).
+    mode: ServerMode,
+    /// `client_ != nullptr` in-process: set once the in-process server "started".
     connected: bool,
+    /// The tokio runtime the gRPC stub runs on (server-process modes only).
+    runtime_: Option<Arc<StubRuntime>>,
+    /// `client_`: the stub of the connected server (server-process modes). Shared with the
+    /// cancel thread, which uses it under `cancel_thread_mutex_` as the C++ does.
+    client_: Arc<Mutex<Option<CommandServerStub>>>,
+    request_cookie_: String,
+    response_cookie_: String,
+    /// `command_id_`, protected by `cancel_thread_mutex_` (this mutex).
+    command_id_: Arc<Mutex<String>>,
+    /// `pipe_`: (read end, write end) of the pipe the main thread and the signal handler send
+    /// actions to and the cancel thread receives actions from (server-process modes).
+    pipe_: Option<(libc::c_int, libc::c_int)>,
     process_info_: ServerProcessInfo,
-    #[allow(dead_code)]
     connect_timeout_secs_: i32,
     batch_: bool,
     block_for_lock_: bool,
@@ -118,14 +147,42 @@ pub struct BlazeServer {
 }
 
 impl BlazeServer {
-    // Java: src/main/cpp/blaze.cc:1715 BlazeServer::BlazeServer
+    /// The in-process `BlazeServer` (`BLAZE_SERVER_MODE` unset or `inprocess`).
     pub fn new(startup_options: &StartupOptions) -> Self {
-        // PORT: the cancel-thread pipe (CreatePipe) is not created: there is no gRPC
-        // connection to cancel in-process.
+        Self::new_with_mode(startup_options, ServerMode::InProcess)
+    }
+
+    // Java: src/main/cpp/blaze.cc:1715 BlazeServer::BlazeServer
+    pub fn new_with_mode(startup_options: &StartupOptions, mode: ServerMode) -> Self {
+        // PORT: in-process, the cancel-thread pipe (CreatePipe) is not created here: the
+        // in-process cancel thread makes its own (signal_handler::with_cancel_thread). The gRPC
+        // runtime exists only when there is a server process to talk to.
+        let mut pipe_ = None;
+        let mut runtime_ = None;
+        if mode.is_server_process() {
+            pipe_ = Some(create_pipe());
+            crate::signal_handler::set_cancel_pipe(pipe_.expect("pipe").1);
+            match StubRuntime::new() {
+                Ok(rt) => runtime_ = Some(Arc::new(rt)),
+                Err(e) => bazel_die(
+                    exit_code::LOCAL_ENVIRONMENTAL_ERROR,
+                    BLAZE_RS,
+                    line!(),
+                    format!("Couldn't create the gRPC client runtime: {}", e),
+                ),
+            }
+        }
         BlazeServer {
             install_base_lock_: None,
             output_base_lock_: None,
+            mode,
             connected: false,
+            runtime_,
+            client_: Arc::new(Mutex::new(None)),
+            request_cookie_: String::new(),
+            response_cookie_: String::new(),
+            command_id_: Arc::new(Mutex::new(String::new())),
+            pipe_,
             process_info_: ServerProcessInfo::new(
                 &startup_options.output_base,
                 &startup_options.server_jvm_out,
@@ -144,7 +201,28 @@ impl BlazeServer {
     // Java: src/main/cpp/blaze.cc:209 BlazeServer::Connected
     /// Whether there is an active connection to a server.
     pub fn connected(&self) -> bool {
-        self.connected
+        if self.mode.is_server_process() {
+            self.client_.lock().expect("client_").is_some()
+        } else {
+            self.connected
+        }
+    }
+
+    /// `client_.reset()`.
+    fn reset_client(&self) {
+        *self.client_.lock().expect("client_") = None;
+    }
+
+    fn client(&self) -> CommandServerStub {
+        self.client_
+            .lock()
+            .expect("client_")
+            .clone()
+            .expect("connected to a server")
+    }
+
+    fn runtime(&self) -> &StubRuntime {
+        self.runtime_.as_deref().expect("server-process mode")
     }
 
     // Java: src/main/cpp/blaze.cc:240 BlazeServer::ProcessInfo
@@ -212,9 +290,8 @@ impl BlazeServer {
 
     // Java: src/main/cpp/blaze.cc:336 BlazeServer::ReleaseLocks
     // PORT: never called while the server runs in-process: `communicate` keeps both locks for
-    // the whole command (see the PORT comment there). Kept for the gRPC client (W8), which
-    // releases them once a long-lived server has accepted the request.
-    #[allow(dead_code)]
+    // the whole command (see the PORT comment there). The server-process client releases them
+    // once the server has the request, as the C++ does.
     fn release_locks(&mut self) {
         let Some(output_base_lock) = self.output_base_lock_.take() else {
             bazel_die(
@@ -239,13 +316,105 @@ impl BlazeServer {
         }
     }
 
+    // Java: src/main/cpp/blaze.cc:1735 BlazeServer::TryConnect
+    fn try_connect(&self, client: &mut CommandServerStub) -> bool {
+        let deadline = std::time::Duration::from_secs(self.connect_timeout_secs_.max(0) as u64);
+
+        let request = PingRequest {
+            cookie: self.request_cookie_.clone(),
+        };
+
+        bazel_log(
+            LogLevel::Info,
+            BLAZE_CC,
+            1744,
+            format!(
+                "Trying to connect to server (timeout: {} secs)...",
+                self.connect_timeout_secs_
+            ),
+        );
+        let result = self.runtime().block_on(client.ping(request, deadline));
+
+        let (status, response_cookie) = match result {
+            Ok(response) => (GrpcStatus::ok(), response.cookie),
+            Err(status) => (status, String::new()),
+        };
+        if !status.is_ok() || response_cookie != self.response_cookie_ {
+            bazel_log(
+                LogLevel::Info,
+                BLAZE_CC,
+                1749,
+                format!(
+                    "Connection to server failed: ({}) {}\n",
+                    status.code, status.message
+                ),
+            );
+            return false;
+        }
+
+        true
+    }
+
     // Java: src/main/cpp/blaze.cc:1757 BlazeServer::Connect
-    /// Connects to the server. In-process there is never a running server to connect to.
+    /// Connects to the server. Returns if the connection was successful. In-process there is
+    /// never a running server to connect to.
     pub fn connect(&mut self) -> bool {
         assert!(!self.connected());
-        // PORT: no gRPC server exists until W8; the in-process server is started per command
-        // (StartServerAndConnect), so connecting to an existing one always fails.
-        false
+        if !self.mode.is_server_process() {
+            // PORT: in-process, the server is started per command (StartServerAndConnect), so
+            // connecting to an existing one always fails.
+            return false;
+        }
+
+        let server_dir = self.output_base_.get_relative("server");
+
+        let Some(bytes) = read_file_path(&server_dir.get_relative("server_info.rawproto"), 0)
+        else {
+            return false;
+        };
+        let Ok(server_info) = <ServerInfo as prost::Message>::decode(bytes.as_slice()) else {
+            return false;
+        };
+
+        let port = server_info.address.clone();
+        let ipv4_prefix = "127.0.0.1:";
+        let ipv6_prefix_1 = "[0:0:0:0:0:0:0:1]:";
+        let ipv6_prefix_2 = "[::1]:";
+
+        // Make sure that we are being directed to localhost
+        if !port.starts_with(ipv4_prefix)
+            && !port.starts_with(ipv6_prefix_1)
+            && !port.starts_with(ipv6_prefix_2)
+        {
+            return false;
+        }
+
+        self.request_cookie_ = server_info.request_cookie.clone();
+        self.response_cookie_ = server_info.response_cookie.clone();
+
+        let server_pid = server_info.pid;
+        if server_pid < 0 {
+            return false;
+        }
+
+        if !verify_server_process(server_pid, &self.output_base_) {
+            return false;
+        }
+
+        // Bazel client and server always run on the same machine and communicate locally over
+        // gRPC; so we want to ignore any configured proxies when setting up a gRPC channel to
+        // the server.
+        let Some(mut client) = new_stub(self.runtime(), &port) else {
+            return false;
+        };
+
+        if !self.try_connect(&mut client) {
+            return false;
+        }
+
+        *self.client_.lock().expect("client_") = Some(client);
+        self.process_info_.server_pid_ = server_pid;
+        true
     }
 
     // Java: src/main/cpp/blaze.cc:936 StartServerAndConnect
@@ -259,12 +428,94 @@ impl BlazeServer {
     }
 
     // Java: src/main/cpp/blaze.cc:1947 BlazeServer::KillRunningServer
+    /// Disconnects and kills an existing server. This will wait indefinitely until the server
+    /// shuts down.
     pub fn kill_running_server(&mut self) {
         assert!(self.connected());
-        ::blaze_util::unported!(
-            "BlazeServer::KillRunningServer",
-            "there is no running server in-process"
-        )
+        if !self.mode.is_server_process() {
+            ::blaze_util::unported!(
+                "BlazeServer::KillRunningServer",
+                "there is no running server in-process"
+            )
+        }
+
+        let mut request = RunRequest::default();
+        request.cookie = self.request_cookie_.clone();
+        request.block_for_lock = self.block_for_lock_;
+        request.client_description = format!("pid={} (for shutdown)", get_process_id_as_string());
+        request.arg.push(b"shutdown".to_vec());
+        // Bazel's command_extension_adder is null.
+        bazel_log(
+            LogLevel::Info,
+            BLAZE_CC,
+            1961,
+            "Shutting running server with RPC request",
+        );
+        let mut client = self.client();
+        let mut response = RunResponse::default();
+        let status = self.runtime().block_on(async {
+            let mut reader = match client.run(request).await {
+                Ok(reader) => reader,
+                Err(status) => RunReader::failed(status),
+            };
+            // TODO(b/111179585): Swallowing these responses loses potential messages from the
+            // server, which may be useful in understanding why a shutdown failed. However, we
+            // don't want to spam the user in case the shutdown works perfectly fine, so we
+            // discard the information.
+            while let Some(r) = reader.read().await {
+                response = r;
+            }
+            reader.finish()
+        });
+        drop(client);
+        if status.is_ok() {
+            // Check the final message from the server to see if it exited because another
+            // command holds the client lock.
+            if response.finished && response.exit_code == exit_code::LOCK_HELD_NOBLOCK_FOR_LOCK {
+                debug_assert!(!self.block_for_lock_);
+                bazel_die(
+                    exit_code::LOCK_HELD_NOBLOCK_FOR_LOCK,
+                    BLAZE_CC,
+                    1985,
+                    "Exiting because the lock is held and --noblock_for_lock was given.",
+                );
+            }
+
+            // If for any reason the shutdown request failed to initiate a termination, this is
+            // a bug. Yes, this means the server won't be forced to shut down, which might be the
+            // preferred behavior, but it will help identify the bug.
+            // PORT: assert() is compiled out of Bazel's release client (-c opt, NDEBUG).
+            debug_assert!(response.termination_expected);
+        }
+
+        // Eagerly disconnect to let the server stop promptly.
+        self.reset_client();
+
+        // Wait for the server process to terminate (if we know the server PID). If it does not
+        // terminate itself gracefully within 1m, terminate it.
+        if self.process_info_.server_pid_ > 0
+            && !await_server_process_termination(
+                self.process_info_.server_pid_,
+                &self.output_base_,
+                K_POST_SHUTDOWN_GRACE_PERIOD_SECONDS,
+            )
+        {
+            if !status.is_ok() {
+                bazel_log(
+                    LogLevel::Warning,
+                    BLAZE_CC,
+                    2008,
+                    format!(
+                        "Shutdown request failed, server still alive: (error code: {}, error \
+                         message: '{}', log file: '{}')",
+                        status.code,
+                        status.message,
+                        self.process_info_.jvm_log_file_.as_printable_path()
+                    ),
+                );
+            }
+            kill_server_process(self.process_info_.server_pid_, &self.output_base_);
+        }
     }
 
     // Java: src/main/cpp/blaze.cc:2018 BlazeServer::Communicate
@@ -342,58 +593,8 @@ impl BlazeServer {
         });
 
         // Java: src/main/cpp/blaze.cc:2166 BlazeServer::Communicate
-        if let Some(request) = &final_response.exec_request
-            && request.should_exec
-        {
-            if request.argv.is_empty() {
-                bazel_log(
-                    LogLevel::User,
-                    file!(),
-                    line!(),
-                    "\nServer requested exec() but did not pass a binary to execute",
-                );
-                return exit_code::INTERNAL_ERROR;
-            }
-
-            // Clear environment variables before setting the requested ones so that users can
-            // still explicitly override the clearing.
-            // The request's bytes are the client's platform strings: internal strings here.
-            let decode = |bytes: &[u8]| latin1_decode(bytes).into_owned();
-            for variable_name in &request.environment_variable_to_clear {
-                // SAFETY: the cancel thread has been joined; the command's threads are done.
-                unsafe { crate::platform::unset_env(&decode(variable_name)) };
-            }
-
-            let argv: Vec<String> = request.argv.iter().map(|a| decode(a)).collect();
-            for variable in &request.environment_variable {
-                // SAFETY: as above.
-                unsafe {
-                    crate::platform::set_env(&decode(&variable.name), &decode(&variable.value))
-                };
-            }
-
-            let working_directory = decode(&request.working_directory);
-            if !change_directory(&working_directory) {
-                bazel_die(
-                    exit_code::INTERNAL_ERROR,
-                    file!(),
-                    line!(),
-                    format!(
-                        "changing directory into {} failed: {}",
-                        working_directory,
-                        get_last_error_string()
-                    ),
-                );
-            }
-
-            // Execute the requested program, but before doing so, flush everything we still
-            // have to say.
-            {
-                use std::io::Write as _;
-                let _ = std::io::stdout().flush();
-                let _ = std::io::stderr().flush();
-            }
-            crate::platform::execute_run_request(&Path::new(&argv[0]), &argv);
+        if let Some(code) = execute_exec_request_if_requested(&final_response) {
+            return code;
         }
 
         if let Some(failure_detail) = &final_response.failure_detail {
@@ -408,6 +609,485 @@ impl BlazeServer {
         // PORT: no broken pipe is detected in-process (the server writes to the streams itself).
         final_response.exit_code
     }
+
+    // Java: src/main/cpp/blaze.cc:2018 BlazeServer::Communicate
+    /// Sends the command line to the server process and forwards whatever it says to stdout and
+    /// stderr. Returns the desired exit code (server-process modes).
+    pub fn communicate_with_server_process(
+        &mut self,
+        command: &str,
+        command_args: &[String],
+        invocation_policy: &str,
+        original_startup_options: &[RcStartupFlag],
+        logging_info: &LoggingInfo,
+        client_startup_duration: DurationMillis,
+        extract_data_duration: Option<DurationMillis>,
+        command_wait_duration: Option<DurationMillis>,
+    ) -> i32 {
+        assert!(self.connected());
+        assert!(self.process_info_.server_pid_ > 0);
+
+        let mut arg_vector: Vec<String> = Vec::new();
+        if !command.is_empty() {
+            arg_vector.push(command.to_string());
+            add_logging_args(
+                logging_info,
+                client_startup_duration,
+                extract_data_duration,
+                command_wait_duration,
+                &mut arg_vector,
+            );
+        }
+        arg_vector.extend(command_args.iter().cloned());
+
+        let mut request = build_run_request(
+            &arg_vector,
+            invocation_policy,
+            original_startup_options,
+            self.block_for_lock_,
+            self.quiet_,
+            self.preemptible_,
+        );
+        request.cookie = self.request_cookie_.clone();
+
+        // client_->Run(context.get(), request): the call starts here, while the locks are
+        // released below.
+        let mut client = self.client();
+        let run_call = self
+            .runtime()
+            .spawn(async move { client.run(request).await });
+
+        // Release the client-side locks, as the server may outlive the client and must implement
+        // its own locking of the install and output bases. This may result in two "waiting for
+        // lock" messages, one emitted by client during server startup, and another emitted by
+        // the server. This is harmless.
+        bazel_log(
+            LogLevel::Info,
+            BLAZE_CC,
+            2071,
+            "Released the client-side locks on the install and output bases",
+        );
+        self.release_locks();
+
+        let cancel_thread = self.start_cancel_thread();
+        let mut command_id_set = false;
+        let mut pipe_broken = false;
+        let mut final_response = RunResponse::default();
+        let mut finished = false;
+        let mut finished_warning_emitted = false;
+
+        let mut reader = match self.runtime().block_on(run_call) {
+            Ok(Ok(reader)) => reader,
+            Ok(Err(status)) => RunReader::failed(status),
+            Err(join_error) => RunReader::failed(GrpcStatus {
+                code: tonic::Code::Unknown as i32,
+                message: join_error.to_string(),
+            }),
+        };
+
+        while let Some(response) = self.runtime().block_on(reader.read()) {
+            if finished && !finished_warning_emitted {
+                bazel_log(
+                    LogLevel::User,
+                    BLAZE_CC,
+                    2084,
+                    "\nServer returned messages after reporting exit code",
+                );
+                finished_warning_emitted = true;
+            }
+
+            if response.cookie != self.response_cookie_ {
+                bazel_log(
+                    LogLevel::User,
+                    BLAZE_CC,
+                    2089,
+                    "\nServer response cookie invalid, exiting",
+                );
+                send_action(CancelThreadAction::Join);
+                let _ = cancel_thread.join();
+                return exit_code::INTERNAL_ERROR;
+            }
+
+            let mut broken_pipe_name: Option<&str> = None;
+
+            if response.finished {
+                final_response = response.clone();
+                finished = true;
+            }
+
+            if !response.standard_output.is_empty()
+                && write_to_std_out_err(&response.standard_output, /* to_stdout= */ true)
+                    == WriteResult::BrokenPipe
+            {
+                broken_pipe_name = Some("standard output");
+            }
+
+            if !response.standard_error.is_empty()
+                && write_to_std_out_err(&response.standard_error, /* to_stdout= */ false)
+                    == WriteResult::BrokenPipe
+            {
+                broken_pipe_name = Some("standard error");
+            }
+
+            if let Some(name) = broken_pipe_name
+                && !pipe_broken
+            {
+                pipe_broken = true;
+                bazel_log(
+                    LogLevel::User,
+                    BLAZE_CC,
+                    2122,
+                    format!("\nCannot write to {}; exiting...\n", name),
+                );
+                self.cancel();
+            }
+
+            if !command_id_set && !response.command_id.is_empty() {
+                let mut command_id = self.command_id_.lock().expect("cancel_thread_mutex_");
+                *command_id = response.command_id.clone();
+                command_id_set = true;
+                send_action(CancelThreadAction::CommandIdReceived);
+            }
+        }
+
+        let status = reader.finish();
+        drop(reader);
+
+        // If the server claims it is shutting down (eg the command was "shutdown"), wait for it
+        // to exit.
+        if final_response.termination_expected {
+            // Eagerly disconnect to let the server stop promptly.
+            self.reset_client();
+            if !await_server_process_termination(
+                self.process_info_.server_pid_,
+                &self.output_base_,
+                K_POST_SHUTDOWN_GRACE_PERIOD_SECONDS,
+            ) {
+                kill_server_process(self.process_info_.server_pid_, &self.output_base_);
+            }
+        }
+
+        send_action(CancelThreadAction::Join);
+        let _ = cancel_thread.join();
+
+        if !status.is_ok() {
+            bazel_log(
+                LogLevel::User,
+                BLAZE_CC,
+                2156,
+                format!(
+                    "\nServer terminated abruptly (error code: {}, error message: '{}', log file: \
+                     '{}')\n",
+                    status.code,
+                    status.message,
+                    self.process_info_.jvm_log_file_.as_printable_path()
+                ),
+            );
+            return get_exit_code_for_abrupt_exit(&self.output_base_);
+        } else if !finished {
+            bazel_log(
+                LogLevel::User,
+                BLAZE_CC,
+                2162,
+                format!(
+                    "\nServer finished RPC without an explicit exit code (log file: '{}')\n",
+                    self.process_info_.jvm_log_file_.as_printable_path()
+                ),
+            );
+            return get_exit_code_for_abrupt_exit(&self.output_base_);
+        } else if let Some(code) = execute_exec_request_if_requested(&final_response) {
+            return code;
+        }
+
+        if let Some(failure_detail) = &final_response.failure_detail {
+            bazel_log(
+                LogLevel::Info,
+                BLAZE_CC,
+                2199,
+                format!("failure_detail: {failure_detail:?}"),
+            );
+        }
+
+        // We'll exit with exit code SIGPIPE on Unixes due to PropagateSignalOnExit()
+        if pipe_broken {
+            exit_code::LOCAL_ENVIRONMENTAL_ERROR
+        } else {
+            final_response.exit_code
+        }
+    }
+
+    /// Starts `BlazeServer::CancelThread` (`std::thread cancel_thread(&BlazeServer::CancelThread,
+    /// this)`).
+    fn start_cancel_thread(&self) -> std::thread::JoinHandle<()> {
+        let state = CancelThreadState {
+            read_fd: self.pipe_.expect("cancel pipe").0,
+            runtime: self.runtime_.clone().expect("server-process mode"),
+            client: self.client_.clone(),
+            command_id: self.command_id_.clone(),
+            request_cookie: self.request_cookie_.clone(),
+        };
+        std::thread::spawn(move || state.cancel_thread())
+    }
+
+    // Java: src/main/cpp/blaze.cc:2216 BlazeServer::Cancel
+    /// Cancel the currently running command.
+    pub fn cancel(&self) {
+        assert!(self.connected());
+        send_action(CancelThreadAction::Cancel);
+    }
+
+    // Java: src/main/cpp/blaze.cc:2221 BlazeServer::TerminalSizeChanged
+    /// Notifies the server that the client terminal size may have changed.
+    pub fn terminal_size_changed(&self) {
+        assert!(self.connected());
+        send_action(CancelThreadAction::TerminalSizeChanged);
+    }
+}
+
+/// `BlazeServer::SendAction` (the signal handler's and the main thread's side of the pipe).
+fn send_action(action: CancelThreadAction) {
+    crate::signal_handler::send_action(action);
+}
+
+/// `blaze_util::CreatePipe()` for `BlazeServer::pipe_`: (read end, write end).
+// Java: src/main/cpp/blaze.cc:1728 BlazeServer::BlazeServer
+fn create_pipe() -> (libc::c_int, libc::c_int) {
+    let mut fd: [libc::c_int; 2] = [-1, -1];
+    // Java: src/main/cpp/util/file_posix.cc:229 CreatePipe
+    // SAFETY: fd is a valid array of two ints.
+    if unsafe { libc::pipe(fd.as_mut_ptr()) } < 0 {
+        bazel_die(
+            exit_code::LOCAL_ENVIRONMENTAL_ERROR,
+            "src/main/cpp/util/file_posix.cc",
+            232,
+            format!("pipe() failed: {}", get_last_error_string()),
+        );
+    }
+    for (f, line) in [(fd[0], 237), (fd[1], 242)] {
+        // SAFETY: plain fcntl on a descriptor just created.
+        if unsafe { libc::fcntl(f, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
+            bazel_die(
+                exit_code::LOCAL_ENVIRONMENTAL_ERROR,
+                "src/main/cpp/util/file_posix.cc",
+                line,
+                format!(
+                    "fcntl(F_SETFD, FD_CLOEXEC) failed: {}",
+                    get_last_error_string()
+                ),
+            );
+        }
+    }
+    (fd[0], fd[1])
+}
+
+/// What `BlazeServer::CancelThread` shares with the main thread: the pipe's read end, the stub
+/// (`client_`), the request cookie and `command_id_` (protected by `cancel_thread_mutex_`).
+struct CancelThreadState {
+    read_fd: libc::c_int,
+    runtime: Arc<StubRuntime>,
+    client: Arc<Mutex<Option<CommandServerStub>>>,
+    command_id: Arc<Mutex<String>>,
+    request_cookie: String,
+}
+
+impl CancelThreadState {
+    // Java: src/main/cpp/blaze.cc:1844 BlazeServer::CancelThread
+    fn cancel_thread(&self) {
+        let mut running = true;
+        let mut cancel = false;
+        let mut command_id_received = false;
+        let mut terminal_size_change_pending = false;
+        let mut last_sent_terminal_columns = get_terminal_columns();
+        let mut send_terminal_size_if_changed = |this: &Self| {
+            let columns = get_terminal_columns();
+            if columns > 0 && columns != last_sent_terminal_columns {
+                this.send_terminal_size_message(columns);
+                last_sent_terminal_columns = columns;
+            }
+        };
+        while running {
+            let mut buf: u8 = 0;
+            // SAFETY: reads one byte into a valid buffer.
+            let bytes_read = unsafe { libc::read(self.read_fd, (&raw mut buf).cast(), 1) };
+            if bytes_read < 0 && crate::util::errors::errno() == libc::EINTR {
+                continue;
+            } else if bytes_read != 1 {
+                bazel_die(
+                    exit_code::INTERNAL_ERROR,
+                    BLAZE_CC,
+                    1865,
+                    format!(
+                        "Cannot communicate with cancel thread: {}",
+                        get_last_error_string()
+                    ),
+                );
+            }
+
+            match CancelThreadAction::from_byte(buf) {
+                Some(CancelThreadAction::Nothing) => {}
+                Some(CancelThreadAction::Join) => running = false,
+                Some(CancelThreadAction::CommandIdReceived) => {
+                    command_id_received = true;
+                    if cancel {
+                        self.send_cancel_message();
+                        cancel = false;
+                    }
+                    if terminal_size_change_pending {
+                        send_terminal_size_if_changed(self);
+                        terminal_size_change_pending = false;
+                    }
+                }
+                Some(CancelThreadAction::Cancel) => {
+                    if command_id_received {
+                        self.send_cancel_message();
+                    } else {
+                        cancel = true;
+                    }
+                }
+                Some(CancelThreadAction::TerminalSizeChanged) => {
+                    if command_id_received {
+                        send_terminal_size_if_changed(self);
+                    } else {
+                        terminal_size_change_pending = true;
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+
+    // Java: src/main/cpp/blaze.cc:1908 BlazeServer::SendCancelMessage
+    fn send_cancel_message(&self) {
+        let command_id = self.command_id.lock().expect("cancel_thread_mutex_");
+
+        let request = CancelRequest {
+            cookie: self.request_cookie.clone(),
+            command_id: command_id.clone(),
+        };
+        let client = self.client.lock().expect("client_").clone();
+        // There isn't a lot we can do if this request fails
+        let status = match client {
+            Some(mut client) => match self
+                .runtime
+                .block_on(client.cancel(request, std::time::Duration::from_secs(10)))
+            {
+                Ok(_) => GrpcStatus::ok(),
+                Err(status) => status,
+            },
+            // PORT: the C++ would dereference a reset client_ here (a cancel after the server
+            // announced its termination); there is no server left to interrupt.
+            None => return,
+        };
+        if !status.is_ok() {
+            bazel_log(
+                LogLevel::User,
+                BLAZE_CC,
+                1921,
+                format!(
+                    "\nCould not interrupt server: ({}) {}\n",
+                    status.code, status.message
+                ),
+            );
+        }
+    }
+
+    // Java: src/main/cpp/blaze.cc:1926 BlazeServer::SendTerminalSizeMessage
+    fn send_terminal_size_message(&self, columns: i32) {
+        let command_id = self.command_id.lock().expect("cancel_thread_mutex_");
+
+        let request = TerminalSizeRequest {
+            cookie: self.request_cookie.clone(),
+            command_id: command_id.clone(),
+            columns,
+            ..Default::default()
+        };
+        let client = self.client.lock().expect("client_").clone();
+        let status = match client {
+            Some(mut client) => match self
+                .runtime
+                .block_on(client.update_terminal_size(request, std::time::Duration::from_secs(10)))
+            {
+                Ok(_) => GrpcStatus::ok(),
+                Err(status) => status,
+            },
+            // PORT: as in send_cancel_message.
+            None => return,
+        };
+        if !status.is_ok() {
+            bazel_log(
+                LogLevel::Info,
+                BLAZE_CC,
+                1940,
+                format!(
+                    "Could not update terminal size: ({}) {}",
+                    status.code, status.message
+                ),
+            );
+        }
+    }
+}
+
+/// The `ExecRequest` part of `BlazeServer::Communicate`: if the final response asks the client
+/// to exec a program (the `run` command), does it (never returns then) or returns the exit code
+/// of the error; otherwise returns `None`.
+// Java: src/main/cpp/blaze.cc:2166 BlazeServer::Communicate
+fn execute_exec_request_if_requested(final_response: &RunResponse) -> Option<i32> {
+    if let Some(request) = &final_response.exec_request
+        && request.should_exec
+    {
+        if request.argv.is_empty() {
+            bazel_log(
+                LogLevel::User,
+                BLAZE_CC,
+                2170,
+                "\nServer requested exec() but did not pass a binary to execute\n",
+            );
+            return Some(exit_code::INTERNAL_ERROR);
+        }
+
+        // Clear environment variables before setting the requested ones so that users can
+        // still explicitly override the clearing.
+        // The request's bytes are the client's platform strings: internal strings here.
+        let decode = |bytes: &[u8]| latin1_decode(bytes).into_owned();
+        for variable_name in &request.environment_variable_to_clear {
+            // SAFETY: the cancel thread has been joined; the command's threads are done.
+            unsafe { crate::platform::unset_env(&decode(variable_name)) };
+        }
+
+        let argv: Vec<String> = request.argv.iter().map(|a| decode(a)).collect();
+        for variable in &request.environment_variable {
+            // SAFETY: as above.
+            unsafe { crate::platform::set_env(&decode(&variable.name), &decode(&variable.value)) };
+        }
+
+        let working_directory = decode(&request.working_directory);
+        if !change_directory(&working_directory) {
+            bazel_die(
+                exit_code::INTERNAL_ERROR,
+                BLAZE_CC,
+                2187,
+                format!(
+                    "changing directory into {} failed: {}",
+                    working_directory,
+                    get_last_error_string()
+                ),
+            );
+        }
+
+        // Execute the requested program, but before doing so, flush everything we still
+        // have to say.
+        {
+            use std::io::Write as _;
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+            // fflush(nullptr): the server's output written through C stdio.
+            // SAFETY: fflush(NULL) flushes every open stdio stream.
+            unsafe { libc::fflush(std::ptr::null_mut()) };
+        }
+        crate::platform::execute_run_request(&Path::new(&argv[0]), &argv);
+    }
+
+    None
 }
 
 /// The `RunRequest` that `BlazeServer::Communicate` sends.
@@ -848,7 +1528,16 @@ fn can_run_outside_workspace(command: &str) -> bool {
 }
 
 // Java: src/main/cpp/blaze.cc:711 RunServerMode
-fn run_server_mode(startup_options: &StartupOptions, server: &BlazeServer) -> i32 {
+/// Replace this process with the blaze server. Does not return (in the server-process modes).
+fn run_server_mode(
+    server_exe: &Path,
+    server_exe_args: &[String],
+    server_dir: &Path,
+    workspace_layout: &WorkspaceLayout,
+    workspace: &str,
+    startup_options: &StartupOptions,
+    server: &BlazeServer,
+) -> i32 {
     if startup_options.batch {
         bazel_die(
             exit_code::BAD_ARGV,
@@ -872,9 +1561,38 @@ fn run_server_mode(startup_options: &StartupOptions, server: &BlazeServer) -> i3
         );
     }
 
-    // PORT: exec-server replaces this process with a long-lived server JVM (writes
-    // server.pid.txt and cmdline, then execs); Blaze has no standalone server until W8.
-    ::blaze_util::unported!("RunServerMode", "exec-server")
+    if !server.mode.is_server_process() {
+        // PORT: in-process, exec-server would replace this process with a long-lived server
+        // (writes server.pid.txt and cmdline, then execs); there is no server process to exec in
+        // this mode (BLAZE_SERVER_MODE=daemon or jvm has one).
+        ::blaze_util::unported!("RunServerMode", "exec-server")
+    }
+
+    ensure_server_dir(server_dir);
+
+    write_file_path(
+        &latin1_encode(&get_process_id_as_string()),
+        &server_dir.get_relative("server.pid.txt"),
+        0o644,
+    );
+    write_file_path(
+        &get_argument_string(server_exe_args),
+        &server_dir.get_relative("cmdline"),
+        0o644,
+    );
+
+    go_to_workspace(workspace_layout, workspace);
+
+    set_scheduling(
+        startup_options.batch_cpu_scheduling,
+        startup_options.io_nice_level,
+    );
+
+    {
+        let _env_obj = WithEnvVars::new(&prepare_environment_for_jvm());
+        let run_in_user_cgroup = startup_options.run_in_user_cgroup;
+        execute_server_jvm(server_exe, server_exe_args, run_in_user_cgroup);
+    }
 }
 
 // Java: src/main/cpp/blaze.cc:754 RunBatchMode
@@ -990,6 +1708,130 @@ fn get_server_pid(server_dir: &Path) -> i32 {
     result
 }
 
+// Java: src/main/cpp/blaze.cc:815 WriteFileToStderrOrDie
+fn write_file_to_stderr_or_die(path: &Path) {
+    use std::io::Read as _;
+    let file = std::fs::File::open(blaze_util::string_encoding::internal_to_platform(
+        &path.as_native_path(),
+    ));
+    let mut fp = match file {
+        Ok(f) => f,
+        Err(_) => bazel_die(
+            exit_code::LOCAL_ENVIRONMENTAL_ERROR,
+            BLAZE_CC,
+            823,
+            format!(
+                "opening {} failed: {}",
+                path.as_printable_path(),
+                get_last_error_string()
+            ),
+        ),
+    };
+    let mut buffer = [0u8; 255];
+    loop {
+        let num_read = match fp.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => bazel_die(
+                exit_code::LOCAL_ENVIRONMENTAL_ERROR,
+                BLAZE_CC,
+                831,
+                format!(
+                    "failed to read from '{}': {}",
+                    path.as_printable_path(),
+                    get_last_error_string()
+                ),
+            ),
+        };
+        // fwrite(buffer, 1, num_read, stderr)
+        write_to_std_out_err(&buffer[..num_read], /* to_stdout= */ false);
+    }
+}
+
+// Java: src/main/cpp/blaze.cc:857 ConnectOrDie
+/// Connect to the server process or exit if it doesn't work out.
+fn connect_or_die(
+    startup_options: &StartupOptions,
+    server_pid: i32,
+    server_startup: &SocketBlazeServerStartup,
+    server: &mut BlazeServer,
+) {
+    // Give the server two minutes to start up. That's enough to connect with a debugger.
+    let start_time = std::time::SystemTime::now();
+    let try_until_time = start_time
+        + std::time::Duration::from_secs(startup_options.local_startup_timeout_secs.max(0) as u64);
+    // Print an update at most once every 10 seconds if we are still trying to connect.
+    let min_message_interval = std::time::Duration::from_secs(10);
+    let mut last_message_time = start_time;
+    while std::time::SystemTime::now() < try_until_time {
+        let attempt_time = std::time::SystemTime::now();
+        let next_attempt_time = attempt_time + std::time::Duration::from_millis(100);
+
+        if server.connect() {
+            return;
+        }
+
+        if attempt_time >= last_message_time + min_message_interval {
+            let elapsed_time = attempt_time
+                .duration_since(start_time)
+                .unwrap_or_default()
+                .as_secs();
+            bazel_log(
+                LogLevel::User,
+                BLAZE_CC,
+                884,
+                format!(
+                    "... still trying to connect to local {} server ({}) after {} seconds ...",
+                    startup_options.product_name, server_pid, elapsed_time
+                ),
+            );
+            last_message_time = attempt_time;
+        }
+
+        // std::this_thread::sleep_until(next_attempt_time)
+        if let Ok(d) = next_attempt_time.duration_since(std::time::SystemTime::now()) {
+            std::thread::sleep(d);
+        }
+        if !server_startup.is_still_alive() {
+            print_startup_options_provenance_message(startup_options);
+            if server.process_info().jvm_log_file_append_ {
+                // Don't dump the log if we were appending - the user should know where to find
+                // it, and who knows how much content they may have accumulated.
+                bazel_log(
+                    LogLevel::User,
+                    BLAZE_CC,
+                    897,
+                    format!(
+                        "Server crashed during startup. See {}",
+                        server.process_info().jvm_log_file_.as_printable_path()
+                    ),
+                );
+            } else {
+                bazel_log(
+                    LogLevel::User,
+                    BLAZE_CC,
+                    901,
+                    format!(
+                        "Server crashed during startup. Now printing {}",
+                        server.process_info().jvm_log_file_.as_printable_path()
+                    ),
+                );
+                write_file_to_stderr_or_die(&server.process_info().jvm_log_file_);
+            }
+            crate::util::logging::exit_process(exit_code::INTERNAL_ERROR);
+        }
+    }
+    bazel_die(
+        exit_code::INTERNAL_ERROR,
+        BLAZE_CC,
+        909,
+        format!(
+            "couldn't connect to server ({}) after {} seconds.",
+            server_pid, startup_options.local_startup_timeout_secs
+        ),
+    );
+}
+
 // PORT: Blaze-only (review 2026-11-18, S2-1); there is no such function in blaze.cc.
 //
 // Blaze computes the same default output user root and output base as Bazel (GetCacheDir,
@@ -1064,8 +1906,29 @@ fn ensure_previous_server_process_terminated(
     server_dir: &Path,
     startup_options: &StartupOptions,
     logging_info: &mut LoggingInfo,
+    mode: ServerMode,
 ) {
     let server_pid = get_server_pid(server_dir);
+    if mode.is_server_process() {
+        if server_pid > 0 {
+            if verify_server_process(server_pid, &startup_options.output_base) {
+                if kill_server_process(server_pid, &startup_options.output_base) {
+                    bazel_log(
+                        LogLevel::User,
+                        BLAZE_CC,
+                        923,
+                        format!("Killed non-responsive server process (pid={})", server_pid),
+                    );
+                    logging_info.set_restart_reason_if_not_set(RestartReason::ServerUnresponsive);
+                } else {
+                    logging_info.set_restart_reason_if_not_set(RestartReason::ServerVanished);
+                }
+            } else {
+                logging_info.set_restart_reason_if_not_set(RestartReason::PidFileButNoServer);
+            }
+        }
+        return;
+    }
     if server_pid > 0 {
         if is_live_foreign_server(server_pid, &startup_options.output_base) {
             // PORT: the C++ kills the server here (KillServerProcess: SIGKILL to its process
@@ -1084,6 +1947,7 @@ fn ensure_previous_server_process_terminated(
 // Java: src/main/cpp/blaze.cc:936 StartServerAndConnect
 /// Starts up a new server and connects to it. Exits if it didn't work out.
 fn start_server_and_connect(
+    server_exe: &Path,
     server_exe_args: &[String],
     server_dir: &Path,
     workspace_layout: &WorkspaceLayout,
@@ -1110,7 +1974,12 @@ fn start_server_and_connect(
 
     // Really make sure there's no other server running in this output base (even an
     // unresponsive one), as that could cause major problems.
-    ensure_previous_server_process_terminated(server_dir, startup_options, logging_info);
+    ensure_previous_server_process_terminated(
+        server_dir,
+        startup_options,
+        logging_info,
+        blaze_server.mode,
+    );
 
     // cmdline file is used to validate the server running in this server_dir. There's no server
     // running now so we're safe to unconditionally write this.
@@ -1139,6 +2008,24 @@ fn start_server_and_connect(
             startup_options.product_name, build_label
         ),
     );
+    if blaze_server.mode.is_server_process() {
+        let (server_pid, server_startup) = execute_daemon(
+            server_exe,
+            server_exe_args,
+            &prepare_environment_for_jvm(),
+            &blaze_server.process_info().jvm_log_file_,
+            blaze_server.process_info().jvm_log_file_append_,
+            &startup_options.install_base,
+            server_dir,
+            startup_options,
+        );
+
+        connect_or_die(startup_options, server_pid, &server_startup, blaze_server);
+
+        drop(server_startup);
+        return;
+    }
+
     // PORT: in-process, the environment PrepareEnvironmentForJvm computes is not applied (it
     // would be the daemon's environment); the call is kept for its warnings.
     let _env = prepare_environment_for_jvm();
@@ -1147,17 +2034,185 @@ fn start_server_and_connect(
     blaze_server.connect_in_process();
 }
 
+// Java: src/main/cpp/blaze.cc:996 IsVolatileArg
+pub fn is_volatile_arg(arg: &str) -> bool {
+    // TODO(ccalvarin) when --batch is gone and the startup_options field in the gRPC message is
+    // always set, there is no reason for client options that are not used at server startup to
+    // be part of the startup command line. The server command line difference logic can be
+    // simplified then.
+    const VOLATILE_STARTUP_OPTIONS: [&str; 7] = [
+        "--option_sources=",
+        "--max_idle_secs=",
+        "--connect_timeout_secs=",
+        "--local_startup_timeout_secs=",
+        "--client_debug=",
+        "--preemptible=",
+        // Internally, -XX:HeapDumpPath is set automatically via the user's TMPDIR environment
+        // variable. Since that can change based on the shell, we tolerate changes to it. Note
+        // that an explicit setting of -XX:HeapDumpPath via --host_jvm_args *will* trigger a
+        // restart.
+        "-XX:HeapDumpPath=",
+    ];
+
+    // Split arg based on the first "=" if one exists in arg.
+    let stripped_arg = match arg.find('=') {
+        None => arg,
+        Some(eq_pos) => &arg[..eq_pos + 1],
+    };
+
+    VOLATILE_STARTUP_OPTIONS.contains(&stripped_arg)
+}
+
+// Java: src/main/cpp/blaze.cc:1021 AreStartupOptionsDifferent
+/// Returns true if the server needs to be restarted to accommodate changes between the two
+/// argument lists. Populates old_server_options and new_server_options.
+pub fn are_startup_options_different(
+    running_server_args: &[String],
+    requested_args: &[String],
+    old_server_options: &mut Vec<String>,
+    new_server_options: &mut Vec<String>,
+) -> bool {
+    // We need not worry about one side missing an argument and the other side having the
+    // default value, since this command line is the canonical one for this version of Bazel:
+    // either the default value is listed explicitly or it is not, but this has nothing to do
+    // with the user's command line: it is defined by GetServerExeArgs(). Same applies for
+    // argument ordering.
+    let mut options_different = false;
+    if running_server_args.len() != requested_args.len() {
+        bazel_log(
+            LogLevel::Info,
+            BLAZE_CC,
+            1033,
+            "The new command line has a different length from the running server's.",
+        );
+        options_different = true;
+    }
+
+    // Facts and implications:
+    // (a) We already verified (with EnsureCorrectRunningVersion) that the old and new server
+    //     versions are the same. Therefore we know that 'running_server_args' and
+    //     'requested_args' follow the same ordering for flags, the same logic of deduplicating
+    //     vs. not deduplicating flags, the same format of canonicalizing flags, etc.
+    // (b) Some startup flags may come from user bazelrc files.
+    // (c) Because of (b), the ordering of flags doesn't matter, because if the user flips two
+    //     "startup" lines in their bazelrc, that doesn't change the effective set of startup
+    //     flags.
+    // (d) Because of (b), some flags may have repeated values (e.g --host_jvm_args="foo" twice)
+    //     so we cannot simply use two sets and take the set difference, but must consider the
+    //     occurrences of each flag.
+    // PORT: cpp-hash-order. std::unordered_multiset<string>, iterated below in libstdc++'s
+    // order (see cpp_unordered.rs).
+    let mut old_args = CppUnorderedMultiset::new();
+    let mut new_args = CppUnorderedMultiset::new();
+    for a in running_server_args {
+        if !is_volatile_arg(a) {
+            old_args.insert(a.clone());
+        }
+    }
+    for a in requested_args {
+        if !is_volatile_arg(a) {
+            if old_args.contains(a) {
+                old_args.erase_one(a); // remove one instance
+            } else {
+                new_args.insert(a.clone());
+            }
+        }
+    }
+
+    if !old_args.is_empty() {
+        bazel_log(
+            LogLevel::Info,
+            BLAZE_CC,
+            1069,
+            "Args from the running server that are not included in the current request:",
+        );
+        for a in old_args.iter() {
+            bazel_log(LogLevel::Info, BLAZE_CC, 1072, format!("  {}", a));
+            old_server_options.push(a.clone());
+        }
+    }
+    if !new_args.is_empty() {
+        bazel_log(
+            LogLevel::Info,
+            BLAZE_CC,
+            1077,
+            "Args from the current request that were not included when creating the server:",
+        );
+        for a in new_args.iter() {
+            bazel_log(LogLevel::Info, BLAZE_CC, 1080, format!("  {}", a));
+            new_server_options.push(a.clone());
+        }
+    }
+
+    options_different || !old_args.is_empty() || !new_args.is_empty()
+}
+
 // Java: src/main/cpp/blaze.cc:1090 KillRunningServerIfDifferentStartupOptions
 /// Kills the running Blaze server, if any, if the startup options do not match. Returns true if
 /// the server has been killed.
-fn kill_running_server_if_different_startup_options(blaze_server: &BlazeServer) -> bool {
+fn kill_running_server_if_different_startup_options(
+    startup_options: &StartupOptions,
+    server_exe_args: &[String],
+    logging_info: &mut LoggingInfo,
+    blaze_server: &mut BlazeServer,
+) -> bool {
     if !blaze_server.connected() {
         return false;
     }
-    ::blaze_util::unported!(
-        "KillRunningServerIfDifferentStartupOptions",
-        "there is no running server in-process"
-    )
+    if !blaze_server.mode.is_server_process() {
+        ::blaze_util::unported!(
+            "KillRunningServerIfDifferentStartupOptions",
+            "there is no running server in-process"
+        )
+    }
+
+    let cmdline_path = startup_options.output_base.get_relative("server/cmdline");
+
+    // No, /proc/$PID/cmdline does not work, because it is limited to 4K. Even worse, its
+    // behavior differs slightly between kernels (in some, when longer command lines are
+    // truncated, the last 4 bytes are replaced with "..." + NUL.
+    let old_joined_arguments = read_file_path(&cmdline_path, 0)
+        .map(|b| latin1_decode(&b).into_owned())
+        .unwrap_or_default();
+    let old_arguments = blaze_options::rc::tokenize::split(&old_joined_arguments, '\0');
+
+    // These strings contain null-separated command line arguments. If they are the same, the
+    // server can stay alive, otherwise, it needs shuffle off this mortal coil.
+    let mut old_server_options: Vec<String> = Vec::new();
+    let mut new_server_options: Vec<String> = Vec::new();
+    if are_startup_options_different(
+        &old_arguments,
+        server_exe_args,
+        &mut old_server_options,
+        &mut new_server_options,
+    ) {
+        logging_info.restart_reason = RestartReason::NewOptions;
+
+        let mut different_startup_options_message = String::new();
+
+        let old_options_str = old_server_options.join(" ");
+        different_startup_options_message
+            .push_str(&format!("\n  - Only in old server: {}", old_options_str));
+
+        let new_options_str = new_server_options.join(" ");
+        different_startup_options_message
+            .push_str(&format!("\n  - Only in new server: {}", new_options_str));
+
+        bazel_log(
+            LogLevel::Warning,
+            BLAZE_CC,
+            1131,
+            format!(
+                "Running {} server needs to be killed, because the following startup options \
+                 are different:{}",
+                startup_options.product_name, different_startup_options_message
+            ),
+        );
+
+        blaze_server.kill_running_server();
+        return true;
+    }
+    false
 }
 
 // Java: src/main/cpp/blaze.cc:1148 EnsureCorrectRunningVersion
@@ -1229,6 +2284,7 @@ fn ensure_correct_running_version(
 /// Runs the launcher in client/server mode: ensures that there's a running server, then
 /// forwards the user's command to it.
 fn run_client_server_mode(
+    server_exe: &Path,
     server_exe_args: &[String],
     first_startup_arg: usize,
     server_dir: &Path,
@@ -1243,8 +2299,25 @@ fn run_client_server_mode(
     build_label: &str,
     server: &dyn InProcessServer,
 ) -> i32 {
+    if blaze_server.mode.is_server_process() {
+        return run_client_server_mode_with_server_process(
+            server_exe,
+            server_exe_args,
+            server_dir,
+            workspace_layout,
+            workspace,
+            option_processor,
+            startup_options,
+            logging_info,
+            extract_data_duration,
+            command_wait_duration,
+            blaze_server,
+            build_label,
+        );
+    }
     if !blaze_server.connected() {
         start_server_and_connect(
+            server_exe,
             server_exe_args,
             server_dir,
             workspace_layout,
@@ -1295,6 +2368,104 @@ fn run_client_server_mode(
         command_wait_duration,
         server,
         &startup,
+    );
+    crate::signal_handler::propagate_signal_or_exit(exit_code)
+}
+
+// Java: src/main/cpp/blaze.cc:1200 RunClientServerMode
+/// `RunClientServerMode` with a server process (`BLAZE_SERVER_MODE=daemon` or `jvm`): ensures
+/// that there's indeed a running server, then forwards the user's command to the server and the
+/// server's response back to the user.
+fn run_client_server_mode_with_server_process(
+    server_exe: &Path,
+    server_exe_args: &[String],
+    server_dir: &Path,
+    workspace_layout: &WorkspaceLayout,
+    workspace: &str,
+    option_processor: &OptionProcessor,
+    startup_options: &StartupOptions,
+    logging_info: &mut LoggingInfo,
+    extract_data_duration: Option<DurationMillis>,
+    command_wait_duration: Option<DurationMillis>,
+    blaze_server: &mut BlazeServer,
+    build_label: &str,
+) -> i32 {
+    loop {
+        if !blaze_server.connected() {
+            start_server_and_connect(
+                server_exe,
+                server_exe_args,
+                server_dir,
+                workspace_layout,
+                workspace,
+                startup_options,
+                logging_info,
+                blaze_server,
+                build_label,
+            );
+        }
+
+        // Check for the case when the workspace directory deleted and then gets recreated while
+        // the server is running.
+
+        let server_cwd = get_process_cwd(blaze_server.process_info().server_pid_);
+        // If server_cwd is nullptr, GetProcessCWD failed. This notably occurs when running
+        // under Docker because then readlink(/proc/[pid]/cwd) returns EPERM. Given that this
+        // occurs only in very weird cases, it's better to assume that everything is alright if
+        // we can't get the cwd.
+
+        match server_cwd {
+            Some(server_cwd)
+                if server_cwd != Path::new(workspace) // changed
+                    || server_cwd.contains(" (deleted)") =>
+            {
+                // deleted.
+                // There's a distant possibility that the two paths look the same yet are
+                // actually different because the two processes have different mount tables.
+                bazel_log(
+                    LogLevel::Info,
+                    BLAZE_CC,
+                    1239,
+                    format!(
+                        "Server's cwd moved or deleted ({}).",
+                        server_cwd.as_printable_path()
+                    ),
+                );
+                blaze_server.kill_running_server();
+            }
+            _ => break,
+        }
+    }
+
+    bazel_log(
+        LogLevel::Info,
+        BLAZE_CC,
+        1247,
+        format!(
+            "Connected (server pid={}).",
+            blaze_server.process_info().server_pid_
+        ),
+    );
+
+    // Wall clock time since process startup.
+    let client_startup_duration =
+        DurationMillis::new(logging_info.start_time_ms, get_milliseconds_monotonic());
+
+    crate::signal_handler::install_for_server_process(
+        &startup_options.product_name,
+        &startup_options.output_base,
+        blaze_server.process_info().server_pid_,
+        &blaze_server.process_info().jvm_log_file_,
+    );
+    let exit_code = blaze_server.communicate_with_server_process(
+        &option_processor.get_command(),
+        &option_processor.get_command_arguments(),
+        &startup_options.invocation_policy,
+        &startup_options.original_startup_options_,
+        logging_info,
+        client_startup_duration,
+        extract_data_duration,
+        command_wait_duration,
     );
     crate::signal_handler::propagate_signal_or_exit(exit_code)
 }
@@ -1504,6 +2675,75 @@ fn check_and_get_binary_path(cwd: &str, argv0: &str) -> String {
     }
 }
 
+// Java: src/main/cpp/blaze.cc:1421 GetExitCodeForAbruptExit
+fn get_exit_code_for_abrupt_exit(output_base: &Path) -> i32 {
+    bazel_log(
+        LogLevel::Info,
+        BLAZE_CC,
+        1422,
+        "Looking for a custom exit-code file.",
+    );
+    let exit_code_file_path = get_abrupt_exit_file_path(output_base);
+    if path_exists_path(&exit_code_file_path) {
+        let Some(content) = read_file_path(&exit_code_file_path, 0) else {
+            bazel_log(
+                LogLevel::Info,
+                BLAZE_CC,
+                1427,
+                "Unable to read the custom exit-code file. Exiting with an INTERNAL_ERROR.",
+            );
+            return exit_code::INTERNAL_ERROR;
+        };
+        let content = latin1_decode(&content).into_owned();
+        let (ok, custom_exit_code) = safe_strto32(&content);
+        if !ok {
+            bazel_log(
+                LogLevel::Info,
+                BLAZE_CC,
+                1433,
+                format!(
+                    "Content of custom exit-code file not an int: {}Exiting with an \
+                     INTERNAL_ERROR.",
+                    content
+                ),
+            );
+            return exit_code::INTERNAL_ERROR;
+        }
+        bazel_log(
+            LogLevel::Info,
+            BLAZE_CC,
+            1437,
+            format!(
+                "Read exit code {} from custom exit-code file. Exiting accordingly.",
+                custom_exit_code
+            ),
+        );
+        return custom_exit_code;
+    }
+    bazel_log(
+        LogLevel::Info,
+        BLAZE_CC,
+        1441,
+        "No custom exit-code file found. Looking for an OOM file.",
+    );
+    if path_exists_path(&get_oom_file_path(output_base)) {
+        bazel_log(
+            LogLevel::Info,
+            BLAZE_CC,
+            1443,
+            "The JVM wrote the OOM file. Exiting with OOM_ERROR.",
+        );
+        return exit_code::OOM_ERROR;
+    }
+    bazel_log(
+        LogLevel::Info,
+        BLAZE_CC,
+        1446,
+        "Unable to determine why the server exited abruptly. Exiting with INTERNAL_ERROR.",
+    );
+    exit_code::INTERNAL_ERROR
+}
+
 // Java: src/main/cpp/blaze.cc:1451 PrintBazelLeaf
 /// Bazel's basil leaf and B-shaped logo at initial release, back in 2015.
 pub fn print_bazel_leaf() {
@@ -1592,16 +2832,19 @@ fn run_launcher(
     build_label: &str,
     logging_info: &mut LoggingInfo,
     server: &dyn InProcessServer,
+    mode: ServerMode,
 ) -> i32 {
-    // PORT: Blaze-only (see find_live_foreign_server): refuse to touch an output base that a
-    // live Bazel server owns, before anything in it is changed. Even the lock file is left
-    // alone (AcquireLock rewrites it with this client's pid).
-    die_if_foreign_server_is_running(&startup_options.output_base);
+    // PORT: Blaze-only (see find_live_foreign_server), in-process mode only: refuse to touch an
+    // output base that a live Bazel server owns, before anything in it is changed. Even the lock
+    // file is left alone (AcquireLock rewrites it with this client's pid).
+    if !mode.is_server_process() {
+        die_if_foreign_server_is_running(&startup_options.output_base);
+    }
 
     // PORT: `blaze_server` is dropped when this function returns, which does not release the
     // locks: a LockHandle is a plain descriptor that only ReleaseLock closes. They are held until
     // the process exits (the C++ never deletes its global `blaze_server` either).
-    let mut blaze_server = BlazeServer::new(startup_options);
+    let mut blaze_server = BlazeServer::new_with_mode(startup_options, mode);
 
     let command_wait_duration = Some(blaze_server.acquire_locks());
     let wait_ms = command_wait_duration.map(|d| d.millis).unwrap_or(0);
@@ -1612,10 +2855,12 @@ fn run_launcher(
         format!("Acquired the client lock, waited {} milliseconds", wait_ms),
     );
 
-    // PORT: Blaze-only: check again now that the output base lock is held. A Bazel client
-    // starts its server while it holds that lock, so a server that came up while this client
-    // waited for the lock is seen here, and none can come up from now on.
-    die_if_foreign_server_is_running(&startup_options.output_base);
+    // PORT: Blaze-only, in-process mode only: check again now that the output base lock is
+    // held. A Bazel client starts its server while it holds that lock, so a server that came up
+    // while this client waited for the lock is seen here, and none can come up from now on.
+    if !mode.is_server_process() {
+        die_if_foreign_server_is_running(&startup_options.output_base);
+    }
 
     warn_filesystem_type(&startup_options.output_base);
 
@@ -1642,7 +2887,14 @@ fn run_launcher(
     let jvm_path = startup_options.get_jvm();
     let server_jar_path = get_server_jar_path(archive);
 
-    let server_exe = startup_options.get_exe(&jvm_path, &server_jar_path);
+    let server_exe = match mode {
+        ServerMode::InProcess | ServerMode::Jvm => {
+            startup_options.get_exe(&jvm_path, &server_jar_path)
+        }
+        // PORT: Blaze-only. The daemon is this binary itself, started with the argument vector
+        // GetServerExeArgs builds (`blaze` recognises that shape and runs the server).
+        ServerMode::Daemon => Path::new(self_path),
+    };
 
     let (server_exe_args, first_startup_arg) = get_server_exe_args(
         &jvm_path,
@@ -1655,13 +2907,27 @@ fn run_launcher(
     );
     // PORT: skipped, OpenBSD only: server_exe_args[0] = server_exe.
 
-    if kill_running_server_if_different_startup_options(&blaze_server) && command == "shutdown" {
+    if kill_running_server_if_different_startup_options(
+        startup_options,
+        &server_exe_args,
+        logging_info,
+        &mut blaze_server,
+    ) && command == "shutdown"
+    {
         return exit_code::SUCCESS;
     }
 
     let server_dir = startup_options.output_base.get_relative("server");
     if is_server_mode(&command) {
-        run_server_mode(startup_options, &blaze_server)
+        run_server_mode(
+            &server_exe,
+            &server_exe_args,
+            &server_dir,
+            workspace_layout,
+            workspace,
+            startup_options,
+            &blaze_server,
+        )
     } else if startup_options.batch {
         run_batch_mode(
             &server_exe,
@@ -1679,6 +2945,7 @@ fn run_launcher(
         )
     } else {
         run_client_server_mode(
+            &server_exe,
             &server_exe_args,
             first_startup_arg,
             &server_dir,
@@ -1709,6 +2976,17 @@ fn blaze_main(
 
     // Logging must be set first to assure no log statements are missed.
     set_log_handler(Some(Box::new(BazelLogHandler::new())));
+
+    // PORT: Blaze-only. Which server the client talks to, read once (server.rs, ServerMode).
+    let mode = match ServerMode::from_env() {
+        Ok(mode) => mode,
+        Err(message) => bazel_die(
+            exit_code::LOCAL_ENVIRONMENTAL_ERROR,
+            BLAZE_RS,
+            line!(),
+            message,
+        ),
+    };
 
     assert!(!argv.is_empty(), "argv must contain the program name");
     let self_path = get_self_path(&argv[0]);
@@ -1856,6 +3134,7 @@ fn blaze_main(
         &build_label,
         &mut logging_info,
         server,
+        mode,
     )
 }
 

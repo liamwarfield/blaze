@@ -20,6 +20,7 @@ blaze_optdefs = { path = "../blaze_optdefs" }
 blaze_options = { path = "../blaze_options" }
 blaze_protos = { path = "../blaze_protos" }
 anyhow.workspace = true
+base64.workspace = true
 thiserror.workspace = true
 indexmap.workspace = true
 parking_lot.workspace = true

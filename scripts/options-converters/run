@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Records Bazel 9.3.2's converter results for scripts/options-converters/cases.txt.
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+usage: scripts/options-converters/run
+       scripts/options-converters/run help
+
+Compiles scripts/options-converters/OptionsConverterVectors.java with a host JDK 25 compiler
+($HOST_JAVA, default /usr/lib/jvm/java-25-openjdk/bin/java, run as `-m jdk.compiler/...`)
+against the oracle's A-server.jar (Bazel 9.3.2's server jar: Bazel's Converters, Caffeine 3.1.8,
+Guava) and runs it on the oracle's embedded JDK with the same jar, for every line of
+scripts/options-converters/cases.txt ("kind<TAB>input"; kinds: caffeine =
+Converters.CaffeineSpecConverter.convert, with the parsed CaffeineSpec fields; double =
+Guava Doubles.tryParse, as raw bits in hex). Writes, one line "kind<TAB>input<TAB>result" each:
+crates/blaze_options/tests/data/caffeine_spec_vectors.tsv (caffeine) and
+crates/blaze_optdefs/tests/data/doubles_try_parse_vectors.tsv (double).
+USAGE
+}
+
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+if [[ $# -ne 0 ]]; then
+  usage
+  exit 2
+fi
+
+here="$(cd "$(dirname "$0")" && pwd)"
+repo="$(cd "$here/../.." && pwd)"
+install="$HOME/.cache/blaze/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9"
+java="$install/embedded_tools/jdk/bin/java"
+jar="$install/A-server.jar"
+build="$(mktemp -d)"
+trap 'rm -rf "$build"' EXIT
+"${HOST_JAVA:-/usr/lib/jvm/java-25-openjdk/bin/java}" -m jdk.compiler/com.sun.tools.javac.Main \
+  -cp "$jar" -d "$build" "$here/OptionsConverterVectors.java"
+"$java" -version 2>&1 | head -1 >&2
+"$java" -cp "$build:$jar" OptionsConverterVectors < "$here/cases.txt" > "$build/out.tsv"
+caffeine="$repo/crates/blaze_options/tests/data/caffeine_spec_vectors.tsv"
+doubles="$repo/crates/blaze_optdefs/tests/data/doubles_try_parse_vectors.tsv"
+mkdir -p "$(dirname "$caffeine")" "$(dirname "$doubles")"
+grep '^caffeine	' "$build/out.tsv" > "$caffeine"
+grep '^double	' "$build/out.tsv" > "$doubles"
+echo "wrote $caffeine ($(wc -l < "$caffeine")) and $doubles ($(wc -l < "$doubles"))" >&2

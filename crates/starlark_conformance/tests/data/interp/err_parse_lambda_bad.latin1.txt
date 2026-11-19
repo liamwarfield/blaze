@@ -1,0 +1,2 @@
+SYNTAX err_parse_lambda_bad.star:1:13: syntax error at 'newline': expected expression
+SYNTAX err_parse_lambda_bad.star:1:13: contains syntax errors

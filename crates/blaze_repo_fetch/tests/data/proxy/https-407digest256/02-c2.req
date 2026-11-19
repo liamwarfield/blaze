@@ -1,0 +1,7 @@
+CONNECT origin.example:443 HTTP/1.1
+User-Agent: Java/25.0.2
+Host: origin.example
+Accept: */*
+Proxy-Connection: keep-alive
+Proxy-authorization: Digest username="user", realm="blaze-proxy", nonce="0123456789abcdef", nc=00000001, uri="origin.example:443", response="754b0d0bc95312ca8a5cbe4f69231845a900423afa6f66ce4e2d2d2601f84612", algorithm=SHA-256, cnonce="PHJHPCGHDLKGAEBBEIFHEFHGJBNDCCLDJMKFJBGM", qop=auth
+

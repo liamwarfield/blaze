@@ -1,0 +1,5 @@
+EVAL len() got unexpected keyword argument 'foo'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_len_unknown_kw.star", line 1, column 4, in <toplevel>
+TRACE \x09\x09len([], foo = 1)
+TRACE Error in len: len() got unexpected keyword argument 'foo'

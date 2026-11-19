@@ -1,0 +1,2 @@
+SYNTAX err_op_augassign_str.star:2:1: 'x' redeclared at top level
+SYNTAX err_op_augassign_str.star:1:1: 'x' previously declared here

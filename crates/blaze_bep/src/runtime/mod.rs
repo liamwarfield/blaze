@@ -8,6 +8,8 @@ pub mod counting_artifact_group_namer;
 pub mod got_options_event;
 pub mod named_artifact_group;
 pub mod runtime_events;
+pub mod synchronized_output_stream;
+pub mod target_summary_publisher;
 pub mod test_summary_event;
 
 pub use build_event_artifact_uploader_factory::{

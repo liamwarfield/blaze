@@ -1,8 +1,9 @@
 //! Ports of `ProxyHelper` and `ProxyInfo`.
 //!
 //! PORT: Java also consults JVM system properties (`http.proxyHost`, `http.nonProxyHosts`, ...);
-//! Blaze has no JVM, so those sources are empty. The JVM-wide `Authenticator` used for HTTPS
-//! CONNECT tunnelling is replaced by passing the credentials to the HTTP client's proxy.
+//! Blaze has no JVM, so those sources are empty. The JVM-wide `Authenticator` and the system
+//! property `jdk.http.auth.tunneling.disabledSchemes` that ProxyHelper sets live in
+//! [`JvmNetState`](super::jdk_http_auth::JvmNetState).
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -10,6 +11,7 @@ use std::sync::LazyLock;
 use blaze_util::string_encoding::{internal_to_unicode, java_new_string_utf8, unicode_to_internal};
 use regex::Regex;
 
+use super::jdk_http_auth::JvmNetState;
 use crate::authandtls::basic_http_authentication_encode;
 use crate::downloader::http_utils;
 use crate::errors::IoException;
@@ -242,9 +244,25 @@ pub fn create_proxy(proxy_address: Option<&str>) -> Result<ProxyInfo, IoExceptio
     create_proxy_info(proxy_address, None, None)
 }
 
-/// Creates a [`ProxyInfo`] from a proxy address URL (possibly with embedded credentials).
-// Java: com/google/devtools/build/lib/bazel/repository/downloader/ProxyHelper.java:228 ProxyHelper.createProxyInfo
+/// [`create_proxy_info`] in this process's JVM state.
 pub fn create_proxy_info(
+    proxy_address: Option<&str>,
+    system_property_user: Option<&str>,
+    system_property_password: Option<&str>,
+) -> Result<ProxyInfo, IoException> {
+    create_proxy_info_in(
+        JvmNetState::global(),
+        proxy_address,
+        system_property_user,
+        system_property_password,
+    )
+}
+
+/// Creates a [`ProxyInfo`] from a proxy address URL (possibly with embedded credentials).
+/// `state` is the JVM whose default `Authenticator` and system properties the credentials set.
+// Java: com/google/devtools/build/lib/bazel/repository/downloader/ProxyHelper.java:228 ProxyHelper.createProxyInfo
+pub fn create_proxy_info_in(
+    state: &JvmNetState,
     proxy_address: Option<&str>,
     system_property_user: Option<&str>,
     system_property_password: Option<&str>,
@@ -308,6 +326,16 @@ pub fn create_proxy_info(
             _ => (None, None),
         },
     };
+    // If credentials are provided, also set up Java's Authenticator for HTTPS proxy support.
+    // For HTTPS connections through HTTP proxies (CONNECT tunneling), Java's HttpURLConnection
+    // handles the CONNECT request internally and won't use Proxy-Authorization header we set.
+    // Instead, it uses the Authenticator mechanism. We also enable Basic auth tunneling by
+    // clearing the disabled schemes (by default, Basic auth is disabled for HTTPS tunneling).
+    // Java: ProxyHelper.java:312-357 (the Authenticator returns
+    // `internalToUnicode(finalUsername)`, `internalToUnicode(finalPassword)`).
+    if let (Some(u), Some(p)) = (&username, &password) {
+        state.install_proxy_authenticator(&internal_to_unicode(u), &internal_to_unicode(p));
+    }
     Ok(ProxyInfo {
         proxy_type,
         hostname: Some(hostname.to_string()),

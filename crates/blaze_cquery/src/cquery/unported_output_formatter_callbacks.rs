@@ -1,7 +1,6 @@
 //! The cquery output formatter callbacks that are not ported yet:
 //! `TransitionsOutputFormatterCallback` (needs `CqueryTransitionResolver`),
-//! `BuildOutputFormatterCallback`, `GraphOutputFormatterCallback`,
-//! `StarlarkOutputFormatterCallback` and `FilesOutputFormatterCallback`. They keep their names
+//! and `StarlarkOutputFormatterCallback`. They keep their names
 //! (so `--output` validation lists them as Java does) and fail loudly when selected.
 
 use blaze_query_engine::callback::{
@@ -27,24 +26,9 @@ impl UnportedOutputFormatterCallback {
         Self::new("transitions", "TransitionsOutputFormatterCallback")
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/BuildOutputFormatterCallback.java:40 BuildOutputFormatterCallback
-    pub fn build() -> Self {
-        Self::new("build", "BuildOutputFormatterCallback")
-    }
-
-    // Java: com/google/devtools/build/lib/query2/cquery/GraphOutputFormatterCallback.java:30 GraphOutputFormatterCallback
-    pub fn graph() -> Self {
-        Self::new("graph", "GraphOutputFormatterCallback")
-    }
-
     // Java: com/google/devtools/build/lib/query2/cquery/StarlarkOutputFormatterCallback.java:63 StarlarkOutputFormatterCallback
     pub fn starlark() -> Self {
         Self::new("starlark", "StarlarkOutputFormatterCallback")
-    }
-
-    // Java: com/google/devtools/build/lib/query2/cquery/FilesOutputFormatterCallback.java:36 FilesOutputFormatterCallback
-    pub fn files() -> Self {
-        Self::new("files", "FilesOutputFormatterCallback")
     }
 
     fn new(name: &'static str, java_class: &'static str) -> Self {

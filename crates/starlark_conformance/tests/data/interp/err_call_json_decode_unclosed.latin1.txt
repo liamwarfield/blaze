@@ -1,0 +1,5 @@
+EVAL at offset 4, unclosed string literal
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_json_decode_unclosed.star", line 1, column 12, in <toplevel>
+TRACE \x09\x09json.decode("\\"abc")
+TRACE Error in decode: at offset 4, unclosed string literal

@@ -1,1 +1,5 @@
 EVAL Cannot mix manual and automatic numbering of positional fields
+TRACE Traceback (most recent call last):
+TRACE \x09File "more_f_manual_then_auto.star", line 1, column 21, in <toplevel>
+TRACE \x09\x09print("{0}{}".format(1, 2))
+TRACE Error in format: Cannot mix manual and automatic numbering of positional fields

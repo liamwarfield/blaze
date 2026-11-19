@@ -167,9 +167,9 @@ fn test_lang_filter(lang_filter_list: &[String]) -> impl Fn(&Target) -> bool + u
 
     move |rule| {
         // TargetUtils.getRuleLanguage(Target): `((Rule) target).getRuleClass()`.
-        let rule = rule.as_rule().unwrap_or_else(|| {
-            panic!("ClassCastException: {} is not a Rule", rule.get_label())
-        });
+        let rule = rule
+            .as_rule()
+            .unwrap_or_else(|| panic!("ClassCastException: {} is not a Rule", rule.get_label()));
         let rule_lang = target_utils::get_rule_language(rule.get_rule_class());
         (required_langs.is_empty() || required_langs.contains(rule_lang))
             && !excluded_langs.contains(rule_lang)

@@ -1,0 +1,1 @@
+SYNTAX err_res_undefined_in_def.star:2:10: name 'undefined_name' is not defined

@@ -1,0 +1,2 @@
+SYNTAX err_parse_slice_bad.star:1:12: syntax error at ':': expected ]
+SYNTAX err_parse_slice_bad.star:1:5: name 'a' is not defined

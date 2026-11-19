@@ -1,0 +1,5 @@
+EVAL startswith() accepts no more than 3 positional arguments but got 4
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_str_method_toomany.star", line 1, column 15, in <toplevel>
+TRACE \x09\x09"a".startswith("a", 1, 2, 3)
+TRACE Error in startswith: startswith() accepts no more than 3 positional arguments but got 4

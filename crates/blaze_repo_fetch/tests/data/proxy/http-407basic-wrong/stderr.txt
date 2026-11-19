@@ -1,0 +1,2 @@
+WARNING: Download from http://origin.example/f failed: class com.google.devtools.build.lib.bazel.repository.downloader.UnrecoverableHttpException GET returned 407 Proxy Authentication Required
+Error in download: java.io.IOException: Error downloading [http://origin.example/f] to <output_base>/external/+dl+r/f: GET returned 407 Proxy Authentication Required

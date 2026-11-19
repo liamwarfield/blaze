@@ -1,0 +1,5 @@
+EVAL 'string' value has no field or method 'uper' (did you mean 'upper'?)
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_attr_str_suggest.star", line 1, column 8, in <toplevel>
+TRACE \x09\x09x = "a".uper()
+TRACE Error: 'string' value has no field or method 'uper' (did you mean 'upper'?)

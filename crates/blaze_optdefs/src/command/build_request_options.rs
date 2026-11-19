@@ -587,7 +587,7 @@ mod tests {
             BuildRequestOptions::default()
                 .directory_creation_cache_spec
                 .maximum_size,
-            Some(100000)
+            100000
         );
     }
 }

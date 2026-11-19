@@ -1,0 +1,5 @@
+EVAL in call to strip(), parameter 'chars' got value of type 'int', want 'string or NoneType'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_str_strip_type.star", line 1, column 10, in <toplevel>
+TRACE \x09\x09"a".strip(1)
+TRACE Error in strip: in call to strip(), parameter 'chars' got value of type 'int', want 'string or NoneType'

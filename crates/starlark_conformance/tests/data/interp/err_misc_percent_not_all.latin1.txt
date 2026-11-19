@@ -1,0 +1,5 @@
+EVAL not all arguments converted during string formatting
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_misc_percent_not_all.star", line 1, column 10, in <toplevel>
+TRACE \x09\x09x = "%s" % (1, 2)
+TRACE Error: not all arguments converted during string formatting

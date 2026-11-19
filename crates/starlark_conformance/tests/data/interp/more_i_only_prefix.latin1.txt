@@ -1,1 +1,5 @@
 EVAL invalid base-16 literal: "0x"
+TRACE Traceback (most recent call last):
+TRACE \x09File "more_i_only_prefix.star", line 1, column 10, in <toplevel>
+TRACE \x09\x09print(int("0x", 0))
+TRACE Error in int: invalid base-16 literal: "0x"

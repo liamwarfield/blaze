@@ -1,0 +1,1 @@
+SYNTAX err_res_multi_star_param.star:1:11: multiple * parameters not allowed

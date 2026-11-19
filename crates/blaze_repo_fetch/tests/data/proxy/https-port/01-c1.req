@@ -1,0 +1,6 @@
+CONNECT origin.example:8443 HTTP/1.1
+User-Agent: Java/25.0.2
+Host: origin.example:8443
+Accept: */*
+Proxy-Connection: keep-alive
+

@@ -1,0 +1,1 @@
+SYNTAX err_parse_keyword_as_ident.star:1:5: syntax error at '=': expected identifier

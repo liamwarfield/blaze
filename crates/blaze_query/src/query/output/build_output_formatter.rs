@@ -165,29 +165,42 @@ impl ReprValue {
 /// Outputs the targets as BUILD rules (Java `BuildOutputFormatter.TargetOutputter`).
 // Java: com/google/devtools/build/lib/query2/query/output/BuildOutputFormatter.java:62 BuildOutputFormatter.TargetOutputter
 pub struct TargetOutputter {
-    writer: TextWriter,
+    pub writer: TextWriter,
+    preserve_select: Box<dyn Fn(&Rule, &Attribute) -> bool>,
     line_term: &'static str,
     label_printer: LabelPrinter,
     printed: RefCell<HashSet<Label>>,
 }
 
+/// Java `BuildOutputFormatter.AttributeReader`: the possible values of an attribute of a rule.
+// Java: com/google/devtools/build/lib/query2/query/output/BuildOutputFormatter.java:56 BuildOutputFormatter.AttributeReader
+pub type AttributeReader<'a> = &'a dyn Fn(&Rule, &Attribute) -> Vec<Option<AttrValue>>;
+
 impl TargetOutputter {
-    /// `preserveSelect` is `AbstractAttributeMapper.isConfigurable(rule, name,
-    /// includeComputedDefaults=false)` and the attribute reader
-    /// `PossibleAttributeValues.forRuleAndAttribute(rule, attr, mayTreatMultipleAsNone=true)`
-    /// (the ones `BuildOutputFormatterCallback` passes).
+    /// - `writer`: where to write output
+    /// - `preserve_select`: a predicate that determines if the given attribute on the given rule
+    ///   is a `select` that should be output as-is (without figuring out which branch it takes).
+    ///   This is useful for implementations that can't evaluate `select`.
+    /// - `line_term`: character to add to the end of each line
     // Java: com/google/devtools/build/lib/query2/query/output/BuildOutputFormatter.java:69 TargetOutputter.<init>
-    pub fn new(writer: TextWriter, line_term: &'static str, label_printer: LabelPrinter) -> Self {
+    pub fn new(
+        writer: TextWriter,
+        preserve_select: Box<dyn Fn(&Rule, &Attribute) -> bool>,
+        line_term: &'static str,
+        label_printer: LabelPrinter,
+    ) -> Self {
         TargetOutputter {
             writer,
+            preserve_select,
             line_term,
             label_printer,
             printed: RefCell::new(HashSet::new()),
         }
     }
 
+    /// Outputs a given target in BUILD-style syntax.
     // Java: com/google/devtools/build/lib/query2/query/output/BuildOutputFormatter.java:80 TargetOutputter.output
-    pub fn output(&self, target: &Target) {
+    pub fn output(&self, target: &Target, attr_reader: AttributeReader<'_>) {
         let rule = match target.get_associated_rule() {
             Some(rule) => rule,
             None => return,
@@ -195,20 +208,12 @@ impl TargetOutputter {
         if self.printed.borrow().contains(rule.get_label()) {
             return;
         }
-        self.output_rule(rule);
+        self.output_rule(rule, attr_reader);
         self.printed.borrow_mut().insert(rule.get_label().clone());
     }
 
-    fn preserve_select(rule: &Rule, attr: &Attribute) -> bool {
-        AbstractAttributeMapper::is_configurable_in_with(
-            rule,
-            attr.get_name(),
-            /* include_computed_defaults= */ false,
-        )
-    }
-
     // Java: com/google/devtools/build/lib/query2/query/output/BuildOutputFormatter.java:91 TargetOutputter.outputRule
-    fn output_rule(&self, rule: &Rule) {
+    fn output_rule(&self, rule: &Rule, attr_reader: AttributeReader<'_>) {
         let w = &self.writer;
         let lt = self.line_term;
         w.append("# ")
@@ -226,7 +231,7 @@ impl TargetOutputter {
             if attr.get_name() == "name" {
                 continue;
             }
-            if Self::preserve_select(rule, attr) {
+            if (self.preserve_select)(rule, attr) {
                 w.append("  ")
                     .append(&attr.get_public_name())
                     .append(" = ")
@@ -238,9 +243,7 @@ impl TargetOutputter {
             if !rule.is_attribute_value_explicitly_specified(attr.get_name()) {
                 continue; // Don't print default values.
             }
-            let mut values = possible_attribute_values::for_rule_and_attribute(
-                rule, attr, /* may_treat_multiple_as_none= */ true,
-            );
+            let mut values = attr_reader(rule, attr);
             if values.len() != 1 {
                 // Computed defaults that depend on configurable attributes can have multiple
                 // values.
@@ -403,6 +406,13 @@ impl StreamedFormatter for BuildOutputFormatter {
         Box::new(BuildOutputFormatterCallback {
             target_outputter: TargetOutputter::new(
                 TextWriter::new(out),
+                Box::new(|rule: &Rule, attr: &Attribute| {
+                    AbstractAttributeMapper::is_configurable_in_with(
+                        rule,
+                        attr.get_name(),
+                        /* include_computed_defaults= */ false,
+                    )
+                }),
                 get_line_terminator(options),
                 label_printer.clone(),
             ),
@@ -427,7 +437,15 @@ impl OutputFormatterCallback<Target> for BuildOutputFormatterCallback {
     // Java: com/google/devtools/build/lib/query2/query/output/BuildOutputFormatter.java:253 BuildOutputFormatterCallback.processOutput
     fn process_output(&self, partial_result: &[Target]) -> Result<(), OutputFormatterError> {
         for target in partial_result {
-            self.target_outputter.output(target);
+            self.target_outputter.output(
+                target,
+                // Multiple possible values are ignored by the outputter.
+                &|rule: &Rule, attr: &Attribute| {
+                    possible_attribute_values::for_rule_and_attribute(
+                        rule, attr, /* may_treat_multiple_as_none= */ true,
+                    )
+                },
+            );
         }
         Ok(())
     }

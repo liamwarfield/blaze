@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use blaze_cmdline::Label;
+use blaze_events::ExtendedEventHandler;
 use blaze_optdefs::command::aspect_resolver::AspectResolverMode;
 use blaze_packages::attribute::Attribute;
 use blaze_packages::attribute::dependency_filter::DependencyFilter;
@@ -11,8 +12,10 @@ use blaze_packages::target::Target;
 use blaze_query_engine::InterruptedException;
 use indexmap::{IndexMap, IndexSet};
 
+use crate::pkgcache::PackageProvider;
 use crate::query::aspectresolvers::conservative_aspect_resolver::ConservativeAspectResolver;
 use crate::query::aspectresolvers::null_aspect_resolver::NullAspectResolver;
+use crate::query::aspectresolvers::precise_aspect_resolver::PreciseAspectResolver;
 
 /// One attribute's entries of Java's `ImmutableMultimap<Attribute, Label>` (keyed by attribute
 /// name; `ImmutableSetMultimap` keeps the first insertion order of keys and values).
@@ -44,13 +47,17 @@ pub trait AspectResolver {
 }
 
 /// How to resolve aspect dependencies in query (Java `AspectResolver.Mode.createResolver`).
-///
-/// PORT: Java passes a `PackageProvider` and event handler (used by the precise resolver only).
 // Java: com/google/devtools/build/lib/query2/query/aspectresolvers/AspectResolver.java:37 AspectResolver.Mode.createResolver
-pub fn create_resolver(mode: AspectResolverMode) -> Arc<dyn AspectResolver> {
+pub fn create_resolver(
+    mode: AspectResolverMode,
+    package_provider: Arc<dyn PackageProvider>,
+    event_handler: Arc<dyn ExtendedEventHandler>,
+) -> Arc<dyn AspectResolver> {
     match mode {
         AspectResolverMode::OFF => Arc::new(NullAspectResolver),
         AspectResolverMode::CONSERVATIVE => Arc::new(ConservativeAspectResolver),
-        AspectResolverMode::PRECISE => blaze_util::unported!("PreciseAspectResolver"),
+        AspectResolverMode::PRECISE => {
+            Arc::new(PreciseAspectResolver::new(package_provider, event_handler))
+        }
     }
 }

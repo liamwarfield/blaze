@@ -1,0 +1,1 @@
+SYNTAX err_res_undefined_did_you_mean_local.star:2:10: name 'valeu' is not defined (did you mean 'value'?)

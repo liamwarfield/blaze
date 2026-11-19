@@ -125,6 +125,11 @@ pub struct TargetDefinitionContext {
     /// The label converter of a running rule initializer (Java sets it as a thread-local of the
     /// thread while the initializer runs).
     pub(crate) initializer_label_converter: Option<Arc<LabelConverter>>,
+    /// Java's builder subclass: `None` for `Package.Builder`, else the package piece builder
+    /// (`PackagePiece.ForBuildFile.Builder` / `PackagePiece.ForMacro.Builder`).
+    pub(crate) piece: Option<crate::package::package_piece::PieceBuilderKind>,
+    /// The piece returned by the first `finishBuild` of a piece builder.
+    pub(crate) built_piece: Option<Arc<crate::package::package_piece::PackagePiece>>,
 }
 
 impl TargetDefinitionContext {
@@ -146,6 +151,43 @@ impl TargetDefinitionContext {
         track_full_macro_information: bool,
         package_limits: PackageLimits,
     ) -> TargetDefinitionContext {
+        Self::new_internal(
+            metadata,
+            declarations,
+            package_settings,
+            no_implicit_file_export,
+            simplify_unconditional_selects_in_rule_attrs,
+            main_repository_mapping,
+            generator_map,
+            globber,
+            enable_name_conflict_checking,
+            track_full_macro_information,
+            /* enable_target_map_snapshotting= */ true,
+            package_limits,
+            /* abstract_builder= */ true,
+        )
+    }
+
+    /// The constructors of Java's builder classes: `TargetDefinitionContext`, then, when
+    /// `abstract_builder`, `Package.AbstractBuilder` (default testonly for `javatests/`, the BUILD
+    /// file target).
+    // Java: com/google/devtools/build/lib/packages/TargetDefinitionContext.java:388 TargetDefinitionContext.<init>
+    // Java: com/google/devtools/build/lib/packages/Package.java:976 Package.AbstractBuilder.<init>
+    pub(crate) fn new_internal(
+        metadata: Arc<PackageMetadata>,
+        declarations: Arc<PackageDeclarations>,
+        package_settings: PackageSettings,
+        no_implicit_file_export: bool,
+        simplify_unconditional_selects_in_rule_attrs: bool,
+        main_repository_mapping: RepositoryMapping,
+        generator_map: Option<IndexMap<Location, String>>,
+        globber: Option<Arc<dyn Globber>>,
+        enable_name_conflict_checking: bool,
+        track_full_macro_information: bool,
+        enable_target_map_snapshotting: bool,
+        package_limits: PackageLimits,
+        abstract_builder: bool,
+    ) -> TargetDefinitionContext {
         let label_converter = Arc::new(LabelConverter::new(
             &metadata.package_identifier,
             metadata.repository_mapping.clone(),
@@ -156,7 +198,7 @@ impl TargetDefinitionContext {
             recorder: TargetRecorder::new(
                 enable_name_conflict_checking,
                 track_full_macro_information,
-                /* enable_target_map_snapshotting= */ true,
+                enable_target_map_snapshotting,
             ),
             simplify_unconditional_selects_in_rule_attrs,
             label_converter,
@@ -188,7 +230,12 @@ impl TargetDefinitionContext {
             target_map_unwrapped: false,
             built_package: None,
             initializer_label_converter: None,
+            piece: None,
+            built_piece: None,
         };
+        if !abstract_builder {
+            return context;
+        }
         // Java: Package.AbstractBuilder.<init>
         if metadata.get_name().starts_with("javatests/") {
             let mut args = PackageArgs::builder();
@@ -577,10 +624,13 @@ impl TargetDefinitionContext {
         ))
     }
 
-    /// True if symbolic macros are expanded eagerly (always, for a package builder).
-    // Java: com/google/devtools/build/lib/packages/Package.java:1268 Package.Builder.eagerlyExpandMacros
+    /// True if symbolic macros are expanded eagerly: always for a package builder, never for a
+    /// package piece builder (lazy macro expansion).
+    // Java: com/google/devtools/build/lib/packages/Package.java:1206 Package.Builder.eagerlyExpandMacros
+    // Java: com/google/devtools/build/lib/packages/PackagePiece.java:279 PackagePiece.ForBuildFile.Builder.eagerlyExpandMacros
+    // Java: com/google/devtools/build/lib/packages/PackagePiece.java:465 PackagePiece.ForMacro.Builder.eagerlyExpandMacros
     pub fn eagerly_expand_macros(&self) -> bool {
-        true
+        self.piece.is_none()
     }
 
     // Java: com/google/devtools/build/lib/packages/TargetDefinitionContext.java:602 TargetDefinitionContext.getCurrentMacroFrame
@@ -607,6 +657,31 @@ impl TargetDefinitionContext {
     // Java: com/google/devtools/build/lib/packages/TargetDefinitionContext.java:633 TargetDefinitionContext.getRulesSnapshotView
     // Java: com/google/devtools/build/lib/packages/Package.java:1164 Package.Builder.getRulesSnapshotView
     pub fn get_rules_snapshot_view(&self) -> IndexMap<String, Arc<Rule>> {
+        // Java: com/google/devtools/build/lib/packages/PackagePiece.java:470 PackagePiece.ForMacro.Builder.getRulesSnapshotView
+        if let Some(crate::package::PieceBuilderKind::ForMacro {
+            identifier,
+            evaluated_macro,
+            existing_rules_map_for_finalizer,
+        }) = &self.piece
+        {
+            let description = format!(
+                "package piece for {}macro {}",
+                if evaluated_macro.get_macro_class().is_finalizer() {
+                    "finalizer "
+                } else {
+                    ""
+                },
+                identifier.get_canonical_form_name()
+            );
+            blaze_util::check_state!(
+                evaluated_macro.get_macro_class().is_finalizer(),
+                "{} is defined by a non-finalizer macro",
+                description
+            );
+            return existing_rules_map_for_finalizer.clone().unwrap_or_else(|| {
+                panic!("native.existing_rules map was not set in builder for {description}")
+            });
+        }
         if let Some(view) = &self.rules_snapshot_view_for_finalizers {
             return view.clone();
         }
@@ -628,6 +703,13 @@ impl TargetDefinitionContext {
     // Java: com/google/devtools/build/lib/packages/TargetDefinitionContext.java:655 TargetDefinitionContext.getNonFinalizerInstantiatedRule
     // Java: com/google/devtools/build/lib/packages/Package.java:1173 Package.Builder.getNonFinalizerInstantiatedRule
     pub fn get_non_finalizer_instantiated_rule(&self, name: &str) -> Option<Arc<Rule>> {
+        // Java: com/google/devtools/build/lib/packages/PackagePiece.java:482 PackagePiece.ForMacro.Builder.getNonFinalizerInstantiatedRule
+        if matches!(
+            self.piece,
+            Some(crate::package::PieceBuilderKind::ForMacro { .. })
+        ) {
+            return self.get_rules_snapshot_view().get(name).cloned();
+        }
         if let Some(view) = &self.rules_snapshot_view_for_finalizers {
             return view.get(name).cloned();
         }
@@ -763,7 +845,10 @@ impl TargetDefinitionContext {
     pub fn add_macro(&mut self, macro_: Arc<MacroInstance>) -> Result<(), NameConflictException> {
         let id = macro_.get_id();
         self.recorder.add_macro(macro_)?;
-        self.unexpanded_macros.insert(id);
+        // Java: only Package.Builder overrides addMacro to track unexpanded macros.
+        if self.piece.is_none() {
+            self.unexpanded_macros.insert(id);
+        }
         Ok(())
     }
 
@@ -799,6 +884,23 @@ impl TargetDefinitionContext {
     // Java: com/google/devtools/build/lib/packages/TargetDefinitionContext.java:820 TargetDefinitionContext.beforeBuild
     // Java: com/google/devtools/build/lib/packages/Package.java:1287 Package.Builder.beforeBuild
     pub fn before_build(&mut self) -> Result<(), NoSuchPackageException> {
+        // Java: the piece builders do not override beforeBuild (Package.Builder's checks).
+        // Java: com/google/devtools/build/lib/packages/Package.java:870 Package.AbstractBuilder.beforeBuild
+        match &self.piece {
+            Some(crate::package::PieceBuilderKind::ForBuildFile { .. }) => {
+                self.before_build_without_discovering_assumed_input_files()?;
+                let new_input_files = self.create_assumed_input_files();
+                for file in new_input_files.into_values() {
+                    self.recorder.add_input_file_unchecked(file);
+                }
+                return Ok(());
+            }
+            // Java: com/google/devtools/build/lib/packages/TargetDefinitionContext.java:820 TargetDefinitionContext.beforeBuild
+            Some(crate::package::PieceBuilderKind::ForMacro { .. }) => {
+                return self.before_build_base();
+            }
+            None => {}
+        }
         // For correct semantics, we refuse to build a package that hasn't thrown any
         // EvalExceptions but has declared symbolic macros that have not yet been expanded.
         blaze_util::check_state!(
@@ -990,18 +1092,21 @@ impl TargetDefinitionContext {
             .collect();
 
         // Java: com/google/devtools/build/lib/packages/Package.java:944 Package.AbstractBuilder.packageoidInitializationHook
-        // Finish Package.Declarations construction.
-        if !self.declarations.loads_set() {
-            blaze_util::check_state!(contains_errors, "Loads not set for error-free package");
-            let digest = blaze_util::Fingerprint::new().digest_and_reset();
-            self.set_loads(Vec::new(), digest);
+        // Finish Package.Declarations construction (a package built from package pieces has the
+        // BUILD file piece's finished declarations).
+        if self.declarations.is_mutable() {
+            if !self.declarations.loads_set() {
+                blaze_util::check_state!(contains_errors, "Loads not set for error-free package");
+                let digest = blaze_util::Fingerprint::new().digest_and_reset();
+                self.set_loads(Vec::new(), digest);
+            }
+            let make_env: IndexMap<String, String> = self
+                .make_env
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            self.declarations.set_make_environment(make_env).build();
         }
-        let make_env: IndexMap<String, String> = self
-            .make_env
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        self.declarations.set_make_environment(make_env).build();
         self.declarations.set_contains_errors(contains_errors);
         self.declarations.set_failure_detail(failure_detail.clone());
 
@@ -1067,7 +1172,7 @@ impl TargetDefinitionContext {
 
     /// Validates the member environments of environment groups (all targets are loaded now).
     // Java: com/google/devtools/build/lib/packages/Package.java:960 Package.AbstractBuilder.finalBuilderValidationHook
-    fn final_builder_validation_hook(&mut self) {
+    pub(crate) fn final_builder_validation_hook(&mut self) {
         // Java: ImmutableSet.copyOf(environmentGroups.values()) (HashMap order).
         // PORT: java-hash-order. The groups are processed in label order here; the order only
         // affects the order of their error events.

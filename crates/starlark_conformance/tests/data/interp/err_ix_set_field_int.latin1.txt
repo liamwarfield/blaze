@@ -1,0 +1,5 @@
+EVAL cannot set .y field of int value
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_ix_set_field_int.star", line 2, column 2, in <toplevel>
+TRACE \x09\x09x.y = 2
+TRACE Error: cannot set .y field of int value

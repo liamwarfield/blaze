@@ -1,0 +1,5 @@
+EVAL in dict, item #0 has length 1, but exactly two elements are required
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_dict_ctor_len.star", line 1, column 5, in <toplevel>
+TRACE \x09\x09dict([(1,)])
+TRACE Error in dict: in dict, item #0 has length 1, but exactly two elements are required

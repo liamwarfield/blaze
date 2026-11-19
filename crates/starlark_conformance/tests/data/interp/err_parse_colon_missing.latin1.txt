@@ -1,0 +1,2 @@
+SYNTAX err_parse_colon_missing.star:1:8: syntax error at 'newline': expected :
+SYNTAX err_parse_colon_missing.star:2:2: contains syntax errors

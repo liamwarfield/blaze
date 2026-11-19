@@ -56,9 +56,7 @@ pub(crate) struct RemoteSupport {
     /// `RemoteModule.executorInit`'s `LeaseService` (a combined cache without
     /// `--rewind_lost_inputs`).
     lease_service: Option<Arc<blaze_remote::lease_service::LeaseService>>,
-    /// The output base (`<output_base>/action_cache` is the persistent action cache) and the
-    /// command's reporter, for [`purge_persistent_action_cache`].
-    output_base: blaze_vfs::Path,
+    /// The command's reporter, for [`purge_action_cache`].
     reporter: Arc<dyn ExtendedEventHandler>,
 }
 
@@ -123,43 +121,35 @@ pub(crate) fn before_command(
     Ok(Some(RemoteSupport {
         module: Mutex::new(module),
         lease_service,
-        output_base: env.get_output_base().clone(),
         reporter: env.get_reporter().clone(),
     }))
 }
 
-/// `LeaseService.handleMissingInputs` on the persistent action cache, written to disk at once:
+/// `LeaseService.handleMissingInputs` on this build's action cache, written to disk at once:
 /// every entry with output files or output trees (remote metadata) is removed.
 ///
 /// PORT: no Java counterpart. Java answers lost inputs under `--rewind_lost_inputs` (Bazel's
 /// default) with action rewinding, which is not ported: the executor fails loudly right after
 /// this runs (`SkyframeActionExecutor::handle_lost_inputs`). The build then crashes and nothing
-/// saves the in-memory action cache of this command, so the purge works on the copy on disk
-/// (`<output_base>/action_cache`, loaded as `ExecutionTool` loads it), which is what the next
-/// command loads; without it a rerun would trust the same stale remote metadata again (review
-/// 2026-11-19 N5).
+/// saves the action cache of this command, so the purge saves it: the executor's own instance
+/// (the one `ExecutionTool` loaded from `<output_base>/action_cache`, whose journal the running
+/// actions append to), which is what the next command loads; without it a rerun would trust the
+/// same stale remote metadata again (review 2026-11-19 N5). The executor runs this while no
+/// action writes the cache and drops every write after it. `None`: `--nouse_action_cache`.
 // Java: com/google/devtools/build/lib/remote/LeaseService.java:79 LeaseService.handleMissingInputs
-fn purge_persistent_action_cache(
-    output_base: &blaze_vfs::Path,
+fn purge_action_cache(
+    action_cache: Option<&dyn blaze_exec::actions::cache::ActionCache>,
     reporter: &dyn ExtendedEventHandler,
 ) {
-    let cache = match blaze_exec::actions::cache::CompactPersistentActionCache::create(
-        &output_base.get_child("action_cache"),
-        &output_base.get_child("action_cache.bad"),
-        &output_base.get_child("action_cache.tmp"),
-        Arc::new(JavaClock),
-        reporter as &dyn EventHandler,
-    ) {
-        Ok(cache) => cache,
-        // Nothing on disk that could be trusted again.
-        Err(_) => return,
+    let Some(action_cache) = action_cache else {
+        return;
     };
     // A LeaseService that saw a LostInputsEvent, finalized on this cache.
     let lease_service = blaze_remote::lease_service::LeaseService::new(false);
     lease_service.on_lost_inputs();
-    lease_service.finalize_execution(Some(&cache));
+    lease_service.finalize_execution(Some(action_cache));
     // ExecutionTool.saveActionCache's error text.
-    if let Err(e) = blaze_exec::actions::cache::ActionCache::save(&cache) {
+    if let Err(e) = action_cache.save() {
         reporter.handle(&Event::error(format!(
             "I/O error while writing action log: {e}"
         )));
@@ -565,12 +555,21 @@ impl RemoteSupport {
                     }),
                     // PORT: with --rewind_lost_inputs Java rewinds the action (no LeaseService);
                     // rewinding is not ported and fails loudly, so the persistent action cache is
-                    // purged first (see purge_persistent_action_cache).
+                    // purged first (see purge_action_cache).
                     purge_before_unported_rewinding: rewind_lost_inputs.then(|| {
-                        let output_base = self.output_base.clone();
                         let reporter = self.reporter.clone();
-                        Arc::new(move || purge_persistent_action_cache(&output_base, &*reporter))
-                            as Arc<dyn Fn() + Send + Sync>
+                        Arc::new(
+                            move |action_cache: Option<
+                                &dyn blaze_exec::actions::cache::ActionCache,
+                            >| {
+                                purge_action_cache(action_cache, &*reporter)
+                            },
+                        )
+                            as Arc<
+                                dyn Fn(Option<&dyn blaze_exec::actions::cache::ActionCache>)
+                                    + Send
+                                    + Sync,
+                            >
                     }),
                 }
             }),

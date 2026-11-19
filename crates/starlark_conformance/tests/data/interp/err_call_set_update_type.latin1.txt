@@ -1,0 +1,5 @@
+EVAL for update argument got value of type 'int', want a collection of hashable elements
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_set_update_type.star", line 1, column 13, in <toplevel>
+TRACE \x09\x09set().update(1)
+TRACE Error in update: for update argument got value of type 'int', want a collection of hashable elements

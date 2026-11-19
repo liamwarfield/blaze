@@ -199,10 +199,11 @@ impl<'a> ActionGraphTextOutputFormatterCallback<'a> {
             write_aspect_descriptors(action_owner.get_aspect_descriptors(), string_builder);
         }
 
-        // PORT: every Rust action is an ActionExecutionMetadata.
-        string_builder.push_str("  ActionKey: ");
-        string_builder.push_str(&action.get_key(&self.action_key_context, None)?);
-        string_builder.push('\n');
+        if action.is_action_execution_metadata() {
+            string_builder.push_str("  ActionKey: ");
+            string_builder.push_str(&action.get_key(&self.action_key_context, None)?);
+            string_builder.push('\n');
+        }
 
         if self.options.include_artifacts {
             let inputs = get_action_inputs(action, self.options.include_pruned_inputs);
@@ -233,7 +234,8 @@ impl<'a> ActionGraphTextOutputFormatterCallback<'a> {
             string_builder.push_str("]\n");
         }
 
-        // PORT: every Rust action is an AbstractAction.
+        // PORT: every Rust action is an AbstractAction; action templates (which are not) have an
+        // empty fixed environment, so they print nothing here, as in Java.
         {
             // TODO(twerth): This handles the fixed environment. We probably want to output the
             // inherited environment as well.

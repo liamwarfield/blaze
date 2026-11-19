@@ -1,0 +1,1 @@
+SYNTAX err_res_star_after_kwargs_param.star:1:12: * parameter may not follow **k

@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use blaze_events::{EventHandler, OutErr, Reporter};
 use blaze_optdefs::command::common_command_options::CommonCommandOptions;
+use blaze_options::invocation_policy::OptionAndRawValue;
 use blaze_options::rc::client_options::ClientOptions;
+use blaze_protos::blaze::invocation_policy::InvocationPolicy;
 use blaze_protos::failure_details::{self, FailureDetail};
 use blaze_vfs::{Path, PathFragment};
 use indexmap::IndexMap;
@@ -25,6 +27,10 @@ use crate::workspace::BlazeWorkspace;
 pub struct CommandEnvironment {
     /// Java `eventBus`.
     event_bus: Arc<CommandEventBus>,
+    /// Java `invocationPolicy`: the policy the client sent (not merged with the modules' one).
+    invocation_policy: InvocationPolicy,
+    /// Java `invocationPolicyFlags`.
+    invocation_policy_flags: Vec<OptionAndRawValue>,
     /// The client's command line (`BlazeCommandDispatcher.execExclusively`'s `args`).
     client_args: Vec<String>,
     /// The client's startup options tagged with the rc file that set them.
@@ -49,6 +55,11 @@ pub struct CommandEnvironment {
     pending_exception: Option<AbruptExitException>,
     has_synced_package_loading: bool,
     ui_event_handler: Option<Arc<blaze_events::ui::UiEventHandler>>,
+    /// The Build Event Protocol of this command, set by `BuildEventServiceModule.beforeCommand`
+    /// (`crate::bazel_modules::BazelBuildEventServiceModule`) when the command streams build
+    /// events. PORT: Java's commands reach the streamer through the event bus only; the posting
+    /// sites that are not subscribers in Blaze (the dispatcher, `run_build`) reach it here.
+    bep: Option<Arc<crate::commands::bep::BepCommandSupport>>,
     shutdown_reason: Option<String>,
     /// `SequencedSkyframeExecutor.trackIncrementalState`, set by
     /// [`CommandEnvironment::decide_keep_incremental_state`].
@@ -66,6 +77,7 @@ impl CommandEnvironment {
         workspace: Arc<BlazeWorkspace>,
         command: &'static CommandAnnotation,
         options: Arc<OptionsParsingResult>,
+        invocation_policy: InvocationPolicy,
         warnings: &mut Vec<String>,
     ) -> CommandEnvironment {
         let directories = workspace.get_directories().clone();
@@ -205,6 +217,8 @@ impl CommandEnvironment {
 
         CommandEnvironment {
             event_bus,
+            invocation_policy,
+            invocation_policy_flags: Vec::new(),
             client_args: Vec::new(),
             startup_options_tagged_with_bazel_rc: None,
             repo_env,
@@ -224,6 +238,7 @@ impl CommandEnvironment {
             pending_exception,
             has_synced_package_loading: false,
             ui_event_handler: None,
+            bep: None,
             shutdown_reason: None,
             // SequencedSkyframeExecutor.trackIncrementalState is true until
             // decideKeepIncrementalState.
@@ -233,6 +248,24 @@ impl CommandEnvironment {
     }
 
     // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:886 CommandEnvironment.getCommandStartTime
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:544 CommandEnvironment.getInvocationPolicy
+    pub fn get_invocation_policy(&self) -> &InvocationPolicy {
+        &self.invocation_policy
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:548 CommandEnvironment.setInvocationPolicyFlags
+    pub(crate) fn set_invocation_policy_flags(
+        &mut self,
+        invocation_policy_flags: Vec<OptionAndRawValue>,
+    ) {
+        self.invocation_policy_flags = invocation_policy_flags;
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:552 CommandEnvironment.getInvocationPolicyFlags
+    pub fn get_invocation_policy_flags(&self) -> &[OptionAndRawValue] {
+        &self.invocation_policy_flags
+    }
+
     pub fn get_command_start_time(&self) -> i64 {
         self.command_start_time
     }
@@ -537,6 +570,17 @@ impl CommandEnvironment {
 
     pub fn get_ui_event_handler(&self) -> Option<&Arc<blaze_events::ui::UiEventHandler>> {
         self.ui_event_handler.as_ref()
+    }
+
+    /// The command's Build Event Protocol support, if the BES module set one up.
+    pub(crate) fn set_bep(&mut self, bep: Option<Arc<crate::commands::bep::BepCommandSupport>>) {
+        self.bep = bep;
+    }
+
+    /// The command's Build Event Protocol support (`None` when no build event file or service
+    /// was requested, or the command does not stream build events).
+    pub(crate) fn get_bep(&self) -> Option<&Arc<crate::commands::bep::BepCommandSupport>> {
+        self.bep.as_ref()
     }
 
     /// The pending abrupt exit recorded by `BlazeModuleEnvironment.exit`.

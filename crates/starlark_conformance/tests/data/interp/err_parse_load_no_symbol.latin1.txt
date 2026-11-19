@@ -1,0 +1,1 @@
+SYNTAX err_parse_load_no_symbol.star:1:14: syntax error at ')': expected at least one symbol to load

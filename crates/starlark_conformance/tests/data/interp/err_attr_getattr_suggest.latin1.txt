@@ -1,0 +1,5 @@
+EVAL 'list' value has no field or method 'appen' (did you mean 'append'?)
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_attr_getattr_suggest.star", line 1, column 12, in <toplevel>
+TRACE \x09\x09x = getattr([], "appen")
+TRACE Error in getattr: 'list' value has no field or method 'appen' (did you mean 'append'?)

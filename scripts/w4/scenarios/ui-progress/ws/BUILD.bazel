@@ -1,0 +1,35 @@
+load(":defs.bzl", "failing", "script_test", "slow")
+
+slow(
+    name = "slow",
+    seconds = 3,
+)
+
+slow(
+    name = "first",
+    seconds = 1,
+)
+
+slow(
+    name = "chain",
+    seconds = 1,
+    srcs = [":first"],
+)
+
+failing(name = "fails")
+
+script_test(
+    name = "pass_test",
+    exit_code = 0,
+)
+
+script_test(
+    name = "fail_test",
+    exit_code = 1,
+)
+
+script_test(
+    name = "timeout_test",
+    exit_code = 0,
+    sleep = 10,
+)

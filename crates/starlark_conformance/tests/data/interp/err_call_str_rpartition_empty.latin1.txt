@@ -1,0 +1,5 @@
+EVAL empty separator
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_str_rpartition_empty.star", line 1, column 15, in <toplevel>
+TRACE \x09\x09"a".rpartition("")
+TRACE Error in rpartition: empty separator

@@ -1,0 +1,1 @@
+SYNTAX err_lex_invalid_escape.star:1:7: invalid escape sequence: \\q. Use '\\\\' to insert '\\'.

@@ -562,6 +562,15 @@ impl ActionCacheChecker {
         self.cache_config.enabled()
     }
 
+    /// The action cache this checker reads and writes (`None` when not enabled).
+    ///
+    /// PORT: no Java counterpart; the executor's purge of remote metadata before the unported
+    /// action rewinding (`LeaseService.handleMissingInputs` on this build's own cache instance)
+    /// needs it.
+    pub fn get_action_cache(&self) -> Option<&dyn ActionCache> {
+        self.action_cache.as_deref()
+    }
+
     fn action_cache(&self) -> &dyn ActionCache {
         &**self
             .action_cache

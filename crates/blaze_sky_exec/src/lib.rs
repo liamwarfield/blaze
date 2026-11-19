@@ -25,6 +25,7 @@
 
 pub mod action_execution_function;
 pub mod action_execution_value;
+pub mod action_template_expansion_value;
 pub mod analysis_seam;
 pub mod artifact_function;
 pub mod build_driver_function;
@@ -60,6 +61,8 @@ pub fn register_execution_functions(
     unrunnable_test_reporter: Option<Arc<UnrunnableTestReporter>>,
 ) -> EvaluatorBuilder {
     let completion_executor = executor.clone();
+    let artifact_executor = executor.clone();
+    let seam_artifact = seam.clone();
     let traversal_executor = executor.clone();
     let action_execution = Arc::new(ActionExecutionFunction {
         skyframe_action_executor: executor,
@@ -79,7 +82,9 @@ pub fn register_execution_functions(
     let build_driver = Arc::new(build_driver_function::BuildDriverFunction::new(seam));
     builder
         .typed_function::<ActionExecutionKey, _>(move |k, env| action_execution.compute(k, env))
-        .typed_function::<ArtifactKey, _>(artifact_function::compute_artifact)
+        .typed_function::<ArtifactKey, _>(move |k, env| {
+            artifact_function::compute_artifact(&artifact_executor, &*seam_artifact, k, env)
+        })
         .typed_function::<ArtifactNestedSetKey, _>(artifact_function::compute_artifact_nested_set)
         .typed_function::<DirectoryArtifactTraversalRequest, _>(move |k, env| {
             recursive_filesystem_traversal.compute(k, env)

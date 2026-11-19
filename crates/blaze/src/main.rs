@@ -45,6 +45,9 @@ fn main() {
     // `main` gets them.
     // Java: src/main/cpp/main.cc:24 main
     let argv = blaze_client::argv_from_os();
+    // The in-process server's stdout and stderr are the client's: an EPIPE there is what the
+    // client's SIGPIPE handler records (blaze_events::io::set_broken_pipe_listener).
+    blaze_events::io::set_broken_pipe_listener(blaze_client::signal_handler::note_broken_pipe);
     let code = blaze_client::main(argv, &BazelServer, &embedded::archive());
     std::process::exit(code);
 }

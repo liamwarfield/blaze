@@ -1,0 +1,1 @@
+SYNTAX err_res_for_toplevel.star:1:1: for loops are not allowed at the top level. You may move it inside a function or use a comprehension, [f(x) for x in sequence]

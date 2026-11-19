@@ -1,0 +1,5 @@
+EVAL range() accepts no more than 3 positional arguments but got 4
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_range_toomany.star", line 1, column 6, in <toplevel>
+TRACE \x09\x09range(1, 2, 3, 4)
+TRACE Error in range: range() accepts no more than 3 positional arguments but got 4

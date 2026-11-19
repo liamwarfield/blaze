@@ -36,6 +36,11 @@ pub trait Artifact: Send + Sync + fmt::Debug {
     fn artifact_equals(&self, other: &dyn Artifact) -> bool;
     /// Java: `Artifact.hashCode` (any hash consistent with [`Artifact::artifact_equals`]).
     fn artifact_hash(&self) -> u64;
+    /// The implementing value, for adapters that hand the real artifact back to their own
+    /// crate (Java has one `Artifact` class; the stand-in trait needs a downcast).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 /// Shared handle to an [`Artifact`] with Java's `equals`/`hashCode`.

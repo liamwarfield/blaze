@@ -1,0 +1,1 @@
+SYNTAX err_res_load_not_toplevel.star:2:3: load statement not at top level

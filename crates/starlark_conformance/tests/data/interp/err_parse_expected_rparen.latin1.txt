@@ -1,0 +1,1 @@
+SYNTAX err_parse_expected_rparen.star:2:1: syntax error at 'y': expected )

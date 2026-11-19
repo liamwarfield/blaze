@@ -142,6 +142,7 @@ impl AnalysisPostProcessor for CqueryProcessor {
             self.reporter.clone(),
             query_output,
             skyframe_executor,
+            request.get_top_level_artifact_context_output_groups(),
         );
         let result = do_post_analysis_query(
             &env,

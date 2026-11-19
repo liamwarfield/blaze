@@ -1,0 +1,5 @@
+load("//scope:flag.bzl", "plain", "transitioned")
+
+plain(name = "leaf")
+
+transitioned(name = "top", deps = [":leaf"])

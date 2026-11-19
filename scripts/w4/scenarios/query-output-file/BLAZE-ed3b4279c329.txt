@@ -1,0 +1,151 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /tmp/claude-1000/-home-liamwarfield--t3-projects-blaze/6d69a44d-e0de-42b9-9769-0799c9eb488a/scratchpad/blaze-before
+# sha256 ed3b4279c3299fbc8c3a5ae6a65e0bc012e1f3f83f47464ae8c9a80846872651
+# tree 67302dc7fd8c4cc5c3c5fc80289402f9b95daaa6 (dirty)
+# date 2026-11-19T13:14:25
+=== 1: run cquery //:x --output_file=out.txt
+exit 0
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 2: cat out.txt
+//:x (a7a71fd)
+=== 3: run cquery "deps(//:x)" --output=label_kind --output_file=sub/out2.txt
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 4: cat sub/out2.txt
+w rule //:x (a7a71fd)
+w rule //:y (a7a71fd)
+alias rule @bazel_tools//tools:host_platform (3030ed4)
+platform rule @@platforms//host:host (3030ed4)
+constraint_value rule @@platforms//os:linux (3030ed4)
+constraint_value rule @@platforms//cpu:x86_64 (3030ed4)
+constraint_setting rule @@platforms//cpu:cpu (3030ed4)
+constraint_setting rule @@platforms//os:os (3030ed4)
+=== 5: run aquery //:x --output=jsonproto --output_file=aq.json
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 6: cat aq.json
+{
+  "artifacts": [{
+    "id": 1,
+    "pathFragmentId": 1
+  }],
+  "actions": [{
+    "targetId": 1,
+    "actionKey": "077fd921393782700ad382a0f90af3fb012092ea950506e2c388e4fd3e94e72f",
+    "mnemonic": "FileWrite",
+    "configurationId": 1,
+    "outputIds": [1],
+    "primaryOutputId": 1,
+    "executionPlatform": "@@platforms//host:host"
+  }],
+  "targets": [{
+    "id": 1,
+    "label": "//:x",
+    "ruleClassId": 1
+  }],
+  "configuration": [{
+    "id": 1,
+    "mnemonic": "k8-fastbuild",
+    "platformName": "k8",
+    "checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18"
+  }],
+  "ruleClasses": [{
+    "id": 1,
+    "name": "w"
+  }],
+  "pathFragments": [{
+    "id": 4,
+    "label": "bazel-out"
+  }, {
+    "id": 3,
+    "label": "k8-fastbuild",
+    "parentId": 4
+  }, {
+    "id": 2,
+    "label": "bin",
+    "parentId": 3
+  }, {
+    "id": 1,
+    "label": "x.txt",
+    "parentId": 2
+  }]
+}
+=== 7: run cquery //:x --output_file=missing-dir/out.txt
+exit 36
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: Could not open query output file <WS>/missing-dir/out.txt
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 8: run aquery //:x --output=jsonproto --output_file=missing-dir/out.txt
+exit 36
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: Could not open query output file <WS>/missing-dir/out.txt
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 9: run cquery //:x --output_file=sub
+exit 36
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: Could not open query output file <WS>/sub
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 10: run cquery //:x --output_file=
+exit 0
+--- stdout
+//:x (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:x (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 11: run cquery "//:nosuch" --output_file=err.txt
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+WARNING: Target pattern parsing failed.
+ERROR: Skipping '//:nosuch': no such target '//:nosuch': target 'nosuch' not declared in package '' defined by <WS>/BUILD.bazel
+ERROR: no such target '//:nosuch': target 'nosuch' not declared in package '' defined by <WS>/BUILD.bazel
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 12: stat err.txt
+cannot stat: FileNotFoundError

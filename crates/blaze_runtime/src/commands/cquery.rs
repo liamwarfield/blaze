@@ -129,6 +129,7 @@ pub(crate) fn construct_execution_tool(
             o.remote_downloader = None;
             o
         });
+    crate::commands::build::check_strategy_policy_is_default(env);
     let config = ExecutionToolConfig {
         file_system: env.get_output_base().get_file_system().clone(),
         output_base: env.get_output_base().clone(),

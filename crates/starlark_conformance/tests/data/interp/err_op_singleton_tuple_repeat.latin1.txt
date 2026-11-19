@@ -1,0 +1,5 @@
+EVAL got 2147483648 for repeat, want value in signed 32-bit range
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_op_singleton_tuple_repeat.star", line 1, column 10, in <toplevel>
+TRACE \x09\x09x = (1,) * (1 << 31)
+TRACE Error: got 2147483648 for repeat, want value in signed 32-bit range

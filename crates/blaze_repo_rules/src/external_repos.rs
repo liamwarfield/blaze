@@ -130,4 +130,22 @@ impl ExternalRepos for BzlmodExternalRepos {
     ) -> Result<Option<RepositoryDirectoryValue>, ComputeError> {
         self.fetch_function.compute(repository_name, env)
     }
+
+    // Java: com/google/devtools/build/lib/packages/AutoloadSymbols.java:428 AutoloadSymbols.getLoadKeys (env.getValue(BazelDepGraphValue.KEY))
+    fn get_bazel_dep_graph_value(
+        &self,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<Arc<BazelDepGraphValue>>, ComputeError> {
+        Ok(env.get_value(BazelDepGraphKey)?)
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/StarlarkBuiltinsFunction.java:195 StarlarkBuiltinsFunction.computeInternal (KEY_FOR_ROOT_MODULE)
+    fn get_root_module_name(
+        &self,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<String>, ComputeError> {
+        Ok(env
+            .get_value(blaze_bzlmod::skyframe::keys::ModuleFileKey::key_for_root_module())?
+            .map(|v| v.as_root().module.name.clone()))
+    }
 }

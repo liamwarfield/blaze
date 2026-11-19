@@ -1,0 +1,3 @@
+project = {
+    "active_directories": {"default": ["//scope/out"]},
+}

@@ -8,7 +8,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use blaze_cmdline::Label;
+use blaze_cmdline::{Label, RepositoryMapping};
 use blaze_events::{Event, EventHandler, ExtendedEventHandler, Postable};
 use blaze_optdefs::fragment::core_options::{CoreOptions, CoreOptionsOutputDirectoryNamingScheme};
 use blaze_optdefs::fragment::platform_mapping_key::PlatformMappingKey;
@@ -20,6 +20,7 @@ use blaze_skyframe::{
 };
 use blaze_starlark::StarlarkSemantics;
 use blaze_vfs::Path;
+use indexmap::IndexMap;
 
 use crate::build_configuration_key::{BuildConfigurationKey, BuildConfigurationKeyValueKey};
 use crate::build_configuration_value::{BuildConfigurationValue, GlobalStateProvider};
@@ -27,6 +28,7 @@ use crate::build_options::{BuildOptions, ScopeDefinition, ScopeType, StarlarkOpt
 use crate::build_options_scope_value::{BuildOptionsScopeKey, BuildOptionsScopeValue};
 use crate::fragment::{FragmentFactory, InvalidConfigurationException};
 use crate::output_directories::ConfigDirectories;
+use crate::parsed_flags::{ParsedFlagsKey, ParsedFlagsValue};
 use crate::platform::{PlatformValueKey, SharedPlatformValueProvider};
 
 impl Key for BuildConfigurationKey {
@@ -89,28 +91,57 @@ impl Key for PlatformMappingSkyKey {
 /// Stores contents of a platforms/flags mapping file for transforming one `BuildOptions` into
 /// another.
 ///
-/// PORT: only the empty mapping (no `platform_mappings` file, or one without entries) is
-/// ported; parsed mappings need PARSED_FLAGS (`ParsedFlagsValue.mergeWith`,
-/// `BuildOptions.matches`). A mappings file with entries stops at
-/// `unported!("PlatformMappingFunction.parse")`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// PORT: skipped, incremental: Java memoizes `computeMapping` per input (`mappingCache`).
+#[derive(Debug, PartialEq, Eq)]
 pub struct PlatformMappingValue {
-    /// The number of `platforms:` and `flags:` entries (only empty mappings are ported).
-    is_empty: bool,
+    /// `ImmutableMap<Label, ParsedFlagsValue>` (insertion order).
+    platforms_to_flags: IndexMap<Label, Arc<ParsedFlagsValue>>,
+    /// `ImmutableMap<ParsedFlagsValue, Label>` (insertion order, unique keys).
+    flags_to_platforms: Vec<(Arc<ParsedFlagsValue>, Label)>,
 }
 
 impl PlatformMappingValue {
-    pub fn empty() -> Self {
-        PlatformMappingValue { is_empty: true }
+    // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingValue.java:67 PlatformMappingValue.<init>
+    /// Creates a new mapping value which will match on the given platforms (if a target platform
+    /// is set on the key to be mapped), otherwise on the set of flags.
+    pub fn new(
+        platforms_to_flags: IndexMap<Label, Arc<ParsedFlagsValue>>,
+        flags_to_platforms: Vec<(Arc<ParsedFlagsValue>, Label)>,
+    ) -> Self {
+        PlatformMappingValue {
+            platforms_to_flags,
+            flags_to_platforms,
+        }
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingValue.java:117 PlatformMappingValue.computeMapping
-    /// Maps one `BuildOptions` to another by way of mappings provided in a file.
+    pub fn empty() -> Self {
+        Self::new(IndexMap::new(), Vec::new())
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingValue.java:103 PlatformMappingValue.map
+    /// Maps one `BuildOptions` to another's `BuildConfigurationKey` by way of mappings provided
+    /// in a file.
+    ///
+    /// 1. If a target platform is set on the original then mappings from platform to flags will
+    ///    be applied.
+    /// 2. If no target platform is set then mappings from flags to platforms will be applied.
+    /// 3. If no matching flags to platforms mapping was found, the default target platform will
+    ///    be used.
     pub fn map(
         &self,
         original_options: &BuildOptions,
     ) -> Result<BuildConfigurationKey, OptionsParsingException> {
+        self.compute_mapping(original_options)
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingValue.java:117 PlatformMappingValue.computeMapping
+    fn compute_mapping(
+        &self,
+        original_options: &BuildOptions,
+    ) -> Result<BuildConfigurationKey, OptionsParsingException> {
         if original_options.has_no_config() {
+            // The empty configuration (produced by NoConfigTransition) is terminal: it'll never
+            // change.
             return Ok(BuildConfigurationKey::create(Arc::new(
                 original_options.clone(),
             )));
@@ -123,20 +154,33 @@ impl PlatformMappingValue {
         let platform_options = platform_options.unwrap();
 
         if !platform_options.platforms.is_empty() {
-            // platformsToFlags.containsKey(targetPlatform)
-            if !self.is_empty {
-                blaze_util::unported!("PlatformMappingValue.computeMapping", "platforms: mappings");
+            let platforms = &platform_options.platforms;
+
+            // Platform mapping only supports a single target platform, others are ignored.
+            let target_platform = &platforms[0].0;
+            let Some(parsed_flags) = self.platforms_to_flags.get(target_platform) else {
+                // This can happen if the user has set the platform and any other flags that
+                // would normally be mapped from it on the command line instead of relying on
+                // the mapping.
+                return Ok(BuildConfigurationKey::create(Arc::new(
+                    original_options.clone(),
+                )));
+            };
+            return Ok(parsed_flags.merge_with(original_options));
+        }
+
+        for (parsed_flags, platform_label) in &self.flags_to_platforms {
+            if original_options.matches(parsed_flags.parsing_result())? {
+                let mut modified_options = original_options.clone();
+                modified_options
+                    .get_mut::<PlatformOptions>()
+                    .unwrap()
+                    .platforms = vec![Foreign(platform_label.clone())];
+                return Ok(BuildConfigurationKey::create(Arc::new(modified_options)));
             }
-            return Ok(BuildConfigurationKey::create(Arc::new(
-                original_options.clone(),
-            )));
         }
 
-        // for (flagsToPlatform : flagsToPlatforms) ... originalOptions.matches(...)
-        if !self.is_empty {
-            blaze_util::unported!("PlatformMappingValue.computeMapping", "flags: mappings");
-        }
-
+        // No mapping found.
         let target_platform = platform_options.compute_target_platform().clone();
         let mut modified_options = original_options.clone();
         modified_options
@@ -180,6 +224,8 @@ pub struct ConfigurationEnvironment {
     /// `PrecomputedValue.BASELINE_EXEC_CONFIGURATION`.
     pub baseline_exec_configuration: Arc<BuildOptions>,
     pub platforms: SharedPlatformValueProvider,
+    /// `RepositoryMappingValue.key(RepositoryName.MAIN)` (PlatformMappingFunction).
+    pub main_repository_mapping: Arc<dyn MainRepositoryMappingLookup>,
 }
 
 fn client<'a>(env: &'a Environment<'_>) -> &'a ConfigurationEnvironment {
@@ -208,9 +254,12 @@ fn compute_platform_mapping(
     env: &mut Environment<'_>,
 ) -> Result<Option<PlatformMappingValue>, ComputeError> {
     let workspace_relative_mapping_path = key.0.get_workspace_relative_mapping_path().clone();
-    // PORT: Java first requests RepositoryMappingValue.key(RepositoryName.MAIN) and returns null
-    // when it is missing. The key lives in blaze_sky_loading, which this crate cannot name; the
-    // value is read only by `parse`, which is `unported!` below.
+    // Java: env.getValue(RepositoryMappingValue.key(RepositoryName.MAIN)); the key lives in
+    // blaze_sky_loading, which this crate cannot name (see `MainRepositoryMappingLookup`).
+    let lookup = client(env).main_repository_mapping.clone();
+    let Some(main_repo_mapping) = lookup.main_repository_mapping(env)? else {
+        return Ok(None);
+    };
     let path_entries = client(env).package_path_roots.clone();
     for root in &path_entries {
         // PORT: skipped, incremental: Java requests FileValue.key(rootedMappingPath) (FILE, in
@@ -255,16 +304,17 @@ fn compute_platform_mapping(
             ),
         };
         let text = blaze_util::string_encoding::java_new_string_utf8(&bytes);
-        // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:158 PlatformMappingFunction.parse
-        // `String::trim` removes the characters up to U+0020.
-        let has_entries = text
-            .lines()
-            .map(|line| line.trim_matches(|c: char| c <= ' '))
-            .any(|line| !line.is_empty() && !line.starts_with('#'));
-        if !has_entries {
-            return Ok(Some(PlatformMappingValue::empty()));
-        }
-        blaze_util::unported!("PlatformMappingFunction.parse", "{}", path);
+        let lines = java_read_lines(&text);
+
+        return match parse(env, &lines, &main_repo_mapping)? {
+            Ok(None) => Ok(None),
+            Ok(Some(parsed)) => Ok(Some(parsed.to_platform_mapping_value())),
+            // Java: catch (PlatformMappingParsingException e) { throw new
+            // PlatformMappingFunctionException(e); } (Transience.PERSISTENT)
+            Err(e) => Err(persistent(ConfigurationError::PlatformMapping(
+                e.to_string(),
+            ))),
+        };
     }
 
     if !key.0.was_explicitly_set_by_user() {
@@ -318,39 +368,424 @@ fn compute_build_configuration_key(
         // PORT: InvalidPlatformException is `blaze_analysis::toolchains::ToolchainException`,
         // which this crate cannot name; the PLATFORM provider recognizes it
         // (`PlatformValueProvider::catch_invalid_platform_exception`) and the same exception is
-        // rethrown here. PLATFORM cannot throw OptionsParsingException before platform flags
-        // are ported (`unported!` in PlatformFunction).
+        // rethrown here.
+        // An OptionsParsingException of PLATFORM (the PARSED_FLAGS error of the platform's
+        // `flags`, which PlatformFunction does not catch) goes to the sink as well
+        // (acceptOptionsParsingError) and is rethrown the same way.
         let platforms = client(env).platforms.clone();
-        let target_platform_value = match env
-            .get_value_or_throw_with(platform_key, |e: &SkyError| {
-                platforms.catch_invalid_platform_exception(e)
+        let target_platform_value =
+            match env.get_value_or_throw_with(platform_key, |e: &SkyError| {
+                platforms.catch_invalid_platform_exception(e).or_else(|| {
+                    e.downcast_ref::<OptionsParsingException>()
+                        .map(|_| e.clone())
+                })
             })? {
-            Ok(Some(target_platform_value)) => target_platform_value,
-            // Java: BuildConfigurationKeyProducer.checkTargetPlatformFlags, "Error.": DONE.
-            Ok(None) => return Ok(None),
-            // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyFunction.java:72 BuildConfigurationKeyFunction.compute
-            // `throw new BuildConfigurationKeyFunctionException(e)` (Transience.PERSISTENT).
-            Err(invalid_platform_exception) => {
-                return Err(SkyFunctionException::from_cause(
-                    invalid_platform_exception,
-                    Transience::Persistent,
-                )
-                .into());
-            }
-        };
+                Ok(Some(target_platform_value)) => target_platform_value,
+                // Java: BuildConfigurationKeyProducer.checkTargetPlatformFlags, "Error.": DONE.
+                Ok(None) => return Ok(None),
+                // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyFunction.java:72 BuildConfigurationKeyFunction.compute
+                // `throw new BuildConfigurationKeyFunctionException(e)` (Transience.PERSISTENT).
+                Err(invalid_platform_exception) => {
+                    return Err(SkyFunctionException::from_cause(
+                        invalid_platform_exception,
+                        Transience::Persistent,
+                    )
+                    .into());
+                }
+            };
         // Java: com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyProducer.java:152 BuildConfigurationKeyProducer.checkTargetPlatformFlags
-        if target_platform_value.has_parsed_flags {
-            blaze_util::unported!(
-                "ParsedFlagsValue.mergeWith",
-                "platform-based flags of {}",
-                target_platform_value.label
-            );
+        match &target_platform_value.parsed_flags {
+            Some(parsed_flags) => {
+                let post_platform_processed_options =
+                    parsed_flags.merge_with(options).get_options().clone();
+                return find_build_options_scopes(post_platform_processed_options, env);
+            }
+            None => {}
         }
         merge_from_platform_mapping(options, env)
     } else {
         blaze_util::check_state!(target_platforms.is_empty());
         merge_from_platform_mapping(options, env)
     }
+}
+
+/// `FileSystemUtils.readLines`: lines end at `\n`, `\r` or `\r\n` (Guava `LineReader`); a
+/// trailing line terminator does not start another line.
+fn java_read_lines(text: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut chars = text.chars().peekable();
+    let mut pending = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '\n' => {
+                lines.push(std::mem::take(&mut current));
+                pending = false;
+            }
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                lines.push(std::mem::take(&mut current));
+                pending = false;
+            }
+            c => {
+                current.push(c);
+                pending = true;
+            }
+        }
+    }
+    if pending {
+        lines.push(current);
+    }
+    lines
+}
+
+/// `env.getValue(RepositoryMappingValue.key(RepositoryName.MAIN))`, which
+/// PlatformMappingFunction reads: the key lives in blaze_sky_loading, which this crate cannot
+/// name, so the client supplies the lookup.
+pub trait MainRepositoryMappingLookup: Send + Sync {
+    /// The main repository's mapping, or `None` when the value is missing (Java returns null).
+    fn main_repository_mapping(
+        &self,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<RepositoryMapping>, ComputeError>;
+}
+
+/// The lookup of a client without repository mappings (the `blaze-config-dev` evaluator).
+pub struct UnportedMainRepositoryMapping;
+
+impl MainRepositoryMappingLookup for UnportedMainRepositoryMapping {
+    fn main_repository_mapping(
+        &self,
+        _env: &mut Environment<'_>,
+    ) -> Result<Option<RepositoryMapping>, ComputeError> {
+        blaze_util::unported!(
+            "RepositoryMappingFunction.compute",
+            "main repository mapping in the blaze-config-dev evaluator"
+        )
+    }
+}
+
+// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingParsingException.java:23 PlatformMappingParsingException
+/// Inner wrapper exception to work around the fact that `SkyFunctionException` cannot carry a
+/// message of its own.
+#[derive(Clone, Debug)]
+pub struct PlatformMappingParsingException {
+    /// `getMessage()`: the message given, or for `PlatformMappingParsingException(cause)` the
+    /// cause's `toString()`.
+    message: String,
+}
+
+impl PlatformMappingParsingException {
+    // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingParsingException.java:25 PlatformMappingParsingException.<init>
+    fn new(message: String) -> Self {
+        PlatformMappingParsingException { message }
+    }
+
+    /// `Throwable.getMessage()`.
+    pub fn get_message(&self) -> &str {
+        &self.message
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingParsingException.java:29 PlatformMappingParsingException.<init>
+    fn from_options_parsing_exception(cause: &OptionsParsingException) -> Self {
+        PlatformMappingParsingException {
+            message: format!(
+                "com.google.devtools.common.options.OptionsParsingException: {}",
+                cause.get_message()
+            ),
+        }
+    }
+}
+
+impl fmt::Display for PlatformMappingParsingException {
+    /// `Throwable.toString()`: the class name, then the message.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "com.google.devtools.build.lib.skyframe.config.PlatformMappingParsingException: {}",
+            self.message
+        )
+    }
+}
+
+// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:350 PlatformMappingFunction.parsingException
+fn parsing_exception(message: String) -> PlatformMappingParsingException {
+    PlatformMappingParsingException::new(message)
+}
+
+/// Simple data holder to make testing easier. Only for use internal to this file/tests thereof.
+// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:362 PlatformMappingFunction.Mappings
+pub struct Mappings {
+    pub platforms_to_flags: IndexMap<Label, Arc<ParsedFlagsValue>>,
+    pub flags_to_platforms: Vec<(Arc<ParsedFlagsValue>, Label)>,
+}
+
+impl Mappings {
+    // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:374 PlatformMappingFunction.Mappings.toPlatformMappingValue
+    fn to_platform_mapping_value(self) -> PlatformMappingValue {
+        PlatformMappingValue::new(self.platforms_to_flags, self.flags_to_platforms)
+    }
+}
+
+/// The result of `parse`: `Ok(None)` where Java returns null (Skyframe dependencies missing).
+type ParseResult<T> = Result<Result<Option<T>, PlatformMappingParsingException>, ComputeError>;
+
+/// Java's `PeekingIterator` over the trimmed, non-empty, non-comment lines.
+struct LineIterator {
+    lines: Vec<String>,
+    position: usize,
+}
+
+impl LineIterator {
+    fn has_next(&self) -> bool {
+        self.position < self.lines.len()
+    }
+
+    fn peek(&self) -> &str {
+        &self.lines[self.position]
+    }
+
+    fn next(&mut self) -> String {
+        self.position += 1;
+        self.lines[self.position - 1].clone()
+    }
+}
+
+/// Java `String.equalsIgnoreCase` with an ASCII literal.
+fn equals_ignore_case(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:158 PlatformMappingFunction.parse
+/// Parses the given lines, returns `None` if not all Skyframe deps are ready.
+pub fn parse(
+    env: &mut Environment<'_>,
+    lines: &[String],
+    main_repo_mapping: &RepositoryMapping,
+) -> ParseResult<Mappings> {
+    let mut it = LineIterator {
+        lines: lines
+            .iter()
+            // String::trim removes the characters up to U+0020.
+            .map(|line| line.trim_matches(|c: char| c <= ' ').to_string())
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect(),
+        position: 0,
+    };
+
+    if !it.has_next() {
+        return Ok(Ok(Some(Mappings {
+            platforms_to_flags: IndexMap::new(),
+            flags_to_platforms: Vec::new(),
+        })));
+    }
+
+    if !equals_ignore_case(it.peek(), "platforms:") && !equals_ignore_case(it.peek(), "flags:") {
+        return Ok(Err(parsing_exception(format!(
+            "Expected 'platforms:' or 'flags:' but got {}",
+            it.peek()
+        ))));
+    }
+
+    let mut platforms_to_flags = IndexMap::new();
+    let mut flags_to_platforms = Vec::new();
+
+    if equals_ignore_case(it.peek(), "platforms:") {
+        it.next();
+        match read_platforms_to_flags(&mut it, env, main_repo_mapping)? {
+            Ok(Some(v)) => platforms_to_flags = v,
+            Ok(None) => return Ok(Ok(None)),
+            Err(e) => return Ok(Err(e)),
+        }
+    }
+
+    if it.has_next() {
+        let line = it.next();
+        if !equals_ignore_case(&line, "flags:") {
+            return Ok(Err(parsing_exception(format!(
+                "Expected 'flags:' but got {}",
+                line
+            ))));
+        }
+        match read_flags_to_platforms(&mut it, env, main_repo_mapping)? {
+            Ok(Some(v)) => flags_to_platforms = v,
+            Ok(None) => return Ok(Ok(None)),
+            Err(e) => return Ok(Err(e)),
+        }
+    }
+
+    if it.has_next() {
+        return Ok(Err(parsing_exception(format!(
+            "Expected end of file but got {}",
+            it.next()
+        ))));
+    }
+    Ok(Ok(Some(Mappings {
+        platforms_to_flags,
+        flags_to_platforms,
+    })))
+}
+
+/// `Label.RepoContext.rootPackage()` of `RepoContext.of(RepositoryName.MAIN, mapping)`.
+// Java: com/google/devtools/build/lib/cmdline/Label.java:125 Label.RepoContext.rootPackage
+fn main_root_package(main_repo_mapping: &RepositoryMapping) -> blaze_cmdline::LabelPackageContext {
+    blaze_cmdline::LabelPackageContext::of(
+        &blaze_cmdline::PackageIdentifier::create(
+            blaze_cmdline::repository_name::MAIN.clone(),
+            blaze_vfs::PathFragment::empty_fragment(),
+        ),
+        main_repo_mapping.clone(),
+    )
+}
+
+// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:211 PlatformMappingFunction.parseFlags
+/// Converts a set of native and Starlark flag settings to a `ParsedFlagsValue`, or returns
+/// `None` if not all Skyframe deps are ready.
+fn parse_flags(
+    raw_flags: Vec<String>,
+    env: &mut Environment<'_>,
+    main_repo_mapping: &RepositoryMapping,
+) -> ParseResult<Arc<ParsedFlagsValue>> {
+    let root_package = main_root_package(main_repo_mapping);
+    // Passing an empty flagAliasMappings means platform mappings don't support flag aliases: if
+    // a mapping sets --foo=bar but --foo is an alias for --//actual:flag, the mapping must be
+    // updated to set --actual:flag=bar. Since this is a deprecated API we won't support mappings
+    // here unless a compelling case demands it.
+    let parsed_flags_key = ParsedFlagsKey::create(raw_flags, root_package, Vec::new());
+    match env.get_value_or_throw_with(parsed_flags_key, |e: &SkyError| {
+        e.downcast_ref::<OptionsParsingException>().cloned()
+    })? {
+        Ok(v) => Ok(Ok(v)),
+        Err(e) => Ok(Err(
+            PlatformMappingParsingException::from_options_parsing_exception(&e),
+        )),
+    }
+}
+
+// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:233 PlatformMappingFunction.readPlatformsToFlags
+/// Returns a parsed `platform -> flags setting`, or `None` if not all Skyframe deps are ready.
+fn read_platforms_to_flags(
+    it: &mut LineIterator,
+    env: &mut Environment<'_>,
+    main_repo_mapping: &RepositoryMapping,
+) -> ParseResult<IndexMap<Label, Arc<ParsedFlagsValue>>> {
+    // ImmutableMap.Builder: a duplicate key fails buildOrThrow.
+    let mut platforms_to_flags: Vec<(Label, Arc<ParsedFlagsValue>)> = Vec::new();
+    let mut need_skyframe_deps = false;
+    while it.has_next() && !equals_ignore_case(it.peek(), "flags:") {
+        let platform = match read_platform(it, main_repo_mapping) {
+            Ok(platform) => platform,
+            Err(e) => return Ok(Err(e)),
+        };
+        let flags = match read_flags(it) {
+            Ok(flags) => flags,
+            Err(e) => return Ok(Err(e)),
+        };
+        match parse_flags(flags, env, main_repo_mapping)? {
+            Ok(None) => need_skyframe_deps = true,
+            Ok(Some(parsed_flags)) => platforms_to_flags.push((platform, parsed_flags)),
+            Err(e) => return Ok(Err(e)),
+        }
+    }
+
+    if need_skyframe_deps {
+        return Ok(Ok(None));
+    }
+
+    let mut result = IndexMap::new();
+    for (platform, flags) in platforms_to_flags {
+        if result.insert(platform, flags).is_some() {
+            return Ok(Err(parsing_exception(
+                "Got duplicate platform entries but each platform key must be unique".to_string(),
+            )));
+        }
+    }
+    Ok(Ok(Some(result)))
+}
+
+// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:264 PlatformMappingFunction.readFlagsToPlatforms
+/// Returns a parsed `flags -> platform setting`, or `None` if not all Skyframe deps are ready.
+fn read_flags_to_platforms(
+    it: &mut LineIterator,
+    env: &mut Environment<'_>,
+    main_repo_mapping: &RepositoryMapping,
+) -> ParseResult<Vec<(Arc<ParsedFlagsValue>, Label)>> {
+    let mut flags_to_platforms: Vec<(Arc<ParsedFlagsValue>, Label)> = Vec::new();
+    let mut need_skyframe_deps = false;
+    while it.has_next() && it.peek().starts_with("--") {
+        let flags = match read_flags(it) {
+            Ok(flags) => flags,
+            Err(e) => return Ok(Err(e)),
+        };
+        let platform = match read_platform(it, main_repo_mapping) {
+            Ok(platform) => platform,
+            Err(e) => return Ok(Err(e)),
+        };
+
+        match parse_flags(flags, env, main_repo_mapping)? {
+            Ok(None) => need_skyframe_deps = true,
+            Ok(Some(parsed_flags)) => flags_to_platforms.push((parsed_flags, platform)),
+            Err(e) => return Ok(Err(e)),
+        }
+    }
+
+    if need_skyframe_deps {
+        return Ok(Ok(None));
+    }
+
+    // ImmutableMap.Builder.buildOrThrow fails on a duplicate key.
+    for i in 0..flags_to_platforms.len() {
+        for j in 0..i {
+            if flags_to_platforms[i].0 == flags_to_platforms[j].0 {
+                return Ok(Err(parsing_exception(
+                    "Got duplicate flags entries but each flags key must be unique".to_string(),
+                )));
+            }
+        }
+    }
+    Ok(Ok(Some(flags_to_platforms)))
+}
+
+// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:296 PlatformMappingFunction.readPlatform
+fn read_platform(
+    it: &mut LineIterator,
+    main_repo_mapping: &RepositoryMapping,
+) -> Result<Label, PlatformMappingParsingException> {
+    if !it.has_next() {
+        return Err(parsing_exception(
+            "Expected platform label but got end of file".to_string(),
+        ));
+    }
+
+    let line = it.next();
+    let main_repo_context = blaze_cmdline::LabelRepoContextImpl::of(
+        blaze_cmdline::repository_name::MAIN.clone(),
+        main_repo_mapping.clone(),
+    );
+    Label::parse_with_repo_context(&line, &main_repo_context)
+        .map_err(|_| parsing_exception(format!("Expected platform label but got {}", line)))
+}
+
+// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:311 PlatformMappingFunction.readFlags
+fn read_flags(it: &mut LineIterator) -> Result<Vec<String>, PlatformMappingParsingException> {
+    let mut flags = Vec::new();
+    // Note: Short form flags are not supported.
+    while it.has_next() && it.peek().starts_with("--") {
+        flags.push(it.next());
+    }
+    if flags.is_empty() {
+        return Err(parsing_exception(if it.has_next() {
+            format!(
+                "Expected a standard format flag (starting with --) but got {}",
+                it.peek()
+            )
+        } else {
+            "Expected a flag but got end of file".to_string()
+        }));
+    }
+    Ok(flags)
 }
 
 // Java: com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyProducer.java:209 BuildConfigurationKeyProducer.mergeFromPlatformMapping
@@ -916,6 +1351,7 @@ impl ConfigurationSkyframe {
             baseline_configuration: build_options,
             baseline_exec_configuration: Arc::new(baseline_exec),
             platforms: request.platforms,
+            main_repository_mapping: Arc::new(UnportedMainRepositoryMapping),
         };
         let client = Arc::new(client);
         let evaluator = register_configuration_functions(EvaluatorBuilder::new())
@@ -1080,7 +1516,15 @@ impl EventHandler for ErrorSensing<'_> {
 }
 
 impl Hash for PlatformMappingValue {
+    // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingValue.java:174 PlatformMappingValue.hashCode
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.is_empty.hash(state)
+        for (flags, platform) in &self.flags_to_platforms {
+            flags.hash(state);
+            platform.hash(state);
+        }
+        for (platform, flags) in &self.platforms_to_flags {
+            platform.hash(state);
+            flags.hash(state);
+        }
     }
 }

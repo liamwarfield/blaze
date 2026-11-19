@@ -1,0 +1,5 @@
+EVAL range() missing 1 required positional argument: start_or_stop
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_range_noargs.star", line 1, column 6, in <toplevel>
+TRACE \x09\x09range()
+TRACE Error in range: range() missing 1 required positional argument: start_or_stop

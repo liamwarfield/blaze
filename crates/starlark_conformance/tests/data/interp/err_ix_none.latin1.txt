@@ -1,0 +1,5 @@
+EVAL type 'NoneType' has no operator [](int)
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_ix_none.star", line 1, column 9, in <toplevel>
+TRACE \x09\x09x = None[0]
+TRACE Error: type 'NoneType' has no operator [](int)

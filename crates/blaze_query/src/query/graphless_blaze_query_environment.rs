@@ -32,6 +32,7 @@ use crate::pkgcache::{
     CachingPackageLocator, GetSiblingsError, GetTargetError, QueryTransitivePackagePreloader,
     TargetEdgeObserver, TargetPatternPreloader, TargetProvider,
 };
+use crate::query::blaze_query_environment::new_fake_load_target;
 use crate::query::blaze_target_accessor;
 use crate::query::label_visitor::LabelVisitor;
 use crate::query::path_label_visitor::PathLabelVisitor;
@@ -715,14 +716,12 @@ impl TransitiveLoadFilesHelper<Target> for GraphlessTransitiveLoadFilesHelper<'_
     fn get_load_file_target(
         &self,
         original_target: &Target,
-        _bzl_label: &Label,
+        bzl_label: &Label,
     ) -> Result<Target, InterruptedException> {
-        let _build_file = self.get_build_file_target(original_target)?;
-        // new FakeLoadTarget(bzlLabel, getBuildFileTarget(originalTarget).getPackageoid())
-        blaze_util::unported!(
-            "FakeLoadTarget.<init>",
-            "needs a constructor from the BUILD file target's package metadata and declarations"
-        )
+        Ok(new_fake_load_target(
+            bzl_label.clone(),
+            &self.get_build_file_target(original_target)?,
+        ))
     }
 
     // Java: com/google/devtools/build/lib/query2/query/GraphlessBlazeQueryEnvironment.java:436 maybeGetBuildFileTargetForLoadFileTarget
@@ -736,13 +735,12 @@ impl TransitiveLoadFilesHelper<Target> for GraphlessTransitiveLoadFilesHelper<'_
             .env
             .caching_package_locator
             .get_base_name_for_loaded_package(pkg_id_of_bzl_label);
-        if base_name.is_none() {
+        let Some(base_name) = base_name else {
             return Ok(None);
-        }
-        let _build_file = self.get_build_file_target(original_target)?;
-        blaze_util::unported!(
-            "FakeLoadTarget.<init>",
-            "needs a constructor from the BUILD file target's package metadata and declarations"
-        )
+        };
+        Ok(Some(new_fake_load_target(
+            Label::create_unvalidated(pkg_id_of_bzl_label.clone(), &base_name),
+            &self.get_build_file_target(original_target)?,
+        )))
     }
 }

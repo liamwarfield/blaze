@@ -367,11 +367,17 @@ impl RemoteActionFileSystem {
         // blocking prefetcher seam waits on the remote crate's runtime, which panics when the
         // calling thread is inside that runtime (an upload reads its file through this file
         // system: `uploadFile` -> `getInputStream`). The wait therefore runs on a thread of its
-        // own; the calling thread blocks until it ends, as Java's caller does.
+        // own; the calling thread blocks until it ends, as Java's caller does. The helper stands
+        // in for the calling thread (`ThreadInterrupt::adopt`, as `on_evaluation_stack` does): an
+        // interrupt of the caller reaches the wait of the prefetch (`getFromFuture` throws
+        // `InterruptedException` at once), and the status the wait clears or leaves is the
+        // caller's.
         let input_artifact_data = &*self.input_artifact_data;
+        let caller = blaze_shell::ThreadInterrupt::current();
         std::thread::scope(|scope| {
             scope
                 .spawn(|| {
+                    let _adopted = caller.adopt();
                     fetcher.prefetch_files(
                         &*action,
                         std::slice::from_ref(&input),
@@ -999,8 +1005,11 @@ impl FileSystem for RemoteActionFileSystem {
             }
             // catch (InterruptedException e)
             if e.kind() == io::ErrorKind::Interrupted {
-                // PORT: Java restores the thread's interrupt flag and throws a plain IOException;
-                // Blaze has no interrupt flag, so the error keeps the kind Interrupted.
+                // Thread.currentThread().interrupt();
+                blaze_shell::thread_interrupt::interrupt_current();
+                // PORT: Java throws a plain IOException; the error keeps the kind Interrupted,
+                // which Blaze's callers read as the InterruptedException that the restored flag
+                // makes their next wait throw in Java.
                 return Err(io::Error::new(
                     io::ErrorKind::Interrupted,
                     format!(

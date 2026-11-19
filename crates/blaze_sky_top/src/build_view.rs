@@ -28,7 +28,7 @@ use blaze_analysis::aspect_value::AspectValue;
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::configured_target_key::ConfiguredTargetKey;
 use blaze_analysis::constraints::top_level_constraint_semantics::{
-    PlatformCompatibility, TopLevelConstraintSemantics,
+    PlatformCompatibility, TargetLookup, TargetLookupException, TopLevelConstraintSemantics,
 };
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_build_config::build_options::BuildOptions;
@@ -321,11 +321,16 @@ pub fn update_with_aspects_parameters(
                 configured_target.clone(),
             )));
         }
+        let target_lookup = SkyframeTargetLookup {
+            skyframe_executor,
+            event_handler: event_handler.clone(),
+        };
         let (result, skipped) = check_target_compatibility_of_build_driver_keys(
             skyframe_executor,
             skyframe_analysis_result,
             options,
             event_handler.as_ref(),
+            &target_lookup,
         )?;
         skyframe_analysis_result = result;
         targets_to_skip = skipped;
@@ -405,6 +410,12 @@ pub fn update_with_aspects_parameters(
                         target.get_configuration_key().as_ref(),
                     )
                 },
+                // Java: TopLevelConstraintSemantics.getOrLoadTarget
+                &SkyframeTargetLookup {
+                    skyframe_executor,
+                    event_handler: event_handler.clone(),
+                },
+                event_handler.as_ref(),
             )
             .map_err(|e| BuildViewError::ViewCreationFailed {
                 message: e.message,
@@ -459,6 +470,7 @@ fn check_target_compatibility_of_build_driver_keys(
     skyframe_analysis_result: SkyframeAnalysisResult,
     options: &BuildViewUpdateOptions,
     event_handler: &dyn ExtendedEventHandler,
+    target_lookup: &dyn TargetLookup,
 ) -> Result<(SkyframeAnalysisResult, Vec<ConfiguredTarget>), BuildViewError> {
     let graph = skyframe_executor.get_walkable_graph();
     let mut skipped: Vec<ConfiguredTarget> = Vec::new();
@@ -495,8 +507,16 @@ fn check_target_compatibility_of_build_driver_keys(
                     TopLevelConstraintSemantics::compatibility_with_target_environment(
                         configured_target,
                         build_configuration_value.as_deref(),
+                        target_lookup,
+                        event_handler,
                     )
-                    .map(|environment_compatibility| environment_compatibility.is_compatible())
+                    .map(|environment_compatibility| {
+                        // PORT: the lookup loads packages outside Skyframe, so a value is never
+                        // missing (Java: BuildDriverFunction returns null then).
+                        environment_compatibility
+                            .expect("environment compatibility")
+                            .is_compatible()
+                    })
                 }
                 Err(e) => Err(e),
             };
@@ -908,4 +928,77 @@ fn set_artifact_roots(skyframe_executor: &SkyframeExecutor) {
         .set_package_roots(Arc::new(MapAsPackageRoots {
             package_roots_map: skyframe_executor.get_package_roots(),
         }));
+}
+
+/// `TopLevelConstraintSemantics.TargetLookup` of a build: the loaded package, or else the
+/// package loaded through the package manager (Java: `TopLevelConstraintSemantics.getOrLoadTarget`;
+/// BuildDriverFunction's lookup requests the package from Skyframe, which the blocking evaluator
+/// computes the same way).
+// Java: com/google/devtools/build/lib/analysis/constraints/TopLevelConstraintSemantics.java:427 TopLevelConstraintSemantics.getOrLoadTarget
+struct SkyframeTargetLookup<'a> {
+    skyframe_executor: &'a SkyframeExecutor,
+    event_handler: Arc<dyn ExtendedEventHandler>,
+}
+
+impl TargetLookup for SkyframeTargetLookup<'_> {
+    fn get_target(
+        &self,
+        label: &Label,
+    ) -> Result<
+        Option<(
+            Target,
+            Vec<Arc<blaze_packages::target::environment_group::EnvironmentGroup>>,
+        )>,
+        TargetLookupException,
+    > {
+        let package = match self
+            .skyframe_executor
+            .get_existing_package(label.get_package_identifier())
+        {
+            Some(package) => package,
+            None => {
+                // Fall back to loading the target. Top-level targets are already in the graph,
+                // but referenced environment targets may not yet be loaded.
+                match self
+                    .skyframe_executor
+                    .get_package_manager()
+                    .get_package(self.event_handler.clone(), label.get_package_identifier())
+                {
+                    Ok(package) => package,
+                    Err(blaze_sky_loading::package_manager::NoSuchPackageOrInterrupted::NoSuchPackage(e)) => {
+                        return Err(TargetLookupException {
+                            message: e.get_message().to_string(),
+                            failure_detail: crate::skyframe_error_processor::packages_failure_detail(
+                                &e.get_detailed_exit_code(),
+                            ),
+                        });
+                    }
+                    Err(blaze_sky_loading::package_manager::NoSuchPackageOrInterrupted::Interrupted) => {
+                        blaze_util::unported!(
+                            "TopLevelConstraintSemantics.getOrLoadTarget",
+                            "interrupted while loading {}",
+                            label
+                        )
+                    }
+                }
+            }
+        };
+        let target = match package.get_target(label.get_name()) {
+            Ok(target) => target.clone(),
+            Err(e) => {
+                return Err(TargetLookupException {
+                    message: e.get_message().to_string(),
+                    failure_detail: crate::skyframe_error_processor::packages_failure_detail(
+                        &e.get_detailed_exit_code(),
+                    ),
+                });
+            }
+        };
+        let groups = package
+            .get_targets()
+            .values()
+            .filter_map(|t| t.as_environment_group().cloned())
+            .collect();
+        Ok(Some((target, groups)))
+    }
 }

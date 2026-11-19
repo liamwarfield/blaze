@@ -1,0 +1,5 @@
+EVAL got string for '%e' format, want int or float
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_misc_percent_e_str.star", line 1, column 10, in <toplevel>
+TRACE \x09\x09x = "%e" % "a"
+TRACE Error: got string for '%e' format, want int or float

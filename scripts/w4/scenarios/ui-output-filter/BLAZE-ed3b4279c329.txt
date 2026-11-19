@@ -1,0 +1,96 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /tmp/claude-1000/-home-liamwarfield--t3-projects-blaze/6d69a44d-e0de-42b9-9769-0799c9eb488a/scratchpad/blaze-before
+# sha256 ed3b4279c3299fbc8c3a5ae6a65e0bc012e1f3f83f47464ae8c9a80846872651
+# tree 67302dc7fd8c4cc5c3c5fc80289402f9b95daaa6 (dirty)
+# date 2026-11-19T13:21:33
+=== 1: run build //a1:t //b1:t
+exit 0
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+DEBUG: <WS>/a1/BUILD.bazel:3:6: loading of package a1
+DEBUG: <WS>/b1/BUILD.bazel:3:6: loading of package b1
+DEBUG: <WS>/defs.bzl:5:10: analysis of @@//dep:old
+WARNING: <WS>/b1/BUILD.bazel:6:6: in noisy rule //b1:t: target '//b1:t' depends on deprecated target '//dep:old': use something else
+DEBUG: <WS>/defs.bzl:5:10: analysis of @@//b1:t
+WARNING: <WS>/a1/BUILD.bazel:6:6: in noisy rule //a1:t: target '//a1:t' depends on deprecated target '//dep:old': use something else
+DEBUG: <WS>/defs.bzl:5:10: analysis of @@//a1:t
+INFO: Analyzed 2 targets (7 packages loaded, 9 targets configured).
+INFO: Found 2 targets...
+INFO: From Action b1/t.out:
+stderr of t
+INFO: From Action a1/t.out:
+stderr of t
+INFO: Elapsed time: <DUR>
+INFO: 3 processes: 1 internal, 2 linux-sandbox.
+INFO: Build completed successfully, 3 total actions
+=== 2: run build //a2:t //b2:t --output_filter=^//a2
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+DEBUG: <WS>/b2/BUILD.bazel:3:6: loading of package b2
+DEBUG: <WS>/a2/BUILD.bazel:3:6: loading of package a2
+DEBUG: <WS>/defs.bzl:5:10: analysis of @@//dep:old
+WARNING: <WS>/a2/BUILD.bazel:6:6: in noisy rule //a2:t: target '//a2:t' depends on deprecated target '//dep:old': use something else
+DEBUG: <WS>/defs.bzl:5:10: analysis of @@//a2:t
+DEBUG: <WS>/defs.bzl:5:10: analysis of @@//b2:t
+INFO: Analyzed 2 targets (7 packages loaded, 9 targets configured).
+INFO: Found 2 targets...
+INFO: From Action a2/t.out:
+stderr of t
+INFO: Elapsed time: <DUR>
+INFO: 3 processes: 1 internal, 2 linux-sandbox.
+INFO: Build completed successfully, 3 total actions
+=== 3: run build //a3:t //b3:t --output_filter=nothingmatches
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+DEBUG: <WS>/b3/BUILD.bazel:3:6: loading of package b3
+DEBUG: <WS>/a3/BUILD.bazel:3:6: loading of package a3
+DEBUG: <WS>/defs.bzl:5:10: analysis of @@//dep:old
+DEBUG: <WS>/defs.bzl:5:10: analysis of @@//a3:t
+DEBUG: <WS>/defs.bzl:5:10: analysis of @@//b3:t
+INFO: Analyzed 2 targets (7 packages loaded, 9 targets configured).
+INFO: Found 2 targets...
+INFO: Elapsed time: <DUR>
+INFO: 3 processes: 1 internal, 2 linux-sandbox.
+INFO: Build completed successfully, 3 total actions
+=== 4: run build //a4:t //b4:t --auto_output_filter=all
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+DEBUG: <WS>/a4/BUILD.bazel:3:6: loading of package a4
+DEBUG: <WS>/b4/BUILD.bazel:3:6: loading of package b4
+DEBUG: <WS>/defs.bzl:5:10: analysis of @@//dep:old
+DEBUG: <WS>/defs.bzl:5:10: analysis of @@//b4:t
+DEBUG: <WS>/defs.bzl:5:10: analysis of @@//a4:t
+INFO: Analyzed 2 targets (7 packages loaded, 9 targets configured).
+INFO: Found 2 targets...
+INFO: Elapsed time: <DUR>
+INFO: 3 processes: 1 internal, 2 linux-sandbox.
+INFO: Build completed successfully, 3 total actions
+=== 5: run build //a5:t //b5:t --auto_output_filter=none
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+DEBUG: <WS>/b5/BUILD.bazel:3:6: loading of package b5
+DEBUG: <WS>/a5/BUILD.bazel:3:6: loading of package a5
+DEBUG: <WS>/defs.bzl:5:10: analysis of @@//dep:old
+WARNING: <WS>/b5/BUILD.bazel:6:6: in noisy rule //b5:t: target '//b5:t' depends on deprecated target '//dep:old': use something else
+DEBUG: <WS>/defs.bzl:5:10: analysis of @@//b5:t
+WARNING: <WS>/a5/BUILD.bazel:6:6: in noisy rule //a5:t: target '//a5:t' depends on deprecated target '//dep:old': use something else
+DEBUG: <WS>/defs.bzl:5:10: analysis of @@//a5:t
+INFO: Analyzed 2 targets (7 packages loaded, 9 targets configured).
+INFO: Found 2 targets...
+INFO: From Action b5/t.out:
+stderr of t
+INFO: From Action a5/t.out:
+stderr of t
+INFO: Elapsed time: <DUR>
+INFO: 3 processes: 1 internal, 2 linux-sandbox.
+INFO: Build completed successfully, 3 total actions

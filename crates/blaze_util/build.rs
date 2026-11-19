@@ -7,6 +7,11 @@
 //! - `fn category_number_and_code(c: &Category) -> (u32, i32)`: the oneof field number of the
 //!   category and the value of the category message's field #1 (its `code` enum).
 //! - `fn metadata_exit_code(category_field_number: u32, code: i32) -> Option<u32>`.
+//! - `fn category_of_name(category: &str, code: Option<&str>) -> Option<Category>`: the category
+//!   submessage named by its proto message type (`ExternalRepository`) with the `Code` value of
+//!   that name (`None`: the default instance, as Java's `getDefaultInstance()`).
+//! - `fn category_of_value(category: &str, code: i32) -> Option<Category>`: the same with the
+//!   code's number.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -43,6 +48,21 @@ fn message_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
         }
     }
     None
+}
+
+fn lower_snake(camel: &str) -> String {
+    let mut out = String::new();
+    for (i, ch) in camel.chars().enumerate() {
+        if ch.is_ascii_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 fn strip_comments(src: &str) -> String {
@@ -131,6 +151,31 @@ fn main() {
         }
     }
     out.push_str("    }\n}\n\n");
+    out.push_str(
+        "#[allow(clippy::needless_update)]\npub(crate) fn category_of_name(category: &str, code: Option<&str>) -> Option<blaze_protos::failure_details::failure_detail::Category> {\n    use blaze_protos::failure_details as fd;\n    use blaze_protos::failure_details::failure_detail::Category;\n    match category {\n",
+    );
+    for (ty, field, _) in &categories {
+        writeln!(
+            out,
+            "        \"{ty}\" => Some(Category::{}(fd::{ty} {{ code: match code {{ None => 0, Some(c) => fd::{}::Code::from_str_name(c)? as i32 }}, ..Default::default() }})),",
+            upper_camel(field),
+            lower_snake(ty),
+        )
+        .unwrap();
+    }
+    out.push_str("        _ => None,\n    }\n}\n\n");
+    out.push_str(
+        "#[allow(clippy::needless_update)]\npub(crate) fn category_of_value(category: &str, code: i32) -> Option<blaze_protos::failure_details::failure_detail::Category> {\n    use blaze_protos::failure_details as fd;\n    use blaze_protos::failure_details::failure_detail::Category;\n    match category {\n",
+    );
+    for (ty, field, _) in &categories {
+        writeln!(
+            out,
+            "        \"{ty}\" => Some(Category::{}(fd::{ty} {{ code, ..Default::default() }})),",
+            upper_camel(field),
+        )
+        .unwrap();
+    }
+    out.push_str("        _ => None,\n    }\n}\n\n");
     out.push_str(
         "pub(crate) fn metadata_exit_code(category_field_number: u32, code: i32) -> Option<u32> {\n    match (category_field_number, code) {\n",
     );

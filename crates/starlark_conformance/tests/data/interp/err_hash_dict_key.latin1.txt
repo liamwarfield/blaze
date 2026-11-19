@@ -1,0 +1,5 @@
+EVAL unhashable type: 'dict'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_hash_dict_key.star", line 1, column 8, in <toplevel>
+TRACE \x09\x09x = {{}: 1}
+TRACE Error: unhashable type: 'dict'

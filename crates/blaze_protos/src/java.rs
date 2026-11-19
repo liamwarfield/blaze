@@ -144,3 +144,152 @@ pub fn encode_latin1(s: &str) -> Vec<u8> {
 pub fn decode_latin1(bytes: &[u8]) -> String {
     bytes.iter().map(|&b| b as char).collect()
 }
+
+/// `new String(bytes, UTF_8)`: the JDK's replacing UTF-8 decoder, which protobuf-java uses for
+/// `string` values (`ByteString.toStringUtf8`, `CodedInputStream.readString`).
+///
+/// The same function as `blaze_util::string_encoding::java_new_string_utf8`, which code above this
+/// crate calls; blaze_protos is below blaze_util and keeps its own copy. Test vectors from the
+/// JDK: `tests/protobuf_utf8_test.rs`.
+///
+/// One U+FFFD per malformed sequence, with the JDK's own notion of how long a malformed sequence
+/// is (it differs from `String::from_utf8_lossy`, for example for an encoded surrogate, which is
+/// one U+FFFD in Java and three in Rust).
+///
+/// Java (JDK): java.base/java/lang/String.java String.decodeUTF8_UTF16 with `doReplace = true`.
+pub fn new_string_utf8(src: &[u8]) -> String {
+    const REPL: char = '\u{fffd}';
+    // Java works on signed bytes; the predicates below are written on `u8`.
+    fn is_not_continuation(b: u8) -> bool {
+        b & 0xc0 != 0x80
+    }
+    fn is_malformed3(b1: u8, b2: u8, b3: u8) -> bool {
+        (b1 == 0xe0 && b2 & 0xe0 == 0x80) || b2 & 0xc0 != 0x80 || b3 & 0xc0 != 0x80
+    }
+    fn is_malformed3_2(b1: u8, b2: u8) -> bool {
+        (b1 == 0xe0 && b2 & 0xe0 == 0x80) || b2 & 0xc0 != 0x80
+    }
+    fn is_malformed4(b2: u8, b3: u8, b4: u8) -> bool {
+        b2 & 0xc0 != 0x80 || b3 & 0xc0 != 0x80 || b4 & 0xc0 != 0x80
+    }
+    fn is_malformed4_2(b1: u8, b2: u8) -> bool {
+        (b1 == 0xf0 && !(0x90..=0xbf).contains(&b2))
+            || (b1 == 0xf4 && b2 & 0xf0 != 0x80)
+            || b2 & 0xc0 != 0x80
+    }
+    fn is_malformed4_3(b3: u8) -> bool {
+        b3 & 0xc0 != 0x80
+    }
+    fn malformed3(src: &[u8], sp: usize) -> usize {
+        let b1 = src[sp];
+        let b2 = src[sp + 1]; // no need to lookup b3
+        if (b1 == 0xe0 && b2 & 0xe0 == 0x80) || is_not_continuation(b2) {
+            1
+        } else {
+            2
+        }
+    }
+    fn malformed4(src: &[u8], sp: usize) -> usize {
+        // we don't care the speed here
+        let b1 = src[sp];
+        let b2 = src[sp + 1];
+        if b1 > 0xf4
+            || (b1 == 0xf0 && !(0x90..=0xbf).contains(&b2))
+            || (b1 == 0xf4 && b2 & 0xf0 != 0x80)
+            || is_not_continuation(b2)
+        {
+            return 1;
+        }
+        if is_not_continuation(src[sp + 2]) {
+            return 2;
+        }
+        3
+    }
+
+    let sl = src.len();
+    let mut sp = 0;
+    let mut dst = String::with_capacity(sl);
+    while sp < sl {
+        let b1 = src[sp];
+        sp += 1;
+        if b1 < 0x80 {
+            dst.push(b1 as char);
+        } else if b1 >> 5 == 0b110 && b1 & 0x1e != 0 {
+            if sp < sl {
+                let b2 = src[sp];
+                sp += 1;
+                if is_not_continuation(b2) {
+                    dst.push(REPL);
+                    sp -= 1;
+                } else {
+                    let c = (((b1 & 0x1f) as u32) << 6) | (b2 & 0x3f) as u32;
+                    dst.push(char::from_u32(c).expect("two-byte sequence"));
+                }
+                continue;
+            }
+            // underflow()
+            dst.push(REPL);
+            break;
+        } else if b1 >> 4 == 0b1110 {
+            if sp + 1 < sl {
+                let b2 = src[sp];
+                let b3 = src[sp + 1];
+                sp += 2;
+                if is_malformed3(b1, b2, b3) {
+                    dst.push(REPL);
+                    sp -= 3;
+                    sp += malformed3(src, sp);
+                } else {
+                    let c = (((b1 & 0x0f) as u32) << 12)
+                        | (((b2 & 0x3f) as u32) << 6)
+                        | (b3 & 0x3f) as u32;
+                    // Character.isSurrogate(c)
+                    match char::from_u32(c) {
+                        None => dst.push(REPL),
+                        Some(c) => dst.push(c),
+                    }
+                }
+                continue;
+            }
+            if sp < sl && is_malformed3_2(b1, src[sp]) {
+                dst.push(REPL);
+                continue;
+            }
+            dst.push(REPL);
+            break;
+        } else if b1 >> 3 == 0b11110 {
+            if sp + 2 < sl {
+                let b2 = src[sp];
+                let b3 = src[sp + 1];
+                let b4 = src[sp + 2];
+                sp += 3;
+                let uc = (((b1 & 0x07) as u32) << 18)
+                    | (((b2 & 0x3f) as u32) << 12)
+                    | (((b3 & 0x3f) as u32) << 6)
+                    | (b4 & 0x3f) as u32;
+                // shortest form check: Character.isSupplementaryCodePoint(uc)
+                if is_malformed4(b2, b3, b4) || !(0x1_0000..=0x10_ffff).contains(&uc) {
+                    dst.push(REPL);
+                    sp -= 4;
+                    sp += malformed4(src, sp);
+                } else {
+                    dst.push(char::from_u32(uc).expect("supplementary code point"));
+                }
+                continue;
+            }
+            if b1 > 0xf4 || (sp < sl && is_malformed4_2(b1, src[sp])) {
+                dst.push(REPL);
+                continue;
+            }
+            sp += 1;
+            dst.push(REPL);
+            if sp < sl && is_malformed4_3(src[sp]) {
+                continue;
+            }
+            break;
+        } else {
+            dst.push(REPL);
+        }
+    }
+    dst
+}

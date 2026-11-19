@@ -1,0 +1,7 @@
+EVAL boom
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_fail_in_def.star", line 3, column 2, in <toplevel>
+TRACE \x09\x09f()
+TRACE \x09File "err_call_fail_in_def.star", line 2, column 7, in f
+TRACE \x09\x09fail("boom")
+TRACE Error in fail: boom

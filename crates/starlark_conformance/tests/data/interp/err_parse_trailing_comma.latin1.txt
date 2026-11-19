@@ -1,0 +1,1 @@
+SYNTAX err_parse_trailing_comma.star:1:10: Trailing comma is allowed only in parenthesized tuples.

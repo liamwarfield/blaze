@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use blaze_build_config::build_options::{Scope, ScopeType};
+use blaze_build_config::build_options::{Scope, ScopeDefinition, ScopeType};
 use blaze_build_config::build_options_scope_value::{BuildOptionsScopeKey, BuildOptionsScopeValue};
 use blaze_cmdline::{Label, TargetParsingException, TargetPatternsCode};
 use blaze_packages::attribute::{AttributeMap, RawAttributeMapper};
@@ -16,8 +16,12 @@ use blaze_packages::exceptions::NoSuchPackageException;
 use blaze_packages::target::Target;
 use blaze_packages::types::{AttrValue, Type};
 use blaze_sky_loading::package_function::PackageKey;
+use blaze_sky_loading::project_function::{
+    ProjectFilesLookupKey, ProjectFilesLookupValue, ProjectKey,
+};
 use blaze_skyframe::{
-    ComputeError, Environment, EvaluatorBuilder, Interrupted, SkyFunctionException, Transience,
+    ComputeError, Environment, EvaluatorBuilder, Interrupted, SkyFunctionException, SkyKey,
+    Transience,
 };
 use indexmap::IndexMap;
 
@@ -55,24 +59,97 @@ fn compute(
     }
 
     // get PROJECT.scl files for each scoped flag that is not universal
-    // Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeFunction.java:131 BuildOptionsScopeFunction.findProjectFiles
-    for (starlark_option, scope) in &scopes {
-        if scope.get_scope_type() == ScopeType::PROJECT {
-            // PORT: ProjectFilesLookupValue / ProjectValue (PROJECT.scl) are not ported.
-            blaze_util::unported!(
-                "BuildOptionsScopeFunction.findProjectFiles",
-                "project-scoped flag {}",
-                starlark_option
-            );
+    let Some(project_files) = find_project_files(&scopes, env)? else {
+        return Ok(None);
+    };
+
+    // look up ProjectValue for scoped flags that have PROJECT.scl files to get the list of
+    // active directories that define the scope of the flag.
+    // PORT: java-hash-order. Java's HashMap<Label, SkyKey> is iterated below and its key set
+    // becomes the value's list of flags with project files; the entries are kept in the order of
+    // `scopes` here.
+    let mut project_value_sky_keys_map: IndexMap<Label, ProjectKey> = IndexMap::new();
+    for (project_scoped_flag, files) in &project_files {
+        if !files.is_empty() {
+            let project_key = ProjectKey::new(files[0].clone());
+            project_value_sky_keys_map.insert(project_scoped_flag.clone(), project_key);
         }
     }
-    // No flag has a PROJECT.scl file: projectValueSkyKeysMap is empty, so no scope gets a
-    // ScopeDefinition and the list of flags with project files is empty.
+
+    let sky_keys: Vec<SkyKey> = project_value_sky_keys_map
+        .values()
+        .map(|k| SkyKey::new(k.clone()))
+        .collect();
+    let project_values_look_up_result = env.get_values_and_exceptions(&sky_keys)?;
+
+    if env.values_missing() {
+        return Ok(None);
+    }
+
+    for (project_scoped_flag, project_key) in &project_value_sky_keys_map {
+        let project_value = project_values_look_up_result
+            .get_typed(project_key)
+            .expect("NullPointerException: projectValue");
+        let default_project_directories = project_value.get_default_project_directories();
+        let scope_type = scopes[project_scoped_flag].get_scope_type();
+        scopes.insert(
+            project_scoped_flag.clone(),
+            Scope::new(
+                scope_type,
+                if default_project_directories.is_empty() {
+                    None
+                } else {
+                    Some(ScopeDefinition::new(default_project_directories))
+                },
+            ),
+        );
+    }
+
     Ok(Some(BuildOptionsScopeValue::create(
         Arc::new(fully_resolved_build_options_builder.build()),
-        Vec::new(),
+        project_value_sky_keys_map.keys().cloned().collect(),
         scopes,
     )))
+}
+
+// Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeFunction.java:131 BuildOptionsScopeFunction.findProjectFiles
+/// TODO: b/384057043 - deduplicate this method in several places in a follow up CL.
+///
+/// `None` where Java returns null. The multimap is a list of (flag, project files) in the order
+/// of `scopes`.
+fn find_project_files(
+    scopes: &IndexMap<Label, Scope>,
+    env: &mut Environment<'_>,
+) -> Result<Option<Vec<(Label, Vec<Label>)>>, ComputeError> {
+    // PORT: java-hash-order. Java collects the keys in a HashMap<Label, Key> and visits it in
+    // its order; the flags are visited in the order of `scopes` here (the lookups do not report
+    // events, and the result is a multimap keyed by flag).
+    let mut targets_to_sky_keys: Vec<(Label, ProjectFilesLookupKey)> = Vec::new();
+    for (starlark_option, scope) in scopes {
+        if scope.get_scope_type() == ScopeType::PROJECT {
+            targets_to_sky_keys.push((
+                starlark_option.clone(),
+                ProjectFilesLookupKey::key(starlark_option.get_package_identifier().clone()),
+            ));
+        }
+    }
+
+    let mut project_files_lookup_values: Vec<(Label, Arc<ProjectFilesLookupValue>)> = Vec::new();
+    for (flag, sky_key) in targets_to_sky_keys {
+        // Java: env.getValueOrThrow(key, ProjectResolutionException.class): PROJECT_FILES_LOOKUP
+        // throws ProjectFilesLookupException, which is not a ProjectResolutionException, so an
+        // error of the lookup is this node's error.
+        let Some(project_files_lookup_value) = env.get_value(sky_key)? else {
+            return Ok(None);
+        };
+        project_files_lookup_values.push((flag, project_files_lookup_value));
+    }
+
+    let mut project_files: Vec<(Label, Vec<Label>)> = Vec::new();
+    for (flag, value) in project_files_lookup_values {
+        project_files.push((flag, value.get_project_files().to_vec()));
+    }
+    Ok(Some(project_files))
 }
 
 // Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeFunction.java:164 BuildOptionsScopeFunction.getScopeType

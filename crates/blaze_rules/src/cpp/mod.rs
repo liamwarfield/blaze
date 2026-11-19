@@ -13,6 +13,7 @@ pub mod cc_module;
 pub mod cc_starlark_internal;
 pub mod cc_toolchain_provider;
 pub mod cpp_compile_action;
+pub mod cpp_compile_action_template;
 pub mod cpp_configuration;
 pub mod cpp_file_types;
 pub mod cpp_include_extraction_context;

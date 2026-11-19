@@ -318,6 +318,33 @@ pub fn create_struct(bindings: &StarlarkEnv) -> OwnedFrozenValue {
     })
 }
 
+/// Java `StructProvider.STRUCT.create(bindings, errorMessageFormatForUnknownField)`: a struct of
+/// `bindings` whose unknown-field error is the format (one `%s`, the field name), followed by
+/// the list of fields (Java `StarlarkInfoWithMessage`).
+// Java: com/google/devtools/build/lib/packages/StructProvider.java:50 StructProvider.create
+pub fn create_struct_with_message(
+    bindings: &StarlarkEnv,
+    error_message_format_for_unknown_field: &str,
+) -> OwnedFrozenValue {
+    freeze_value(|module| {
+        let provider = module.heap().alloc(StructProvider);
+        let fields = bindings
+            .iter()
+            .map(|(k, e)| {
+                (
+                    k.clone(),
+                    blaze_starlark::eval::frozen_into(module, &e.value),
+                )
+            })
+            .collect();
+        module.heap().alloc(StarlarkInfo::with_message(
+            provider,
+            fields,
+            error_message_format_for_unknown_field,
+        ))
+    })
+}
+
 /// The fields of a struct created by [`create_struct`] (Java `convertNativeStructToMap`), in
 /// field order.
 pub fn struct_fields(value: &OwnedFrozenValue) -> StarlarkEnv {

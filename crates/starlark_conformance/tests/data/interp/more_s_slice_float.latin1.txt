@@ -1,1 +1,5 @@
 EVAL got float for start index, want int
+TRACE Traceback (most recent call last):
+TRACE \x09File "more_s_slice_float.star", line 1, column 12, in <toplevel>
+TRACE \x09\x09print("abc"[1.0:])
+TRACE Error: got float for start index, want int

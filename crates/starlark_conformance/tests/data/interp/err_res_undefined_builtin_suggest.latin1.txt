@@ -1,0 +1,1 @@
+SYNTAX err_res_undefined_builtin_suggest.star:1:7: name 'lenn' is not defined (did you mean 'len'?)

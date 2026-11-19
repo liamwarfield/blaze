@@ -1,0 +1,5 @@
+EVAL in update, dictionary update sequence element #0 is not iterable (int)
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_dict_update_elem.star", line 1, column 10, in <toplevel>
+TRACE \x09\x09{}.update([1])
+TRACE Error in update: in update, dictionary update sequence element #0 is not iterable (int)

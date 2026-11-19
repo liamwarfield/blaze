@@ -1,0 +1,5 @@
+EVAL 'list' value has no field or method 'apend' (did you mean 'append'?)
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_attr_list_suggest.star", line 1, column 7, in <toplevel>
+TRACE \x09\x09x = [].apend(1)
+TRACE Error: 'list' value has no field or method 'apend' (did you mean 'append'?)

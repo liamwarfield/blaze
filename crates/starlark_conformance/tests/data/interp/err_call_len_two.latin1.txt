@@ -1,0 +1,5 @@
+EVAL len() accepts no more than 1 positional argument but got 2
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_len_two.star", line 1, column 4, in <toplevel>
+TRACE \x09\x09len([], [])
+TRACE Error in len: len() accepts no more than 1 positional argument but got 2

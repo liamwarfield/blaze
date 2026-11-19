@@ -14,6 +14,8 @@
 
 pub mod archive_utils;
 pub mod blaze;
+pub mod command_server;
+pub mod cpp_unordered;
 pub mod option_processor;
 pub mod platform;
 pub mod server;

@@ -1,0 +1,5 @@
+EVAL got 1099511627776 for sequence index, want value in signed 32-bit range
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_ix_index_big_int.star", line 1, column 11, in <toplevel>
+TRACE \x09\x09x = [1, 2][1 << 40]
+TRACE Error: got 1099511627776 for sequence index, want value in signed 32-bit range

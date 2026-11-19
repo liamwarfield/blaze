@@ -1,0 +1,2 @@
+SYNTAX err_parse_unexpected_indent.star:2:2: indentation error
+SYNTAX err_parse_unexpected_indent.star:2:2: contains syntax errors

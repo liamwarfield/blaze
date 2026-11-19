@@ -2336,3 +2336,334 @@ fn test_json_invalid_structure() {
         &["json.encode(struct(a=rule))"],
     );
 }
+
+// ---- Symbolic macros (Java StarlarkRuleClassFunctionsTest.testSymbolicMacro_*), on the
+// package-loading harness (Java scratch.file + getPackage).
+
+/// The package, or `None` where Java's `getPackage` returns null (loading threw).
+fn load_package_or_none(
+    t: &PackageLoadingTestCase,
+    pkg: &str,
+) -> (Option<std::sync::Arc<blaze_packages::package::Package>>, Vec<Event>) {
+    let (result, events) = t.evaluate_package(pkg);
+    if result.has_error() {
+        return (None, events);
+    }
+    let loaded = t.get_package(pkg);
+    (Some(loaded.package), loaded.events)
+}
+
+fn empty_macro_bzl(t: &PackageLoadingTestCase) {
+    t.scratch_file(
+        "pkg/foo.bzl",
+        &[
+            "def _impl(name, visibility):",
+            "    pass",
+            "my_macro = macro(implementation=_impl)",
+        ],
+    );
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_failsWithoutFlag
+#[test]
+fn test_symbolic_macro_fails_without_flag() {
+    let mut t = PackageLoadingTestCase::new();
+    t.set_build_language_options(&["--experimental_enable_first_class_macros=false"]);
+    empty_macro_bzl(&t);
+    t.scratch_file("pkg/BUILD", &["load(\":foo.bzl\", \"my_macro\")"]);
+    let (pkg, events) = load_package_or_none(&t, "pkg");
+    assert!(pkg.is_none());
+    assert_contains_event(&events, "requires --experimental_enable_first_class_macros");
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_instantiationRegistersOnPackage
+#[test]
+fn test_symbolic_macro_instantiation_registers_on_package() {
+    let t = PackageLoadingTestCase::new();
+    empty_macro_bzl(&t);
+    t.scratch_file(
+        "pkg/BUILD",
+        &[
+            "load(\":foo.bzl\", \"my_macro\")",
+            "my_macro(name=\"ghi\")  # alphabetized when read back",
+            "my_macro(name=\"abc\")",
+            "my_macro(name=\"def\")",
+        ],
+    );
+    let pkg = t.get_package("pkg").package;
+    let ids: Vec<&String> = pkg.get_macros_by_id().keys().collect();
+    assert_eq!(ids, vec!["abc:1", "def:1", "ghi:1"]);
+    assert_eq!(
+        pkg.get_macros_by_id()["abc:1"].get_macro_class().get_name(),
+        "my_macro"
+    );
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_instantiationRequiresExport
+#[test]
+fn test_symbolic_macro_instantiation_requires_export() {
+    let t = PackageLoadingTestCase::new();
+    t.scratch_file(
+        "pkg/foo.bzl",
+        &[
+            "def _impl(name, visibility):",
+            "    pass",
+            "s = struct(m = macro(implementation=_impl))",
+        ],
+    );
+    t.scratch_file(
+        "pkg/BUILD",
+        &["load(\":foo.bzl\", \"s\")", "s.m(name=\"abc\")"],
+    );
+    let (pkg, events) = load_package_or_none(&t, "pkg");
+    let pkg = pkg.expect("the package");
+    assert!(pkg.contains_errors());
+    assert_contains_event(
+        &events,
+        "Cannot instantiate a macro that has not been exported",
+    );
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_cannotInstantiateInBzlThread
+#[test]
+fn test_symbolic_macro_cannot_instantiate_in_bzl_thread() {
+    let t = PackageLoadingTestCase::new();
+    t.scratch_file(
+        "pkg/foo.bzl",
+        &[
+            "def _impl(name, visibility):",
+            "    pass",
+            "my_macro = macro(implementation=_impl)",
+            "",
+            "# Calling it from a function during .bzl load time is a little more interesting than",
+            "# calling it directly at the top level, since it forces us to check thread state rather",
+            "# than call stack state.",
+            "def some_func():",
+            "    my_macro(name=\"nope\")",
+            "some_func()",
+        ],
+    );
+    t.scratch_file("pkg/BUILD", &["load(\":foo.bzl\", \"my_macro\")"]);
+    let (pkg, events) = load_package_or_none(&t, "pkg");
+    assert!(pkg.is_none());
+    assert_contains_event(
+        &events,
+        "a symbolic macro can only be instantiated while evaluating a BUILD file or a legacy or \
+         symbolic macro",
+    );
+}
+
+/// The events of loading `pkg/BUILD` (one line), which must load with errors.
+fn package_in_error_events(t: &PackageLoadingTestCase, build: &[&str]) -> Vec<Event> {
+    t.scratch_file("pkg/BUILD", build);
+    let (pkg, events) = load_package_or_none(t, "pkg");
+    let pkg = pkg.expect("the package");
+    assert!(pkg.contains_errors());
+    events
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_requiresNameAttribute
+#[test]
+fn test_symbolic_macro_requires_name_attribute() {
+    let t = PackageLoadingTestCase::new();
+    empty_macro_bzl(&t);
+    let events =
+        package_in_error_events(&t, &["load(\":foo.bzl\", \"my_macro\")", "my_macro()"]);
+    assert_contains_event(
+        &events,
+        "missing value for mandatory attribute 'name' in 'my_macro' macro",
+    );
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_prohibitsPositionalArgs
+#[test]
+fn test_symbolic_macro_prohibits_positional_args() {
+    let t = PackageLoadingTestCase::new();
+    empty_macro_bzl(&t);
+    let events = package_in_error_events(
+        &t,
+        &[
+            "load(\":foo.bzl\", \"my_macro\")",
+            "my_macro(\"a positional arg\", name = \"abc\")",
+        ],
+    );
+    assert_contains_event(&events, "unexpected positional arguments");
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacroCanAcceptAttributes
+#[test]
+fn test_symbolic_macro_can_accept_attributes() {
+    let t = PackageLoadingTestCase::new();
+    t.scratch_file(
+        "pkg/foo.bzl",
+        &[
+            "def _impl(name, visibility, target_suffix):",
+            "    native.filegroup(name = name + \"_\" + target_suffix)",
+            "my_macro = macro(",
+            "    implementation=_impl,",
+            "    attrs = {",
+            "        \"target_suffix\": attr.string(configurable=False),",
+            "    },",
+            ")",
+        ],
+    );
+    t.scratch_file(
+        "pkg/BUILD",
+        &[
+            "load(\":foo.bzl\", \"my_macro\")",
+            "my_macro(",
+            "    name = \"abc\",",
+            "    target_suffix = \"xyz\"",
+            ")",
+        ],
+    );
+    let pkg = t.get_package_without_errors("pkg");
+    assert!(pkg.package.get_targets().contains_key("abc_xyz"));
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_rejectsUnknownAttribute
+#[test]
+fn test_symbolic_macro_rejects_unknown_attribute() {
+    let t = PackageLoadingTestCase::new();
+    t.scratch_file(
+        "pkg/foo.bzl",
+        &[
+            "def _impl(name, visibility):",
+            "    pass",
+            "my_macro = macro(",
+            "    implementation = _impl,",
+            "    attrs = {",
+            "        \"xzz\": attr.string(doc=\"This attr is public\"),",
+            "    },",
+            ")",
+        ],
+    );
+    let events = package_in_error_events(
+        &t,
+        &[
+            "load(\":foo.bzl\", \"my_macro\")",
+            "my_macro(",
+            "    name = \"abc\",",
+            "    xyz = \"UNKNOWN\",",
+            ")",
+        ],
+    );
+    assert_contains_event(
+        &events,
+        "no such attribute 'xyz' in 'my_macro' macro (did you mean 'xzz'?)",
+    );
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_rejectsReservedAttributeName
+#[test]
+fn test_symbolic_macro_rejects_reserved_attribute_name() {
+    let ev = Ev::new();
+    let events = ev.exec_collecting_events(&[
+        "def _impl(name, visibility):",
+        "    pass",
+        "my_macro = macro(",
+        "    implementation = _impl,",
+        "    attrs = {",
+        "        \"visibility\": attr.string(),",
+        "    },",
+        ")",
+    ]);
+    assert_contains_error(&events, "Cannot declare a macro attribute named 'visibility'");
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_requiresMandatoryAttribute
+#[test]
+fn test_symbolic_macro_requires_mandatory_attribute() {
+    let t = PackageLoadingTestCase::new();
+    t.scratch_file(
+        "pkg/foo.bzl",
+        &[
+            "def _impl(name, visibility):",
+            "    pass",
+            "my_macro = macro(",
+            "    implementation = _impl,",
+            "    attrs = {",
+            "        \"xyz\": attr.string(mandatory=True),",
+            "    },",
+            ")",
+        ],
+    );
+    let events = package_in_error_events(
+        &t,
+        &["load(\":foo.bzl\", \"my_macro\")", "my_macro(name=\"abc\")"],
+    );
+    assert_contains_event(
+        &events,
+        "missing value for mandatory attribute 'xyz' in 'my_macro' macro",
+    );
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_cannotOverrideImplicitAttribute
+#[test]
+fn test_symbolic_macro_cannot_override_implicit_attribute() {
+    let t = PackageLoadingTestCase::new();
+    t.scratch_file(
+        "pkg/foo.bzl",
+        &[
+            "def _impl(name, visibility, _xyz):",
+            "    print(\"_xyz is %s\" % _xyz)",
+            "my_macro = macro(",
+            "    implementation=_impl,",
+            "    attrs = {",
+            "      \"_xyz\": attr.string(default=\"IMPLICIT\")",
+            "    },",
+            ")",
+        ],
+    );
+    let events = package_in_error_events(
+        &t,
+        &[
+            "load(\":foo.bzl\", \"my_macro\")",
+            "my_macro(",
+            "    name = \"abc\",",
+            "    _xyz = \"CAN'T SET THIS\",",
+            ")",
+        ],
+    );
+    assert_contains_event(&events, "cannot set value of implicit attribute '_xyz'");
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_doesNotSupportComputedDefaults
+#[test]
+fn test_symbolic_macro_does_not_support_computed_defaults() {
+    let ev = Ev::new();
+    ev.check_eval_error_contains(
+        "In macro attribute 'xyz': Macros do not support computed defaults or late-bound defaults",
+        &[
+            "def _impl(name, visibility, xyz): pass",
+            "def _computed_default(): return \"DEFAULT\"",
+            "my_macro = macro(",
+            "    implementation=_impl,",
+            "    attrs = {",
+            "      \"xyz\": attr.label(default=_computed_default)",
+            "    },",
+            ")",
+        ],
+    );
+}
+
+// Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_doesNotSupportLateBoundDefaults
+// PORT: Java registers the `coverage` fragment on its evaluation test case; the harness here
+// has Bazel's rule class provider, whose fragments include it.
+#[test]
+fn test_symbolic_macro_does_not_support_late_bound_defaults() {
+    let ev = Ev::new();
+    ev.check_eval_error_contains(
+        "In macro attribute 'xyz': Macros do not support computed defaults or late-bound defaults",
+        &[
+            "def _impl(name, visibility, xyz): pass",
+            "_latebound_default = configuration_field(fragment = \"coverage\", name = \"output_generator\")",
+            "my_macro = macro(",
+            "    implementation=_impl,",
+            "    attrs = {",
+            "      \"xyz\": attr.label(default=_latebound_default)",
+            "    },",
+            ")",
+        ],
+    );
+}

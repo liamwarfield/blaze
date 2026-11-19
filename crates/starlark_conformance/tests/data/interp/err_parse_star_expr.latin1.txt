@@ -1,0 +1,2 @@
+SYNTAX err_parse_star_expr.star:1:5: syntax error at '*': expected expression
+SYNTAX err_parse_star_expr.star:1:5: contains syntax errors

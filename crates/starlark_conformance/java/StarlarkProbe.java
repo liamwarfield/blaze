@@ -8,9 +8,13 @@
 //   unicode: ParserInput.fromUTF8(bytes), the flag off (Bazel's ScriptTest target)
 // Predeclared: json, _utf8_byte_strings. Output is ASCII: each printed line with `\` as `\\`,
 // chars below 0x20 and 0x7F..0xFF as \xNN, chars above 0xFF as backslash-u{NNNN} (hex). Syntax errors
-// print `SYNTAX <location>: <message>`, evaluation errors `EVAL <message>`.
+// print `SYNTAX <location>: <message>` (every error of the file, in Java's order), evaluation
+// errors `EVAL <message>` followed by one `TRACE <line>` per line of
+// EvalException.getMessageWithStack (the traceback Bazel prints; source lines read as Latin-1,
+// as Bazel's BlazeRuntime source reader does, BlazeRuntime.java:1452).
 // <install_base> is ~/.cache/blaze/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9.
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.HashMap;
@@ -68,6 +72,25 @@ public class StarlarkProbe {
         }
       } catch (EvalException e) {
         out("EVAL " + e.getMessage());
+        String stack =
+            e.getMessageWithStack(
+                loc -> {
+                  try {
+                    String content =
+                        new String(
+                            Files.readAllBytes(Paths.get(loc.file())),
+                            StandardCharsets.ISO_8859_1);
+                    String[] lines = content.split("\n", -1);
+                    return loc.line() >= 1 && loc.line() <= lines.length
+                        ? lines[loc.line() - 1]
+                        : null;
+                  } catch (Throwable unused) {
+                    return null;
+                  }
+                });
+        for (String line : stack.split("\n", -1)) {
+          out("TRACE " + line);
+        }
       }
     }
   }

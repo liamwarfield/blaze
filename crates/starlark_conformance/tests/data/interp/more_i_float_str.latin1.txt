@@ -1,1 +1,5 @@
 EVAL can't convert float nan to int
+TRACE Traceback (most recent call last):
+TRACE \x09File "more_i_float_str.star", line 1, column 10, in <toplevel>
+TRACE \x09\x09print(int(float("nan")))
+TRACE Error in int: can't convert float nan to int

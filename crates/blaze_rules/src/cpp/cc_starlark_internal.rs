@@ -22,6 +22,7 @@ use blaze_analysis::starlark::starlark_rule_context::{
 };
 use blaze_analysis::starlark::thread_payload::register_action;
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
+use blaze_cc_features::artifact_category::ArtifactCategory;
 use blaze_cc_features::cc_starlark_internal as body;
 use blaze_cc_features::cc_toolchain_variables::CcToolchainVariablesRef;
 use blaze_starlark::label::LabelValue;
@@ -45,6 +46,7 @@ use super::cc_toolchain_provider::CcToolchainProvider;
 use super::cpp_compile_action::{
     BuildAndVerifyError, CcToolchainCompileData, CppCompileActionBuilder,
 };
+use super::cpp_compile_action_template::CppCompileActionTemplate;
 use super::cpp_configuration::cpp_configuration_param;
 use super::header_info::{HeaderInfo, HeaderInfoData, header_info_of};
 use super::link_command_line::LinkCommandLineAdapter;
@@ -1149,31 +1151,100 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named, default = NoneType)] copts_filter: Value<'v>,
         #[starlark(require = named)] needs_include_validation: bool,
         #[starlark(require = named)] toolchain_type: &str,
+        eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<NoneType> {
-        let _ = (
-            this,
+        let _ = this;
+        let heap = eval.heap();
+        const F: &str = "create_cc_compile_action_template";
+        let handle = ctx_rule_context(
             action_construction_context,
-            cc_compilation_context,
-            cc_toolchain,
-            configuration,
-            feature_configuration,
-            compile_build_variables,
-            source,
-            additional_compilation_inputs,
-            additional_include_scanning_roots,
-            use_pic,
-            output_categories,
-            output_files,
-            dotd_tree_artifact,
-            diagnostics_tree_artifact,
-            lto_indexing_tree_artifact,
-            copts_filter,
-            needs_include_validation,
-            toolchain_type,
-        );
-        // Needs CppCompileActionTemplate (an ActionTemplate over tree artifacts); not reached by
-        // brotli or re2.
-        blaze_util::unported!("CcStarlarkInternal.createCppCompileActionTemplate")
+            F,
+            "action_construction_context",
+        )?;
+        let feature_configuration =
+            feature_configuration_param(feature_configuration, F, "feature_configuration")?;
+        let compile_build_variables =
+            variables_param(compile_build_variables, F, "compile_build_variables")?;
+        let configuration = configuration_param(configuration, F, "configuration")?;
+        let source_artifact = artifact_param(source, F, "source")?;
+        let empty_list = heap.alloc(AllocList(Vec::<Value<'v>>::new()));
+        let additional_compilation_inputs = additional_compilation_inputs.unwrap_or(empty_list);
+        let additional_include_scanning_roots =
+            additional_include_scanning_roots.unwrap_or(empty_list);
+
+        let copts_filter = copts_filter_of(copts_filter)?;
+        let mut output_categories_builder: Vec<ArtifactCategory> = Vec::new();
+        for output_category_object in sequence_elements(output_categories, heap)? {
+            if let Some(output_category_string) = output_category_object.unpack_str() {
+                match ArtifactCategory::value_of(output_category_string) {
+                    Some(category) => output_categories_builder.push(category),
+                    None => {
+                        return Err(errorf(format!(
+                            "Invalid output category: {output_category_string}"
+                        )));
+                    }
+                }
+            } else {
+                return Err(errorf(format!(
+                    "Output category has invalid type. Expected string, got: {}",
+                    output_category_object.to_repr()
+                )));
+            }
+        }
+        // CcToolchainProvider.create(ccToolchain).getFeatures(), read when the template expands.
+        let toolchain_features = CcToolchainProvider::of_param(cc_toolchain, F, "cc_toolchain")?
+            .get_features()
+            .map_err(|e| e.to_string());
+        let cc_toolchain = CcToolchainProvider::of_param(cc_toolchain, F, "cc_toolchain")?;
+        let mut builder = {
+            let rc = handle.borrow();
+            create_cpp_compile_action_builder(
+                &rc,
+                toolchain_type,
+                CcCompilationContext::of_value(cc_compilation_context)?,
+                cc_toolchain,
+                configuration,
+                copts_filter,
+                &feature_configuration,
+                source_artifact.clone(),
+                additional_compilation_inputs,
+                additional_include_scanning_roots,
+                output_files,
+                dotd_tree_artifact,
+                diagnostics_tree_artifact,
+                /* gcno_file= */ None,
+                /* dwo_file= */ None,
+                /* lto_indexing_file= */ None,
+                use_pic,
+                needs_include_validation,
+                heap,
+            )?
+        };
+        // SpecialArtifact sourceArtifact = (SpecialArtifact) source;
+        let source_tree_artifact = source_artifact;
+        builder.set_variables(compile_build_variables);
+
+        let output_tree_artifact = artifact_param(output_files, F, "output_files")?;
+        match CppCompileActionTemplate::new(
+            source_tree_artifact,
+            output_tree_artifact,
+            null_if_none_artifact(dotd_tree_artifact),
+            null_if_none_artifact(diagnostics_tree_artifact),
+            null_if_none_artifact(lto_indexing_tree_artifact),
+            builder,
+            toolchain_features,
+            output_categories_builder,
+        ) {
+            Ok(action_template) => {
+                register_action(eval, Arc::new(action_template))?;
+            }
+            // catch (EvalException e) { throw new RuleErrorException(e.getMessage()); }
+            Err(BuildAndVerifyError::Eval(e)) => return Err(errorf(e.to_string())),
+            Err(BuildAndVerifyError::UnconfiguredActionConfig(e)) => {
+                return Err(errorf(e.message));
+            }
+        }
+        Ok(NoneType)
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CcStarlarkInternal.java:954 CcStarlarkInternal.freeze

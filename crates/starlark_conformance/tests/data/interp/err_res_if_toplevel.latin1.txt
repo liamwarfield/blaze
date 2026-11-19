@@ -1,0 +1,1 @@
+SYNTAX err_res_if_toplevel.star:1:1: if statements are not allowed at the top level. You may move it inside a function or use an if expression (x if condition else y).

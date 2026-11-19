@@ -1,1 +1,5 @@
 EVAL invalid base 37 (want 2 <= base <= 36)
+TRACE Traceback (most recent call last):
+TRACE \x09File "str_int_base37.star", line 1, column 10, in <toplevel>
+TRACE \x09\x09print(int("1", 37))
+TRACE Error in int: invalid base 37 (want 2 <= base <= 36)

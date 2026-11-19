@@ -177,6 +177,39 @@ impl DetailedExitCode {
         }
     }
 
+    /// `DetailedExitCode.of(FailureDetail.newBuilder().setMessage(message).set<Category>(
+    /// <Category>.newBuilder().setCode(<Category>.Code.<code>)))`, with the category named by its
+    /// proto message type (`"ExternalRepository"`) and the code by its enum value name; `None` for
+    /// `code` is the category's default instance (code 0). `None` when either name is unknown.
+    ///
+    /// PORT: crates that keep a reduced `DetailedExitCode` (blaze_packages: message plus
+    /// `<Category>.<CODE>`) rebuild Java's object with this; the table is generated from
+    /// failure_details.proto, so every category is known.
+    pub fn of_category_name(
+        message: impl Into<String>,
+        category: &str,
+        code: Option<&str>,
+    ) -> Option<DetailedExitCode> {
+        let category = generated::category_of_name(category, code)?;
+        Some(Self::of(FailureDetail {
+            message: message.into(),
+            category: Some(category),
+        }))
+    }
+
+    /// [`DetailedExitCode::of_category_name`] with the code given by its number.
+    pub fn of_category_value(
+        message: impl Into<String>,
+        category: &str,
+        code: i32,
+    ) -> Option<DetailedExitCode> {
+        let category = generated::category_of_value(category, code)?;
+        Some(Self::of(FailureDetail {
+            message: message.into(),
+            category: Some(category),
+        }))
+    }
+
     // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:115 DetailedExitCode.getNumericExitCode
     pub fn get_numeric_exit_code(failure_detail: &FailureDetail) -> i32 {
         let category = failure_detail.category.as_ref().unwrap_or_else(|| {

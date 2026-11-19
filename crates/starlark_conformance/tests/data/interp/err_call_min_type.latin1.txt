@@ -1,0 +1,5 @@
+EVAL type 'int' is not iterable
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_min_type.star", line 1, column 4, in <toplevel>
+TRACE \x09\x09min(1)
+TRACE Error in min: type 'int' is not iterable

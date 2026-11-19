@@ -949,10 +949,7 @@ fn classify_transport_error(status: &tonic::Status, host: &str) -> Option<Transp
                 // scripts/remote/tls-probe row mtls-noclient). A failure this side detects (the
                 // server's certificate) is an `SSLHandshakeException` (an `IOException`) whose
                 // JDK/OpenSSL text is not reproduced: rustls' text is kept.
-                if connector_error
-                    .to_string()
-                    .starts_with("received fatal alert: ")
-                {
+                if is_tls_alert(&connector_error.to_string()) {
                     return Some(TransportThrowable::Ssl);
                 }
                 return None;
@@ -976,6 +973,9 @@ fn classify_transport_error(status: &tonic::Status, host: &str) -> Option<Transp
         {
             let debug = format!("{h2_error:?}");
             if debug.starts_with("Error { kind: Io(") {
+                if is_tls_alert(&h2_error.to_string()) {
+                    return Some(TransportThrowable::Ssl);
+                }
                 return Some(TransportThrowable::Io(io::Error::other(
                     h2_error.to_string(),
                 )));
@@ -990,6 +990,9 @@ fn classify_transport_error(status: &tonic::Status, host: &str) -> Option<Transp
             return None;
         }
         if let Some(io_error) = e.downcast_ref::<io::Error>() {
+            if is_tls_alert(&io_error.to_string()) {
+                return Some(TransportThrowable::Ssl);
+            }
             return Some(TransportThrowable::Io(io::Error::new(
                 io_error.kind(),
                 io_error.to_string(),
@@ -998,6 +1001,18 @@ fn classify_transport_error(status: &tonic::Status, host: &str) -> Option<Transp
         source = e.source();
     }
     None
+}
+
+/// Whether an I/O error of the TLS session is a fatal alert the server sent (rustls' text
+/// "received fatal alert: <description>"). grpc-netty's `Utils.statusFromThrowable` makes the
+/// `DecoderException` caused by an `SSLException` that Netty's `SslHandler` raises for it
+/// "UNAVAILABLE: ssl exception", whether it arrives during the handshake (the connector's error)
+/// or after it, on the established connection (TLS 1.3: a server that requires a client
+/// certificate sends `certificate_required` after the client's Finished, so the alert reaches
+/// h2 or hyper as an I/O error; scripts/remote/tls-probe row mtls-noclient).
+// Java: io/grpc/netty/Utils.java Utils.statusFromThrowable
+fn is_tls_alert(text: &str) -> bool {
+    text.starts_with("received fatal alert: ")
 }
 
 /// The address field of hyper-util's `ConnectError` `Debug` text
@@ -1573,5 +1588,123 @@ mod tests {
             "Unable to resolve host blaze-unresolvable.invalid"
         );
         assert!(transport_io_cause(&status).is_none());
+    }
+
+    /// Oracle: "Failed to query remote execution capabilities: UNAVAILABLE: ssl exception" for a
+    /// TLS server that requires a client certificate, the client having none
+    /// (scripts/remote/tls-probe row mtls-noclient). In TLS 1.3 the server judges the client's
+    /// certificate after the client's Finished: the client's handshake has succeeded and the
+    /// server's `certificate_required` alert arrives on the established connection, as an I/O
+    /// error of the HTTP/2 connection (review 2026-11-19 round 3, P5). The certificates are
+    /// tests/testdata/mtls (a CA and a server certificate for localhost signed by it).
+    #[test]
+    fn tls_alert_after_the_handshake_is_unavailable_ssl_exception() {
+        use crate::grpc::stubs::capabilities_server::{Capabilities, CapabilitiesServer};
+        use tonic::transport::{Certificate, ClientTlsConfig, Identity, ServerTlsConfig};
+
+        struct NoCapabilities;
+        #[tonic::async_trait]
+        impl Capabilities for NoCapabilities {
+            async fn get_capabilities(
+                &self,
+                _request: tonic::Request<GetCapabilitiesRequest>,
+            ) -> Result<tonic::Response<ServerCapabilities>, tonic::Status> {
+                Ok(tonic::Response::new(ServerCapabilities::default()))
+            }
+        }
+
+        let data = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/testdata/mtls");
+        let read = |name: &str| std::fs::read(format!("{data}/{name}")).unwrap();
+        let ca = Certificate::from_pem(read("ca.crt"));
+        let server_tls = ServerTlsConfig::new()
+            .identity(Identity::from_pem(read("server.crt"), read("server.key")))
+            .client_ca_root(ca.clone());
+        let listener =
+            crate::runtime::block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).expect("bind");
+        let server_port = listener.local_addr().unwrap().port();
+        // A relay in front of the server that keeps the client's side open for a moment after
+        // the server has closed, draining what the client writes: the client then reads the
+        // alert before any of its writes can fail. Without it the client's first request may
+        // race the server's close and fail with EPIPE ("broken pipe", an I/O error) first.
+        let relay = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = relay.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (client, _) = relay.accept().unwrap();
+            let upstream = std::net::TcpStream::connect(("127.0.0.1", server_port)).unwrap();
+            let (mut from_client, mut to_upstream) = (client.try_clone().unwrap(), upstream);
+            let mut from_upstream = to_upstream.try_clone().unwrap();
+            let mut to_client = client;
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 16384];
+                while let Ok(n) = from_client.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    let _ = to_upstream.write_all(&buf[..n]);
+                }
+            });
+            let mut buf = [0u8; 16384];
+            while let Ok(n) = from_upstream.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                if to_client.write_all(&buf[..n]).is_err() {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let _ = to_client.shutdown(std::net::Shutdown::Both);
+        });
+        let server = crate::runtime::runtime().spawn(async move {
+            tonic::transport::Server::builder()
+                .tls_config(server_tls)
+                .expect("server TLS")
+                .serve_with_incoming(
+                    CapabilitiesServer::new(NoCapabilities),
+                    tonic::transport::server::TcpIncoming::from(listener),
+                )
+                .await
+        });
+
+        let endpoint = tonic::transport::Endpoint::from_shared(format!("https://localhost:{port}"))
+            .unwrap()
+            .tls_config(
+                ClientTlsConfig::new()
+                    .ca_certificate(ca)
+                    .domain_name("localhost"),
+            )
+            .unwrap();
+        let lazy = {
+            let _guard = crate::runtime::runtime().enter();
+            endpoint.connect_lazy()
+        };
+        let channel = ReferenceCountedChannel::new(
+            lazy,
+            &format!("localhost:{port}"),
+            true,
+            Vec::new(),
+            usize::MAX,
+            None,
+        );
+        let status =
+            crate::runtime::block_on(channel.unary::<GetCapabilitiesRequest, ServerCapabilities>(
+                methods::GET_CAPABILITIES,
+                GetCapabilitiesRequest::default(),
+                CallOptions::new(),
+            ))
+            .unwrap_err();
+        server.abort();
+        assert_eq!(status.code(), tonic::Code::Unavailable, "{status:?}");
+        assert_eq!(status.message(), "ssl exception", "{status:?}");
+        assert!(transport_io_cause(&status).is_none());
+    }
+
+    #[test]
+    fn is_tls_alert_matches_rustls_alert_text_only() {
+        assert!(is_tls_alert("received fatal alert: CertificateRequired"));
+        assert!(is_tls_alert("received fatal alert: HandshakeFailure"));
+        assert!(!is_tls_alert("invalid peer certificate: UnknownIssuer"));
+        assert!(!is_tls_alert("Connection reset by peer (os error 104)"));
     }
 }

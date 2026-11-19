@@ -177,6 +177,18 @@ pub fn prepare_execution(
         seam.clone(),
         None,
     );
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:940 SkyframeExecutor.skyFunctions
+    // (`SkyFunctions.ACTION_TEMPLATE_EXPANSION, new ActionTemplateExpansionFunction(actionKeyContext)`).
+    let action_template_expansion = Arc::new(
+        crate::action_template_expansion_function::ActionTemplateExpansionFunction {
+            skyframe_action_executor: prepared.executor.clone(),
+            seam: seam.clone(),
+        },
+    );
+    let builder = builder.typed_function::<
+        blaze_sky_exec::action_template_expansion_value::ActionTemplateExpansionKey,
+        _,
+    >(move |k, env| action_template_expansion.compute(k, env));
     // The sandbox module lives until afterCommand (see ExecutionState::after_command).
     let sandbox_module = std::mem::replace(
         &mut prepared.sandbox_module,

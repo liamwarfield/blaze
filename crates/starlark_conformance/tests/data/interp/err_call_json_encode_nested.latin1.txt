@@ -1,0 +1,5 @@
+EVAL in dict key "a": at list index 1: cannot encode builtin_function_or_method as JSON
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_json_encode_nested.star", line 1, column 12, in <toplevel>
+TRACE \x09\x09json.encode({"a": [1, len]})
+TRACE Error in encode: in dict key "a": at list index 1: cannot encode builtin_function_or_method as JSON

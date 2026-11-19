@@ -16,7 +16,6 @@ use blaze_packages::package::RuleVisibility;
 use blaze_skyframe::EvaluatorBuilder;
 use blaze_starlark::env::NativeRegistry;
 use blaze_starlark::{FileKind, StarlarkSemantics};
-use blaze_util::unported;
 use blaze_vfs::{DigestHashFunction, Path, PathFragment, Root};
 use indexmap::IndexMap;
 use parking_lot::RwLock;
@@ -312,8 +311,13 @@ pub fn register_loading_functions(
         fragment_names: config.fragment_names.clone(),
         hash_function: config.digest_function,
     }));
-    let starlark_builtins_function =
-        StarlarkBuiltinsFunction::new(config.bazel_starlark_environment.clone());
+    let starlark_builtins_function = StarlarkBuiltinsFunction::new(
+        config.bazel_starlark_environment.clone(),
+        config.external_repos.clone(),
+    );
+    let eval_macro_function = config.package_factory.clone().map(|package_factory| {
+        crate::package_pieces::EvalMacroFunction { package_factory }
+    });
     let package_function = config.package_factory.clone().map(|package_factory| {
         PackageFunction::new(Arc::new(PackageFunctionConfig {
             package_factory,
@@ -368,11 +372,45 @@ pub fn register_loading_functions(
         .typed_function::<PackageErrorKey, _>(package_error_function)
         .typed_function::<TargetPatternKey, _>(target_pattern_function)
         .typed_function::<TransitiveTargetKey, _>(transitive_target_function)
-        .typed_function::<PackageKey, _>(move |k, env| match &package_function {
-            Some(f) => f.compute(k, env),
-            None => blaze_util::unported!(
-                "PackageFunction without a PackageFactory (no rule class provider configured)"
-            ),
+        // Java: PACKAGE takes a PackageIdentifier or a PackagePieceIdentifier.ForBuildFile.
+        .function(crate::sky_functions::PACKAGE, {
+            let package_function = package_function.map(Arc::new);
+            move |key: &blaze_skyframe::SkyKey,
+                  env: &mut blaze_skyframe::Environment<'_>|
+                  -> blaze_skyframe::ComputeResult {
+                let Some(f) = &package_function else {
+                    blaze_util::unported!(
+                        "PackageFunction without a PackageFactory (no rule class provider \
+                         configured)"
+                    )
+                };
+                if let Some(k) = key.downcast::<PackageKey>() {
+                    return Ok(f.compute(k, env)?.map(|v| Arc::new(v) as blaze_skyframe::SkyValue));
+                }
+                let k = key
+                    .downcast::<crate::package_pieces::PackagePieceForBuildFileKey>()
+                    .expect("a PACKAGE key");
+                Ok(f
+                    .compute_package_piece(k, env)?
+                    .map(|v| Arc::new(v) as blaze_skyframe::SkyValue))
+            }
+        })
+        .typed_function::<crate::package_pieces::PackageDeclarationsKey, _>(
+            crate::package_pieces::package_declarations_function,
+        )
+        .typed_function::<crate::package_pieces::MacroInstanceKey, _>(
+            crate::package_pieces::macro_instance_function,
+        )
+        .typed_function::<crate::package_pieces::NonFinalizerPackagePiecesKey, _>(
+            crate::package_pieces::non_finalizer_package_pieces_function,
+        )
+        .typed_function::<crate::package_pieces::EvalMacroKey, _>(move |k, env| {
+            match &eval_macro_function {
+                Some(f) => f.compute(k, env),
+                None => blaze_util::unported!(
+                    "EvalMacroFunction without a PackageFactory (no rule class provider configured)"
+                ),
+            }
         })
 }
 
@@ -393,7 +431,7 @@ pub fn inject_loading_precomputed(
         repository_overrides,
         package_function::default_visibility(),
         package_function::config_setting_visibility_policy(true, false),
-        HashSet::new(),
+        crate::precomputed::LazyMacroExpansionPackages::Set(HashSet::new()),
     )
 }
 
@@ -425,13 +463,10 @@ pub fn inject_loading_precomputed_with_package_options(
     );
     // setLazyMacroExpansionPackages(packageOptions.lazyMacroExpansionPackages);
     let lazy_macro_expansion_packages = match &package_options.lazy_macro_expansion_packages {
-        LazyMacroExpansionPackages::Set(ids) => {
-            ids.iter().map(|p| p.0.clone()).collect::<HashSet<_>>()
-        }
-        LazyMacroExpansionPackages::All => {
-            // PORT: the precomputed value is the listed set.
-            unported!("LazyMacroExpansionPackages.ALL")
-        }
+        LazyMacroExpansionPackages::Set(ids) => crate::precomputed::LazyMacroExpansionPackages::Set(
+            ids.iter().map(|p| p.0.clone()).collect::<HashSet<_>>(),
+        ),
+        LazyMacroExpansionPackages::All => crate::precomputed::LazyMacroExpansionPackages::All,
     };
     inject_loading_precomputed_impl(
         builder,
@@ -451,7 +486,7 @@ fn inject_loading_precomputed_impl(
     repository_overrides: IndexMap<String, PathFragment>,
     default_visibility: RuleVisibility,
     config_setting_visibility_policy: ConfigSettingVisibilityPolicy,
-    lazy_macro_expansion_packages: HashSet<PackageIdentifier>,
+    lazy_macro_expansion_packages: crate::precomputed::LazyMacroExpansionPackages,
 ) -> EvaluatorBuilder {
     let autoload_symbols = AutoloadSymbols::new(
         config

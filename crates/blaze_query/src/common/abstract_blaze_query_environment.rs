@@ -385,6 +385,15 @@ pub trait AbstractBlazeQueryEnvironment: QueryEnvironment<Target> {
     fn get_label_printer(&self) -> &LabelPrinter {
         self.base().get_label_printer()
     }
+
+    /// The graph of the environment's `DigraphQueryEvalResult` (Java: `evaluateQuery` returns
+    /// one only from `BlazeQueryEnvironment`); `None` for the other environments.
+    fn get_result_graph(
+        &self,
+    ) -> Option<std::rc::Rc<std::cell::RefCell<crate::query::blaze_query_environment::TargetDigraph>>>
+    {
+        None
+    }
 }
 
 /// Batch version of `getTarget(Label)`. Missing targets are absent in the returned map (in the

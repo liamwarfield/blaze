@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""Stress the repo contents cache with concurrent processes. See `stress-rcc help`."""
+
+import argparse
+import os
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+USAGE = """\
+usage: scripts/repo-gaps/stress-rcc --binary <blaze|bazel> [--workers N] [--iterations N]
+                                    [--runs N] [--files N] [--label NAME] [--keep]
+                                    [--reset-after SECONDS]
+       scripts/repo-gaps/stress-rcc help
+
+Starts N processes of <binary> at once (default 6). Each has its own copy of a small workspace
+and its own output user root; all share one --repository_cache (so one repo contents cache,
+<cache>/contents), as Bazel's integration tests do with $REPOSITORY_CACHE. The workspace has
+three reproducible Starlark repositories (repository_ctx.repo_metadata(reproducible=True), so
+they go into the contents cache), each with --files files in nested directories (default 300),
+and genrules that glob and read every file of each repository through the sandbox.
+
+Each worker runs --iterations times (default 4): `build //...`, `build //... --spawn_strategy=
+local`, `clean --expunge`. A step fails when the exit code is not 0 or stderr mentions a missing
+file, a missing BUILD file or the repo contents cache. --runs repeats the whole thing from an
+empty cache (default 1); the tool stops at the first failing run.
+
+--reset-after S: S seconds into each run, do what scripts/upstream-tests/run does at its start
+(ut_common.reset_test_repo_cache): rename <cache>/contents aside, `chmod -R u+w` and `rm -rf`
+it, while the workers are running. This is what another harness run starting during a run does.
+
+Clean environment (HOME, PATH=/usr/bin:/bin), --nohome_rc --nosystem_rc, --batch for Bazel
+(each command its own server process, as Blaze), under systemd-run --user --scope with
+MemoryMax=12G. Work dir: ~/.cache/blaze/work/repo-gaps/stress-rcc/<label> (removed at the end
+unless --keep or a failure). Output: one line per failed step with its stderr excerpt, and a
+summary; exit 0 when every run passed, 1 otherwise.
+"""
+
+GEN_BZL = r'''
+def _impl(rctx):
+    n = rctx.attr.n
+    for i in range(n):
+        rctx.file("d%d/e%d/f%d.txt" % (i % 7, i % 3, i), "%s %d\n" % (rctx.attr.name, i))
+    rctx.file("BUILD.bazel", """
+filegroup(
+    name = "all",
+    srcs = glob(["**/*.txt"]),
+    visibility = ["//visibility:public"],
+)
+""")
+    return rctx.repo_metadata(reproducible = True)
+
+gen_repo = repository_rule(
+    implementation = _impl,
+    attrs = {"n": attr.int()},
+)
+'''
+
+BAD = re.compile(
+    r"No such file or directory|BUILD file not found|repo contents cache|"
+    r"not ported|panicked|error loading package"
+)
+
+
+def write_workspace(ws, files):
+    os.makedirs(ws, exist_ok=True)
+    with open(os.path.join(ws, "gen.bzl"), "w") as f:
+        f.write(GEN_BZL)
+    repos = ["alpha", "beta", "gamma"]
+    with open(os.path.join(ws, "MODULE.bazel"), "w") as f:
+        f.write('module(name = "stress")\n')
+        f.write('gen_repo = use_repo_rule("//:gen.bzl", "gen_repo")\n')
+        for r in repos:
+            f.write('gen_repo(name = "%s", n = %d)\n' % (r, files))
+    with open(os.path.join(ws, "BUILD.bazel"), "w") as f:
+        for r in repos:
+            f.write(
+                'genrule(\n    name = "cat_%s",\n    srcs = ["@%s//:all"],\n'
+                '    outs = ["%s.txt"],\n    cmd = "cat $(SRCS) | wc -l > $@",\n)\n' % (r, r, r)
+            )
+    open(os.path.join(ws, "REPO.bazel"), "w").close()
+
+
+def run_cmd(binary, is_bazel, ws, root, cache, args, log):
+    cmd = ["systemd-run", "--user", "--scope", "--collect", "--quiet",
+           "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0",
+           "env", "-i", "HOME=" + os.environ["HOME"], "PATH=/usr/bin:/bin",
+           binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc"]
+    if is_bazel:
+        cmd.append("--batch")
+    cmd += [args[0], "--repository_cache=" + cache, "--color=no", "--curses=no"] + args[1:]
+    p = subprocess.run(cmd, cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    err = p.stderr.decode("latin-1")
+    with open(log, "a") as f:
+        f.write("$ %s\n%s\n[exit %d]\n" % (" ".join(args), err, p.returncode))
+    return p.returncode, err
+
+
+def worker(i, a, base, cache, is_bazel):
+    ws = os.path.join(base, "ws%d" % i)
+    write_workspace(ws, a.files)
+    root = os.path.join(base, "root%d" % i)
+    log = os.path.join(base, "worker%d.log" % i)
+    failures = []
+    steps = [["build", "//..."], ["build", "//...", "--spawn_strategy=local"],
+             ["clean", "--expunge"]]
+    for it in range(a.iterations):
+        for s in steps:
+            code, err = run_cmd(a.binary, is_bazel, ws, root, cache, s, log)
+            bad = [l for l in err.splitlines() if BAD.search(l)]
+            if code != 0 or bad:
+                excerpt = (bad or err.strip().splitlines()[-3:] or [""])[:3]
+                failures.append("worker %d iteration %d `%s`: exit %d: %s" % (
+                    i, it, " ".join(s), code, " | ".join(excerpt)[:600]))
+    return failures
+
+
+def reset_contents(cache):
+    """ut_common.reset_test_repo_cache, the part that touches contents/."""
+    contents = os.path.join(cache, "contents")
+    if os.path.exists(contents):
+        trash = contents + ".old-%d" % os.getpid()
+        os.rename(contents, trash)
+        subprocess.run(["chmod", "-R", "u+w", trash], check=False)
+        subprocess.run(["rm", "-rf", trash], check=True)
+        print("  (contents reset at %s)" % time.strftime("%H:%M:%S"), flush=True)
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("help", "--help", "-h"):
+        print(USAGE)
+        return 0
+    ap = argparse.ArgumentParser(usage=USAGE)
+    ap.add_argument("--binary", required=True)
+    ap.add_argument("--workers", type=int, default=6)
+    ap.add_argument("--iterations", type=int, default=4)
+    ap.add_argument("--runs", type=int, default=1)
+    ap.add_argument("--files", type=int, default=300)
+    ap.add_argument("--label", default="default")
+    ap.add_argument("--keep", action="store_true")
+    ap.add_argument("--reset-after", type=float)
+    a = ap.parse_args()
+    a.binary = os.path.abspath(a.binary)
+    out = subprocess.run([a.binary, "--version"], stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL).stdout.decode("latin-1")
+    is_bazel = out.startswith("bazel")
+    base_root = os.path.expanduser("~/.cache/blaze/work/repo-gaps/stress-rcc/" + a.label)
+    passed = 0
+    for run in range(a.runs):
+        if os.path.exists(base_root):
+            subprocess.run(["chmod", "-R", "u+w", base_root])
+            shutil.rmtree(base_root)
+        os.makedirs(base_root)
+        cache = os.path.join(base_root, "cache")
+        t = time.time()
+        resetter = None
+        if a.reset_after is not None:
+            resetter = threading.Timer(a.reset_after, reset_contents, [cache])
+            resetter.start()
+        with ThreadPoolExecutor(a.workers) as ex:
+            results = list(ex.map(lambda i: worker(i, a, base_root, cache, is_bazel),
+                                  range(a.workers)))
+        if resetter is not None:
+            resetter.join()
+        failures = [f for r in results for f in r]
+        print("run %d: %s, %d failed steps, %.0f s" % (
+            run + 1, "PASS" if not failures else "FAIL", len(failures), time.time() - t),
+            flush=True)
+        for f in failures:
+            print("  " + f)
+        if failures:
+            print("logs kept in " + base_root)
+            print("summary: %d of %d runs passed before the first failure" % (passed, a.runs))
+            return 1
+        passed += 1
+    if not a.keep and os.path.exists(base_root):
+        subprocess.run(["chmod", "-R", "u+w", base_root])
+        shutil.rmtree(base_root)
+    print("summary: %d of %d runs passed" % (passed, a.runs))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

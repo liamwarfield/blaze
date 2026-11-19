@@ -1,0 +1,5 @@
+EVAL KeyError: "a"
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_dict_pop_missing.star", line 1, column 7, in <toplevel>
+TRACE \x09\x09{}.pop("a")
+TRACE Error in pop: KeyError: "a"

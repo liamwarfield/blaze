@@ -24,11 +24,12 @@ use blaze_protos::failure_details::{
 use blaze_query_engine::callback::IoException;
 use blaze_query_engine::query_util::{AggregateAllCallback, AggregateAllOutputFormatterCallback};
 use blaze_query_engine::{
-    DetailedExitCode, QueryEvalResult, QueryException, QueryExpression, QueryFunction,
-    ThreadSafeOutputFormatterCallback,
+    DetailedExitCode, DigraphQueryEvalResult, QueryEvalResult, QueryException, QueryExpression,
+    QueryFunction, ThreadSafeOutputFormatterCallback,
 };
 use blaze_starlark::StarlarkSemantics;
-use blaze_vfs::{DigestHashFunction, PathFragment};
+use blaze_util::string_encoding::latin1_decode;
+use blaze_vfs::{DigestHashFunction, Path, PathFragment};
 
 use crate::common::abstract_blaze_query_environment::{
     AbstractBlazeQueryEnvironment, EvaluateQueryError, LabelFilter,
@@ -37,9 +38,11 @@ use crate::common::query_util_targets::{
     LexicographicallySortedTargetAggregator, new_lexicographically_sorted_target_aggregator,
 };
 use crate::pkgcache::{
-    CachingPackageLocator, QueryTransitivePackagePreloader, TargetPatternPreloader, TargetProvider,
+    CachingPackageLocator, PackageProvider, QueryTransitivePackagePreloader,
+    TargetPatternPreloader, TargetProvider,
 };
 use crate::query::aspectresolvers::aspect_resolver;
+use crate::query::blaze_query_environment::BlazeQueryEnvironment;
 use crate::query::graphless_blaze_query_environment::GraphlessBlazeQueryEnvironment;
 use crate::query::output::output_formatter::{OutputFormatter, OutputStream};
 use crate::query::output::output_formatters;
@@ -65,6 +68,8 @@ pub struct QueryCommandEnvironment {
     pub starlark_semantics: StarlarkSemantics,
     /// `env.getRelativeWorkingDirectory()`.
     pub relative_working_directory: PathFragment,
+    /// `env.getWorkingDirectory()` (`--query_file` is relative to it).
+    pub working_directory: Path,
     /// `env.getSkyframeExecutor().getMainRepoMapping(...)` (computed by the caller after
     /// `syncPackageLoading`; its failures are reported there).
     pub main_repo_mapping: RepositoryMapping,
@@ -72,6 +77,8 @@ pub struct QueryCommandEnvironment {
     pub query_functions: Vec<Arc<dyn QueryFunction<Target>>>,
     /// `TargetProviderForQueryEnvironment`.
     pub target_provider: Arc<dyn TargetProvider>,
+    /// `env.getPackageManager()` as a `PackageProvider` (the precise aspect resolver's).
+    pub package_provider: Arc<dyn PackageProvider>,
     /// `env.getPackageManager()` as a `CachingPackageLocator`.
     pub caching_package_locator: Arc<dyn CachingPackageLocator>,
     /// `new SkyframeTargetPatternEvaluator(env.getSkyframeExecutor())`.
@@ -105,10 +112,11 @@ fn interrupted_detailed_exit_code(message: &str) -> DetailedExitCode {
 }
 
 /// Reads the query expression from the residue or `--query_file`.
-// Java: com/google/devtools/build/lib/query2/common/QueryOptionHelper.java:33 QueryOptionHelper.readQuery
+// Java: com/google/devtools/build/lib/runtime/commands/QueryOptionHelper.java:35 QueryOptionHelper.readQuery
 pub fn read_query(
     query_options: &QueryOptions,
     residue: &[String],
+    working_directory: &Path,
     allow_empty_query: bool,
 ) -> Result<String, QueryException> {
     let mut query = String::new();
@@ -122,8 +130,29 @@ pub fn read_query(
         }
         query = residue.join(" ");
     } else if !query_options.query_file.is_empty() {
-        blaze_util::unported!("QueryOptionHelper.readQuery", "--query_file");
+        // Works for absolute or relative query file.
+        let residue_path =
+            working_directory.get_relative(&PathFragment::create(&query_options.query_file));
+        // PORT: skipped, Google-internal: InputFileEvent ("query_file", size) has no subscriber
+        // in Bazel.
+        // FileSystemUtils.readContent(residuePath): the whole file through the VFS.
+        let content = residue_path.get_input_stream().and_then(|mut stream| {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut stream, &mut bytes).map(|_| bytes)
+        });
+        match content {
+            // new String(bytes, ISO_8859_1): the internal string, one char per byte.
+            Ok(bytes) => query = latin1_decode(&bytes).into_owned(),
+            Err(_) => {
+                return Err(QueryException::new(
+                    None,
+                    format!("I/O error reading from {}", residue_path.get_path_string()),
+                    query::Code::QueryFileReadFailure,
+                ));
+            }
+        }
     } else if !allow_empty_query {
+        // When querying for the state of Skyframe, it's possible to omit the query expression.
         return Err(QueryException::new(
             None,
             // env.getRuntime().getProductName()
@@ -153,7 +182,12 @@ pub fn exec_internal(
         env.main_repo_mapping.clone(),
     );
 
-    let query = match read_query(query_options, residue, /* allow_empty_query= */ false) {
+    let query = match read_query(
+        query_options,
+        residue,
+        &env.working_directory,
+        /* allow_empty_query= */ false,
+    ) {
         Ok(query) => query,
         Err(e) => {
             return DetailedExitCode::of(e.get_failure_detail().clone());
@@ -274,7 +308,21 @@ fn new_query_environment(
             label_printer,
         ))
     } else {
-        blaze_util::unported!("BlazeQueryEnvironment", "needs lib/graph Digraph")
+        Box::new(BlazeQueryEnvironment::new(
+            env.query_transitive_package_preloader.clone(),
+            env.target_provider.clone(),
+            env.caching_package_locator.clone(),
+            env.target_pattern_preloader.clone(),
+            main_repo_target_parser,
+            keep_going,
+            /* strict_scope= */ true,
+            loading_phase_threads,
+            /* label_filter= */ LabelFilter::AllLabels,
+            env.reporter.clone(),
+            settings,
+            env.query_functions.clone(),
+            label_printer,
+        ))
     }
 }
 
@@ -324,7 +372,11 @@ pub fn do_query(
             .expect("StreamedFormatter");
         streamed_formatter.set_options(
             query_options,
-            aspect_resolver::create_resolver(query_options.aspect_deps),
+            aspect_resolver::create_resolver(
+                query_options.aspect_deps,
+                env.package_provider.clone(),
+                env.reporter.clone(),
+            ),
             env.hash_function,
         );
         streamed_formatter.set_event_handler(Some(event_handler_arc(env)));
@@ -373,12 +425,20 @@ pub fn do_query(
     if !stream_results || lexicographically_sort_output {
         // ((AggregateAllOutputFormatterCallback<Target, ?>) callback).getResult()
         let targets = callback.get_result();
+        let digraph_result = query_env
+            .get_result_graph()
+            .map(|graph| DigraphQueryEvalResult::new(result.clone(), graph));
         let output_result = query_output_utils::output(
             query_options,
+            digraph_result.as_ref(),
             &targets,
             formatter,
             out.clone(),
-            aspect_resolver::create_resolver(query_options.aspect_deps),
+            aspect_resolver::create_resolver(
+                query_options.aspect_deps,
+                env.package_provider.clone(),
+                env.reporter.clone(),
+            ),
             Some(event_handler_arc(env)),
             env.hash_function,
             query_env.get_label_printer(),

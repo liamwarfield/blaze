@@ -1,0 +1,5 @@
+EVAL len() missing 1 required positional argument: x
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_len_noargs.star", line 1, column 4, in <toplevel>
+TRACE \x09\x09len()
+TRACE Error in len: len() missing 1 required positional argument: x

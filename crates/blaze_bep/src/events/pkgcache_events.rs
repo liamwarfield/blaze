@@ -202,3 +202,56 @@ impl blaze_events::Postable for TargetParsingCompleteEvent {
         true
     }
 }
+
+/// The build event half of `PatternExpandingError` (the event itself is posted by
+/// `blaze_sky_top`): an `Aborted` with reason `LOADING_FAILURE` for the pattern.
+// Java: com/google/devtools/build/lib/skyframe/PatternExpandingError.java:27 PatternExpandingError
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PatternExpandingErrorEvent {
+    pattern: Vec<String>,
+    message: String,
+    skipped: bool,
+}
+
+impl PatternExpandingErrorEvent {
+    // Java: com/google/devtools/build/lib/skyframe/PatternExpandingError.java:33 PatternExpandingError.<init>
+    pub fn new(pattern: Vec<String>, message: String, skipped: bool) -> Self {
+        PatternExpandingErrorEvent {
+            pattern,
+            message,
+            skipped,
+        }
+    }
+}
+
+impl BuildEvent for PatternExpandingErrorEvent {
+    // Java: com/google/devtools/build/lib/skyframe/PatternExpandingError.java:58 PatternExpandingError.getEventId
+    fn get_event_id(&self) -> BuildEventId {
+        if self.skipped {
+            build_event_id_util::target_pattern_skipped(&self.pattern)
+        } else {
+            build_event_id_util::target_pattern_expanded(&self.pattern)
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/PatternExpandingError.java:67 PatternExpandingError.getChildrenEvents
+    fn get_children_events(&self) -> Vec<BuildEventId> {
+        Vec::new()
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/PatternExpandingError.java:72 PatternExpandingError.asStreamProto
+    fn as_stream_proto(&self, _: &dyn BuildEventContext) -> Result<bes::BuildEvent, Interrupted> {
+        let failure = bes::Aborted {
+            reason: bes::aborted::AbortReason::LoadingFailure as i32,
+            description: self.message.clone(),
+        };
+        Ok(proto_chaining_with(self, Payload::Aborted(failure)))
+    }
+}
+
+impl blaze_events::Postable for PatternExpandingErrorEvent {
+    // Java: com/google/devtools/build/lib/skyframe/PatternExpandingError.java:83 PatternExpandingError.storeForReplay
+    fn store_for_replay(&self) -> bool {
+        true
+    }
+}

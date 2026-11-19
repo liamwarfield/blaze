@@ -1,0 +1,5 @@
+EVAL integer division by zero
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_op_floordiv_zero.star", line 1, column 7, in <toplevel>
+TRACE \x09\x09x = 1 // 0
+TRACE Error: integer division by zero

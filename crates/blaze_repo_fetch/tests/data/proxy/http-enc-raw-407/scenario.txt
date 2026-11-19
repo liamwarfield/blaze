@@ -1,0 +1,1 @@
+http://origin.example/f HTTP_PROXY=http://é中:pé@127.0.0.1:PORT 407:basic,ok

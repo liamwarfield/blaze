@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+"""Compare the Java rules between the oracle (Bazel 9.3.2) and Blaze. See `compare help`."""
+
+import glob
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+USAGE = """\
+usage: scripts/java/compare --binary <blaze> [--oracle <bazel>] [--label NAME] [--skip-oracle]
+                            [--step ID]... [--keep-going]
+       scripts/java/compare list
+       scripts/java/compare help
+
+Runs a fixed list of steps (see `list`) on the probe workspace scripts/java/probe with the oracle
+and with Blaze. Each side has its own work copy (~/.cache/blaze/work/java-compare/<label>/<side>,
+rsync of the probe) and its own output user root (~/.cache/blaze/oracle-out/java-compare-<side>),
+a clean environment (HOME, PATH=/usr/bin:/bin), --nohome_rc --nosystem_rc, the shared repository
+cache, --color=no --curses=no, and runs under systemd-run --user --scope -p MemoryMax=12G
+-p MemorySwapMax=0. Both sides start from a fresh output user root and run the same steps in the
+same order; the server is shut down at the end.
+
+Compared per step (after replacing the workspace copy, output base, execroot, output user root,
+install base and $HOME by placeholders, scripts/oracle/normalise.py):
+  exit       the exit code of every step
+  cquery     `cquery --output=label_kind //...`: stdout, line by line
+  aquery     `aquery --output=jsonproto 'deps(//...)'`: every action (mnemonic, argv, inputs,
+             outputs, environment, execution info, action key, owner, configuration) and the
+             order of every list, as the referee's extractor (scripts/oracle/surfaces.py
+             aquery_summary/aquery_order) resolves them; the action key of runfiles manifest
+             actions is allow-listed as in scripts/oracle/allow.json, nothing else
+  build      `build //...` with --spawn_strategy=linux-sandbox (Blaze has no persistent
+             workers; the oracle would run Javac in a worker otherwise): the
+             "INFO: N processes: ..." line and the "Build completed" line
+  outputs    sha256 of every *.jar and of the launcher scripts under bazel-bin of the build
+  test       `test //:greeter_test`: exit code and the per-target result lines
+  run        `run //:hello -- probe`: the program's stdout
+
+Output: a table on stdout; raw outputs under ~/.cache/blaze/java-compare/<label>/<side>/ and
+results.json there. Exit 0 when every compared field matches, 1 otherwise.
+--skip-oracle reuses the oracle outputs of an earlier run with the same --label.
+--step limits the run to the named steps (the build step is implied by outputs).
+"""
+
+HOME = os.path.expanduser("~")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(REPO_ROOT, "scripts", "oracle"))
+import normalise  # noqa: E402
+import surfaces  # noqa: E402
+
+CACHE = os.path.join(HOME, ".cache", "blaze")
+ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+REPO_CACHE = os.path.join(CACHE, "repo-cache")
+PROBE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe")
+TIMEOUT = 3600
+
+STEPS = [
+    ("cquery", ["cquery", "--output=label_kind", "//..."]),
+    ("aquery", ["aquery", "--output=jsonproto", "deps(//...)"]),
+    ("build", ["build", "--spawn_strategy=linux-sandbox", "//..."]),
+    ("test", ["test", "--spawn_strategy=linux-sandbox", "//:greeter_test"]),
+    ("run", ["run", "--spawn_strategy=linux-sandbox", "//:hello", "--", "probe"]),
+]
+RUNFILES_MANIFEST_RE = re.compile(r"\.runfiles(_manifest|/MANIFEST)$")
+SUMMARY_RE = re.compile(r"^(INFO: \d+ process(es)?:.*|INFO: Build completed.*|INFO: Build did NOT.*"
+                        r"|//\S+\s+(PASSED|FAILED|NO STATUS|TIMEOUT|FLAKY).*|Executed .*)$")
+
+
+def clean_env():
+    return {"HOME": HOME, "PATH": "/usr/bin:/bin"}
+
+
+def make_writable_and_remove(path):
+    if not os.path.lexists(path):
+        return
+    subprocess.run(["chmod", "-R", "u+w", path], stderr=subprocess.DEVNULL)
+    shutil.rmtree(path, ignore_errors=True)
+    if os.path.lexists(path):
+        subprocess.run(["rm", "-rf", path])
+
+
+def run_cmd(binary, ws, our, args):
+    cmd = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "-p", "MemoryMax=12G",
+           "-p", "MemorySwapMax=0", binary, "--output_user_root=" + our, "--nohome_rc",
+           "--nosystem_rc"] + args[:1] + ["--repository_cache=" + REPO_CACHE, "--color=no",
+                                          "--curses=no"] + args[1:]
+    p = subprocess.run(cmd, cwd=ws, env=clean_env(), stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=TIMEOUT)
+    return p.returncode, p.stdout, p.stderr
+
+
+def info(binary, ws, our, key):
+    rc, out, _ = run_cmd(binary, ws, our, ["info", key])
+    return out.decode("latin-1").strip() if rc == 0 else ""
+
+
+def side_run(side, binary, label, steps):
+    ws = os.path.join(CACHE, "work", "java-compare", label, side)
+    our = os.path.join(CACHE, "oracle-out", "java-compare-" + side)
+    outdir = os.path.join(CACHE, "java-compare", label, side)
+    make_writable_and_remove(ws)
+    make_writable_and_remove(our)
+    make_writable_and_remove(outdir)
+    os.makedirs(ws)
+    os.makedirs(outdir)
+    subprocess.run(["rsync", "-a", "--delete", PROBE_DIR + "/", ws + "/"], check=True)
+    results = {"steps": {}}
+    for sid, args in STEPS:
+        if steps and sid not in steps and not (sid == "build" and "outputs" in steps):
+            continue
+        rc, out, err = run_cmd(binary, ws, our, args)
+        open(os.path.join(outdir, sid + ".stdout"), "wb").write(out)
+        open(os.path.join(outdir, sid + ".stderr"), "wb").write(err)
+        results["steps"][sid] = {"exit": rc}
+        if sid == "build":
+            hashes = {}
+            bin_dir = os.path.join(ws, "bazel-bin")
+            for path in sorted(glob.glob(os.path.join(bin_dir, "**", "*"), recursive=True)):
+                rel = os.path.relpath(path, bin_dir)
+                if ".runfiles" in rel or os.path.isdir(path):
+                    continue
+                if rel.endswith(".jar") or rel in ("hello", "greeter_test"):
+                    with open(path, "rb") as f:
+                        hashes[rel] = hashlib.sha256(f.read()).hexdigest()
+            results["outputs"] = hashes
+    paths = {
+        "workspace": ws,
+        "output_user_root": our,
+        "output_base": info(binary, ws, our, "output_base"),
+        "execroot": info(binary, ws, our, "execution_root"),
+        "install_base": info(binary, ws, our, "install_base"),
+        "home": HOME,
+    }
+    results["paths"] = paths
+    run_cmd(binary, ws, our, ["shutdown"])
+    with open(os.path.join(outdir, "results.json"), "w") as f:
+        json.dump(results, f, indent=1, sort_keys=True)
+    return results
+
+
+def load(side, label):
+    outdir = os.path.join(CACHE, "java-compare", label, side)
+    with open(os.path.join(outdir, "results.json")) as f:
+        return json.load(f), outdir
+
+
+def read(outdir, name):
+    p = os.path.join(outdir, name)
+    return open(p, "rb").read().decode("latin-1") if os.path.exists(p) else ""
+
+
+def summary_lines(ctx, text):
+    return [ctx.text(l) for l in text.splitlines() if SUMMARY_RE.match(l)]
+
+
+def aquery_items(ctx, text):
+    try:
+        doc = ctx.deep(json.loads(text))
+    except ValueError:
+        return None
+    summary = surfaces.aquery_summary(doc)
+    return {**summary, **surfaces.aquery_order(doc, list(summary))}
+
+
+def compare(label, steps):
+    o, odir = load("oracle", label)
+    b, bdir = load("blaze", label)
+    octx = normalise.Context(o["paths"])
+    bctx = normalise.Context(b["paths"])
+    rows = []
+
+    def row(name, ok, detail=""):
+        rows.append((name, "MATCH" if ok else "DIFF", detail))
+
+    for sid, _ in STEPS:
+        if sid not in o["steps"] or sid not in b["steps"]:
+            continue
+        oe, be = o["steps"][sid]["exit"], b["steps"][sid]["exit"]
+        row(sid + " exit", oe == be, "oracle %d, blaze %d" % (oe, be))
+        if sid == "cquery":
+            ol = octx.text(read(odir, "cquery.stdout")).splitlines()
+            bl = bctx.text(read(bdir, "cquery.stdout")).splitlines()
+            row("cquery stdout", ol == bl, "%d vs %d lines" % (len(ol), len(bl)))
+        elif sid == "aquery":
+            oi = aquery_items(octx, read(odir, "aquery.stdout"))
+            bi = aquery_items(bctx, read(bdir, "aquery.stdout"))
+            if oi is None or bi is None:
+                row("aquery", False, "no jsonproto on %s" % ("oracle" if oi is None else "blaze"))
+                continue
+            same = diff = missing = extra = allowed = 0
+            diffs = []
+            for k, v in oi.items():
+                if k not in bi:
+                    missing += 1
+                    diffs.append("missing " + k)
+                elif bi[k] == v:
+                    same += 1
+                else:
+                    fields = sorted(f for f in set(v) | set(bi[k]) if v.get(f) != bi[k].get(f)) \
+                        if isinstance(v, dict) and isinstance(bi[k], dict) else ["value"]
+                    if RUNFILES_MANIFEST_RE.search(k) and fields == ["actionKey"]:
+                        allowed += 1
+                    else:
+                        diff += 1
+                        diffs.append("diff %s: %s" % (k, ",".join(fields)))
+            for k in bi:
+                if k not in oi:
+                    extra += 1
+                    diffs.append("extra " + k)
+            with open(os.path.join(bdir, "aquery.diffs.txt"), "w") as f:
+                f.write("\n".join(diffs) + "\n")
+            row("aquery items", diff == missing == extra == 0,
+                "%d items: %d same, %d allowed, %d diff, %d missing, %d extra" % (
+                    len(oi), same, allowed, diff, missing, extra))
+        elif sid in ("build", "test", "run"):
+            ol = summary_lines(octx, read(odir, sid + ".stderr"))
+            bl = summary_lines(bctx, read(bdir, sid + ".stderr"))
+            row(sid + " summary", ol == bl, " | ".join(bl) if ol != bl else " | ".join(ol))
+            if sid == "run":
+                os_ = read(odir, "run.stdout")
+                bs = read(bdir, "run.stdout")
+                row("run stdout", os_ == bs, repr(bs[:60]))
+    if "outputs" in o and "outputs" in b:
+        oh, bh = o["outputs"], b["outputs"]
+        for k in sorted(set(oh) | set(bh)):
+            row("sha256 " + k, oh.get(k) == bh.get(k),
+                "" if oh.get(k) == bh.get(k) else "oracle %s, blaze %s" % (
+                    (oh.get(k) or "-")[:12], (bh.get(k) or "-")[:12]))
+    ok = all(r[1] == "MATCH" for r in rows)
+    w = max(len(r[0]) for r in rows) if rows else 10
+    for name, status, detail in rows:
+        print("%-*s  %-5s  %s" % (w, name, status, detail))
+    with open(os.path.join(CACHE, "java-compare", label, "results.json"), "w") as f:
+        json.dump({"rows": rows, "ok": ok}, f, indent=1)
+    return ok
+
+
+def main(argv):
+    if not argv or argv[0] in ("help", "--help", "-h"):
+        print(USAGE, end="")
+        return 0
+    if argv[0] == "list":
+        for sid, args in STEPS:
+            print("%-8s %s" % (sid, " ".join(args)))
+        print("%-8s %s" % ("outputs", "sha256 of bazel-bin/**/*.jar and launcher scripts after build"))
+        return 0
+    binary, oracle, label, skip_oracle, steps = None, ORACLE, "java-compare", False, []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--binary":
+            binary = argv[i + 1]; i += 2
+        elif a == "--oracle":
+            oracle = argv[i + 1]; i += 2
+        elif a == "--label":
+            label = argv[i + 1]; i += 2
+        elif a == "--step":
+            steps.append(argv[i + 1]); i += 2
+        elif a == "--skip-oracle":
+            skip_oracle = True; i += 1
+        else:
+            print("unknown argument %s\n%s" % (a, USAGE), file=sys.stderr)
+            return 2
+    if not binary:
+        print(USAGE, file=sys.stderr)
+        return 2
+    binary = os.path.abspath(binary)
+    if not skip_oracle:
+        side_run("oracle", oracle, label, steps)
+    side_run("blaze", binary, label, steps)
+    return 0 if compare(label, steps) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

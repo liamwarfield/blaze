@@ -11,11 +11,13 @@ pub mod event;
 pub mod event_kind;
 pub mod handler;
 pub mod io;
+pub mod java_format;
 pub mod location;
 pub mod output_filter;
 pub mod printing;
 pub mod reporter;
 pub mod terminal;
+pub mod terminal_writers;
 pub mod ui;
 
 pub use collectors::{EventCollector, StoredEventHandler};
@@ -37,6 +39,6 @@ pub use reporter::{EventBus, Reporter, ReporterStream};
 pub use terminal::{AnsiTerminal, AnsiTerminalPrinter, AnsiTerminalWriter, Color, Mode};
 pub use ui::{
     Clock, JavaClock, LocationPrinter, UiEventHandler, UiEventHandlerOptions, ansi_strip_err,
-    ansi_strip_out, format_date, format_event, format_timestamp, set_event_kind_color,
-    write_event_text,
+    ansi_strip_out, format_date, format_event, format_timestamp, nano_time_of,
+    set_event_kind_color, write_event_text,
 };

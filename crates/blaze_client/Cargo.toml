@@ -15,6 +15,12 @@ hex.workspace = true
 libc.workspace = true
 tar.workspace = true
 zstd.workspace = true
+# The gRPC client of the persistent server (BlazeServer::Connect / Communicate): tonic on a
+# tokio runtime owned by BlazeServer, message types from blaze_protos::command_server.
+prost.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

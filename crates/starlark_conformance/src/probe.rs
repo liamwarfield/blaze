@@ -10,9 +10,10 @@
 //! `FileOptions.DEFAULT`), then resolved (patch 0029: every unresolved name), then executed.
 //!
 //! Output: each printed line escaped as `StarlarkProbe.out` does; a syntax error (lexer, parser
-//! or resolver) as `SYNTAX file:line:col: message`, an evaluation error as `EVAL message`.
-//! Java prints every syntax error of a file; starlark-rust stops at the first lexer or parser
-//! error, so only the first `SYNTAX` line is comparable.
+//! or resolver) as `SYNTAX file:line:col: message` (every resolver error of the file; for the
+//! lexer and parser, every error starlark-rust reports), an evaluation error as `EVAL message`
+//! followed by one `TRACE line` per line of Bazel's traceback
+//! (`EvalError::message_with_stack`, Java `EvalException.getMessageWithStack`).
 
 use std::sync::Mutex;
 
@@ -64,8 +65,23 @@ fn syntax_line(e: &starlark::Error) -> String {
     let err = EvalError::from_starlark(e);
     match &err.kind {
         EvalErrorKind::Syntax(errors) => escape(&format!("SYNTAX {}", errors[0])),
-        _ => escape(&format!("SYNTAX {}", err.message)),
+        _ => match e.span() {
+            Some(span) => escape(&format!(
+                "SYNTAX {}: {}",
+                blaze_starlark::error::Location::of_span_start(span),
+                err.message
+            )),
+            None => escape(&format!("SYNTAX {}", err.message)),
+        },
     }
+}
+
+/// The `TRACE` lines of an evaluation error.
+fn trace_lines(err: &EvalError) -> Vec<String> {
+    err.message_with_stack()
+        .split('\n')
+        .map(|l| escape(&format!("TRACE {l}")))
+        .collect()
 }
 
 /// Runs the file `name` with contents `bytes` (decoded per `mode`, as the probe's
@@ -94,8 +110,9 @@ pub fn run(name: &str, bytes: &[u8], mode: ScriptMode) -> Vec<String> {
                 Ok(ast) => ast,
                 Err(e) => return vec![syntax_line(&e)],
             };
-            if let Some(e) = starlark::eval::resolve_errors(&ast, &globals).first() {
-                return vec![syntax_line(e)];
+            let errors = starlark::eval::resolve_errors(&ast, &globals);
+            if !errors.is_empty() {
+                return errors.iter().map(syntax_line).collect();
             }
             let result = Module::with_temp_heap(|module| {
                 let mut eval = Evaluator::new(&module);
@@ -108,10 +125,82 @@ pub fn run(name: &str, bytes: &[u8], mode: ScriptMode) -> Vec<String> {
             if let Err(e) = result {
                 let err = EvalError::from_starlark(&e);
                 lines.push(escape(&format!("EVAL {}", err.message)));
+                lines.extend(trace_lines(&err));
             }
             lines
         })
         .unwrap()
         .join()
         .unwrap_or_else(|_| vec!["HARNESS panic".to_owned()])
+}
+
+/// How a case of a probe directory compares with Bazel's recorded output (`NAME.latin1.txt`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CaseResult {
+    /// Every line equal: printed output, every `SYNTAX` line, `EVAL` message and `TRACE` lines.
+    Match,
+    /// Printed output and the kind of the first error (`SYNTAX`/`EVAL`/none) are equal, the
+    /// error text, location or traceback differ.
+    TextDiffers,
+    /// Printed output or the kind of error differ.
+    Differs,
+}
+
+/// One compared case: its result, Java's lines and Blaze's lines.
+pub struct CaseDiff {
+    pub name: String,
+    pub result: CaseResult,
+    pub java: Vec<String>,
+    pub rust: Vec<String>,
+}
+
+/// Runs `dir/NAME.star` (latin1 mode) and compares it with `dir/NAME.latin1.txt`.
+pub fn compare_case(dir: &std::path::Path, name: &str) -> CaseDiff {
+    let bytes = std::fs::read(dir.join(name)).unwrap_or_default();
+    let rust = run(name, &bytes, ScriptMode::Latin1);
+    let stem = name.strip_suffix(".star").unwrap_or(name);
+    let java: Vec<String> = std::fs::read_to_string(dir.join(format!("{stem}.latin1.txt")))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let result = if java == rust {
+        CaseResult::Match
+    } else {
+        let is_error = |l: &String| l.starts_with("SYNTAX ") || l.starts_with("EVAL ");
+        let split = |v: &[String]| {
+            let n = v.iter().position(is_error).unwrap_or(v.len());
+            (
+                v[..n].to_vec(),
+                v.get(n).map(|l| l.split(' ').next().unwrap_or("").to_owned()),
+            )
+        };
+        if split(&java) == split(&rust) {
+            CaseResult::TextDiffers
+        } else {
+            CaseResult::Differs
+        }
+    };
+    CaseDiff {
+        name: name.to_owned(),
+        result,
+        java,
+        rust,
+    }
+}
+
+/// The `.star` files of `dir`, sorted.
+pub fn case_names(dir: &std::path::Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter_map(|e| {
+                    let n = e.file_name().into_string().ok()?;
+                    n.ends_with(".star").then_some(n)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
 }

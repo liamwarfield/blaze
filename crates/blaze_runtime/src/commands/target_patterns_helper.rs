@@ -160,7 +160,7 @@ pub fn read_from_with(
 /// `FileSystemUtils.readLines` (`CharStreams.readLines`): the lines of `content`, without their
 /// terminators (`\n`, `\r` or `\r\n`); a last line needs no terminator.
 // Java: com/google/devtools/build/lib/vfs/FileSystemUtils.java:795 FileSystemUtils.readLines
-fn read_lines(content: &str) -> Vec<&str> {
+pub(crate) fn read_lines(content: &str) -> Vec<&str> {
     let mut lines = Vec::new();
     let bytes = content.as_bytes();
     let mut start = 0;

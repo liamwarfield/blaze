@@ -1,0 +1,57 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /tmp/claude-1000/-home-liamwarfield--t3-projects-blaze/6d69a44d-e0de-42b9-9769-0799c9eb488a/scratchpad/blaze-before
+# sha256 ed3b4279c3299fbc8c3a5ae6a65e0bc012e1f3f83f47464ae8c9a80846872651
+# tree 67302dc7fd8c4cc5c3c5fc80289402f9b95daaa6 (dirty)
+# date 2026-11-19T13:11:11
+=== 1: run build //build_names:all
+exit 1
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/build_names/BUILD.bazel:3:5: Variable `undefined_one` not found
+ERROR: <WS>/build_names/BUILD.bazel:3:21: Variable `undefined_two` not found
+ERROR: <WS>/build_names/BUILD.bazel:5:1: Variable `undefined_rule` not found
+ERROR: package contains errors: build_names: Variable `undefined_one` not found
+WARNING: Target pattern parsing failed.
+ERROR: Skipping '//build_names:all': Error evaluating '//build_names:all': error loading package 'build_names': Package 'build_names' contains errors
+ERROR: Error evaluating '//build_names:all': error loading package 'build_names': Package 'build_names' contains errors
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 2: run build //bzl_names:t
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/bzl_names/defs.bzl:1:5: Variable `nope_one` not found
+ERROR: <WS>/bzl_names/defs.bzl:4:12: Variable `nope_two` not found
+ERROR: <WS>/bzl_names/defs.bzl:4:23: Variable `nope_three` not found
+WARNING: Target pattern parsing failed.
+ERROR: Skipping '//bzl_names:t': error loading package 'bzl_names': compilation of module 'bzl_names/defs.bzl' failed
+ERROR: error loading package 'bzl_names': compilation of module 'bzl_names/defs.bzl' failed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 3: run build //bzl_names_before_load:t
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/bzl_names_before_load/defs.bzl:4:5: Variable `nope_one` not found
+WARNING: Target pattern parsing failed.
+ERROR: Skipping '//bzl_names_before_load:t': error loading package 'bzl_names_before_load': compilation of module 'bzl_names_before_load/defs.bzl' failed
+ERROR: error loading package 'bzl_names_before_load': compilation of module 'bzl_names_before_load/defs.bzl' failed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 4: run query //build_names:all
+exit 7
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/build_names/BUILD.bazel:3:5: Variable `undefined_one` not found
+ERROR: <WS>/build_names/BUILD.bazel:3:21: Variable `undefined_two` not found
+ERROR: <WS>/build_names/BUILD.bazel:5:1: Variable `undefined_rule` not found
+ERROR: package contains errors: build_names: Variable `undefined_one` not found
+ERROR: Evaluation of query "//build_names:all" failed

@@ -1,0 +1,49 @@
+caffeine		OK:CaffeineSpec{}|-1|-1|-1|null|null|null|null|null|false
+caffeine	maximumSize=100000	OK:CaffeineSpec{maximumSize=100000}|-1|100000|-1|null|null|null|null|null|false
+caffeine	maximumSize=100000,	OK:CaffeineSpec{maximumSize=100000,}|-1|100000|-1|null|null|null|null|null|false
+caffeine	 maximumSize = 5 , recordStats	OK:CaffeineSpec{ maximumSize = 5 , recordStats}|-1|5|-1|null|null|null|null|null|true
+caffeine	,,maximumSize=1	OK:CaffeineSpec{,,maximumSize=1}|-1|1|-1|null|null|null|null|null|false
+caffeine	initialCapacity=10,maximumSize=20,weakKeys,softValues,recordStats	OK:CaffeineSpec{initialCapacity=10,maximumSize=20,weakKeys,softValues,recordStats}|10|20|-1|WEAK|SOFT|null|null|null|true
+caffeine	maximumWeight=7,weakValues	OK:CaffeineSpec{maximumWeight=7,weakValues}|-1|-1|7|null|WEAK|null|null|null|false
+caffeine	maximumSize=1,maximumWeight=2	ERR:Failed to parse CaffeineSpec: maximum size was already set to 1
+caffeine	maximumWeight=2,maximumSize=1	ERR:Failed to parse CaffeineSpec: maximum weight was already set to 2
+caffeine	maximumSize=1,maximumSize=1234567	ERR:Failed to parse CaffeineSpec: maximum size was already set to 1
+caffeine	initialCapacity=1,initialCapacity=2	ERR:Failed to parse CaffeineSpec: initial capacity was already set to 1
+caffeine	initialCapacity=-1,initialCapacity=2	OK:CaffeineSpec{initialCapacity=-1,initialCapacity=2}|2|-1|-1|null|null|null|null|null|false
+caffeine	initialCapacity=abc	ERR:Failed to parse CaffeineSpec: key initialCapacity value was set to abc, must be an integer
+caffeine	initialCapacity=99999999999	ERR:Failed to parse CaffeineSpec: key initialCapacity value was set to 99999999999, must be an integer
+caffeine	maximumSize=99999999999999999999	ERR:Failed to parse CaffeineSpec: key maximumSize value was set to 99999999999999999999, must be a long
+caffeine	maximumSize=+12	OK:CaffeineSpec{maximumSize=+12}|-1|12|-1|null|null|null|null|null|false
+caffeine	maximumSize=-12	OK:CaffeineSpec{maximumSize=-12}|-1|-12|-1|null|null|null|null|null|false
+caffeine	maximumSize	ERR:Failed to parse CaffeineSpec: value of key maximumSize was omitted
+caffeine	maximumSize=	ERR:Failed to parse CaffeineSpec: value of key maximumSize was omitted
+caffeine	a=b=c	ERR:Failed to parse CaffeineSpec: key-value pair a=b=c with more than one equals sign
+caffeine	maximumSize=1=	OK:CaffeineSpec{maximumSize=1=}|-1|1|-1|null|null|null|null|null|false
+caffeine	=5	ERR:Failed to parse CaffeineSpec: Unknown key 
+caffeine	unknownKey=1	ERR:Failed to parse CaffeineSpec: Unknown key unknownKey
+caffeine	weakKeys=true	ERR:Failed to parse CaffeineSpec: weak keys does not take a value
+caffeine	weakKeys,weakKeys	ERR:Failed to parse CaffeineSpec: weak keys was already set
+caffeine	weakValues,softValues	ERR:Failed to parse CaffeineSpec: softValues was already set to WEAK
+caffeine	softValues=1	ERR:Failed to parse CaffeineSpec: softValues does not take a value
+caffeine	recordStats,recordStats	ERR:Failed to parse CaffeineSpec: record stats was already set
+caffeine	recordStats=1	ERR:Failed to parse CaffeineSpec: record stats does not take a value
+caffeine	expireAfterWrite=10s	OK:CaffeineSpec{expireAfterWrite=10s}|-1|-1|-1|null|null|10s0n|null|null|false
+caffeine	expireAfterWrite=10S	OK:CaffeineSpec{expireAfterWrite=10S}|-1|-1|-1|null|null|10s0n|null|null|false
+caffeine	expireAfterAccess=3m,refreshAfterWrite=2h	OK:CaffeineSpec{expireAfterAccess=3m,refreshAfterWrite=2h}|-1|-1|-1|null|null|null|180s0n|7200s0n|false
+caffeine	expireAfterAccess=1d	OK:CaffeineSpec{expireAfterAccess=1d}|-1|-1|-1|null|null|null|86400s0n|null|false
+caffeine	expireAfterWrite=10x	ERR:Failed to parse CaffeineSpec: key expireAfterWrite invalid format; was 10x, must end with one of [dDhHmMsS]
+caffeine	expireAfterWrite=s	ERR:Failed to parse CaffeineSpec: value of key expireAfterWrite was omitted
+caffeine	expireAfterWrite=	ERR:Failed to parse CaffeineSpec: value of key expireAfterWrite omitted
+caffeine	expireAfterWrite	ERR:Failed to parse CaffeineSpec: value of key expireAfterWrite omitted
+caffeine	expireAfterWrite=-5s	OK:CaffeineSpec{expireAfterWrite=-5s}|-1|-1|-1|null|null|-5s0n|null|null|false
+caffeine	expireAfterWrite=99999999999999999d	OK:CaffeineSpec{expireAfterWrite=99999999999999999d}|-1|-1|-1|null|null|9223372036s854775807n|null|null|false
+caffeine	expireAfterWrite=PT10S	OK:CaffeineSpec{expireAfterWrite=PT10S}|-1|-1|-1|null|null|10s0n|null|null|false
+caffeine	expireAfterWrite=pt1.5s	OK:CaffeineSpec{expireAfterWrite=pt1.5s}|-1|-1|-1|null|null|1s500000000n|null|null|false
+caffeine	expireAfterWrite=P2DT3H4M5.000000006S	OK:CaffeineSpec{expireAfterWrite=P2DT3H4M5.000000006S}|-1|-1|-1|null|null|183845s6n|null|null|false
+caffeine	expireAfterWrite=PT-1S	ERR:Failed to parse CaffeineSpec: key expireAfterWrite invalid format; was PT-1S, but the duration cannot be negative
+caffeine	expireAfterWrite=-PT1S	ERR:Failed to parse CaffeineSpec: key expireAfterWrite invalid format; was -PT1S, but the duration cannot be negative
+caffeine	expireAfterWrite=PT0.5S,expireAfterWrite=1s	ERR:Failed to parse CaffeineSpec: expireAfterWrite was already set
+caffeine	expireAfterWrite=P	EXC:java.time.format.DateTimeParseException
+caffeine	expireAfterWrite=PT	EXC:java.time.format.DateTimeParseException
+caffeine	expireAfterWrite=Pfoo	EXC:java.time.format.DateTimeParseException
+caffeine	refreshAfterWrite=PT1M2S	OK:CaffeineSpec{refreshAfterWrite=PT1M2S}|-1|-1|-1|null|null|null|null|62s0n|false

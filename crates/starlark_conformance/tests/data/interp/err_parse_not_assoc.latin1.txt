@@ -1,0 +1,1 @@
+SYNTAX err_parse_not_assoc.star:1:11: Operator '<' is not associative with operator '<'. Use parens.

@@ -23,6 +23,7 @@
 
 pub mod action_conflict_exception;
 pub mod action_lookup_conflict_finding_function;
+pub mod action_template_expansion_function;
 pub mod analysis_failure_event;
 pub mod analysis_phase_runner;
 pub mod artifact_conflict_finder;

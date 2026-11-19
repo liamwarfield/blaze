@@ -1,0 +1,2 @@
+SYNTAX err_parse_semicolon.star:1:7: syntax error at ';': expected expression
+SYNTAX err_parse_semicolon.star:1:7: contains syntax errors

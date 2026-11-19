@@ -1,0 +1,5 @@
+EVAL slice step cannot be zero
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_ix_slice_step_zero.star", line 1, column 11, in <toplevel>
+TRACE \x09\x09x = [1, 2][::0]
+TRACE Error: slice step cannot be zero

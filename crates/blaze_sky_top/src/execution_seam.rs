@@ -10,6 +10,8 @@
 
 use std::fmt;
 use std::sync::Arc;
+
+use blaze_sky_exec::action_template_expansion_value::ActionTemplateExpansionKey;
 use std::sync::atomic::Ordering;
 
 use blaze_actions::analysis::workspace_status_action::BUILD_INFO_FUNCTION_NAME;
@@ -187,7 +189,18 @@ impl AnalysisSeam for SkyframeAnalysisSeam {
                 ))
             }
             // Java: ActionTemplateExpansionValue.ActionTemplateExpansionKey.
-            "ACTION_TEMPLATE_EXPANSION" => unported!("ActionTemplateExpansionValue.getActions"),
+            "ACTION_TEMPLATE_EXPANSION" => {
+                let expansion_key = key
+                    .as_any()
+                    .downcast_ref::<ActionTemplateExpansionKey>()
+                    .unwrap_or_else(|| {
+                        panic!("ClassCastException: {key} is not an ActionTemplateExpansionKey")
+                    });
+                let Some(value) = env.get_value(expansion_key.clone())? else {
+                    return Ok(None);
+                };
+                Ok(Some(value as Arc<dyn ActionLookupValue>))
+            }
             // Java: CoverageReportValue.COVERAGE_REPORT_KEY.
             "COVERAGE_REPORT" => unported!("CoverageReportValue.getActions"),
             other => unported!("ArtifactFunction.getActionLookupValue", "{other} ({key})"),

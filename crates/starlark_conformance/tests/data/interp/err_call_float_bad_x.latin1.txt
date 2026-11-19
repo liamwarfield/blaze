@@ -1,0 +1,5 @@
+EVAL invalid float literal: 1.0x
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_float_bad_x.star", line 1, column 6, in <toplevel>
+TRACE \x09\x09float("1.0x")
+TRACE Error in float: invalid float literal: 1.0x

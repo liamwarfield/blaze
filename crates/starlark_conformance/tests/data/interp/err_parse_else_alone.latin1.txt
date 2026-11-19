@@ -1,0 +1,4 @@
+SYNTAX err_parse_else_alone.star:1:1: syntax error at 'else': expected expression
+SYNTAX err_parse_else_alone.star:2:2: indentation error
+SYNTAX err_parse_else_alone.star:1:1: name 'else' is not defined
+SYNTAX err_parse_else_alone.star:2:2: contains syntax errors

@@ -148,7 +148,21 @@ where
         // W4-analysis: subrules are called during analysis; blaze_analysis installs the call.
         match SUBRULE_CALL_HOOK.get() {
             Some(hook) => hook(_me, _args, _eval),
-            None => blaze_util::unported!("StarlarkSubrule.call"),
+            // Without blaze_analysis no thread is a rule analysis thread: Java's call fails in
+            // checkExported() or BazelRuleAnalysisThreadContext.fromOrFail.
+            // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkSubrule.java:135 StarlarkSubrule.call
+            None => {
+                if !self.is_exported() {
+                    return Err(super::util::errorf(
+                        "Invalid subrule hasn't been exported by a bzl file",
+                    ));
+                }
+                // Java: com/google/devtools/build/lib/analysis/BazelRuleAnalysisThreadContext.java:64 BazelRuleAnalysisThreadContext.fromOrFail
+                Err(super::util::errorf(format!(
+                    "{} can only be called from a rule or aspect implementation",
+                    self.get_name()
+                )))
+            }
         }
     }
 

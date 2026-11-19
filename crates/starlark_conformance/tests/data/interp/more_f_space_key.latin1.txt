@@ -1,1 +1,5 @@
 EVAL Missing argument ' 0'
+TRACE Traceback (most recent call last):
+TRACE \x09File "more_f_space_key.star", line 1, column 20, in <toplevel>
+TRACE \x09\x09print("{ 0}".format(1))
+TRACE Error in format: Missing argument ' 0'

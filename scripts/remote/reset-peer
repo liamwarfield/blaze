@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""A TCP proxy that resets the client's connection mid-write. See `reset-peer help`."""
+
+import os
+import select
+import socket
+import struct
+import sys
+import threading
+import time
+
+USAGE = """\
+usage: scripts/remote/reset-peer <listen-port> <upstream-port> [--after-bytes N]
+                                 [--trigger-file PATH] [--fin-delay S] [--every] [--log FILE]
+       scripts/remote/reset-peer help
+
+Listens on 127.0.0.1:<listen-port> (never on another address) and forwards each connection to
+127.0.0.1:<upstream-port> (for example Bazel's remote worker, scripts/remote/worker). After the
+trigger it ends the client's connection while the client is still writing: it stops reading,
+sends FIN (shutdown(SHUT_WR)), waits --fin-delay seconds, then closes the client socket with
+SO_LINGER {1, 0}, which sends RST. A client that writes on after that gets EPIPE (and, unless it
+ignores the signal or passes MSG_NOSIGNAL, SIGPIPE): the situation of a remote cache, executor
+or BES endpoint that closes a connection under a writing client.
+
+Trigger (default: --after-bytes 1048576):
+  --after-bytes N    after N bytes of one connection were forwarded upstream (client to server)
+  --trigger-file P   once the file P exists (checked at each forwarded chunk)
+  --fin-delay S      seconds between the FIN and the RST (default 0.05; 0: RST at once)
+  --every            reset every connection that reaches the trigger (default: only the first
+                     one; later connections, such as the client's reconnect, are forwarded
+                     normally)
+  --log FILE         one line per connection and per reset (default: stderr)
+
+Runs until killed (SIGTERM).
+"""
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("help", "--help", "-h"):
+        print(USAGE, end="")
+        return 0
+    if len(args) < 2:
+        sys.stderr.write(USAGE)
+        return 2
+    listen_port, upstream_port = int(args[0]), int(args[1])
+    after_bytes, trigger_file, fin_delay, every, log_path = 1048576, None, 0.05, False, None
+    rest = args[2:]
+    while rest:
+        a = rest.pop(0)
+        if a == "--after-bytes":
+            after_bytes = int(rest.pop(0))
+        elif a == "--trigger-file":
+            trigger_file = rest.pop(0)
+            after_bytes = None
+        elif a == "--fin-delay":
+            fin_delay = float(rest.pop(0))
+        elif a == "--every":
+            every = True
+        elif a == "--log":
+            log_path = rest.pop(0)
+        else:
+            sys.stderr.write("unknown option: %s\n" % a)
+            return 2
+    log_fh = open(log_path, "a", buffering=1) if log_path else sys.stderr
+    lock = threading.Lock()
+    state = {"resets": 0, "conn": 0}
+
+    def log(msg):
+        with lock:
+            log_fh.write("%.3f %s\n" % (time.time(), msg))
+
+    def triggered(n_up):
+        if trigger_file is not None:
+            return os.path.exists(trigger_file)
+        return n_up >= after_bytes
+
+    def handle(client, cid):
+        try:
+            upstream = socket.create_connection(("127.0.0.1", upstream_port))
+        except OSError as e:
+            log("conn %d: upstream: %s" % (cid, e))
+            client.close()
+            return
+        n_up = n_down = 0
+        armed = True
+        with lock:
+            if not every and state["resets"] > 0:
+                armed = False
+        log("conn %d: open (reset %s)" % (cid, "armed" if armed else "off"))
+        socks = [client, upstream]
+        try:
+            while True:
+                r, _, _ = select.select(socks, [], [])
+                if client in r:
+                    data = client.recv(65536)
+                    if not data:
+                        upstream.shutdown(socket.SHUT_WR)
+                        socks.remove(client)
+                    else:
+                        upstream.sendall(data)
+                        n_up += len(data)
+                        if armed and triggered(n_up):
+                            with lock:
+                                state["resets"] += 1
+                            client.shutdown(socket.SHUT_WR)
+                            if fin_delay > 0:
+                                time.sleep(fin_delay)
+                            client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                                              struct.pack("ii", 1, 0))
+                            client.close()
+                            log("conn %d: RST after %d bytes up, %d down" % (cid, n_up, n_down))
+                            upstream.close()
+                            return
+                if upstream in r:
+                    data = upstream.recv(65536)
+                    if not data:
+                        break
+                    client.sendall(data)
+                    n_down += len(data)
+        except OSError as e:
+            log("conn %d: %s" % (cid, e))
+        finally:
+            for s in (client, upstream):
+                try:
+                    s.close()
+                except OSError:
+                    pass
+        log("conn %d: closed after %d bytes up, %d down" % (cid, n_up, n_down))
+
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", listen_port))
+    srv.listen(64)
+    log("listening on 127.0.0.1:%d -> 127.0.0.1:%d" % (listen_port, upstream_port))
+    while True:
+        c, _ = srv.accept()
+        with lock:
+            state["conn"] += 1
+            cid = state["conn"]
+        threading.Thread(target=handle, args=(c, cid), daemon=True).start()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

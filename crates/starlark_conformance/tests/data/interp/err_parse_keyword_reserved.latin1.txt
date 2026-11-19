@@ -1,0 +1,3 @@
+SYNTAX err_parse_keyword_reserved.star:1:1: 'import' not supported, use 'load' instead
+SYNTAX err_parse_keyword_reserved.star:1:1: syntax error at 'import': expected expression
+SYNTAX err_parse_keyword_reserved.star:1:1: contains syntax errors

@@ -4,6 +4,7 @@ mod bzl_compile_function_test;
 mod bzl_load_function_test;
 mod containing_package_lookup_function_test;
 mod environment_group_test;
+mod eval_macro_function_test;
 mod exports_files_test;
 mod file_contents_proxy_test;
 mod file_function_test;

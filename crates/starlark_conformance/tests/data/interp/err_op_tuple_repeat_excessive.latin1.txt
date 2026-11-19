@@ -1,0 +1,5 @@
+EVAL excessive repeat (2 * 1073741824 elements)
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_op_tuple_repeat_excessive.star", line 1, column 12, in <toplevel>
+TRACE \x09\x09x = (1, 2) * (1 << 30)
+TRACE Error: excessive repeat (2 * 1073741824 elements)

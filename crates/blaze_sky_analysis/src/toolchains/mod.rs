@@ -10,6 +10,7 @@ use blaze_skyframe::EvaluatorBuilder;
 
 pub mod config_matching_util;
 pub mod constraint_value_lookup_util;
+pub mod debug_printers;
 pub mod lookup_error;
 pub mod platform_keys;
 pub mod platform_lookup_util;

@@ -1,0 +1,2 @@
+SYNTAX err_parse_multi_errors.star:2:1: syntax error at 'def': expected expression
+SYNTAX err_parse_multi_errors.star:1:5: contains syntax errors

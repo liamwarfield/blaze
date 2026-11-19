@@ -1,0 +1,1 @@
+SYNTAX err_res_req_after_kwargs.star:1:12: required parameter a may not follow **k

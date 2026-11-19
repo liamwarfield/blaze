@@ -5,46 +5,57 @@
 #                          [<extra startup option>...]
 #        scripts/proxy/run help
 #
-#   <url>         what `repository_ctx.download` fetches, for example https://origin.example/f
+#   <url>         what `repository_ctx.download` fetches, for example https://origin.example/f;
+#                 a comma-separated list downloads each URL in turn (outputs f0, f1, ...)
 #   <proxy-var>   HTTPS_PROXY, HTTP_PROXY, https_proxy or http_proxy; in <proxy-url> the word PORT
 #                 is replaced by the fake proxy's port (http://user:pw@127.0.0.1:PORT)
 #   <responses>   the fake proxy's answer list (scripts/proxy/fake-proxy help)
 #
 # Workspace: ~/.cache/blaze/work/proxy/ws (MODULE.bazel, defs.bzl, BUILD.bazel written each run;
-# the module has no bazel_dep, its lockfile is resolved once without a proxy).
-# Runs `query @r//:all` with startup options --output_user_root=~/.cache/blaze/oracle-out/ur-proxy
-# --nohome_rc --nosystem_rc and command options --repository_cache= --color=no --curses=no, inside
+# the download carries the sha256 of "hello\n", the fake proxy's body, since Bazel refuses http
+# without a checksum;
+# the module has no bazel_dep; its lockfile and the registry files are fetched once without a
+# proxy into the private repository cache ~/.cache/blaze/work/proxy/repo-cache, so the proxied
+# download is the server's first HTTP connection; the cached "hello\n" blob and the fetched
+# repository are deleted before each run).
+# Runs `query @r//:all` with startup options --output_user_root=~/.cache/blaze/oracle-out/proxy-ur
+# --nohome_rc --nosystem_rc and command options --repository_cache=<private> --color=no
+# --curses=no, inside
 # `systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0` (the server dies with
 # the unit: every run is a fresh JVM, so ProxyHelper's one-time Authenticator setup happens anew).
-# Environment: HOME, PATH=/usr/bin:/bin, the proxy variable, NO_PROXY=bcr.bazel.build.
+# Environment: HOME, PATH=/usr/bin:/bin, the proxy variable.
 # Results in <out-dir>: the proxy log (NN-cC.req, NN-cC.tunnel, events.txt), stderr, exit-code.
 set -euo pipefail
-if [[ $# -lt 5 || $1 == help ]]; then sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi
+if [[ $# -lt 5 || $1 == help ]]; then sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi
 here=$(cd "$(dirname "$0")" && pwd)
 bin=$1; out=$2; url=$3; pvar=${4%%=*}; purl=${4#*=}; responses=$5
 shift 5; extra=("$@")
 [[ $bin == oracle ]] && bin=~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64
 ws=~/.cache/blaze/work/proxy/ws
-ur=~/.cache/blaze/oracle-out/ur-proxy
+ur=~/.cache/blaze/oracle-out/proxy-ur
+rc=~/.cache/blaze/work/proxy/repo-cache
 mkdir -p "$ws" "$ur"
 rm -rf "$out"; mkdir -p "$out"
 echo 'module(name = "proxy_probe")
 dl = use_repo_rule("//:defs.bzl", "dl")
-dl(name = "r", url = "'"$url"'")' > "$ws/MODULE.bazel"
+dl(name = "r", urls = ["'"${url//,/\",\"}"'"])' > "$ws/MODULE.bazel"
 cat > "$ws/defs.bzl" <<'EOF'
 def _impl(rctx):
-    rctx.download(url = rctx.attr.url, output = "f")
-    rctx.file("BUILD.bazel", "exports_files(['f'])\n")
+    for i, url in enumerate(rctx.attr.urls):
+        rctx.download(url = url, output = "f%d" % i, canonical_id = url, sha256 = "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03")
+    rctx.file("BUILD.bazel", "")
 
-dl = repository_rule(implementation = _impl, attrs = {"url": attr.string()})
+dl = repository_rule(implementation = _impl, attrs = {"urls": attr.string_list()})
 EOF
 : > "$ws/BUILD.bazel"
 common=(--output_user_root="$ur" --nohome_rc --nosystem_rc)
 if [[ ! -f $ws/MODULE.bazel.lock ]]; then
   (cd "$ws" && systemd-run --user --collect --wait --quiet --pipe -p MemoryMax=12G -p MemorySwapMax=0 \
     --working-directory="$ws" env -i HOME="$HOME" PATH=/usr/bin:/bin \
-    "$bin" "${common[@]}" mod deps --repository_cache=$HOME/.cache/blaze/repo-cache >/dev/null 2>&1) || true
+    "$bin" "${common[@]}" mod deps --repository_cache="$rc" >/dev/null 2>&1) || true
 fi
+rm -rf "$rc"/content_addressable/sha256/5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03
+rm -rf "$ur"/*/external/+dl+r "$ur"/*/external/@+dl+r.marker
 log=$out/proxy
 "$here/fake-proxy" 0 "$log" "$responses" > "$out/proxy.port" &
 ppid_=$!
@@ -55,8 +66,7 @@ purl=${purl//PORT/$port}
 set +e
 systemd-run --user --collect --wait --quiet --pipe -p MemoryMax=12G -p MemorySwapMax=0 \
   --working-directory="$ws" env -i HOME="$HOME" PATH=/usr/bin:/bin "$pvar=$purl" \
-  NO_PROXY=bcr.bazel.build \
-  "$bin" "${common[@]}" "${extra[@]}" query @r//:all --repository_cache= --color=no --curses=no \
+  "$bin" "${common[@]}" "${extra[@]}" query @r//:all --repository_cache="$rc" --color=no --curses=no \
   > "$out/stdout" 2> "$out/stderr"
 code=$?
 set -e

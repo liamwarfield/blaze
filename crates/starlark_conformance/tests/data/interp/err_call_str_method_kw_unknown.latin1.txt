@@ -1,0 +1,5 @@
+EVAL split() got unexpected keyword argument 'foo'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_str_method_kw_unknown.star", line 1, column 10, in <toplevel>
+TRACE \x09\x09"a".split(foo = 1)
+TRACE Error in split: split() got unexpected keyword argument 'foo'

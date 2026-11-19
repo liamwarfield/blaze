@@ -1,1 +1,5 @@
 EVAL substring not found
+TRACE Traceback (most recent call last):
+TRACE \x09File "more_s_rindex_missing.star", line 1, column 19, in <toplevel>
+TRACE \x09\x09print("abc".rindex("c", 0, 2))
+TRACE Error in rindex: substring not found

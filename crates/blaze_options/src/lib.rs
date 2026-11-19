@@ -13,6 +13,7 @@
 #[macro_use]
 mod macros;
 
+pub mod caffeine_spec;
 pub mod converter;
 pub mod converters;
 pub mod data;
@@ -21,6 +22,7 @@ pub mod exception;
 pub mod foreign;
 pub mod global_rc;
 pub mod html_utils;
+pub mod invocation_policy;
 mod line_break_iterator;
 pub mod option_filter_descriptions;
 pub mod options;

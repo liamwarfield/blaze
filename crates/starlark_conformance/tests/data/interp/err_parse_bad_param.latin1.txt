@@ -1,0 +1,1 @@
+SYNTAX err_parse_bad_param.star:1:7: syntax error at '1': expected identifier

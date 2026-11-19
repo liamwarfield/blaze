@@ -1,0 +1,2 @@
+SYNTAX err_lex_indent_paren.star:3:2: indentation error
+SYNTAX err_lex_indent_paren.star:3:2: contains syntax errors

@@ -1,0 +1,6 @@
+first
+EVAL unsupported binary operation: int + NoneType
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_misc_print_ok_then_err.star", line 2, column 7, in <toplevel>
+TRACE \x09\x09x = 1 + None
+TRACE Error: unsupported binary operation: int + NoneType

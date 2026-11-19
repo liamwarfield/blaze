@@ -1,0 +1,28 @@
+platform(
+    name = "p1",
+)
+
+platform(
+    name = "p2",
+    flags = [
+        "--compilation_mode=opt",
+        "--//flags:color=blue",
+    ],
+)
+
+platform(
+    name = "p3",
+)
+
+platform(
+    name = "p_default_reset",
+    flags = [
+        "--//flags:color=none",
+        "--copt=-DFROM_PLATFORM",
+    ],
+)
+
+platform(
+    name = "p_bad_flag",
+    flags = ["--no_such_native_flag=1"],
+)

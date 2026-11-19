@@ -1,0 +1,36 @@
+# Probe package for scripts/exec2/compare: copied into a work copy of brotli as
+# //blaze_exec2_probe. Identical input for the oracle and for Blaze.
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load(":defs.bzl", "pruning_rule", "tree_sources")
+
+# (a) unused_inputs_list: the tool lists every input containing "unused" as unused.
+filegroup(
+    name = "all_inputs",
+    srcs = glob(["*.input"], allow_empty = True),
+)
+
+pruning_rule(
+    name = "output",
+    out = "output.out",
+    inputs = ":all_inputs",
+    tool = "cat_unused.sh",
+)
+
+# (b) cc_library / cc_binary whose sources come from a tree artifact (a directory of .cc files
+# and a header), compiled through CppCompileActionTemplate.
+tree_sources(
+    name = "gen_tree",
+    template = "template.txt",
+)
+
+cc_library(
+    name = "treelib",
+    srcs = [":gen_tree"],
+)
+
+cc_binary(
+    name = "treebin",
+    srcs = ["main.cc"],
+    deps = [":treelib"],
+)

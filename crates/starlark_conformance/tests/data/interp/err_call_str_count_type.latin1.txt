@@ -1,0 +1,5 @@
+EVAL in call to count(), parameter 'sub' got value of type 'NoneType', want 'string'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_str_count_type.star", line 1, column 10, in <toplevel>
+TRACE \x09\x09"a".count(None)
+TRACE Error in count: in call to count(), parameter 'sub' got value of type 'NoneType', want 'string'

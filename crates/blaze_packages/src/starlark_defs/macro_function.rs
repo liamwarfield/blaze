@@ -9,7 +9,13 @@ use std::sync::OnceLock;
 use allocative::Allocative;
 use blaze_cmdline::Label;
 use blaze_starlark::Location;
+use blaze_starlark::EvalError;
 use blaze_starlark::ThreadContext;
+use blaze_starlark::error::EvalErrorKind;
+use blaze_starlark::error::EvalErrorWithStack;
+use blaze_starlark::error::StackEntry;
+use blaze_starlark::error::bare_message;
+use indexmap::IndexMap;
 use parking_lot::Mutex;
 use starlark::any::ProvidesStaticType;
 use starlark::coerce::Coerce;
@@ -59,6 +65,8 @@ pub struct MacroFunctionState {
     builder: Mutex<Option<MacroClassBuilder>>,
     macro_class: OnceLock<Arc<MacroClass>>,
     exported_location: OnceLock<Location>,
+    /// The source line at `exported_location`, for tracebacks.
+    exported_source_line: OnceLock<String>,
     documentation: Option<String>,
     symbol: u64,
     exported: OnceLock<(Label, String)>,
@@ -170,9 +178,50 @@ impl<'v, V: ValueLike<'v>> fmt::Display for MacroFunctionGen<V> {
     }
 }
 
+/// Java `thread.getCallStack()` from inside a macro function: [`call_stack`] with the macro's
+/// own frame at its location (Java `StarlarkThread.push` gives a callable's frame
+/// `fn.getLocation()`, which for an exported macro is where it was exported).
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:1573 MacroFunction.getLocation
+fn macro_call_stack(state: &MacroFunctionState, eval: &Evaluator) -> Vec<StackEntry> {
+    let mut stack = call_stack(eval);
+    if let (Some(last), Some(location)) = (stack.last_mut(), state.exported_location.get()) {
+        last.location = Some(location.clone());
+        last.source_line = state.exported_source_line.get().cloned();
+    }
+    stack
+}
+
 /// Java `MacroFunction.call`.
+///
+/// An `EvalException` thrown from `call` gets the thread's call stack (Java
+/// `EvalException.ensureStack`), whose innermost frame is the macro at its location; an
+/// exception of the macro's implementation already has its stack
+/// (MacroClass.executeMacroImplementation).
 // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:1598 MacroFunction.call
 fn call_macro_function<'v>(
+    state: &MacroFunctionState,
+    args: &Arguments<'v, '_>,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> starlark::Result<Value<'v>> {
+    match call_macro_function_impl(state, args, eval) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            if EvalErrorWithStack::of(&e).is_some() || state.exported_location.get().is_none() {
+                return Err(e);
+            }
+            let mut ex = EvalError {
+                kind: EvalErrorKind::Eval,
+                message: bare_message(&e),
+                callstack: macro_call_stack(state, eval),
+                include_stack: true,
+            };
+            ex.read_missing_source_lines();
+            Err(EvalErrorWithStack(ex).into_starlark())
+        }
+    }
+}
+
+fn call_macro_function_impl<'v>(
     state: &MacroFunctionState,
     args: &Arguments<'v, '_>,
     eval: &mut Evaluator<'v, '_, '_>,
@@ -200,13 +249,18 @@ fn call_macro_function<'v>(
     if args.len()? != named.len() {
         return Err(errorf("unexpected positional arguments"));
     }
-    let kwargs: Vec<(String, Value<'v>)> = named
+    let kwargs: IndexMap<String, Value<'v>> = named
         .into_iter()
         .map(|(k, v)| (k.as_str().to_owned(), v))
         .collect();
 
     let macro_instance = macro_class
-        .instantiate_and_add_macro(&mut target_definition_context, &kwargs, &call_stack(eval))
+        .instantiate_and_add_macro(
+            &mut target_definition_context,
+            &kwargs,
+            &macro_call_stack(state, eval),
+            eval.heap(),
+        )
         .map_err(eval_exception)?;
 
     // Evaluate the macro now, if it's not a finalizer. Finalizer evaluation will be deferred to
@@ -215,18 +269,35 @@ fn call_macro_function<'v>(
     // Non-finalizers must be evaluated synchronously with the call to instantiate the macro,
     // because their side-effects must be visible to native.existing_rules() calls in legacy
     // macros.
-    if target_definition_context.eagerly_expand_macros() && !macro_class.is_finalizer() {
+    //
+    // TODO: #19922 - Once compatibility with native.existing_rules() in legacy macros is no
+    // longer a concern, we can make all symbolic macros use deferred evaluation rather than
+    // expanding them here. And when we have lazy evaluation, they won't even be expanded at the
+    // end of BUILD file evaluation, but rather at the end of package evaluation (which at that
+    // time would be a distinct skyfunction).
+    let eagerly_expand_macros = target_definition_context.eagerly_expand_macros();
+    drop(target_definition_context);
+    if eagerly_expand_macros && !macro_class.is_finalizer() {
         // PORT: Java's updatePausedThreadComputationSteps accounting is skipped.
-        let semantics = ThreadContext::get(eval)?.semantics.clone();
-        MacroClass::execute_macro_implementation(
-            &macro_instance,
-            &mut target_definition_context,
-            &semantics,
-        )
-        .map_err(eval_exception)?;
+        // PORT: the builder is this thread's payload; it moves into the macro's thread while
+        // the implementation runs (MacroClass.executeMacroImplementation) and comes back.
+        let thread = ThreadContext::get(eval)?;
+        let semantics = thread.semantics.clone();
+        let builder = thread
+            .clear_payload()
+            .and_then(|p| p.downcast::<TargetDefinitionContext>().ok())
+            .expect("the thread context holds the package builder");
+        let (builder, result) =
+            MacroClass::execute_macro_implementation(&macro_instance, *builder, &semantics);
+        thread.restore_payload(Some(builder_box(builder)));
+        result.map_err(|e| EvalErrorWithStack(e).into_starlark())?;
     }
 
     Ok(Value::new_none())
+}
+
+fn builder_box(builder: TargetDefinitionContext) -> Box<dyn std::any::Any> {
+    Box::new(builder)
 }
 
 #[starlark_value(type = "macro")]
@@ -241,6 +312,11 @@ where
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
         call_macro_function(&self.state, args, eval)
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:1568 MacroFunction.getName
+    fn name_for_call_stack(&self, _me: Value<'v>) -> String {
+        self.state.get_name()
     }
 
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:1692 MacroFunction.equals
@@ -287,16 +363,62 @@ where
             .state
             .exported
             .set((starlark_label, variable_name.to_owned()));
-        // PORT: Java receives the location of the exporting assignment; the innermost call-stack
-        // location is the closest Blaze has.
-        if let Some(loc) = eval.call_stack_top_location() {
-            let _ = self
-                .state
-                .exported_location
-                .set(Location::of_span_start(&loc));
+        // Java receives the location of the assigned identifier (BzlLoadFunction's post-assign
+        // hook). PORT: starlark-rust's export hook has no location; it is found by the
+        // assignment of `variable_name` among the top-level statements of the module being
+        // executed (the bottom frame while its top level runs).
+        if let Some(module) = eval.innermost_enclosing_def_module(0)
+            && let Some((location, source_line)) =
+                top_level_assignment_location(module.codemap(), variable_name)
+        {
+            let _ = self.state.exported_source_line.set(source_line);
+            let _ = self.state.exported_location.set(location);
         }
         Ok(())
     }
+}
+
+/// The location of the identifier `name` in the first top-level assignment to it in the file of
+/// `codemap`, and the trimmed source line there.
+fn top_level_assignment_location(
+    codemap: &starlark::codemap::CodeMap,
+    name: &str,
+) -> Option<(Location, String)> {
+    use starlark::syntax::ast::AssignTargetP;
+    use starlark::syntax::ast::AstAssignTarget;
+    use starlark::syntax::ast::StmtP;
+
+    fn find(target: &AstAssignTarget, name: &str) -> Option<starlark::codemap::Span> {
+        match &target.node {
+            AssignTargetP::Identifier(id) if id.node.ident == name => Some(id.span),
+            AssignTargetP::Tuple(items) => items.iter().find_map(|t| find(t, name)),
+            _ => None,
+        }
+    }
+
+    let ast = starlark::syntax::AstModule::parse(
+        codemap.filename(),
+        codemap.source().to_owned(),
+        &blaze_starlark::FileKind::Bzl.dialect(),
+    )
+    .ok()?;
+    let top = ast.statement();
+    let statements: Vec<_> = match &top.node {
+        StmtP::Statements(list) => list.iter().collect(),
+        _ => vec![top],
+    };
+    let span = statements.iter().find_map(|stmt| match &stmt.node {
+        StmtP::Assign(assign) => find(&assign.lhs, name),
+        _ => None,
+    })?;
+    let file_span = ast.file_span(span);
+    let location = Location::of_span_start(&file_span);
+    let source_line = file_span
+        .file
+        .source_line(location.line.saturating_sub(1))
+        .trim_matches(|c: char| c <= ' ')
+        .to_owned();
+    Some((location, source_line))
 }
 
 /// Java `StarlarkRuleClassFunctions.getAttrsOf`.
@@ -492,6 +614,7 @@ pub fn register_macro(builder: &mut GlobalsBuilder) {
                 builder: Mutex::new(Some(builder)),
                 macro_class: OnceLock::new(),
                 exported_location: OnceLock::new(),
+                exported_source_line: OnceLock::new(),
                 documentation: doc.map(trim_doc_string),
                 symbol,
                 exported: OnceLock::new(),

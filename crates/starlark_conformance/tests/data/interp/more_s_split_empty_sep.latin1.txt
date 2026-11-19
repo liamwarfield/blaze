@@ -1,1 +1,5 @@
 EVAL Empty separator
+TRACE Traceback (most recent call last):
+TRACE \x09File "more_s_split_empty_sep.star", line 1, column 18, in <toplevel>
+TRACE \x09\x09print("abc".split(""))
+TRACE Error in split: Empty separator

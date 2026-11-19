@@ -1,1 +1,5 @@
 EVAL 'in <string>' requires string as left operand, not 'int'
+TRACE Traceback (most recent call last):
+TRACE \x09File "more_s_in_int.star", line 1, column 9, in <toplevel>
+TRACE \x09\x09print(1 in "abc")
+TRACE Error: 'in <string>' requires string as left operand, not 'int'

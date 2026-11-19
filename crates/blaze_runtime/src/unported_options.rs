@@ -98,11 +98,10 @@ pub(crate) fn check_unported_options(command: &CommandAnnotation, options: &Opti
         );
     }
 
-    // BuildEventServiceModule.beforeCommand: the Build Event Protocol of the commands other than
-    // build and test (crate::commands::bep is wired into those two).
-    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:337 BuildEventServiceModule.beforeCommand
-    if command_name != "build"
-        && command_name != "test"
+    // The Build Event Protocol of the commands whose build events are not posted yet (the
+    // module streams them: crate::bazel_modules::BazelBuildEventServiceModule).
+    // Java: com/google/devtools/build/lib/buildeventservice/BazelBuildEventServiceModule.java:189 BazelBuildEventServiceModule.ALLOWED_COMMANDS
+    if matches!(command_name, "cquery" | "aquery" | "coverage" | "mobile-install")
         && let Some(o) = options.get_options::<BuildEventStreamOptions>()
         && (!o.build_event_text_file.is_empty()
             || !o.build_event_binary_file.is_empty()
@@ -110,7 +109,7 @@ pub(crate) fn check_unported_options(command: &CommandAnnotation, options: &Opti
     {
         blaze_util::unported!(
             "BuildEventServiceModule.beforeCommand",
-            "--build_event_*_file for the {} command",
+            "the build events of the {} command",
             command_name
         );
     }
@@ -212,8 +211,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "BuildEventServiceModule.beforeCommand")]
-    fn build_event_files_fail_for_other_commands() {
+    fn build_event_files_are_accepted_for_query() {
         check_unported_options(
             &QUERY_COMMAND,
             &parser(&["--build_event_json_file=bep.json"]),

@@ -610,3 +610,175 @@ impl blaze_events::Postable for TargetCompleteEvent {
         true
     }
 }
+
+/// The build event half of `AspectConfiguredEvent` (posted by `blaze_sky_top`).
+// Java: com/google/devtools/build/lib/analysis/AspectConfiguredEvent.java:28 AspectConfiguredEvent
+#[derive(Clone, Debug)]
+pub struct AspectConfiguredBuildEvent {
+    target: Label,
+    aspect_class_name: String,
+    aspect_description: String,
+    /// `configurationId(configuration)`'s checksum (`None` for the null configuration).
+    configuration_checksum: Option<String>,
+    /// `buildEvent(configuration)`: the configuration's build event, or `None` for
+    /// `NullConfiguration`.
+    configuration_event: Option<Arc<dyn BuildEvent>>,
+}
+
+impl AspectConfiguredBuildEvent {
+    // Java: com/google/devtools/build/lib/analysis/AspectConfiguredEvent.java:38 AspectConfiguredEvent.<init>
+    pub fn new(
+        target: Label,
+        aspect_class_name: String,
+        aspect_description: String,
+        configuration_checksum: Option<String>,
+        configuration_event: Option<Arc<dyn BuildEvent>>,
+    ) -> Self {
+        AspectConfiguredBuildEvent {
+            target,
+            aspect_class_name,
+            aspect_description,
+            configuration_checksum,
+            configuration_event,
+        }
+    }
+}
+
+impl BuildEvent for AspectConfiguredBuildEvent {
+    // Java: com/google/devtools/build/lib/analysis/AspectConfiguredEvent.java:54 AspectConfiguredEvent.getEventId
+    fn get_event_id(&self) -> BuildEventId {
+        build_event_id_util::aspect_configured(&self.target, &self.aspect_class_name)
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/AspectConfiguredEvent.java:59 AspectConfiguredEvent.getChildrenEvents
+    fn get_children_events(&self) -> Vec<BuildEventId> {
+        vec![build_event_id_util::aspect_completed(
+            &self.target,
+            &build_event_id_util::configuration_id_for_key(self.configuration_checksum.as_deref()),
+            &self.aspect_description,
+        )]
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/AspectConfiguredEvent.java:74 AspectConfiguredEvent.asStreamProto
+    fn as_stream_proto(
+        &self,
+        _converters: &dyn BuildEventContext,
+    ) -> Result<bes::BuildEvent, Interrupted> {
+        Ok(proto_chaining_with(
+            self,
+            Payload::Configured(bes::TargetConfigured::default()),
+        ))
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/AspectConfiguredEvent.java:49 AspectConfiguredEvent.getConfigurations
+    fn get_configurations(&self) -> Option<Vec<Arc<dyn BuildEvent>>> {
+        Some(vec![match &self.configuration_event {
+            Some(event) => event.clone(),
+            None => crate::buildeventstream::generic_build_event::NullConfiguration::instance(),
+        }])
+    }
+}
+
+impl blaze_events::Postable for AspectConfiguredBuildEvent {}
+
+/// The build event half of `AspectCompleteEvent` (posted by `blaze_sky_exec`): fired as soon as a
+/// top-level aspect is either built or fails.
+// Java: com/google/devtools/build/lib/analysis/AspectCompleteEvent.java:42 AspectCompleteEvent
+#[derive(Clone, Debug)]
+pub struct AspectCompleteBuildEvent {
+    label: Label,
+    /// `configurationId(aspectKey.getConfigurationKey())`'s checksum.
+    configuration_checksum: Option<String>,
+    /// `aspectKey.getAspectDescriptor().getDescription()`.
+    aspect_description: String,
+    root_causes: Vec<Cause>,
+    posted_after: Vec<BuildEventId>,
+    completion_context: Arc<CompletionContext>,
+    artifact_output_groups: IndexMap<String, ArtifactsInOutputGroup>,
+}
+
+impl AspectCompleteBuildEvent {
+    // Java: com/google/devtools/build/lib/analysis/AspectCompleteEvent.java:51 AspectCompleteEvent.<init>
+    pub fn new(
+        label: Label,
+        configuration_checksum: Option<String>,
+        aspect_description: String,
+        root_causes: Vec<Cause>,
+        completion_context: Arc<CompletionContext>,
+        artifact_output_groups: IndexMap<String, ArtifactsInOutputGroup>,
+    ) -> Self {
+        let posted_after = root_causes.iter().map(|c| c.id_proto.clone()).collect();
+        AspectCompleteBuildEvent {
+            label,
+            configuration_checksum,
+            aspect_description,
+            root_causes,
+            posted_after,
+            completion_context,
+            artifact_output_groups,
+        }
+    }
+
+    /// Determines whether the target has failed or succeeded.
+    // Java: com/google/devtools/build/lib/analysis/AspectCompleteEvent.java:100 AspectCompleteEvent.failed
+    pub fn failed(&self) -> bool {
+        !self.root_causes.is_empty()
+    }
+}
+
+impl BuildEvent for AspectCompleteBuildEvent {
+    // Java: com/google/devtools/build/lib/analysis/AspectCompleteEvent.java:143 AspectCompleteEvent.getEventId
+    fn get_event_id(&self) -> BuildEventId {
+        build_event_id_util::aspect_completed(
+            &self.label,
+            &build_event_id_util::configuration_id_for_key(self.configuration_checksum.as_deref()),
+            &self.aspect_description,
+        )
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/AspectCompleteEvent.java:151 AspectCompleteEvent.postedAfter
+    fn posted_after(&self) -> Option<Vec<BuildEventId>> {
+        Some(self.posted_after.clone())
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/AspectCompleteEvent.java:156 AspectCompleteEvent.getChildrenEvents
+    fn get_children_events(&self) -> Vec<BuildEventId> {
+        Vec::new()
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/AspectCompleteEvent.java:161 AspectCompleteEvent.reportedArtifacts
+    fn reported_artifacts(
+        &self,
+        output_group_file_modes: &OutputGroupFileModes,
+    ) -> Option<ReportedArtifacts> {
+        Some(TargetCompleteEvent::to_reported_artifacts(
+            &self.artifact_output_groups,
+            &self.completion_context,
+            output_group_file_modes,
+        ))
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/AspectCompleteEvent.java:169 AspectCompleteEvent.asStreamProto
+    fn as_stream_proto(
+        &self,
+        converters: &dyn BuildEventContext,
+    ) -> Result<bes::BuildEvent, Interrupted> {
+        let builder = bes::TargetComplete {
+            success: !self.failed(),
+            output_group: TargetCompleteEvent::to_output_group_protos(
+                &self.artifact_output_groups,
+                &self.completion_context,
+                converters,
+            ),
+            ..Default::default()
+        };
+        Ok(proto_chaining_with(self, Payload::Completed(builder)))
+    }
+}
+
+impl blaze_events::Postable for AspectCompleteBuildEvent {
+    // Java: com/google/devtools/build/lib/analysis/AspectCompleteEvent.java:182 AspectCompleteEvent.storeForReplay
+    fn store_for_replay(&self) -> bool {
+        true
+    }
+}

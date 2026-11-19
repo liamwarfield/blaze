@@ -1,0 +1,4 @@
+SYNTAX err_res_multi_kwargs.star:1:8: multiple **kwargs not allowed
+SYNTAX err_res_multi_kwargs.star:1:1: name 'f' is not defined
+SYNTAX err_res_multi_kwargs.star:1:5: name 'a' is not defined
+SYNTAX err_res_multi_kwargs.star:1:10: name 'b' is not defined

@@ -1,0 +1,5 @@
+EVAL floating-point division by zero
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_op_float_div_zero.star", line 1, column 9, in <toplevel>
+TRACE \x09\x09x = 1.0 / 0
+TRACE Error: floating-point division by zero

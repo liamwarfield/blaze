@@ -1,0 +1,10 @@
+# comment
+platforms:
+  //plat:p1
+    --compilation_mode=dbg
+    --//flags:color=red
+
+flags:
+  --compilation_mode=fastbuild
+  --//flags:fast
+    //plat:p3

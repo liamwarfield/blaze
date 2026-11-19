@@ -24,6 +24,9 @@ pub struct InvalidConfigurationException {
     /// carries its detailed exit code (Java `new InvalidConfigurationException(
     /// noSuchThingException.getDetailedExitCode(), e)`); `code` is then unused.
     pub package_loading_code: Option<i32>,
+    /// The same for a wrapped `NoSuchThingException` whose detailed exit code has another
+    /// category: `<Category>[.<CODE>]` as blaze_packages' `FailureCode::Other` names it.
+    pub wrapped_failure_code: Option<String>,
 }
 
 impl InvalidConfigurationException {
@@ -32,6 +35,7 @@ impl InvalidConfigurationException {
             message: message.into(),
             code: "BUILD_CONFIGURATION_UNKNOWN",
             package_loading_code: None,
+            wrapped_failure_code: None,
         }
     }
 
@@ -40,6 +44,7 @@ impl InvalidConfigurationException {
             message: message.into(),
             code,
             package_loading_code: None,
+            wrapped_failure_code: None,
         }
     }
 
@@ -51,6 +56,19 @@ impl InvalidConfigurationException {
             message: message.into(),
             code: "BUILD_CONFIGURATION_UNKNOWN",
             package_loading_code: Some(code),
+            wrapped_failure_code: None,
+        }
+    }
+
+    /// `new InvalidConfigurationException(noSuchThingException.getDetailedExitCode(), e)` for a
+    /// detailed exit code of a category other than `PackageLoading` (see
+    /// [`Self::wrapped_failure_code`]).
+    pub fn with_wrapped_failure_code(message: impl Into<String>, code: impl Into<String>) -> Self {
+        InvalidConfigurationException {
+            message: message.into(),
+            code: "BUILD_CONFIGURATION_UNKNOWN",
+            package_loading_code: None,
+            wrapped_failure_code: Some(code.into()),
         }
     }
 

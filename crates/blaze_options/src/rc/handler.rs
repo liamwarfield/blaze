@@ -9,7 +9,11 @@ use indexmap::{IndexMap, IndexSet};
 use super::client_options::{ClientOptions, OptionOverride};
 use crate::data::OptionsData;
 use crate::definition::{OptionDefinitionRef, OptionsClassRef};
+use blaze_protos::blaze::invocation_policy::InvocationPolicy;
+use prost::Message as _;
+
 use crate::exception::OptionsParsingException;
+use crate::invocation_policy::{InvocationPolicyEnforcer, OptionAndRawValue};
 use crate::parser::{ArgAndFallbackData, OptionsParser};
 use crate::priority::PriorityCategory;
 
@@ -139,8 +143,9 @@ pub struct OptionsParseFailure {
 
 // Java: com/google/devtools/build/lib/runtime/BlazeOptionHandler.java:73 BlazeOptionHandler
 /// Handles parsing the command arguments: rc options, configs and command-line options.
-/// PORT: invocation policy, `BlazeCommand.editOptions`, project files and the
-/// workspace check are the caller's (runtime) responsibility and are not run here.
+/// PORT: project files and the workspace check are the caller's (runtime) responsibility and
+/// are not run here. `BlazeCommand.editOptions` and the invocation policy run here only when the
+/// caller supplies them ([`BlazeOptionHandler::with_invocation_policy`]); the runtime does.
 pub struct BlazeOptionHandler<'p> {
     product_name: String,
     command: &'static Command,
@@ -148,6 +153,18 @@ pub struct BlazeOptionHandler<'p> {
     options_parser: &'p mut OptionsParser,
     rcfile_notes: Vec<String>,
     all_options_classes: Vec<OptionsClassRef>,
+    /// `runtime.getModuleInvocationPolicy()`, the Java constructor's `invocationPolicy` and
+    /// `command.editOptions`; `None` when the caller does not run them through the handler.
+    policy_and_edit_options: Option<PolicyAndEditOptions<'p>>,
+    /// The `invocationPolicyFlagListBuilder` the parse methods fill.
+    invocation_policy_flags: Vec<OptionAndRawValue>,
+}
+
+/// What the runtime gives the handler for the last steps of `parseOptionsInternal`.
+struct PolicyAndEditOptions<'p> {
+    module_invocation_policy: InvocationPolicy,
+    invocation_policy: InvocationPolicy,
+    edit_options: Box<dyn FnMut(&mut OptionsParser) + 'p>,
 }
 
 impl<'p> BlazeOptionHandler<'p> {
@@ -168,7 +185,33 @@ impl<'p> BlazeOptionHandler<'p> {
             options_parser,
             rcfile_notes: Vec::new(),
             all_options_classes,
+            policy_and_edit_options: None,
+            invocation_policy_flags: Vec::new(),
         }
+    }
+
+    /// The Java constructor's `invocationPolicy`, with `runtime.getModuleInvocationPolicy()` and
+    /// `command.editOptions`: `parseOptionsInternal` then runs `editOptions` and enforces the
+    /// combined policy after parsing, before the warnings, as Java does.
+    // Java: com/google/devtools/build/lib/runtime/BlazeOptionHandler.java:115 BlazeOptionHandler.<init>
+    pub fn with_invocation_policy(
+        mut self,
+        module_invocation_policy: InvocationPolicy,
+        invocation_policy: InvocationPolicy,
+        edit_options: Box<dyn FnMut(&mut OptionsParser) + 'p>,
+    ) -> Self {
+        self.policy_and_edit_options = Some(PolicyAndEditOptions {
+            module_invocation_policy,
+            invocation_policy,
+            edit_options,
+        });
+        self
+    }
+
+    /// The flags the invocation policy applied while parsing (Java: the
+    /// `invocationPolicyFlagListBuilder` passed to `parseOptions`).
+    pub fn get_invocation_policy_flags(&self) -> &[OptionAndRawValue] {
+        &self.invocation_policy_flags
     }
 
     pub fn options_parser(&mut self) -> &mut OptionsParser {
@@ -311,59 +354,19 @@ impl<'p> BlazeOptionHandler<'p> {
 
     // Java: com/google/devtools/build/lib/runtime/BlazeOptionHandler.java:466 BlazeOptionHandler.parseOptions
     /// Parses the options (`args[0]` is the command name). Errors are reported as events.
+    /// PORT: Java's `invocationPolicyFlagListBuilder` argument is the handler's
+    /// [`BlazeOptionHandler::get_invocation_policy_flags`].
     pub fn parse_options(
         &mut self,
         args: &[String],
         event_handler: &mut StoredEventHandler,
     ) -> Result<(), OptionsParseFailure> {
-        let result = self.parse_options_internal(args, event_handler);
+        let (result, _) =
+            self.parse_options_internal(args, event_handler, /* get_config_definitions= */ false);
         if result.is_err() {
             self.options_parser.set_error();
         }
         result
-    }
-
-    // Java: com/google/devtools/build/lib/runtime/BlazeOptionHandler.java:496 BlazeOptionHandler.parseOptionsInternal
-    fn parse_options_internal(
-        &mut self,
-        args: &[String],
-        event_handler: &mut StoredEventHandler,
-    ) -> Result<(), OptionsParseFailure> {
-        // PORT: checkCwdInWorkspace, command.editOptions and InvocationPolicyEnforcer.enforce run
-        // in the runtime, not here.
-        match self.parse_args_and_configs(args, event_handler) {
-            Ok(_) => {
-                for warning in self.options_parser.get_warnings() {
-                    event_handler.handle(HandlerEvent::warn(warning));
-                }
-                // PORT: Java reads CommonCommandOptions.deprecationWarnings; looked up by option
-                // name here because CommonCommandOptions lives in the runtime crate.
-                if let Some(d) = self
-                    .options_parser
-                    .options_data()
-                    .get_option_definition_from_name("unconditional_warning")
-                {
-                    let value = self
-                        .options_parser
-                        .get_option_value_description(d.get_option_name())
-                        .and_then(|v| v.get_value());
-                    if let Some(list) = value.as_ref().and_then(|v| v.as_list()) {
-                        for warning in list {
-                            event_handler.handle(HandlerEvent::warn(warning.get::<String>()));
-                        }
-                    }
-                }
-                Ok(())
-            }
-            Err(e) => {
-                let log_message = "Error parsing options";
-                Err(process_options_parsing_exception(
-                    event_handler,
-                    &e,
-                    log_message,
-                ))
-            }
-        }
     }
 
     /// `parseOptionsAndGetConfigDefinitions`: also returns the `--config` definitions that apply
@@ -377,23 +380,90 @@ impl<'p> BlazeOptionHandler<'p> {
         Result<(), OptionsParseFailure>,
         Vec<(String, RcChunkOfArgs)>,
     ) {
-        let rc_definitions = match self.parse_args_and_configs(args, event_handler) {
-            Ok(d) => d,
-            Err(e) => {
-                self.options_parser.set_error();
-                return (
-                    Err(process_options_parsing_exception(
-                        event_handler,
-                        &e,
-                        "Error parsing options",
-                    )),
-                    vec![],
-                );
-            }
-        };
-        for warning in self.options_parser.get_warnings() {
-            event_handler.handle(HandlerEvent::warn(warning));
+        let (result, config_definitions) =
+            self.parse_options_internal(args, event_handler, /* get_config_definitions= */ true);
+        if result.is_err() {
+            self.options_parser.set_error();
         }
+        (result, config_definitions)
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/BlazeOptionHandler.java:496 BlazeOptionHandler.parseOptionsInternal
+    // PORT: checkCwdInWorkspace runs in the runtime, before the handler is created.
+    fn parse_options_internal(
+        &mut self,
+        args: &[String],
+        event_handler: &mut StoredEventHandler,
+        get_config_definitions: bool,
+    ) -> (
+        Result<(), OptionsParseFailure>,
+        Vec<(String, RcChunkOfArgs)>,
+    ) {
+        let mut rc_definitions = CommandToRcArgs::new();
+        let exit_code = (|| -> Result<(), OptionsParsingException> {
+            rc_definitions = self.parse_args_and_configs(args, event_handler)?;
+            if let Some(p) = &mut self.policy_and_edit_options {
+                // Allow the command to edit the options.
+                (p.edit_options)(self.options_parser);
+                // Merge the invocation policy that is user-supplied, from the command line, and
+                // any invocation policy that was added by a module. The module one goes 'first,'
+                // so the user one has priority. (`Builder.mergeFrom(Message)` is the merge of
+                // the serialized forms.)
+                let mut combined_policy = p.module_invocation_policy.clone();
+                combined_policy
+                    .merge(p.invocation_policy.encode_to_vec().as_slice())
+                    .expect("re-encoded InvocationPolicy");
+                let options_policy_enforcer = InvocationPolicyEnforcer::new(
+                    combined_policy,
+                    self.options_parser.get_conversion_context().cloned(),
+                );
+                // Enforce the invocation policy. It is intentional that this is the last step in
+                // preparing the options. The invocation policy is used in security-critical
+                // contexts, and may be used as a last resort to override flags. That means that
+                // the policy can override flags set in BlazeCommand.editOptions, so the code
+                // needs to be safe regardless of the actual flag values. At the time of this
+                // writing, editOptions was only used as a convenience feature or to improve the
+                // user experience, but not required for safety or correctness.
+                options_policy_enforcer.enforce(
+                    self.options_parser,
+                    self.command.name,
+                    &mut self.invocation_policy_flags,
+                )?;
+            }
+            // Print warnings for odd options usage
+            for warning in self.options_parser.get_warnings() {
+                event_handler.handle(HandlerEvent::warn(warning));
+            }
+            // PORT: Java reads CommonCommandOptions.deprecationWarnings; looked up by option
+            // name here because CommonCommandOptions lives in the runtime crate.
+            if let Some(d) = self
+                .options_parser
+                .options_data()
+                .get_option_definition_from_name("unconditional_warning")
+            {
+                let value = self
+                    .options_parser
+                    .get_option_value_description(d.get_option_name())
+                    .and_then(|v| v.get_value());
+                if let Some(list) = value.as_ref().and_then(|v| v.as_list()) {
+                    for warning in list {
+                        event_handler.handle(HandlerEvent::warn(warning.get::<String>()));
+                    }
+                }
+            }
+            Ok(())
+        })();
+        let exit_code = exit_code.map_err(|e| {
+            let log_message = "Error parsing options";
+            process_options_parsing_exception(event_handler, &e, log_message)
+        });
+
+        if !get_config_definitions {
+            return (exit_code, Vec::new());
+        }
+        // Transforms all rc definitions into valid --config definitions for this command. For
+        // example, "build:asan" is valid for a build command but not "test:asan". Rc definitions
+        // like "build" aren't included because those aren't --config definitions.
         let matching_rc_commands = get_command_names_to_parse(self.command);
         let mut valid_config_defs = Vec::new();
         for (rc_key, chunks) in &rc_definitions {
@@ -408,7 +478,7 @@ impl<'p> BlazeOptionHandler<'p> {
                 }
             }
         }
-        (Ok(()), valid_config_defs)
+        (exit_code, valid_config_defs)
     }
 
     // Java: com/google/devtools/build/lib/runtime/BlazeOptionHandler.java:594 BlazeOptionHandler.expandConfigOptions

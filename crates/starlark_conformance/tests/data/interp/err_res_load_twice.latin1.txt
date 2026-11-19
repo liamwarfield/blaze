@@ -1,0 +1,1 @@
+SYNTAX err_res_load_twice.star:1:21: load statement defines 'x' more than once

@@ -1,0 +1,5 @@
+EVAL in call to join(), parameter 'elements' got value of type 'int', want 'iterable'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_str_join_type.star", line 1, column 9, in <toplevel>
+TRACE \x09\x09",".join(1)
+TRACE Error in join: in call to join(), parameter 'elements' got value of type 'int', want 'iterable'

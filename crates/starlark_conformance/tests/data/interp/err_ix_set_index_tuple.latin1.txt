@@ -1,0 +1,5 @@
+EVAL can only assign an element in a dictionary or a list, not in a 'tuple'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_ix_set_index_tuple.star", line 2, column 6, in <toplevel>
+TRACE \x09\x09t[0] = 1
+TRACE Error: can only assign an element in a dictionary or a list, not in a 'tuple'

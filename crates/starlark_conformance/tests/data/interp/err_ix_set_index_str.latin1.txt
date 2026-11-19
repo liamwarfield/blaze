@@ -1,0 +1,5 @@
+EVAL can only assign an element in a dictionary or a list, not in a 'string'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_ix_set_index_str.star", line 2, column 6, in <toplevel>
+TRACE \x09\x09s[0] = "c"
+TRACE Error: can only assign an element in a dictionary or a list, not in a 'string'

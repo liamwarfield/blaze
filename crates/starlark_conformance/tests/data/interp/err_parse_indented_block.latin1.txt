@@ -1,0 +1,1 @@
+SYNTAX err_parse_indented_block.star:2:1: expected an indented block

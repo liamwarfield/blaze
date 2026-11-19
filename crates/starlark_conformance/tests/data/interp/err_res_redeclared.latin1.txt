@@ -1,0 +1,2 @@
+SYNTAX err_res_redeclared.star:2:1: 'x' redeclared at top level
+SYNTAX err_res_redeclared.star:1:1: 'x' previously declared here

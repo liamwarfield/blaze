@@ -1,0 +1,5 @@
+EVAL in call to print(), parameter 'sep' got value of type 'int', want 'string'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_print_sep_type.star", line 1, column 6, in <toplevel>
+TRACE \x09\x09print(1, sep = 1)
+TRACE Error in print: in call to print(), parameter 'sep' got value of type 'int', want 'string'

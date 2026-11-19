@@ -133,6 +133,15 @@ impl BlazeCommandResult {
         self.shutdown
     }
 
+    // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:111 BlazeCommandResult.createShutdown
+    pub fn create_shutdown(crash: &crate::bugreport::Crash) -> Self {
+        BlazeCommandResult {
+            detailed_exit_code: crash.get_detailed_exit_code().clone(),
+            exec_description: None,
+            shutdown: true,
+        }
+    }
+
     // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:107 BlazeCommandResult.shutdownOnSuccess
     pub fn shutdown_on_success() -> Self {
         BlazeCommandResult {

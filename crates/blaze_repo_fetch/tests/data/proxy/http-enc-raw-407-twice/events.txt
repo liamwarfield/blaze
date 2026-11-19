@@ -1,0 +1,10 @@
+accept c1
+request 01-c1 GET http://origin.example/f HTTP/1.1
+response 01-c1 HTTP/1.1 407 Proxy Authentication Required
+close c1 by client
+accept c2
+request 02-c2 GET http://origin.example/f HTTP/1.1
+response 02-c2 HTTP/1.1 200 OK
+request 03-c2 GET http://origin.example/g HTTP/1.1
+response 03-c2 HTTP/1.1 200 OK
+close c2 by client

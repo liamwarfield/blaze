@@ -1,0 +1,5 @@
+EVAL 'NoneType' object is not callable
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_misc_bool_none_call.star", line 1, column 1, in <toplevel>
+TRACE \x09\x09None()
+TRACE Error: 'NoneType' object is not callable

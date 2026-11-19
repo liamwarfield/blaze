@@ -1,0 +1,5 @@
+EVAL key "b" not found in dictionary
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_ix_dict_missing.star", line 1, column 13, in <toplevel>
+TRACE \x09\x09x = {"a": 1}["b"]
+TRACE Error: key "b" not found in dictionary

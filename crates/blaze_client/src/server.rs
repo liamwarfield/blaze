@@ -52,3 +52,58 @@ pub trait InProcessServer {
     /// thread calls when the user presses Ctrl-C (`BlazeServer::SendCancelMessage`).
     fn canceller(&self) -> std::sync::Arc<dyn Fn() + Send + Sync>;
 }
+
+/// Which server the client talks to: the environment variable `BLAZE_SERVER_MODE` of the
+/// client, read once by `blaze::Main`.
+///
+/// PORT: Blaze-only (the persistent server is opt-in until it becomes the default).
+/// - unset or `inprocess`: the server runs in this process ([`InProcessServer`]); the client
+///   keeps its locks for the whole command and refuses an output base a live foreign server owns.
+/// - `daemon`: Bazel's client/server protocol. The server is a separate process started by the
+///   install base's `daemonize`: this binary itself (`/proc/self/exe`), with the argument vector
+///   `GetServerExeArgs` builds.
+/// - `jvm` (tests only): as `daemon`, but the server executable is the one
+///   `StartupOptions::GetExe` computes (the JVM of the install base), so a Bazel install base
+///   gives a real Bazel server.
+///
+/// `--batch` runs in-process in every mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServerMode {
+    InProcess,
+    Daemon,
+    Jvm,
+}
+
+impl ServerMode {
+    /// The name of the environment variable.
+    pub const ENV: &'static str = "BLAZE_SERVER_MODE";
+
+    /// The mode for the value of `BLAZE_SERVER_MODE` (`None`: unset).
+    pub fn parse(value: Option<&str>) -> Result<ServerMode, String> {
+        match value {
+            None | Some("inprocess") => Ok(ServerMode::InProcess),
+            Some("daemon") => Ok(ServerMode::Daemon),
+            Some("jvm") => Ok(ServerMode::Jvm),
+            Some(other) => Err(format!(
+                "Invalid value of {}: '{}'. Use 'inprocess' (or leave it unset), 'daemon' or \
+                 'jvm'.",
+                Self::ENV,
+                other
+            )),
+        }
+    }
+
+    /// Reads `BLAZE_SERVER_MODE` from this process's environment.
+    pub fn from_env() -> Result<ServerMode, String> {
+        if crate::platform::exists_env(Self::ENV) {
+            Self::parse(Some(&crate::platform::get_env(Self::ENV)))
+        } else {
+            Self::parse(None)
+        }
+    }
+
+    /// Whether the server is a separate process the client talks to over gRPC.
+    pub fn is_server_process(self) -> bool {
+        self != ServerMode::InProcess
+    }
+}

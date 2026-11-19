@@ -1,0 +1,5 @@
+EVAL elems() got unexpected positional argument
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_str_elems_args.star", line 1, column 10, in <toplevel>
+TRACE \x09\x09"a".elems(1)
+TRACE Error in elems: elems() got unexpected positional argument

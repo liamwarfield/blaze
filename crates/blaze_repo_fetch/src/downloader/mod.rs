@@ -8,6 +8,7 @@ pub mod http_connector_multiplexer;
 pub mod http_downloader;
 pub mod http_stream;
 pub mod http_utils;
+pub mod jdk_http_auth;
 pub mod proxy_helper;
 pub mod socket_transport;
 pub mod streams;

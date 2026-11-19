@@ -71,6 +71,25 @@ impl TargetProvider for PackageManagerTargetProvider {
     }
 }
 
+impl blaze_query::pkgcache::PackageProvider for PackageManagerTargetProvider {
+    fn get_package(
+        &self,
+        event_handler: &Arc<dyn ExtendedEventHandler>,
+        package_name: &PackageIdentifier,
+    ) -> Result<Arc<blaze_packages::package::Package>, blaze_query::pkgcache::GetPackageError> {
+        self.0
+            .get_package(event_handler.clone(), package_name)
+            .map_err(|e| match e {
+                NoSuchPackageOrInterrupted::NoSuchPackage(e) => {
+                    blaze_query::pkgcache::GetPackageError::NoSuchPackage(e)
+                }
+                NoSuchPackageOrInterrupted::Interrupted => {
+                    blaze_query::pkgcache::GetPackageError::Interrupted(InterruptedException::new())
+                }
+            })
+    }
+}
+
 /// `SkyframePackageManager` as query's `pkgcache::CachingPackageLocator`.
 pub struct PackageManagerCachingPackageLocator(pub Arc<SkyframePackageManager>);
 
@@ -127,6 +146,7 @@ pub fn query_command_environment(
     reporter: Arc<dyn ExtendedEventHandler>,
     output: OutputStream,
     relative_working_directory: PathFragment,
+    working_directory: blaze_vfs::Path,
     main_repo_mapping: RepositoryMapping,
 ) -> QueryCommandEnvironment {
     let package_manager = skyframe_executor.get_package_manager().clone();
@@ -136,10 +156,12 @@ pub fn query_command_environment(
         hash_function: skyframe_executor.get_digest_function(),
         starlark_semantics: skyframe_executor.get_effective_starlark_semantics().clone(),
         relative_working_directory,
+        working_directory,
         main_repo_mapping,
         // PORT: env.getRuntime().getQueryFunctions() is empty for Bazel.
         query_functions: Vec::new(),
         target_provider: Arc::new(PackageManagerTargetProvider(package_manager.clone())),
+        package_provider: Arc::new(PackageManagerTargetProvider(package_manager.clone())),
         caching_package_locator: Arc::new(PackageManagerCachingPackageLocator(
             package_manager.clone(),
         )),

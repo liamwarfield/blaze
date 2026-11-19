@@ -138,6 +138,122 @@ impl PackageFactory {
         )
     }
 
+    /// A builder for a package assembled from package pieces (lazy macro expansion).
+    // Java: com/google/devtools/build/lib/packages/PackageFactory.java:252 PackageFactory.newPackageFromPackagePiecesBuilder
+    pub fn new_package_from_package_pieces_builder(
+        &self,
+        metadata: Arc<crate::package::PackageMetadata>,
+        declarations: Arc<crate::package::PackageDeclarations>,
+        starlark_semantics: &StarlarkSemantics,
+        main_repository_mapping: RepositoryMapping,
+        generator_map: Option<IndexMap<Location, String>>,
+        config_setting_visibility_policy: Option<ConfigSettingVisibilityPolicy>,
+        globber: Option<Arc<dyn Globber>>,
+        build_file: Arc<crate::target::InputFile>,
+    ) -> TargetDefinitionContext {
+        // PORT: Java passes configSettingVisibilityPolicy here but the metadata (from the BUILD
+        // file piece) already carries it; Package.newPackageFromPackagePiecesBuilder ignores it.
+        let _ = config_setting_visibility_policy;
+        TargetDefinitionContext::new_package_from_package_pieces_builder(
+            self.package_settings,
+            metadata,
+            declarations,
+            starlark_semantics.incompatible_no_implicit_file_export,
+            starlark_semantics.incompatible_simplify_unconditional_selects_in_rule_attrs,
+            main_repository_mapping,
+            generator_map,
+            globber,
+            /* enable_name_conflict_checking= */ true,
+            /* track_full_macro_information= */ true,
+            self.package_validator.get_package_limits(),
+            build_file,
+        )
+    }
+
+    /// A builder for the BUILD file piece of a package (lazy macro expansion).
+    // Java: com/google/devtools/build/lib/packages/PackageFactory.java:283 PackageFactory.newPackagePieceForBuildFileBuilder
+    pub fn new_package_piece_for_build_file_builder(
+        &self,
+        package_piece_id: crate::package::PackagePieceIdentifierForBuildFile,
+        filename: RootedPath,
+        associated_module_name: Option<String>,
+        associated_module_version: Option<String>,
+        starlark_semantics: &StarlarkSemantics,
+        repository_mapping: RepositoryMapping,
+        main_repository_mapping: RepositoryMapping,
+        generator_map: Option<IndexMap<Location, String>>,
+        config_setting_visibility_policy: Option<ConfigSettingVisibilityPolicy>,
+        globber: Option<Arc<dyn Globber>>,
+    ) -> TargetDefinitionContext {
+        TargetDefinitionContext::new_package_piece_for_build_file_builder(
+            self.package_settings,
+            package_piece_id,
+            filename,
+            self.rule_class_provider
+                .get_runfiles_prefix()
+                .expect("setRunfilesPrefix was not called")
+                .to_owned(),
+            associated_module_name,
+            associated_module_version,
+            starlark_semantics.incompatible_no_implicit_file_export,
+            starlark_semantics.incompatible_simplify_unconditional_selects_in_rule_attrs,
+            repository_mapping,
+            main_repository_mapping,
+            generator_map,
+            config_setting_visibility_policy,
+            globber,
+            /* enable_name_conflict_checking= */ true,
+            /* track_full_macro_information= */ true,
+            self.package_validator.get_package_limits(),
+        )
+    }
+
+    /// A builder for the piece of one symbolic macro (lazy macro expansion).
+    // Java: com/google/devtools/build/lib/packages/PackageFactory.java:320 PackageFactory.newPackagePieceForMacroBuilder
+    pub fn new_package_piece_for_macro_builder(
+        &self,
+        metadata: Arc<crate::package::PackageMetadata>,
+        declarations: Arc<crate::package::PackageDeclarations>,
+        macro_: Arc<crate::macros::MacroInstance>,
+        parent_identifier: crate::package::PackagePieceIdentifier,
+        starlark_semantics: &StarlarkSemantics,
+        main_repository_mapping: RepositoryMapping,
+        existing_rules_map_for_finalizer: Option<IndexMap<String, Arc<crate::target::Rule>>>,
+    ) -> TargetDefinitionContext {
+        TargetDefinitionContext::new_package_piece_for_macro_builder(
+            metadata,
+            declarations,
+            macro_,
+            parent_identifier,
+            starlark_semantics.incompatible_simplify_unconditional_selects_in_rule_attrs,
+            main_repository_mapping,
+            /* enable_name_conflict_checking= */ true,
+            /* track_full_macro_information= */ true,
+            self.package_validator.get_package_limits(),
+            existing_rules_map_for_finalizer,
+        )
+    }
+
+    /// Enforces `--max_computation_steps` on a package piece (Java has no piece validation yet).
+    // Java: com/google/devtools/build/lib/packages/PackageFactory.java:415 PackageFactory.afterDoneLoadingPackagePiece
+    pub fn after_done_loading_package_piece(
+        &self,
+        pkg_piece: &crate::package::PackagePiece,
+        starlark_semantics: &StarlarkSemantics,
+    ) {
+        // TODO(https://github.com/bazelbuild/bazel/issues/23852): add package piece validation.
+        // PORT: starlark-rust does not count Java's computation steps (see
+        // executeBuildFileImpl), so the limit fails loudly when set.
+        let max_steps = starlark_semantics.max_computation_steps;
+        if max_steps > 0 {
+            blaze_util::unported!(
+                "PackageFactory.afterDoneLoadingPackagePiece",
+                "--max_computation_steps={max_steps} for {} (StarlarkThread.getExecutedSteps)",
+                pkg_piece.get_short_description()
+            );
+        }
+    }
+
     /// The non-Skyframe globber of a package (Java `createNonSkyframeGlobber`).
     // PORT: the syscall cache and thread-state receiver are not ported (see GlobCache::new).
     // Java: com/google/devtools/build/lib/packages/PackageFactory.java:347 PackageFactory.createNonSkyframeGlobber

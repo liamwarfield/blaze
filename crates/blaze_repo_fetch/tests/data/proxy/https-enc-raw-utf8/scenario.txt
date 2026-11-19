@@ -1,0 +1,1 @@
+https://origin.example/f HTTPS_PROXY=http://é中:pé@127.0.0.1:PORT 407:basicutf8,ok

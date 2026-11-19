@@ -1,0 +1,2 @@
+SYNTAX err_parse_list_maker.star:1:8: syntax error at '2': expected ',', 'for' or ']'
+SYNTAX err_parse_list_maker.star:1:5: contains syntax errors

@@ -6,26 +6,17 @@
 //! rebuild the `FailureDetail` the Java object would hold.
 
 use blaze_cmdline::TargetParsingException;
-use blaze_packages::exceptions::{DetailedExitCode as PackagesDetailedExitCode, FailureCode};
-use blaze_protos::failure_details::{
-    FailureDetail, PackageLoading, TargetPatterns, failure_detail::Category,
-};
+use blaze_packages::exceptions::DetailedExitCode as PackagesDetailedExitCode;
+use blaze_protos::failure_details::{FailureDetail, TargetPatterns, failure_detail::Category};
 use blaze_query_engine::DetailedExitCode;
 
 /// The `FailureDetail` of a blaze_packages `DetailedExitCode`.
 pub fn packages_failure_detail(detailed_exit_code: &PackagesDetailedExitCode) -> FailureDetail {
-    match &detailed_exit_code.code {
-        FailureCode::PackageLoading(code) => FailureDetail {
-            message: detailed_exit_code.message.clone(),
-            category: Some(Category::PackageLoading(PackageLoading {
-                code: *code as i32,
-            })),
-        },
-        FailureCode::Other(name) => blaze_util::unported!(
-            "FailureDetail of a non-PackageLoading packages DetailedExitCode",
-            "{name}"
-        ),
-    }
+    detailed_exit_code
+        .to_util()
+        .get_failure_detail()
+        .expect("a DetailedExitCode of a FailureDetail")
+        .clone()
 }
 
 /// Java `DetailedExitCode.of(failureDetail)` for a blaze_packages `DetailedExitCode`.

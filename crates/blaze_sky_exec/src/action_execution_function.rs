@@ -18,7 +18,7 @@ use blaze_exec::actions::action_execution::{ActionFailed, FailedActionInfo};
 use blaze_exec::actions::{
     ActionExecutionException, ActionInputRef, FileArtifactValue, TreeArtifactValue,
 };
-use blaze_packages::exceptions::{FailureCode, NoSuchPackageException, NoSuchPackageKind};
+use blaze_packages::exceptions::{NoSuchPackageException, NoSuchPackageKind};
 use blaze_protos::failure_details::{
     FailureDetail, IncludeScanning, PackageLoading, execution, failure_detail, include_scanning,
     package_loading,
@@ -281,20 +281,16 @@ pub fn package_root_exception_for_build_file_not_found(
     exec_path: &PathFragment,
     e: &NoSuchPackageException,
 ) -> PackageRootException {
-    let detailed_exit_code = e.get_detailed_exit_code();
-    let package_loading_code = match &detailed_exit_code.code {
-        FailureCode::PackageLoading(code) => *code,
-        FailureCode::Other(name) => blaze_util::unported!(
-            "PackageRootException.create (BuildFileNotFoundException with a non-PackageLoading \
-             DetailedExitCode)",
-            "{name}"
-        ),
-    };
-    let failure_detail = FailureDetail {
-        message: detailed_exit_code.message.clone(),
-        category: Some(failure_detail::Category::PackageLoading(PackageLoading {
-            code: package_loading_code as i32,
-        })),
+    let detailed_exit_code = e.get_detailed_exit_code().to_util();
+    let failure_detail = detailed_exit_code
+        .get_failure_detail()
+        .expect("a NoSuchPackageException's DetailedExitCode has a FailureDetail")
+        .clone();
+    // Java: failureDetail.getPackageLoading().getCode() (the default instance's code when the
+    // category is another one).
+    let package_loading_code = match &failure_detail.category {
+        Some(failure_detail::Category::PackageLoading(PackageLoading { code })) => *code,
+        _ => 0,
     };
     let code = if e.has_explicit_detailed_exit_code() {
         if blaze_util::DetailedExitCode::get_exit_code_of(&failure_detail)
@@ -313,7 +309,7 @@ pub fn package_root_exception_for_build_file_not_found(
         exec_path,
         IncludeScanning {
             code: code as i32,
-            package_loading_code: package_loading_code as i32,
+            package_loading_code,
         },
         &e.get_message(),
     )
@@ -575,10 +571,16 @@ impl ActionExecutionFunction {
                 // earlier build, and actions are created fresh for each build here.
                 let discovered_inputs = {
                     let _skyframe_allowed = state.input_artifact_data.with_skyframe_allowed();
+                    // state.actionFileSystem: the one the output metadata store holds, which
+                    // execution in this same call uses as well. PORT: Java keeps it in the
+                    // SkyKeyComputeState across restarts; here a restart (missing deps) creates
+                    // the store, and so the file system, again (see create_action_file_system).
+                    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:740 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
                     executor.discover_inputs(
                         env.listener(),
                         action,
                         state.input_artifact_data.clone(),
+                        output_metadata_store.get_action_file_system().cloned(),
                     )?
                 };
                 if env.values_missing() {
@@ -1741,7 +1743,10 @@ mod timestamp_builder_tests {
             }
             if let Some(tree) = &remote.tree {
                 contexts.register_raw(std::any::TypeId::of::<RemoteOutputTree>(), tree.clone());
-                let prefetcher: Arc<dyn ActionInputPrefetcher> = Arc::new(NoPrefetch);
+                let prefetcher: Arc<dyn ActionInputPrefetcher> = remote
+                    .prefetcher
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(NoPrefetch));
                 contexts.register_raw(
                     std::any::TypeId::of::<Arc<dyn ActionInputPrefetcher>>(),
                     Arc::new(prefetcher),
@@ -1860,6 +1865,9 @@ mod timestamp_builder_tests {
         /// the exec root as the workspace: a source directory input needs them
         /// (RecursiveFilesystemTraversalFunction).
         loading: bool,
+        /// The input fetcher of the action file systems (`ActionInputPrefetcher.NONE` when
+        /// `None`).
+        prefetcher: Option<Arc<dyn ActionInputPrefetcher>>,
     }
 
     /// No external repository (the loading functions of [`RemoteSetup::loading`]).
@@ -2079,6 +2087,7 @@ mod timestamp_builder_tests {
                 file_write: Some(Arc::new(InjectingFileWrite)),
                 lost_inputs_policy: None,
                 loading: false,
+                prefetcher: None,
             };
             assert_eq!(f.build_with(&actions, &cache, &hello, &first), BUILT);
             // Not downloaded: no local file.
@@ -2091,6 +2100,7 @@ mod timestamp_builder_tests {
                 file_write: Some(Arc::new(InjectingFileWrite)),
                 lost_inputs_policy: None,
                 loading: false,
+                prefetcher: None,
             };
             assert_eq!(
                 f.build_with(&actions, &cache, &hello, &second),
@@ -2143,6 +2153,7 @@ mod timestamp_builder_tests {
             file_write: Some(forging),
             lost_inputs_policy: None,
             loading: false,
+            prefetcher: None,
         };
         let (result, _events) = f.evaluate_roots_with(&actions, &cache, &[&a, &b], &remote);
         assert!(!result.has_error(), "{:?}", result.error_map());
@@ -2198,6 +2209,7 @@ mod timestamp_builder_tests {
                     purge_before_unported_rewinding: None,
                 }),
                 loading: false,
+                prefetcher: None,
             };
             let (result, events) = f.evaluate_with(&actions, &cache, &out, &remote);
             assert!(result.has_error());
@@ -2229,29 +2241,129 @@ mod timestamp_builder_tests {
         }
     }
 
+    /// The `FileWriteActionContext` of a build in which one action (`losing`) loses an input
+    /// while another one (`late`) is still in flight: `late` finishes only after the purge
+    /// before the unported rewinding ran, and its output is a remote cache hit (remote metadata
+    /// injected, as [`InjectingFileWrite`]); every other write is one too.
+    struct PurgeRaceFileWrite {
+        losing: LosingFileWrite,
+        losing_output: Artifact,
+        late: Artifact,
+        purged: Arc<std::sync::atomic::AtomicBool>,
+        late_finished_after_purge: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl FileWriteActionContext for PurgeRaceFileWrite {
+        fn write_output_to_file_with_output(
+            &self,
+            action: &dyn blaze_actions::actions::action::Action,
+            ctx: &dyn blaze_exec::exec::action_execution_context::ActionExecutionContext,
+            deterministic_writer: &dyn blaze_actions::analysis::actions::abstract_file_write_action::DeterministicWriter,
+            make_executable: bool,
+            is_remotable: bool,
+            output: &Artifact,
+        ) -> Result<Vec<blaze_exec::actions::SpawnResult>, blaze_exec::actions::ExecException>
+        {
+            if output == &self.losing_output {
+                return self.losing.write_output_to_file_with_output(
+                    action,
+                    ctx,
+                    deterministic_writer,
+                    make_executable,
+                    is_remotable,
+                    output,
+                );
+            }
+            let late = output == &self.late;
+            if late {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                while !self.purged.load(std::sync::atomic::Ordering::SeqCst)
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+            let result = InjectingFileWrite.write_output_to_file_with_output(
+                action,
+                ctx,
+                deterministic_writer,
+                make_executable,
+                is_remotable,
+                output,
+            );
+            if late && self.purged.load(std::sync::atomic::Ordering::SeqCst) {
+                self.late_finished_after_purge
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            result
+        }
+    }
+
     /// Review 2026-11-19 N5: with `--rewind_lost_inputs` (Bazel's default) Java rewinds the
     /// action; rewinding is not ported, so the executor fails loudly with a message that names
     /// `--norewind_lost_inputs`, after purging the persistent action cache (the policy's
     /// `purge_before_unported_rewinding`, a PORT) and without posting a `LostInputsEvent`
     /// (`ActionRewindStrategy.checkRewindingEnabled` returns before posting when rewinding is
     /// enabled).
+    ///
+    /// Review 2026-11-19 round 3 P7: the purge works on the executor's own action cache (the
+    /// instance the build's actions write), applies `LeaseService.handleMissingInputs`'s
+    /// predicate (`LeaseService.java:96-104`) and saves it; an action that finishes after the
+    /// purge, while the evaluation is torn down, does not bring a remote-metadata entry back,
+    /// neither into that instance nor onto disk.
     #[test]
     fn lost_inputs_with_rewinding_purge_the_action_cache_before_failing_loudly() {
         let f = Fixture::new();
         let lost = f.create_derived_artifact("lost.o");
+        let prev = f.create_derived_artifact("prev");
         let out = f.create_derived_artifact("out");
-        let actions = f.register_actions(vec![write_action(&f, &out, "content")]);
+        let late = f.create_derived_artifact("late");
+        let actions = f.register_actions(vec![
+            write_action(&f, &prev, "previous"),
+            write_action(&f, &out, "content"),
+            write_action(&f, &late, "late"),
+        ]);
         let cache = f.create_cache("cache");
+        let key = |a: &Artifact| a.get_exec_path_string().to_string();
+
+        // An earlier build left a remote-metadata entry in the action cache.
+        let first = RemoteSetup {
+            output_checker: Some(Arc::new(TrustAll) as Arc<dyn OutputChecker>),
+            tree: Some(Arc::new(RemoteOutputTree::new())),
+            file_write: Some(Arc::new(InjectingFileWrite)),
+            lost_inputs_policy: None,
+            loading: false,
+            prefetcher: None,
+        };
+        assert_eq!(f.build_with(&actions, &cache, &prev, &first), BUILT);
+        assert!(
+            !cache
+                .get(&key(&prev))
+                .expect("a cache entry")
+                .get_output_files()
+                .is_empty()
+        );
+
         let seen: Arc<parking_lot::Mutex<Vec<String>>> = Arc::default();
         let seen_in_handler = seen.clone();
         let purged = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let purged_in_policy = purged.clone();
+        let purged_own_cache = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let purged_own_cache_in_policy = purged_own_cache.clone();
+        let own_cache = Arc::as_ptr(&cache) as *const () as usize;
+        let late_finished_after_purge = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let remote = RemoteSetup {
-            output_checker: None,
+            output_checker: Some(Arc::new(TrustAll) as Arc<dyn OutputChecker>),
             tree: Some(Arc::new(RemoteOutputTree::new())),
-            file_write: Some(Arc::new(LosingFileWrite {
-                lost: lost.clone(),
-                digest: "0f3d/40520".to_string(),
+            file_write: Some(Arc::new(PurgeRaceFileWrite {
+                losing: LosingFileWrite {
+                    lost: lost.clone(),
+                    digest: "0f3d/40520".to_string(),
+                },
+                losing_output: out.clone(),
+                late: late.clone(),
+                purged: purged.clone(),
+                late_finished_after_purge: late_finished_after_purge.clone(),
             })),
             lost_inputs_policy: Some(blaze_exec::exec::executor_setup::LostInputsPolicy {
                 rewinding_enabled: true,
@@ -2259,14 +2371,29 @@ mod timestamp_builder_tests {
                 on_lost_inputs: Arc::new(move |digests: &[String]| {
                     seen_in_handler.lock().extend(digests.iter().cloned())
                 }),
-                purge_before_unported_rewinding: Some(Arc::new(move || {
-                    purged_in_policy.store(true, std::sync::atomic::Ordering::SeqCst)
-                })),
+                purge_before_unported_rewinding: Some(Arc::new(
+                    move |action_cache: Option<&dyn ActionCache>| {
+                        let action_cache = action_cache.expect("the build's action cache");
+                        purged_own_cache_in_policy.store(
+                            action_cache as *const dyn ActionCache as *const () as usize
+                                == own_cache,
+                            std::sync::atomic::Ordering::SeqCst,
+                        );
+                        // LeaseService.handleMissingInputs, then saved.
+                        action_cache.remove_if(&|entry| {
+                            !entry.get_output_files().is_empty()
+                                || !entry.get_output_trees().is_empty()
+                        });
+                        action_cache.save().unwrap();
+                        purged_in_policy.store(true, std::sync::atomic::Ordering::SeqCst)
+                    },
+                )),
             }),
             loading: false,
+            prefetcher: None,
         };
         let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            f.evaluate_with(&actions, &cache, &out, &remote)
+            f.evaluate_roots_with(&actions, &cache, &[&prev, &out, &late], &remote)
         })) else {
             panic!("action rewinding is not ported: the build must fail loudly");
         };
@@ -2282,7 +2409,274 @@ mod timestamp_builder_tests {
             "{message}"
         );
         assert!(purged.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(purged_own_cache.load(std::sync::atomic::Ordering::SeqCst));
         assert!(seen.lock().is_empty());
+
+        // The late action ran to the end after the purge; nothing it did is in the cache.
+        assert!(late_finished_after_purge.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(cache.get(&key(&prev)).is_none());
+        assert!(
+            cache.get(&key(&late)).is_none(),
+            "{:?}",
+            cache.get(&key(&late))
+        );
+        // Nor on disk (the next command loads the saved cache and replays its journal).
+        let reloaded = f.create_cache("cache");
+        assert!(reloaded.get(&key(&prev)).is_none());
+        assert!(reloaded.get(&key(&late)).is_none());
+    }
+
+    /// An input-discovering action whose discovery reads one input in process, as
+    /// `CppCompileAction.discoverInputs` reads the modmap input (`FileSystemUtils
+    /// .readLinesAsLatin1(actionExecutionContext.getInputPath(modmapInputFile))`, failing with
+    /// "failed to read modmap input: <exec path>"); its execution writes `out` locally.
+    #[derive(Debug)]
+    struct ReadingDiscoveryAction {
+        base: blaze_actions::actions::action::AbstractAction,
+        read: Artifact,
+        out: Artifact,
+        discovered: parking_lot::Mutex<bool>,
+        read_content: Arc<parking_lot::Mutex<Option<String>>>,
+    }
+
+    impl blaze_actions::Action for ReadingDiscoveryAction {
+        fn abstract_action(&self) -> &blaze_actions::actions::action::AbstractAction {
+            &self.base
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn get_mnemonic(&self) -> String {
+            "ReadingDiscovery".to_string()
+        }
+        fn compute_key(
+            &self,
+            _action_key_context: &blaze_actions::actions::action_key_context::ActionKeyContext,
+            _input_metadata_provider: Option<
+                &dyn blaze_actions::actions::action::InputMetadataProvider,
+            >,
+            fp: &mut blaze_util::Fingerprint,
+        ) -> Result<(), blaze_actions::actions::action::ComputeKeyError> {
+            fp.add_string("ReadingDiscoveryAction");
+            Ok(())
+        }
+        fn discovers_inputs(&self) -> bool {
+            true
+        }
+        fn inputs_discovered(&self) -> bool {
+            *self.discovered.lock()
+        }
+        fn set_inputs_discovered(&self, inputs_discovered: bool) {
+            *self.discovered.lock() = inputs_discovered;
+        }
+        fn get_allowed_derived_inputs(&self) -> blaze_collect::NestedSet<Artifact> {
+            self.get_inputs()
+        }
+    }
+
+    impl blaze_exec::actions::action_execution::ExecutableAction for ReadingDiscoveryAction {
+        fn discover_inputs(
+            &self,
+            ctx: &dyn blaze_exec::exec::action_execution_context::ActionExecutionContext,
+        ) -> Result<
+            Option<blaze_collect::NestedSet<Artifact>>,
+            blaze_exec::actions::ActionExecutionException,
+        > {
+            use std::io::Read as _;
+            let path = blaze_exec::analysis::actions::get_input_path(ctx, &self.read);
+            let mut content = String::new();
+            if path
+                .get_input_stream()
+                .and_then(|mut s| s.read_to_string(&mut content))
+                .is_err()
+            {
+                return Err(blaze_exec::actions::ActionExecutionException::new(
+                    format!(
+                        "failed to read modmap input: {}",
+                        self.read.get_exec_path_string()
+                    ),
+                    Some(self),
+                    false,
+                    None,
+                ));
+            }
+            *self.read_content.lock() = Some(content);
+            blaze_actions::Action::set_inputs_discovered(self, true);
+            Ok(Some(blaze_actions::Action::get_inputs(self)))
+        }
+        fn execute(
+            &self,
+            _ctx: &dyn blaze_exec::exec::action_execution_context::ActionExecutionContext,
+        ) -> Result<blaze_exec::actions::ActionResult, blaze_exec::actions::ActionExecutionException>
+        {
+            write_file(&self.out.get_path(), "compiled");
+            Ok(blaze_exec::actions::ActionResult::empty())
+        }
+    }
+
+    /// The remote input fetcher of the action file system: writes the content of a known
+    /// input to its local path, or fails with a `BulkTransferException` whose cause is a
+    /// missing blob (`CacheNotFoundException`) for the input.
+    struct FakeRemotePrefetcher {
+        exec_root: Path,
+        content: Option<String>,
+        lost_digest: String,
+    }
+
+    impl ActionInputPrefetcher for FakeRemotePrefetcher {
+        fn prefetch_files(
+            &self,
+            _action: &dyn blaze_exec::actions::ActionExecutionMetadata,
+            inputs: &[blaze_exec::actions::ActionInputRef],
+            _metadata_provider: &dyn blaze_exec::actions::InputMetadataProvider,
+        ) -> std::io::Result<()> {
+            for input in inputs {
+                match &self.content {
+                    Some(content) => {
+                        write_file(&self.exec_root.get_relative(input.get_exec_path()), content)
+                    }
+                    None => {
+                        return Err(std::io::Error::other(
+                            blaze_exec::exec::action_execution_context::BulkTransferError {
+                                message: format!(
+                                    "Missing digest: {} for {}",
+                                    self.lost_digest,
+                                    input.get_exec_path()
+                                ),
+                                causes: Some(vec![(
+                                    self.lost_digest.clone(),
+                                    Some(input.get_exec_path().clone()),
+                                )]),
+                            },
+                        ));
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// Two actions in one build without the bytes: `mod.map` is a remote cache hit that is not
+    /// downloaded, and the discovering action reads it during input discovery.
+    fn discovery_fixture(
+        f: &Fixture,
+        prefetcher: FakeRemotePrefetcher,
+        lost_inputs_policy: Option<blaze_exec::exec::executor_setup::LostInputsPolicy>,
+    ) -> (
+        Vec<ActionRef>,
+        Artifact,
+        Artifact,
+        Arc<parking_lot::Mutex<Option<String>>>,
+        RemoteSetup,
+    ) {
+        let modmap = f.create_derived_artifact("mod.map");
+        let out = f.create_derived_artifact("mod.o");
+        let read_content: Arc<parking_lot::Mutex<Option<String>>> = Arc::default();
+        let discovering: ActionRef = Arc::new(ReadingDiscoveryAction {
+            base: blaze_actions::actions::action::AbstractAction::new(
+                owner(),
+                blaze_collect::NestedSetBuilder::stable_order()
+                    .add(modmap.clone())
+                    .build(),
+                [out.clone()],
+            ),
+            read: modmap.clone(),
+            out: out.clone(),
+            discovered: parking_lot::Mutex::new(false),
+            read_content: read_content.clone(),
+        });
+        blaze_exec::actions::action_execution::register_executable_action::<ReadingDiscoveryAction>(
+        );
+        let actions = f.register_actions(vec![write_action(f, &modmap, "a.pcm\n"), discovering]);
+        let remote = RemoteSetup {
+            output_checker: None,
+            tree: Some(Arc::new(RemoteOutputTree::new())),
+            file_write: Some(Arc::new(InjectingFileWrite)),
+            lost_inputs_policy,
+            loading: false,
+            prefetcher: Some(Arc::new(prefetcher)),
+        };
+        (actions, modmap, out, read_content, remote)
+    }
+
+    /// Review 2026-11-19 round 3 P2: input discovery runs with the action file system
+    /// (`ActionExecutionFunction.java:331-332` creates `state.actionFileSystem` before
+    /// discovery; `SkyframeActionExecutor.java:931-952` `forInputDiscovery(...,
+    /// actionFileSystem, ...)` and `updateActionFileSystemContext`), so an input that exists
+    /// only remotely is read through it (downloaded by the input fetcher) during discovery.
+    #[test]
+    fn input_discovery_reads_a_remote_only_input_through_the_action_file_system() {
+        let f = Fixture::new();
+        let prefetcher = FakeRemotePrefetcher {
+            exec_root: f.exec_root.clone(),
+            content: Some("a.pcm\n".to_string()),
+            lost_digest: String::new(),
+        };
+        let (actions, modmap, out, read_content, remote) = discovery_fixture(&f, prefetcher, None);
+        let cache = f.create_cache("cache");
+        let (result, events) = f.evaluate_with(&actions, &cache, &out, &remote);
+        assert!(
+            !result.has_error(),
+            "{:?} {:?}",
+            result.error_map(),
+            events
+                .get_events()
+                .iter()
+                .map(|e| e.get_message().to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(read_content.lock().as_deref(), Some("a.pcm\n"));
+        // Downloaded by the fetcher, not written by the (remote) write action.
+        assert!(modmap.get_path().exists());
+        assert!(out.get_path().exists());
+    }
+
+    /// Review 2026-11-19 round 3 P2: an input lost during discovery
+    /// (`SkyframeActionExecutor.java:967-989`): the discovery failure ("failed to read modmap
+    /// input") gives way to the lost inputs of the action file system, which fail the action as
+    /// `--norewind_lost_inputs` prescribes (`ActionExecutionFunction.handleLostInputs` →
+    /// `ActionRewindStrategy.checkRewindingEnabled`); the discovery error is not reported.
+    #[test]
+    fn input_lost_during_discovery_fails_as_without_rewinding() {
+        let f = Fixture::new();
+        let prefetcher = FakeRemotePrefetcher {
+            exec_root: f.exec_root.clone(),
+            content: None,
+            lost_digest: "5b1d/6".to_string(),
+        };
+        let (actions, _modmap, out, read_content, remote) = discovery_fixture(
+            &f,
+            prefetcher,
+            Some(blaze_exec::exec::executor_setup::LostInputsPolicy {
+                rewinding_enabled: false,
+                invocation_retries_enabled: false,
+                on_lost_inputs: Arc::new(|_: &[String]| {}),
+                purge_before_unported_rewinding: None,
+            }),
+        );
+        let cache = f.create_cache("cache");
+        let (result, events) = f.evaluate_with(&actions, &cache, &out, &remote);
+        assert!(result.has_error());
+        assert!(read_content.lock().is_none());
+        let errors: Vec<String> = events
+            .get_events()
+            .iter()
+            .filter(|e| e.get_kind() == blaze_events::EventKind::Error)
+            .map(|e| e.get_message().to_string())
+            .collect();
+        assert!(
+            errors.iter().any(|m| m.ends_with(
+                "failed: Unexpected lost inputs (pass --rewind_lost_inputs to enable recovery): \
+                 mod.map"
+            )),
+            "{errors:?}"
+        );
+        assert!(
+            !errors
+                .iter()
+                .any(|m| m.contains("failed to read modmap input")),
+            "{errors:?}"
+        );
     }
 
     const BUILT: BuildCounts = BuildCounts {
@@ -2458,6 +2852,7 @@ mod timestamp_builder_tests {
             &link,
             &RemoteSetup {
                 loading: true,
+                prefetcher: None,
                 ..RemoteSetup::default()
             },
         );

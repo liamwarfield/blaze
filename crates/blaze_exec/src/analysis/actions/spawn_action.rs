@@ -313,7 +313,8 @@ fn get_unused_input_list_input_stream(
     // Check if the file is in-memory.
     // Note: SpawnActionContext guarantees that the first list entry exists and corresponds to the
     // executed spawn.
-    let content = spawn_results[0].get_in_memory_output(&artifact_input(unused_inputs_list_artifact));
+    let content =
+        spawn_results[0].get_in_memory_output(&artifact_input(unused_inputs_list_artifact));
     if let Some(content) = content {
         return Ok(Ok(content.to_vec()));
     }
@@ -538,7 +539,12 @@ impl ExecutableAction for SpawnAction {
         let result = resolver
             .exec(&spawn, ctx)
             .and_then(|result| {
-                after_execute(self, ctx, &result, crate::actions::Spawn::get_path_mapper(&spawn))?;
+                after_execute(
+                    self,
+                    ctx,
+                    &result,
+                    crate::actions::Spawn::get_path_mapper(&spawn),
+                )?;
                 Ok(result)
             })
             .map_err(|e| match &e {

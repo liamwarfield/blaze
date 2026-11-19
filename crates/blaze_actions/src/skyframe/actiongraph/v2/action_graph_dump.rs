@@ -73,7 +73,7 @@ impl From<InterruptedException> for ActionGraphDumpError {
 /// Returns the inputs aquery reports for an action.
 // Java: com/google/devtools/build/lib/query2/aquery/AqueryUtils.java:45 AqueryUtils.getActionInputs
 pub fn get_action_inputs(action: &dyn Action, include_pruned_inputs: bool) -> NestedSet<Artifact> {
-    if include_pruned_inputs || !action.inputs_known() {
+    if include_pruned_inputs || (action.is_action_execution_metadata() && !action.inputs_known()) {
         // getInputs() is potentially missing inputs that will be added by discovery (if the
         // action hasn't yet executed) and inputs that have been removed by discovery (if the
         // action has already executed). Instead, assemble the inputs from getOriginalInputs() and
@@ -271,9 +271,10 @@ impl<'h> ActionGraphDump<'h> {
             ..Default::default()
         };
 
-        // PORT: every Rust action is an ActionExecutionMetadata.
-        action_builder.action_key = action.get_key(&self.action_key_context, None)?;
-        action_builder.discovers_inputs = action.discovers_inputs();
+        if action.is_action_execution_metadata() {
+            action_builder.action_key = action.get_key(&self.action_key_context, None)?;
+            action_builder.discovers_inputs = action.discovers_inputs();
+        }
 
         // store environment
         if action.as_command_action().is_some() {

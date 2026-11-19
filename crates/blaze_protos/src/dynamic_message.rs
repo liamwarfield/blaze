@@ -789,11 +789,7 @@ fn read_primitive_field(
                             "Protocol message had invalid UTF-8.",
                         ));
                     }
-                    Value::String(
-                        String::from_utf8_lossy(e.as_bytes())
-                            .into_owned()
-                            .into_bytes(),
-                    )
+                    Value::String(crate::java::new_string_utf8(e.as_bytes()).into_bytes())
                 }
             }
         }

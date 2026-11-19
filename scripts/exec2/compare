@@ -1,0 +1,322 @@
+#!/usr/bin/env python3
+"""Compare unused_inputs_list pruning and C++ compile action templates between the oracle
+(Bazel 9.3.2) and Blaze. See `compare help`."""
+
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+USAGE = """\
+usage: scripts/exec2/compare --binary <blaze> [--oracle <bazel>] [--case pruning|tree-cc]...
+                             [--label NAME] [--skip-oracle]
+       scripts/exec2/compare list
+       scripts/exec2/compare help
+
+Runs fixed command sequences (see `list`) with the oracle and with Blaze, each side on its own
+work copy of brotli (~/.cache/blaze/work/exec2-compare/brotli, recreated for each side and case,
+so action keys that contain the workspace path agree: rsync of the read-only checkout minus
+bazel-* and .git, plus the probe package scripts/exec2/probe as //blaze_exec2_probe) and its own output user root (~/.cache/blaze/oracle-out/exec2-<side>), with a
+clean environment (HOME, PATH=/usr/bin:/bin), --nohome_rc --nosystem_rc, the shared repository
+cache, --color=no --curses=no, under systemd-run --user --scope -p MemoryMax=12G
+-p MemorySwapMax=0. Each case starts from a fresh output base.
+
+The oracle runs `shutdown` after every command, so each build starts a new server and, as in
+Blaze (one process per command), only the on-disk action cache carries state between builds.
+
+Cases:
+  pruning  ctx.actions.run(unused_inputs_list=...): build; mark b.input unused; change b.input
+           (pruned: must not re-run); change c.input (must re-run, b used again). Then aquery.
+  tree-cc  cc_library with sources from a tree artifact (CppCompileActionTemplate) linked into
+           a cc_binary: aquery of both targets, build, run the binary, null build, change the
+           generator's input, build.
+
+Compared per step (paths normalised: workspace, output base, install base):
+  exit       the exit code
+  processes  the "INFO: N processes: ..." line
+  spawns     --execution_log_json_file, one entry per spawn: mnemonic, target label, argv,
+             environment, inputs (path, digest), listed outputs, actual outputs (path, digest),
+             sorted by the first listed output
+  files      sha256 of the step's files of interest (outputs, the unused inputs list, objects)
+  stdout     program output (run steps), aquery text (aquery steps)
+
+Output: a table on stdout; raw and normalised records under
+~/.cache/blaze/exec2-compare/<label>/<side>/<case>/ and results.json. Exit 0 when every compared
+field matches, 1 otherwise. --skip-oracle reuses the oracle records of an earlier run with the
+same --label.
+"""
+
+HOME = os.path.expanduser("~")
+CACHE = os.path.join(HOME, ".cache", "blaze")
+ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+REPO_CACHE = os.path.join(CACHE, "repo-cache")
+PROBE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe")
+CORPUS = os.path.join(CACHE, "corpus")
+PKG = "blaze_exec2_probe"
+P = "//" + PKG
+TIMEOUT = 3600
+
+UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+PROCESSES_RE = re.compile(r"^INFO: \d+ process(es)?\b.*$", re.M)
+
+
+def write(ws, rel, text):
+    path = os.path.join(ws, PKG, rel)
+    with open(path, "w") as f:
+        f.write(text)
+
+
+# Each step: (id, kind, args, setup, files). kind: build | aquery | run.
+# setup(ws) edits the workspace before the step; files are paths (relative to the workspace,
+# through the bazel-bin/bazel-out convenience symlinks) whose sha256 is recorded.
+PRUNING_FILES = ["bazel-bin/%s/output.out" % PKG, "bazel-bin/%s/output.unused" % PKG]
+CASES = {
+    "pruning": [
+        ("build-1", "build", [P + ":output"],
+         lambda ws: (write(ws, "a.input", "contentA\n"), write(ws, "b.input", "contentB\n"),
+                     write(ws, "c.input", "contentC\n")), PRUNING_FILES),
+        ("b-unused", "build", [P + ":output"],
+         lambda ws: write(ws, "b.input", "unused\n"), PRUNING_FILES),
+        ("b-changed-pruned", "build", [P + ":output"],
+         lambda ws: write(ws, "b.input", "newContentB\n"), PRUNING_FILES),
+        ("c-unused", "build", [P + ":output"],
+         lambda ws: write(ws, "c.input", "unused\n"), PRUNING_FILES),
+        ("aquery", "aquery", ["--output=text", P + ":output"], None, []),
+    ],
+    "tree-cc": [
+        ("aquery-lib", "aquery", ["--output=text", P + ":treelib"], None, []),
+        ("aquery-bin", "aquery", ["--output=text", P + ":treebin"], None, []),
+        ("build-1", "build", [P + ":treebin"], None,
+         ["bazel-bin/%s/treebin" % PKG, "bazel-bin/%s/libtreelib.a" % PKG,
+          "bazel-bin/%s/_pic_objs/treelib/gen_tree_dir" % PKG,
+          "bazel-bin/%s/_objs/treelib/gen_tree_dir" % PKG]),
+        ("run-1", "run", [P + ":treebin"], None, []),
+        ("null-build", "build", [P + ":treebin"], None, []),
+        ("template-changed", "build", [P + ":treebin"],
+         lambda ws: write(ws, "template.txt", "7\n"),
+         ["bazel-bin/%s/treebin" % PKG, "bazel-bin/%s/libtreelib.a" % PKG]),
+        ("run-2", "run", [P + ":treebin"], None, []),
+    ],
+}
+
+
+def clean_env():
+    return {"HOME": HOME, "PATH": "/usr/bin:/bin"}
+
+
+def make_writable_and_remove(path):
+    if not os.path.lexists(path):
+        return
+    subprocess.run(["chmod", "-R", "u+w", path], stderr=subprocess.DEVNULL)
+    shutil.rmtree(path, ignore_errors=True)
+    if os.path.lexists(path):
+        subprocess.run(["rm", "-rf", path])
+
+
+def prepare_workspace(ws):
+    """Copy brotli to ws (minus bazel-* and .git) and add the probe package."""
+    make_writable_and_remove(ws)
+    os.makedirs(ws, exist_ok=True)
+    subprocess.run(
+        ["rsync", "-a", "--delete", "--exclude=/bazel-*", "--exclude=/.git",
+         os.path.join(CORPUS, "brotli") + "/", ws + "/"], check=True)
+    shutil.copytree(PROBE_DIR, os.path.join(ws, PKG), symlinks=True)
+
+
+def sha256_of(path):
+    """sha256 of a file, or of a directory as a sorted list of (relative path, sha256)."""
+    if os.path.isdir(path):
+        entries = []
+        for root, _dirs, files in os.walk(path):
+            for name in sorted(files):
+                p = os.path.join(root, name)
+                entries.append((os.path.relpath(p, path), sha256_of(p)))
+        return sorted(entries)
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def normaliser(ws, root):
+    output_base_hash = hashlib.md5(ws.encode()).hexdigest()
+
+    def norm(text):
+        text = text.replace(os.path.join(root, output_base_hash), "<OUTPUT_BASE>")
+        text = text.replace(root, "<OUTPUT_USER_ROOT>")
+        text = text.replace(ws, "<WORKSPACE>")
+        text = re.sub(r"<OUTPUT_USER_ROOT>/install/[0-9a-f]{32}", "<INSTALL_BASE>", text)
+        return UUID_RE.sub("<UUID>", text)
+    return norm
+
+
+def read_json_stream(path):
+    """The concatenated JSON objects of --execution_log_json_file."""
+    if not os.path.exists(path):
+        return None
+    text = open(path, encoding="latin-1").read()
+    dec = json.JSONDecoder()
+    out, i = [], 0
+    while True:
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text):
+            break
+        obj, i = dec.raw_decode(text, i)
+        out.append(obj)
+    return out
+
+
+def spawn_summary(spawns, norm):
+    if spawns is None:
+        return None
+    rows = []
+    for s in spawns:
+        def files(key):
+            return [(f.get("path"), (f.get("digest") or {}).get("hash"))
+                    for f in s.get(key, [])]
+        rows.append({
+            "mnemonic": s.get("mnemonic"),
+            "targetLabel": s.get("targetLabel"),
+            "args": [norm(a) for a in s.get("commandArgs", [])],
+            "env": sorted((e.get("name"), norm(e.get("value", "")))
+                          for e in s.get("environmentVariables", [])),
+            "inputs": files("inputs"),
+            "listedOutputs": s.get("listedOutputs", []),
+            "actualOutputs": files("actualOutputs"),
+        })
+    rows.sort(key=lambda r: (r["listedOutputs"][:1], r["mnemonic"] or ""))
+    return rows
+
+
+def run_case(side, binary, case, out_dir):
+    # Both sides use the same workspace path (one after the other): some action keys (source
+    # manifests, runfiles trees) contain the absolute workspace path.
+    ws = os.path.join(CACHE, "work", "exec2-compare", "brotli")
+    root = os.path.join(CACHE, "oracle-out", "exec2-" + side)
+    base = [binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc"]
+    subprocess.run(base + ["shutdown"], cwd=ws if os.path.isdir(ws) else HOME,
+                   env=clean_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    make_writable_and_remove(os.path.join(root, hashlib.md5(ws.encode()).hexdigest()))
+    prepare_workspace(ws)
+    norm = normaliser(ws, root)
+    os.makedirs(out_dir, exist_ok=True)
+    results = {}
+    for (sid, kind, args, setup, files) in CASES[case]:
+        if setup is not None:
+            setup(ws)
+        log = os.path.join(out_dir, sid + ".execlog.json")
+        if os.path.exists(log):
+            os.remove(log)
+        cmd = base + [kind, "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"]
+        if kind in ("build", "run"):
+            cmd.append("--execution_log_json_file=" + log)
+        cmd += args
+        scoped = ["systemd-run", "--user", "--scope", "--collect", "--quiet",
+                  "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0", "--",
+                  "env", "-i"] + ["%s=%s" % kv for kv in clean_env().items()] + cmd
+        print("[exec2-compare] %s %s/%s" % (side, case, sid), flush=True)
+        t0 = time.monotonic()
+        try:
+            p = subprocess.run(scoped, cwd=ws, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=TIMEOUT)
+            rc, out, err = p.returncode, p.stdout, p.stderr
+        except subprocess.TimeoutExpired as e:
+            rc, out, err = -9, e.stdout or b"", (e.stderr or b"") + b"\n[compare] timed out\n"
+        dur = round(time.monotonic() - t0, 1)
+        # Every command ends with a fresh server for the oracle (Blaze has none).
+        subprocess.run(base + ["shutdown"], cwd=ws, env=clean_env(),
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with open(os.path.join(out_dir, sid + ".stdout"), "wb") as f:
+            f.write(out)
+        with open(os.path.join(out_dir, sid + ".stderr"), "wb") as f:
+            f.write(err)
+        err_s = norm(err.decode("latin-1"))
+        m = PROCESSES_RE.search(err_s)
+        rec = {
+            "argv": cmd, "duration_s": dur, "exit": rc,
+            "processes": m.group(0) if m else None,
+            "spawns": spawn_summary(read_json_stream(log), norm) if kind != "aquery" else None,
+            "files": {f: sha256_of(os.path.join(ws, f)) for f in files},
+            "stdout": norm(out.decode("latin-1")),
+        }
+        results[sid] = rec
+        with open(os.path.join(out_dir, sid + ".norm.json"), "w") as f:
+            json.dump(rec, f, indent=1)
+        print("[exec2-compare]   exit %d in %.1fs; %s" % (rc, dur, rec["processes"]), flush=True)
+    return results
+
+
+FIELDS = ["exit", "processes", "spawns", "files", "stdout"]
+
+
+def compare(o, b):
+    return {f: ("MATCH" if o.get(f) == b.get(f) else "DIFF") for f in FIELDS}
+
+
+def main(argv):
+    if not argv or argv[0] in ("help", "--help", "-h"):
+        print(USAGE)
+        return 0
+    if argv[0] == "list":
+        for c, steps in CASES.items():
+            print("%-8s %s" % (c, ", ".join(s[0] for s in steps)))
+        return 0
+    binary, oracle, label, only, skip_oracle = None, ORACLE, "exec2-1", [], False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--binary":
+            binary = os.path.abspath(argv[i + 1]); i += 2
+        elif a == "--oracle":
+            oracle = os.path.abspath(argv[i + 1]); i += 2
+        elif a == "--label":
+            label = argv[i + 1]; i += 2
+        elif a == "--case":
+            only.append(argv[i + 1]); i += 2
+        elif a == "--skip-oracle":
+            skip_oracle = True; i += 1
+        else:
+            print("unknown argument: %s\n\n%s" % (a, USAGE), file=sys.stderr)
+            return 2
+    if binary is None:
+        print(USAGE, file=sys.stderr)
+        return 2
+    base = os.path.join(CACHE, "exec2-compare", label)
+    ok = True
+    table, all_results = [], {}
+    for case in CASES:
+        if only and case not in only:
+            continue
+        odir = os.path.join(base, "oracle", case)
+        if skip_oracle:
+            ores = {s[0]: json.load(open(os.path.join(odir, s[0] + ".norm.json")))
+                    for s in CASES[case]}
+        else:
+            ores = run_case("oracle", oracle, case, odir)
+        bres = run_case("blaze", binary, case, os.path.join(base, "blaze", case))
+        for (sid, *_rest) in CASES[case]:
+            c = compare(ores[sid], bres[sid])
+            ok = ok and all(v == "MATCH" for v in c.values())
+            table.append((case, sid, ores[sid]["exit"], bres[sid]["exit"], c))
+            all_results["%s/%s" % (case, sid)] = {
+                "oracle": ores[sid], "blaze": bres[sid], "compare": c}
+    os.makedirs(base, exist_ok=True)
+    with open(os.path.join(base, "results.json"), "w") as f:
+        json.dump(all_results, f, indent=1)
+    print()
+    print("| case | step | oracle exit | blaze exit | " + " | ".join(FIELDS) + " |")
+    print("| --- | --- | --- | --- | " + " | ".join("---" for _ in FIELDS) + " |")
+    for case, sid, oe, be, c in table:
+        print("| %s | %s | %d | %d | %s |" % (case, sid, oe, be,
+                                              " | ".join(c[f] for f in FIELDS)))
+    print("\nresults: %s" % os.path.join(base, "results.json"))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

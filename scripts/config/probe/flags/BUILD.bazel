@@ -1,0 +1,8 @@
+load(":defs.bzl", "bool_flag", "int_flag", "repeatable_string_flag", "string_flag", "string_list_flag", "string_set_flag")
+
+string_flag(name = "color", build_setting_default = "none", visibility = ["//visibility:public"])
+bool_flag(name = "fast", build_setting_default = False, visibility = ["//visibility:public"])
+int_flag(name = "level", build_setting_default = 1, visibility = ["//visibility:public"])
+string_list_flag(name = "tags", build_setting_default = [], visibility = ["//visibility:public"])
+string_set_flag(name = "set", build_setting_default = set(), visibility = ["//visibility:public"])
+repeatable_string_flag(name = "multi", build_setting_default = "", visibility = ["//visibility:public"])

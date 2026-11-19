@@ -1,0 +1,5 @@
+EVAL 'builtin_function_or_method' value has no field or method 'x'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_attr_builtin.star", line 1, column 8, in <toplevel>
+TRACE \x09\x09x = len.x
+TRACE Error: 'builtin_function_or_method' value has no field or method 'x'

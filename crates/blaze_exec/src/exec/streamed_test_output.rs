@@ -73,7 +73,10 @@ impl<'scope> StreamedTestOutput<'scope> {
     /// Stops the watcher and waits for it.
     fn stop_and_join(&mut self) -> bool {
         self.stop.stop_pumping();
-        let handle = self.watcher.take().expect("StreamedTestOutput closed twice");
+        let handle = self
+            .watcher
+            .take()
+            .expect("StreamedTestOutput closed twice");
         // The watcher thread might leak if the following call is interrupted. This is a
         // relatively minor issue since the worst it could do is write one additional line from
         // the test.log to the console later on in the build.

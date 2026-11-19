@@ -1,0 +1,5 @@
+EVAL attribute x: boom
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_fail_attr.star", line 1, column 5, in <toplevel>
+TRACE \x09\x09fail("boom", attr = "x")
+TRACE Error in fail: attribute x: boom

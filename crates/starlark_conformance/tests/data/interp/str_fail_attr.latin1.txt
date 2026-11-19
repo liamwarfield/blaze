@@ -1,1 +1,5 @@
 EVAL attribute a:   x
+TRACE Traceback (most recent call last):
+TRACE \x09File "str_fail_attr.star", line 1, column 5, in <toplevel>
+TRACE \x09\x09fail("  x", attr = "a")
+TRACE Error in fail: attribute a:   x

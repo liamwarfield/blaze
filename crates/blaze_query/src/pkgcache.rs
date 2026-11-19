@@ -83,6 +83,28 @@ pub trait TargetProvider {
     ) -> Result<Vec<Target>, GetSiblingsError>;
 }
 
+/// What `PackageProvider.getPackage` throws.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum GetPackageError {
+    #[error(transparent)]
+    NoSuchPackage(#[from] NoSuchPackageException),
+    #[error(transparent)]
+    Interrupted(#[from] InterruptedException),
+}
+
+/// API for retrieving packages. Implementations generally load packages to fulfill requests.
+// Java: com/google/devtools/build/lib/pkgcache/PackageProvider.java:24 PackageProvider
+pub trait PackageProvider: TargetProvider {
+    /// Returns the Package named "packageName". If there is no such package (e.g.
+    /// `isPackage(packageName)` returns false), throws a `NoSuchPackageException`.
+    // Java: com/google/devtools/build/lib/pkgcache/PackageProvider.java:38 PackageProvider.getPackage
+    fn get_package(
+        &self,
+        event_handler: &Arc<dyn ExtendedEventHandler>,
+        package_name: &PackageIdentifier,
+    ) -> Result<Arc<blaze_packages::package::Package>, GetPackageError>;
+}
+
 /// A preloader for target patterns.
 // Java: com/google/devtools/build/lib/pkgcache/TargetPatternPreloader.java:27 TargetPatternPreloader
 pub trait TargetPatternPreloader {

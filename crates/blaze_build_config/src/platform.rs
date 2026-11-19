@@ -59,6 +59,9 @@ pub struct PlatformValue {
     pub constraints: BTreeMap<Label, Label>,
     /// Whether `parsedFlags()` is present (the platform has `flags`).
     pub has_parsed_flags: bool,
+    /// `parsedFlags()`: the platform's `flags`, parsed. `None` for a value recorded from the
+    /// oracle (`OraclePlatforms` fails loudly for a platform with flags).
+    pub parsed_flags: Option<Arc<crate::parsed_flags::ParsedFlagsValue>>,
     /// `platformInfo()` itself, for the readers that need more than the two fields above
     /// (`PlatformProducer`). `None` for a value recorded from the oracle (`OraclePlatforms`).
     pub platform_info: Option<OpaquePlatformInfo>,
@@ -174,6 +177,7 @@ impl OraclePlatforms {
                         .map_err(|e| e.get_message().to_string())?,
                     constraints,
                     has_parsed_flags,
+                    parsed_flags: None,
                     platform_info: None,
                 },
             );

@@ -62,6 +62,10 @@ pub fn registrations() -> RuleClassProviderRegistrations {
         EnvEntry::plain(crate::cpp::cc_common_value()),
     );
     registrations.builtins_internals.insert(
+        "java_common_internal_do_not_use".to_owned(),
+        EnvEntry::plain(crate::java::java_common_internal_value()),
+    );
+    registrations.builtins_internals.insert(
         "apple_common".to_owned(),
         EnvEntry::plain(crate::apple::apple_common_value()),
     );

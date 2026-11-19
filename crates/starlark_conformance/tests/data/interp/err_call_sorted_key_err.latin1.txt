@@ -1,0 +1,8 @@
+EVAL unsupported binary operation: int + string
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_sorted_key_err.star", line 1, column 7, in <toplevel>
+TRACE \x09\x09sorted([1, 2], key = lambda x: x + "a")
+TRACE \x09File "<builtin>", in sorted
+TRACE \x09File "err_call_sorted_key_err.star", line 1, column 34, in lambda
+TRACE \x09\x09sorted([1, 2], key = lambda x: x + "a")
+TRACE Error: unsupported binary operation: int + string

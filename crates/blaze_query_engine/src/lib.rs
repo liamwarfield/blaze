@@ -32,6 +32,7 @@ pub mod build_files_function;
 pub mod callback;
 pub mod deps_function;
 pub mod detailed_exit_code;
+pub mod digraph_query_eval_result;
 pub mod executables_function;
 pub mod filter_function;
 pub mod function_expression;
@@ -84,6 +85,7 @@ pub use callback::{
 };
 pub use deps_function::DepsFunction;
 pub use detailed_exit_code::DetailedExitCode;
+pub use digraph_query_eval_result::DigraphQueryEvalResult;
 pub use executables_function::ExecutablesFunction;
 pub use filter_function::FilterFunction;
 pub use function_expression::FunctionExpression;

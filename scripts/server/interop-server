@@ -1,0 +1,491 @@
+#!/usr/bin/env python3
+"""Drives Blaze's command server (crates/blaze_server) with the real Bazel 9.3.2 client.
+
+Usage:
+  scripts/server/interop-server help
+  scripts/server/interop-server list
+  scripts/server/interop-server run [CASE...] [--probe PATH] [--bazel PATH] [--scratch DIR]
+  scripts/server/interop-server clean [--scratch DIR]
+
+The fixture is `command_server_probe` (crates/blaze_server/src/bin/command_server_probe.rs): a
+GrpcServerImpl with a fake dispatcher. The oracle's C++ client starts whatever is at
+`<server_javabase>/bin/java`, so the tool makes a directory whose bin/java is a symlink to a
+copy of the probe and runs
+  bazel --output_user_root=<scratch>/<case> --nohome_rc --nosystem_rc --server_javabase=<dir> CMD
+in a scratch workspace (an empty MODULE.bazel). The client extracts its own install base,
+writes server/cmdline, runs daemonize, waits for server_info.rawproto, verifies the pid, pings,
+sends the RunRequest, streams, cancels on SIGINT and waits for the process on shutdown.
+
+Each case prints the commands it ran and what the client printed, then PASS or FAIL. The tool
+always shuts down, and failing that kills (SIGKILL), every server it started (found through
+<scratch>/*/*/server/server.pid.txt), also when a case fails. Exit status: 0 if every case
+passed, 1 otherwise.
+
+Defaults: --probe target/debug/command_server_probe (build it with
+`scripts/cargo-capped build -p blaze_server --bin command_server_probe`),
+--bazel ~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64,
+--scratch ~/.cache/blaze/work/server/s3/interop (wiped at the start of `run`).
+Never point --scratch at the oracle's own output_user_root.
+Run it under systemd-run, e.g.
+  systemd-run --user --collect --wait --pipe -p MemoryMax=12G -p MemorySwapMax=0 \\
+    scripts/server/interop-server run
+"""
+
+import glob
+import hashlib
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DEFAULT_PROBE = os.path.join(REPO, "target/debug/command_server_probe")
+DEFAULT_BAZEL = os.path.expanduser("~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64")
+DEFAULT_SCRATCH = os.path.expanduser("~/.cache/blaze/work/server/s3/interop")
+ORACLE_ROOT = os.path.realpath(os.path.expanduser("~/.cache/blaze/oracle-out/ur"))
+STARTING = b"Starting local Bazel server"
+
+
+class Env:
+    def __init__(self, probe, bazel, scratch):
+        self.probe = probe
+        self.bazel = bazel
+        self.scratch = scratch
+        self.javabase = os.path.join(scratch, "javabase")
+        self.workspace = os.path.join(scratch, "ws")
+        self.clients = []  # Popen objects of clients started in the background
+
+    def root(self, case):
+        return os.path.join(self.scratch, "roots", case)
+
+    def argv(self, case, *command, startup=()):
+        return [
+            self.bazel,
+            "--output_user_root=" + self.root(case),
+            "--nohome_rc",
+            "--nosystem_rc",
+            "--server_javabase=" + self.javabase,
+            *startup,
+            *command,
+        ]
+
+
+def show_cmd(argv):
+    return " ".join(a if a and " " not in a else repr(a) for a in argv)
+
+
+def run_client(env, case, *command, startup=(), timeout=120, merge=False):
+    argv = env.argv(case, *command, startup=startup)
+    print("  $ (cd %s && %s)%s" % (env.workspace, show_cmd(argv), " 2>&1" if merge else ""))
+    p = subprocess.run(
+        argv,
+        cwd=env.workspace,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT if merge else subprocess.PIPE,
+        timeout=timeout,
+    )
+    out = p.stdout
+    err = b"" if merge else p.stderr
+    print("    exit %d" % p.returncode)
+    show_output("stdout" if not merge else "stdout+stderr", out)
+    if not merge:
+        show_output("stderr", err)
+    return p.returncode, out, err
+
+
+def show_output(name, data, limit=1200):
+    if not data:
+        print("    %s: (empty)" % name)
+        return
+    text = data if len(data) <= limit else data[:limit] + b"...[%d bytes in all]" % len(data)
+    print("    %s: %r" % (name, text))
+
+
+def server_pid(env, case):
+    pids = []
+    for f in glob.glob(os.path.join(env.root(case), "*", "server", "server.pid.txt")):
+        try:
+            with open(f) as fh:
+                pids.append(int(fh.read()))
+        except (OSError, ValueError):
+            pass
+    return pids[0] if pids else None
+
+
+def alive(pid):
+    if pid is None:
+        return False
+    try:
+        with open("/proc/%d/stat" % pid) as fh:
+            state = fh.read().rsplit(")", 1)[1].split()[0]
+        return state != "Z"
+    except OSError:
+        return False
+
+
+def is_probe(pid):
+    try:
+        exe = os.readlink("/proc/%d/exe" % pid)
+    except OSError:
+        return False
+    return os.path.basename(exe.replace(" (deleted)", "")) in ("probe", "command_server_probe")
+
+
+def wait_for(predicate, timeout, step=0.1):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(step)
+    return predicate()
+
+
+def output_base(env, case):
+    bases = glob.glob(os.path.join(env.root(case), "*", "server"))
+    return os.path.dirname(bases[0]) if bases else None
+
+
+class Failure(Exception):
+    pass
+
+
+def check(cond, what):
+    print("    check: %s: %s" % (what, "ok" if cond else "FAILED"))
+    if not cond:
+        raise Failure(what)
+
+
+# ---------------------------------------------------------------------------------------------
+# Cases. Each takes the Env and raises Failure on a failed check.
+
+
+def case_connect(env):
+    """First command starts the server; the client connects (Ping with the cookies)."""
+    code, out, err = run_client(env, "connect", "echo", "hello")
+    check(code == 0, "exit code 0")
+    check(STARTING in err, "client started a server ('Starting local Bazel server')")
+    check(out == b"out:hello\n", "stdout is the echo")
+    base = output_base(env, "connect")
+    server = os.path.join(base, "server")
+    files = sorted(os.listdir(server))
+    print("    server dir: %s" % files)
+    for f in ("server_info.rawproto", "command_port", "request_cookie", "response_cookie"):
+        check(f in files, "server/%s written" % f)
+    with open(os.path.join(server, "command_port")) as fh:
+        port = fh.read()
+    print("    command_port: %r" % port)
+    check(port.startswith("[::1]:") or port.startswith("127.0.0.1:"), "loopback address")
+    with open(os.path.join(server, "request_cookie")) as fh:
+        cookie = fh.read()
+    check(len(cookie) > 16 and all(c in "0123456789abcdef" for c in cookie), "hex cookie")
+    pid = server_pid(env, "connect")
+    check(alive(pid) and is_probe(pid), "server pid %s is the probe and alive" % pid)
+    with open(os.path.join(server, "jvm.out"), "rb") as fh:
+        show_output("server/jvm.out", fh.read())
+    # The connect log of the client: --client_debug prints its Ping attempts.
+    code, out, err = run_client(env, "connect", "echo", "ping", startup=("--client_debug",))
+    lines = [l for l in err.splitlines() if b"connect" in l.lower() or b"ping" in l.lower()]
+    for l in lines[:6]:
+        print("    client_debug: %r" % l)
+    check(code == 0 and out == b"out:ping\n", "second command over the same server")
+    check(any(b"Connected (server pid=%d)" % pid in l for l in lines), "client logged 'Connected (server pid=%d)'" % pid)
+
+
+def case_order(env):
+    """stdout and stderr forwarded in order and byte-exact (non-UTF-8 bytes included)."""
+    raw = [b"a", "b\u00e9".encode("latin-1"), "c\u00e9".encode("utf-8"), b"\xff\xfe\x80", b"d"]
+    full = [os.fsencode(a) for a in env.argv("order", "echo")] + raw
+    shown = [a.decode("latin-1") for a in full]
+    print("  $ (cd %s && %s) 2>&1   # args as bytes: %r" % (env.workspace, show_cmd(shown), raw))
+    p = subprocess.run(full, cwd=env.workspace, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+    print("    exit %d" % p.returncode)
+    lines = [l for l in p.stdout.split(b"\n") if l.startswith(b"out:") or l.startswith(b"err:")]
+    show_output("stdout+stderr (echo lines)", b"\n".join(lines) + b"\n")
+    expected = []
+    for r in raw:
+        expected += [b"out:" + r, b"err:" + r]
+    check(p.returncode == 0, "exit code 0")
+    check(lines == expected, "out/err interleaved per argument, exact bytes")
+    q = subprocess.run(full, cwd=env.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    check(q.stdout == b"".join(b"out:" + r + b"\n" for r in raw), "stdout alone byte-exact")
+    errs = [l for l in q.stderr.split(b"\n") if l.startswith(b"err:")]
+    check(errs == [b"err:" + r for r in raw], "stderr alone byte-exact")
+
+
+def case_exit_codes(env):
+    """The client exits with the command's exit code."""
+    for n in (0, 1, 2, 3, 4, 8, 36):
+        code, out, err = run_client(env, "exit", "exit", str(n))
+        check(code == n, "exit %d" % n)
+
+
+def case_big(env):
+    """5 MB of output arrive complete (8192-byte chunks, flow control)."""
+    n = 5 * 1000 * 1000
+    argv = env.argv("big", "big", str(n))
+    print("  $ (cd %s && %s) | sha256sum" % (env.workspace, show_cmd(argv)))
+    p = subprocess.run(argv, cwd=env.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+    expected = bytes(i % 251 for i in range(n))
+    print("    exit %d, %d bytes, sha256 %s (expected %s)" % (
+        p.returncode, len(p.stdout), hashlib.sha256(p.stdout).hexdigest()[:16],
+        hashlib.sha256(expected).hexdigest()[:16]))
+    show_output("stderr", p.stderr)
+    check(p.returncode == 0, "exit code 0")
+    check(p.stdout == expected, "all %d bytes, in order" % n)
+    # A slow reader: the client blocks on its stdout pipe, the server on flow control.
+    print("  $ (cd %s && %s) | (sleep 3; cat) | wc -c" % (env.workspace, show_cmd(argv)))
+    slow = subprocess.Popen(argv, cwd=env.workspace, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    time.sleep(3)
+    data = slow.stdout.read()
+    slow.wait(timeout=300)
+    print("    exit %d, %d bytes" % (slow.returncode, len(data)))
+    check(slow.returncode == 0 and data == expected, "slow reader gets all bytes")
+
+
+def case_reuse(env):
+    """A second client invocation reuses the server (no 'Starting local Bazel server')."""
+    code, out, err = run_client(env, "reuse", "echo", "first")
+    check(code == 0 and STARTING in err, "first invocation starts the server")
+    pid1 = server_pid(env, "reuse")
+    code, out, err = run_client(env, "reuse", "echo", "second")
+    pid2 = server_pid(env, "reuse")
+    check(code == 0 and out == b"out:second\n", "second invocation works")
+    check(STARTING not in err, "second invocation did not start a server")
+    check(pid1 == pid2 and alive(pid2), "same server pid %s" % pid2)
+
+
+def start_background(env, case, *command):
+    argv = env.argv(case, *command)
+    print("  $ (cd %s && %s) &" % (env.workspace, show_cmd(argv)))
+    p = subprocess.Popen(argv, cwd=env.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    env.clients.append(p)
+    return p
+
+
+def read_stderr_until(p, marker, timeout):
+    """Reads the client's stderr until `marker` appears; returns what was read."""
+    os.set_blocking(p.stderr.fileno(), False)
+    data = b""
+    deadline = time.time() + timeout
+    while time.time() < deadline and marker not in data:
+        try:
+            chunk = p.stderr.read()
+        except BlockingIOError:
+            chunk = None
+        if chunk:
+            data += chunk
+        elif p.poll() is not None:
+            break
+        else:
+            time.sleep(0.05)
+    os.set_blocking(p.stderr.fileno(), True)
+    return data
+
+
+def case_cancel(env):
+    """SIGINT to the client during `sleep 60` sends Cancel; the command ends (exit 8)."""
+    code, out, err = run_client(env, "cancel", "echo", "warm")
+    pid = server_pid(env, "cancel")
+    p = start_background(env, "cancel", "sleep", "60")
+    before = read_stderr_until(p, b"sleeping 60s", 60)
+    check(b"sleeping 60s" in before, "command started on the server")
+    print("  $ kill -INT %d   # the client" % p.pid)
+    t0 = time.time()
+    p.send_signal(signal.SIGINT)
+    out, err = p.communicate(timeout=60)
+    elapsed = time.time() - t0
+    err = before + err
+    print("    exit %d after %.1fs" % (p.returncode, elapsed))
+    show_output("stdout", out)
+    show_output("stderr", err)
+    check(b"Bazel caught interrupt signal; cancelling pending invocation." in err, "client sent Cancel")
+    check(b"sleep interrupted" in err, "server command was interrupted")
+    check(p.returncode == 8, "exit code 8 (INTERRUPTED)")
+    check(elapsed < 10, "ended well before the 60 s sleep")
+    check(alive(pid) and server_pid(env, "cancel") == pid, "server still running (pid %s)" % pid)
+
+
+def case_exec(env):
+    """The client executes the ExecRequest (/bin/echo exec-ok)."""
+    code, out, err = run_client(env, "exec", "exec")
+    check(code == 0 and out == b"exec-ok\n", "client exec'd /bin/echo exec-ok")
+
+
+def case_shutdown(env):
+    """`shutdown` returns; the server process is gone and its files deleted."""
+    code, out, err = run_client(env, "shutdown", "echo", "up")
+    pid = server_pid(env, "shutdown")
+    base = output_base(env, "shutdown")
+    check(alive(pid), "server %s running" % pid)
+    t0 = time.time()
+    code, out, err = run_client(env, "shutdown", "shutdown")
+    elapsed = time.time() - t0
+    print("    client returned after %.1fs" % elapsed)
+    check(code == 0, "exit code 0")
+    check(not alive(pid), "server process %d is gone when the client returns" % pid)
+    left = sorted(os.listdir(os.path.join(base, "server")))
+    print("    server dir after shutdown: %s" % left)
+    for f in ("server_info.rawproto", "command_port", "request_cookie", "response_cookie", "server.pid.txt"):
+        check(f not in left, "server/%s deleted by the shutdown hooks" % f)
+    with open(os.path.join(base, "server", "jvm.out"), "rb") as fh:
+        show_output("server/jvm.out", fh.read())
+
+
+def case_sigkill(env):
+    """SIGKILL of the server during a command: 'Server terminated abruptly'."""
+    code, out, err = run_client(env, "sigkill", "echo", "up")
+    pid = server_pid(env, "sigkill")
+    p = start_background(env, "sigkill", "sleep", "60")
+    before = read_stderr_until(p, b"sleeping 60s", 60)
+    check(b"sleeping 60s" in before, "command started on the server")
+    print("  $ kill -KILL %d   # the server" % pid)
+    os.kill(pid, signal.SIGKILL)
+    out, err = p.communicate(timeout=60)
+    err = before + err
+    print("    exit %d" % p.returncode)
+    show_output("stderr", err)
+    check(b"Server terminated abruptly" in err, "client printed 'Server terminated abruptly'")
+    check(p.returncode == 37, "exit code 37")
+
+
+def case_idle(env):
+    """--max_idle_secs=5: the server exits by itself."""
+    code, out, err = run_client(env, "idle", "echo", "up", startup=("--max_idle_secs=5",))
+    pid = server_pid(env, "idle")
+    check(code == 0 and alive(pid), "server %s running" % pid)
+    t0 = time.time()
+    gone = wait_for(lambda: not alive(pid), 30)
+    print("    server gone after %.1fs" % (time.time() - t0))
+    check(gone, "server exited by itself")
+    check(time.time() - t0 >= 3, "not before the idle time")
+
+
+def case_crash(env):
+    """A panic on the command thread halts the server (37); the client reports it."""
+    code, out, err = run_client(env, "crash", "echo", "up")
+    pid = server_pid(env, "crash")
+    code, out, err = run_client(env, "crash", "crash")
+    check(code == 37, "exit code 37")
+    check(b"Server terminated abruptly" in err or b"without an explicit exit code" in err,
+          "client reported the dead server")
+    check(wait_for(lambda: not alive(pid), 10), "server process is gone")
+
+
+CASES = [
+    ("connect", case_connect),
+    ("order", case_order),
+    ("exit-codes", case_exit_codes),
+    ("big", case_big),
+    ("reuse", case_reuse),
+    ("cancel", case_cancel),
+    ("exec", case_exec),
+    ("shutdown", case_shutdown),
+    ("sigkill", case_sigkill),
+    ("idle", case_idle),
+    ("crash", case_crash),
+]
+
+
+def cleanup(env):
+    """Shuts down, and failing that kills, every server under the scratch roots."""
+    for p in env.clients:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+    for pidfile in glob.glob(os.path.join(env.scratch, "roots", "*", "*", "server", "server.pid.txt")):
+        try:
+            with open(pidfile) as fh:
+                pid = int(fh.read())
+        except (OSError, ValueError):
+            continue
+        if not alive(pid):
+            continue
+        case = pidfile.split(os.sep)[-4]
+        try:
+            subprocess.run(env.argv(case, "shutdown"), cwd=env.workspace, timeout=30,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired:
+            pass
+        if alive(pid) and is_probe(pid):
+            os.kill(pid, signal.SIGKILL)
+            wait_for(lambda: not alive(pid), 5)
+        print("cleanup: server %d of %s %s" % (pid, case, "gone" if not alive(pid) else "STILL ALIVE"))
+
+
+def parse(argv):
+    opts = {"probe": DEFAULT_PROBE, "bazel": DEFAULT_BAZEL, "scratch": DEFAULT_SCRATCH}
+    rest = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--probe", "--bazel", "--scratch"):
+            opts[a[2:]] = os.path.abspath(os.path.expanduser(argv[i + 1]))
+            i += 2
+        else:
+            rest.append(a)
+            i += 1
+    if os.path.realpath(opts["scratch"]).startswith(ORACLE_ROOT):
+        sys.exit("refusing to use the oracle's output_user_root")
+    return opts, rest
+
+
+def main(argv):
+    if not argv or argv[0] in ("help", "--help", "-h"):
+        print(__doc__)
+        return 0
+    action, args = argv[0], argv[1:]
+    opts, names = parse(args)
+    if action == "list":
+        for name, fn in CASES:
+            print("%-11s %s" % (name, fn.__doc__))
+        return 0
+    env = Env(opts["probe"], opts["bazel"], opts["scratch"])
+    if action == "clean":
+        cleanup(env)
+        return 0
+    if action != "run":
+        print(__doc__)
+        return 2
+    selected = [c for c in CASES if not names or c[0] in names]
+    unknown = set(names) - {c[0] for c in CASES}
+    if unknown:
+        sys.exit("unknown cases: %s" % sorted(unknown))
+    if os.path.isdir(env.scratch):
+        cleanup(env)
+        shutil.rmtree(env.scratch)
+    os.makedirs(os.path.join(env.javabase, "bin"))
+    os.makedirs(env.workspace)
+    open(os.path.join(env.workspace, "MODULE.bazel"), "w").close()
+    probe_copy = os.path.join(env.scratch, "probe")
+    shutil.copy2(env.probe, probe_copy)
+    os.symlink(probe_copy, os.path.join(env.javabase, "bin", "java"))
+    print("probe: %s (copied to %s), sha256 %s" % (
+        env.probe, probe_copy, hashlib.sha256(open(probe_copy, "rb").read()).hexdigest()[:16]))
+    print("client: %s" % env.bazel)
+    results = []
+    try:
+        for name, fn in selected:
+            print("\n== %s: %s" % (name, fn.__doc__))
+            try:
+                fn(env)
+                results.append((name, "PASS", ""))
+            except Failure as e:
+                results.append((name, "FAIL", str(e)))
+            except Exception as e:  # noqa: BLE001 - report and continue
+                results.append((name, "FAIL", "%s: %s" % (type(e).__name__, e)))
+            print("== %s: %s" % (name, results[-1][1]))
+    finally:
+        print()
+        cleanup(env)
+    print("\nSummary:")
+    for name, status, why in results:
+        print("  %-11s %s%s" % (name, status, ("  (" + why + ")") if why else ""))
+    passed = sum(1 for r in results if r[1] == "PASS")
+    print("%d of %d cases passed" % (passed, len(results)))
+    return 0 if passed == len(results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

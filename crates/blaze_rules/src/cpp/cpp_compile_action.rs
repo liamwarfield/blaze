@@ -568,7 +568,7 @@ fn collect_outputs(
 }
 
 // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:454 CppCompileAction.buildCommandLine
-fn build_command_line(
+pub(crate) fn build_command_line(
     copts_filter: CoptsFilter,
     action_name: &str,
     feature_configuration: Arc<FeatureConfiguration>,
@@ -2286,6 +2286,126 @@ impl CppCompileActionBuilder {
         }
     }
 
+    /// Creates a builder that is a copy of another builder.
+    ///
+    /// PORT: Java's copy constructor leaves `variables`, `diagnosticsFile`,
+    /// `buildInfoHeaderArtifacts`, `cacheKeyInputs` and `additionalPrunableHeaders` at their
+    /// field defaults; `pluginOpts` and `extraSystemIncludePrefixes` have no port (never set by
+    /// the Starlark natives). The Rust-only `execution_platform` (the owner's) is copied with the
+    /// owner.
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:110 CppCompileActionBuilder.<init>
+    pub fn copy_of(other: &CppCompileActionBuilder) -> CppCompileActionBuilder {
+        let mut mandatory_inputs_builder = NestedSetBuilder::stable_order();
+        mandatory_inputs_builder.add_transitive(&other.mandatory_inputs_builder.build());
+        CppCompileActionBuilder {
+            owner: other.owner.clone(),
+            shareable: other.shareable,
+            configuration: other.configuration.clone(),
+            feature_configuration: other.feature_configuration.clone(),
+            variables: CcToolchainVariables::empty(),
+            source_file: other.source_file.clone(),
+            mandatory_inputs_builder,
+            output_file: other.output_file.clone(),
+            modmap_file: other.modmap_file.clone(),
+            modmap_input_file: other.modmap_input_file.clone(),
+            module_files: other.module_files.clone(),
+            dwo_file: other.dwo_file.clone(),
+            lto_indexing_file: other.lto_indexing_file.clone(),
+            dotd_file: other.dotd_file.clone(),
+            diagnostics_file: None,
+            gcno_file: other.gcno_file.clone(),
+            cc_compilation_context: other.cc_compilation_context.clone(),
+            copts_filter: other.copts_filter.clone(),
+            use_pic: other.use_pic,
+            additional_include_scanning_roots: other.additional_include_scanning_roots.clone(),
+            should_scan_includes: other.should_scan_includes,
+            execution_info: other.execution_info.clone(),
+            cc_toolchain: other.cc_toolchain.clone(),
+            action_name: other.action_name.clone(),
+            build_info_header_artifacts: Vec::new(),
+            cache_key_inputs: NestedSetBuilder::empty_set(Order::STABLE_ORDER),
+            additional_prunable_headers: NestedSetBuilder::empty_set(Order::STABLE_ORDER),
+            additional_outputs: other.additional_outputs.clone(),
+            needs_include_validation: other.needs_include_validation,
+            execution_platform: other.execution_platform.clone(),
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:180 CppCompileActionBuilder.getOwner
+    pub fn get_owner(&self) -> &ActionOwner {
+        &self.owner
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:188 CppCompileActionBuilder.getCcCompilationContext
+    pub fn get_cc_compilation_context(&self) -> &CcCompilationContext {
+        self.cc_compilation_context
+            .as_ref()
+            .expect("NullPointerException: ccCompilationContext")
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:401 CppCompileActionBuilder.getPrunableHeaders
+    pub fn get_prunable_headers(&self) -> &NestedSet<Artifact> {
+        &self.additional_prunable_headers
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:405 CppCompileActionBuilder.getInputsForInvalidation
+    pub fn get_inputs_for_invalidation(&self) -> &NestedSet<Artifact> {
+        self.get_cc_compilation_context()
+            .get_declared_include_srcs()
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:458 CppCompileActionBuilder.getFeatureConfiguration
+    pub fn get_feature_configuration(&self) -> &Arc<FeatureConfiguration> {
+        self.feature_configuration()
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:470 CppCompileActionBuilder.getVariables
+    pub fn get_variables(&self) -> &CcToolchainVariablesRef {
+        &self.variables
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:480 CppCompileActionBuilder.getExecutionInfo
+    pub fn get_execution_info(&self) -> &IndexMap<String, String> {
+        &self.execution_info
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:509 CppCompileActionBuilder.useDotdFile
+    pub fn use_dotd_file(&self, source_file: &Artifact) -> bool {
+        cpp_file_types::header_discovery_required(source_file)
+            && !self.use_header_modules_for(source_file)
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:610 CppCompileActionBuilder.getCoptsFilter
+    pub fn get_copts_filter(&self) -> &CoptsFilter {
+        &self.copts_filter
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:627 CppCompileActionBuilder.getActionEnvironment
+    pub fn get_action_environment(&self) -> Arc<ActionEnvironment> {
+        action_environment(&self.configuration)
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:656 CppCompileActionBuilder.getBuiltinIncludeDirectories
+    pub fn get_builtin_include_directories(&self) -> Result<Vec<PathFragment>, String> {
+        self.cc_toolchain.built_in_include_directories.clone()
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:660 CppCompileActionBuilder.shouldCompileHeaders
+    pub fn should_compile_headers(&self) -> bool {
+        // CcToolchainProvider.shouldProcessHeaders(featureConfiguration, cppConfiguration)
+        // Java: com/google/devtools/build/lib/rules/cpp/CcToolchainProvider.java:239 CcToolchainProvider.shouldProcessHeaders
+        self.feature_configuration()
+            .is_enabled(cpp_rule_classes::PARSE_HEADERS)
+    }
+
+    /// `buildMandatoryInputs()` for `CppCompileActionTemplate` (package-private in Java).
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:371 CppCompileActionBuilder.buildMandatoryInputs
+    pub fn build_mandatory_inputs_for_template(
+        &mut self,
+    ) -> Result<NestedSet<Artifact>, BuildAndVerifyError> {
+        self.build_mandatory_inputs()
+    }
+
     /// Records the execution platform of the builder's action owner (Java reads it from the
     /// owner: `ActionOwner.getExecutionPlatform()`).
     pub fn set_execution_platform(
@@ -2301,6 +2421,23 @@ impl CppCompileActionBuilder {
         check_state!(
             self.source_file.is_none(),
             "New source file {} trying to overwrite old source file {}",
+            source_file,
+            self.source_file
+                .as_ref()
+                .map_or("null".to_owned(), |a| a.to_string())
+        );
+        self.source_file = Some(source_file);
+        self
+    }
+
+    /// The `setSourceFile(TreeFileArtifact)` overload: a tree file artifact may replace a source
+    /// that is not one (the template's builder carries the source tree artifact).
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:153 CppCompileActionBuilder.setSourceFile
+    pub fn set_source_file_tree_file(&mut self, source_file: Artifact) -> &mut Self {
+        check_state!(
+            self.source_file.as_ref().is_none_or(|a| a.artifact_class()
+                != blaze_actions::actions::artifact::ArtifactClass::TreeFileArtifact),
+            "New source file {} trying to overwrite old source file {} also a tree file artifact",
             source_file,
             self.source_file
                 .as_ref()

@@ -41,6 +41,7 @@ use blaze_optdefs::misc::starlark_debugger_options::StarlarkDebuggerOptions;
 use blaze_optdefs::misc::worker_options::WorkerOptions;
 
 use crate::command::BlazeCommand;
+use crate::command_environment::CommandEnvironment;
 use crate::command_registry::{
     AqueryCommand, BuildCommand, CanonicalizeCommand, ConfigCommand, CoverageCommand,
     CqueryCommand, DumpCommand, FetchCommand, LicenseCommand, MobileInstallCommand, ModCommand,
@@ -107,7 +108,7 @@ pub fn bazel_modules() -> Vec<Arc<dyn BlazeModule>> {
         Arc::new(BlockWaitingModule),
         // This module needs to come after BlockWaitingModule so that the BES isn't closed until
         // the background tasks maintained by the module have completed.
-        Arc::new(BazelBuildEventServiceModule),
+        Arc::new(BazelBuildEventServiceModule::default()),
         // Modules that are involved in the collection of heap-related metrics of a build. They
         // need to be last in the modules order, so when the GCs happen at the end of the build,
         // we mitigate the risk that objects are still held onto by the other modules.
@@ -847,15 +848,20 @@ impl BlazeModule for BlockWaitingModule {
 }
 
 /// Bazel's BES module (`BuildEventServiceModule<BuildEventServiceOptions>`).
-/// PORT: the inherited beforeCommand, afterCommand and commandComplete are ported for the BEP
-/// files of build and test (`crate::commands::bep`); a BEP file for another command and the
-/// upload to a Build Event Service (`--bes_backend`: workspaceInit, getBesKeywords,
-/// getBesClient, clearBesClient, allowedCommands, getInvocationIdPrefix,
-/// getBuildRequestIdPrefix) fail loudly (`crate::unported_options`). getOutputListener (the
-/// command's stdout and stderr in the BEP's progress events) is not ported: progress events
-/// carry no output. blazeShutdown, blazeShutdownOnCrash close a streamer the server left open.
+/// beforeCommand and afterCommand set up and close the Build Event Protocol of a command
+/// (`crate::commands::bep::BepCommandSupport`). PORT: the upload to a Build Event Service
+/// (`--bes_backend`: workspaceInit, getBesKeywords, getBesClient, clearBesClient,
+/// getInvocationIdPrefix, getBuildRequestIdPrefix) fails loudly (`crate::unported_options`).
+/// getOutputListener (the command's stdout and stderr in the BEP's progress events) is not
+/// ported: progress events carry no output. blazeShutdown, blazeShutdownOnCrash close a streamer
+/// the server left open.
 // Java: com/google/devtools/build/lib/buildeventservice/BazelBuildEventServiceModule.java:52 BazelBuildEventServiceModule
-pub struct BazelBuildEventServiceModule;
+#[derive(Default)]
+pub struct BazelBuildEventServiceModule {
+    /// The command's streamer support, between beforeCommand and afterCommand (Java: the
+    /// module's `streamer`, `bepTransports`, ... fields, reset by `commandComplete`).
+    current: parking_lot::Mutex<Option<Arc<crate::commands::bep::BepCommandSupport>>>,
+}
 
 impl BlazeModule for BazelBuildEventServiceModule {
     fn name(&self) -> &'static str {
@@ -871,6 +877,23 @@ impl BlazeModule for BazelBuildEventServiceModule {
             BuildEventStreamOptions::class(),
             BuildEventProtocolOptions::class(),
         ]
+    }
+
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:337 BuildEventServiceModule.beforeCommand
+    fn before_command(&self, env: &mut CommandEnvironment) -> Result<(), AbruptExitException> {
+        let bep = crate::commands::bep::BepCommandSupport::module_before_command(env);
+        *self.current.lock() = bep.clone();
+        env.set_bep(bep);
+        Ok(())
+    }
+
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:662 BuildEventServiceModule.afterCommand
+    fn after_command(&self) -> Result<(), AbruptExitException> {
+        // commandComplete: the module forgets the command's streamer.
+        let Some(bep) = self.current.lock().take() else {
+            return Ok(());
+        };
+        bep.after_command()
     }
 }
 

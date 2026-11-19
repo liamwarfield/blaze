@@ -1,1 +1,5 @@
 EVAL 'int' value has no field or method 'bit_length'
+TRACE Traceback (most recent call last):
+TRACE \x09File "lex_int_dot_attr.star", line 1, column 9, in <toplevel>
+TRACE \x09\x09print(1 .bit_length)
+TRACE Error: 'int' value has no field or method 'bit_length'

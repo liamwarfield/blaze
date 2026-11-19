@@ -123,6 +123,49 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "axum"
+version = "0.8.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b52af3cb4058c895d37317bb27508dccc8e5f2d39454016b297bf4a400597b8"
+dependencies = [
+ "axum-core",
+ "bytes",
+ "futures-util",
+ "http",
+ "http-body",
+ "http-body-util",
+ "itoa",
+ "matchit",
+ "memchr",
+ "mime",
+ "percent-encoding",
+ "pin-project-lite",
+ "serde_core",
+ "sync_wrapper",
+ "tower",
+ "tower-layer",
+ "tower-service",
+]
+
+[[package]]
+name = "axum-core"
+version = "0.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08c78f31d7b1291f7ee735c1c6780ccde7785daae9a9206026862dab7d8792d1"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "http",
+ "http-body",
+ "http-body-util",
+ "mime",
+ "pin-project-lite",
+ "sync_wrapper",
+ "tower-layer",
+ "tower-service",
+]
+
+[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -181,6 +224,7 @@ name = "blaze"
 version = "0.1.0"
 dependencies = [
  "blaze_client",
+ "blaze_events",
  "blaze_protos",
  "blaze_runtime",
  "hex",
@@ -295,6 +339,7 @@ name = "blaze_buildtool"
 version = "0.1.0"
 dependencies = [
  "blaze_actions",
+ "blaze_bep",
  "blaze_build_config",
  "blaze_cmdline",
  "blaze_collect",
@@ -389,8 +434,12 @@ dependencies = [
  "hex",
  "libc",
  "md-5",
+ "prost",
  "tar",
  "tempfile",
+ "tokio",
+ "tonic",
+ "tonic-prost",
  "zstd",
 ]
 
@@ -502,6 +551,7 @@ dependencies = [
  "parking_lot",
  "prost",
  "prost-types",
+ "quick-xml",
  "regex",
  "serde_json",
  "sha2",
@@ -518,17 +568,20 @@ dependencies = [
  "blaze_options",
  "blaze_util",
  "blaze_vfs",
+ "libc",
 ]
 
 [[package]]
 name = "blaze_options"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "blaze_cmdline",
  "blaze_protos",
  "blaze_util",
  "blaze_vfs",
  "indexmap",
+ "prost",
  "pulldown-cmark",
  "regex",
 ]
@@ -539,6 +592,7 @@ version = "0.1.0"
 dependencies = [
  "allocative",
  "anyhow",
+ "blaze_bzlmod_model",
  "blaze_cmdline",
  "blaze_collect",
  "blaze_config",
@@ -580,6 +634,7 @@ name = "blaze_query"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "blaze_cmdline",
  "blaze_events",
  "blaze_optdefs",
@@ -753,6 +808,7 @@ dependencies = [
  "indexmap",
  "once_cell",
  "parking_lot",
+ "prost",
  "regex",
  "starlark",
  "starlark_derive",
@@ -791,6 +847,7 @@ dependencies = [
  "blaze_sky_loading",
  "blaze_sky_top",
  "blaze_skyframe",
+ "blaze_starlark",
  "blaze_util",
  "blaze_vfs",
  "indexmap",
@@ -803,6 +860,25 @@ dependencies = [
 [[package]]
 name = "blaze_server"
 version = "0.1.0"
+dependencies = [
+ "blaze_events",
+ "blaze_protos",
+ "blaze_shell",
+ "blaze_util",
+ "blaze_vfs",
+ "futures",
+ "libc",
+ "parking_lot",
+ "prost",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-build",
+ "tonic-prost",
+ "uuid",
+]
 
 [[package]]
 name = "blaze_shell"
@@ -887,6 +963,7 @@ version = "0.1.0"
 dependencies = [
  "allocative",
  "anyhow",
+ "blaze_bzlmod_model",
  "blaze_cmdline",
  "blaze_config",
  "blaze_events",
@@ -2035,6 +2112,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e2e65a1a2e43cfcb47a895c4c8b10d1f4a61097f9f254f183aee60cad9c651d"
 
 [[package]]
+name = "matchit"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
+
+[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2080,6 +2163,12 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "mime"
+version = "0.3.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5848f5a9e8117cf94f2f90faac24a87ff81600ff8628c1e3deaab572e76bfa1"
 
 [[package]]
 name = "miniz_oxide"
@@ -2439,6 +2528,15 @@ name = "pulldown-cmark-escape"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "007d8adb5ddab6f8e3f491ac63566a7d5002cc7ed73901f72057943fa71ae1ae"
+
+[[package]]
+name = "quick-xml"
+version = "0.38.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b66c2058c55a409d601666cffe35f04333cf1013010882cec174a7467cd4e21c"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "quickcheck"
@@ -3196,6 +3294,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2cdfc673aabd30fe8fee92e65837b644c37c5d47f0f97ae6d5e0f1237d15e1b"
 dependencies = [
  "async-trait",
+ "axum",
  "base64",
  "bytes",
  "h2",

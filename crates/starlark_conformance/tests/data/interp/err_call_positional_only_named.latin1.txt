@@ -1,0 +1,5 @@
+EVAL find() got named argument for positional-only parameter 'sub'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_positional_only_named.star", line 1, column 9, in <toplevel>
+TRACE \x09\x09"a".find(sub = "a")
+TRACE Error in find: find() got named argument for positional-only parameter 'sub'

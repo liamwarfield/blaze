@@ -1,0 +1,5 @@
+EVAL unhashable type: 'list'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_hash_set_elem.star", line 1, column 8, in <toplevel>
+TRACE \x09\x09x = set([[1]])
+TRACE Error in set: unhashable type: 'list'

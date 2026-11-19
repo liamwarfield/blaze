@@ -7,8 +7,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use blaze_events::EventHandler;
-use blaze_optdefs::command::query_options::QueryOptions;
+use blaze_optdefs::command::query_options::{OrderOutput, QueryOptions};
 use blaze_packages::target::{LabelPrinter, Target};
+use blaze_query_engine::callback::{OutputFormatterError, process_all_targets};
 use blaze_query_engine::{
     OutputFormatterCallback, QueryException, QueryExpression, ThreadSafeOutputFormatterCallback,
 };
@@ -17,6 +18,8 @@ use blaze_vfs::DigestHashFunction;
 
 use crate::common::abstract_blaze_query_environment::AbstractBlazeQueryEnvironment;
 use crate::query::aspectresolvers::aspect_resolver::AspectResolver;
+use crate::query::blaze_query_environment::{TargetDigraph, TargetNode};
+use crate::query::output::format_utils;
 
 /// Java `OutputStream`, shared between the command and the callbacks it creates.
 pub type OutputStream = Rc<RefCell<dyn Write>>;
@@ -52,11 +55,29 @@ pub trait OutputFormatter {
     /// Format the result (a set of target nodes implicitly ordered according to the graph
     /// maintained by the QueryEnvironment), and print it to "out".
     ///
-    /// PORT: the non-streamed path needs `lib/graph/Digraph` and `BlazeQueryEnvironment`,
-    /// which are not ported yet.
+    /// The default is `AbstractUnorderedFormatter.output`, for the formatters that are
+    /// `StreamedFormatter`s; the others override it.
     // Java: com/google/devtools/build/lib/query2/query/output/OutputFormatter.java:54 OutputFormatter.output
-    fn output_digraph(&self) {
-        blaze_util::unported!("OutputFormatter.output(Digraph)", "{}", self.get_name())
+    // Java: com/google/devtools/build/lib/query2/query/output/AbstractUnorderedFormatter.java:43 AbstractUnorderedFormatter.output
+    fn output(
+        &self,
+        options: &QueryOptions,
+        result: &TargetDigraph,
+        out: OutputStream,
+        aspect_resolver: Arc<dyn AspectResolver>,
+        event_handler: Option<Arc<dyn EventHandler>>,
+        hash_function: DigestHashFunction,
+        label_printer: &LabelPrinter,
+    ) -> Result<(), OutputFormatterError> {
+        let streamed = self
+            .as_streamed_formatter()
+            .unwrap_or_else(|| panic!("AbstractMethodError: {}.output(Digraph)", self.get_name()));
+        streamed.set_options(options, aspect_resolver, hash_function);
+        streamed.set_event_handler(event_handler);
+        process_all_targets(
+            &*streamed.create_post_facto_stream_callback(out, options, label_printer),
+            &get_ordered_targets(result, options),
+        )
     }
 
     /// Java `formatter instanceof StreamedFormatter`.
@@ -105,6 +126,35 @@ pub trait StreamedFormatter {
         options: &QueryOptions,
         label_printer: &LabelPrinter,
     ) -> Box<dyn OutputFormatterCallback<Target>>;
+}
+
+/// The targets of `result` in the order `--order_output` asks for.
+// Java: com/google/devtools/build/lib/query2/query/output/AbstractUnorderedFormatter.java:59 AbstractUnorderedFormatter.getOrderedTargets
+pub fn get_ordered_targets(result: &TargetDigraph, options: &QueryOptions) -> Vec<Target> {
+    if options.order_output == OrderOutput::FULL {
+        // Get targets in total order, the difference here from topological ordering is the
+        // sorting of nodes before post-order visitation (which ensures determinism at a time
+        // cost).
+        let ordering = |a: &TargetNode, b: &TargetNode| format_utils::target_ordering(&a.0, &b.0);
+        result
+            .get_topological_order_by(&ordering)
+            .into_iter()
+            .map(|n| result.get_label(n).0.clone())
+            .collect()
+    } else if options.order_output == OrderOutput::DEPS {
+        // Get targets in topological order.
+        result
+            .get_topological_order()
+            .into_iter()
+            .map(|n| result.get_label(n).0.clone())
+            .collect()
+    } else {
+        result
+            .get_labels()
+            .into_iter()
+            .map(|t| t.0.clone())
+            .collect()
+    }
 }
 
 /// Java `TextOutputFormatterCallback`'s writer: a `BufferedWriter(OutputStreamWriter(out))`

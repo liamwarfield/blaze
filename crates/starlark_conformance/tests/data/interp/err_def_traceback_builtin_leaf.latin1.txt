@@ -1,0 +1,7 @@
+EVAL substring not found
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_def_traceback_builtin_leaf.star", line 3, column 2, in <toplevel>
+TRACE \x09\x09f()
+TRACE \x09File "err_def_traceback_builtin_leaf.star", line 2, column 19, in f
+TRACE \x09\x09return "a".index("b")
+TRACE Error in index: substring not found

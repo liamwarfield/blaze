@@ -1,0 +1,5 @@
+EVAL unsupported binary operation: int + string
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_def_traceback_comprehension.star", line 1, column 8, in <toplevel>
+TRACE \x09\x09x = [y + "a" for y in [1]]
+TRACE Error: unsupported binary operation: int + string

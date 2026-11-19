@@ -1,0 +1,5 @@
+EVAL dict() accepts no more than 1 positional argument but got 2
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_dict_ctor_toomany.star", line 1, column 5, in <toplevel>
+TRACE \x09\x09dict({}, {})
+TRACE Error in dict: dict() accepts no more than 1 positional argument but got 2

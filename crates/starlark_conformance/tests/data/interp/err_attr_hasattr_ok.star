@@ -1,0 +1,1 @@
+print(hasattr("a", "upper"))

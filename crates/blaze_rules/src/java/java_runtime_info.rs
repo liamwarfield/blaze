@@ -1,0 +1,108 @@
+//! `rules/java/JavaRuntimeInfo.java`: information about the Java runtime used by the `java_*`
+//! rules (a wrapped instance of rules_java's `JavaRuntimeInfo` provider).
+
+use blaze_actions::Artifact;
+use blaze_collect::NestedSet;
+use blaze_packages::rule_class::ProviderKey;
+use blaze_vfs::PathFragment;
+use starlark::values::{Heap, Value};
+
+use super::provider_util::{
+    info_key, is_starlark_info_with_schema, main_repo_provider_key, rules_java_provider_key,
+    starlark_type,
+};
+use super::starlark_info_wrapper::StarlarkInfoWrapper;
+use crate::cpp::util::errorf;
+
+/// The bzl file of the provider, relative to the rules_java repository.
+const BZL: &str = "java/common/rules:java_runtime.bzl";
+
+/// `JavaRuntimeInfo.PROVIDER.getKey()`.
+// Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:143 JavaRuntimeInfo.Provider.<init>
+pub fn provider_key() -> ProviderKey {
+    rules_java_provider_key(BZL, "JavaRuntimeInfo")
+}
+
+/// `JavaRuntimeInfo.RULES_JAVA_PROVIDER.getKey()`.
+// Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:136 JavaRuntimeInfo.RulesJavaProvider.<init>
+pub fn rules_java_provider_key_() -> ProviderKey {
+    main_repo_provider_key(BZL, "JavaRuntimeInfo")
+}
+
+/// Information about the Java runtime used by the `java_*` rules.
+// Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:44 JavaRuntimeInfo
+#[derive(Clone, Copy)]
+pub struct JavaRuntimeInfo<'v> {
+    wrapper: StarlarkInfoWrapper<'v>,
+}
+
+impl<'v> JavaRuntimeInfo<'v> {
+    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:98 JavaRuntimeInfo.wrap
+    pub fn wrap(info: Value<'v>, heap: Heap<'v>) -> starlark::Result<JavaRuntimeInfo<'v>> {
+        let key = info_key(info);
+        if key == Some(provider_key()) || key == Some(rules_java_provider_key_()) {
+            // Java: JavaRuntimeInfo.Provider.wrap
+            // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:153 JavaRuntimeInfo.Provider.wrap
+            if is_starlark_info_with_schema(info) {
+                return Ok(JavaRuntimeInfo {
+                    wrapper: StarlarkInfoWrapper::new(info, heap),
+                });
+            }
+            return Err(errorf(format!(
+                "got value of type '{}', want 'JavaRuntimeInfo'",
+                starlark_type(info)
+            )));
+        }
+        Err(errorf(format!(
+            "expected JavaRuntimeInfo, got: {}",
+            key.map(|k| k.to_string())
+                .unwrap_or_else(|| "null".to_owned())
+        )))
+    }
+
+    /// All input artifacts in the javabase.
+    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:110 JavaRuntimeInfo.javaBaseInputs
+    pub fn java_base_inputs(&self) -> starlark::Result<NestedSet<Artifact>> {
+        self.wrapper.get_underlying_nested_set_artifacts("files")
+    }
+
+    /// The root directory of the Java installation.
+    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:115 JavaRuntimeInfo.javaHome
+    pub fn java_home(&self) -> starlark::Result<Option<String>> {
+        self.wrapper.get_underlying_string("java_home")
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:119 JavaRuntimeInfo.javaBinaryExecPathFragment
+    pub fn java_binary_exec_path_fragment(&self) -> starlark::Result<PathFragment> {
+        let s = self
+            .wrapper
+            .get_underlying_string("java_executable_exec_path")?
+            .unwrap_or_else(|| panic!("NullPointerException: java_executable_exec_path"));
+        Ok(PathFragment::create(&s))
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:123 JavaRuntimeInfo.javaBinaryRunfilesPathFragment
+    pub fn java_binary_runfiles_path_fragment(&self) -> starlark::Result<PathFragment> {
+        let s = self
+            .wrapper
+            .get_underlying_string("java_executable_runfiles_path")?
+            .unwrap_or_else(|| panic!("NullPointerException: java_executable_runfiles_path"));
+        Ok(PathFragment::create(&s))
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:127 JavaRuntimeInfo.hermeticStaticLibs
+    pub fn hermetic_static_libs(&self) -> starlark::Result<Vec<Value<'v>>> {
+        self.wrapper.get_underlying_sequence("hermetic_static_libs")
+    }
+
+    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:131 JavaRuntimeInfo.version
+    pub fn version(&self) -> starlark::Result<i32> {
+        match self.wrapper.get_underlying_value("version") {
+            None => panic!("NullPointerException: version"),
+            Some(v) => match v.unpack_i32() {
+                Some(i) => Ok(i),
+                None => Err(StarlarkInfoWrapper::cast_error("version", v, "int")),
+            },
+        }
+    }
+}

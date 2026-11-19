@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use std::sync::Arc;
 
@@ -44,6 +44,7 @@ use crate::query::output::output_formatter::{
     OutputFormatter, OutputStream, StreamedFormatter, write_all,
 };
 use crate::query::output::possible_attribute_values;
+use crate::query::output::synthetic_attribute_hash_calculator::SyntheticAttributeHashCalculator;
 
 // Java: com/google/devtools/build/lib/query2/query/output/ProtoOutputFormatter.java:90 ProtoOutputFormatter.RULE_IMPLEMENTATION_HASH_ATTR_NAME
 pub const RULE_IMPLEMENTATION_HASH_ATTR_NAME: &str = "$rule_implementation_hash";
@@ -474,11 +475,23 @@ impl TargetProtoConverter {
                 }
 
                 if state.include_instantiation_stack {
-                    blaze_util::unported!("ProtoOutputFormatter instantiation stack");
+                    for fr in rule.reconstruct_call_stack() {
+                        // Always report relative locations.
+                        // (New fields needn't honor relativeLocations.)
+                        rule_pb
+                            .instantiation_stack
+                            .push(u(call_stack_entry_string(&fr, rule.get_package_metadata())));
+                    }
                 }
 
                 if state.include_definition_stack && rule.get_rule_class_object().is_starlark() {
-                    blaze_util::unported!("ProtoOutputFormatter definition stack");
+                    for fr in rule.get_rule_class_object().get_call_stack() {
+                        // Always report relative locations.
+                        // (New fields needn't honor relativeLocations.)
+                        rule_pb
+                            .definition_stack
+                            .push(u(call_stack_entry_string(fr, rule.get_package_metadata())));
+                    }
                 }
 
                 if state.rule_class_info_formatter {
@@ -629,11 +642,13 @@ impl TargetProtoConverter {
         &self,
         rule_pb: &mut RulePb,
         rule: &Rule,
-        _extra_data_for_attr_hash: &str,
+        extra_data_for_attr_hash: &str,
         label_printer: &LabelPrinter,
     ) {
         let state = &self.state;
         let mut serialized_attributes: Vec<AttributePb> = Vec::new();
+        // Java `Map<Attribute, Build.Attribute> serializedAttributes` (by attribute name).
+        let mut serialized_attributes_by_name: HashMap<String, AttributePb> = HashMap::new();
         let attribute_mapper = AggregatingAttributeMapper::of(rule);
         for attr in rule.get_attributes() {
             if !self.should_include_attribute(rule, attr) {
@@ -658,6 +673,8 @@ impl TargetProtoConverter {
                 state.include_attribute_source_aspects,
                 label_printer,
             );
+            serialized_attributes_by_name
+                .insert(attr.get_name().to_owned(), serialized_attribute.clone());
             serialized_attributes.push(serialized_attribute);
         }
 
@@ -665,7 +682,22 @@ impl TargetProtoConverter {
             .attribute
             .extend(distinct_sorted_by_name(serialized_attributes));
         if state.include_synthetic_attribute_hash {
-            blaze_util::unported!("SyntheticAttributeHashCalculator.compute");
+            let mut attr = AttributePb {
+                name: "$internal_attr_hash".to_owned(),
+                string_value: Some(SyntheticAttributeHashCalculator::compute(
+                    rule,
+                    &serialized_attributes_by_name,
+                    extra_data_for_attr_hash,
+                    state
+                        .hash_function
+                        .expect("NullPointerException: hashFunction"),
+                    state.include_attribute_source_aspects,
+                    state.include_starlark_rule_env,
+                )),
+                ..Default::default()
+            };
+            attr.set_type(get_discriminator_from_type(Type::String));
+            rule_pb.attribute.push(attr);
         }
     }
 
@@ -885,4 +917,22 @@ fn get_flattened_attribute_values(
         }
         _ => panic!("AssertionError: Unknown type: {attr_type:?}"),
     }
+}
+
+/// `FormatUtils.getRootRelativeLocation(fr.location, rule.getPackageMetadata()) + ": " + fr.name`
+/// (a builtin frame's location is `Location.BUILTIN`).
+// Java: com/google/devtools/build/lib/query2/query/output/ProtoOutputFormatter.java:273 ProtoOutputFormatter.toTargetProtoBuffer
+fn call_stack_entry_string(
+    fr: &blaze_starlark::error::StackEntry,
+    package_metadata: &blaze_packages::package::PackageMetadata,
+) -> String {
+    let location = fr
+        .location
+        .clone()
+        .unwrap_or_else(blaze_starlark::Location::builtin);
+    format!(
+        "{}: {}",
+        format_utils::get_root_relative_location(location, Some(package_metadata)),
+        fr.name
+    )
 }

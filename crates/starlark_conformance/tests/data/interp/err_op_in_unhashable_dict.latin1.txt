@@ -1,0 +1,5 @@
+EVAL unhashable type: 'list'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_op_in_unhashable_dict.star", line 1, column 8, in <toplevel>
+TRACE \x09\x09x = [] in {}
+TRACE Error: unhashable type: 'list'

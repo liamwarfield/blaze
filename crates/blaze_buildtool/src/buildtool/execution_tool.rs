@@ -3,13 +3,18 @@
 //! `UiStateTracker.buildComplete` summary lines.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
 use std::time::Instant;
 
 use blaze_actions::Artifact;
 use blaze_actions::actions::artifact_factory::ArtifactFactory;
+use blaze_bep::metrics::criticalpath::{
+    AggregatedCriticalPath, CanBeShared, CriticalPathComputer, CriticalPathEvent,
+};
+use blaze_events::java_format::java_format_fixed;
 use blaze_events::{
-    Event, EventBus, EventHandler, ExtendedEventHandler, JavaClock, OutputFilter, Postable,
+    Clock, Event, EventBus, EventHandler, ExtendedEventHandler, JavaClock, OutputFilter, Postable,
+    nano_time_of,
 };
 use blaze_exec::actions::CacheCheckAction;
 use blaze_exec::actions::action_cache_checker::{
@@ -19,7 +24,10 @@ use blaze_exec::actions::cache::{
     ActionCache, ActionCacheStatistics, CompactPersistentActionCache, PostableActionCacheStats,
 };
 use blaze_exec::actions::resource_manager::{ResourceManager, configure_resource_manager};
+use blaze_exec::analysis::test::test_runner_action::SpawnExecutedEventChangePhase;
+use blaze_exec::exec::action_execution_context::SpawnExecutedEvent;
 use blaze_exec::exec::bin_tools::BinTools;
+use blaze_exec::exec::evaluation_stack::on_evaluation_stack;
 use blaze_exec::exec::exec_command_environment::ExecCommandEnvironment;
 use blaze_exec::exec::executor_setup::{
     RemoteModuleContributions, build_spawn_strategy_registry_with_remote,
@@ -37,12 +45,14 @@ use blaze_optdefs::misc::worker_options::WorkerOptions;
 use blaze_options::Options;
 use blaze_sky_exec::action_execution_function::SkyframeContainingPackageRootLookup;
 use blaze_sky_exec::events::{
-    ActionCompletionEvent, ActionResultReceivedEvent, TargetCompleteEvent, downcast_event,
+    ActionCompletionEvent, ActionResultReceivedEvent, ActionStartedEvent, TargetCompleteEvent,
+    TopLevelTargetPendingExecutionEvent, downcast_event,
 };
 use blaze_sky_exec::keys::{BuildDriverKey, TestCompletionKey, artifact_key};
 use blaze_sky_exec::skyframe_action_executor::{
-    ActionCacheSetup, ActionContexts, ArtifactFactoryResolver, ContainingPackageRootLookup,
-    OutputPermissions, SkyframeActionExecutor, SkyframeActionExecutorConfig,
+    ActionCacheSetup, ActionContexts, ArtifactFactoryResolver, CachedActionEvent,
+    ContainingPackageRootLookup, OutputPermissions, SkyframeActionExecutor,
+    SkyframeActionExecutorConfig,
 };
 use blaze_skyframe::{EvaluationContext, EvaluationResult, Evaluator, Interrupted, SkyKey};
 use blaze_vfs::{FileSystemRef, Path};
@@ -94,6 +104,9 @@ pub struct ExecutionToolConfig {
 }
 
 /// `BuildSummaryStatsModule` + the `UiStateTracker` counters, as an event-bus subscriber.
+///
+/// PORT: the `CriticalPathComputer` that `executorInit` registers on the event bus is called from
+/// here (its `@Subscribe` methods take the events' parts, see `blaze_bep::metrics::criticalpath`).
 // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:56 BuildSummaryStatsModule
 pub struct ExecutionEventCollector {
     pub spawn_stats: SpawnStats,
@@ -102,21 +115,169 @@ pub struct ExecutionEventCollector {
     pub target_complete_events: Mutex<Vec<TargetCompleteEvent>>,
     /// Further subscribers (`AggregatingTestListener`, BEP).
     pub forward: Mutex<Vec<Arc<dyn EventBus>>>,
+    /// `criticalPathComputer`: set by `executorInit` with `--experimental_enable_critical_path_profiling`.
+    critical_path_computer: Mutex<Option<Arc<CriticalPathComputer>>>,
+    /// `statsSummary` (`--experimental_stats_summary`), set by `executorInit`.
+    stats_summary: AtomicBool,
+    /// `commandStartMillis` (`env.getCommandStartTime()`).
+    command_start_millis: AtomicI64,
+    /// `executionStartMillis`.
+    execution_start_millis: AtomicI64,
+    /// `executionEndMillis`.
+    execution_end_millis: AtomicI64,
+    /// `executionStarted`.
+    execution_started: AtomicBool,
+    /// Whether `executorInit` ran (the build's `ExecutionTool` was constructed).
+    executor_initialized: AtomicBool,
+    /// The `criticalPath` of the last `buildComplete` when a computer existed: the BEP's
+    /// `BuildToolLogCollection` value "critical path" (`criticalPath.toString()`).
+    ///
+    /// PORT: Java adds the value to the build result inside `buildComplete`; the BEP side of the
+    /// command (which owns the collection) reads it from here.
+    critical_path_tool_log: Mutex<Option<String>>,
+    /// The clock of the summary (`BlazeClock.instance()`).
+    clock: Arc<dyn Clock>,
 }
 
 impl ExecutionEventCollector {
     pub fn new() -> ExecutionEventCollector {
+        ExecutionEventCollector::with_clock(Arc::new(JavaClock))
+    }
+
+    /// `beforeCommand` with an injectable clock (Java's `BlazeClock.instance()`).
+    // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:71 BuildSummaryStatsModule.beforeCommand
+    pub fn with_clock(clock: Arc<dyn Clock>) -> ExecutionEventCollector {
         ExecutionEventCollector {
             spawn_stats: SpawnStats::new(),
             actions_completed: AtomicI32::new(0),
             target_complete_events: Mutex::new(Vec::new()),
             forward: Mutex::new(Vec::new()),
+            critical_path_computer: Mutex::new(None),
+            stats_summary: AtomicBool::new(false),
+            command_start_millis: AtomicI64::new(0),
+            execution_start_millis: AtomicI64::new(0),
+            execution_end_millis: AtomicI64::new(0),
+            execution_started: AtomicBool::new(false),
+            executor_initialized: AtomicBool::new(false),
+            critical_path_tool_log: Mutex::new(None),
+            clock,
         }
+    }
+
+    /// `commandStartMillis = env.getCommandStartTime()` (`beforeCommand`).
+    pub fn set_command_start_millis(&self, command_start_millis: i64) {
+        self.command_start_millis
+            .store(command_start_millis, Ordering::SeqCst);
+    }
+
+    /// `executorInit`: called when the build's `ExecutionTool` is constructed. With
+    /// `--experimental_enable_critical_path_profiling` (the default) a `CriticalPathComputer` is
+    /// registered; `can_be_shared` is `Actions.canBeShared` with the executor's action key
+    /// context (see [`can_be_shared_with_executor`]).
+    // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:91 BuildSummaryStatsModule.executorInit
+    pub fn executor_init(
+        &self,
+        enable_critical_path_profiling: bool,
+        stats_summary: bool,
+        can_be_shared: CanBeShared,
+    ) {
+        // PORT: Blaze creates the executor before the analysis; the command calls this where
+        // Java constructs the ExecutionTool, which happens once per build.
+        if self.executor_initialized.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let enabled = enable_critical_path_profiling;
+        self.stats_summary.store(stats_summary, Ordering::SeqCst);
+        if enabled {
+            *self.critical_path_computer.lock() =
+                Some(Arc::new(CriticalPathComputer::new(can_be_shared)));
+        }
+    }
+
+    /// Whether `executorInit` ran (the build's `ExecutionTool` was constructed).
+    pub fn executor_initialized(&self) -> bool {
+        self.executor_initialized.load(Ordering::SeqCst)
+    }
+
+    /// Whether `executorInit` registered a critical path computer.
+    pub fn has_critical_path_computer(&self) -> bool {
+        self.critical_path_computer.lock().is_some()
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:121 BuildSummaryStatsModule.markExecutionPhaseStarted
+    fn mark_execution_phase_started(&self) {
+        // TODO(ulfjack): Make sure to use the same clock as for commandStartMillis.
+        self.execution_start_millis
+            .store(self.clock.current_time_millis(), Ordering::SeqCst);
+    }
+
+    /// `@Subscribe executionPhaseFinish(ExecutionFinishedEvent)`.
+    ///
+    /// PORT: the `ExecutionFinishedEvent` (`ExecutionTool.unconditionalExecutionPhaseFinalizations`)
+    /// is not posted by the execution side; the command calls this where Java posts it.
+    // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:132 BuildSummaryStatsModule.executionPhaseFinish
+    pub fn execution_phase_finish(&self) {
+        self.execution_end_millis
+            .store(self.clock.current_time_millis(), Ordering::SeqCst);
+    }
+
+    /// The "critical path" value of the build tool logs, when `buildComplete` computed one.
+    pub fn critical_path_tool_log(&self) -> Option<String> {
+        self.critical_path_tool_log.lock().clone()
+    }
+
+    /// The `@Subscribe` methods of the `CriticalPathComputer` registered by `executorInit`.
+    fn post_to_critical_path_computer(&self, event: &Arc<dyn Postable>) {
+        let Some(computer) = self.critical_path_computer.lock().clone() else {
+            return;
+        };
+        if let Some(e) = downcast_event::<ActionStartedEvent>(event) {
+            // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:234 CriticalPathComputer.actionStarted
+            computer.action_started(&e.action, nano_time_of(e.nano_time_start));
+        } else if let Some(e) = downcast_event::<ActionCompletionEvent>(event) {
+            // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:307 CriticalPathComputer.actionComplete
+            computer.action_complete(
+                &e.action,
+                nano_time_of(e.related_time_start),
+                nano_time_of(e.finish_time),
+            );
+        } else if let Some(e) = downcast_event::<CachedActionEvent>(event) {
+            // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:293 CriticalPathComputer.actionCached
+            computer.action_cached(
+                &e.action,
+                nano_time_of(e.nano_time_start),
+                nano_time_of(e.nano_time_finish),
+            );
+        } else if let Some(e) = downcast_event::<SpawnExecutedEvent>(event) {
+            // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:150 CriticalPathComputer.spawnExecuted
+            // getActionMetadata().getPrimaryOutput(): the action's primary output artifact.
+            let primary_output = e
+                .get_action_primary_output()
+                .as_any()
+                .downcast_ref::<Artifact>();
+            let spawn_result = e.get_spawn_result();
+            computer.spawn_executed(
+                primary_output,
+                spawn_result.get_metrics(),
+                spawn_result.get_runner_name(),
+                spawn_result.get_runner_subtype(),
+                spawn_result.was_remote(),
+            );
+        } else if let Some(e) = downcast_event::<SpawnExecutedEventChangePhase>(event) {
+            // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:139 CriticalPathComputer.nextCriticalPathPhase
+            computer.next_critical_path_phase(&blaze_actions::Action::get_primary_output(
+                &**e.get_action(),
+            ));
+        }
+        // PORT: DiscoveredInputsEvent, ActionChangePrunedEvent and ActionRewoundEvent are not
+        // posted by the execution side (input discovery metrics, change pruning and action
+        // rewinding are not ported there).
     }
 }
 
 impl EventBus for ExecutionEventCollector {
     fn post(&self, event: Arc<dyn Postable>) {
+        self.post_to_critical_path_computer(&event);
         if let Some(e) = downcast_event::<ActionResultReceivedEvent>(&event) {
             // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:139 BuildSummaryStatsModule.actionResultReceived
             self.spawn_stats
@@ -132,12 +293,77 @@ impl EventBus for ExecutionEventCollector {
                 .record_action_cache_stats(e.as_proto().hits);
         } else if let Some(e) = downcast_event::<TargetCompleteEvent>(&event) {
             self.target_complete_events.lock().push(e.clone());
+        } else if downcast_event::<TopLevelTargetPendingExecutionEvent>(&event).is_some() {
+            // Skymeld-specific marking of the start of execution. Multiple instances of this
+            // event might be fired during the build, but we make sure to only mark the start of
+            // the execution phase when the first one is received.
+            // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:114 BuildSummaryStatsModule.executionPhaseStarting
+            if self
+                .execution_started
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                self.mark_execution_phase_started();
+            }
         }
         let forward = self.forward.lock().clone();
         for f in forward {
             f.post(event.clone());
         }
     }
+}
+
+/// `Actions.canBeShared(actionKeyContext, a, b)` with the executor's `ActionKeyContext`, for the
+/// `CriticalPathComputer` of `executorInit`.
+///
+/// PORT: the same port as `blaze_sky_exec::skyframe_action_executor::can_be_shared` (private
+/// there); the action keys may run Starlark callbacks, so they are computed on an
+/// evaluation-sized stack. An interrupted key computation answers false (the computer then
+/// reports the duplicate output as Java's `IllegalStateException` does).
+// Java: com/google/devtools/build/lib/actions/Actions.java:85 Actions.canBeShared
+pub fn can_be_shared_with_executor(executor: Arc<SkyframeActionExecutor>) -> CanBeShared {
+    Arc::new(move |a, b| {
+        let action_key_context = executor.get_action_key_context();
+        let (key_a, key_b) = on_evaluation_stack(|| {
+            (
+                a.get_key(action_key_context, None).ok(),
+                b.get_key(action_key_context, None).ok(),
+            )
+        });
+        let (Some(key_a), Some(key_b)) = (key_a, key_b) else {
+            return false;
+        };
+        if !(a.get_mnemonic() == b.get_mnemonic() && key_a == key_b) {
+            return false;
+        }
+        // Uses a standard comparison technique for shareable actions.
+        if a.is_shareable() && b.is_shareable() {
+            return artifacts_equal_without_owner(
+                &a.get_mandatory_inputs().to_list(),
+                &b.get_mandatory_inputs().to_list(),
+            ) && artifacts_equal_without_owner(&a.get_outputs(), &b.get_outputs());
+        }
+        // If this is reached, at least one action is not shareable. If the actions differ on
+        // this, they cannot be shared.
+        if a.is_shareable() || b.is_shareable() {
+            return false;
+        }
+        // If the artifacts are in fact equal (with owners), these are aliases of the same action
+        // and not in conflict with each other.
+        *a.get_mandatory_inputs().to_list() == *b.get_mandatory_inputs().to_list()
+            && a.get_outputs() == b.get_outputs()
+    })
+}
+
+// Java: com/google/devtools/build/lib/actions/Actions.java:146 Actions.artifactsEqualWithoutOwner
+fn artifacts_equal_without_owner(collection1: &[Artifact], collection2: &[Artifact]) -> bool {
+    if collection1.len() != collection2.len() {
+        return false;
+    }
+    collection1
+        .iter()
+        .zip(collection2)
+        .all(|(a1, a2)| a1.equals_without_owner(a2))
 }
 
 /// The executor of one build plus the modules whose lifetime it spans.
@@ -653,26 +879,71 @@ pub fn run_exclusive_test_skymeld(
     evaluator.evaluate(&[SkyKey::new(test_completion_key.clone())], &ctx)
 }
 
-/// The `BuildSummaryStatsModule.buildComplete` lines: `Elapsed time: ...` and the process
-/// summary. `elapsed_seconds` is `event.getResult().getElapsedSeconds()`.
+/// The `BuildSummaryStatsModule.buildComplete` lines: `Elapsed time: ...` (with
+/// `, Critical Path: ...` when `executorInit` registered a critical path computer) and the
+/// process summary, or the `--experimental_stats_summary` lines. `elapsed_seconds` is
+/// `event.getResult().getElapsedSeconds()` and `stop_time_millis`
+/// `event.getResult().getStopTime()`. Posts the `CriticalPathEvent`.
 ///
-/// PORT: skipped, profiling: critical path profiling (`CriticalPathComputer`,
-/// `--experimental_enable_critical_path_profiling`) is not ported, so the summary is the one Java
-/// prints without a `criticalPathComputer`: no `, Critical Path: ...` item, no `CriticalPathEvent`
-/// and no "critical path" build tool log. The `--experimental_stats_summary` form of the summary
-/// is not ported either; the build command fails loudly when the flag is set.
+/// PORT: the build tool log values ("elapsed time", "critical path", "process stats") are added
+/// by the command's BEP side, which owns the `BuildToolLogCollection`
+/// ([`ExecutionEventCollector::critical_path_tool_log`]). The profiler (`ProfilerStartedEvent`,
+/// `Profiler.instance().stop()`, the critical path profile tasks) is not ported. The logger
+/// lines go to the server log, which is not ported.
 // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:154 BuildSummaryStatsModule.buildComplete
 pub fn report_build_summary_stats(
-    reporter: &dyn EventHandler,
+    reporter: &dyn ExtendedEventHandler,
     collector: &ExecutionEventCollector,
     elapsed_seconds: f64,
+    stop_time_millis: i64,
 ) {
     // We might want to make this conditional on a flag; it can sometimes be a bit of a nuisance.
-    let items = [format!("Elapsed time: {elapsed_seconds:.3}s")];
+    let mut items = vec![format!(
+        "Elapsed time: {}s",
+        java_format_fixed(elapsed_seconds, 3)
+    )];
+
+    let mut critical_path = AggregatedCriticalPath::empty();
+    let critical_path_computer = collector.critical_path_computer.lock().clone();
+    if let Some(critical_path_computer) = &critical_path_computer {
+        critical_path = critical_path_computer.aggregate();
+        reporter.post(Arc::new(CriticalPathEvent::new(critical_path.clone())));
+        items.push(critical_path.to_string_summary_no_remote());
+        *collector.critical_path_tool_log.lock() = Some(critical_path.to_string());
+    }
+
     let spawn_summary = collector.spawn_stats.get_summary();
     let spawn_summary_string = SpawnStats::convert_summary_to_string(&spawn_summary);
-    reporter.handle(&Event::info(items.join(", ")));
-    reporter.handle(&Event::info(spawn_summary_string));
+    if collector.stats_summary.load(Ordering::SeqCst) {
+        reporter.handle(&Event::info(spawn_summary_string));
+        reporter.handle(&Event::info(format!(
+            "Total action wall time {}s",
+            java_format_fixed(
+                collector.spawn_stats.get_total_wall_time_millis() as f64 / 1000.0,
+                2
+            )
+        )));
+        if !critical_path.is_empty_instance() {
+            reporter.handle(&Event::info(critical_path.get_new_string_summary()));
+        }
+        let now = stop_time_millis;
+        let command_start_millis = collector.command_start_millis.load(Ordering::SeqCst);
+        let execution_time = collector.execution_end_millis.load(Ordering::SeqCst)
+            - collector.execution_start_millis.load(Ordering::SeqCst);
+        let overhead_time = now - command_start_millis - execution_time;
+        reporter.handle(&Event::info(format!(
+            "Elapsed time {}s (preparation {}s, execution {}s)",
+            java_format_fixed((now - command_start_millis) as f64 / 1000.0, 2),
+            java_format_fixed(overhead_time as f64 / 1000.0, 2),
+            java_format_fixed(execution_time as f64 / 1000.0, 2)
+        )));
+    } else {
+        reporter.handle(&Event::info(items.join(", ")));
+        reporter.handle(&Event::info(spawn_summary_string));
+    }
+
+    // finally: eventBus.unregister(criticalPathComputer); criticalPathComputer = null.
+    *collector.critical_path_computer.lock() = None;
 }
 
 /// `UiStateTracker.buildComplete`: `Build completed successfully, N total actions` or

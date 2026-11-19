@@ -1,0 +1,2 @@
+SYNTAX err_parse_expected_in.star:1:14: syntax error at 'z': expected in
+SYNTAX err_parse_expected_in.star:1:5: contains syntax errors

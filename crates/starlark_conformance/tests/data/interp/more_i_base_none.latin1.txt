@@ -1,1 +1,5 @@
 EVAL in call to int(), parameter 'base' got value of type 'NoneType', want 'int'
+TRACE Traceback (most recent call last):
+TRACE \x09File "more_i_base_none.star", line 1, column 10, in <toplevel>
+TRACE \x09\x09print(int("1", None))
+TRACE Error in int: in call to int(), parameter 'base' got value of type 'NoneType', want 'int'

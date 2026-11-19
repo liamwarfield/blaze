@@ -1,0 +1,2 @@
+SYNTAX err_parse_generator_paren.star:1:8: syntax error at 'for': Starlark does not support Python-style generator expressions
+SYNTAX err_parse_generator_paren.star:1:5: contains syntax errors

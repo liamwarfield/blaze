@@ -76,7 +76,13 @@ pub fn thread_call_stack(eval: &Evaluator<'_, '_, '_>) -> Vec<StackEntry> {
     let frames = eval.call_stack().frames;
     let mut callstack = Vec::with_capacity(frames.len() + 1);
     let mut caller = "<toplevel>".to_owned();
-    for f in &frames {
+    for (i, f) in frames.iter().enumerate() {
+        // A function called from native code (a symbolic macro's implementation) is the
+        // outermost frame and has no call site: Java's thread has no `<toplevel>` frame then.
+        if i == 0 && f.location.is_none() {
+            caller = f.name.clone();
+            continue;
+        }
         callstack.push(StackEntry {
             name: caller,
             location: f.location.as_ref().map(Location::bazel_position),

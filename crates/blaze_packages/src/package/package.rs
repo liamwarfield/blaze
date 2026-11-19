@@ -251,6 +251,20 @@ impl PackageDeclarations {
         }
     }
 
+    /// The same finished declarations for another packageoid. PORT: Java shares the one
+    /// immutable `Declarations` object among a package's pieces and the package assembled from
+    /// them, each packageoid keeping its own error status; here the error status lives on the
+    /// declarations (see `contains_errors`), so each packageoid gets its own copy.
+    pub fn copy_for_packageoid(&self) -> PackageDeclarations {
+        self.check_immutable();
+        PackageDeclarations {
+            inner: RwLock::new(self.inner.read().clone()),
+            mutable: AtomicBool::new(false),
+            contains_errors: AtomicBool::new(false),
+            failure_detail: RwLock::new(None),
+        }
+    }
+
     // Java: com/google/devtools/build/lib/packages/Package.java:1608 Package.Declarations.getPackageArgs
     pub fn get_package_args(&self) -> PackageArgs {
         self.inner.read().package_args.clone()
@@ -274,6 +288,11 @@ impl PackageDeclarations {
     pub fn count_transitively_loaded_starlark_files(&self) -> usize {
         self.get_or_compute_transitively_loaded_starlark_files()
             .len()
+    }
+
+    /// Java `this instanceof Declarations.Builder`.
+    pub(crate) fn is_mutable(&self) -> bool {
+        self.mutable.load(Ordering::Acquire)
     }
 
     /// Panics unless still mutable (Java `checkMutable`).
@@ -1028,7 +1047,13 @@ impl TargetDefinitionContext {
         what: &str,
         participle: &str,
     ) -> Result<std::cell::RefMut<'a, TargetDefinitionContext>, blaze_cmdline::EvalException> {
+        // Java `Package.AbstractBuilder.fromOrNull`: a `PackagePiece.ForMacro.Builder` is not an
+        // AbstractBuilder.
         if let Some(builder) = TargetDefinitionContext::from_or_null(eval)
+            && !matches!(
+                builder.piece,
+                Some(crate::package::PieceBuilderKind::ForMacro { .. })
+            )
             && builder.recorder.get_current_macro_frame().is_none()
         {
             return Ok(builder);
@@ -1185,11 +1210,15 @@ impl TargetDefinitionContext {
     }
 
     /// Expands the symbolic macros not yet expanded (finalizers last).
+    ///
+    /// PORT: the builder moves into each macro's thread while its implementation runs
+    /// ([`crate::macros::MacroClass::execute_macro_implementation`]), so it is taken by value and
+    /// returned with the result. The error is Java's `EvalException` with its call stack.
     // Java: com/google/devtools/build/lib/packages/Package.java:1251 Package.Builder.expandAllRemainingMacros
     pub fn expand_all_remaining_macros(
-        &mut self,
-        semantics: &blaze_starlark::StarlarkSemantics,
-    ) -> Result<(), blaze_cmdline::EvalException> {
+        mut self,
+        semantics: &Arc<blaze_starlark::StarlarkSemantics>,
+    ) -> (Self, Result<(), blaze_starlark::EvalError>) {
         // Finalizer expansion step. Requires that the package not be in error (no point in
         // finalizing a package that already threw an EvalException).
         if !self.contains_errors() && !self.unexpanded_macros.is_empty() {
@@ -1225,9 +1254,14 @@ impl TargetDefinitionContext {
                     .get(&id)
                     .expect("macro id")
                     .clone();
-                crate::macros::MacroClass::execute_macro_implementation(&macro_, self, semantics)?;
+                let (builder, result) =
+                    crate::macros::MacroClass::execute_macro_implementation(&macro_, self, semantics);
+                self = builder;
+                if let Err(ex) = result {
+                    return (self, Err(ex));
+                }
             }
         }
-        Ok(())
+        (self, Ok(()))
     }
 }

@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""Compare oracle and Blaze on the repo-gaps reproductions. See `compare help`."""
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+USAGE = """\
+usage: scripts/repo-gaps/compare --binary <blaze> [--oracle <bazel>] [--case GLOB]... [--label NAME]
+       scripts/repo-gaps/compare list
+       scripts/repo-gaps/compare help
+
+Runs each case (see `list`) with the oracle (default ~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64)
+and with <binary>: each side gets a fresh copy of the case's workspace under
+~/.cache/blaze/work/repo-gaps/compare/<label>/<side>/<case> and its own output user root
+(~/.cache/blaze/oracle-out/repo-gaps-<side>), a clean environment (HOME, PATH=/usr/bin:/bin),
+--nohome_rc --nosystem_rc, --batch on the oracle, the shared repository cache, --color=no
+--curses=no, under systemd-run --user --scope -p MemoryMax=12G.
+
+Compared per command (after replacing the workspace, output user root and output base hash with
+placeholders): the exit code, and the stderr lines that start with ERROR:, WARNING: or FATAL:
+plus the first line of a Java exception / Rust panic message. Output: a table; transcripts
+under ~/.cache/blaze/repo-gaps-compare/<label>/<side>/<case>.{stderr,norm.json}. Exit 0 when
+all compared cases match.
+"""
+
+HOME = os.environ["HOME"]
+ORACLE = os.path.join(HOME, ".cache/blaze/oracle/bazel-9.3.2-linux-x86_64")
+REPO_CACHE = os.path.join(HOME, ".cache/blaze/repo-cache")
+
+# Each case: files (relative path -> content; "{ws}" is the workspace, "{aux}" a sibling dir),
+# and cmds (lists of arguments; the first is the command).
+CASES = {}
+
+
+def case(name, files, cmds, desc):
+    CASES[name] = {"files": files, "cmds": cmds, "desc": desc}
+
+
+# Item 1: FailureDetail categories (ExternalDeps / ExternalRepository).
+case("fd-module-not-found",
+     {"MODULE.bazel": 'bazel_dep(name = "ss", version = "1.0")\n', "BUILD": "",
+      "{aux}/registry/bazel_registry.json": "{}\n"},
+     [["build", "--registry=file://{aux}/registry", "//..."],
+      ["query", "--registry=file://{aux}/registry", "//..."]],
+     "bazel_dep on a module the registry lacks (ExternalDeps.MODULE_NOT_FOUND)")
+case("fd-bad-module-file",
+     {"MODULE.bazel": 'module(name = "a", version = "1.0")\nbazel_dep(name = )\n', "BUILD": ""},
+     [["build", "//..."], ["query", "//..."], ["fetch", "--all"]],
+     "malformed MODULE.bazel")
+case("fd-yanked",
+     {"MODULE.bazel": 'bazel_dep(name = "aaa", version = "1.0")\n', "BUILD": "",
+      "{aux}/registry/bazel_registry.json": "{}\n",
+      "{aux}/registry/modules/aaa/metadata.json":
+          '{"versions": ["1.0"], "yanked_versions": {"1.0": "dodgy"}}\n',
+      "{aux}/registry/modules/aaa/1.0/MODULE.bazel": 'module(name = "aaa", version = "1.0")\n',
+      "{aux}/registry/modules/aaa/1.0/source.json":
+          '{"type": "local_path", "path": "{aux}/aaa"}\n',
+      "{aux}/aaa/MODULE.bazel": 'module(name = "aaa", version = "1.0")\n',
+      "{aux}/aaa/BUILD": ""},
+     [["build", "--registry=file://{aux}/registry", "--lockfile_mode=off", "//..."]],
+     "a yanked dependency (ExternalDeps.VERSION_RESOLUTION_ERROR)")
+case("fd-lockfile-error",
+     {"MODULE.bazel": 'bazel_dep(name = "aaa", version = "1.0")\n', "BUILD": "",
+      "{aux}/registry/bazel_registry.json": "{}\n",
+      "{aux}/registry/modules/aaa/metadata.json": '{"versions": ["1.0"]}\n',
+      "{aux}/registry/modules/aaa/1.0/MODULE.bazel": 'module(name = "aaa", version = "1.0")\n',
+      "{aux}/registry/modules/aaa/1.0/source.json":
+          '{"type": "local_path", "path": "{aux}/aaa"}\n',
+      "{aux}/aaa/MODULE.bazel": 'module(name = "aaa", version = "1.0")\n',
+      "{aux}/aaa/BUILD": ""},
+     [["build", "--registry=file://{aux}/registry", "--lockfile_mode=error", "//..."]],
+     "--lockfile_mode=error without a lockfile")
+# Item 3: autoloads.
+case("al-bad-flag",
+     {"MODULE.bazel": "", "BUILD": "py_library(name = 'py_library')\n"},
+     [["query", "--incompatible_autoload_externally=py_library,-py_library", ":py_library",
+       "--output=build"]],
+     "duplicated symbol in --incompatible_autoload_externally")
+case("al-undefined-symbol",
+     {"MODULE.bazel": "", "BUILD": ""},
+     [["query", "--incompatible_autoload_externally=pyzzz_library", "//..."]],
+     "undefined symbol")
+case("al-rdeps",
+     {"MODULE.bazel": "", "BUILD": ""},
+     [["query", "--incompatible_autoload_externally=-CcInfo", "//..."]],
+     "removing a provider still used by rules")
+case("al-removed-rule",
+     {"MODULE.bazel": "", "BUILD": "sh_library(name = 'x')\n"},
+     [["query", "--incompatible_autoload_externally=-sh_library", "//:x"],
+      ["query", "--incompatible_autoload_externally=+sh_library", "//:x"]],
+     "removed and kept rule")
+case("al-missing-repo",
+     {"MODULE.bazel": "", "BUILD": "aar_import(name = 'x', aar = 'x.aar')\n",
+      "x.aar": ""},
+     [["query", "--incompatible_autoload_externally=aar_import",
+       "--noincompatible_disable_autoloads_in_main_repo", "//:x"]],
+     "autoload from a repository that is not a dependency")
+case("al-mock-android",
+     {"MODULE.bazel": 'bazel_dep(name = "rules_android")\n'
+                      'local_path_override(module_name = "rules_android", path = "{aux}/ra")\n',
+      "BUILD": "aar_import(name = 'x', aar = 'x.aar')\n", "x.aar": "",
+      "{aux}/ra/MODULE.bazel": 'module(name = "rules_android")\n',
+      "{aux}/ra/rules/BUILD": "",
+      "{aux}/ra/rules/rules.bzl": "def _impl(ctx):\n  pass\n\naar_import = rule(\n"
+                                  "  implementation = _impl,\n  attrs = {\n"
+                                  '    "aar": attr.label(allow_files = True),\n'
+                                  '    "deps": attr.label_list(),\n  }\n)\n'},
+     [["query", "--incompatible_autoload_externally=aar_import",
+       "--noincompatible_disable_autoloads_in_main_repo", "//:x", "--output=build"],
+      ["query", "--incompatible_autoload_externally=aar_import",
+       "--noincompatible_disable_autoloads_in_main_repo", "//:x", "--output=label_kind"]],
+     "autoloaded rule from a local rules_android")
+case("al-missing-symbol",
+     {"MODULE.bazel": 'bazel_dep(name = "rules_android")\n'
+                      'local_path_override(module_name = "rules_android", path = "{aux}/ra")\n',
+      "BUILD": "aar_import(name = 'x', aar = 'x.aar')\n", "x.aar": "",
+      "{aux}/ra/MODULE.bazel": 'module(name = "rules_android")\n',
+      "{aux}/ra/rules/BUILD": "", "{aux}/ra/rules/rules.bzl": ""},
+     [["query", "--incompatible_autoload_externally=aar_import",
+       "--noincompatible_disable_autoloads_in_main_repo", "//:x"]],
+     "the autoloaded .bzl lacks the symbol")
+case("al-native-unknown",
+     {"MODULE.bazel": "", "BUILD": "load(':m.bzl', 'm')\nm()\n",
+      "m.bzl": "def m():\n    native.aar_import(name = 'x')\n"},
+     [["query", "//:all"]],
+     "native.<removed rule> error text (default flag)")
+# Item 4: --experimental_sibling_repository_layout.
+case("sib-external-pkg",
+     {"MODULE.bazel": "", "external/a/BUILD":
+          "genrule(name = 'g', srcs = ['a.txt'], outs = ['o.txt'], cmd = 'cat $< > $@')\n",
+      "external/a/a.txt": "hello\n"},
+     [["build", "--experimental_sibling_repository_layout", "//external/a:g"]],
+     "a main-repo package under external/ with sibling layout")
+case("sib-genrule-setup",
+     {"MODULE.bazel": "", "BUILD":
+          "genrule(name = 'g', outs = ['o.txt'], cmd = 'echo hi > $@')\n"},
+     [["build", "--experimental_sibling_repository_layout", "//:g"]],
+     "genrule (needs @bazel_tools genrule-setup.sh) with sibling layout")
+case("sib-external-repo",
+     {"MODULE.bazel": 'local_repository = use_repo_rule('
+                      '"@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")\n'
+                      'local_repository(name = "r", path = "{aux}/r")\n',
+      "BUILD": "genrule(name = 'g', srcs = ['@r//:r.txt'], outs = ['o.txt'], "
+               "cmd = 'cat $< > $@')\n",
+      "{aux}/r/REPO.bazel": "", "{aux}/r/BUILD": "exports_files(['r.txt'])\n",
+      "{aux}/r/r.txt": "repo file\n"},
+     [["build", "--experimental_sibling_repository_layout", "//:g"]],
+     "source file of an external repository with sibling layout")
+# Item 5.
+SPARSE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../crates/blaze_repo_fetch/tests/data/sparse")
+case("sparse-tar",
+     {"MODULE.bazel": 'r = use_repo_rule("//:r.bzl", "r")\nr(name = "s")\n', "BUILD": "",
+      "r.bzl": "def _impl(rctx):\n"
+               "    out = []\n"
+               "    for v in ['0.0', '0.1', '1.0']:\n"
+               "        rctx.extract('%s/sparse_' + v + '.tar', output = v)\n"
+               "        p = rctx.path(v + '/dir/holes.bin')\n"
+               "        c = rctx.read(p) if p.exists else ''\n"
+               "        out.append('%%s exists=%%s len=%%d hash=%%d' %% (v, p.exists, len(c), hash(c)))\n"
+               "    fail(' | '.join(out))\n"
+               "r = repository_rule(_impl)\n" % os.path.abspath(SPARSE_DIR)},
+     [["build", "@s//:all"]],
+     "PAX sparse tar entries (formats 0.0, 0.1, 1.0), extracted content reported by fail()")
+case("nofetch",
+     {"MODULE.bazel": 'http_archive = use_repo_rule('
+                      '"@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")\n'
+                      'http_archive(name = "z", urls = ["http://127.0.0.1:9/z.zip"])\n',
+      "BUILD": "genrule(name = 'g', srcs = ['@z//:f'], outs = ['o'], cmd = 'cp $< $@')\n"},
+     [["build", "--nofetch", "//:g"]],
+     "--nofetch with a repository that is not fetched")
+
+
+def norm(text, ws, aux, root):
+    text = text.replace(ws, "<WS>").replace(aux, "<AUX>").replace(root, "<ROOT>")
+    text = re.sub(r"<ROOT>/[0-9a-f]{32}", "<ROOT>/<OB>", text)
+    return text
+
+
+def compared(stderr):
+    out = []
+    lines = stderr.splitlines()
+    for i, l in enumerate(lines):
+        if re.match(r"(ERROR|WARNING|FATAL):", l):
+            out.append(l)
+        elif re.match(r"(java\.lang\.\w+|blaze: not ported yet|thread '.*' .*panicked)", l):
+            out.append(l)
+    return out
+
+
+def write_files(ws, aux, files):
+    for rel, content in files.items():
+        path = rel.replace("{aux}", aux)
+        path = path if os.path.isabs(path) else os.path.join(ws, path)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(content.replace("{aux}", aux).replace("{ws}", ws))
+
+
+def run_side(side, binary, is_bazel, name, c, label):
+    base = os.path.join(HOME, ".cache/blaze/work/repo-gaps/compare", label, side, name)
+    if os.path.exists(base):
+        subprocess.run(["chmod", "-R", "u+w", base])
+        shutil.rmtree(base)
+    ws, aux = os.path.join(base, "ws"), os.path.join(base, "aux")
+    os.makedirs(ws)
+    os.makedirs(aux)
+    write_files(ws, aux, c["files"])
+    root = os.path.join(HOME, ".cache/blaze/oracle-out/repo-gaps-" + side)
+    results = []
+    transcript = ""
+    for args in c["cmds"]:
+        args = [a.replace("{aux}", aux).replace("{ws}", ws) for a in args]
+        cmd = ["systemd-run", "--user", "--scope", "--collect", "--quiet",
+               "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0",
+               "env", "-i", "HOME=" + HOME, "PATH=/usr/bin:/bin",
+               binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc"]
+        if is_bazel:
+            cmd.append("--batch")
+        cmd += [args[0], "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"]
+        cmd += args[1:]
+        p = subprocess.run(cmd, cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        err = norm(p.stderr.decode("latin-1"), ws, aux, root)
+        out = norm(p.stdout.decode("latin-1"), ws, aux, root)
+        transcript += "$ %s\n%s\n--- stdout\n%s\n[exit %d]\n" % (" ".join(args), err, out,
+                                                                p.returncode)
+        results.append({"cmd": " ".join(args), "exit": p.returncode, "lines": compared(err),
+                        "stdout": out})
+    odir = os.path.join(HOME, ".cache/blaze/repo-gaps-compare", label, side)
+    os.makedirs(odir, exist_ok=True)
+    open(os.path.join(odir, name + ".stderr"), "w").write(transcript)
+    json.dump(results, open(os.path.join(odir, name + ".norm.json"), "w"), indent=1)
+    return results
+
+
+def main(argv):
+    if not argv or argv[0] in ("help", "--help", "-h"):
+        print(USAGE)
+        return 0
+    if argv[0] == "list":
+        for n, c in CASES.items():
+            print("%-22s %s" % (n, c["desc"]))
+        return 0
+    import argparse
+    import fnmatch
+    ap = argparse.ArgumentParser(usage=USAGE)
+    ap.add_argument("--binary", required=True)
+    ap.add_argument("--oracle", default=ORACLE)
+    ap.add_argument("--case", action="append")
+    ap.add_argument("--label", default="default")
+    a = ap.parse_args(argv)
+    names = [n for n in CASES if not a.case or any(fnmatch.fnmatch(n, g) for g in a.case)]
+    allok = True
+    for n in names:
+        o = run_side("oracle", a.oracle, True, n, CASES[n], a.label)
+        b = run_side("blaze", os.path.abspath(a.binary), False, n, CASES[n], a.label)
+        for i, (x, y) in enumerate(zip(o, b)):
+            same = x["exit"] == y["exit"] and x["lines"] == y["lines"]
+            allok &= same
+            print("%-5s %-20s #%d exit %s/%s  %s" % ("MATCH" if same else "DIFF", n, i,
+                                                    x["exit"], y["exit"], x["cmd"][:60]))
+            if not same:
+                for l in x["lines"]:
+                    if l not in y["lines"]:
+                        print("        - oracle: " + l[:300])
+                for l in y["lines"]:
+                    if l not in x["lines"]:
+                        print("        + blaze:  " + l[:300])
+    return 0 if allok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,1 @@
+SYNTAX err_lex_octal_range.star:1:9: octal escape sequence out of range (maximum is \\377)

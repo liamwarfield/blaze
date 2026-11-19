@@ -21,6 +21,13 @@ commands:
                        run each file as java/StarlarkProbe.java does on Bazel's interpreter
                        (Blaze's universe, json, print) and print the probe's lines; default
                        mode is latin1 (one char per byte, byte-strings flag on)
+  probe-diff [-v] [--only SUBSTR] [DIR]
+                       run every case of DIR (default tests/data/interp) as `probe` does and
+                       compare all lines (printed output, every SYNTAX line, the EVAL message
+                       and Bazel's traceback as TRACE lines) with NAME.latin1.txt, recorded on
+                       Bazel's interpreter (scripts/starlark/interp-diff record-java). One line
+                       per case: MATCH, TEXT (same output and error kind, different error
+                       text/location/traceback) or DIFF; -v shows both sides of each difference
   parse PATH...         compile every Starlark file under PATH (.bzl, .scl, BUILD, *.BUILD,
                        MODULE.bazel, REPO.bazel) with Bazel's dialect and static checks
                        (blaze_starlark::eval::compile) and list failures
@@ -63,6 +70,53 @@ fn real_main() -> anyhow::Result<()> {
                 println!("{line}");
             }
         }
+        return Ok(());
+    }
+    if cmd == "probe-diff" {
+        let mut verbose = false;
+        let mut only: Option<String> = None;
+        let mut dir =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/interp");
+        let mut it = args[1..].iter();
+        while let Some(a) = it.next() {
+            match a.as_str() {
+                "-v" => verbose = true,
+                "--only" => only = it.next().cloned(),
+                d => dir = PathBuf::from(d),
+            }
+        }
+        use starlark_conformance::probe::CaseResult;
+        let (mut m, mut t, mut d) = (0, 0, 0);
+        for name in starlark_conformance::probe::case_names(&dir) {
+            if only.as_ref().is_some_and(|o| !name.contains(o.as_str())) {
+                continue;
+            }
+            let c = starlark_conformance::probe::compare_case(&dir, &name);
+            let tag = match c.result {
+                CaseResult::Match => {
+                    m += 1;
+                    "MATCH"
+                }
+                CaseResult::TextDiffers => {
+                    t += 1;
+                    "TEXT"
+                }
+                CaseResult::Differs => {
+                    d += 1;
+                    "DIFF"
+                }
+            };
+            println!("{tag} {}", c.name);
+            if verbose && c.result != CaseResult::Match {
+                for l in &c.java {
+                    println!("    java {l}");
+                }
+                for l in &c.rust {
+                    println!("    rust {l}");
+                }
+            }
+        }
+        println!("{} cases: {m} match, {t} differ in error text only, {d} differ", m + t + d);
         return Ok(());
     }
     if cmd == "parse" {

@@ -1,0 +1,5 @@
+EVAL 'dict' value has no field or method 'itmes' (did you mean 'items'?)
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_attr_dict_suggest.star", line 1, column 7, in <toplevel>
+TRACE \x09\x09x = {}.itmes()
+TRACE Error: 'dict' value has no field or method 'itmes' (did you mean 'items'?)

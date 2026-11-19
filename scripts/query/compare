@@ -1,0 +1,570 @@
+#!/usr/bin/env python3
+"""Oracle-against-Blaze matrix for query, cquery and aquery output formats and flags.
+
+usage: scripts/query/compare --binary PATH --label NAME [--project P[,P...]]
+                             [--command query,cquery,aquery] [--cells REGEX] [--no-run]
+                             [--details N]
+       scripts/query/compare cells [--project P] [--command C]   list the matrix, run nothing
+       scripts/query/compare help
+
+Projects: brotli, re2 (copies of the read-only checkouts in ~/.cache/blaze/corpus), probe (a
+small generated workspace with select()s, package groups and odd characters), workerd (a sample
+of cells through scripts/workerd/run, read-only use). Default: brotli,re2,probe.
+
+Each cell is one command line (expression x --output x flags). For every cell:
+  oracle A   the oracle (~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64) in one server
+  oracle B   the oracle again after `shutdown` (a new JVM): Bazel's own run-to-run variation
+             (identity hash order in Digraph, HashSet<Target>) shows up as A != B
+  blaze      the binary under test
+Workspaces: ~/.cache/blaze/work/query-cmp/{o,b}/<project> (rsync of the checkout minus bazel-*
+and .git, refreshed at the start of a run); output user roots ~/.cache/blaze/oracle-out/qc-{o,b}.
+The two sides' paths have equal lengths, and Blaze's workspace, output base and install base are
+replaced by the oracle's in Blaze's stdout (byte for byte, so binary protos stay comparable).
+workerd uses its own copies (scripts/workerd/run); its paths are replaced as text only.
+
+Verdict per cell:
+  identical            same exit code and same stdout bytes as oracle A or B
+  identical-unordered  the oracle itself varies (A != B), or the cell's order comes from Java
+                       identity hashes (see order_is_identity_hashed); Blaze's lines (and the
+                       items of a factored graph node) equal A's as a multiset
+  loud                 Blaze stopped at an `unported!` ("not ported yet") or panicked
+  different            anything else (stdout or exit code differ)
+Results: ~/.cache/blaze/query-compare/<label>/{results.json,matrix.md,cells/<id>/...}.
+--no-run re-classifies the saved outputs. Run it under systemd-run (AGENTS.md: heavy jobs).
+"""
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+HOME = os.path.expanduser("~")
+CACHE = os.path.join(HOME, ".cache/blaze")
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ORACLE = os.path.join(CACHE, "oracle/bazel-9.3.2-linux-x86_64")
+REPO_CACHE = os.path.join(CACHE, "repo-cache")
+WORK = os.path.join(CACHE, "work/query-cmp")
+OUT = os.path.join(CACHE, "query-compare")
+USER_ROOT = {"o": os.path.join(CACHE, "oracle-out/qc-o"), "b": os.path.join(CACHE, "oracle-out/qc-b")}
+COMMON = ["--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"]
+
+PROBE_FILES = {
+    "MODULE.bazel": 'module(name = "probe")\n',
+    "pkg/BUILD": r'''load(":defs.bzl", "my_rule", "my_test")
+
+genrule(
+    name = "g",
+    srcs = ["in.txt"],
+    outs = ["out.txt"],
+    cmd = "echo 'a<b>&\"c' \n\t\001\177 x \303\251 \342\202\254 \r end > $@",
+    tags = ["t1", "t&2"],
+    visibility = ["//visibility:public"],
+)
+
+config_setting(name = "c1", values = {"compilation_mode": "opt"})
+
+config_setting(name = "c2", values = {"compilation_mode": "dbg"})
+
+filegroup(
+    name = "fg",
+    srcs = select({
+        ":c1": [":a", ":b"],
+        ":c2": [":b"],
+        "//conditions:default": [":d"],
+    }),
+)
+
+filegroup(name = "a", srcs = ["a.txt"])
+
+filegroup(name = "b", srcs = ["b.txt", ":a"])
+
+filegroup(name = "d", srcs = ["d.txt", ":g"])
+
+package_group(name = "pg", packages = ["//pkg/..."], includes = [":pg2"])
+
+package_group(name = "pg2", packages = ["//other"])
+
+my_rule(name = "m", deps = [":a", ":fg"], flag = True, n = 3, d = {"k": "v"})
+
+my_test(name = "t", size = "small", tags = ["unit"])
+
+test_suite(name = "suite", tests = [":t"])
+
+filegroup(name = "ca", srcs = [":cb"])
+
+filegroup(name = "cb", srcs = [":ca"])
+''',
+    "pkg/defs.bzl": r'''def _impl(ctx):
+    return []
+
+my_rule = rule(
+    implementation = _impl,
+    attrs = {
+        "deps": attr.label_list(),
+        "flag": attr.bool(),
+        "n": attr.int(),
+        "d": attr.string_dict(),
+    },
+)
+
+def _test_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(out, "#!/bin/sh\nexit 0\n", is_executable = True)
+    return [DefaultInfo(executable = out)]
+
+my_test = rule(implementation = _test_impl, test = True)
+''',
+    "pkg/in.txt": "", "pkg/a.txt": "", "pkg/b.txt": "", "pkg/d.txt": "", "pkg/t.sh": "",
+    "other/BUILD": 'filegroup(name = "o", srcs = ["//pkg:a"])\n',
+    "q.txt": "deps(//pkg:m)\n",
+}
+
+QUERY_FORMATS = ["label", "label_kind", "build", "minrank", "maxrank", "package", "location",
+                 "graph", "xml", "proto", "streamed_jsonproto", "streamed_proto"]
+CQUERY_FORMATS = ["label", "label_kind", "build", "graph", "transitions=lite",
+                  "transitions=full", "files", "starlark", "proto", "jsonproto", "textproto",
+                  "streamed_proto"]
+AQUERY_FORMATS = ["text", "summary", "commands", "proto", "jsonproto", "textproto",
+                  "streamed_proto"]
+
+
+def query_exprs(p):
+    if p == "brotli":
+        a, b, lib, top = "//:brotli", "//:brotlicommon", "//:brotlienc", "//..."
+        return [top, "deps(%s)" % a, "deps(%s, 2)" % a, "rdeps(%s, %s)" % (top, b),
+                "rdeps(%s, %s, 1)" % (top, b), "allrdeps(%s)" % b,
+                "somepath(%s, %s)" % (a, b), "allpaths(%s, %s)" % (a, b),
+                'kind("cc_library", %s)' % top, 'attr("linkopts", "-lm", %s)' % top,
+                'filter("enc", %s)' % top, "labels(srcs, %s)" % lib, "tests(%s)" % top,
+                "buildfiles(%s)" % a, "loadfiles(%s)" % a, "siblings(%s)" % lib,
+                "visible(%s, %s)" % (a, top), "same_pkg_direct_rdeps(%s)" % b,
+                "(%s - deps(%s)) ^ kind(rule, %s)" % (top, lib, top),
+                "let x = deps(%s) in $x except %s" % (lib, b), "some(%s)" % top]
+    if p == "re2":
+        a, b, top = "//:re2_test", "//:re2", "//:all + //python:all"
+        return ["//:all", "deps(%s)" % b, "deps(%s, 2)" % a, "rdeps(%s, %s)" % (top, b),
+                "rdeps(%s, %s, 1)" % (top, b), "somepath(%s, %s)" % (a, b),
+                "allpaths(%s, %s)" % (a, b), 'kind(".*_test", //:all)',
+                'attr("size", "large", //:all)', 'filter("exhaustive", //:all)',
+                "labels(deps, %s)" % a, "tests(//:all)", "tests(//:small_tests)",
+                "buildfiles(%s)" % b, "loadfiles(%s)" % b, "siblings(//python:re2)",
+                "visible(%s, //:all)" % a, "//:all - tests(//:all)",
+                "let t = tests(//:all) in $t intersect kind(cc_test, $t)"]
+    if p == "probe":
+        return ["//pkg:all", "deps(//pkg:m)", "deps(//pkg:all)", "rdeps(//..., //pkg:a)",
+                "somepath(//pkg:m, //pkg:a)", "allpaths(//pkg:m, //pkg:a)",
+                "tests(//pkg:suite)", "buildfiles(//pkg:m)", "loadfiles(//pkg:m)",
+                "visible(//other:o, //pkg:all)", "//...", "deps(//pkg:ca)"]
+    return []
+
+
+def query_cells(p):
+    cells = []
+    exprs = query_exprs(p)
+    for e in exprs:
+        for f in QUERY_FORMATS:
+            cells.append(("query", e, f, []))
+    if not exprs:
+        return cells
+    d = exprs[1]  # a deps(...) expression
+    flagsets = [
+        ("label", ["--order_output=full"]), ("label", ["--order_output=deps"]),
+        ("label", ["--order_output=no"]), ("label_kind", ["--noincompatible_lexicographical_output"]),
+        ("graph", ["--order_output=full"]), ("graph", ["--order_output=full", "--nograph:factored"]),
+        ("graph", ["--order_output=full", "--graph:node_limit=40"]),
+        ("graph", ["--order_output=full", "--graph:conditional_edges_limit=1"]),
+        ("graph", ["--order_output=full", "--graph:conditional_edges_limit=0"]),
+        ("minrank", ["--order_output=full"]), ("maxrank", ["--order_output=full"]),
+        ("label", ["--noimplicit_deps"]), ("label", ["--notool_deps"]),
+        ("label", ["--nonodep_deps"]), ("label", ["--experimental_graphless_query=yes"]),
+        ("label", ["--experimental_graphless_query=no"]), ("label", ["--consistent_labels"]),
+        ("label", ["--line_terminator_null"]), ("location", ["--relative_locations"]),
+        ("xml", ["--relative_locations"]), ("xml", ["--noxml:line_numbers"]),
+        ("xml", ["--xml:default_values"]), ("xml", ["--order_output=full"]),
+        ("build", ["--order_output=full"]), ("proto", ["--noproto:default_values"]),
+        ("proto", ["--proto:locations=false"]), ("proto", ["--relative_locations"]),
+        ("proto", ["--noproto:flatten_selects"]), ("proto", ["--proto:output_rule_attrs=srcs,deps"]),
+        ("proto", ["--noproto:rule_inputs_and_outputs"]),
+        ("proto", ["--proto:include_synthetic_attribute_hash"]),
+        ("proto", ["--proto:instantiation_stack"]), ("proto", ["--proto:definition_stack"]),
+        ("proto", ["--proto:rule_classes"]), ("proto", ["--proto:include_attribute_source_aspects"]),
+        ("streamed_jsonproto", ["--proto:instantiation_stack", "--proto:definition_stack"]),
+        ("label", ["--aspect_deps=off"]), ("label", ["--aspect_deps=precise"]),
+        ("xml", ["--aspect_deps=precise"]), ("proto", ["--aspect_deps=precise"]),
+    ]
+    for f, flags in flagsets:
+        cells.append(("query", d, f, flags))
+    cells.append(("query", "", "label", ["--query_file=q.txt"]) if p == "probe" else
+                 ("query", "", "label", ["--query_file=/nonexistent/q.txt"]))
+    cells.append(("query", exprs[0], "label", ["--query_file=/nonexistent/q.txt"]))
+    cells.append(("query", "tests(%s)" % ("//pkg:suite" if p == "probe" else exprs[0]),
+                  "label", ["--strict_test_suite"]))
+    cells.append(("query", d, "nosuchformat", []))
+    cells.append(("query", "buildfiles(%s)" % d, "location", []))
+    return cells
+
+
+def cquery_cells(p):
+    if p == "brotli":
+        exprs = ["deps(//:brotli)", "//:brotlienc", "somepath(//:brotli, //:brotlicommon)",
+                 "config(//:brotlienc, target)"]
+    elif p == "re2":
+        exprs = ["deps(//:re2)", "//:re2_test", "//python:_re2"]
+    elif p == "probe":
+        exprs = ["deps(//pkg:m)", "//pkg:fg", "deps(//pkg:t)"]
+    else:
+        return []
+    cells = []
+    for e in exprs:
+        for f in CQUERY_FORMATS:
+            flags = []
+            if f == "starlark":
+                flags = ["--starlark:expr=str(target.label) + ' ' + str(providers(target).keys())"]
+            if f.startswith("transitions="):
+                flags, f = ["--transitions=" + f.split("=")[1]], "transitions"
+            cells.append(("cquery", e, f, flags))
+    d = exprs[0]
+    for f, flags in [("label", ["--show_config_fragments=direct"]),
+                     ("label", ["--show_config_fragments=transitive"]),
+                     ("label", ["--show_config_fragments=direct_host_only"]),
+                     ("label", ["--noimplicit_deps"]), ("label", ["--notool_deps"]),
+                     ("label_kind", ["--include_aspects"]),
+                     ("graph", ["--nograph:factored"]), ("files", ["--output_files_with_path_prefix"]),
+                     ("proto", ["--proto:include_configurations=false"]),
+                     ("jsonproto", ["--proto:include_configurations"]),
+                     ("label", ["--universe_scope=%s" % d]),
+                     ("starlark", ["--starlark:file=/nonexistent.cqs"])]:
+        cells.append(("cquery", d, f, flags))
+    return cells
+
+
+def aquery_cells(p):
+    if p == "brotli":
+        exprs = ["deps(//:brotlicommon)", 'mnemonic("CppCompile", deps(//:brotlicommon))',
+                 'inputs(".*encode.*", deps(//:brotlienc))', 'outputs(".*\\.a", deps(//:brotli))']
+    elif p == "re2":
+        exprs = ["//:re2", 'mnemonic("CppLink", deps(//:re2_test))']
+    elif p == "probe":
+        exprs = ["deps(//pkg:g)", "//pkg:t"]
+    else:
+        return []
+    cells = []
+    for e in exprs:
+        for f in AQUERY_FORMATS:
+            cells.append(("aquery", e, f, []))
+    d = exprs[0]
+    for f, flags in [("text", ["--include_commandline=false"]), ("text", ["--include_artifacts=false"]),
+                     ("text", ["--include_param_files"]), ("text", ["--include_file_write_contents"]),
+                     ("text", ["--include_pruned_inputs"]),
+                     ("text", ["--include_scheduling_dependencies"]),
+                     ("jsonproto", ["--include_commandline=false", "--include_artifacts=false"]),
+                     ("jsonproto", ["--include_param_files", "--include_file_write_contents"]),
+                     ("summary", ["--include_aspects"]), ("text", ["--skyframe_state"]),
+                     ("text", ["--deduplicate_depsets=false"])]:
+        cells.append(("aquery", d, f, flags))
+    return cells
+
+
+WORKERD_CELLS = [
+    ("query", "deps(//src/workerd/server:workerd)", "label_kind", ["--order_output=full"]),
+    ("query", "deps(//src/workerd/server:workerd)", "minrank", ["--order_output=full"]),
+    ("query", "deps(//src/workerd/server:workerd)", "maxrank", ["--order_output=full"]),
+    ("query", "deps(//src/workerd/server:workerd, 2)", "graph", ["--order_output=full"]),
+    ("query", "deps(//src/workerd/server:workerd)", "xml", []),
+    ("query", "deps(//src/workerd/server:workerd)", "build", []),
+    ("query", "somepath(//src/workerd/server:workerd, //src/workerd/util:sqlite)", "label", []),
+    ("query", "buildfiles(deps(//src/workerd/server:workerd))", "package", []),
+    ("query", "kind(rust_library, deps(//src/workerd/server:workerd))", "streamed_jsonproto", []),
+]
+
+
+def cells_for(project, commands):
+    if project == "workerd":
+        return [c for c in WORKERD_CELLS if c[0] in commands]
+    cells = []
+    if "query" in commands:
+        cells += query_cells(project)
+    if "cquery" in commands:
+        cells += cquery_cells(project)
+    if "aquery" in commands:
+        cells += aquery_cells(project)
+    return cells
+
+
+def cell_id(project, cell):
+    cmd, expr, fmt, flags = cell
+    h = hashlib.sha256(json.dumps([project, cmd, expr, fmt, flags]).encode()).hexdigest()[:10]
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", "%s_%s_%s" % (cmd, fmt, " ".join(flags)))[:60]
+    return "%s-%s-%s" % (project, slug.strip("_"), h)
+
+
+def cell_argv(cell):
+    cmd, expr, fmt, flags = cell
+    argv = [cmd] + COMMON + ["--output=" + fmt] + flags
+    if expr:
+        argv.append(expr)
+    return argv
+
+
+def sync_workspace(project, side):
+    dst = os.path.join(WORK, side, project)
+    os.makedirs(dst, exist_ok=True)
+    if project == "probe":
+        shutil.rmtree(dst)
+        for rel, text in PROBE_FILES.items():
+            path = os.path.join(dst, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="latin-1") as f:
+                f.write(text)
+        return dst
+    src = os.path.join(CACHE, "corpus", project)
+    subprocess.run(["rsync", "-a", "--delete", "--exclude", "bazel-*", "--exclude", ".git",
+                    src + "/", dst + "/"], check=True)
+    # Restore the checkout's committed MODULE.bazel.lock (rsync already copied it).
+    return dst
+
+
+def run(side, project, binary, argv, timeout=1800):
+    if project == "workerd":
+        env = dict(os.environ)
+        cmd = [os.path.join(ROOT, "scripts/workerd/run"), "oracle" if side == "o" else "blaze"]
+        if side == "b":
+            env["BLAZE"] = binary
+        p = subprocess.run(cmd + argv, capture_output=True, timeout=timeout, env=env)
+        return p.returncode, p.stdout, p.stderr
+    exe = ORACLE if side == "o" else binary
+    startup = [exe, "--output_user_root=" + USER_ROOT[side], "--nohome_rc", "--nosystem_rc"]
+    p = subprocess.run(startup + argv, cwd=os.path.join(WORK, side, project),
+                       capture_output=True, timeout=timeout)
+    return p.returncode, p.stdout, p.stderr
+
+
+def info_paths(side, project, binary):
+    """(workspace, output_base, install_base) of one side."""
+    paths = []
+    for key in ("workspace", "output_base", "install_base"):
+        rc, out, _ = run(side, project, binary, ["info"] + COMMON + [key], timeout=600)
+        paths.append(out.decode("latin-1").strip() if rc == 0 else None)
+    return paths
+
+
+def normalise_unordered(data):
+    """Order-insensitive form: sorted lines; items of a factored graph node sorted too."""
+    text = data.decode("latin-1")
+    lines = []
+    for line in text.split("\n"):
+        line = re.sub(r'"([^"]*)"',
+                      lambda m: '"' + "\\n".join(sorted(m.group(1).split("\\n"))) + '"', line)
+        lines.append(line)
+    return sorted(lines)
+
+
+def order_is_identity_hashed(cell):
+    """Cells whose output order Java takes from identity hash codes (a Digraph's node map, a
+    HashSet<Node>): it differs from one Bazel server to the next, so only the multiset of lines
+    is defined. query --output=graph|minrank|maxrank without --order_output=full (factored
+    classes, roots, rank ties), and --order_output=deps|no (topological order from the node map;
+    the graphless deps set)."""
+    cmd, _, fmt, flags = cell
+    if cmd != "query":
+        return False
+    if "--order_output=deps" in flags or "--order_output=no" in flags:
+        return True
+    return fmt in ("graph", "minrank", "maxrank") and "--order_output=full" not in flags
+
+
+def classify(cell, oa, ob, b):
+    (orc_a, oout_a, _), (orc_b, oout_b, _), (brc, bout, berr) = oa, ob, b
+    if b"not ported yet" in berr or b"panicked at" in berr:
+        return "loud"
+    if (brc == orc_a and bout == oout_a) or (brc == orc_b and bout == oout_b):
+        return "identical"
+    if ((orc_a, oout_a) != (orc_b, oout_b) or order_is_identity_hashed(cell)) and \
+            brc == orc_a and normalise_unordered(bout) == normalise_unordered(oout_a):
+        return "identical-unordered"
+    return "different"
+
+
+def save(d, name, res):
+    rc, out, err = res
+    with open(os.path.join(d, name + ".stdout"), "wb") as f:
+        f.write(out)
+    with open(os.path.join(d, name + ".stderr"), "wb") as f:
+        f.write(err)
+    with open(os.path.join(d, name + ".rc"), "w") as f:
+        f.write(str(rc))
+
+
+def load(d, name):
+    with open(os.path.join(d, name + ".stdout"), "rb") as f:
+        out = f.read()
+    with open(os.path.join(d, name + ".stderr"), "rb") as f:
+        err = f.read()
+    with open(os.path.join(d, name + ".rc")) as f:
+        rc = int(f.read())
+    return rc, out, err
+
+
+def substitute(data, pairs):
+    for frm, to in pairs:
+        if frm and to and frm != to:
+            data = data.replace(frm.encode("latin-1"), to.encode("latin-1"))
+    return data
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("help", "-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    list_only = argv[1] == "cells"
+    args = {"--project": "brotli,re2,probe", "--command": "query,cquery,aquery", "--cells": None,
+            "--binary": None, "--label": None, "--details": "0"}
+    flags = set()
+    i = 2 if list_only else 1
+    while i < len(argv):
+        if argv[i] == "--no-run":
+            flags.add(argv[i])
+            i += 1
+        elif argv[i] in args:
+            args[argv[i]] = argv[i + 1]
+            i += 2
+        else:
+            print("unknown argument: " + argv[i], file=sys.stderr)
+            return 2
+    projects = args["--project"].split(",")
+    commands = args["--command"].split(",")
+    sel = re.compile(args["--cells"]) if args["--cells"] else None
+    plan = []
+    for p in projects:
+        for c in cells_for(p, commands):
+            cid = cell_id(p, c)
+            if sel and not sel.search(cid) and not sel.search(" ".join(cell_argv(c))):
+                continue
+            plan.append((p, c, cid))
+    if list_only:
+        for p, c, cid in plan:
+            print("%s\t%s" % (cid, " ".join(cell_argv(c))))
+        print("%d cells" % len(plan))
+        return 0
+    if not args["--label"] or (not args["--binary"] and "--no-run" not in flags):
+        print("--label and --binary are required (see help)", file=sys.stderr)
+        return 2
+    label_dir = os.path.join(OUT, args["--label"])
+    os.makedirs(os.path.join(label_dir, "cells"), exist_ok=True)
+    binary = os.path.abspath(args["--binary"]) if args["--binary"] else None
+    meta_path = os.path.join(label_dir, "meta.json")
+    meta = json.load(open(meta_path)) if os.path.exists(meta_path) else {"paths": {}}
+    if "--no-run" not in flags:
+        if "/target/" in binary:
+            print("warning: the binary lies in a target/ directory; copy it out first",
+                  file=sys.stderr)
+        meta["binary"] = binary
+        meta["binary_sha256"] = hashlib.sha256(open(binary, "rb").read()).hexdigest()
+        meta["date"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        meta["blaze_head"] = subprocess.run(["git", "-C", ROOT, "rev-parse", "HEAD"],
+                                            capture_output=True, text=True).stdout.strip()
+        for p in sorted(set(x[0] for x in plan)):
+            if p != "workerd":
+                sync_workspace(p, "o")
+                sync_workspace(p, "b")
+            meta["paths"][p] = {"o": info_paths("o", p, binary), "b": info_paths("b", p, binary)}
+            p_cells = [x for x in plan if x[0] == p]
+            for side_pass in ("A", "B"):
+                if p != "workerd":
+                    run("o", p, binary, ["shutdown"], timeout=300)
+                for _, c, cid in p_cells:
+                    d = os.path.join(label_dir, "cells", cid)
+                    os.makedirs(d, exist_ok=True)
+                    save(d, "oracle" + side_pass, run("o", p, binary, cell_argv(c)))
+                    if side_pass == "A":
+                        t0 = time.time()
+                        res = run("b", p, binary, cell_argv(c))
+                        save(d, "blaze", res)
+                        with open(os.path.join(d, "argv.json"), "w") as f:
+                            json.dump({"project": p, "argv": cell_argv(c),
+                                       "blaze_s": round(time.time() - t0, 2)}, f)
+            if p != "workerd":
+                run("o", p, binary, ["shutdown"], timeout=300)
+        json.dump(meta, open(meta_path, "w"), indent=1)
+    results = []
+    for p, c, cid in plan:
+        d = os.path.join(label_dir, "cells", cid)
+        if not os.path.exists(os.path.join(d, "blaze.rc")):
+            continue
+        po, pb = meta["paths"][p]["o"], meta["paths"][p]["b"]
+        pairs = sorted(zip(pb, po), key=lambda x: -len(x[0] or ""))
+        b = load(d, "blaze")
+        b = (b[0], substitute(b[1], pairs), b[2])
+        verdict = classify(c, load(d, "oracleA"), load(d, "oracleB"), b)
+        with open(os.path.join(d, "blaze.normalised.stdout"), "wb") as f:
+            f.write(b[1])
+        results.append({"id": cid, "project": p, "command": c[0], "expr": c[1], "output": c[2],
+                        "flags": c[3], "verdict": verdict,
+                        "oracle_rc": load(d, "oracleA")[0], "blaze_rc": b[0],
+                        "oracle_deterministic": load(d, "oracleA")[:2] == load(d, "oracleB")[:2]})
+    json.dump(results, open(os.path.join(label_dir, "results.json"), "w"), indent=1)
+    write_matrix(label_dir, results, meta)
+    counts = {}
+    for r in results:
+        counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
+    print("cells: %d  %s  (of the identical: %d where both exit non-zero)" % (
+        len(results), "  ".join("%s %d" % kv for kv in sorted(counts.items())),
+        len([r for r in results if r["verdict"] == "identical" and r["oracle_rc"] != 0])))
+    n = int(args["--details"])
+    for r in [r for r in results if r["verdict"] in ("different", "loud")][:n]:
+        print("%s  %s  %s" % (r["verdict"], r["id"], " ".join([r["command"], "--output=" + r["output"]] + r["flags"] + [r["expr"]])))
+    print("matrix: " + os.path.join(label_dir, "matrix.md"))
+    return 0
+
+
+def write_matrix(label_dir, results, meta):
+    lines = ["# query/cquery/aquery comparison: oracle 9.3.2 against Blaze", "",
+             "Binary: `%s` (sha256 %s), Blaze HEAD %s, %s." % (
+                 meta.get("binary"), meta.get("binary_sha256", "")[:12], meta.get("blaze_head"),
+                 meta.get("date")), "",
+             "Verdicts: identical (I), identical-unordered (U: the oracle varies between two "
+             "servers; same lines as a multiset), loud (L), different (D).", ""]
+    for p in sorted(set(r["project"] for r in results)):
+        for cmd in ("query", "cquery", "aquery"):
+            rs = [r for r in results if r["project"] == p and r["command"] == cmd]
+            if not rs:
+                continue
+            plain = [r for r in rs if not r["flags"]]
+            fmts = []
+            for r in plain:
+                if r["output"] not in fmts:
+                    fmts.append(r["output"])
+            exprs = []
+            for r in plain:
+                if r["expr"] not in exprs:
+                    exprs.append(r["expr"])
+            lines.append("## %s %s" % (p, cmd))
+            lines.append("")
+            if plain:
+                lines.append("| expression | " + " | ".join(fmts) + " |")
+                lines.append("|---|" + "---|" * len(fmts))
+                short = {"identical": "I", "identical-unordered": "U", "loud": "L", "different": "D"}
+                for e in exprs:
+                    row = []
+                    for f in fmts:
+                        v = [r["verdict"] for r in plain if r["expr"] == e and r["output"] == f]
+                        row.append(short.get(v[0], "?") if v else "")
+                    lines.append("| `%s` | %s |" % (e.replace("|", "\\|"), " | ".join(row)))
+                lines.append("")
+            flagged = [r for r in rs if r["flags"]]
+            if flagged:
+                lines.append("| expression | output | flags | verdict |")
+                lines.append("|---|---|---|---|")
+                for r in flagged:
+                    lines.append("| `%s` | %s | `%s` | %s |" % (
+                        r["expr"].replace("|", "\\|"), r["output"], " ".join(r["flags"]), r["verdict"]))
+                lines.append("")
+    with open(os.path.join(label_dir, "matrix.md"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

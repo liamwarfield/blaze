@@ -12,11 +12,16 @@ blaze_util = { path = "../blaze_util" }
 # blaze_options.
 blaze_cmdline = { path = "../blaze_cmdline" }
 blaze_vfs = { path = "../blaze_vfs" }
+# InvocationPolicy (invocation_policy.rs); blaze_protos does not depend on blaze_options.
+blaze_protos = { path = "../blaze_protos" }
+prost.workspace = true
 indexmap.workspace = true
 regex.workspace = true
 pulldown-cmark.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
 blaze_protos = { path = "../blaze_protos" }
+prost.workspace = true
 regex.workspace = true
 indexmap.workspace = true

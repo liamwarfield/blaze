@@ -1,0 +1,5 @@
+EVAL element 2 not found in set
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_set_remove_missing.star", line 1, column 16, in <toplevel>
+TRACE \x09\x09set([1]).remove(2)
+TRACE Error in remove: element 2 not found in set

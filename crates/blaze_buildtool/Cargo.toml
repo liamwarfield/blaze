@@ -17,6 +17,7 @@ blaze_skyframe = { path = "../blaze_skyframe" }
 blaze_actions = { path = "../blaze_actions" }
 blaze_exec = { path = "../blaze_exec" }
 blaze_sky_exec = { path = "../blaze_sky_exec" }
+blaze_bep = { path = "../blaze_bep" }
 blaze_options = { path = "../blaze_options" }
 blaze_optdefs = { path = "../blaze_optdefs" }
 blaze_build_config = { path = "../blaze_build_config" }

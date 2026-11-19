@@ -1,0 +1,5 @@
+EVAL in call to splitlines(), parameter 'keepends' got value of type 'string', want 'bool'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_str_splitlines_type.star", line 1, column 15, in <toplevel>
+TRACE \x09\x09"a".splitlines("x")
+TRACE Error in splitlines: in call to splitlines(), parameter 'keepends' got value of type 'string', want 'bool'

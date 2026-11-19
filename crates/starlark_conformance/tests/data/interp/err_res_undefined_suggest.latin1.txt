@@ -1,0 +1,1 @@
+SYNTAX err_res_undefined_suggest.star:2:7: name 'foobaz' is not defined (did you mean 'foobar'?)

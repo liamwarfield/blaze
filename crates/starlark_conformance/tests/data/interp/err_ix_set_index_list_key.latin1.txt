@@ -1,0 +1,5 @@
+EVAL got string for list index, want int
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_ix_set_index_list_key.star", line 2, column 8, in <toplevel>
+TRACE \x09\x09l["a"] = 1
+TRACE Error: got string for list index, want int

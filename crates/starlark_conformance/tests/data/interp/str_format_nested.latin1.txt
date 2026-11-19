@@ -1,1 +1,5 @@
 EVAL Invalid character '[' inside replacement field
+TRACE Traceback (most recent call last):
+TRACE \x09File "str_format_nested.star", line 1, column 22, in <toplevel>
+TRACE \x09\x09print("{0[0]}".format([1]))
+TRACE Error in format: Invalid character '[' inside replacement field

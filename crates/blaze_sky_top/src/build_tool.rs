@@ -691,6 +691,15 @@ pub fn invalid_configuration_detailed_exit_code(
             })),
         });
     }
+    if let Some(name) = &e.wrapped_failure_code {
+        let (category, code) = match name.split_once('.') {
+            Some((category, code)) => (category, Some(code)),
+            None => (name.as_str(), None),
+        };
+        let util = blaze_util::DetailedExitCode::of_category_name(e.get_message(), category, code)
+            .unwrap_or_else(|| panic!("IllegalArgumentException: no FailureDetail code {name}"));
+        return DetailedExitCode::of(util.get_failure_detail().expect("a FailureDetail").clone());
+    }
     if let Some(toolchain_code) = e.code.strip_prefix("Toolchain.") {
         let code = failure_details::toolchain::Code::from_str_name(toolchain_code)
             .unwrap_or_else(|| panic!("IllegalArgumentException: Toolchain.Code {toolchain_code}"));

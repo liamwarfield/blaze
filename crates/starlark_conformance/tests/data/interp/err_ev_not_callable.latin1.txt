@@ -1,0 +1,5 @@
+EVAL 'int' object is not callable
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_ev_not_callable.star", line 1, column 1, in <toplevel>
+TRACE \x09\x09x = 1
+TRACE Error: 'int' object is not callable

@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Input discovery reading a remote-only input (review round 3, P2): oracle vs Blaze.
+#
+# usage: scripts/remote/discovery-probe <oracle|BLAZE-BINARY> <label> [extra options...]
+#        scripts/remote/discovery-probe help
+#
+# Workspace: ~/.cache/blaze/work/remote/r2-discovery/src (written by this script when missing),
+# the C++20 modules setup of Bazel's cc_integration_test.sh test_cpp20_modules_with_clang
+# (rules_cc 0.2.14, `package(features = ["cpp_modules"])`): //:base and //:foo are cc_library
+# targets with module_interfaces, //:main a cc_binary whose main.cc imports foo. With
+# --experimental_cpp_modules every compile reads its modmap input in
+# CppCompileAction.discoverInputs (computeUsedCpp20Modules), an output of the
+# CppAggregateDdi/CppGenerateModmap actions.
+#
+# Steps (run names r2-dp-<label>-<step>, each in a fresh output base, W = ~/.cache/blaze/work/remote):
+#   local    build //:main --experimental_cpp_modules --copt=-std=c++20 (no remote option): does
+#            the toolchain build C++20 modules at all on this machine?
+#   seed     only when `local` exited 0 and <W>/r2-dp-dc-seed does not exist: the oracle builds
+#            //:main with --disk_cache=<W>/r2-dp-dc-seed
+#   minimal  only when the seed exists: the binary builds //:main with --disk_cache=<copy of the
+#            seed> --remote_download_outputs=minimal (the modmap producers are cache hits whose
+#            outputs stay remote; discovery reads them through the action file system)
+# For each step: the `N processes:` line, the ERROR lines and the exit code.
+set -euo pipefail
+if [[ "${1:-help}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,24p' "$0"; exit 0; fi
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+W="$HOME/.cache/blaze/work/remote"
+src="$W/r2-discovery/src"
+bin=$1; label=$2; shift 2
+if [[ ! -f $src/BUILD.bazel ]]; then
+  mkdir -p "$src"
+  printf 'module(name = "r2_discovery_probe")\n\nbazel_dep(name = "rules_cc", version = "0.2.14")\n' \
+    > "$src/MODULE.bazel"
+  cat > "$src/BUILD.bazel" <<'EOF'
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+
+package(features = ["cpp_modules"])
+
+cc_library(
+    name = "base",
+    module_interfaces = ["base.cppm"],
+)
+
+cc_library(
+    name = "foo",
+    module_interfaces = ["foo.cppm"],
+    deps = [":base"],
+)
+
+cc_binary(
+    name = "main",
+    srcs = ["main.cc"],
+    deps = [":foo"],
+)
+EOF
+  printf 'export module base;\n\nexport int f_base() {\n  return 42;\n}\n' > "$src/base.cppm"
+  printf 'export module foo;\nimport base;\n\nexport int f_foo() {\n  return f_base();\n}\n' \
+    > "$src/foo.cppm"
+  printf 'import foo;\n\nint main() {\n  return f_foo() == 42 ? 0 : 1;\n}\n' > "$src/main.cc"
+fi
+flags=(--experimental_cpp_modules --copt=-std=c++20)
+
+report() { # <step dir>
+  grep -E "^INFO: [0-9]+ process|^ERROR|what\(\)" "$1/stderr" || true
+  echo "exit: $(cat "$1/exit")"
+}
+run() { # <run name> <binary> <options...>
+  local name=$1 b=$2; shift 2
+  local out
+  set +e
+  out=$("$here/ws-run" "$name" "$src" "$b" --fresh -- build "${flags[@]}" "$@" //:main)
+  set -e
+  sed -n 's/^step: //p' <<<"$out" | head -1
+}
+
+echo "== local ($bin)"
+step=$(run "r2-dp-$label-local" "$bin" "$@")
+report "$step"
+local_exit=$(cat "$step/exit")
+
+if [[ ! -d $W/r2-dp-dc-seed ]]; then
+  if [[ $bin == oracle && $local_exit == 0 ]]; then
+    echo "== seed (oracle)"
+    step=$(run r2-dp-seed oracle "--disk_cache=$W/r2-dp-dc-seed")
+    report "$step"
+  else
+    echo "== seed: none (the oracle seeds it once its local build exits 0)"
+    exit 0
+  fi
+fi
+rm -rf "$W/r2-dp-$label-dc"; cp -a "$W/r2-dp-dc-seed" "$W/r2-dp-$label-dc"
+echo "== minimal ($bin)"
+step=$(run "r2-dp-$label-minimal" "$bin" "--disk_cache=$W/r2-dp-$label-dc" \
+  --remote_download_outputs=minimal "$@")
+report "$step"

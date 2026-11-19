@@ -1,0 +1,5 @@
+EVAL in call to reversed(), parameter 'sequence' got value of type 'int', want 'iterable'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_reversed_type.star", line 1, column 9, in <toplevel>
+TRACE \x09\x09reversed(1)
+TRACE Error in reversed: in call to reversed(), parameter 'sequence' got value of type 'int', want 'iterable'

@@ -1660,3 +1660,725 @@ fn test_package_validation_failure_registered_after_loading() {}
 #[ignore = "needs a file system whose readdir fails for one directory and then recovers (Java \
             overrides InMemoryFileSystem.readdir); the harness runs on the real file system"]
 fn test_transient_errors_in_globbing() {}
+
+// ---- Symbolic macros (Java PackageFactoryTest, testSymbolicMacro_* and visibility unioning).
+//
+// PORT: Java's macros call the test-only native rule as `native.fake_cc_library`; here the
+// macro .bzl files load `fake_cc_library` from //fake_rules:defs.bzl and call it directly.
+
+const FAKE_CC_LIBRARY_BZL_LOAD: &str = "load('//fake_rules:defs.bzl', 'fake_cc_library')";
+
+/// Java `PackageFactoryTest.defineEmptyMacroBzl`.
+fn define_empty_macro_bzl(t: &PackageLoadingTestCase) {
+    t.scratch_file(
+        "pkg/my_macro.bzl",
+        &[
+            "def _impl(name, visibility):",
+            "    pass",
+            "my_macro = macro(implementation = _impl)",
+        ],
+    );
+}
+
+/// `expect_eval_error` with Java's text block (one line per element).
+fn expect_eval_error_lines(t: &PackageLoadingTestCase, expected_error: &str, content: &str) {
+    let lines: Vec<&str> = content.lines().collect();
+    expect_eval_error(t, expected_error, &lines);
+}
+
+fn expect_eval_success_lines(t: &PackageLoadingTestCase, content: &str) -> LoadedPackage {
+    let lines: Vec<&str> = content.lines().collect();
+    expect_eval_success(t, &lines)
+}
+
+fn scratch_text(t: &PackageLoadingTestCase, path: &str, content: &str) {
+    let lines: Vec<&str> = content.lines().collect();
+    t.scratch_file(path, &lines);
+}
+
+/// The BUILD prefix of a test that uses `fake_cc_library` at top level.
+fn with_fake_load(content: &str) -> String {
+    format!("{FAKE_CC_LIBRARY_LOAD}\n{content}")
+}
+
+// Java: PackageFactoryTest.testSymbolicMacro_duplicateMacroNamesDisallowed
+#[test]
+fn test_symbolic_macro_duplicate_macro_names_disallowed() {
+    // However, note that duplicates are allowed if one is a submacro of the other.
+    // See SymbolicMacroTest#submacroMayHaveSameNameAsAncestorMacros for coverage of that.
+    let t = new_test_case();
+    define_empty_macro_bzl(&t);
+    expect_eval_error_lines(
+        &t,
+        "macro 'foo' conflicts with an existing macro (and was not created by it)",
+        "load(\":my_macro.bzl\", \"my_macro\")\nmy_macro(name = \"foo\")\nmy_macro(name = \"foo\")",
+    );
+}
+
+// Java: PackageFactoryTest.testSymbolicMacro_macroAndRuleClash_macroDeclaredFirst
+#[test]
+fn test_symbolic_macro_macro_and_rule_clash_macro_declared_first() {
+    let t = new_test_case();
+    define_empty_macro_bzl(&t);
+    expect_eval_error_lines(
+        &t,
+        "target 'foo' conflicts with an existing macro (and was not created by it)",
+        &with_fake_load(
+            "load(\":my_macro.bzl\", \"my_macro\")\nmy_macro(name = \"foo\")\n\
+             fake_cc_library(name = \"foo\")",
+        ),
+    );
+}
+
+// Java: PackageFactoryTest.testSymbolicMacro_macroAndRuleClash_ruleDeclaredFirst
+#[test]
+fn test_symbolic_macro_macro_and_rule_clash_rule_declared_first() {
+    let t = new_test_case();
+    define_empty_macro_bzl(&t);
+    expect_eval_error_lines(
+        &t,
+        "macro 'foo' conflicts with an existing target",
+        &with_fake_load(
+            "load(\":my_macro.bzl\", \"my_macro\")\nfake_cc_library(name = \"foo\")\n\
+             my_macro(name = \"foo\")",
+        ),
+    );
+}
+
+// Java: PackageFactoryTest.testSymbolicMacro_macroAndOutputClash_macroDeclaredFirst
+#[test]
+fn test_symbolic_macro_macro_and_output_clash_macro_declared_first() {
+    let t = new_test_case();
+    define_empty_macro_bzl(&t);
+    expect_eval_error_lines(
+        &t,
+        "target 'foo' conflicts with an existing macro (and was not created by it)",
+        "load(\":my_macro.bzl\", \"my_macro\")\nmy_macro(name = \"foo\")\n\
+         genrule(name = \"gen\", outs = [\"foo\"], cmd = \"\")",
+    );
+}
+
+// Java: PackageFactoryTest.testSymbolicMacro_macroAndOutputClash_outputDeclaredFirst
+#[test]
+fn test_symbolic_macro_macro_and_output_clash_output_declared_first() {
+    let t = new_test_case();
+    define_empty_macro_bzl(&t);
+    expect_eval_error_lines(
+        &t,
+        "macro 'foo' conflicts with an existing target",
+        "load(\":my_macro.bzl\", \"my_macro\")\n\
+         genrule(name = \"gen\", outs = [\"foo\"], cmd = \"\")\nmy_macro(name = \"foo\")",
+    );
+}
+
+// Java: PackageFactoryTest.testSymbolicMacro_macroMayCollideWithPrefixOfOutput
+#[test]
+fn test_symbolic_macro_macro_may_collide_with_prefix_of_output() {
+    // TODO(#19922): Currently we only prevent output file prefixes from colliding with other
+    // output files, and don't check if they collide with other types of targets.
+    let t = new_test_case();
+    define_empty_macro_bzl(&t);
+    expect_eval_success_lines(
+        &t,
+        "load(\":my_macro.bzl\", \"my_macro\")\nmy_macro(name = \"foo\")\n\
+         genrule(name = \"gen\", outs = [\"foo/bar\"], cmd = \"\")",
+    );
+}
+
+// Java: PackageFactoryTest.testSymbolicMacro_macroAndEnvironmentGroupClash_macroDeclaredFirst
+#[test]
+fn test_symbolic_macro_macro_and_environment_group_clash_macro_declared_first() {
+    let t = new_test_case();
+    define_empty_macro_bzl(&t);
+    expect_eval_error_lines(
+        &t,
+        "target 'foo' conflicts with an existing macro (and was not created by it)",
+        "load(\":my_macro.bzl\", \"my_macro\")\nmy_macro(name = \"foo\")\n\
+         environment(name = \"env\")\n\
+         environment_group(name=\"foo\", environments = [\":env\"], defaults = [\":env\"])",
+    );
+}
+
+// Java: PackageFactoryTest.testSymbolicMacro_macroAndEnvironmentGroupClash_environmentGroupDeclaredFirst
+#[test]
+fn test_symbolic_macro_macro_and_environment_group_clash_environment_group_declared_first() {
+    let t = new_test_case();
+    define_empty_macro_bzl(&t);
+    expect_eval_error_lines(
+        &t,
+        "macro 'foo' conflicts with an existing target",
+        "load(\":my_macro.bzl\", \"my_macro\")\nenvironment(name = \"env\")\n\
+         environment_group(name=\"foo\", environments = [\":env\"], defaults = [\":env\"])\n\
+         my_macro(name = \"foo\")",
+    );
+}
+
+// Java: PackageFactoryTest.testSymbolicMacro_macroAndPackageGroupClash_macroDeclaredFirst
+#[test]
+fn test_symbolic_macro_macro_and_package_group_clash_macro_declared_first() {
+    let t = new_test_case();
+    define_empty_macro_bzl(&t);
+    expect_eval_error_lines(
+        &t,
+        "target 'foo' conflicts with an existing macro (and was not created by it)",
+        "load(\":my_macro.bzl\", \"my_macro\")\nmy_macro(name = \"foo\")\n\
+         package_group(name = \"foo\")",
+    );
+}
+
+// Java: PackageFactoryTest.testSymbolicMacro_macroAndPackageGroupClash_packageGroupDeclaredFirst
+#[test]
+fn test_symbolic_macro_macro_and_package_group_clash_package_group_declared_first() {
+    let t = new_test_case();
+    define_empty_macro_bzl(&t);
+    expect_eval_error_lines(
+        &t,
+        "macro 'foo' conflicts with an existing target",
+        "load(\":my_macro.bzl\", \"my_macro\")\npackage_group(name = \"foo\")\n\
+         my_macro(name = \"foo\")",
+    );
+}
+
+// Java: PackageFactoryTest.testSymbolicMacro_macroAndInputClash_macroDeclaredFirst
+#[test]
+fn test_symbolic_macro_macro_and_input_clash_macro_declared_first() {
+    let t = new_test_case();
+    define_empty_macro_bzl(&t);
+    expect_eval_error_lines(
+        &t,
+        "target 'foo' conflicts with an existing macro (and was not created by it)",
+        "load(\":my_macro.bzl\", \"my_macro\")\nmy_macro(name = \"foo\")\n\
+         exports_files([\"foo\"])",
+    );
+}
+
+// Java: PackageFactoryTest.testSymbolicMacro_macroAndInputClash_inputDeclaredFirst
+#[test]
+fn test_symbolic_macro_macro_and_input_clash_input_declared_first() {
+    let t = new_test_case();
+    define_empty_macro_bzl(&t);
+    expect_eval_error_lines(
+        &t,
+        "macro 'foo' conflicts with an existing target",
+        "load(\":my_macro.bzl\", \"my_macro\")\nexports_files([\"foo\"])\n\
+         my_macro(name = \"foo\")",
+    );
+}
+
+// Java: PackageFactoryTest.testSymbolicMacro_implicitlyCreatedInput_isCreatedEvenInsideMacroNamespace
+#[test]
+fn test_symbolic_macro_implicitly_created_input_is_created_even_inside_macro_namespace() {
+    let t = new_test_case();
+    define_empty_macro_bzl(&t);
+    scratch_text(
+        &t,
+        "pkg/BUILD",
+        &with_fake_load(
+            "load(\":my_macro.bzl\", \"my_macro\")\nmy_macro(name = \"foo\")\n\
+             fake_cc_library(\n    name = \"toplevel_target\",\n    srcs = [\"foo_implicit\"],\n)",
+        ),
+    );
+    let pkg = t.get_package_without_errors("pkg");
+    assert!(matches!(
+        pkg.target("foo_implicit"),
+        blaze_packages::target::Target::InputFile(_)
+    ));
+}
+
+// Java: PackageFactoryTest.testSymbolicMacro_implicitlyCreatedInput_isNotCreatedIfMacroDeclaresTarget
+#[test]
+fn test_symbolic_macro_implicitly_created_input_is_not_created_if_macro_declares_target() {
+    let t = new_test_case();
+    scratch_text(
+        &t,
+        "pkg/my_macro.bzl",
+        &format!(
+            "{FAKE_CC_LIBRARY_BZL_LOAD}\ndef _impl(name, visibility):\n\
+             \x20   fake_cc_library(name = name + \"_declared_target\")\n\
+             \x20   fake_cc_library(name = \"illegally_named_target\")\n\
+             my_macro = macro(implementation = _impl)"
+        ),
+    );
+    scratch_text(
+        &t,
+        "pkg/BUILD",
+        &with_fake_load(
+            "load(\":my_macro.bzl\", \"my_macro\")\nmy_macro(name = \"foo\")\n\
+             fake_cc_library(\n    name = \"toplevel_target\",\n    srcs = [\n\
+             \x20       \"foo_declared_target\",\n        \"illegally_named_target\",\n    ],\n)",
+        ),
+    );
+    let pkg = t.get_package_without_errors("pkg");
+    assert!(matches!(
+        pkg.target("foo_declared_target"),
+        blaze_packages::target::Target::Rule(_)
+    ));
+    // This target doesn't lie within the macro's namespace and so can't be analyzed, but it
+    // still exists and prevents input file creation.
+    assert!(matches!(
+        pkg.target("illegally_named_target"),
+        blaze_packages::target::Target::Rule(_)
+    ));
+}
+
+// Java: PackageFactoryTest.testSymbolicMacro_implicitlyCreatedInput_isNotCreatedIfMacroNameMatchesExactly
+#[test]
+fn test_symbolic_macro_implicitly_created_input_is_not_created_if_macro_name_matches_exactly() {
+    let t = new_test_case();
+    define_empty_macro_bzl(&t);
+    scratch_text(
+        &t,
+        "pkg/BUILD",
+        &with_fake_load(
+            "load(\":my_macro.bzl\", \"my_macro\")\nmy_macro(name = \"foo\")\n\
+             fake_cc_library(\n    name = \"toplevel_target\",\n    srcs = [\"foo\"],\n)",
+        ),
+    );
+    let pkg = t.get_package_without_errors("pkg");
+    assert!(!pkg.package.get_targets().contains_key("foo"));
+}
+
+// Java: PackageFactoryTest.testSymbolicMacro_implicitlyCreatedInput_isCreatedByUsageInMacroAttr
+#[test]
+fn test_symbolic_macro_implicitly_created_input_is_created_by_usage_in_macro_attr() {
+    // A usage in a macro, provided it is top-level, is sufficient to cause an input file to be
+    // implicitly created, even if that input file is not also referred to by any actual targets.
+    let t = new_test_case();
+    scratch_text(
+        &t,
+        "pkg/my_macro.bzl",
+        "def _impl(name, visibility, src):\n    pass\nmy_macro = macro(\n\
+         \x20   implementation = _impl,\n    attrs = {\"src\": attr.label()},\n)",
+    );
+    scratch_text(
+        &t,
+        "pkg/BUILD",
+        "load(\":my_macro.bzl\", \"my_macro\")\nmy_macro(\n    name = \"foo\",\n\
+         \x20   src = \"//pkg:input\",\n)",
+    );
+    let pkg = t.get_package_without_errors("pkg");
+    assert!(matches!(
+        pkg.target("input"),
+        blaze_packages::target::Target::InputFile(_)
+    ));
+}
+
+// Java: PackageFactoryTest.testSymbolicMacro_implicitlyCreatedInput_isNotCreatedByUsageInMacroBody
+#[test]
+fn test_symbolic_macro_implicitly_created_input_is_not_created_by_usage_in_macro_body() {
+    // A usage in the body of a macro (whether the declaration is for a target or submacro),
+    // does not by itself cause an input file to be implicitly created.
+    let t = new_test_case();
+    scratch_text(
+        &t,
+        "pkg/my_macro.bzl",
+        &format!(
+            "{FAKE_CC_LIBRARY_BZL_LOAD}\ndef _sub_impl(name, visibility):\n\
+             \x20   fake_cc_library(\n        name = name,\n        srcs = [\"//pkg:input\"],\n    )\n\
+             my_submacro = macro(implementation = _sub_impl)\n\n\
+             def _impl(name, visibility):\n\
+             \x20   fake_cc_library(\n        name = name,\n        srcs = [\"//pkg:input\"],\n    )\n\
+             \x20   my_submacro(name = name + \"_submacro\")\n\
+             my_macro = macro(implementation = _impl)"
+        ),
+    );
+    scratch_text(
+        &t,
+        "pkg/BUILD",
+        "load(\":my_macro.bzl\", \"my_macro\")\nmy_macro(name = \"foo\")",
+    );
+    let pkg = t.get_package_without_errors("pkg");
+    assert!(!pkg.package.get_targets().contains_key("input"));
+}
+
+// Java: PackageFactoryTest.testSymbolicMacro_deferredEvaluationExpandsTransitively
+#[test]
+fn test_symbolic_macro_deferred_evaluation_expands_transitively() {
+    let t = new_test_case();
+    scratch_text(
+        &t,
+        "pkg/my_macro.bzl",
+        &format!(
+            "{FAKE_CC_LIBRARY_BZL_LOAD}\ndef _inner_impl(name, visibility):\n\
+             \x20   fake_cc_library(name = name)\n\
+             inner_macro = macro(implementation=_inner_impl, finalizer = True)\n\n\
+             def _middle_impl(name, visibility):\n    inner_macro(name = name)\n\
+             middle_macro = macro(implementation=_middle_impl, finalizer = True)\n\n\
+             def _outer_impl(name, visibility):\n    middle_macro(name = name)\n\
+             outer_macro = macro(implementation=_outer_impl, finalizer = True)"
+        ),
+    );
+    scratch_text(
+        &t,
+        "pkg/BUILD",
+        "load(\":my_macro.bzl\", \"outer_macro\")\nouter_macro(name = \"abc\")",
+    );
+    let pkg = t.get_package_without_errors("pkg");
+    assert!(pkg.package.get_targets().contains_key("abc"));
+    let ids: Vec<&String> = pkg.package.get_macros_by_id().keys().collect();
+    assert_eq!(ids, vec!["abc:1", "abc:2", "abc:3"]);
+}
+
+/// Java `PackageFactoryTest.defineRecursiveMacro`.
+fn define_recursive_macro(t: &PackageLoadingTestCase, deferred_evaluation: bool) {
+    scratch_text(
+        t,
+        "pkg/recursive_macro.bzl",
+        &format!(
+            "{FAKE_CC_LIBRARY_BZL_LOAD}\ndef _impl(name, visibility, height):\n\
+             \x20   if height == 0:\n        fake_cc_library(name = name)\n    else:\n\
+             \x20       recursive_macro(\n            name = name + \"_x\",\n\
+             \x20           height = height - 1,\n        )\n\n\
+             recursive_macro = macro(\n    implementation = _impl,\n    attrs = {{\n\
+             \x20       \"height\": attr.int(configurable=False),\n    }},\n\
+             \x20   finalizer = {},\n)",
+            if deferred_evaluation { "True" } else { "False" }
+        ),
+    );
+}
+
+const RECURSIVE_MACRO_ERROR: &str = "macro 'abc_x' is a direct recursive call of 'abc'. Macro \
+     instantiation traceback (most recent call last):\n\
+     \tPackage //pkg, macro 'abc' of type //pkg:recursive_macro.bzl%recursive_macro\n\
+     \tPackage //pkg, macro 'abc_x' of type //pkg:recursive_macro.bzl%recursive_macro";
+
+// Java: PackageFactoryTest.testSymbolicMacro_recursionProhibitedWithEagerEvaluation
+#[test]
+fn test_symbolic_macro_recursion_prohibited_with_eager_evaluation() {
+    let t = new_test_case();
+    define_recursive_macro(&t, /* deferred_evaluation= */ false);
+    expect_eval_error_lines(
+        &t,
+        RECURSIVE_MACRO_ERROR,
+        "load(\":recursive_macro.bzl\", \"recursive_macro\")\nrecursive_macro(\n\
+         \x20   name = \"abc\",\n    height = 3,\n)",
+    );
+}
+
+// Java: PackageFactoryTest.testSymbolicMacro_recursionProhibitedWithDeferredEvaluation
+#[test]
+fn test_symbolic_macro_recursion_prohibited_with_deferred_evaluation() {
+    let t = new_test_case();
+    define_recursive_macro(&t, /* deferred_evaluation= */ true);
+    expect_eval_error_lines(
+        &t,
+        RECURSIVE_MACRO_ERROR,
+        "load(\":recursive_macro.bzl\", \"recursive_macro\")\nrecursive_macro(\n\
+         \x20   name = \"abc\",\n    height = 3,\n)",
+    );
+}
+
+// Java: PackageFactoryTest.testSymbolicMacro_indirectRecursionAlsoProhibited
+#[test]
+fn test_symbolic_macro_indirect_recursion_also_prohibited() {
+    // Define a pair of macros where A calls B calls A (and then would stop, if allowed to get
+    // that far). Wrap it in a different entry point to test that the non-cyclic part is included
+    // in the traceback.
+    let t = new_test_case();
+    scratch_text(
+        &t,
+        "pkg/recursive_macro.bzl",
+        &format!(
+            "{FAKE_CC_LIBRARY_BZL_LOAD}\ndef _A_impl(name, visibility, stop):\n    if stop:\n\
+             \x20       fake_cc_library(name = name)\n    else:\n\
+             \x20       macro_B(name = name + \"_B\")\n\n\
+             macro_A = macro(\n    implementation = _A_impl,\n    attrs = {{\n\
+             \x20       \"stop\": attr.bool(default=False, configurable=False),\n    }},\n)\n\n\
+             def _B_impl(name, visibility):\n    macro_A(\n        name = name + \"_A\",\n\
+             \x20       stop = True,\n    )\n\n\
+             macro_B = macro(implementation = _B_impl)\n\n\
+             def _main_impl(name, visibility):\n    macro_A(name = name)\n\n\
+             main_macro = macro(implementation = _main_impl)"
+        ),
+    );
+    expect_eval_error_lines(
+        &t,
+        "macro 'abc_B_A' is an indirect recursive call of 'abc'. Macro instantiation traceback \
+         (most recent call last):\n\
+         \tPackage //pkg, macro 'abc' of type //pkg:recursive_macro.bzl%main_macro\n\
+         \tPackage //pkg, macro 'abc' of type //pkg:recursive_macro.bzl%macro_A\n\
+         \tPackage //pkg, macro 'abc_B' of type //pkg:recursive_macro.bzl%macro_B\n\
+         \tPackage //pkg, macro 'abc_B_A' of type //pkg:recursive_macro.bzl%macro_A",
+        "load(\":recursive_macro.bzl\", \"main_macro\")\nmain_macro(name = \"abc\")",
+    );
+}
+
+/// Java `PackageFactoryTest.assertVisibilityIs`: the target's actual visibility contains exactly
+/// the given labels.
+fn assert_visibility_is(pkg: &LoadedPackage, target: &str, visibility_labels: &[&str]) {
+    let mut actual: Vec<String> = pkg
+        .target(target)
+        .get_actual_visibility()
+        .get_declared_labels()
+        .iter()
+        .map(|l| l.get_canonical_form())
+        .collect();
+    let mut expected: Vec<String> = visibility_labels
+        .iter()
+        .map(|l| {
+            blaze_cmdline::Label::parse_canonical_unchecked(l).get_canonical_form()
+        })
+        .collect();
+    actual.sort();
+    expected.sort();
+    assert_eq!(actual, expected, "visibility of {target}");
+}
+
+/// Java `PackageFactoryTest.enableMacrosAndUsePrivateVisibility`: the test case with
+/// `--default_visibility=private` (the harness default) and `//fake_rules:defs.bzl`.
+fn new_private_visibility_test_case() -> PackageLoadingTestCase {
+    let t = new_test_case();
+    let mut t = t;
+    t.set_package_options(|o| {
+        o.default_visibility = blaze_optdefs::command::rule_visibility::RuleVisibility::PRIVATE;
+    });
+    t
+}
+
+fn lib_macro_bzl(t: &PackageLoadingTestCase, path: &str, body: &str) {
+    scratch_text(t, path, &format!("{FAKE_CC_LIBRARY_BZL_LOAD}\n{body}"));
+}
+
+// Java: PackageFactoryTest.testDeclarationVisibilityUnioning_occursBothInsideAndOutsideMacros
+#[test]
+fn test_declaration_visibility_unioning_occurs_both_inside_and_outside_macros() {
+    let t = new_private_visibility_test_case();
+    t.scratch_file("lib/BUILD", &[]);
+    lib_macro_bzl(
+        &t,
+        "lib/macro.bzl",
+        "def _impl(name, visibility):\n    fake_cc_library(\n        name = name,\n\
+         \x20       visibility = [\"//other_pkg:__pkg__\"],\n    )\n\
+         my_macro = macro(implementation = _impl)",
+    );
+    scratch_text(
+        &t,
+        "pkg/BUILD",
+        &with_fake_load(
+            "load(\"//lib:macro.bzl\", \"my_macro\")\n\nfake_cc_library(\n    name = \"foo\",\n\
+             \x20   visibility = [\"//other_pkg:__pkg__\"],\n)\nmy_macro(name = \"bar\")",
+        ),
+    );
+    let pkg = t.get_package_without_errors("pkg");
+    assert_visibility_is(&pkg, "foo", &["//other_pkg:__pkg__", "//pkg:__pkg__"]);
+    assert_visibility_is(&pkg, "bar", &["//other_pkg:__pkg__", "//lib:__pkg__"]);
+}
+
+// Java: PackageFactoryTest.testDeclarationVisibilityUnioning_usesInnermostMacroLocation
+#[test]
+fn test_declaration_visibility_unioning_uses_innermost_macro_location() {
+    let t = new_private_visibility_test_case();
+    t.scratch_file("inner/BUILD", &[]);
+    lib_macro_bzl(
+        &t,
+        "inner/macro.bzl",
+        "def _impl(name, visibility):\n    fake_cc_library(\n        name = name,\n\
+         \x20       visibility = [\"//other_pkg:__pkg__\"],\n    )\n\
+         inner_macro = macro(implementation = _impl)",
+    );
+    t.scratch_file("outer/BUILD", &[]);
+    scratch_text(
+        &t,
+        "outer/macro.bzl",
+        "load(\"//inner:macro.bzl\", \"inner_macro\")\ndef _impl(name, visibility):\n\
+         \x20   inner_macro(name = name)\nouter_macro = macro(implementation = _impl)",
+    );
+    scratch_text(
+        &t,
+        "pkg/BUILD",
+        "load(\"//outer:macro.bzl\", \"outer_macro\")\n\nouter_macro(name = \"foo\")",
+    );
+    let pkg = t.get_package_without_errors("pkg");
+    assert_visibility_is(&pkg, "foo", &["//other_pkg:__pkg__", "//inner:__pkg__"]);
+}
+
+// Java: PackageFactoryTest.testDeclarationVisibilityUnioning_doesNotApplyPackageDefaultVisibility
+#[test]
+fn test_declaration_visibility_unioning_does_not_apply_package_default_visibility() {
+    let t = new_private_visibility_test_case();
+    t.scratch_file("lib/BUILD", &[]);
+    lib_macro_bzl(
+        &t,
+        "lib/macro.bzl",
+        "def _impl(name, visibility):\n    fake_cc_library(name = name)\n\
+         my_macro = macro(implementation = _impl)",
+    );
+    scratch_text(
+        &t,
+        "pkg/BUILD",
+        &with_fake_load(
+            "load(\"//lib:macro.bzl\", \"my_macro\")\n\
+             package(default_visibility = [\"//other_pkg:__pkg__\"])\n\n\
+             fake_cc_library(name = \"foo\")\nmy_macro(name = \"bar\")",
+        ),
+    );
+    let pkg = t.get_package_without_errors("pkg");
+    assert_visibility_is(&pkg, "foo", &["//other_pkg:__pkg__", "//pkg:__pkg__"]);
+    // other_pkg doesn't propagate to bar, it only has its own instantiation location.
+    assert_visibility_is(&pkg, "bar", &["//lib:__pkg__"]);
+}
+
+// Java: PackageFactoryTest.testImplicitVisibility_worksWithPackageDefaultVisibility
+#[test]
+fn test_implicit_visibility_works_with_package_default_visibility() {
+    let t = new_private_visibility_test_case();
+    t.scratch_file("lib/BUILD", &[]);
+    lib_macro_bzl(
+        &t,
+        "lib/macro.bzl",
+        "def _impl(name, visibility):\n\
+         \x20   fake_cc_library(name = name, visibility = native.package_default_visibility())\n\
+         my_macro = macro(implementation = _impl)",
+    );
+    scratch_text(
+        &t,
+        "pkg/BUILD",
+        &with_fake_load(
+            "load(\"//lib:macro.bzl\", \"my_macro\")\n\
+             package(default_visibility = [\"//other_pkg:__pkg__\"])\n\n\
+             fake_cc_library(name = \"foo\")\nmy_macro(name = \"bar\")",
+        ),
+    );
+    let pkg = t.get_package_without_errors("pkg");
+    assert_visibility_is(&pkg, "foo", &["//other_pkg:__pkg__", "//pkg:__pkg__"]);
+    // Package default visibility is propagated to bar via native.package_default_visibility()
+    // Visibility to the package where the macro is defined is propagated implicitly.
+    assert_visibility_is(
+        &pkg,
+        "bar",
+        &["//lib:__pkg__", "//other_pkg:__pkg__", "//pkg:__pkg__"],
+    );
+}
+
+// Java: PackageFactoryTest.testPackageDefaultVisibility_playsWellWithPrivateVisibility
+#[test]
+fn test_package_default_visibility_plays_well_with_private_visibility() {
+    let t = new_private_visibility_test_case();
+    t.scratch_file("lib/BUILD", &[]);
+    lib_macro_bzl(
+        &t,
+        "lib/macro.bzl",
+        "def _impl(name, visibility):\n\
+         \x20   fake_cc_library(name = name, visibility = native.package_default_visibility())\n\
+         my_macro = macro(implementation = _impl)",
+    );
+    scratch_text(
+        &t,
+        "pkg/BUILD",
+        "load(\"//lib:macro.bzl\", \"my_macro\")\n\
+         package(default_visibility = [\"//visibility:private\"])\n\nmy_macro(name = \"bar\")",
+    );
+    let pkg = t.get_package_without_errors("pkg");
+    assert_visibility_is(&pkg, "bar", &["//lib:__pkg__", "//pkg:__pkg__"]);
+}
+
+// Java: PackageFactoryTest.testPackageDefaultVisibility_succeedsIfNoDefaultVisibilitySet
+#[test]
+fn test_package_default_visibility_succeeds_if_no_default_visibility_set() {
+    let t = new_private_visibility_test_case();
+    t.scratch_file("lib/BUILD", &[]);
+    lib_macro_bzl(
+        &t,
+        "lib/macro.bzl",
+        "def _impl(name, visibility):\n\
+         \x20   fake_cc_library(name = name, visibility = native.package_default_visibility())\n\
+         my_macro = macro(implementation = _impl)",
+    );
+    scratch_text(
+        &t,
+        "pkg/BUILD",
+        "load(\"//lib:macro.bzl\", \"my_macro\")\n\nmy_macro(name = \"bar\")",
+    );
+    let pkg = t.get_package_without_errors("pkg");
+    assert_visibility_is(&pkg, "bar", &["//lib:__pkg__", "//pkg:__pkg__"]);
+}
+
+// Java: PackageFactoryTest.testDeclarationVisibilityUnioning_worksWithPublicPrivateAndDuplicateVisibilities
+#[test]
+fn test_declaration_visibility_unioning_works_with_public_private_and_duplicate_visibilities() {
+    let t = new_private_visibility_test_case();
+    t.scratch_file("lib/BUILD", &[]);
+    lib_macro_bzl(
+        &t,
+        "lib/macro.bzl",
+        "def _impl(name, visibility):\n    fake_cc_library(\n        name = name + \"_public\",\n\
+         \x20       visibility = [\"//visibility:public\"],\n    )\n\
+         \x20   fake_cc_library(\n        name = name + \"_private\",\n\
+         \x20       visibility = [\"//visibility:private\"],\n    )\n\
+         \x20   fake_cc_library(\n        name = name + \"_selfvisible\",\n\
+         \x20       visibility = [\"//lib:__pkg__\"],\n    )\n\
+         my_macro = macro(implementation = _impl)",
+    );
+    scratch_text(
+        &t,
+        "pkg/BUILD",
+        "load(\"//lib:macro.bzl\", \"my_macro\")\n\nmy_macro(name = \"foo\")",
+    );
+    let pkg = t.get_package_without_errors("pkg");
+    assert_visibility_is(&pkg, "foo_public", &["//visibility:public"]);
+    assert_visibility_is(&pkg, "foo_private", &["//lib:__pkg__"]);
+    // The visibility concatenation operation does not add any label that would duplicate an
+    // existing one.
+    assert_visibility_is(&pkg, "foo_selfvisible", &["//lib:__pkg__"]);
+}
+
+// Java: PackageFactoryTest.testDeclarationVisibilityUnioning_appliesToExportsFiles
+#[test]
+fn test_declaration_visibility_unioning_applies_to_exports_files() {
+    let t = new_private_visibility_test_case();
+    t.scratch_file("lib/BUILD", &[]);
+    scratch_text(
+        &t,
+        "lib/macro.bzl",
+        "def _impl(name, visibility):\n    native.exports_files([name + \"_exported\"])\n\
+         \x20   native.exports_files([name + \"_internal\"], visibility = [\"//visibility:private\"])\n\
+         my_macro = macro(implementation = _impl)",
+    );
+    scratch_text(
+        &t,
+        "pkg/BUILD",
+        "load(\"//lib:macro.bzl\", \"my_macro\")\n\nmy_macro(name = \"foo\")",
+    );
+    let pkg = t.get_package_without_errors("pkg");
+    assert_visibility_is(&pkg, "foo_exported", &["//visibility:public"]);
+    assert_visibility_is(&pkg, "foo_internal", &["//lib:__pkg__"]);
+}
+
+// Java: PackageFactoryTest.testDeclarationVisibilityUnioning_hasNoEffectOnPackageGroups
+#[test]
+fn test_declaration_visibility_unioning_has_no_effect_on_package_groups() {
+    let t = new_private_visibility_test_case();
+    t.scratch_file("lib/BUILD", &[]);
+    scratch_text(
+        &t,
+        "lib/macro.bzl",
+        "def _impl(name, visibility):\n    native.package_group(name = name)\n\
+         my_macro = macro(implementation = _impl)",
+    );
+    scratch_text(
+        &t,
+        "pkg/BUILD",
+        "load(\"//lib:macro.bzl\", \"my_macro\")\n\nmy_macro(name = \"foo\")",
+    );
+    let pkg = t.get_package_without_errors("pkg");
+    assert_visibility_is(&pkg, "foo", &["//visibility:public"]);
+}
+
+// Java: PackageFactoryTest.testDeclarationVisibilityUnioning_failsGracefullyOnInvalidVisibility
+#[test]
+fn test_declaration_visibility_unioning_fails_gracefully_on_invalid_visibility() {
+    let t = new_private_visibility_test_case();
+    t.scratch_file("lib/BUILD", &[]);
+    lib_macro_bzl(
+        &t,
+        "lib/macro.bzl",
+        "def _impl(name, visibility):\n    fake_cc_library(\n        name = name,\n\
+         \x20       visibility = [\"//visibility:not_a_valid_specifier\"],\n    )\n\
+         my_macro = macro(implementation = _impl)",
+    );
+    expect_eval_error_lines(
+        &t,
+        "//pkg:foo Invalid visibility label '//visibility:not_a_valid_specifier'",
+        "load(\"//lib:macro.bzl\", \"my_macro\")\n\nmy_macro(name = \"foo\")",
+    );
+}

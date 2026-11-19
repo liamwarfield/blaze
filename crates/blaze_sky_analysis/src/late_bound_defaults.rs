@@ -8,6 +8,7 @@
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_build_config::build_options::StarlarkOptionValue;
 use blaze_build_config::fragment::Fragment;
+use blaze_build_config::fragments::android_configuration::AndroidConfiguration;
 use blaze_build_config::fragments::apple_configuration::AppleConfiguration;
 use blaze_build_config::fragments::bazel_python_configuration::BazelPythonConfiguration;
 use blaze_build_config::fragments::coverage_configuration::CoverageConfiguration;
@@ -276,6 +277,20 @@ fn resolve_configuration_field(
                 "proto_toolchain_for_cc" => label(proto.proto_toolchain_for_cc()),
                 other => {
                     blaze_util::unported!("ProtoConfiguration configuration field", "{}", other)
+                }
+            }
+        }
+        ("android", _) => {
+            let android = input.fragment::<AndroidConfiguration>();
+            match field_name {
+                // Java: com/google/devtools/build/lib/rules/android/AndroidConfiguration.java:1390 AndroidConfiguration.getLegacyMainDexListGenerator
+                "legacy_main_dex_list_generator" => {
+                    label(android.get_legacy_main_dex_list_generator())
+                }
+                // Java: com/google/devtools/build/lib/rules/android/AndroidConfiguration.java:1399 AndroidConfiguration.getOptimizingDexer
+                "optimizing_dexer" => label(android.get_optimizing_dexer()),
+                other => {
+                    blaze_util::unported!("AndroidConfiguration configuration field", "{}", other)
                 }
             }
         }

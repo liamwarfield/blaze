@@ -97,11 +97,9 @@ impl FileWatcher {
         })();
         if let Err(ex) = result {
             // output.printOutLn("Failure reading or writing: " + ex.getMessage())
-            let _ = output.write_all(
-                &blaze_util::string_encoding::latin1_encode_lossy(&format!(
-                    "Failure reading or writing: {ex}\n"
-                )),
-            );
+            let _ = output.write_all(&blaze_util::string_encoding::latin1_encode_lossy(&format!(
+                "Failure reading or writing: {ex}\n"
+            )));
             let _ = output.flush();
         }
     }

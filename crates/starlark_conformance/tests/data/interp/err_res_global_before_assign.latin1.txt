@@ -1,0 +1,7 @@
+EVAL global variable 'y' is referenced before assignment.
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_res_global_before_assign.star", line 3, column 8, in <toplevel>
+TRACE \x09\x09print(f())
+TRACE \x09File "err_res_global_before_assign.star", line 2, column 10, in f
+TRACE \x09\x09return y
+TRACE Error: global variable 'y' is referenced before assignment.

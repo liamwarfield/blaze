@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+# SIGPIPE probe (review 2026-11-19 round 3, P1): runs one scenario up to N times with the oracle
+# or with Blaze and tabulates the exit status recorded inside the unit (scripts/remote/ws-run,
+# scripts/remote/unit-supervisor: a death by signal N is 128+N, its name in <step>/signal).
+#
+# usage: scripts/remote/sigpipe-probe <oracle|BINARY> <tag> <scenario> [--runs N] [--load K]
+#                                     [--stop-on-signal] [--port-base P] [--fin-delay S]
+#        scripts/remote/sigpipe-probe help
+#
+# Probe workspace ~/.cache/blaze/work/remote/r1-sp-src (created here when missing): //:a (one
+# genrule), //:big (a genrule writing 32 MiB of random bytes, so its upload to a remote cache
+# takes many writes) and //many:all (5000 genrules, so `query //...` prints more than a pipe
+# buffer). Run directories: ~/.cache/blaze/work/remote/sp-<tag>-<scenario>/run1..runN (the first
+# run of a call uses --fresh). Servers (started here on 127.0.0.1 or localhost, stopped at the
+# end); ports P..P+3, default P=9800:
+#   P    Bazel's worker sp-<tag>-tls with --tls_certificate/--tls_private_key/--tls_ca_certificate
+#        (requires a client certificate; certificates of scripts/remote/tls-probe)
+#   P+1  python http.server on 127.0.0.1 (answers HTTP/1, not gRPC)
+#   P+2  Bazel's worker sp-<tag>-plain (a plain remote cache)
+#   P+3  scripts/remote/reset-peer in front of P+2 (FIN, then RST --fin-delay S seconds later
+#        (default 0), after 1 MiB sent upstream on the first connection of each run; log:
+#        <step>/reset-peer.log)
+#
+# Scenarios:
+#   mtls-noclient      build //:a --remote_cache=grpcs://localhost:P --tls_certificate=ca.crt
+#                      (no client certificate: the server sends an alert after the client's
+#                      Finished and closes); expected 34
+#   http-cache         build //:a --remote_cache=grpc://127.0.0.1:P+1; expected 34
+#   reset-peer         build //:big --remote_cache=grpc://127.0.0.1:P+3 --remote_local_fallback
+#                      --incompatible_remote_local_fallback_for_remote_cache
+#                      --action_env=SP_RUN=<run> (a new action each run, so its outputs upload);
+#                      expected 0
+#   pipe-build-both    `build //:a 2>&1 | head -1`
+#   pipe-build-stdout  `build //:a | head -1` (stderr to the step's stderr file)
+#   pipe-info-stdout   `info | head -1`
+#   pipe-query-stdout  `query //... | head -1`
+#   pipe-query-stderr  `query //... 2>&1 >/dev/null | head -1`
+# The pipe scenarios run the binary through a generated bash wrapper inside the unit, which
+# exits with ${PIPESTATUS[0]} (141 = the binary was killed by SIGPIPE, bash's convention); the
+# wrapper is ~/.cache/blaze/work/remote/sp-<tag>-<scenario>/wrapper.
+#
+#   --runs N           at most N runs (default 1)
+#   --stop-on-signal   stop after the first run whose binary died by a signal
+#   --load K           run K `nice -n 19` busy loops while the runs go (default 0)
+#
+# Prints one line per run (exit code, signal) and a count of the statuses.
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+if [[ $# -lt 3 || "$1" == help || "$1" == --help || "$1" == -h ]]; then
+  sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+binary="$1"; tag="$2"; scenario="$3"; shift 3
+runs=1 load=0 stop=0 P=9800 fin_delay=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --runs) runs="$2"; shift 2 ;;
+    --load) load="$2"; shift 2 ;;
+    --stop-on-signal) stop=1; shift ;;
+    --port-base) P="$2"; shift 2 ;;
+    --fin-delay) fin_delay="$2"; shift 2 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+W="$HOME/.cache/blaze/work/remote"
+src="$W/r1-sp-src"
+if [[ ! -f "$src/many/BUILD.bazel" ]]; then
+  mkdir -p "$src/many"
+  echo 'module(name = "sp_probe")' >"$src/MODULE.bazel"
+  cat >"$src/BUILD.bazel" <<'EOF'
+genrule(
+    name = "a",
+    outs = ["a.txt"],
+    cmd = "echo hello > $@",
+)
+
+genrule(
+    name = "big",
+    outs = ["big.bin"],
+    cmd = "head -c 33554432 /dev/urandom > $@",
+)
+EOF
+  python3 -c '
+import sys
+with open(sys.argv[1], "w") as f:
+    for i in range(5000):
+        f.write("genrule(name = \"target_with_a_long_name_%05d\", outs = [\"o%05d\"], cmd = \"touch $@\")\n" % (i, i))
+' "$src/many/BUILD.bazel"
+fi
+run="sp-$tag-$scenario"
+rd="$W/$run"
+mkdir -p "$rd"
+if [[ "$binary" == oracle ]]; then
+  real="$HOME/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64"
+else
+  real="$(realpath "$binary")"
+fi
+
+c="$W/tls-probe-certs"
+pids=()
+workers=()
+cleanup() {
+  for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
+  for w in "${workers[@]}"; do "$here/worker" stop "$w" >/dev/null 2>&1 || true; done
+}
+trap cleanup EXIT
+
+opts=() cmd=(build //:a) wrapper_mode=""
+case "$scenario" in
+  mtls-noclient)
+    [[ -f "$c/ca.crt" ]] || { echo "no certificates: run scripts/remote/tls-probe once" >&2; exit 2; }
+    workers+=("sp-$tag-tls")
+    "$here/worker" start "sp-$tag-tls" "$P" --tls_certificate="$c/server.crt" \
+      --tls_private_key="$c/server.key" --tls_ca_certificate="$c/ca.crt" >/dev/null
+    opts=(--remote_cache=grpcs://localhost:$P --tls_certificate="$c/ca.crt") ;;
+  http-cache)
+    mkdir -p "$W/sp-$tag-http"
+    (cd "$W/sp-$tag-http" && exec python3 -I -m http.server $((P + 1)) --bind 127.0.0.1) \
+      >/dev/null 2>&1 &
+    pids+=($!)
+    sleep 1
+    opts=(--remote_cache=grpc://127.0.0.1:$((P + 1))) ;;
+  reset-peer)
+    workers+=("sp-$tag-plain")
+    "$here/worker" start "sp-$tag-plain" $((P + 2)) >/dev/null
+    cmd=(build //:big)
+    opts=(--remote_cache=grpc://127.0.0.1:$((P + 3)) --remote_local_fallback
+      --incompatible_remote_local_fallback_for_remote_cache) ;;
+  pipe-build-both) wrapper_mode='"$@" 2>&1 | head -1' ;;
+  pipe-build-stdout) wrapper_mode='"$@" | head -1' ;;
+  pipe-info-stdout) cmd=(info); wrapper_mode='"$@" | head -1' ;;
+  pipe-query-stdout) cmd=(query //...); wrapper_mode='"$@" | head -1' ;;
+  pipe-query-stderr) cmd=(query //...); wrapper_mode='"$@" 2>&1 >/dev/null | head -1' ;;
+  *) echo "unknown scenario: $scenario" >&2; exit 2 ;;
+esac
+run_binary="$real"
+if [[ -n "$wrapper_mode" ]]; then
+  run_binary="$rd/wrapper"
+  printf '#!/bin/bash\nset -- %q "$@"\n%s\nexit "${PIPESTATUS[0]}"\n' "$real" "$wrapper_mode" \
+    >"$run_binary"
+  chmod +x "$run_binary"
+fi
+for _ in $(seq 1 "$load"); do
+  nice -n 19 sh -c 'while :; do :; done' &
+  pids+=($!)
+done
+
+declare -A count
+fresh=(--fresh)
+for i in $(seq 1 "$runs"); do
+  extra=()
+  rp_pid=""
+  if [[ $scenario == reset-peer ]]; then
+    extra=(--action_env=SP_RUN=$i)
+    rm -f "$rd/reset-peer.log.tmp"
+    "$here/reset-peer" $((P + 3)) $((P + 2)) --fin-delay "$fin_delay" --log "$rd/reset-peer.log.tmp" &
+    rp_pid=$!
+    sleep 0.5
+  fi
+  out="$("$here/ws-run" "$run" "$src" "$run_binary" "${fresh[@]}" -- "${cmd[@]}" "${opts[@]}" \
+    "${extra[@]}" || true)"
+  [[ -n "$rp_pid" ]] && { kill "$rp_pid" 2>/dev/null || true; wait "$rp_pid" 2>/dev/null || true; }
+  fresh=()
+  step=$(echo "$out" | sed -n 's/^step: //p')
+  code=$(cat "$step/exit")
+  sig=$(cat "$step/signal" 2>/dev/null || true)
+  [[ -f "$rd/reset-peer.log.tmp" ]] && mv "$rd/reset-peer.log.tmp" "$step/reset-peer.log"
+  resets=""
+  [[ -f "$step/reset-peer.log" ]] && resets=" resets=$(grep -c ' RST ' "$step/reset-peer.log" || true)"
+  echo "run $i: $(basename "$step") exit $code${sig:+ ($sig)}$resets"
+  key="$code${sig:+ $sig}"
+  count[$key]=$(( ${count[$key]:-0} + 1 ))
+  if [[ $stop == 1 && ( -n "$sig" || ( -n "$wrapper_mode" && $code -gt 128 ) ) ]]; then break; fi
+done
+echo "statuses:"
+for k in "${!count[@]}"; do echo "  $k: ${count[$k]}"; done

@@ -9,6 +9,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use blaze_build_config::parsed_flags::ParsedFlagsKey;
+use blaze_cmdline::LabelPackageContext;
+
 use blaze_analysis::analysis_services::AnalysisServices;
 use blaze_analysis::configured_target_key::ConfiguredTargetKey;
 use blaze_analysis::platform::PlatformInfo;
@@ -119,7 +122,10 @@ impl PlatformFunction {
 }
 
 /// The PLATFORM value the configuration code reads (see `blaze_build_config::platform`).
-fn platform_value_of(platform_info: &Arc<PlatformInfo>, has_parsed_flags: bool) -> PlatformValue {
+fn platform_value_of(
+    platform_info: &Arc<PlatformInfo>,
+    parsed_flags: Option<Arc<blaze_build_config::parsed_flags::ParsedFlagsValue>>,
+) -> PlatformValue {
     // PORT: the seam's PlatformValue (blaze_build_config cannot name PlatformInfo) keeps
     // `constraints().get(setting)` for every setting the platform (or a parent) sets. Java's
     // `ConstraintCollection.get` also answers with a setting's default_constraint_value for a
@@ -136,7 +142,8 @@ fn platform_value_of(platform_info: &Arc<PlatformInfo>, has_parsed_flags: bool) 
     PlatformValue {
         label: platform_info.label().clone(),
         constraints,
-        has_parsed_flags,
+        has_parsed_flags: parsed_flags.is_some(),
+        parsed_flags,
         platform_info: Some(blaze_build_config::platform::OpaquePlatformInfo(
             platform_info.clone(),
         )),
@@ -164,24 +171,40 @@ impl PlatformValueProvider for PlatformFunction {
 
         let platform_info = Arc::new(platform_info);
         if platform_info.flags().is_empty() {
-            return Ok(Some(platform_value_of(&platform_info, false)));
+            // Java: PlatformValue.noFlags(platformInfo)
+            return Ok(Some(platform_value_of(&platform_info, None)));
         }
 
-        let Some(_repo_mapping_value) = env.get_value(RepositoryMappingKey::key(
+        let Some(repo_mapping_value) = env.get_value(RepositoryMappingKey::key(
             platform_label.get_repository().clone(),
         ))?
         else {
             return Ok(None);
         };
 
-        // Java: ParsedFlagsValue.Key.create(platformInfo.flags(), PackageContext.of(pkgId,
-        // repoMapping), includeDefaultValues=true, params.flagAliasMappings()), then
-        // PlatformValue.withFlags.
-        blaze_util::unported!(
-            "ParsedFlagsValue.Key.create",
-            "platform flags of {}",
-            platform_label
-        )
+        let parsed_flags_key = ParsedFlagsKey::create_with_defaults(
+            platform_info.flags().to_vec(),
+            LabelPackageContext::of(
+                platform_label.get_package_identifier(),
+                repo_mapping_value
+                    .repository_mapping()
+                    .expect("NullPointerException: repositoryMapping()")
+                    .clone(),
+            ),
+            // Include default values so that any flags explicitly reset to the default are kept.
+            /* include_default_values= */
+            true,
+            key.flag_alias_mappings.clone(),
+        );
+        let Some(parsed_flags_value) = env.get_value(parsed_flags_key)? else {
+            return Ok(None);
+        };
+
+        // Java: PlatformValue.withFlags(platformInfo, parsedFlagsValue)
+        Ok(Some(platform_value_of(
+            &platform_info,
+            Some(parsed_flags_value),
+        )))
     }
 
     /// `InvalidPlatformException` is a `ToolchainException` of kind `InvalidPlatform` (what

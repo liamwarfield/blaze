@@ -1,0 +1,5 @@
+SYNTAX err_lex_multi_errors.star:1:5: invalid character: '$'
+SYNTAX err_lex_multi_errors.star:1:6: syntax error at 'newline': expected expression
+SYNTAX err_lex_multi_errors.star:2:7: invalid escape sequence: \\q. Use '\\\\' to insert '\\'.
+SYNTAX err_lex_multi_errors.star:3:7: invalid character: '!'
+SYNTAX err_lex_multi_errors.star:1:6: contains syntax errors

@@ -1,0 +1,5 @@
+EVAL in call to getattr(), parameter 'name' got value of type 'int', want 'string'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_getattr_type.star", line 1, column 8, in <toplevel>
+TRACE \x09\x09getattr(1, 2)
+TRACE Error in getattr: in call to getattr(), parameter 'name' got value of type 'int', want 'string'

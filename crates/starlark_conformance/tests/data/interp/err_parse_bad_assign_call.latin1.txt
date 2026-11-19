@@ -1,0 +1,1 @@
+SYNTAX err_parse_bad_assign_call.star:1:1: cannot assign to 'f()'

@@ -8,6 +8,8 @@ import subprocess
 import sys
 import time
 
+import unitstatus
+
 CACHE = os.path.expanduser("~/.cache/blaze")
 ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
 WORK = os.path.join(CACHE, "work", "remote")
@@ -31,16 +33,22 @@ Runs one command of the oracle (Bazel 9.3.2) or of another Bazel-compatible bina
 Startup options --output_user_root=<above> --nohome_rc --nosystem_rc; command options
 --repository_cache=~/.cache/blaze/repo-cache --color=no --curses=no, then the given ones
 (`{step}` is replaced by the step directory). Environment: HOME and PATH=/usr/bin:/bin only.
-The command runs in `systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0`.
+The command runs in `systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0`
+under scripts/remote/unit-supervisor, which records the real status inside the unit
+(systemd-run itself returns 0 after a death by SIGPIPE, SIGHUP, SIGINT or SIGTERM).
 
   --fresh            delete the workspace copy and the output user root first
-  --sigint-after S   send SIGINT to the client process S seconds after it starts (the exit code
-                     is then the one the client exits with after the interrupt)
+  --sigint-after S   send SIGINT to the client process S seconds after it starts (the unit's main
+                     process is the supervisor, which forwards it to the client; the exit code is
+                     then the one the client exits with after the interrupt)
   --sigint-on-glob G send SIGINT once a path matching the glob G exists (polled every 0.1 s;
                      for example the work directory of a remote worker's running action), then
                      print the seconds from the signal to the client's exit
 
-Prints the step directory, the last `N processes` / ERROR lines and the exit code.
+Prints the step directory, the last `N processes` / ERROR lines and the exit code
+(`exit code: N`, or `exit code: 141 (killed by SIGPIPE)` after a death by signal). The step's
+`exit` file holds the number (128+N after signal N) and, after a signal, a file `signal` its
+name. Exits with that number.
 """
 
 
@@ -93,17 +101,16 @@ def main():
     full = [binary, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc", cmd[0],
             "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"]
     full += [c.replace("{step}", step) for c in cmd[1:]]
-    unit = ["systemd-run", "--user", "--collect", "--wait", "--pipe", "--quiet", "--same-dir",
-            "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0", "env", "-i",
-            "HOME=" + os.environ["HOME"], "PATH=/usr/bin:/bin"]
+    status_path = os.path.join(step, ".unit-status")
+    unit_name = "ws-run-%s-%d" % (name, n)
     with open(os.path.join(step, "stdout"), "wb") as so, \
             open(os.path.join(step, "stderr"), "wb") as se:
         if sigint_after is None and sigint_glob is None:
-            code = subprocess.run(unit + full, cwd=ws, stdout=so, stderr=se).returncode
+            code = subprocess.run(unitstatus.unit_argv(status_path, full), cwd=ws, stdout=so,
+                                  stderr=se).returncode
         elif sigint_glob is not None:
-            unit_name = "ws-run-%s-%d" % (name, n)
-            unit = unit[:2] + ["--unit=" + unit_name] + unit[2:]
-            p = subprocess.Popen(unit + full, cwd=ws, stdout=so, stderr=se)
+            p = subprocess.Popen(unitstatus.unit_argv(status_path, full, unit_name), cwd=ws,
+                                 stdout=so, stderr=se)
             deadline = time.time() + 300
             while p.poll() is None and not glob.glob(sigint_glob) and time.time() < deadline:
                 time.sleep(0.1)
@@ -117,23 +124,22 @@ def main():
                 print("the client exited before the glob matched")
                 code = p.wait()
         else:
-            # `--pipe` forwards nothing but stdio; the signal goes to the unit's main process.
-            unit_name = "ws-run-%s-%d" % (name, n)
-            unit = unit[:2] + ["--unit=" + unit_name] + unit[2:]
-            p = subprocess.Popen(unit + full, cwd=ws, stdout=so, stderr=se)
+            # `--pipe` forwards nothing but stdio; the signal goes to the unit's main process
+            # (the supervisor), which forwards it to the client.
+            p = subprocess.Popen(unitstatus.unit_argv(status_path, full, unit_name), cwd=ws,
+                                 stdout=so, stderr=se)
             try:
                 p.wait(timeout=sigint_after)
             except subprocess.TimeoutExpired:
                 subprocess.run(["systemctl", "--user", "kill", "--kill-whom=main", "-s",
                                 "SIGINT", unit_name + ".service"])
             code = p.wait()
-    with open(os.path.join(step, "exit"), "w") as fh:
-        fh.write("%d\n" % code)
+    code, sig = unitstatus.collect(status_path, code, step)
     print("step: " + step)
     for line in open(os.path.join(step, "stderr"), errors="replace"):
         if " process" in line and line.startswith("INFO:") or line.startswith("ERROR:"):
             print("  " + line.rstrip())
-    print("exit code: %d" % code)
+    print("exit code: " + unitstatus.describe(code, sig))
     return code
 
 

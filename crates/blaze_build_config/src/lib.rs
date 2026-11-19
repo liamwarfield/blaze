@@ -40,6 +40,7 @@ pub mod function_transition_util;
 pub mod options_diff;
 pub mod output_directories;
 pub mod output_path_mnemonic_computer;
+pub mod parsed_flags;
 pub mod platform;
 pub mod skyframe;
 pub mod starlark_transition;

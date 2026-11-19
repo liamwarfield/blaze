@@ -1,0 +1,335 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/work/crash-fix/blaze-after
+# sha256 09bb4e56b0e4dc51ddccf6b8304fc26fd237eefa979b194d5f0179d59d494f0c
+# tree 67302dc7fd8c4cc5c3c5fc80289402f9b95daaa6 (dirty)
+# date 2026-11-19T13:36:20
+=== 1: run cquery "deps(//:consume)" --output=label_kind
+exit 0
+--- stdout
+consume rule //:consume (a7a71fd)
+source file //:c.txt (null)
+alias rule @bazel_tools//tools:host_platform (3030ed4)
+alias rule //:b_alias (a7a71fd)
+lib_plain rule //:p (a7a71fd)
+platform rule @@platforms//host:host (3030ed4)
+lib rule //:a (a7a71fd)
+filegroup rule //:fg (a7a71fd)
+constraint_value rule @@platforms//os:linux (3030ed4)
+constraint_value rule @@platforms//cpu:x86_64 (3030ed4)
+lib rule //:c (a7a71fd)
+lib rule //:b (a7a71fd)
+constraint_setting rule @@platforms//cpu:cpu (3030ed4)
+constraint_setting rule @@platforms//os:os (3030ed4)
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:consume (5 packages loaded, 14 targets configured, 4 aspect applications).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 2: run cquery "deps(//:consume_top)" --output=label_kind
+exit 0
+--- stdout
+consume_top rule //:consume_top (a7a71fd)
+alias rule @bazel_tools//tools:host_platform (3030ed4)
+platform rule @@platforms//host:host (3030ed4)
+lib rule //:a (a7a71fd)
+constraint_value rule @@platforms//os:linux (3030ed4)
+constraint_value rule @@platforms//cpu:x86_64 (3030ed4)
+lib rule //:b (a7a71fd)
+lib rule //:c (a7a71fd)
+constraint_setting rule @@platforms//cpu:cpu (3030ed4)
+source file //:c.txt (null)
+constraint_setting rule @@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:consume_top (5 packages loaded, 11 targets configured, 6 aspect applications).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 3: run shutdown
+exit 0
+--- stdout
+--- stderr
+=== 4: aquery "deps(//:consume)"
+exit 0
+--- stdout
+{"actionKey": "d32873a18b0ff66abf3373025e14164c94bd8f604c0e22ba6714c3722bc567ca", "argv": ["/bin/bash", "-c", "printf '%s\\n' \"$@\" > bazel-out/k8-fastbuild/bin/consume.txt", "", "@@//:a: @@//:a,@@//:b,@@//:c,@@//:c", "@@//:b: @@//:b,@@//:c", "@@//:fg: no CollectInfo", "@@//:c.txt: no CollectInfo", "@@//:p: no CollectInfo", "bazel-out/k8-fastbuild/bin/c.collect.txt", "bazel-out/k8-fastbuild/bin/b.collect.txt", "bazel-out/k8-fastbuild/bin/a.collect.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-fastbuild/bin/a.collect.txt", "bazel-out/k8-fastbuild/bin/b.collect.txt", "bazel-out/k8-fastbuild/bin/c.collect.txt"], "mnemonic": "Consume", "outputs": ["bazel-out/k8-fastbuild/bin/consume.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/consume.txt", "ruleClass": "consume", "target": "//:consume"}
+{"actionKey": "f807d3f7847d07f2524a37e0981361bd188f5a6d9687475d459bc38b53013de7", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "lib @@//:p\n", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/p.lib"], "primaryOutput": "bazel-out/k8-fastbuild/bin/p.lib", "ruleClass": "lib_plain", "target": "//:p"}
+{"actionKey": "ecc837157cfef900c7380c4a7aba666ae1434171b27e610df9bcb97231a9edc2", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "lib @@//:a\n", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/a.lib"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a.lib", "ruleClass": "lib", "target": "//:a"}
+{"actionKey": "695ede399b349ef22c03baa360ccb673416a4d7df51ec4e335510951bc11860f", "argv": [], "aspects": [{"name": "//:defs.bzl%collect"}], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "lib\n[\"//:defs.bzl%collect\"]\n@@//:a\n@@//:b\n@@//:c\n@@//:c\n", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/a.collect.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a.collect.txt", "ruleClass": "lib", "target": "//:a"}
+{"actionKey": "aca7f48429d2080de725f6140cc820e040073e8fbebcb4d2c6fd381f770af287", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "lib @@//:c\n", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/c.lib"], "primaryOutput": "bazel-out/k8-fastbuild/bin/c.lib", "ruleClass": "lib", "target": "//:c"}
+{"actionKey": "2d131474117b3986c400457ff17c8dac1b0bc4d7f77bd1c79bc06b240b64854c", "argv": [], "aspects": [{"name": "//:defs.bzl%collect"}], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "lib\n[\"//:defs.bzl%collect\"]\n@@//:c\n", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/c.collect.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/c.collect.txt", "ruleClass": "lib", "target": "//:c"}
+{"actionKey": "3393346926cfea6bd72ddb8386c39fbb569610c7694a611f529c826c3937e424", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "lib @@//:b\n", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/b.lib"], "primaryOutput": "bazel-out/k8-fastbuild/bin/b.lib", "ruleClass": "lib", "target": "//:b"}
+{"actionKey": "5895b1ba5c5e7505754116fd3365913014907beb6f81c6a7029283bbc3e0165f", "argv": [], "aspects": [{"name": "//:defs.bzl%collect"}], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "lib\n[\"//:defs.bzl%collect\"]\n@@//:b\n@@//:c\n", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/b.collect.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/b.collect.txt", "ruleClass": "lib", "target": "//:b"}
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:consume (5 packages loaded, 14 targets configured, 4 aspect applications).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 5: run shutdown
+exit 0
+--- stdout
+--- stderr
+=== 6: run aquery //:a --aspects=//:defs.bzl%collect --output=jsonproto
+exit 0
+--- stdout
+{
+  "artifacts": [
+    {
+      "id": 1,
+      "pathFragmentId": 1
+    },
+    {
+      "id": 2,
+      "pathFragmentId": 5
+    }
+  ],
+  "actions": [
+    {
+      "targetId": 1,
+      "actionKey": "ecc837157cfef900c7380c4a7aba666ae1434171b27e610df9bcb97231a9edc2",
+      "mnemonic": "FileWrite",
+      "configurationId": 1,
+      "outputIds": [
+        1
+      ],
+      "primaryOutputId": 1,
+      "executionPlatform": "@@platforms//host:host"
+    },
+    {
+      "targetId": 1,
+      "aspectDescriptorIds": [
+        1
+      ],
+      "actionKey": "695ede399b349ef22c03baa360ccb673416a4d7df51ec4e335510951bc11860f",
+      "mnemonic": "FileWrite",
+      "configurationId": 1,
+      "outputIds": [
+        2
+      ],
+      "primaryOutputId": 2,
+      "executionPlatform": "@@platforms//host:host"
+    }
+  ],
+  "targets": [
+    {
+      "id": 1,
+      "label": "//:a",
+      "ruleClassId": 1
+    }
+  ],
+  "configuration": [
+    {
+      "id": 1,
+      "mnemonic": "k8-fastbuild",
+      "platformName": "k8",
+      "checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18"
+    }
+  ],
+  "aspectDescriptors": [
+    {
+      "id": 1,
+      "name": "//:defs.bzl%collect"
+    }
+  ],
+  "ruleClasses": [
+    {
+      "id": 1,
+      "name": "lib"
+    }
+  ],
+  "pathFragments": [
+    {
+      "id": 4,
+      "label": "bazel-out"
+    },
+    {
+      "id": 3,
+      "label": "k8-fastbuild",
+      "parentId": 4
+    },
+    {
+      "id": 2,
+      "label": "bin",
+      "parentId": 3
+    },
+    {
+      "id": 1,
+      "label": "a.lib",
+      "parentId": 2
+    },
+    {
+      "id": 5,
+      "label": "a.collect.txt",
+      "parentId": 2
+    }
+  ]
+}
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:a (5 packages loaded, 10 targets configured, 3 aspect applications).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 7: run build //:consume //:consume_top //:consume_gen
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 3 targets (6 packages loaded, 19 targets configured, 10 aspect applications).
+INFO: Found 3 targets...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 10 processes: 4 internal, 6 linux-sandbox.
+INFO: Build completed successfully, 10 total actions
+=== 8: cat bazel-bin/consume.txt
+@@//:a: @@//:a,@@//:b,@@//:c,@@//:c
+@@//:b: @@//:b,@@//:c
+@@//:fg: no CollectInfo
+@@//:c.txt: no CollectInfo
+@@//:p: no CollectInfo
+bazel-out/k8-fastbuild/bin/c.collect.txt
+bazel-out/k8-fastbuild/bin/b.collect.txt
+bazel-out/k8-fastbuild/bin/a.collect.txt
+=== 9: cat bazel-bin/consume_top.txt
+@@//:a: @@//:a,@@//:b,@@//:c,@@//:c
+@@//:a: TopInfo
+bazel-out/k8-fastbuild/bin/c.collect.txt
+bazel-out/k8-fastbuild/bin/b.collect.txt
+bazel-out/k8-fastbuild/bin/a.collect.txt
+bazel-out/k8-fastbuild/bin/c.top.txt
+bazel-out/k8-fastbuild/bin/b.top.txt
+bazel-out/k8-fastbuild/bin/a.top.txt
+=== 10: cat bazel-bin/consume_gen.txt
+@@//:g.txt: generated by @@//:g
+@@//:c: generated by @@//:c
+=== 11: cat bazel-bin/a.collect.txt
+lib
+["//:defs.bzl%collect"]
+@@//:a
+@@//:b
+@@//:c
+@@//:c
+=== 12: cat bazel-bin/a.top.txt
+lib
+["//:defs.bzl%collect"]
+@@//:c
+lib
+["//:defs.bzl%collect"]
+@@//:b
+@@//:c
+lib
+["//:defs.bzl%collect"]
+@@//:a
+@@//:b
+@@//:c
+@@//:c
+=== 13: run build --nobuild //:a --aspects=//:defs.bzl%param_aspect --aspects_parameters=mode=b
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:a (5 packages loaded, 11 targets configured, 3 aspect applications).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 14: run build --nobuild //:a --aspects=//:defs.bzl%param_aspect --aspects_parameters=mode=c
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: //:defs.bzl%param_aspect: invalid value in 'mode' attribute: has to be one of 'a' or 'b' instead of 'c'
+ERROR: Analysis of aspects '[//:defs.bzl%param_aspect] with parameters {mode=c} on //:a' failed; build aborted: //:defs.bzl%param_aspect: invalid value in 'mode' attribute: has to be one of 'a' or 'b' instead of 'c'
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 15: run build --nobuild //:a --aspects=//:defs.bzl%nonexistent
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: nonexistent is not exported from //:defs.bzl
+ERROR: Analysis of aspects '[//:defs.bzl%nonexistent] with parameters {} on //:a' failed; build aborted: nonexistent is not exported from //:defs.bzl
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 16: run build --nobuild //:a --aspects=//:missing.bzl%x
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: cannot load '//:missing.bzl': no such file
+ERROR: Analysis of aspects '[//:missing.bzl%x] with parameters {} on //:a' failed; build aborted: cannot load '//:missing.bzl': no such file
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 17: run build //:a --aspects=//:defs.bzl%param_aspect --aspects_parameters=mode=b --output_groups=param
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:a (5 packages loaded, 11 targets configured, 3 aspect applications).
+INFO: Found 1 target...
+Aspect //:defs.bzl%param_aspect of //:a up-to-date:
+  bazel-bin/a.param.b.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 18: cat bazel-bin/a.param.b.txt
+mode b tool @@//:tool.txt
+=== 19: run build //:a --aspects=//:defs.bzl%collect,//:defs.bzl%top --output_groups=collect
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:a (5 packages loaded, 10 targets configured, 6 aspect applications).
+INFO: Found 1 target...
+Aspect //:defs.bzl%collect of //:a up-to-date:
+  bazel-bin/c.collect.txt
+  bazel-bin/b.collect.txt
+  bazel-bin/a.collect.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 3 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 20: run build --nobuild //:consume_top_plain
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:5:4: in //:defs.bzl%top aspect on lib rule //:c:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 51, column 20, in _top_impl
+		inputs = target[CollectInfo].files
+Error: <target //:c> (rule 'lib') doesn't contain declared provider 'CollectInfo'
+ERROR: Analysis of target '//:c' (config: a7a71fd) failed
+ERROR: Analysis of target '//:consume_top_plain' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 21: run build --nobuild //:consume_bad
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:5:4: in //:defs.bzl%bad_aspect aspect on lib rule //:c: Aspect implementation should return a list, or a provider instance, but got int
+ERROR: Analysis of target '//:c' (config: a7a71fd) failed
+ERROR: Analysis of target '//:consume_bad' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 22: run build --nobuild //:consume_dup
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:26:12: Provider LibInfo provided twice
+ERROR: Analysis of target '//:consume_dup' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully

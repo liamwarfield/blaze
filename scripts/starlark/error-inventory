@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+"""Inventory of the error messages Bazel's Starlark interpreter can raise. See `help`."""
+
+import os
+import re
+import sys
+
+USAGE = """\
+usage: scripts/starlark/error-inventory extract [TSV]
+       scripts/starlark/error-inventory summary [TSV]
+       scripts/starlark/error-inventory help
+
+Work list of docs/decisions.md 2026-11-19 (Starlark core-language error texts are ported).
+
+extract  scans the Java of net.starlark.java at the pin (syntax, eval, lib/json under
+         ~/.cache/blaze/src/bazel-9.3.2/src/main/java/net/starlark/java) for every error site:
+         `throw new ...(`, `Starlark.errorf(` / `errorf(`, `new EvalException(`, the parser's
+         `syntaxError(` / `reportError(` and the lexer's `error(`. One row per site (a `throw`
+         of an `errorf` is one site). TSV (default docs/starlark-errors.tsv) columns:
+           id        CLASS:LINE (line of the statement's first token)
+           class     Java file, relative to net/starlark/java
+           line      line number at the pin
+           method    enclosing Java method
+           kind      throw | errorf | syntaxError | reportError | lexer | eval-exception
+           message   the message arguments as written in Java (whitespace collapsed)
+           rust      the corresponding starlark-rust / blaze_starlark site, or "none"
+           status    matched | different | todo | not-triggerable | internal | rethrow
+           case      interp case(s) that trigger it (crates/starlark_conformance/tests/data/
+                     interp/NAME.star), comma separated
+           note      free text
+         Existing rows of TSV keep their rust/status/case/note columns (matched by class and
+         message, then by id); new rows get status `todo`, or `internal` for Java exceptions
+         that are crashes (IllegalStateException, IllegalArgumentException, ...) and `rethrow`
+         for a `throw` of a caught exception.
+summary  counts the rows of TSV by status."""
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+JAVA = os.path.expanduser("~/.cache/blaze/src/bazel-9.3.2/src/main/java/net/starlark/java")
+DEFAULT_TSV = os.path.join(ROOT, "docs/starlark-errors.tsv")
+DIRS = ["syntax", "eval", "lib/json"]
+COLUMNS = ["id", "class", "line", "method", "kind", "message", "rust", "status", "case", "note"]
+# Files with no user-visible errors (profiling, debugging hooks, printing internals).
+SKIP_FILES = {"eval/CpuProfiler.java", "eval/Debug.java", "eval/JNI.java"}
+
+SITE_RE = re.compile(
+    r"\bthrow\s+(?:new\s+)?|\bStarlark\.errorf\(|(?<![.\w])errorf\(|\bnew EvalException\(|"
+    r"(?<![.\w])syntaxError\(|(?<![.\w])reportError\(|(?<![.\w])error\(")
+INTERNAL_EXC = re.compile(
+    r"^throw new (IllegalStateException|IllegalArgumentException|NullPointerException|"
+    r"AssertionError|UnsupportedOperationException|VerifyException|IndexOutOfBoundsException|"
+    r"ArrayIndexOutOfBoundsException|NoSuchElementException|"
+    r"InternalError|RuntimeException|Error|ExceptionInInitializerError|"
+    r"ConcurrentModificationException|LinkageError|IOException)\b")
+METHOD_RE = re.compile(
+    r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:public|private|protected|static|final|abstract|"
+    r"synchronized|default|native)\s+)*(?:<[^>]+>\s+)?\w[\w.<>\[\], ?]*\s+(\w+)\s*\([^;]*$")
+NOT_METHODS = {"if", "for", "while", "switch", "catch", "return", "new", "else", "throw", "try",
+               "synchronized"}
+
+
+def strip_comments(src):
+    """Blanks // and /* */ comments, keeping string literals and line numbers."""
+    out = []
+    i, n = 0, len(src)
+    while i < n:
+        c = src[i]
+        if c == '"' or c == "'":
+            # Text block """...""" or ordinary literal.
+            if src.startswith('"""', i):
+                j = src.index('"""', i + 3) + 3
+            else:
+                j = i + 1
+                while j < n and src[j] != c:
+                    j += 2 if src[j] == "\\" else 1
+                j += 1
+            out.append(src[i:j])
+            i = j
+        elif src.startswith("//", i):
+            j = src.find("\n", i)
+            j = n if j < 0 else j
+            out.append(" " * (j - i))
+            i = j
+        elif src.startswith("/*", i):
+            j = src.index("*/", i + 2) + 2
+            out.append(re.sub(r"[^\n]", " ", src[i:j]))
+            i = j
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def statement_end(src, i):
+    """Index after the `;` (or `{`) ending the statement that contains position i."""
+    depth = 0
+    n = len(src)
+    while i < n:
+        c = src[i]
+        if c == '"' or c == "'":
+            if src.startswith('"""', i):
+                i = src.index('"""', i + 3) + 3
+                continue
+            j = i + 1
+            while j < n and src[j] != c:
+                j += 2 if src[j] == "\\" else 1
+            i = j + 1
+            continue
+        if c in "([":
+            depth += 1
+        elif c in ")]":
+            depth -= 1
+            if depth < 0:
+                return i
+        elif c in ";{" and depth <= 0:
+            return i + 1
+        i += 1
+    return n
+
+
+def enclosing_methods(lines):
+    """For each line index, the name of the last method declared at or before it."""
+    names = []
+    cur = ""
+    for ln in lines:
+        m = METHOD_RE.match(ln)
+        if m and m.group(1) not in NOT_METHODS and not ln.strip().startswith(("return", "throw")):
+            cur = m.group(1)
+        names.append(cur)
+    return names
+
+
+def extract():
+    rows = []
+    for d in DIRS:
+        for f in sorted(os.listdir(os.path.join(JAVA, d))):
+            if not f.endswith(".java"):
+                continue
+            rel = d + "/" + f
+            if rel in SKIP_FILES:
+                continue
+            raw = open(os.path.join(JAVA, rel), encoding="utf-8").read()
+            src = strip_comments(raw)
+            lines = src.split("\n")
+            methods = enclosing_methods(lines)
+            seen_until = -1
+            for m in SITE_RE.finditer(src):
+                start = m.start()
+                if start < seen_until:
+                    continue
+                # Skip method declarations of the helpers themselves (`void error(String ...`).
+                line_start = src.rfind("\n", 0, start) + 1
+                prefix = src[line_start:start]
+                if re.search(r"\b(void|String|EvalException|SyntaxError|static)\s+$", prefix):
+                    continue
+                end = statement_end(src, m.end())
+                seen_until = end
+                stmt = " ".join(src[start:end].split())
+                line = src.count("\n", 0, start) + 1
+                tok = m.group(0)
+                if tok.startswith("throw"):
+                    inner = stmt[len(tok.strip()):].strip()
+                    if INTERNAL_EXC.match("throw new " + inner.split("(")[0]) or \
+                            INTERNAL_EXC.match(stmt):
+                        kind, status = "throw", "internal"
+                    elif re.match(r"^throw\s+[\w.]+\s*;$", stmt) or \
+                            re.match(r"^throw\s+(?!new\b)[\w.]+\.(?!errorf)\w+\(", stmt):
+                        kind, status = "throw", "rethrow"
+                    elif "Starlark.errorf(" in stmt or re.match(r"^throw\s+errorf\(", stmt):
+                        kind, status = "errorf", "todo"
+                    elif "new EvalException(" in stmt:
+                        kind, status = "eval-exception", "todo"
+                    else:
+                        kind, status = "throw", "todo"
+                elif "errorf(" in tok:
+                    kind, status = "errorf", "todo"
+                elif tok.startswith("new EvalException"):
+                    kind, status = "eval-exception", "todo"
+                elif tok.startswith("syntaxError"):
+                    kind, status = "syntaxError", "todo"
+                elif tok.startswith("reportError"):
+                    kind, status = "reportError", "todo"
+                else:
+                    kind, status = "lexer", "todo"
+                if kind != "lexer" and tok.startswith("error(") and d != "syntax":
+                    continue
+                if tok.startswith("error(") and f != "Lexer.java":
+                    continue
+                # The message: everything after the site keyword, without `throw`.
+                msg = re.sub(r"^throw\s+(new\s+)?", "", stmt).rstrip(";{ ")
+                rows.append({
+                    "id": "%s:%d" % (rel, line), "class": rel, "line": str(line),
+                    "method": methods[line - 1], "kind": kind, "message": msg, "rust": "",
+                    "status": status, "case": "", "note": "",
+                })
+    return rows
+
+
+def read_tsv(path):
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        lines = f.read().split("\n")
+    head = lines[0].split("\t")
+    return [dict(zip(head, ln.split("\t"))) for ln in lines[1:] if ln]
+
+
+def write_tsv(path, rows):
+    clean = lambda v: re.sub(r"[\t\n]", " ", v or "")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\t".join(COLUMNS) + "\n")
+        for r in rows:
+            f.write("\t".join(clean(r.get(k, "")) for k in COLUMNS) + "\n")
+
+
+def merge(new, old):
+    by_msg = {}
+    by_id = {}
+    for r in old:
+        by_msg.setdefault((r["class"], r["message"]), []).append(r)
+        by_id[r["id"]] = r
+    for r in new:
+        prev = None
+        cands = by_msg.get((r["class"], r["message"]))
+        if cands:
+            prev = cands.pop(0)
+        elif r["id"] in by_id:
+            prev = by_id[r["id"]]
+        if prev:
+            for k in ("rust", "status", "case", "note"):
+                if prev.get(k):
+                    r[k] = prev[k]
+    return new
+
+
+def summary(path):
+    rows = read_tsv(path)
+    counts = {}
+    for r in rows:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+    for k in sorted(counts):
+        print("%-16s %d" % (k, counts[k]))
+    print("%-16s %d" % ("total", len(rows)))
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("help", "--help", "-h"):
+        print(USAGE)
+        return
+    path = os.path.abspath(args[1]) if len(args) > 1 else DEFAULT_TSV
+    if args[0] == "extract":
+        rows = merge(extract(), read_tsv(path))
+        write_tsv(path, rows)
+        print("%d rows written to %s" % (len(rows), path))
+        summary(path)
+    elif args[0] == "summary":
+        summary(path)
+    else:
+        print(USAGE)
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

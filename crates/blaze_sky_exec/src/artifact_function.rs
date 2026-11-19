@@ -3,8 +3,12 @@
 use std::fmt;
 use std::sync::Arc;
 
-use blaze_actions::Artifact;
+use blaze_actions::actions::action::{Action, ActionRef};
+use blaze_actions::{ActionLookupData, ActionLookupKeyRef, Artifact};
 use blaze_collect::{NestedSet, NestedSetBuilder};
+use blaze_events::event::Event;
+use blaze_exec::actions::action_adapters::artifact_input;
+use blaze_exec::actions::as_action_template;
 use blaze_exec::actions::{ActionExecutionException, FileArtifactValue, TreeArtifactValue};
 use blaze_protos::failure_details::{self, FailureDetail, execution, failure_detail};
 use blaze_skyframe::{
@@ -15,11 +19,14 @@ use blaze_util::fingerprint::Fingerprint;
 use blaze_vfs::{RootedPath, Symlinks};
 
 use crate::action_execution_value::ActionExecutionValue;
+use crate::action_template_expansion_value::ActionTemplateExpansionValue;
+use crate::analysis_seam::{ActionLookupValue, AnalysisSeam};
 use crate::keys::{ActionExecutionKey, ArtifactKey, ArtifactNestedSetKey, ArtifactNestedSetValue};
 use crate::recursive_filesystem_traversal_function::{
     DirectTraversalRoot, DirectoryArtifactTraversalRequest, RecursiveFilesystemTraversalException,
     RecursiveFilesystemTraversalExceptionType, TrackSourceDirectoriesFlag,
 };
+use crate::skyframe_action_executor::SkyframeActionExecutor;
 
 /// The value of an [`ArtifactKey`]: a `FileArtifactValue` (source files), `MissingArtifactValue`
 /// or a `TreeArtifactValue`.
@@ -157,6 +164,8 @@ pub fn construct_error_message(artifact: &Artifact, error: &str) -> String {
 /// `ArtifactFunction.compute`.
 // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:131 ArtifactFunction.compute
 pub fn compute_artifact(
+    action_executor: &SkyframeActionExecutor,
+    seam: &dyn AnalysisSeam,
     key: &ArtifactKey,
     env: &mut Environment<'_>,
 ) -> Result<Option<ArtifactValue>, ComputeError> {
@@ -166,8 +175,28 @@ pub fn compute_artifact(
         // cached remotely.
         return create_source_value(artifact, env);
     }
-    // PORT: remote analysis caching (retrieveRemoteSkyValue) and action templates
-    // (ArtifactDependencies.maybeGetTemplateActionForTreeArtifact) are not ported.
+    // PORT: remote analysis caching (retrieveRemoteSkyValue) is not ported:
+    // `RemoteAnalysisCachingDependenciesProvider.isRetrievalEnabled()` is false without it.
+
+    let Some(artifact_dependencies) = ArtifactDependencies::discover_dependencies(
+        artifact, seam, env, /* crash_if_action_owner_missing= */ true,
+    )?
+    else {
+        return Ok(None);
+    };
+
+    // If the action is an ActionTemplate, we need to expand the ActionTemplate into concrete
+    // actions, execute those actions in parallel and then aggregate the action execution results.
+    if let Some(action_template) =
+        artifact_dependencies.maybe_get_template_action_for_tree_artifact()
+    {
+        // mkdirForTreeArtifacts: () -> !skyframeActionExecutor.actionFileSystemType().inMemoryFileSystem()
+        if !action_executor.action_file_system_type_in_memory_file_system() {
+            mkdir_for_tree_artifact(artifact, env, action_template.as_ref())?;
+        }
+        return create_tree_artifact_value_from_action_key(&artifact_dependencies, env);
+    }
+
     let generating_action_key = artifact.get_generating_action_key().clone();
     let Some(action_value) = env.get_value(ActionExecutionKey(generating_action_key))? else {
         return Ok(None);
@@ -184,6 +213,218 @@ pub fn compute_artifact(
         .unwrap_or_else(|| panic!("NullPointerException: {artifact}"))
         .clone();
     Ok(Some(ArtifactValue::Tree(tree)))
+}
+
+// Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:186 ArtifactFunction.mkdirForTreeArtifact
+fn mkdir_for_tree_artifact(
+    artifact: &Artifact,
+    env: &mut Environment<'_>,
+    action_for_failure: &dyn Action,
+) -> Result<(), ComputeError> {
+    if let Err(e) = artifact.get_path().create_directory_and_parents() {
+        let error_message = format!(
+            "Failed to create output directory for TreeArtifact {}: {}",
+            artifact.get_exec_path(),
+            e
+        );
+        env.listener().handle(&Event::error_at(
+            Some(action_for_failure.get_owner().get_location().clone()),
+            error_message.clone(),
+        ));
+        // We could throw this as an IOException and expect our callers to catch and reprocess
+        // it, but we know the action at fault, so we should be in charge.
+        let code = execution_failure(
+            error_message.clone(),
+            execution::Code::TreeArtifactDirectoryCreationFailure,
+        );
+        // Java: ArtifactFunctionException(ActionExecutionException) is TRANSIENT.
+        return Err(SkyFunctionException::new(
+            ActionExecutionException::with_cause(
+                error_message,
+                &e,
+                Some(action_for_failure),
+                false,
+                Some(code),
+            ),
+            Transience::Transient,
+        )
+        .into());
+    }
+    Ok(())
+}
+
+// Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:211 ArtifactFunction.createTreeArtifactValueFromActionKey
+fn create_tree_artifact_value_from_action_key(
+    artifact_dependencies: &ArtifactDependencies,
+    env: &mut Environment<'_>,
+) -> Result<Option<ArtifactValue>, ComputeError> {
+    // Request the list of expanded action keys from the ActionTemplate.
+    let Some(expanded_action_execution_keys) =
+        artifact_dependencies.get_action_template_expansion_keys(env)?
+    else {
+        return Ok(None); // The expanded actions are not yet available.
+    };
+
+    let keys: Vec<SkyKey> = expanded_action_execution_keys
+        .iter()
+        .map(|k| SkyKey::new(ActionExecutionKey(k.clone())))
+        .collect();
+    let expanded_action_values = env.get_values_and_exceptions(&keys)?;
+    if env.values_missing() {
+        return Ok(None); // The execution values of the expanded actions are not yet all available.
+    }
+
+    // Aggregate the metadata for individual TreeFileArtifacts into a TreeArtifactValue for the
+    // parent TreeArtifact.
+    let parent = &artifact_dependencies.artifact;
+    // TreeArtifactValue.newBuilder(parent) with putChild for each child, then build().
+    let mut tree_children: Vec<(blaze_exec::actions::ActionInputRef, FileArtifactValue)> =
+        Vec::new();
+
+    for action_key in &expanded_action_execution_keys {
+        let mut saw_tree_child = false;
+        let Some(action_execution_value) =
+            expanded_action_values.get_typed(&ActionExecutionKey(action_key.clone()))
+        else {
+            return Ok(None);
+        };
+
+        for (artifact, metadata) in action_execution_value.get_all_file_values() {
+            blaze_util::check_state!(
+                artifact.has_parent(),
+                "Parentless artifact {} found in ActionExecutionValue for {}: {:?} {:?}",
+                artifact,
+                action_key,
+                action_execution_value,
+                artifact_dependencies
+            );
+
+            if artifact.get_parent() == Some(parent) {
+                saw_tree_child = true;
+                tree_children.push((artifact_input(artifact), metadata.clone()));
+            }
+        }
+
+        blaze_util::check_state!(
+            saw_tree_child,
+            "Action denoted by {} does not output any TreeFileArtifacts from {:?}",
+            action_key,
+            artifact_dependencies
+        );
+    }
+
+    let tree = TreeArtifactValue::build(tree_children, None, None);
+    Ok(Some(ArtifactValue::Tree(Arc::new(tree))))
+}
+
+// Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:378 ArtifactFunction.getActionLookupValue
+pub fn get_action_lookup_value(
+    action_lookup_key: &ActionLookupKeyRef,
+    seam: &dyn AnalysisSeam,
+    env: &mut Environment<'_>,
+    crash_if_action_owner_missing: bool,
+) -> Result<Option<Arc<dyn ActionLookupValue>>, ComputeError> {
+    let Some(value) = seam.get_action_lookup_value(action_lookup_key, env)? else {
+        blaze_util::check_state!(
+            action_lookup_key.function_name() == "COVERAGE_REPORT"
+                || !crash_if_action_owner_missing,
+            "Not-yet-present artifact owner: {}",
+            action_lookup_key
+        );
+        return Ok(None);
+    };
+    Ok(Some(value))
+}
+
+/// Describes dependencies of derived artifacts.
+// Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:439 ArtifactFunction.ArtifactDependencies
+pub struct ArtifactDependencies {
+    artifact: Artifact,
+    action_lookup_value: Arc<dyn ActionLookupValue>,
+}
+
+impl ArtifactDependencies {
+    /// Constructs an `ArtifactDependencies` for the provided `derived_artifact`. Returns `None` if
+    /// any dependencies are not yet ready.
+    // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:452 ArtifactDependencies.discoverDependencies
+    pub fn discover_dependencies(
+        derived_artifact: &Artifact,
+        seam: &dyn AnalysisSeam,
+        env: &mut Environment<'_>,
+        crash_if_action_owner_missing: bool,
+    ) -> Result<Option<ArtifactDependencies>, ComputeError> {
+        let generating_action_key = derived_artifact.get_generating_action_key();
+        let Some(action_lookup_value) = get_action_lookup_value(
+            generating_action_key.get_action_lookup_key(),
+            seam,
+            env,
+            crash_if_action_owner_missing,
+        )?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(ArtifactDependencies {
+            artifact: derived_artifact.clone(),
+            action_lookup_value,
+        }))
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:469 ArtifactDependencies.isTemplateActionForTreeArtifact
+    pub fn is_template_action_for_tree_artifact(&self) -> bool {
+        self.maybe_get_template_action_for_tree_artifact().is_some()
+    }
+
+    /// The generating action of the tree artifact when it is an `ActionTemplate`.
+    // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:473 ArtifactDependencies.maybeGetTemplateActionForTreeArtifact
+    fn maybe_get_template_action_for_tree_artifact(&self) -> Option<ActionRef> {
+        if !self.artifact.is_tree_artifact() {
+            return None;
+        }
+        let result = self.action_lookup_value.get_actions()
+            [self.artifact.get_generating_action_key().get_action_index() as usize]
+            .clone();
+        as_action_template(result.as_ref())
+            .is_some()
+            .then_some(result)
+    }
+
+    /// Returns action template expansion keys or `None` if that information is unavailable.
+    ///
+    /// Must only be called if [`Self::is_template_action_for_tree_artifact`] returns `true`.
+    // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:488 ArtifactDependencies.getActionTemplateExpansionKeys
+    pub fn get_action_template_expansion_keys(
+        &self,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<Vec<ActionLookupData>>, ComputeError> {
+        blaze_util::check_state!(
+            self.is_template_action_for_tree_artifact(),
+            "Action is unexpectedly non-template: {:?}",
+            self
+        );
+        let key = ActionTemplateExpansionValue::key(
+            self.artifact
+                .get_generating_action_key()
+                .get_action_lookup_key()
+                .clone(),
+            self.artifact.get_generating_action_key().get_action_index(),
+        );
+        let Some(value) = env.get_value(key)? else {
+            return Ok(None);
+        };
+        Ok(Some(value.get_generating_action_keys(&self.artifact)))
+    }
+}
+
+// Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:503 ArtifactDependencies.toString
+impl fmt::Debug for ArtifactDependencies {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "ArtifactDependencies{{artifact={}, generatingActionKey={}, actionLookupValue=<value>}}",
+            self.artifact,
+            self.artifact.get_generating_action_key()
+        )
+    }
 }
 
 // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:278 ArtifactFunction.createSourceValue

@@ -122,6 +122,12 @@ struct FakeInputFetcher {
     contents: Mutex<HashMap<PathFragment, String>>,
     failures: Mutex<VecDeque<io::Error>>,
     calls: Mutex<Vec<Vec<PathFragment>>>,
+    /// When set, the next prefetch is a download in flight: it tells the sender it started and
+    /// waits (at most 30 s) for an interrupt of the thread it runs for, as
+    /// `getFromFuture(downloadIfRemote(path))` waits (`blaze_remote::runtime::get_from_future`
+    /// registers an interrupt listener on the calling thread's status and clears the flag when
+    /// it throws).
+    block_next_prefetch: Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
 
 impl FakeInputFetcher {
@@ -131,6 +137,7 @@ impl FakeInputFetcher {
             contents: Mutex::new(HashMap::new()),
             failures: Mutex::new(VecDeque::new()),
             calls: Mutex::new(Vec::new()),
+            block_next_prefetch: Mutex::new(None),
         })
     }
 
@@ -161,6 +168,25 @@ impl ActionInputPrefetcher for FakeInputFetcher {
             .push(inputs.iter().map(|i| i.get_exec_path().clone()).collect());
         if let Some(error) = self.failures.lock().pop_front() {
             return Err(error);
+        }
+        let blocking = self.block_next_prefetch.lock().take();
+        if let Some(started) = blocking {
+            let (interrupted_tx, interrupted_rx) = std::sync::mpsc::channel::<()>();
+            let interrupted_tx = Mutex::new(interrupted_tx);
+            let _registration = blaze_shell::ThreadInterrupt::current().add_interrupt_listener(
+                Arc::new(move || {
+                    let _ = interrupted_tx.lock().send(());
+                }),
+            );
+            started.send(()).unwrap();
+            if interrupted_rx
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .is_ok()
+            {
+                // The wait threw InterruptedException, which cleared the flag.
+                blaze_shell::thread_interrupt::interrupted();
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "interrupted"));
+            }
         }
         for input in inputs {
             if let Some(contents) = self.contents.lock().get(input.get_exec_path()) {
@@ -3306,6 +3332,50 @@ fn get_input_stream_interrupted() {
             a.get_path().get_path_string()
         )
     );
+    assert!(action_fs.check_for_lost_inputs().is_none());
+    // Thread.currentThread().interrupt(): the flag is restored.
+    assert!(blaze_shell::thread_interrupt::interrupted());
+}
+
+/// Review 2026-11-19 round 3 P7: an interrupt of the reading thread delivered while the download
+/// is in flight ends `getInputStream` at once with "Received interrupt while fetching file
+/// '<path>'" and leaves the thread's interrupt flag set (`RemoteActionFileSystem.java:381-385`:
+/// `getFromFuture` throws `InterruptedException`; `Thread.currentThread().interrupt()`). The
+/// download runs on a helper thread (see `download_if_remote`), which must observe the reader's
+/// interrupt status.
+#[test]
+fn get_input_stream_interrupted_while_download_in_flight() {
+    let f = Fixture::new();
+    let inputs = Arc::new(InputMap::default());
+    let a = f.create_remote_artifact("a", "aaa", &inputs);
+    f.fetcher.mock_prefetch_file(&a, "aaa");
+    let action_fs = f.create_action_file_system_with(inputs);
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    *f.fetcher.block_next_prefetch.lock() = Some(started_tx);
+
+    let reader = blaze_shell::ThreadInterrupt::current();
+    let interrupter = std::thread::spawn(move || {
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the download started");
+        reader.interrupt();
+    });
+    let start = std::time::Instant::now();
+    let e = action_fs
+        .get_input_stream(a.get_path().as_fragment())
+        .err()
+        .expect("an interrupted download fails");
+    let elapsed = start.elapsed();
+    interrupter.join().unwrap();
+    assert!(elapsed < std::time::Duration::from_secs(10), "{elapsed:?}");
+    assert_eq!(
+        e.to_string(),
+        format!(
+            "Received interrupt while fetching file '{}'",
+            a.get_path().get_path_string()
+        )
+    );
+    assert!(blaze_shell::thread_interrupt::interrupted());
     assert!(action_fs.check_for_lost_inputs().is_none());
 }
 

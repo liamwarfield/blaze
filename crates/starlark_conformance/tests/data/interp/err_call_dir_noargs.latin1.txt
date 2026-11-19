@@ -1,0 +1,5 @@
+EVAL dir() missing 1 required positional argument: x
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_dir_noargs.star", line 1, column 4, in <toplevel>
+TRACE \x09\x09dir()
+TRACE Error in dir: dir() missing 1 required positional argument: x

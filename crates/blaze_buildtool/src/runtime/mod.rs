@@ -11,3 +11,5 @@ pub mod test_command_support;
 pub mod test_result_aggregator;
 pub mod test_summary;
 pub mod test_summary_printer;
+pub mod ui_event_subscriber;
+pub mod ui_state_tracker;

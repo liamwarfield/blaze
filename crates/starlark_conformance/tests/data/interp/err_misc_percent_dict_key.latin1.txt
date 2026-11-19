@@ -1,0 +1,5 @@
+EVAL unsupported format character "(" at index 1 in "%(a)s"
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_misc_percent_dict_key.star", line 1, column 13, in <toplevel>
+TRACE \x09\x09x = "%(a)s" % {}
+TRACE Error: unsupported format character "(" at index 1 in "%(a)s"

@@ -251,6 +251,26 @@ pub trait ExternalRepos: Send + Sync + 'static {
         repository_name: &RepositoryName,
         env: &mut Environment<'_>,
     ) -> Result<Option<RepositoryDirectoryValue>, ComputeError>;
+
+    /// Java `(BazelDepGraphValue) env.getValue(BazelDepGraphValue.KEY)`, for loading code that
+    /// reads the dependency graph itself (`AutoloadSymbols.getLoadKeys`).
+    fn get_bazel_dep_graph_value(
+        &self,
+        _env: &mut Environment<'_>,
+    ) -> Result<Option<Arc<blaze_bzlmod_model::BazelDepGraphValue>>, ComputeError> {
+        blaze_util::unported!("ExternalRepos.get_bazel_dep_graph_value (BazelDepGraphValue.KEY)")
+    }
+
+    /// Java `((ModuleFileValue) env.getValue(ModuleFileValue.KEY_FOR_ROOT_MODULE)).module()
+    /// .getName()` (StarlarkBuiltinsFunction with autoloads).
+    fn get_root_module_name(
+        &self,
+        _env: &mut Environment<'_>,
+    ) -> Result<Option<String>, ComputeError> {
+        blaze_util::unported!(
+            "ExternalRepos.get_root_module_name (ModuleFileValue.KEY_FOR_ROOT_MODULE)"
+        )
+    }
 }
 
 /// Java `StarlarkBuiltinsValue.isBuiltinsRepo`.

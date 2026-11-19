@@ -1,0 +1,2 @@
+SYNTAX err_res_conflict_load_global.star:2:1: conflicting global declaration of 'x'
+SYNTAX err_res_conflict_load_global.star:1:17: 'x' previously declared as file-local here

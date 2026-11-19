@@ -1,0 +1,5 @@
+EVAL at offset 0, unexpected end of file
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_json_decode_eof.star", line 1, column 12, in <toplevel>
+TRACE \x09\x09json.decode("")
+TRACE Error in decode: at offset 0, unexpected end of file

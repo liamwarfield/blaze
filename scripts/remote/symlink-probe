@@ -9,6 +9,8 @@ import shutil
 import subprocess
 import sys
 
+import unitstatus
+
 CACHE = os.path.expanduser("~/.cache/blaze")
 ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
 WORK = os.path.join(CACHE, "work", "probe-symlink")
@@ -57,6 +59,9 @@ fresh output base: the `processes:` line shows the disk cache hits.
 outputs.txt is equal and whether the execution logs are equal (after dropping timing fields and
 replacing the run's paths), with a diff of the first difference.
 
+The exit code is recorded inside the unit by scripts/remote/unit-supervisor (a death by
+signal N is 128+N, its name in the step's `signal` file); systemd-run's own status is 0
+after SIGPIPE, SIGHUP, SIGINT or SIGTERM.
 Every Bazel/Blaze call runs in `systemd-run --user --collect --wait -p MemoryMax=12G
 -p MemorySwapMax=0` with HOME and PATH=/usr/bin:/bin only, startup options
 --output_user_root=<OUT_ROOT>/<name> --nohome_rc --nosystem_rc, and --repository_cache,
@@ -181,14 +186,8 @@ def run_binary(binary, name, ws, step, args):
     os.makedirs(step, exist_ok=True)
     full = [binary, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc", args[0],
             "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"] + args[1:]
-    unit = ["systemd-run", "--user", "--collect", "--wait", "--pipe", "--quiet", "--same-dir",
-            "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0", "env", "-i",
-            "HOME=" + os.environ["HOME"], "PATH=/usr/bin:/bin"]
-    with open(os.path.join(step, "stdout"), "wb") as so, \
-            open(os.path.join(step, "stderr"), "wb") as se:
-        code = subprocess.run(unit + full, cwd=ws, stdout=so, stderr=se).returncode
-    with open(os.path.join(step, "exit"), "w") as f:
-        f.write("%d\n" % code)
+    code, _ = unitstatus.run(os.path.join(step, ".unit-status"), full, ws,
+                             os.path.join(step, "stdout"), os.path.join(step, "stderr"), step)
     if args[0] == "build":
         record_outputs(ws, step)
     return code

@@ -1,0 +1,31 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/work/blaze-before-errors
+# sha256 0ac2a4c8cda23a716bf35c55afe064eca1929ba3d0fc8d46a41ffb7c1028af05
+# tree 67302dc7fd8c4cc5c3c5fc80289402f9b95daaa6 (dirty)
+# date 2026-11-19T13:39:08
+=== 1: run cquery "somepath(//a:a, //b:b)"
+exit 0
+--- stdout
+//a:a (a7a71fd)
+//b:b (a7a71fd)
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (6 packages loaded, 8 targets configured).
+INFO: Found 2 targets...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 2: run cquery "allpaths(//a:a, //b:b)"
+exit 0
+--- stdout
+//b:b (a7a71fd)
+//a:a (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (6 packages loaded, 8 targets configured).
+INFO: Found 2 targets...
+WARNING: Targets were missing from graph: [ConfiguredTargetKey{label=//a:a, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions

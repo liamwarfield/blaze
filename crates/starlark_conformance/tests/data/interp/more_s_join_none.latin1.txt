@@ -1,1 +1,5 @@
 EVAL in call to join(), parameter 'elements' got value of type 'NoneType', want 'iterable'
+TRACE Traceback (most recent call last):
+TRACE \x09File "more_s_join_none.star", line 1, column 15, in <toplevel>
+TRACE \x09\x09print(",".join(None))
+TRACE Error in join: in call to join(), parameter 'elements' got value of type 'NoneType', want 'iterable'

@@ -141,6 +141,25 @@ impl TargetProvider for PackageManagerTargetProvider {
 /// Adapts `SkyframePackageManager` (Java `CachingPackageLocator`).
 struct PackageManagerCachingPackageLocator(Arc<SkyframePackageManager>);
 
+impl blaze_query::pkgcache::PackageProvider for PackageManagerTargetProvider {
+    fn get_package(
+        &self,
+        event_handler: &Arc<dyn ExtendedEventHandler>,
+        package_name: &PackageIdentifier,
+    ) -> Result<Arc<blaze_packages::package::Package>, blaze_query::pkgcache::GetPackageError> {
+        self.0
+            .get_package(event_handler.clone(), package_name)
+            .map_err(|e| match e {
+                NoSuchPackageOrInterrupted::NoSuchPackage(e) => {
+                    blaze_query::pkgcache::GetPackageError::NoSuchPackage(e)
+                }
+                NoSuchPackageOrInterrupted::Interrupted => {
+                    blaze_query::pkgcache::GetPackageError::Interrupted(InterruptedException::new())
+                }
+            })
+    }
+}
+
 impl CachingPackageLocator for PackageManagerCachingPackageLocator {
     fn get_build_file_for_package(&self, package_name: &PackageIdentifier) -> Option<Path> {
         package_manager::CachingPackageLocator::get_build_file_for_package(&*self.0, package_name)
@@ -344,9 +363,11 @@ fn main() {
         hash_function: digest_function,
         starlark_semantics,
         relative_working_directory: PathFragment::empty_fragment(),
+        working_directory: Path::create(PathFragment::create(&workspace), &fs),
         main_repo_mapping,
         query_functions: Vec::new(),
         target_provider: Arc::new(PackageManagerTargetProvider(package_manager.clone())),
+        package_provider: Arc::new(PackageManagerTargetProvider(package_manager.clone())),
         caching_package_locator: Arc::new(PackageManagerCachingPackageLocator(
             package_manager.clone(),
         )),

@@ -1,0 +1,5 @@
+EVAL type() accepts no more than 1 positional argument but got 2
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_type_toomany.star", line 1, column 5, in <toplevel>
+TRACE \x09\x09type(1, 2)
+TRACE Error in type: type() accepts no more than 1 positional argument but got 2

@@ -1,0 +1,5 @@
+EVAL got string for start index, want int
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_ix_slice_bad_bound.star", line 1, column 11, in <toplevel>
+TRACE \x09\x09x = [1, 2]["a":]
+TRACE Error: got string for start index, want int

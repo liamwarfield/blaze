@@ -1,0 +1,359 @@
+#!/usr/bin/env python3
+"""Compare test execution between the oracle (Bazel 9.3.2) and Blaze. See `compare help`."""
+
+import hashlib
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+USAGE = """\
+usage: scripts/tests/compare --binary <blaze> [--oracle <bazel>] [--case ID]... [--label NAME]
+                             [--skip-oracle]
+       scripts/tests/compare --oracle-only [--oracle <bazel>] [--case ID]... [--label NAME]
+       scripts/tests/compare list
+       scripts/tests/compare help
+
+Runs a fixed list of `test` (and `build`) invocations (see `list`) with the oracle and with
+Blaze, each side on its own work copy of the corpus project re2
+(~/.cache/blaze/work/tests-compare/<side>/re2: rsync of the read-only checkout minus bazel-* and
+.git, restored to the checkout's git HEAD, plus the probe package scripts/tests/probe as
+//blaze_tests_probe) and its own output user root (~/.cache/blaze/oracle-out/tests-compare-<side>),
+with a clean environment (HOME, PATH=/usr/bin:/bin), --nohome_rc --nosystem_rc, the shared
+repository cache, --color=no --curses=no and a build event JSON file per case, under
+systemd-run --user --scope -p MemoryMax=12G -p MemorySwapMax=0. Both sides run the same cases in
+the same order from a fresh output root; each case starts with `clean` so no result is cached.
+
+Compared per case (after normalising the workspace path, the output user root, the output base
+hash, UUIDs, durations "in 1.2s", "(1.2s)", "(N ms)" and "Elapsed time" on each side):
+  exit      the exit code
+  summary   stderr lines that are not progress: ERROR:, WARNING:, PASS:/FAIL:/TIMEOUT:/FLAKY:
+            lines, the test summary (lines starting with "//" and the indented lines that follow,
+            "Executed ..."/"There were ..."), "INFO: Build completed", "INFO: Build did NOT",
+            and "INFO: N processes: ..." ("Starting local Bazel server" is dropped: Blaze has no
+            persistent server yet)
+  found     the "INFO: Found ..." line (compared on its own: its position among the other
+            lines depends on console timing)
+  ran       the test results of the build event stream (label, run, shard, attempt, status),
+            sorted, except for cases marked ordered (exclusive tests) where the stream order is
+            compared
+  stdout    standard output (--test_output=streamed writes the test logs there)
+
+Output: a table on stdout; raw and normalised outputs under
+~/.cache/blaze/tests-compare/<label>/<side>/<case>.{stdout,stderr,bep.json,norm.json}, and
+results.json. Exit 0 when every compared field matches, 1 otherwise.
+--skip-oracle reuses the oracle outputs of an earlier run with the same --label;
+--oracle-only records them without running Blaze.
+"""
+
+HOME = os.path.expanduser("~")
+CACHE = os.path.join(HOME, ".cache", "blaze")
+ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+REPO_CACHE = os.path.join(CACHE, "repo-cache")
+PROBE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe")
+CORPUS = os.path.join(CACHE, "corpus")
+PROJECT = "re2"
+TIMEOUT = 3600
+
+P = "//blaze_tests_probe"
+
+# (id, description, command, args, ordered)
+CASES = [
+    ("pass-fail", "a passing and a failing cc_test and sh_test", "test",
+     [P + ":pass", P + ":fail", P + ":sh_pass", P + ":sh_fail"], False),
+    ("flaky-attempts", "--flaky_test_attempts=3 on failing tests, flaky = True", "test",
+     ["--flaky_test_attempts=3", P + ":fail", P + ":flaky_attr"], False),
+    ("exclusive", "tags exclusive / exclusive-if-local, run after the parallel tests", "test",
+     [P + ":excl_a", P + ":pass", P + ":excl_b", P + ":excl_if_local",
+      P + ":excl_if_local_local", P + ":sh_excl", P + ":sh_pass"], True),
+    ("exclusive-keep-going", "exclusive tests with --keep_going and a failing build", "test",
+     ["--keep_going", P + ":excl_b", P + ":excl_broken", P + ":excl_a", P + ":pass"], True),
+    ("exclusive-test-keep-going-off", "--notest_keep_going with a failing exclusive test", "test",
+     ["--notest_keep_going", P + ":excl_b", P + ":excl_a", P + ":pass"], True),
+    ("test-strategy-exclusive", "--test_strategy=exclusive", "test",
+     ["--test_strategy=exclusive", P + ":pass", P + ":fail", P + ":sh_pass", P + ":sharded"],
+     True),
+    ("streamed", "--test_output=streamed", "test",
+     ["--test_output=streamed", P + ":lines", P + ":sh_pass", P + ":fail", P + ":sharded"], True),
+    ("size-filters", "--test_size_filters=small,medium", "test",
+     ["--test_size_filters=small,medium", P + ":pass", P + ":pass_medium", P + ":large_long",
+      P + ":enormous", P + ":sh_fail"], False),
+    ("size-filters-neg", "--test_size_filters=-small", "test",
+     ["--test_size_filters=-small", P + ":pass", P + ":pass_medium", P + ":large_long",
+      P + ":sh_fail"], False),
+    ("timeout-filters", "--test_timeout_filters=long,eternal", "test",
+     ["--test_timeout_filters=long,eternal", P + ":pass", P + ":large_long", P + ":enormous"],
+     False),
+    ("lang-filters", "--test_lang_filters=sh", "test",
+     ["--test_lang_filters=sh", P + ":pass", P + ":sh_pass", P + ":sh_fail"], False),
+    ("lang-filters-neg", "--test_lang_filters=-sh", "test",
+     ["--test_lang_filters=-sh", P + ":pass", P + ":sh_pass"], False),
+    ("build-tests-only", "build --build_tests_only with a size filter", "build",
+     ["--build_tests_only", "--test_size_filters=medium", P + ":pass", P + ":pass_medium",
+      P + ":sh_pass"], False),
+    ("test-tests-only", "test --build_tests_only with lang and size filters", "test",
+     ["--build_tests_only", "--test_lang_filters=cc", "--test_size_filters=small", P + ":all"],
+     False),
+    ("timeout", "a test past --test_timeout", "test",
+     ["--test_timeout=1", P + ":sleepy"], False),
+    ("sharded", "shard_count = 2", "test", [P + ":sharded"], False),
+    ("xml-detailed", "test.xml parsed for --test_summary=detailed", "test",
+     ["--test_summary=detailed", P + ":xml_pass", P + ":xml_fail", P + ":pass"], False),
+    ("xml-testcase", "test.xml parsed for --test_summary=testcase", "test",
+     ["--test_summary=testcase", P + ":xml_pass", P + ":xml_fail"], False),
+    ("cancel-on-passed", "--experimental_cancel_concurrent_tests=on_passed", "test",
+     ["--runs_per_test=3", "--experimental_cancel_concurrent_tests=on_passed", P + ":pass"],
+     False),
+    ("cancel-on-failed", "--experimental_cancel_concurrent_tests=on_failed", "test",
+     ["--runs_per_test=3", "--experimental_cancel_concurrent_tests=on_failed", P + ":fail"],
+     False),
+    ("re2-all", "the corpus project's tests", "test", ["//:all"], False),
+]
+
+PROGRESS_RE = re.compile(
+    r"^(INFO: (Analyzed|Invocation ID|Streaming|Elapsed time|From |Running|Starting clean|"
+    r"Reading|Current date|Options provided|Found )|Loading:|Analyzing:|Computing main repo|"
+    r"Starting local Bazel server|"
+    r"\[[0-9,]+ / [0-9,]+\]|Target //|  bazel-|Aspect |DEBUG: )")
+UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def summary_lines(stderr):
+    out = []
+    for line in stderr.splitlines():
+        if not line.strip() or PROGRESS_RE.match(line):
+            continue
+        out.append(line)
+    return out
+
+
+def clean_env():
+    return {"HOME": HOME, "PATH": "/usr/bin:/bin"}
+
+
+def make_writable_and_remove(path):
+    if not os.path.lexists(path):
+        return
+    subprocess.run(["chmod", "-R", "u+w", path], stderr=subprocess.DEVNULL)
+    shutil.rmtree(path, ignore_errors=True)
+    if os.path.lexists(path):
+        subprocess.run(["rm", "-rf", path])
+
+
+def kill_servers(root):
+    if not os.path.isdir(root):
+        return
+    for name in os.listdir(root):
+        pidfile = os.path.join(root, name, "server", "server.pid.txt")
+        try:
+            pid = int(open(pidfile).read().strip())
+        except (OSError, ValueError):
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+        for _ in range(100):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+
+
+def prepare_workspace(checkout, ws):
+    """Copy the checkout to ws, restore it to the checkout's git HEAD, add the probe package."""
+    os.makedirs(ws, exist_ok=True)
+    subprocess.run(
+        ["rsync", "-a", "--delete", "--delete-excluded", "--exclude=/bazel-*", "--exclude=/.git",
+         checkout.rstrip("/") + "/", ws + "/"], check=True)
+    st = subprocess.run(
+        ["git", "--no-optional-locks", "-C", checkout, "status", "--porcelain=v1", "-z",
+         "--ignored", "--untracked-files=all"], check=True, stdout=subprocess.PIPE).stdout.decode()
+    for entry in st.split("\0"):
+        if len(entry) < 4:
+            continue
+        code, path = entry[:2], entry[3:]
+        if path.startswith("bazel-") and "/" not in path.rstrip("/"):
+            continue
+        dest = os.path.join(ws, path)
+        if code in ("??", "!!"):
+            if os.path.isdir(dest) and not os.path.islink(dest):
+                shutil.rmtree(dest)
+            elif os.path.lexists(dest):
+                os.remove(dest)
+        else:
+            blob = subprocess.run(["git", "-C", checkout, "show", "HEAD:" + path],
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            if blob.returncode == 0:
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "wb") as f:
+                    f.write(blob.stdout)
+    shutil.copytree(PROBE_DIR, os.path.join(ws, "blaze_tests_probe"))
+
+
+def normaliser(ws, root):
+    output_base_hash = hashlib.md5(ws.encode()).hexdigest()
+
+    def norm(text):
+        text = text.replace(os.path.join(root, output_base_hash), "<OUTPUT_BASE>")
+        text = text.replace(root, "<OUTPUT_USER_ROOT>")
+        text = text.replace(ws, "<WORKSPACE>")
+        text = re.sub(r"<OUTPUT_USER_ROOT>/install/[0-9a-f]{32}", "<INSTALL_BASE>", text)
+        text = UUID_RE.sub("<UUID>", text)
+        text = re.sub(r"\b\d+(\.\d+)?s\b", "<T>s", text)
+        text = re.sub(r"\((\d+) ms( total)?\)", lambda m: "(<N> ms%s)" % (m.group(2) or ""), text)
+        return text
+    return norm
+
+
+def test_results(bep_path):
+    """The testResult events of a build event JSON file, in stream order."""
+    out = []
+    if not os.path.isfile(bep_path):
+        return out
+    for line in open(bep_path, encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        tid = ev.get("id", {}).get("testResult")
+        if tid is None:
+            continue
+        status = ev.get("testResult", {}).get("status", "?")
+        out.append([tid.get("label"), tid.get("run", 0), tid.get("shard", 0),
+                    tid.get("attempt", 0), status])
+    return out
+
+
+def run_side(side, binary, cases, out_dir):
+    ws = os.path.join(CACHE, "work", "tests-compare", side, PROJECT)
+    root = os.path.join(CACHE, "oracle-out", "tests-compare-" + side)
+    kill_servers(root)
+    make_writable_and_remove(ws)
+    make_writable_and_remove(os.path.join(root, hashlib.md5(ws.encode()).hexdigest()))
+    prepare_workspace(os.path.join(CORPUS, PROJECT), ws)
+    norm = normaliser(ws, root)
+    os.makedirs(out_dir, exist_ok=True)
+    startup = [binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc"]
+    env_args = ["%s=%s" % kv for kv in clean_env().items()]
+    scope = ["systemd-run", "--user", "--scope", "--collect", "--quiet",
+             "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0", "--", "env", "-i"] + env_args
+    results = {}
+    for (cid, _desc, command, args, ordered) in cases:
+        subprocess.run(scope + startup + ["clean"], cwd=ws, stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        bep = os.path.join(out_dir, cid + ".bep.json")
+        if os.path.exists(bep):
+            os.remove(bep)
+        cmd = startup + [command, "--repository_cache=" + REPO_CACHE, "--color=no",
+                         "--curses=no", "--build_event_json_file=" + bep] + args
+        print("[tests-compare] %s %s" % (side, cid), flush=True)
+        t0 = time.monotonic()
+        try:
+            p = subprocess.run(scope + cmd, cwd=ws, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=TIMEOUT)
+            rc, out, err = p.returncode, p.stdout, p.stderr
+        except subprocess.TimeoutExpired as e:
+            rc, out, err = -9, e.stdout or b"", (e.stderr or b"") + b"\n[compare] timed out\n"
+        dur = round(time.monotonic() - t0, 1)
+        with open(os.path.join(out_dir, cid + ".stdout"), "wb") as f:
+            f.write(out)
+        with open(os.path.join(out_dir, cid + ".stderr"), "wb") as f:
+            f.write(err)
+        ran = test_results(bep)
+        rec = {
+            "argv": cmd, "duration_s": dur,
+            "exit": rc,
+            "summary": summary_lines(norm(err.decode("latin-1"))),
+            "found": [l for l in norm(err.decode("latin-1")).splitlines()
+                      if l.startswith("INFO: Found ")],
+            "ran": ran if ordered else sorted(ran),
+            "stdout": norm(out.decode("latin-1")),
+        }
+        results[cid] = rec
+        with open(os.path.join(out_dir, cid + ".norm.json"), "w") as f:
+            json.dump(rec, f, indent=1)
+        print("[tests-compare]   exit %d in %.1fs" % (rc, dur), flush=True)
+    subprocess.run(startup + ["shutdown"], cwd=ws, env=clean_env(), stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+    return results
+
+
+def compare(oracle, blaze):
+    return {f: ("MATCH" if oracle.get(f) == blaze.get(f) else "DIFF")
+            for f in ("exit", "summary", "found", "ran", "stdout")}
+
+
+def main(argv):
+    if not argv or argv[0] in ("help", "--help", "-h"):
+        print(USAGE)
+        return 0
+    if argv[0] == "list":
+        for c in CASES:
+            print("%-30s %s" % (c[0], c[1]))
+        return 0
+    binary, oracle, label, only, skip_oracle, oracle_only = None, ORACLE, "tests-1", [], False, False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--binary":
+            binary = os.path.abspath(argv[i + 1]); i += 2
+        elif a == "--oracle":
+            oracle = os.path.abspath(argv[i + 1]); i += 2
+        elif a == "--label":
+            label = argv[i + 1]; i += 2
+        elif a == "--case":
+            only.append(argv[i + 1]); i += 2
+        elif a == "--skip-oracle":
+            skip_oracle = True; i += 1
+        elif a == "--oracle-only":
+            oracle_only = True; i += 1
+        else:
+            print("unknown argument: %s\n\n%s" % (a, USAGE), file=sys.stderr)
+            return 2
+    if binary is None and not oracle_only:
+        print(USAGE, file=sys.stderr)
+        return 2
+    base = os.path.join(CACHE, "tests-compare", label)
+    cases = [c for c in CASES if not only or c[0] in only]
+    odir = os.path.join(base, "oracle")
+    if skip_oracle:
+        ores = {c[0]: json.load(open(os.path.join(odir, c[0] + ".norm.json"))) for c in cases}
+    else:
+        ores = run_side("oracle", oracle, cases, odir)
+    if oracle_only:
+        for c in cases:
+            print("| %s | %d |" % (c[0], ores[c[0]]["exit"]))
+        return 0
+    bres = run_side("blaze", binary, cases, os.path.join(base, "blaze"))
+    ok = True
+    table = []
+    all_results = {}
+    for c in cases:
+        cmp_ = compare(ores[c[0]], bres[c[0]])
+        ok = ok and all(v == "MATCH" for v in cmp_.values())
+        table.append((c[0], ores[c[0]]["exit"], bres[c[0]]["exit"], cmp_))
+        all_results[c[0]] = {"oracle": ores[c[0]], "blaze": bres[c[0]], "compare": cmp_}
+    with open(os.path.join(base, "results.json"), "w") as f:
+        json.dump(all_results, f, indent=1)
+    print()
+    print("| case | oracle exit | blaze exit | exit | summary | found | ran | stdout |")
+    print("| --- | --- | --- | --- | --- | --- | --- | --- |")
+    for cid, oe, be, cmp_ in table:
+        print("| %s | %d | %d | %s | %s | %s | %s | %s |" % (
+            cid, oe, be, cmp_["exit"], cmp_["summary"], cmp_["found"], cmp_["ran"],
+            cmp_["stdout"]))
+    print("\nresults: %s" % os.path.join(base, "results.json"))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

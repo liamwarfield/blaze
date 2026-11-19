@@ -1,0 +1,2 @@
+WARNING: Download from https://origin.example/f failed: class java.io.IOException Unable to tunnel through proxy. Proxy returns "HTTP/1.1 407 Proxy Authentication Required"
+Error in download: java.io.IOException: Error downloading [https://origin.example/f] to <output_base>/external/+dl+r/f: Unable to tunnel through proxy. Proxy returns "HTTP/1.1 407 Proxy Authentication Required"

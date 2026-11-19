@@ -1,10 +1,13 @@
 //! Port of `com.google.devtools.build.lib.query2.cquery`: the configured target query
 //! environment, its accessor, the `config()` function and the output formatter callbacks.
 
+pub mod build_output_formatter_callback;
 pub mod config_function;
 pub mod configured_target_query_environment;
 pub mod cquery_options;
 pub mod cquery_threadsafe_callback;
+pub mod files_output_formatter_callback;
+pub mod graph_output_formatter_callback;
 pub mod label_and_configuration_output_formatter_callback;
 pub mod proto_output_formatter_callback;
 pub mod unported_output_formatter_callbacks;
@@ -18,8 +21,11 @@ use blaze_query::query::output::output_formatter::OutputStream;
 use blaze_sky_top::skyframe_executor::SkyframeExecutor;
 
 use crate::post_analysis_query_environment::NamedThreadSafeOutputFormatterCallback;
+use build_output_formatter_callback::BuildOutputFormatterCallback;
 use configured_target_query_environment::{ConfiguredTargetQueryEnvironment, CqueryNode};
 use cquery_threadsafe_callback::CqueryThreadsafeCallback;
+use files_output_formatter_callback::FilesOutputFormatterCallback;
+use graph_output_formatter_callback::GraphOutputFormatterCallback;
 use label_and_configuration_output_formatter_callback::LabelAndConfigurationOutputFormatterCallback;
 use proto_output_formatter_callback::{OutputType, ProtoOutputFormatterCallback};
 use unported_output_formatter_callbacks::UnportedOutputFormatterCallback;
@@ -32,9 +38,18 @@ pub fn get_default_output_formatters<'a>(
     event_handler: Arc<dyn ExtendedEventHandler>,
     out: OutputStream,
     skyframe_executor: &'a SkyframeExecutor,
+    top_level_artifact_context_output_groups: Vec<String>,
 ) -> Vec<Box<dyn NamedThreadSafeOutputFormatterCallback<CqueryNode> + 'a>> {
     // cqueryOptions.aspectDeps.createResolver(packageManager, eventHandler)
-    let aspect_resolver = aspect_resolver::create_resolver(cquery_options.aspect_deps);
+    let aspect_resolver = aspect_resolver::create_resolver(
+        cquery_options.aspect_deps,
+        Arc::new(
+            crate::commands::query_adapters::PackageManagerTargetProvider(
+                skyframe_executor.get_package_manager().clone(),
+            ),
+        ),
+        event_handler.clone(),
+    );
     let base = |uniquify_results: bool| {
         CqueryThreadsafeCallback::new(
             event_handler.clone(),
@@ -87,9 +102,18 @@ pub fn get_default_output_formatters<'a>(
             label_printer,
             hash_function,
         )),
-        Box::new(UnportedOutputFormatterCallback::build()),
-        Box::new(UnportedOutputFormatterCallback::graph()),
+        Box::new(BuildOutputFormatterCallback::new(
+            base(false),
+            env.get_label_printer().clone(),
+        )),
+        Box::new(GraphOutputFormatterCallback::new(
+            base(false),
+            env.get_label_printer().clone(),
+        )),
         Box::new(UnportedOutputFormatterCallback::starlark()),
-        Box::new(UnportedOutputFormatterCallback::files()),
+        Box::new(FilesOutputFormatterCallback::new(
+            base(true),
+            top_level_artifact_context_output_groups,
+        )),
     ]
 }

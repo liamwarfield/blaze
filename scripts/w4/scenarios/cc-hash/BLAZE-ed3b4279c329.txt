@@ -1,0 +1,33 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /tmp/claude-1000/-home-liamwarfield--t3-projects-blaze/6d69a44d-e0de-42b9-9769-0799c9eb488a/scratchpad/blaze-before
+# sha256 ed3b4279c3299fbc8c3a5ae6a65e0bc012e1f3f83f47464ae8c9a80846872651
+# tree 4cc4f6287b03bc359d0fbd69b9f4b0eeee1b66e9 (dirty)
+# date 2026-11-19T12:58:47
+=== 1: run build //:probe
+exit 0
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:probe (86 packages loaded, 464 targets configured).
+INFO: Found 1 target...
+Target //:probe up-to-date:
+  bazel-bin/probe.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 2: cat bazel-bin/probe.txt
+cpp key count: 1
+fragment keys: 4
+cpp value: 2
+cpp == cpp: True
+cpp == platform: False
+apple == apple: True
+depset of structs: 2
+dict of structs: 2
+same context equal: True
+different contexts equal: False
+dict of targets: 2
+depset of depsets: 1
+files_to_run in dict: 1
+runfiles in dict: 1

@@ -119,10 +119,41 @@ fn convert_options_path_fragment(path: &str) -> PathFragment {
     PathFragment::create(path)
 }
 
-/// `StandardSystemProperty.USER_HOME.value()`. The JVM's `user.home` comes from
-/// `getpwuid(getuid())->pw_dir`, not `$HOME`.
-fn user_home() -> String {
-    blaze_util::unported!("StandardSystemProperty.USER_HOME")
+/// `StandardSystemProperty.USER_HOME.value()`: the JVM's `user.home`, as an internal string (the
+/// server decodes system properties with `sun.jnu.encoding`, ISO-8859-1).
+///
+/// Java (JDK 25): java.base/unix/native/libjava/java_props_md.c GetJavaProperties: `pw_dir` of
+/// `getpwuid(getuid())`; if that is missing, empty or one character long, a non-empty `$HOME`
+/// instead; with neither, `pw_dir` if there is one, else "?".
+pub(crate) fn user_home() -> String {
+    // SAFETY: getpwuid returns NULL or a pointer to a passwd entry valid until the next call;
+    // pw_dir is copied out at once.
+    let pw_dir: Option<Vec<u8>> = unsafe {
+        let pwent = libc::getpwuid(libc::getuid());
+        if pwent.is_null() || (*pwent).pw_dir.is_null() {
+            None
+        } else {
+            Some(
+                std::ffi::CStr::from_ptr((*pwent).pw_dir)
+                    .to_bytes()
+                    .to_vec(),
+            )
+        }
+    };
+    let home = match pw_dir {
+        Some(dir) if dir.len() >= 2 => dir,
+        pw_dir => {
+            // If the OS supplied home directory is not defined or less than two characters
+            // long try HOME environment variable instead.
+            match std::env::var_os("HOME") {
+                Some(env_home) if !env_home.is_empty() => {
+                    std::os::unix::ffi::OsStrExt::as_bytes(env_home.as_os_str()).to_vec()
+                }
+                _ => pw_dir.unwrap_or_else(|| b"?".to_vec()),
+            }
+        }
+    };
+    blaze_util::string_encoding::latin1_decode(&home).into_owned()
 }
 
 #[cfg(test)]

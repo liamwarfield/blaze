@@ -1,0 +1,5 @@
+EVAL Missing argument 'x'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_str_format_missing.star", line 1, column 13, in <toplevel>
+TRACE \x09\x09"{x}".format()
+TRACE Error in format: Missing argument 'x'

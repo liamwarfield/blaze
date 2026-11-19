@@ -1,1 +1,5 @@
 EVAL No replacement found for index -1
+TRACE Traceback (most recent call last):
+TRACE \x09File "more_f_neg_index.star", line 1, column 20, in <toplevel>
+TRACE \x09\x09print("{-1}".format("a"))
+TRACE Error in format: No replacement found for index -1

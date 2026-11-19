@@ -587,3 +587,114 @@ pub fn get_all_files_under(path: &Path, result: &mut Vec<Path>) {
     }
     walk(path, result);
 }
+
+// Java: src/main/cpp/util/file_platform.h:107 WriteResult
+/// Result of a `WriteToStdOutErr` operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteResult {
+    Success,
+    OtherError,
+    BrokenPipe,
+}
+
+unsafe extern "C" {
+    /// glibc's `stdout` and `stderr` `FILE*`s.
+    #[link_name = "stdout"]
+    static mut C_STDOUT: *mut libc::FILE;
+    #[link_name = "stderr"]
+    static mut C_STDERR: *mut libc::FILE;
+}
+
+/// `setvbuf(stdout, nullptr, _IONBF, 0); setvbuf(stderr, nullptr, _IONBF, 0);` (part of
+/// `SetupStdStreams`).
+///
+/// # Safety
+/// Must be called before any output through the C streams.
+pub unsafe fn setvbuf_unbuffered_std_streams() {
+    // SAFETY: forwarded to the caller.
+    unsafe {
+        libc::setvbuf(C_STDOUT, std::ptr::null_mut(), libc::_IONBF, 0);
+        libc::setvbuf(C_STDERR, std::ptr::null_mut(), libc::_IONBF, 0);
+    }
+}
+
+// Java: src/main/cpp/util/file_posix.cc:331 WriteToStdOutErr
+/// Writes `data` to stdout (or stderr) through C stdio (`fwrite`), as the C++ does (unbuffered:
+/// `SetupStdStreams`).
+pub fn write_to_std_out_err(data: &[u8], to_stdout: bool) -> WriteResult {
+    // SAFETY: the stdio streams are valid for the life of the process; fwrite is thread-safe.
+    let r = unsafe {
+        let stream = if to_stdout { C_STDOUT } else { C_STDERR };
+        libc::fwrite(data.as_ptr().cast(), 1, data.len(), stream)
+    };
+    if r == data.len() {
+        WriteResult::Success
+    } else if crate::util::errors::errno() == libc::EPIPE {
+        // The SIGPIPE the C++ client's handler records at this write (SIGPIPE is ignored in
+        // this process; see signal_handler::install).
+        crate::signal_handler::note_broken_pipe();
+        WriteResult::BrokenPipe
+    } else {
+        WriteResult::OtherError
+    }
+}
+
+// Java: src/main/cpp/util/file_platform.h:69 ReadFileResult
+const READ_FILE_RESULT_SUCCESS: i32 = 0;
+const READ_FILE_RESULT_OTHER_ERROR: i32 = 1;
+const READ_FILE_RESULT_INTERRUPTED: i32 = 2;
+const READ_FILE_RESULT_AGAIN: i32 = 3;
+
+// Java: src/main/cpp/util/file_posix.cc:249 ReadFromHandle
+fn read_from_handle(fd: libc::c_int, data: &mut [u8], error: &mut i32) -> isize {
+    // SAFETY: data is a valid writable buffer of data.len() bytes.
+    let result = unsafe { libc::read(fd, data.as_mut_ptr().cast(), data.len()) };
+    if result >= 0 {
+        *error = READ_FILE_RESULT_SUCCESS;
+    } else if errno() == libc::EINTR {
+        *error = READ_FILE_RESULT_INTERRUPTED;
+    } else if errno() == libc::EAGAIN {
+        *error = READ_FILE_RESULT_AGAIN;
+    } else {
+        *error = READ_FILE_RESULT_OTHER_ERROR;
+    }
+    result
+}
+
+// Java: src/main/cpp/util/file.cc:32 ReadFrom
+/// Reads `handle` until end of file (or `max_size` bytes if positive). Returns the content, or
+/// `None` on a read error.
+pub fn read_from(handle: libc::c_int, max_size: i32) -> Option<Vec<u8>> {
+    const K_READ_SIZE: usize = 4096; // read 4K chunks
+    let mut max_size = max_size;
+    let mut content = Vec::new();
+    let mut buf = [0u8; K_READ_SIZE];
+    // OPT:  This loop generates one spurious read on regular files.
+    let mut error = 0;
+    loop {
+        let size = if max_size > 0 {
+            std::cmp::min(max_size as usize, K_READ_SIZE)
+        } else {
+            K_READ_SIZE
+        };
+        let r = read_from_handle(handle, &mut buf[..size], &mut error);
+        if r == 0 {
+            break;
+        }
+        if r < 0 {
+            if error == READ_FILE_RESULT_INTERRUPTED || error == READ_FILE_RESULT_AGAIN {
+                continue;
+            }
+            return None;
+        }
+        content.extend_from_slice(&buf[..r as usize]);
+        if max_size > 0 {
+            if max_size as isize > r {
+                max_size -= r as i32;
+            } else {
+                break;
+            }
+        }
+    }
+    Some(content)
+}

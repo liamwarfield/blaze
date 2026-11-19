@@ -15,6 +15,9 @@ use blaze_actions::skyframe::actiongraph::v2::aquery_output_handler::{
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_events::ExtendedEventHandler;
 use blaze_optdefs::command::aquery_options::AqueryOptions;
+use blaze_protos::JavaMessage;
+use blaze_protos::analysis;
+use blaze_protos::text_format::message_to_string;
 use blaze_query::query::output::output_formatter::OutputStream;
 use blaze_query_engine::callback::{
     IoExceptionSlot, OutputFormatterError, output_formatter_callback_process,
@@ -23,6 +26,7 @@ use blaze_query_engine::{
     Callback, InterruptedException, OutputFormatterCallback, QueryError,
     ThreadSafeOutputFormatterCallback,
 };
+use blaze_util::string_encoding::latin1_encode_lossy;
 
 use crate::aquery::action_graph_query_environment::{
     ActionGraphQueryEnvironment, KeyedConfiguredTargetValue,
@@ -124,49 +128,211 @@ impl<'a> ActionGraphProtoOutputFormatterCallback<'a> {
 }
 
 /// Constructs the output handler of an output type.
-// Java: com/google/devtools/build/lib/query2/aquery/ActionGraphProtoOutputFormatterCallback.java:84 ActionGraphProtoOutputFormatterCallback.constructAqueryOutputHandler
+// Java: com/google/devtools/build/lib/query2/aquery/ActionGraphProtoOutputFormatterCallback.java:86 ActionGraphProtoOutputFormatterCallback.constructAqueryOutputHandler
 pub fn construct_aquery_output_handler(
     output_type: OutputType,
     out: OutputStream,
 ) -> Box<dyn AqueryOutputHandler> {
     match output_type {
         OutputType::BINARY | OutputType::DELIMITED_BINARY | OutputType::TEXT => {
-            Box::new(UnportedStreamedConsumingOutputHandler)
+            Box::new(StreamedConsumingOutputHandler::new(output_type, out))
         }
         OutputType::JSON => Box::new(MonolithicOutputHandler::new(PrintStream(out))),
     }
 }
 
-/// `StreamedConsumingOutputHandler` (proto, streamed_proto and textproto output) is not ported.
-struct UnportedStreamedConsumingOutputHandler;
+/// `CodedOutputStream.writeUInt32NoTag` (a varint).
+fn encode_varint(mut value: u64, out: &mut Vec<u8>) {
+    loop {
+        if value < 0x80 {
+            out.push(value as u8);
+            return;
+        }
+        out.push(((value & 0x7f) | 0x80) as u8);
+        value >>= 7;
+    }
+}
 
-impl AqueryOutputHandler for UnportedStreamedConsumingOutputHandler {
-    fn output_artifact(&mut self, _message: blaze_protos::analysis::Artifact) {
-        blaze_util::unported!("StreamedConsumingOutputHandler")
+/// `ActionGraphContainer` field numbers (Java `ActionGraphContainer.*_FIELD_NUMBER`).
+mod field_number {
+    pub const ARTIFACTS: u32 = 1;
+    pub const ACTIONS: u32 = 2;
+    pub const TARGETS: u32 = 3;
+    pub const DEP_SET_OF_FILES: u32 = 4;
+    pub const CONFIGURATION: u32 = 5;
+    pub const ASPECT_DESCRIPTORS: u32 = 6;
+    pub const RULE_CLASSES: u32 = 7;
+    pub const PATH_FRAGMENTS: u32 = 8;
+}
+
+/// The output handler for the `proto`, `streamed_proto` and `textproto` formats: each message is
+/// printed as it is produced.
+///
+/// PORT: Java hands each message to a single consumer thread through a bounded
+/// `LinkedBlockingQueue` (`startConsumer` / `stopConsumer`, a poison pill); the consumer prints
+/// the tasks in queue order, which is the order of the `output*` calls. Blaze prints each task
+/// on the calling thread, in the same order. The class belongs to
+/// `skyframe/actiongraph/v2` (blaze_actions); it is ported next to its only user.
+// Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:41 StreamedConsumingOutputHandler
+pub struct StreamedConsumingOutputHandler {
+    output_type: OutputType,
+    output_stream: OutputStream,
+    /// Java `CodedOutputStream.newInstance(out, OUTPUT_BUFFER_SIZE)` (BINARY) and
+    /// `PrintStream(out)` (TEXT): bytes not yet flushed to `output_stream`.
+    buffer: Vec<u8>,
+}
+
+// Java: com/google/devtools/build/lib/query2/aquery/ActionGraphProtoOutputFormatterCallback.java:61 ActionGraphProtoOutputFormatterCallback.OUTPUT_BUFFER_SIZE
+const OUTPUT_BUFFER_SIZE: usize = 16384;
+
+impl StreamedConsumingOutputHandler {
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:53 StreamedConsumingOutputHandler.<init>
+    pub fn new(output_type: OutputType, output_stream: OutputStream) -> Self {
+        blaze_util::check_argument!(
+            matches!(
+                output_type,
+                OutputType::BINARY | OutputType::DELIMITED_BINARY | OutputType::TEXT
+            ),
+            "Only proto, streamed_proto and textproto outputs should be streamed."
+        );
+        StreamedConsumingOutputHandler {
+            output_type,
+            output_stream,
+            buffer: Vec::new(),
+        }
     }
-    fn output_action(&mut self, _message: blaze_protos::analysis::Action) {
-        blaze_util::unported!("StreamedConsumingOutputHandler")
+
+    /// Construct the printing task and print it (Java: put it in the queue, whose consumer
+    /// prints it).
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:132 StreamedConsumingOutputHandler.addTaskToQueue
+    fn add_task_to_queue<M: JavaMessage>(
+        &mut self,
+        message: M,
+        field_number: u32,
+        message_label: &str,
+        wrap: impl FnOnce(M) -> analysis::ActionGraphContainer,
+    ) {
+        match self.output_type {
+            OutputType::BINARY => {
+                // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/PrintTask.java:44 PrintTask.ProtoPrintTask.print
+                // codedOutputStream.writeMessage(fieldNumber, message)
+                encode_varint(u64::from((field_number << 3) | 2), &mut self.buffer);
+                message.write_delimited_to(&mut self.buffer);
+                if self.buffer.len() >= OUTPUT_BUFFER_SIZE {
+                    self.flush_buffer();
+                }
+            }
+            OutputType::DELIMITED_BINARY => {
+                // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/PrintTask.java:66 PrintTask.StreamedProtoPrintTask.print
+                let mut bytes = Vec::new();
+                wrap(message).write_delimited_to(&mut bytes);
+                // builder.build().writeDelimitedTo(out): straight to the stream.
+                let _ = self.output_stream.borrow_mut().write_all(&bytes);
+            }
+            OutputType::TEXT => {
+                // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/PrintTask.java:118 PrintTask.TextProtoPrintTask.print
+                let text = format!("{message_label} {{\n{}}}\n", message_to_string(&message));
+                // PrintStream(out): the default charset (ISO-8859-1 on Bazel's server).
+                self.buffer.extend_from_slice(&latin1_encode_lossy(&text));
+            }
+            OutputType::JSON => panic!("IllegalStateException: Unknown outputType: JSON"),
+        }
     }
-    fn output_target(&mut self, _message: blaze_protos::analysis::Target) {
-        blaze_util::unported!("StreamedConsumingOutputHandler")
+
+    fn flush_buffer(&mut self) {
+        let bytes = std::mem::take(&mut self.buffer);
+        let _ = self.output_stream.borrow_mut().write_all(&bytes);
     }
-    fn output_dep_set_of_files(&mut self, _message: blaze_protos::analysis::DepSetOfFiles) {
-        blaze_util::unported!("StreamedConsumingOutputHandler")
+}
+
+impl AqueryOutputHandler for StreamedConsumingOutputHandler {
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:69 StreamedConsumingOutputHandler.outputArtifact
+    fn output_artifact(&mut self, message: analysis::Artifact) {
+        self.add_task_to_queue(message, field_number::ARTIFACTS, "artifacts", |m| {
+            analysis::ActionGraphContainer {
+                artifacts: vec![m],
+                ..Default::default()
+            }
+        });
     }
-    fn output_configuration(&mut self, _message: blaze_protos::analysis::Configuration) {
-        blaze_util::unported!("StreamedConsumingOutputHandler")
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:74 StreamedConsumingOutputHandler.outputAction
+    fn output_action(&mut self, message: analysis::Action) {
+        self.add_task_to_queue(message, field_number::ACTIONS, "actions", |m| {
+            analysis::ActionGraphContainer {
+                actions: vec![m],
+                ..Default::default()
+            }
+        });
     }
-    fn output_aspect_descriptor(&mut self, _message: blaze_protos::analysis::AspectDescriptor) {
-        blaze_util::unported!("StreamedConsumingOutputHandler")
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:79 StreamedConsumingOutputHandler.outputTarget
+    fn output_target(&mut self, message: analysis::Target) {
+        self.add_task_to_queue(message, field_number::TARGETS, "targets", |m| {
+            analysis::ActionGraphContainer {
+                targets: vec![m],
+                ..Default::default()
+            }
+        });
     }
-    fn output_rule_class(&mut self, _message: blaze_protos::analysis::RuleClass) {
-        blaze_util::unported!("StreamedConsumingOutputHandler")
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:84 StreamedConsumingOutputHandler.outputDepSetOfFiles
+    fn output_dep_set_of_files(&mut self, message: analysis::DepSetOfFiles) {
+        self.add_task_to_queue(
+            message,
+            field_number::DEP_SET_OF_FILES,
+            "dep_set_of_files",
+            |m| analysis::ActionGraphContainer {
+                dep_set_of_files: vec![m],
+                ..Default::default()
+            },
+        );
     }
-    fn output_path_fragment(&mut self, _message: blaze_protos::analysis::PathFragment) {
-        blaze_util::unported!("StreamedConsumingOutputHandler")
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:89 StreamedConsumingOutputHandler.outputConfiguration
+    fn output_configuration(&mut self, message: analysis::Configuration) {
+        self.add_task_to_queue(message, field_number::CONFIGURATION, "configuration", |m| {
+            analysis::ActionGraphContainer {
+                configuration: vec![m],
+                ..Default::default()
+            }
+        });
     }
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:94 StreamedConsumingOutputHandler.outputAspectDescriptor
+    fn output_aspect_descriptor(&mut self, message: analysis::AspectDescriptor) {
+        self.add_task_to_queue(
+            message,
+            field_number::ASPECT_DESCRIPTORS,
+            "aspect_descriptors",
+            |m| analysis::ActionGraphContainer {
+                aspect_descriptors: vec![m],
+                ..Default::default()
+            },
+        );
+    }
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:100 StreamedConsumingOutputHandler.outputRuleClass
+    fn output_rule_class(&mut self, message: analysis::RuleClass) {
+        self.add_task_to_queue(message, field_number::RULE_CLASSES, "rule_classes", |m| {
+            analysis::ActionGraphContainer {
+                rule_classes: vec![m],
+                ..Default::default()
+            }
+        });
+    }
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:105 StreamedConsumingOutputHandler.outputPathFragment
+    fn output_path_fragment(&mut self, message: analysis::PathFragment) {
+        self.add_task_to_queue(
+            message,
+            field_number::PATH_FRAGMENTS,
+            "path_fragments",
+            |m| analysis::ActionGraphContainer {
+                path_fragments: vec![m],
+                ..Default::default()
+            },
+        );
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:156 StreamedConsumingOutputHandler.close
     fn close(&mut self) -> std::io::Result<()> {
-        blaze_util::unported!("StreamedConsumingOutputHandler")
+        // codedOutputStream.flush() / outputStream.flush() / printStream.flush()
+        self.flush_buffer();
+        self.output_stream.borrow_mut().flush()
     }
 }
 

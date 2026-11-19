@@ -1,0 +1,1 @@
+SYNTAX err_parse_not_assoc_eq.star:1:12: Operator '==' is not associative with operator '=='. Use parens.

@@ -1,0 +1,5 @@
+EVAL cannot set .y field of string value
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_mut_str_assign.star", line 2, column 2, in <toplevel>
+TRACE \x09\x09x.y = 1
+TRACE Error: cannot set .y field of string value

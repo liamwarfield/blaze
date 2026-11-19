@@ -25,6 +25,8 @@ use blaze_packages::bzl_context::BazelModuleContext;
 use blaze_packages::exceptions::{
     DetailedExitCode, NoSuchPackageException, NoSuchPackageKind, PackageLoadingCode,
 };
+use blaze_packages::package::NoSuchPackagePieceException;
+use blaze_packages::package::PackagePieceIdentifierForBuildFile;
 use blaze_packages::package::{
     BadGlobException, ConfigSettingVisibilityPolicy, Globber, GlobberError, GlobberOperation,
     GlobberToken, Package, PackageArgs, RuleVisibility, TargetDefinitionContext,
@@ -53,6 +55,10 @@ use crate::ignored_subdirectories::{
     IgnoredSubdirectories, IgnoredSubdirectoriesKey, InvalidIgnorePathException,
 };
 use crate::io::IOException;
+use crate::package_pieces::{
+    NoSuchMacroInstanceException, NonFinalizerPackagePiecesKey, PackagePieceForBuildFileKey,
+    PackagePieceValueForBuildFile, PieceException, RecursiveExpander,
+};
 use crate::package_lookup::{
     ErrorReason, PackageLookupFunction, PackageLookupKey, PackageLookupValue,
 };
@@ -419,6 +425,27 @@ enum CompiledBuildFile {
     },
 }
 
+// Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1500 PackageFunction.handlePackagePieceDependencyError
+fn handle_package_piece_dependency_error(pkg_builder: &mut TargetDefinitionContext, message: &str) {
+    pkg_builder.set_contains_errors();
+    let location = pkg_builder.get_metadata().get_build_file_location();
+    let package_id = pkg_builder
+        .get_metadata()
+        .package_identifier
+        .get_canonical_form();
+    pkg_builder.get_local_event_handler().handle(&Package::error(
+        Some(&location),
+        &format!("cannot compute package {package_id}: {message}"),
+        PackageLoadingCode::StarlarkEvalError,
+    ));
+}
+
+/// What PACKAGE computes (Java `Packageoid`): a package, or the BUILD file piece of a package.
+enum Packageoid {
+    Package(PackageValue),
+    PieceForBuildFile(PackagePieceValueForBuildFile),
+}
+
 /// What PACKAGE is constructed with (Java `PackageFunction.Builder` settings).
 pub struct PackageFunctionConfig {
     pub package_factory: Arc<PackageFactory>,
@@ -450,13 +477,49 @@ impl PackageFunction {
         PackageFunction { config }
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:386 PackageFunction.compute
+    /// PACKAGE for a package key.
     pub fn compute(
         &self,
         key: &PackageKey,
         env: &mut Environment<'_>,
     ) -> Result<Option<PackageValue>, ComputeError> {
-        let package_id = key.argument();
+        Ok(
+            match self.compute_packageoid(key.argument(), None, env)? {
+                None => None,
+                Some(Packageoid::Package(pkg)) => Some(pkg),
+                Some(Packageoid::PieceForBuildFile(_)) => {
+                    unreachable!("a package key computes a package")
+                }
+            },
+        )
+    }
+
+    /// PACKAGE for the key of a BUILD file piece (lazy macro expansion).
+    pub fn compute_package_piece(
+        &self,
+        key: &PackagePieceForBuildFileKey,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<PackagePieceValueForBuildFile>, ComputeError> {
+        Ok(
+            match self.compute_packageoid(key.0.get_package_identifier(), Some(&key.0), env)? {
+                None => None,
+                Some(Packageoid::PieceForBuildFile(v)) => Some(v),
+                Some(Packageoid::Package(_)) => {
+                    unreachable!("a package piece key computes a package piece")
+                }
+            },
+        )
+    }
+
+    /// Java `compute`: a `Package` given a `PackageIdentifier`, or a `PackagePiece.ForBuildFile`
+    /// given a `PackagePieceIdentifier.ForBuildFile` (`package_piece_id`).
+    // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:368 PackageFunction.compute
+    fn compute_packageoid(
+        &self,
+        package_id: &PackageIdentifier,
+        package_piece_id: Option<&PackagePieceIdentifierForBuildFile>,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<Packageoid>, ComputeError> {
         if *package_id == *EXTERNAL_PACKAGE_IDENTIFIER {
             return Err(PackageFunctionExceptionBuilder::new(
                 ExceptionType::NoSuchPackage,
@@ -473,8 +536,10 @@ impl PackageFunction {
         let Some(lazy_macro_expansion_packages) = LAZY_MACRO_EXPANSION_PACKAGES.get(env)? else {
             return Ok(None);
         };
-        if lazy_macro_expansion_packages.contains(package_id) {
-            blaze_util::unported!("PackageFunction.computePackageFromPackagePieces");
+        if package_piece_id.is_none() && lazy_macro_expansion_packages.contains(package_id) {
+            return Ok(self
+                .compute_package_from_package_pieces(package_id, env)?
+                .map(Packageoid::Package));
         }
 
         let Some(package_lookup_value) = self.get_package_lookup_value(package_id, env)? else {
@@ -548,6 +613,7 @@ impl PackageFunction {
 
         let Some(mut loaded_package) = self.load_package(
             &package_lookup_value,
+            package_piece_id,
             package_id,
             &starlark_builtins_value,
             package_lookup_value.get_root(),
@@ -609,6 +675,25 @@ impl PackageFunction {
         }
 
         let pkg_builder = &mut loaded_package.builder;
+        if let Some(_package_piece_id) = package_piece_id {
+            let pkg_piece = pkg_builder.finish_build_piece();
+            pkg_builder
+                .get_local_event_handler()
+                .replay_on(env.listener());
+            self.config
+                .package_factory
+                .after_done_loading_package_piece(
+                    &pkg_piece,
+                    &starlark_builtins_value.starlark_semantics,
+                );
+            return Ok(Some(Packageoid::PieceForBuildFile(
+                PackagePieceValueForBuildFile {
+                    for_build_file: pkg_piece,
+                    starlark_semantics: starlark_builtins_value.starlark_semantics.clone(),
+                    main_repository_mapping: pkg_builder.get_main_repository_mapping().clone(),
+                },
+            )));
+        }
         let pkg = pkg_builder.finish_build();
 
         pkg_builder
@@ -623,6 +708,146 @@ impl PackageFunction {
             return Err(package_function_exception(e, Transience::Persistent));
         }
 
+        Ok(Some(Packageoid::Package(PackageValue::new(pkg))))
+    }
+
+    /// Builds a package from its pieces (lazy macro expansion).
+    // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1423 PackageFunction.computePackageFromPackagePieces
+    fn compute_package_from_package_pieces(
+        &self,
+        package_id: &PackageIdentifier,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<PackageValue>, ComputeError> {
+        // Java's catch blocks in compute: NoSuchPackageException is rethrown; a
+        // NoSuchPackagePieceException or NoSuchMacroInstanceException becomes a
+        // NoSuchPackageException of this package.
+        // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:395 PackageFunction.compute
+        let rethrow = |e: PieceException| -> ComputeError {
+            let e = match e {
+                PieceException::Package(e) => e,
+                PieceException::Piece(e) => NoSuchPackageException::of_kind(
+                    NoSuchPackageKind::NoSuchPackage,
+                    package_id.clone(),
+                    format!(
+                        "cannot compute package {}: {}",
+                        package_id.get_canonical_form(),
+                        e.get_message()
+                    ),
+                    Some(e.get_message().to_string()),
+                    Some(e.get_detailed_exit_code()),
+                ),
+                PieceException::MacroInstance(e) => NoSuchPackageException::of_kind(
+                    NoSuchPackageKind::NoSuchPackage,
+                    package_id.clone(),
+                    format!(
+                        "cannot compute package {}: {}",
+                        package_id.get_canonical_form(),
+                        e.get_message()
+                    ),
+                    Some(e.get_message().to_string()),
+                    Some(e.get_detailed_exit_code()),
+                ),
+            };
+            package_function_exception(e, Transience::Persistent)
+        };
+        let non_finalizer_package_pieces_value = match env.get_value_or_throw_with(
+            NonFinalizerPackagePiecesKey {
+                pkg_id: package_id.clone(),
+            },
+            |e| {
+                if let Some(e) = e.downcast_ref::<NoSuchPackageException>() {
+                    return Some(PieceException::Package(e.clone()));
+                }
+                if let Some(e) = e.downcast_ref::<NoSuchPackagePieceException>() {
+                    return Some(PieceException::Piece(e.clone()));
+                }
+                e.downcast_ref::<NoSuchMacroInstanceException>()
+                    .map(|e| PieceException::MacroInstance(e.clone()))
+            },
+        )? {
+            Err(e) => return Err(rethrow(e)),
+            Ok(None) => return Ok(None),
+            Ok(Some(v)) => v,
+        };
+        let build_file_piece = non_finalizer_package_pieces_value
+            .package_pieces
+            .values()
+            .next()
+            .expect("the BUILD file piece")
+            .clone();
+        let all_package_pieces =
+            match RecursiveExpander::expand_finalizers(&non_finalizer_package_pieces_value, env)? {
+                Err(e) => return Err(rethrow(e)),
+                Ok(None) => return Ok(None),
+                Ok(Some(pieces)) => pieces,
+            };
+        let Some(config_setting_visibility_policy) = CONFIG_SETTING_VISIBILITY_POLICY.get(env)?
+        else {
+            return Ok(None);
+        };
+
+        let mut pkg_builder = self
+            .config
+            .package_factory
+            .new_package_from_package_pieces_builder(
+                build_file_piece.get_metadata().clone(),
+                build_file_piece.get_declarations().clone(),
+                &non_finalizer_package_pieces_value.starlark_semantics,
+                non_finalizer_package_pieces_value
+                    .main_repository_mapping
+                    .clone(),
+                /* generator_map= */ None,
+                Some(*config_setting_visibility_policy),
+                /* globber= */ None,
+                build_file_piece
+                    .get_build_file()
+                    .expect("the BUILD file piece's BUILD file")
+                    .clone(),
+            );
+
+        if !all_package_pieces.error_keys.is_empty() {
+            // Error within one package piece. It was already reported as an event with stack
+            // trace by the computation of the PackagePieceValue, so we don't need to repeat the
+            // stack trace - just a brief summary.
+            let error_key = &all_package_pieces.error_keys[0];
+            let error_piece = &all_package_pieces.package_pieces[error_key];
+            handle_package_piece_dependency_error(
+                &mut pkg_builder,
+                &format!("error in {}", error_piece.get_short_description()),
+            );
+        } else if let Some(e) = &non_finalizer_package_pieces_value
+            .name_conflict_between_package_pieces_exception
+        {
+            // Name conflict between non-finalizer package pieces. It was already reported as an
+            // event with stack trace by the computation of the NonFinalizerPackagePiecesValue, so
+            // we don't need to repeat the stack trace - just a brief summary.
+            handle_package_piece_dependency_error(&mut pkg_builder, &e.message);
+        } else {
+            // TODO(https://github.com/bazelbuild/bazel/issues/23852): in the common case where
+            // there are no errors and no finalizers, we should directly use the target and macro
+            // maps from the NonFinalizerPackagePiecesValue rather than re-recording them.
+            if let Err(e) = all_package_pieces.record_targets_and_macros(&mut pkg_builder) {
+                // Previously unreported name conflict between a finalizer package piece and
+                // another package piece.
+                handle_package_piece_dependency_error(&mut pkg_builder, &e.message_with_stack());
+            }
+        }
+
+        let pkg = pkg_builder.finish_build();
+
+        pkg_builder
+            .get_local_event_handler()
+            .replay_on(env.listener());
+
+        // TODO(https://github.com/bazelbuild/bazel/issues/23852): compute sum of metrics from
+        // package piece values.
+        if let Err(e) = self.config.package_factory.after_done_loading_package(
+            &pkg,
+            &non_finalizer_package_pieces_value.starlark_semantics,
+            env.listener(),
+        ) {
+            return Err(package_function_exception(e, Transience::Persistent));
+        }
         Ok(Some(PackageValue::new(pkg)))
     }
 
@@ -766,6 +991,7 @@ impl PackageFunction {
     fn load_package(
         &self,
         package_lookup_value: &PackageLookupValue,
+        package_piece_id: Option<&PackagePieceIdentifierForBuildFile>,
         package_id: &PackageIdentifier,
         starlark_builtins_value: &StarlarkBuiltinsValue,
         _package_root: &Root,
@@ -955,22 +1181,40 @@ impl PackageFunction {
             CompiledBuildFile::Errors(_) => None,
         };
         // Create the package, even if it will be empty because we cannot attempt execution.
-        let mut pkg_builder = package_factory.new_package_builder(
-            package_id.clone(),
-            build_file_rooted_path.clone(),
-            repository_mapping_value
-                .associated_module_name()
-                .map(str::to_owned),
-            repository_mapping_value
-                .associated_module_version()
-                .map(str::to_owned),
-            &semantics,
-            repository_mapping.clone(),
-            main_repository_mapping.clone(),
-            generator_map,
-            Some(*config_setting_visibility_policy),
-            Some(globber.clone() as Arc<dyn Globber>),
-        );
+        let mut pkg_builder = match package_piece_id {
+            None => package_factory.new_package_builder(
+                package_id.clone(),
+                build_file_rooted_path.clone(),
+                repository_mapping_value
+                    .associated_module_name()
+                    .map(str::to_owned),
+                repository_mapping_value
+                    .associated_module_version()
+                    .map(str::to_owned),
+                &semantics,
+                repository_mapping.clone(),
+                main_repository_mapping.clone(),
+                generator_map,
+                Some(*config_setting_visibility_policy),
+                Some(globber.clone() as Arc<dyn Globber>),
+            ),
+            Some(package_piece_id) => package_factory.new_package_piece_for_build_file_builder(
+                package_piece_id.clone(),
+                build_file_rooted_path.clone(),
+                repository_mapping_value
+                    .associated_module_name()
+                    .map(str::to_owned),
+                repository_mapping_value
+                    .associated_module_version()
+                    .map(str::to_owned),
+                &semantics,
+                repository_mapping.clone(),
+                main_repository_mapping.clone(),
+                generator_map,
+                Some(*config_setting_visibility_policy),
+                Some(globber.clone() as Arc<dyn Globber>),
+            ),
+        };
 
         pkg_builder.merge_package_args_from(
             &PackageArgs::builder()
@@ -998,14 +1242,22 @@ impl PackageFunction {
                 // TODO: b/155396641 - Validate that transitive visibility groups are correctly
                 // declared and that this package is a member of all transitive visibility groups
                 // it declares, but probably not in this part of the code.
-                if let Err(ex) = pkg_builder.expand_all_remaining_macros(&semantics) {
-                    // PORT: Java reports `getMessageWithStack()`; the ported EvalException has
-                    // no stack.
+                let (builder, result) = if package_piece_id.is_none() {
+                    pkg_builder.expand_all_remaining_macros(&semantics)
+                } else {
+                    (pkg_builder, Ok(()))
+                };
+                pkg_builder = builder;
+                if let Err(ex) = result {
+                    // Java: InterruptedException is not caught here.
+                    if ex.kind == EvalErrorKind::Cancelled {
+                        return Err(Interrupted.into());
+                    }
                     pkg_builder
                         .get_local_event_handler()
                         .handle(&Package::error(
                             None,
-                            ex.get_message(),
+                            &ex.message_with_stack(),
                             PackageLoadingCode::StarlarkEvalError,
                         ));
                     pkg_builder.set_contains_errors();

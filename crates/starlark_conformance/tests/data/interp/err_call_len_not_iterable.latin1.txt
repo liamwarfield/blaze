@@ -1,0 +1,5 @@
+EVAL in call to len(), parameter 'x' got value of type 'int', want 'iterable or string'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_len_not_iterable.star", line 1, column 4, in <toplevel>
+TRACE \x09\x09len(1)
+TRACE Error in len: in call to len(), parameter 'x' got value of type 'int', want 'iterable or string'

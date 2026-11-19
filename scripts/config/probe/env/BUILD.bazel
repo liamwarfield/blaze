@@ -1,0 +1,23 @@
+load("//pkg:defs.bzl", "leaf")
+
+environment(name = "a")
+
+environment(name = "b")
+
+environment(name = "c")
+
+environment_group(
+    name = "grp",
+    defaults = [":a"],
+    environments = [
+        ":a",
+        ":b",
+        ":c",
+    ],
+)
+
+leaf(name = "only_a", restricted_to = [":a"])
+
+leaf(name = "a_and_b", restricted_to = [":a", ":b"])
+
+leaf(name = "defaults")

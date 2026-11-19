@@ -265,6 +265,13 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
         self.abstract_action().owner()
     }
 
+    /// `this instanceof ActionExecutionMetadata`: true for every action; false for action
+    /// templates (`ActionTemplate` is only an `ActionAnalysisMetadata`), which override it.
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:27 ActionExecutionMetadata
+    fn is_action_execution_metadata(&self) -> bool {
+        true
+    }
+
     /// Returns true if inputs are known for this action.
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:123 AbstractAction.inputsKnown
     fn inputs_known(&self) -> bool {

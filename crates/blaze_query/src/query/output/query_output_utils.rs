@@ -1,14 +1,17 @@
 //! Port of `query2/query/output/QueryOutputUtils.java`.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use blaze_events::EventHandler;
 use blaze_optdefs::command::query_options::{OrderOutput, QueryOptions};
 use blaze_packages::target::{LabelPrinter, Target};
+use blaze_query_engine::DigraphQueryEvalResult;
 use blaze_query_engine::callback::{OutputFormatterError, process_all_targets};
 use blaze_vfs::DigestHashFunction;
 
 use crate::query::aspectresolvers::aspect_resolver::AspectResolver;
+use crate::query::blaze_query_environment::TargetNode;
 use crate::query::output::output_formatter::{OutputFormatter, OutputStream};
 use crate::query::output::output_formatters::is_streamed_formatter;
 
@@ -40,11 +43,13 @@ pub fn should_stream_results(
         || lexicographically_sort_output(query_options, formatter)
 }
 
-/// PORT: the non-streamed branch needs `DigraphQueryEvalResult` (lib/graph `Digraph`), which is
-/// not ported yet.
+/// PORT: Java casts the `QueryEvalResult` to `DigraphQueryEvalResult` for the non-streamed
+/// branch; Blaze passes the result's graph (`AbstractBlazeQueryEnvironment::get_result_graph`)
+/// as `result`.
 // Java: com/google/devtools/build/lib/query2/query/output/QueryOutputUtils.java:54 QueryOutputUtils.output
 pub fn output(
     query_options: &QueryOptions,
+    result: Option<&DigraphQueryEvalResult<TargetNode>>,
     targets_result: &[Target],
     formatter: &dyn OutputFormatter,
     output_stream: OutputStream,
@@ -53,8 +58,9 @@ pub fn output(
     hash_function: DigestHashFunction,
     label_printer: &LabelPrinter,
 ) -> Result<(), OutputFormatterError> {
-    // Note that if this is a StreamedFormatter, the results are output by the formatter's
-    // callbacks, not here.
+    // This is not really streaming, but we are using the streaming interface for writing into
+    // the output everything in one batch. This happens when the QueryEnvironment does not
+    // support streaming but we don't care about ordered results.
     if should_stream_results(query_options, formatter) {
         let streamed_formatter = formatter
             .as_streamed_formatter()
@@ -70,7 +76,25 @@ pub fn output(
             targets_result,
         )
     } else {
-        formatter.output_digraph();
-        Ok(())
+        let digraph_query_eval_result =
+            result.expect("ClassCastException: not a DigraphQueryEvalResult");
+        // PORT: Profiler "digraph.extractSubgraph" / "formatter.output" skipped (profiling).
+        let targets: HashSet<TargetNode> = targets_result
+            .iter()
+            .map(|t| TargetNode(t.clone()))
+            .collect();
+        let subgraph = digraph_query_eval_result
+            .get_graph()
+            .extract_subgraph(&|t: &TargetNode| targets.contains(t));
+
+        formatter.output(
+            query_options,
+            &subgraph,
+            output_stream,
+            aspect_resolver,
+            event_handler,
+            hash_function,
+            label_printer,
+        )
     }
 }

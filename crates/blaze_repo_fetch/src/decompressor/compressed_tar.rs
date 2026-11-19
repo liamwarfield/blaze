@@ -235,6 +235,164 @@ fn name_is_from_pax_path<R: Read>(entry: &mut tar::Entry<'_, R>) -> Result<bool,
     Ok(false)
 }
 
+/// The PAX GNU sparse records of an entry (Commons Compress 1.26.1 `TarArchiveEntry.
+/// fillGNUSparse0xData` / `fillGNUSparse1xData`, `TarArchiveInputStream.paxHeaders`).
+struct PaxSparse {
+    /// `GNU.sparse.name`: the entry's real name.
+    name: Option<Vec<u8>>,
+    /// Format 0.0 (`GNU.sparse.offset`/`GNU.sparse.numbytes` pairs) and 0.1 (`GNU.sparse.map`):
+    /// the map from the PAX header. `None` for format 1.0, whose map starts the entry's data.
+    map: Option<Vec<(u64, u64)>>,
+}
+
+fn sparse_number(value: &[u8]) -> Result<u64, IoException> {
+    std::str::from_utf8(value)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .ok_or_else(|| {
+            IoException::new(
+                "Corrupted TAR archive. Sparse struct offset contains a non-numeric value",
+            )
+        })
+}
+
+/// `TarArchiveInputStream.paxHeaders` and `TarArchiveEntry.updateEntryFromPaxHeaders` for the
+/// `GNU.sparse.*` records: `None` when the entry is not a PAX sparse file.
+fn pax_sparse_headers<R: Read>(
+    entry: &mut tar::Entry<'_, R>,
+) -> Result<Option<PaxSparse>, IoException> {
+    let Some(exts) = entry.pax_extensions()? else {
+        return Ok(None);
+    };
+    let mut name = None;
+    let mut size_0x = false;
+    let mut realsize_1x = false;
+    let mut map_01: Option<Vec<(u64, u64)>> = None;
+    let mut pairs_00: Vec<(u64, u64)> = Vec::new();
+    let mut pending_offset: Option<u64> = None;
+    for ext in exts {
+        let ext = ext?;
+        match ext.key_bytes() {
+            b"GNU.sparse.name" => name = Some(ext.value_bytes().to_vec()),
+            b"GNU.sparse.size" => size_0x = true,
+            b"GNU.sparse.realsize" => realsize_1x = true,
+            // Java: TarUtils.parsePaxHeaders (format 0.0: offset/numbytes records in order).
+            b"GNU.sparse.offset" => pending_offset = Some(sparse_number(ext.value_bytes())?),
+            b"GNU.sparse.numbytes" => {
+                let Some(offset) = pending_offset.take() else {
+                    return Err(IoException::new(
+                        "Failed to read Paxheader.GNU.sparse.offset is expected before                          GNU.sparse.numbytes shows up.",
+                    ));
+                };
+                pairs_00.push((offset, sparse_number(ext.value_bytes())?));
+            }
+            // Java: TarUtils.parseFromPAX01SparseHeaders
+            b"GNU.sparse.map" => {
+                let mut map = Vec::new();
+                let value = ext.value_bytes();
+                let parts: Vec<&[u8]> = value.split(|b| *b == b',').collect();
+                if parts.len() % 2 == 1 {
+                    return Err(IoException::new(
+                        "Corrupted TAR archive. Bad format in GNU.sparse.map PAX Header",
+                    ));
+                }
+                for pair in parts.chunks(2) {
+                    map.push((sparse_number(pair[0])?, sparse_number(pair[1])?));
+                }
+                map_01 = Some(map);
+            }
+            _ => {}
+        }
+    }
+    if realsize_1x {
+        return Ok(Some(PaxSparse { name, map: None }));
+    }
+    if size_0x || map_01.is_some() || !pairs_00.is_empty() {
+        return Ok(Some(PaxSparse {
+            name,
+            map: Some(map_01.unwrap_or(pairs_00)),
+        }));
+    }
+    Ok(None)
+}
+
+/// `TarUtils.readLineOfNumberForPax1X`: a decimal number terminated by '\n'; returns the
+/// number and the bytes read.
+fn read_line_of_number_for_pax_1x<R: Read>(input: &mut R) -> Result<(u64, u64), IoException> {
+    let mut result: u64 = 0;
+    let mut bytes_read: u64 = 0;
+    loop {
+        let mut b = [0u8; 1];
+        if input.read(&mut b)? == 0 {
+            return Err(IoException::new(
+                "Unexpected EOF when reading parse information of 1.X PAX format",
+            ));
+        }
+        bytes_read += 1;
+        if b[0] == b'\n' {
+            return Ok((result, bytes_read));
+        }
+        if !b[0].is_ascii_digit() {
+            return Err(IoException::new(
+                "Corrupted TAR archive. Non-numeric value in sparse headers block",
+            ));
+        }
+        result = result * 10 + u64::from(b[0] - b'0');
+    }
+}
+
+/// `TarUtils.parsePAX1XSparseHeaders`: the sparse map at the start of a format 1.0 entry's
+/// data, then the rest of its 512-byte record is skipped.
+fn parse_pax_1x_sparse_headers<R: Read>(input: &mut R) -> Result<Vec<(u64, u64)>, IoException> {
+    const RECORD_SIZE: u64 = 512;
+    let (count, mut bytes_read) = read_line_of_number_for_pax_1x(input)?;
+    let mut headers = Vec::new();
+    for _ in 0..count {
+        let (offset, n) = read_line_of_number_for_pax_1x(input)?;
+        bytes_read += n;
+        let (num_bytes, n) = read_line_of_number_for_pax_1x(input)?;
+        bytes_read += n;
+        headers.push((offset, num_bytes));
+    }
+    // skip the rest of this record data
+    let bytes_to_skip = RECORD_SIZE - bytes_read % RECORD_SIZE;
+    io::copy(&mut input.take(bytes_to_skip), &mut io::sink())?;
+    Ok(headers)
+}
+
+/// The expanded content of a PAX sparse entry (`TarArchiveInputStream.buildSparseInputStreams`
+/// and `readSparse`): zeros for each hole, then the stored bytes of each block.
+fn copy_pax_sparse<R: Read, W: io::Write + ?Sized>(
+    entry: &mut tar::Entry<'_, R>,
+    sparse: &PaxSparse,
+    out: &mut W,
+) -> Result<(), IoException> {
+    let mut map = match &sparse.map {
+        Some(map) => map.clone(),
+        None => parse_pax_1x_sparse_headers(entry)?,
+    };
+    // Java sorts the sparse headers by offset.
+    map.sort_by_key(|(offset, _)| *offset);
+    let zeros = [0u8; 8192];
+    let mut position: u64 = 0;
+    for (offset, num_bytes) in map {
+        if offset < position {
+            return Err(IoException::new("Corrupted struct sparse detected"));
+        }
+        let mut hole = offset - position;
+        while hole > 0 {
+            let n = hole.min(zeros.len() as u64) as usize;
+            out.write_all(&zeros[..n])?;
+            hole -= n as u64;
+        }
+        if num_bytes > 0 {
+            io::copy(&mut (&mut *entry).take(num_bytes), out)?;
+        }
+        position = offset + num_bytes;
+    }
+    Ok(())
+}
+
 /// Commons Compress `TarArchiveEntry.getLastModifiedDate().getTime()`: the PAX `mtime` (with its
 /// fraction, floored to milliseconds) when present, else the header's seconds.
 fn last_modified_millis<R: Read>(
@@ -307,7 +465,12 @@ pub(crate) fn decompress(
             // return them; Blaze skips them (they carry no path in practice).
             continue;
         }
-        let raw_name = entry.path_bytes().into_owned();
+        // Commons Compress applies the PAX GNU sparse records (`GNU.sparse.name`) to the entry.
+        let pax_sparse = pax_sparse_headers(&mut entry)?;
+        let raw_name = match pax_sparse.as_ref().and_then(|s| s.name.clone()) {
+            Some(name) => name,
+            None => entry.path_bytes().into_owned(),
+        };
         // Java: toRawBytesString(entry.getName()): the raw header bytes, one char per byte.
         // PORT: Commons Compress decodes a PAX `path` record as UTF-8 and Java re-encodes it
         // with `unicodeToInternal`, which replaces malformed UTF-8 in such a record; the `tar`
@@ -382,7 +545,13 @@ pub(crate) fn decompress(
         } else {
             {
                 let mut out = file_path.get_output_stream()?;
-                io::copy(&mut entry, &mut out)?;
+                match &pax_sparse {
+                    // Commons Compress returns the expanded content of a sparse entry.
+                    Some(sparse) => copy_pax_sparse(&mut entry, sparse, &mut out)?,
+                    None => {
+                        io::copy(&mut entry, &mut out)?;
+                    }
+                }
                 out.flush()?;
             }
             // Java: filePath.chmod(entry.getMode() | 0400), in finish_file.

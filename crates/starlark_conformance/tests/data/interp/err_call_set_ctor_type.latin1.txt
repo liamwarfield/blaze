@@ -1,0 +1,5 @@
+EVAL in call to set(), parameter 'elements' got value of type 'int', want 'iterable'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_set_ctor_type.star", line 1, column 4, in <toplevel>
+TRACE \x09\x09set(1)
+TRACE Error in set: in call to set(), parameter 'elements' got value of type 'int', want 'iterable'

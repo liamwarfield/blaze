@@ -1,0 +1,2 @@
+SYNTAX err_lex_invalid_char.star:1:7: invalid character: '$'
+SYNTAX err_lex_invalid_char.star:1:9: syntax error at '2': expected newline

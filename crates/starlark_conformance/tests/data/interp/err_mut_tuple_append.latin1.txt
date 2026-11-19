@@ -1,0 +1,5 @@
+EVAL 'tuple' value has no field or method 'append'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_mut_tuple_append.star", line 1, column 5, in <toplevel>
+TRACE \x09\x09(1,).append(2)
+TRACE Error: 'tuple' value has no field or method 'append'

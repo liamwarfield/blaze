@@ -1,0 +1,2 @@
+SYNTAX err_parse_implicit_concat.star:1:9: Implicit string concatenation is forbidden, use the + operator
+SYNTAX err_parse_implicit_concat.star:1:9: syntax error at '"b"': expected newline

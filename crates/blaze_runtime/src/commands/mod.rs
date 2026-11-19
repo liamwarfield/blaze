@@ -13,6 +13,7 @@ pub mod query;
 // Integration lead: mod, build, test.
 pub mod bep;
 pub mod build;
+mod exclusive_test_order;
 pub mod mod_command;
 pub mod target_patterns_helper;
 // run.

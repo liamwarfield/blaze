@@ -667,6 +667,13 @@ fn main() -> ExitCode {
         Arc::new(blaze_events::JavaClock),
         Some(workspace.get_path_string().to_string()),
     ));
+    // UiEventHandler.<init>: the state tracker (no cursor control: target width 0).
+    ui.set_state_tracker(Arc::new(
+        blaze_buildtool::runtime::ui_state_tracker::UiStateTracker::new(
+            Arc::new(blaze_events::JavaClock),
+            0,
+        ),
+    ));
     reporter.add_handler(ui.clone());
     let reporter: Arc<dyn ExtendedEventHandler> = reporter;
     let mut client_env = IndexMap::new();
@@ -772,7 +779,12 @@ fn main() -> ExitCode {
     }
     let elapsed = (result.stop - result.start).as_secs_f64();
     blaze_buildtool::buildtool::build_tool::report_build_complete(
-        &*reporter, &collector, &result, elapsed, 0,
+        &*reporter,
+        &collector,
+        &result,
+        elapsed,
+        blaze_events::Clock::current_time_millis(&blaze_events::JavaClock),
+        0,
     );
     ui.after_command();
     if success {

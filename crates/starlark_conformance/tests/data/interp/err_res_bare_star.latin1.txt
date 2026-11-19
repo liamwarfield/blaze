@@ -1,0 +1,1 @@
+SYNTAX err_res_bare_star.star:1:7: bare * must be followed by keyword-only parameters

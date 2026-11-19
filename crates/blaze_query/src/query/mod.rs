@@ -3,6 +3,7 @@
 
 pub mod aspectresolvers;
 pub mod aspects;
+pub mod blaze_query_environment;
 pub mod blaze_query_visibility;
 pub mod blaze_target_accessor;
 pub mod graphless_blaze_query_environment;

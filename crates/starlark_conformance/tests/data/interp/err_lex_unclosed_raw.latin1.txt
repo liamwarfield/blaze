@@ -1,0 +1,1 @@
+SYNTAX err_lex_unclosed_raw.star:1:5: unclosed string literal

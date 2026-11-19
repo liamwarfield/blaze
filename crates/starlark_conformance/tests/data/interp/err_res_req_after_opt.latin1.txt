@@ -1,0 +1,1 @@
+SYNTAX err_res_req_after_opt.star:1:14: required positional parameter b may not follow an optional parameter

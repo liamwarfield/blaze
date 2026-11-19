@@ -1,0 +1,5 @@
+EVAL can't convert non-string with explicit base
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_int_base_nonstr.star", line 1, column 4, in <toplevel>
+TRACE \x09\x09int(1, 10)
+TRACE Error in int: can't convert non-string with explicit base

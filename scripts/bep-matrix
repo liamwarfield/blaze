@@ -1,0 +1,410 @@
+#!/usr/bin/env python3
+"""bep-matrix: whole-stream Build Event Protocol comparison of Blaze with Bazel on a scenario matrix.
+
+Usage:
+  scripts/bep-matrix run --binary B --out DIR [--only S1,S2,...] [--build-flag F]...
+  scripts/bep-matrix compare REFDIR CANDDIR [--only S1,...] [--verbose]
+  scripts/bep-matrix list
+  scripts/bep-matrix help
+
+run      Writes a small synthetic workspace (genrules, a failing genrule, a Starlark test rule
+         with a passing, a failing and a flaky test, an aspect with an output group) to
+         ~/.cache/blaze/work/bep-matrix-<DIR name>/ws and runs binary B (the oracle or a Blaze
+         binary) once per scenario, each with --build_event_json_file=DIR/<scenario>.json, a
+         fresh output user root ~/.cache/blaze/oracle-out/bep-matrix-<DIR name> per scenario,
+         a clean environment (--nohome_rc --nosystem_rc, HOME and PATH only), the shared
+         repository cache, under a 12G memory scope. Before each scenario the server is started
+         with `info` so that both binaries run the scenario's command on a server that was
+         already running (the oracle does not pass --restart_reason then). Records exit codes,
+         stderr and `info` paths (DIR/context.json) for the normaliser. --build-flag adds a
+         flag to the build, test and run scenarios (e.g.
+         --noexperimental_merged_skyframe_analysis_execution for Bazel's non-Skymeld order).
+compare  For every scenario both directories hold, compares
+           1. the event sequence: canonical event ids in stream order with their announced
+              children (progress events included, named-set ids by first appearance);
+           2. every event's payload after the referee's BEP normaliser
+              (scripts/oracle/surfaces.normalise_bep, read-only) plus the masks below;
+           3. lastMessage and the exit code.
+         Prints one line per scenario and the differences; exit 1 on any difference.
+
+Masks applied on top of the referee's normaliser (each is a value that differs between two runs
+of the same binary or that names the binary itself):
+  * structured/unstructured command lines: --install_md5 (each binary's own install key) and
+    --restart_reason (whether the client started a server; Blaze has no persistent server yet);
+  * progress stdout/stderr (terminal output interleaving is timing-dependent);
+  * buildToolLogs: only the log names are compared (the referee does the same);
+  * buildMetrics: removed except the action and target counts (the referee drops the rest);
+  * actionExecuted / action completions: start and end times (wall clock);
+  * testResult: timing and the test log digests (the referee does the same);
+  * named sets: the set id numbering follows the order in which targets complete, which is
+    thread-dependent; sets are inlined by the normaliser and ids are renumbered by first use.
+Python 3 standard library only.
+"""
+import argparse
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "oracle"))
+
+import oracle_common as oc  # noqa: E402
+import oracle_compare as cmp  # noqa: E402
+import surfaces  # noqa: E402
+from normalise import Context  # noqa: E402
+
+WORKSPACE = {
+    "MODULE.bazel": 'module(name = "bepmatrix")\n',
+    "pkg/defs.bzl": '''
+def _my_test_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(out, ctx.attr.script, is_executable = True)
+    return [DefaultInfo(executable = out)]
+
+my_test = rule(
+    implementation = _my_test_impl,
+    attrs = {"script": attr.string()},
+    test = True,
+)
+
+def _my_binary_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(out, "#!/bin/sh\\necho hello from run\\n", is_executable = True)
+    return [DefaultInfo(executable = out)]
+
+my_binary = rule(implementation = _my_binary_impl, executable = True)
+
+def _aspect_impl(target, ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".aspect.txt")
+    ctx.actions.run_shell(outputs = [out], command = "echo aspect > " + out.path)
+    return [OutputGroupInfo(aout = depset([out]))]
+
+my_aspect = aspect(implementation = _aspect_impl)
+''',
+    "pkg/BUILD": '''
+load(":defs.bzl", "my_binary", "my_test")
+
+genrule(name = "ok", outs = ["ok.txt"], cmd = "echo ok > $@")
+genrule(name = "ok2", srcs = [":ok"], outs = ["ok2.txt"], cmd = "cat $< > $@")
+genrule(name = "bad", outs = ["bad.txt"], cmd = "echo failing >&2; exit 1")
+my_binary(name = "hello")
+my_test(name = "pass_test", script = "#!/bin/sh\\nexit 0\\n")
+my_test(name = "fail_test", script = "#!/bin/sh\\necho failing test\\nexit 1\\n")
+my_test(
+    name = "flaky_test",
+    script = "#!/bin/sh\\nif [ -e \\"$FLAKY_MARKER\\" ]; then exit 0; fi\\ntouch \\"$FLAKY_MARKER\\"\\nexit 1\\n",
+    flaky = True,
+    tags = ["no-sandbox", "external"],
+)
+my_test(
+    name = "incompatible_test",
+    script = "#!/bin/sh\\nexit 0\\n",
+    target_compatible_with = ["@platforms//:incompatible"],
+)
+''',
+}
+
+# name, command and arguments (after the startup options), extra environment.
+SCENARIOS = [
+    ("build_ok", ["build", "//pkg:ok", "//pkg:ok2"]),
+    ("build_fail", ["build", "//pkg:ok2", "//pkg:bad"]),
+    ("build_keep_going", ["build", "--keep_going", "//pkg:ok2", "//pkg:bad"]),
+    ("build_loading_error", ["build", "//pkg:does_not_exist"]),
+    ("build_incompatible", ["build", "//pkg:ok", "//pkg:incompatible_test"]),
+    ("build_all_actions", ["build", "--build_event_publish_all_actions", "//pkg:ok2"]),
+    ("build_aspect", ["build", "--aspects=//pkg:defs.bzl%my_aspect", "--output_groups=aout",
+                      "//pkg:ok"]),
+    ("build_target_summary", ["build", "--experimental_bep_target_summary", "//pkg:ok"]),
+    ("build_bad_flag", ["build", "--no_such_flag", "//pkg:ok"]),
+    ("test_mixed", ["test", "--flaky_test_attempts=2", "--test_env=FLAKY_MARKER=@MARKER@",
+                    "//pkg:pass_test", "//pkg:fail_test", "//pkg:flaky_test"]),
+    ("run", ["run", "//pkg:hello"]),
+    ("fetch", ["fetch", "//pkg:ok"]),
+    ("query", ["query", "//pkg:all"]),
+    ("cquery", ["cquery", "//pkg:ok"]),
+    ("aquery", ["aquery", "//pkg:ok"]),
+    ("info", ["info", "execution_root"]),
+    ("mod", ["mod", "graph"]),
+    ("clean", ["clean"]),
+    ("help", ["help", "build"]),
+    ("version", ["version"]),
+]
+
+
+def write_workspace(ws):
+    oc_remove(ws)
+    for rel, text in WORKSPACE.items():
+        p = os.path.join(ws, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w") as f:
+            f.write(text.lstrip("\n"))
+
+
+def oc_remove(path):
+    if os.path.lexists(path):
+        subprocess.run(["chmod", "-R", "u+w", path], stderr=subprocess.DEVNULL)
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def run_logged(argv, cwd, out_path, err_path):
+    scoped = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "-p", "MemoryMax=12G",
+              "-p", "MemorySwapMax=0", "--", "env", "-i", "HOME=" + oc.HOME,
+              "PATH=/usr/bin:/bin"] + argv
+    with open(out_path, "wb") as out, open(err_path, "wb") as err:
+        p = subprocess.run(scoped, cwd=cwd, stdout=out, stderr=err, stdin=subprocess.DEVNULL)
+    return p.returncode
+
+
+def parse_info(text):
+    out = {}
+    for line in text.splitlines():
+        if ": " in line:
+            k, v = line.split(": ", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+def selected(only):
+    names = [s[0] for s in SCENARIOS]
+    if not only:
+        return SCENARIOS
+    want = only.split(",")
+    for w in want:
+        if w not in names:
+            raise SystemExit("unknown scenario %s (see `list`)" % w)
+    return [s for s in SCENARIOS if s[0] in want]
+
+
+def cmd_run(argv):
+    ap = argparse.ArgumentParser(prog="bep-matrix run")
+    ap.add_argument("--binary", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--only")
+    ap.add_argument("--build-flag", action="append", default=[],
+                    help="extra flag for build/test/run scenarios (repeatable)")
+    a = ap.parse_args(argv)
+    out = os.path.abspath(a.out)
+    os.makedirs(out, exist_ok=True)
+    name = os.path.basename(out.rstrip("/"))
+    binary = os.path.abspath(a.binary)
+    base = os.path.join(oc.WORK, "bep-matrix-" + name)
+    ws = os.path.join(base, "ws")
+    root = os.path.join(oc.OUTPUT_ROOTS, "bep-matrix-" + name)
+    common = ["--repository_cache=" + oc.REPO_CACHE, "--color=no", "--curses=no"]
+    codes = {}
+    contexts = {}
+    for scen, args in selected(a.only):
+        write_workspace(ws)
+        wsr = os.path.realpath(ws)
+        # One path for every run: the value reaches --test_env and so the configuration checksum.
+        marker = os.path.join(oc.WORK, "bep-matrix-flaky-marker")
+        if os.path.exists(marker):
+            os.remove(marker)
+        oc_remove(root)
+        os.makedirs(root)
+        startup = [binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc"]
+        info_out = os.path.join(out, scen + ".info")
+        run_logged(startup + ["info"] + common + ["output_base", "execution_root", "install_base"],
+                   wsr, info_out, os.path.join(out, scen + ".info.stderr"))
+        args = [x.replace("@MARKER@", marker) for x in args]
+        bep = os.path.join(out, scen + ".json")
+        if os.path.exists(bep):
+            os.remove(bep)
+        extra = a.build_flag if args[0] in ("build", "test", "run") else []
+        argv_ = startup + [args[0]] + common + extra + ["--build_event_json_file=" + bep] + args[1:]
+        rc = run_logged(argv_, wsr, os.path.join(out, scen + ".stdout"),
+                        os.path.join(out, scen + ".stderr"))
+        codes[scen] = rc
+        run_logged(startup + ["shutdown"], wsr, os.devnull, os.devnull)
+        info = parse_info(open(info_out, encoding="utf-8", errors="replace").read())
+        contexts[scen] = {
+            "paths": {
+                "execroot": info.get("execution_root"),
+                "output_base": info.get("output_base"),
+                "install_base": info.get("install_base"),
+                "output_user_root": root,
+                "workspace": wsr,
+                "record_dir": out,
+                "binary": binary,
+                "binary_dir": os.path.dirname(binary),
+                "home": oc.HOME,
+            },
+            "user": os.environ.get("USER") or os.path.basename(oc.HOME),
+            "host": socket.gethostname().split(".")[0],
+        }
+        print("[bep-matrix] %s: exit %d" % (scen, rc), flush=True)
+    merge(os.path.join(out, "exit_codes.json"), codes)
+    merge(os.path.join(out, "context.json"), contexts)
+    return 0
+
+
+def merge(path, new):
+    old = {}
+    if os.path.exists(path):
+        old = json.load(open(path))
+    old.update(new)
+    with open(path, "w") as f:
+        json.dump(old, f, indent=1, sort_keys=True)
+
+
+# --- comparison ---------------------------------------------------------------------------------
+
+MASK_OPTIONS = ("install_md5", "restart_reason")
+
+
+def mask_command_lines(p):
+    if "unstructuredCommandLine" in p:
+        p["unstructuredCommandLine"]["args"] = [
+            a for a in p["unstructuredCommandLine"].get("args", [])
+            if not any(a.startswith("--%s=" % o) for o in MASK_OPTIONS)]
+    if "structuredCommandLine" in p:
+        for s in p["structuredCommandLine"].get("sections", []):
+            ol = s.get("optionList")
+            if ol:
+                ol["option"] = [o for o in ol.get("option", [])
+                                if o.get("optionName") not in MASK_OPTIONS]
+    return p
+
+
+def event_key(ctx, eid, named_ids):
+    eid = json.loads(json.dumps(eid))
+    if "namedSet" in eid:
+        nid = eid["namedSet"].get("id")
+        named_ids.setdefault(nid, "N%d" % len(named_ids))
+        eid["namedSet"]["id"] = named_ids[nid]
+    return oc.canonical(ctx.deep(eid))
+
+
+def sequence(ctx, events):
+    named = {}
+    out = []
+    for e in events:
+        key = event_key(ctx, e["id"], named)
+        children = [event_key(ctx, c, named) for c in e.get("children", [])]
+        out.append((key, children, bool(e.get("lastMessage"))))
+    return out
+
+
+def payloads(ctx, events):
+    items = surfaces.normalise_bep(ctx, json.loads(json.dumps(events)))
+    for k, p in items.items():
+        mask_command_lines(p)
+        for t in ("actionExecuted", "action"):
+            if isinstance(p.get(t), dict):
+                for f in ("startTime", "endTime"):
+                    p[t].pop(f, None)
+        if "buildMetrics" in p:
+            keep = {}
+            for f in ("actionSummary", "targetMetrics"):
+                if f in p["buildMetrics"]:
+                    keep[f] = {kk: vv for kk, vv in p["buildMetrics"][f].items()
+                               if kk in ("actionsCreated", "actionsExecuted", "targetsConfigured",
+                                         "targetsLoaded")}
+            p["buildMetrics"] = keep
+    return items
+
+
+def load_events(path):
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        return [json.loads(l) for l in f if l.strip()]
+
+
+def cmd_compare(argv):
+    ap = argparse.ArgumentParser(prog="bep-matrix compare")
+    ap.add_argument("reference")
+    ap.add_argument("candidate")
+    ap.add_argument("--only")
+    ap.add_argument("--verbose", action="store_true")
+    a = ap.parse_args(argv)
+    rctx = json.load(open(os.path.join(a.reference, "context.json")))
+    cctx = json.load(open(os.path.join(a.candidate, "context.json")))
+    rcodes = json.load(open(os.path.join(a.reference, "exit_codes.json")))
+    ccodes = json.load(open(os.path.join(a.candidate, "exit_codes.json")))
+    bad_total = 0
+    for scen, _ in selected(a.only):
+        if scen not in rctx or scen not in cctx:
+            print("%-22s NOT RUN (%s)" % (scen, "reference" if scen not in rctx else "candidate"))
+            continue
+        rc_, cc_ = Context.from_dict(rctx[scen]), Context.from_dict(cctx[scen])
+        re_ = load_events(os.path.join(a.reference, scen + ".json"))
+        ce_ = load_events(os.path.join(a.candidate, scen + ".json"))
+        problems = []
+        if rcodes.get(scen) != ccodes.get(scen):
+            problems.append("exit code %s vs %s" % (rcodes.get(scen), ccodes.get(scen)))
+        if re_ is None or ce_ is None:
+            if (re_ is None) != (ce_ is None):
+                problems.append("no BEP file on the %s side" % ("reference" if re_ is None else "candidate"))
+            report(scen, problems, 0, 0, a.verbose)
+            bad_total += bool(problems)
+            continue
+        rs, cs = sequence(rc_, re_), sequence(cc_, ce_)
+        seq_diff = 0
+        if rs != cs:
+            seq_diff = sum(1 for x, y in zip(rs, cs) if x != y) + abs(len(rs) - len(cs))
+            problems.append("sequence differs at %d of %d/%d positions" % (seq_diff, len(rs), len(cs)))
+            shown = 0
+            for i in range(max(len(rs), len(cs))):
+                x = rs[i] if i < len(rs) else None
+                y = cs[i] if i < len(cs) else None
+                if x != y:
+                    problems.append("  #%d - %s" % (i, fmt(x)))
+                    problems.append("  #%d + %s" % (i, fmt(y)))
+                    shown += 1
+                    if shown >= (40 if a.verbose else 4):
+                        break
+        rp, cp = payloads(rc_, re_), payloads(cc_, ce_)
+        n_items = len(set(rp) | set(cp))
+        for key in sorted(set(rp) | set(cp)):
+            if key not in cp:
+                problems.append("MISSING %s" % key[:200])
+            elif key not in rp:
+                problems.append("EXTRA %s" % key[:200])
+            elif oc.canonical(rp[key]) != oc.canonical(cp[key]):
+                paths = cmp.diff_paths(rp[key], cp[key])
+                problems.append("DIFF %s" % key[:200])
+                for line in cmp.describe_diff(rp[key], cp[key], paths)[: (40 if a.verbose else 6)]:
+                    problems.append("  " + line)
+        report(scen, problems, len(rs), n_items, a.verbose)
+        bad_total += bool(problems)
+    print("scenarios with differences: %d" % bad_total)
+    return 1 if bad_total else 0
+
+
+def fmt(x):
+    if x is None:
+        return "(end of stream)"
+    key, children, last = x
+    return "%s -> [%s]%s" % (key, ", ".join(children), " LAST" if last else "")
+
+
+def report(scen, problems, n_events, n_items, verbose):
+    status = "MATCH" if not problems else "DIFF"
+    print("%-22s %s (%d events, %d payload items)" % (scen, status, n_events, n_items))
+    for p in problems[: (400 if verbose else 30)]:
+        print("    " + p)
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("help", "--help", "-h"):
+        print(__doc__)
+        return 0 if len(argv) >= 2 else 2
+    sub, rest = argv[1], argv[2:]
+    if sub == "run":
+        return cmd_run(rest)
+    if sub == "compare":
+        return cmd_compare(rest)
+    if sub == "list":
+        for s, args in SCENARIOS:
+            print("%-22s %s" % (s, " ".join(args)))
+        return 0
+    print(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

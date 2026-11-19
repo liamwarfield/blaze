@@ -1,0 +1,1 @@
+SYNTAX err_parse_bad_augassign_tuple.star:1:6: cannot perform augmented assignment on a list or tuple expression

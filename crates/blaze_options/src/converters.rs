@@ -1079,8 +1079,16 @@ impl Converter for OptionalPercentageConverter {
 pub struct CaffeineSpecConverter;
 
 impl Converter for CaffeineSpecConverter {
-    fn convert(&self, _input: Option<&str>, _: Option<&ConversionContext>) -> ConvResult {
-        crate::unported!("Converters.CaffeineSpecConverter.convert (needs a CaffeineSpec port)")
+    // Java: com/google/devtools/common/options/Converters.java:711 Converters.CaffeineSpecConverter.convert
+    fn convert(&self, input: Option<&str>, _: Option<&ConversionContext>) -> ConvResult {
+        let spec = non_null(input);
+        match crate::caffeine_spec::CaffeineSpec::parse(spec) {
+            Ok(spec) => Ok(Some(Value::new(spec))),
+            Err(e) => Err(OptionsParsingException::with_cause(
+                format!("Failed to parse CaffeineSpec: {}", e.0),
+                e.0,
+            )),
+        }
     }
     fn get_type_description(&self) -> String {
         "Converts to a CaffeineSpec, or null if the input is empty".into()

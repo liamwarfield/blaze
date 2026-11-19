@@ -1,0 +1,5 @@
+EVAL dictionary expression has duplicate key: "a"
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_ev_dict_dup_key_str.star", line 1, column 17, in <toplevel>
+TRACE \x09\x09x = {"a": 2, "a": 3}
+TRACE Error: dictionary expression has duplicate key: "a"

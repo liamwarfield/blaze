@@ -1,1 +1,5 @@
 EVAL in call to splitlines(), parameter 'keepends' got value of type 'int', want 'bool'
+TRACE Traceback (most recent call last):
+TRACE \x09File "more_s_splitlines_int.star", line 1, column 21, in <toplevel>
+TRACE \x09\x09print("a".splitlines(1))
+TRACE Error in splitlines: in call to splitlines(), parameter 'keepends' got value of type 'int', want 'bool'

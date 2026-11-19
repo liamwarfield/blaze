@@ -1,1 +1,5 @@
 EVAL strip() got named argument for positional-only parameter 'chars'
+TRACE Traceback (most recent call last):
+TRACE \x09File "str_strip_named.star", line 1, column 12, in <toplevel>
+TRACE \x09\x09"abc".strip(chars = "a")
+TRACE Error in strip: strip() got named argument for positional-only parameter 'chars'

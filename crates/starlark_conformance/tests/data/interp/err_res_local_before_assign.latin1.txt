@@ -1,0 +1,7 @@
+EVAL local variable 'x' is referenced before assignment.
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_res_local_before_assign.star", line 4, column 2, in <toplevel>
+TRACE \x09\x09f()
+TRACE \x09File "err_res_local_before_assign.star", line 2, column 9, in f
+TRACE \x09\x09print(x)
+TRACE Error: local variable 'x' is referenced before assignment.

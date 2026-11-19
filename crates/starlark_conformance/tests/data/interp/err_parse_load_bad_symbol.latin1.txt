@@ -1,0 +1,1 @@
+SYNTAX err_parse_load_bad_symbol.star:1:16: syntax error at '1': expected either a literal string or an identifier

@@ -1,0 +1,5 @@
+EVAL at index 0 of sub, got element of type int, want string
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_str_endswith_tuple_elem.star", line 1, column 13, in <toplevel>
+TRACE \x09\x09"a".endswith((1,))
+TRACE Error in endswith: at index 0 of sub, got element of type int, want string

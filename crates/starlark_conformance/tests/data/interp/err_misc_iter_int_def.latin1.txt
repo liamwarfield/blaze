@@ -1,0 +1,7 @@
+EVAL type 'int' is not iterable
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_misc_iter_int_def.star", line 4, column 2, in <toplevel>
+TRACE \x09\x09f()
+TRACE \x09File "err_misc_iter_int_def.star", line 2, column 12, in f
+TRACE \x09\x09for x in 1:
+TRACE Error: type 'int' is not iterable

@@ -278,8 +278,19 @@ impl BlazeCommand for QueryCommand {
         &QUERY_COMMAND
     }
 
-    // Java: com/google/devtools/build/lib/runtime/commands/QueryEnvironmentBasedCommand.java:96 QueryEnvironmentBasedCommand.execInternal
+    // Java: com/google/devtools/build/lib/runtime/commands/QueryEnvironmentBasedCommand.java:80 QueryEnvironmentBasedCommand.exec
     fn exec(
+        &self,
+        env: &mut CommandEnvironment,
+        options: &OptionsParsingResult,
+    ) -> BlazeCommandResult {
+        crate::commands::bep::exec_with_no_build_events(env, |env| self.exec_internal(env, options))
+    }
+}
+
+impl QueryCommand {
+    // Java: com/google/devtools/build/lib/runtime/commands/QueryEnvironmentBasedCommand.java:96 QueryEnvironmentBasedCommand.execInternal
+    fn exec_internal(
         &self,
         env: &mut CommandEnvironment,
         options: &OptionsParsingResult,
@@ -350,6 +361,7 @@ impl BlazeCommand for QueryCommand {
             reporter,
             query_output,
             env.get_relative_working_directory().clone(),
+            env.get_working_directory().clone(),
             main_repo_mapping,
         );
         let residue = options.get_residue();

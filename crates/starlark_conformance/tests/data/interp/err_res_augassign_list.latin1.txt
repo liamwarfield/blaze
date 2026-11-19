@@ -1,0 +1,1 @@
+SYNTAX err_res_augassign_list.star:2:7: cannot perform augmented assignment on a list or tuple expression

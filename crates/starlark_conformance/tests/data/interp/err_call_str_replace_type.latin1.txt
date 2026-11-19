@@ -1,0 +1,5 @@
+EVAL in call to replace(), parameter 'old' got value of type 'int', want 'string'
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_call_str_replace_type.star", line 1, column 12, in <toplevel>
+TRACE \x09\x09"a".replace(1, 2)
+TRACE Error in replace: in call to replace(), parameter 'old' got value of type 'int', want 'string'

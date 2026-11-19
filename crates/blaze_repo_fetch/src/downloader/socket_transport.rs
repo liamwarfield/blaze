@@ -23,9 +23,12 @@ use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
 use super::http_connector::{HttpTransport, UrlConnection};
+use super::jdk_http_auth::{
+    AuthenticationInfo, JDK_USER_AGENT, JvmNetState, MAX_REDIRECTS, PROXY_AUTHORIZATION,
+};
 use super::proxy_helper::{ProxyInfo, ProxyType};
 use super::streams::InputStream;
-use blaze_util::string_encoding::{internal_to_unicode, latin1_decode, latin1_encode_lossy};
+use blaze_util::string_encoding::latin1_encode_lossy;
 
 use crate::errors::{IoException, IoExceptionKind};
 use crate::uri::JavaUri;
@@ -190,6 +193,8 @@ fn read_head_line(reader: &mut impl BufRead) -> Result<Option<String>, IoExcepti
 
 #[derive(Debug)]
 struct ResponseHead {
+    /// The first line as received (one char per byte).
+    status_line: String,
     code: i32,
     message: String,
     /// Lower-cased names, in order.
@@ -197,6 +202,15 @@ struct ResponseHead {
 }
 
 impl ResponseHead {
+    /// All values of a header (lower-case name), in order.
+    fn header_values(&self, name: &str) -> Vec<String> {
+        self.headers
+            .iter()
+            .filter(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+            .collect()
+    }
+
     fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
@@ -261,6 +275,7 @@ fn read_response_head(reader: &mut impl BufRead) -> Result<ResponseHead, IoExcep
         .filter_map(|(name, value)| Some((trim(&name?).to_ascii_lowercase(), trim(&value))))
         .collect();
     Ok(ResponseHead {
+        status_line,
         code,
         message,
         headers,
@@ -510,74 +525,91 @@ fn host_header(host: &str, port: i32, default_port: u16) -> String {
     }
 }
 
-/// The `Proxy-Authorization` value of a `CONNECT` tunnel.
-///
-/// Java: bazel/repository/downloader/ProxyHelper.java:330-333 hands the credentials to the JDK's
-/// `Authenticator` as `internalToUnicode(username)` / `internalToUnicode(password)`, and the
-/// JDK's `sun.net.www.protocol.http.BasicAuthentication` encodes `user + ":" + password` as
-/// ISO-8859-1 (`?` for a char above U+00FF). Checked on the oracle's JDK (Zulu 25.0.2): user `é`,
-/// password `pw` gives `Basic 6Tpwdw==`. Plain-HTTP proxying uses the request property set by
-/// `HttpConnector` instead (`basic_http_authentication_encode`, the internal bytes).
-fn proxy_authorization(proxy: &ProxyInfo) -> Option<String> {
-    use base64::Engine as _;
-    match (proxy.username(), proxy.password()) {
-        (Some(u), Some(p)) => {
-            let plain = format!("{}:{}", internal_to_unicode(u), internal_to_unicode(p));
-            Some(format!(
-                "Basic {}",
-                base64::engine::general_purpose::STANDARD.encode(latin1_encode_lossy(&plain))
-            ))
-        }
-        _ => None,
-    }
+/// The address of an HTTP proxy.
+fn proxy_address(proxy: &ProxyInfo) -> Result<(&str, u16), IoException> {
+    let proxy_host = proxy.hostname.as_deref().unwrap_or("");
+    let proxy_port = u16::try_from(proxy.port)
+        .map_err(|_| IoException::new(format!("proxy port out of range: {}", proxy.port)))?;
+    Ok((proxy_host, proxy_port))
 }
 
 /// Opens a tunnel to `host:port` through an HTTP proxy (`CONNECT`).
+///
+/// No credentials go with the first `CONNECT` unless an earlier answer to this proxy succeeded
+/// (the JDK's authentication cache). A 407 is answered, on a new connection, with what
+/// [`JvmNetState::get_http_proxy_authentication`] gives for a tunnel; when it gives nothing, or
+/// after `MAX_REDIRECTS` requests, the tunnel fails with the proxy's status line. Recorded with
+/// the oracle: `tests/data/proxy/https-*`.
+// Java: sun/net/www/protocol/http/HttpURLConnection.java HttpURLConnection.doTunneling (JDK 25.0.2)
+#[allow(clippy::too_many_arguments)]
 fn connect_tunnel(
-    stream: TcpStream,
+    state: &JvmNetState,
     proxy: &ProxyInfo,
     host: &str,
     port: u16,
+    url_port: i32,
+    connect_timeout_ms: i32,
+    read_timeout_ms: i32,
 ) -> Result<TcpStream, IoException> {
-    let mut request = format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n");
-    if let Some(auth) = proxy_authorization(proxy) {
-        request.push_str(&format!("Proxy-Authorization: {auth}\r\n"));
-    }
-    request.push_str("\r\n");
-    // The JDK writes requests through a `PrintStream` with the default charset (ISO-8859-1).
-    (&stream)
-        .write_all(&latin1_encode_lossy(&request))
-        .map_err(|e| map_io_error(&e, false))?;
-    // Read the proxy's answer byte by byte so that nothing of the tunnelled stream is consumed.
-    let mut head = Vec::new();
-    let mut byte = [0u8; 1];
-    while !head.ends_with(b"\r\n\r\n") {
-        match (&stream).read(&mut byte) {
-            Ok(0) => {
-                return Err(IoException::of(
-                    IoExceptionKind::SocketException,
-                    "Unexpected end of file from server",
-                ));
+    let (proxy_host, proxy_port) = proxy_address(proxy)?;
+    let mut proxy_authentication: Option<AuthenticationInfo> = None;
+    let mut status_line = String::new();
+    for _ in 0..MAX_REDIRECTS {
+        let stream = connect_tcp(proxy_host, proxy_port, connect_timeout_ms, read_timeout_ms)?;
+        // sendCONNECTRequest: the request line, then `setIfNotSet` of User-Agent, Host (with
+        // the port only when it is not the scheme's default), Accept and Proxy-Connection, then
+        // the proxy authentication: the answer to the last 407, else the cached one
+        // (setPreemptiveProxyAuthentication).
+        let mut request = format!(
+            "CONNECT {host}:{port} HTTP/1.1\r\n\
+             User-Agent: {JDK_USER_AGENT}\r\n\
+             Host: {}\r\n\
+             Accept: */*\r\n\
+             Proxy-Connection: keep-alive\r\n",
+            host_header(host, url_port, 443)
+        );
+        let authorization = match &proxy_authentication {
+            Some(a) => Some(a.clone()),
+            None => state.preemptive_proxy_authentication(proxy_host, proxy.port),
+        };
+        if let Some(a) = &authorization {
+            request.push_str(&format!("{PROXY_AUTHORIZATION}: {}\r\n", a.header_value()));
+        }
+        request.push_str("\r\n");
+        // The JDK writes requests through a `PrintStream` with the default charset (ISO-8859-1).
+        (&stream)
+            .write_all(&latin1_encode_lossy(&request))
+            .map_err(|e| map_io_error(&e, false))?;
+        // A buffer of one byte: nothing of the tunnelled stream is consumed with the head.
+        let head = read_response_head(&mut BufReader::with_capacity(1, &stream))?;
+        status_line = head.status_line.clone();
+        match head.code {
+            200 => {
+                // Cache proxy authentication info.
+                if let Some(a) = &proxy_authentication {
+                    state.add_to_cache(a);
+                }
+                return Ok(stream);
             }
-            Ok(_) => head.push(byte[0]),
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(map_io_error(&e, false)),
-        }
-        if head.len() > MAX_HEADER_LINE {
-            return Err(IoException::new("HTTP header line is too long"));
+            407 => {
+                state.reset_proxy_authentication(proxy_authentication.as_ref());
+                proxy_authentication = state.get_http_proxy_authentication(
+                    &head.header_values("proxy-authenticate"),
+                    proxy_host,
+                    proxy.port,
+                    true,
+                );
+                if proxy_authentication.is_none() {
+                    break;
+                }
+                // The next try goes on a new connection; this one is dropped.
+            }
+            _ => break,
         }
     }
-    // Response header bytes are read one char per byte (`MessageHeader.parseHeader`).
-    let status_line = latin1_decode(&head);
-    let status_line = status_line.lines().next().unwrap_or("");
-    let code = status_line.split(' ').nth(1).unwrap_or("");
-    if code != "200" {
-        // sun.net.www.protocol.http.HttpURLConnection.doTunneling
-        return Err(IoException::new(format!(
-            "Unable to tunnel through proxy. Proxy returns \"{status_line}\""
-        )));
-    }
-    Ok(stream)
+    Err(IoException::new(format!(
+        "Unable to tunnel through proxy. Proxy returns \"{status_line}\""
+    )))
 }
 
 /// The last line of defence for what is written into the request head: `HttpConnector` applies
@@ -623,6 +655,10 @@ fn check_request_header(name: &str, value: &str) -> Result<(), IoException> {
 /// `Host` always comes from the URL: `HttpURLConnection` does not let a caller set it
 /// (`isRestrictedHeader`), and a transport that sent a caller's `Host` would let a request reach
 /// another virtual host than the one its URL names. A `Host` among `headers` is an error here.
+///
+/// `proxy_authorization` is the JDK's own answer to the proxy (after a 407, or cached):
+/// `MessageHeader.set` puts it in place of the value of the caller's last `Proxy-Authorization`
+/// (recorded: `tests/data/proxy/http-enc-raw-407`).
 // Java: sun/net/www/protocol/http/HttpURLConnection.java HttpURLConnection.writeRequests (JDK 25.0.2)
 fn request_head(
     url: &JavaUri,
@@ -630,6 +666,7 @@ fn request_head(
     default_port: u16,
     headers: &[(String, String)],
     through_proxy_without_tunnel: bool,
+    proxy_authorization: Option<&str>,
 ) -> Result<String, IoException> {
     let has = |name: &str| headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(name));
     if has("host") {
@@ -642,8 +679,26 @@ fn request_head(
         "GET {} HTTP/1.1\r\n",
         request_target(url, through_proxy_without_tunnel)
     );
-    for (name, value) in headers {
+    let replaced = proxy_authorization.map(|value| {
+        match headers
+            .iter()
+            .rposition(|(k, _)| k.eq_ignore_ascii_case("Proxy-Authorization"))
+        {
+            Some(i) => (i, value),
+            // PORT: not recorded: where the JDK puts its header when the caller set none (only
+            // possible when another proxy's credentials answered this proxy).
+            None => blaze_util::unported!(
+                "MessageHeader.set",
+                "Proxy-authorization without a caller's Proxy-Authorization"
+            ),
+        }
+    });
+    for (i, (name, value)) in headers.iter().enumerate() {
         check_request_header(name, value)?;
+        let value = match replaced {
+            Some((j, v)) if j == i => v,
+            _ => value.as_str(),
+        };
         request.push_str(&format!("{name}: {value}\r\n"));
     }
     request.push_str(&format!(
@@ -688,9 +743,16 @@ fn body_framing(head: &ResponseHead) -> BodyFraming {
     }
 }
 
-/// Opens the connection, sends the request and reads the response head. `tls` replaces the
-/// default TLS configuration (tests only).
+/// Opens the connection, sends the request and reads the response head, in the JVM `state`.
+/// `tls` replaces the default TLS configuration (tests only).
+///
+/// Through an HTTP proxy without a tunnel, a 407 is answered on a new connection with what
+/// [`JvmNetState::get_http_proxy_authentication`] gives, up to `MAX_REDIRECTS` requests; when it
+/// gives nothing (or at the limit) the 407 is the response. Recorded with the oracle:
+/// `tests/data/proxy/http-*`.
+// Java: sun/net/www/protocol/http/HttpURLConnection.java HttpURLConnection.getInputStream0 (JDK 25.0.2)
 fn open_connection(
+    state: &JvmNetState,
     url: &JavaUri,
     proxy: &ProxyInfo,
     headers: &[(String, String)],
@@ -708,6 +770,8 @@ fn open_connection(
             ));
         }
     };
+    // `URL.openConnection` makes an `HttpURLConnection`: its class is initialised by the first.
+    state.http_url_connection_class_init();
     let host = url.get_host().ok_or_else(|| {
         IoException::of(
             IoExceptionKind::UnrecoverableHttpException,
@@ -726,38 +790,89 @@ fn open_connection(
     };
     // Built before anything is connected: a bad header fails without a request.
     let through_proxy_without_tunnel = proxy.proxy_type == ProxyType::HTTP && !https;
-    let request = request_head(
+    request_head(
         url,
         host,
         default_port,
         headers,
         through_proxy_without_tunnel,
+        None,
     )?;
 
-    let tcp = match proxy.proxy_type {
-        ProxyType::DIRECT => connect_tcp(host, port, connect_timeout_ms, read_timeout_ms)?,
-        ProxyType::HTTP => {
-            let proxy_host = proxy.hostname.as_deref().unwrap_or("");
-            let proxy_port = u16::try_from(proxy.port).map_err(|_| {
-                IoException::new(format!("proxy port out of range: {}", proxy.port))
-            })?;
-            let stream = connect_tcp(proxy_host, proxy_port, connect_timeout_ms, read_timeout_ms)?;
-            if https {
-                connect_tunnel(stream, proxy, host, port)?
-            } else {
-                // The absolute-form request goes to the proxy; `HttpConnector` has added
-                // `Proxy-Authorization` to the request properties.
-                stream
-            }
-        }
-        // PORT: java.net.SocksSocketImpl is not ported.
-        ProxyType::SOCKS => blaze_util::unported!(
-            "SocksSocketImpl.connect",
-            "SOCKS proxy {}",
-            proxy.address().unwrap_or_default()
-        ),
-    };
+    if !through_proxy_without_tunnel {
+        let tcp = match proxy.proxy_type {
+            ProxyType::DIRECT => connect_tcp(host, port, connect_timeout_ms, read_timeout_ms)?,
+            ProxyType::HTTP => connect_tunnel(
+                state,
+                proxy,
+                host,
+                port,
+                url.get_port(),
+                connect_timeout_ms,
+                read_timeout_ms,
+            )?,
+            // PORT: java.net.SocksSocketImpl is not ported.
+            ProxyType::SOCKS => blaze_util::unported!(
+                "SocksSocketImpl.connect",
+                "SOCKS proxy {}",
+                proxy.address().unwrap_or_default()
+            ),
+        };
+        let request = request_head(url, host, default_port, headers, false, None)?;
+        let (reader, head) = send_request(host, https, tcp, &request, tls)?;
+        return Ok(url_connection(url, reader, head));
+    }
 
+    // Through the proxy without a tunnel: the absolute-form request goes to the proxy, with the
+    // `Proxy-Authorization` that `HttpConnector` set as a request property, until the JDK has an
+    // answer of its own (after a 407, or cached from an earlier one to this proxy).
+    let (proxy_host, proxy_port) = proxy_address(proxy)?;
+    let mut proxy_authentication: Option<AuthenticationInfo> = None;
+    let mut requests = 0;
+    loop {
+        requests += 1;
+        let authorization = match &proxy_authentication {
+            Some(a) => Some(a.clone()),
+            None => state.preemptive_proxy_authentication(proxy_host, proxy.port),
+        };
+        let request = request_head(
+            url,
+            host,
+            default_port,
+            headers,
+            true,
+            authorization.as_ref().map(AuthenticationInfo::header_value),
+        )?;
+        let tcp = connect_tcp(proxy_host, proxy_port, connect_timeout_ms, read_timeout_ms)?;
+        let (reader, head) = send_request(host, false, tcp, &request, None)?;
+        if head.code == 407 {
+            state.reset_proxy_authentication(proxy_authentication.as_ref());
+            proxy_authentication = state.get_http_proxy_authentication(
+                &head.header_values("proxy-authenticate"),
+                proxy_host,
+                proxy.port,
+                false,
+            );
+            if proxy_authentication.is_some() && requests < MAX_REDIRECTS {
+                // The next try goes on a new connection; this one is dropped.
+                continue;
+            }
+        } else if let Some(a) = &proxy_authentication {
+            // Cache proxy authentication info.
+            state.add_to_cache(a);
+        }
+        return Ok(url_connection(url, reader, head));
+    }
+}
+
+/// Wraps `tcp` in TLS when `https`, sends `request` and reads the final response head.
+fn send_request(
+    host: &str,
+    https: bool,
+    tcp: TcpStream,
+    request: &str,
+    tls: Option<Arc<ClientConfig>>,
+) -> Result<(BufReader<Connection>, ResponseHead), IoException> {
     let mut connection = if https {
         let config = match tls {
             Some(config) => config,
@@ -776,7 +891,7 @@ fn open_connection(
     // `NetworkClient.encoding`, the default charset (ISO-8859-1): header values are internal
     // strings and leave as their bytes.
     connection
-        .write_all(&latin1_encode_lossy(&request))
+        .write_all(&latin1_encode_lossy(request))
         .and_then(|()| connection.flush())
         .map_err(|e| map_io_error(&e, false))?;
 
@@ -792,14 +907,42 @@ fn open_connection(
             break head;
         }
     };
+    Ok((reader, head))
+}
+
+fn url_connection(
+    url: &JavaUri,
+    reader: BufReader<Connection>,
+    head: ResponseHead,
+) -> UrlConnection {
     let framing = body_framing(&head);
-    Ok(UrlConnection::new(
+    UrlConnection::new(
         url.clone(),
         head.code,
         Some(head.message),
         head.headers,
         Ok(Box::new(BodyStream::new(reader, framing))),
-    ))
+    )
+}
+
+/// [`HttpTransport::open`] in the JVM `state` (tests that need a fresh JVM).
+pub fn open_in(
+    state: &JvmNetState,
+    url: &JavaUri,
+    proxy: &ProxyInfo,
+    headers: &[(String, String)],
+    connect_timeout_ms: i32,
+    read_timeout_ms: i32,
+) -> Result<UrlConnection, IoException> {
+    open_connection(
+        state,
+        url,
+        proxy,
+        headers,
+        connect_timeout_ms,
+        read_timeout_ms,
+        None,
+    )
 }
 
 impl HttpTransport for SocketTransport {
@@ -812,6 +955,7 @@ impl HttpTransport for SocketTransport {
         read_timeout_ms: i32,
     ) -> Result<UrlConnection, IoException> {
         open_connection(
+            JvmNetState::global(),
             url,
             proxy,
             headers,
@@ -834,19 +978,30 @@ mod tests {
     #[test]
     fn connect_tunnel_credentials_are_latin1_of_the_unicode_string() {
         use blaze_util::string_encoding::latin1_decode;
-        let proxy = |url: &str| {
-            super::super::proxy_helper::create_proxy(Some(&latin1_decode(url.as_bytes()))).unwrap()
+        let answer = |url: &str| {
+            let state = JvmNetState::new();
+            super::super::proxy_helper::create_proxy_info_in(
+                &state,
+                Some(&latin1_decode(url.as_bytes())),
+                None,
+                None,
+            )
+            .unwrap();
+            state
+                .get_http_proxy_authentication(
+                    &["Basic realm=\"r\"".into()],
+                    "127.0.0.1",
+                    3128,
+                    true,
+                )
+                .unwrap()
+                .header_value()
+                .to_string()
         };
+        assert_eq!(answer("http://é:pw@127.0.0.1:3128"), "Basic 6Tpwdw==");
+        assert_eq!(answer("http://中:pw@127.0.0.1:3128"), "Basic Pzpwdw==");
         assert_eq!(
-            proxy_authorization(&proxy("http://é:pw@127.0.0.1:3128")).unwrap(),
-            "Basic 6Tpwdw=="
-        );
-        assert_eq!(
-            proxy_authorization(&proxy("http://中:pw@127.0.0.1:3128")).unwrap(),
-            "Basic Pzpwdw=="
-        );
-        assert_eq!(
-            proxy_authorization(&proxy("http://user:pass@127.0.0.1:3128")).unwrap(),
+            answer("http://user:pass@127.0.0.1:3128"),
             "Basic dXNlcjpwYXNz"
         );
     }
@@ -1085,7 +1240,7 @@ mod tests {
             header("User-Agent", "bazel/test"),
         ];
         assert_eq!(
-            request_head(&url, "example.com", 80, &headers, false).unwrap(),
+            request_head(&url, "example.com", 80, &headers, false, None).unwrap(),
             "GET /a?b=c HTTP/1.1\r\n\
              Accept-Encoding: gzip\r\n\
              X-Multi: 1\r\n\
@@ -1104,7 +1259,7 @@ mod tests {
             header("Connection", "close"),
         ];
         assert_eq!(
-            request_head(&url, "example.com", 80, &headers, true).unwrap(),
+            request_head(&url, "example.com", 80, &headers, true, None).unwrap(),
             "GET http://example.com:8080/a?b=c HTTP/1.1\r\n\
              Proxy-Authorization: Basic dXNlcjpwYXNz\r\n\
              Accept: text/plain\r\n\
@@ -1121,8 +1276,8 @@ mod tests {
     fn request_head_refuses_header_injection() {
         let url = JavaUri::create("http://example.com/").unwrap();
         let error = |name: &str, value: &str| {
-            let e =
-                request_head(&url, "example.com", 80, &[header(name, value)], false).unwrap_err();
+            let e = request_head(&url, "example.com", 80, &[header(name, value)], false, None)
+                .unwrap_err();
             assert_eq!(e.kind, IoExceptionKind::UnrecoverableHttpException);
             e.get_message()
         };
@@ -1163,7 +1318,8 @@ mod tests {
                 "example.com",
                 80,
                 &[header("X-A", "one\n two")],
-                false
+                false,
+                None
             )
             .unwrap()
             .contains("X-A: one\n two\r\nHost: example.com\r\n")
@@ -1277,6 +1433,7 @@ mod tests {
         tls: Option<Arc<ClientConfig>>,
     ) -> Result<UrlConnection, IoException> {
         open_connection(
+            &JvmNetState::new(),
             &JavaUri::create(url).unwrap(),
             proxy,
             headers,
@@ -1431,9 +1588,9 @@ mod tests {
         .unwrap()
     }
 
-    /// https through an authenticated proxy: `CONNECT` with the proxy credentials, then TLS to
-    /// the origin inside the tunnel. The credentials do not go to the origin, and the origin's
-    /// request does not go to the proxy.
+    /// https through an authenticated proxy that does not ask for credentials: `CONNECT` without
+    /// them (the JDK answers only a 407; tests/data/proxy/https-200-creds), then TLS to the
+    /// origin inside the tunnel. The origin's request does not go to the proxy.
     #[test]
     fn https_request_through_a_proxy_uses_a_connect_tunnel() {
         let (origin_port, origin_requests) = tls_server(OK_CHUNKED);
@@ -1452,8 +1609,10 @@ mod tests {
             proxy_requests,
             vec![format!(
                 "CONNECT localhost:{origin_port} HTTP/1.1\r\n\
+                 User-Agent: Java/25.0.2\r\n\
                  Host: localhost:{origin_port}\r\n\
-                 Proxy-Authorization: Basic dXNlcjpwYXNz\r\n\r\n"
+                 Accept: */*\r\n\
+                 Proxy-Connection: keep-alive\r\n\r\n"
             )]
         );
         let origin_requests = origin_requests.lock().unwrap().clone();

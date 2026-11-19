@@ -1,0 +1,5 @@
+load(":defs.bzl", "leaf")
+
+leaf(name = "a")
+
+leaf(name = "b", deps = [":a"])

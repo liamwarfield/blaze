@@ -10,6 +10,7 @@ use blaze_optdefs::fragment::converters::BLAZE_ALIASING_FLAG;
 use blaze_options::OptionsClass;
 use blaze_options::OptionsParser;
 use blaze_options::definition::OptionsClassRef;
+use blaze_options::invocation_policy::{InvocationPolicyEnforcer, InvocationPolicyParser};
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail::Category};
 use blaze_sky_loading::package_manager::RepositoryMappingResolutionOrInterrupted;
 use blaze_sky_top::skyframe_executor::DEFAULT_THREAD_COUNT;
@@ -192,28 +193,57 @@ impl BlazeCommand for CanonicalizeCommand {
             );
         }
 
-        // InvocationPolicyParser.parsePolicy: an empty value is the default (empty) policy.
-        // Java: com/google/devtools/common/options/InvocationPolicyParser.java:36 InvocationPolicyParser.parsePolicy
-        if !canonicalize_options.invocation_policy.is_empty() {
-            blaze_util::unported!("InvocationPolicyParser.parsePolicy");
-        }
-
-        // InvocationPolicyEnforcer.enforce returns at once for a policy without flag policies.
-        // Java: com/google/devtools/common/options/InvocationPolicyEnforcer.java:105 InvocationPolicyEnforcer.enforce
-
-        let out_err = env.get_reporter().get_out_err().clone();
-        // Print out the canonical invocation policy if requested.
-        if canonicalize_options.canonicalize_policy {
-            // getEffectiveInvocationPolicy of the empty policy has no flag policies; the
-            // `toString()` (text format) of an empty InvocationPolicy is "".
-            // Java: com/google/devtools/common/options/InvocationPolicyEnforcer.java:213 InvocationPolicyEnforcer.getEffectiveInvocationPolicy
-            out_err.print_out_ln("");
-        } else {
-            // Otherwise, print out the canonical command line
-            let native_result = parser.canonicalize();
-            for piece in native_result.iter().chain(starlark_canonical.iter()) {
-                out_err.print_out_ln(piece);
+        // Java: com/google/devtools/build/lib/runtime/commands/CanonicalizeCommand.java:225 CanonicalizeCommand.exec
+        let policy = match InvocationPolicyParser::parse_policy(Some(
+            canonicalize_options.invocation_policy.as_str(),
+        )) {
+            Ok(policy) => policy,
+            Err(e) => {
+                return Self::report_and_create_command_failure(
+                    env,
+                    e.get_message(),
+                    failure_details::command::Code::InvocationPolicyParseFailure,
+                );
             }
+        };
+
+        let result = (|| -> Result<(), blaze_options::OptionsParsingException> {
+            let invocation_policy_enforcer =
+                InvocationPolicyEnforcer::new(policy.clone(), parser.get_conversion_context().cloned());
+            invocation_policy_enforcer.enforce(
+                &mut parser,
+                &command_name,
+                /* invocation_policy_flag_list_builder= */ &mut Vec::new(),
+            )?;
+
+            let out_err = env.get_reporter().get_out_err().clone();
+            // Print out the canonical invocation policy if requested.
+            if canonicalize_options.canonicalize_policy {
+                let effective_policy = InvocationPolicyEnforcer::get_effective_invocation_policy(
+                    &policy,
+                    &mut parser,
+                    &command_name,
+                )?;
+                out_err.print_out_ln(&blaze_protos::text_format::message_to_string(
+                    &effective_policy,
+                ));
+            } else {
+                // Otherwise, print out the canonical command line
+                // PORT: the Starlark half was computed above, before the native parser was
+                // borrowed for the enforcement; the enforcer does not touch Starlark options.
+                let native_result = parser.canonicalize();
+                for piece in native_result.iter().chain(starlark_canonical.iter()) {
+                    out_err.print_out_ln(piece);
+                }
+            }
+            Ok(())
+        })();
+        if let Err(e) = result {
+            return Self::report_and_create_command_failure(
+                env,
+                e.get_message(),
+                failure_details::command::Code::InvocationPolicyInvalid,
+            );
         }
 
         BlazeCommandResult::success()

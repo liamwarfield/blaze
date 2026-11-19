@@ -1,0 +1,34 @@
+load(":defs.bzl", "my_toolchain", "tc_user")
+
+constraint_setting(name = "flavor")
+
+constraint_value(name = "red", constraint_setting = ":flavor")
+
+constraint_value(name = "blue", constraint_setting = ":flavor")
+
+toolchain_type(name = "type")
+
+my_toolchain(name = "impl_red")
+
+my_toolchain(name = "impl_any")
+
+toolchain(
+    name = "tc_red",
+    toolchain = ":impl_red",
+    toolchain_type = ":type",
+    target_compatible_with = [":red"],
+)
+
+toolchain(
+    name = "tc_any",
+    toolchain = ":impl_any",
+    toolchain_type = ":type",
+)
+
+platform(name = "red_platform", constraint_values = [":red"])
+
+platform(name = "blue_platform", constraint_values = [":blue"])
+
+tc_user(name = "user")
+
+tc_user(name = "user_red_exec", exec_compatible_with = [":red"])

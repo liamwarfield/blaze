@@ -1,0 +1,3 @@
+module(name = "config_probe")
+
+register_toolchains("//tc:tc_red", "//tc:tc_any")

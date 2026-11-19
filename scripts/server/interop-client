@@ -1,0 +1,680 @@
+#!/usr/bin/env python3
+"""Blaze client against a real Bazel server: see `interop-client help`."""
+
+import difflib
+import importlib.machinery
+import importlib.util
+import os
+import re
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+sys.dont_write_bytecode = True
+
+HOME = os.path.expanduser("~")
+ORACLE = os.path.join(HOME, ".cache/blaze/oracle/bazel-9.3.2-linux-x86_64")
+ORACLE_INSTALL_BASE = os.path.join(
+    HOME, ".cache/blaze/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9")
+REPO_CACHE = os.path.join(HOME, ".cache/blaze/repo-cache")
+WORK = os.path.join(HOME, ".cache/blaze/work/server/s1")
+INSTALL = os.path.join(WORK, "install")
+WS = os.path.join(WORK, "ws")
+SIDES = ("A", "B")
+
+USAGE = """\
+usage: scripts/server/interop-client help
+       scripts/server/interop-client list
+       scripts/server/interop-client run [CASE...] [--scenarios a,b,...]
+
+Runs every case (or the named ones) twice, on separate fresh output user roots and separate
+fresh copies of the same small workspace:
+  A  the oracle (real Bazel 9.3.2, ~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64) as client,
+     with its own server: the expected result;
+  B  the Blaze client ($BLAZE, default target/debug/blaze) with BLAZE_SERVER_MODE=jvm, which
+     starts and drives the same real Bazel server (the JVM of the install base).
+and compares, per step, the exit code, the stdout bytes and the stderr bytes. A difference is
+printed as a unified diff (A = oracle, B = blaze) and makes the tool exit 1. `--scenarios`
+limits the `scenarios` case to the named probe scenarios.
+
+Setup (all scratch state under ~/.cache/blaze/work/server/s1):
+  install/      a copy of the oracle's install base (read-only original:
+                ~/.cache/blaze/oracle-out/ur/install/58cf...), used by both sides through
+                --install_base. Its install_base_key is the oracle's for A and Blaze's for B
+                (Blaze's client accepts an install base only with its own key; Blaze's key is
+                read from an install base the Blaze binary extracts once into keyprobe/).
+  ws/           the workspace, re-created from its template before each side (same path for A
+                and B, so the output base hash is the same).
+  ur-A/, ur-B/  the output user roots, deleted and re-created for each case.
+  transcripts/  <case>-A.txt and <case>-B.txt: every normalised step of the last run.
+Both sides: cwd ws/, environment exactly HOME=$HOME PATH=/usr/bin:/bin BLAZE_SERVER_MODE=jvm
+(the oracle ignores the variable; setting it for both keeps --client_env equal), startup options
+--output_user_root=<ur> --install_base=<install> --nohome_rc --nosystem_rc, and for build,
+query, cquery, aquery, run, test and info the command options
+--repository_cache=~/.cache/blaze/repo-cache --color=no --curses=no (as scripts/w4/probe).
+
+Normalisation (only what must differ between two runs; applied to stdout and stderr alike):
+  1. the output user root path (ur-A or ur-B) -> <OUTPUT_USER_ROOT>; the output base under it
+     (<OUTPUT_USER_ROOT>/<32 hex>) -> <OUTPUT_BASE>;
+  2. process ids: `pid=N` (also in server_pid=N), `server (N)`, `JVM process N`,
+     `process (pid=N)` -> <PID>;
+  3. durations: a number followed by s or ms (`1.23s`, `45ms`) -> <DUR>;
+  4. UUIDs (invocation ids, command ids) -> <UUID>; the time of day in the client's log
+     prefix `[LEVEL HH:MM:SS.mmm file:line]` -> `[LEVEL <TIME> file:line]`;
+  5. sandbox directory numbers `/sandbox/<strategy>/N/` -> `/sandbox/<strategy>/<N>/`;
+  6. stderr only: the rate-limited progress lines whose number and content depend on timing
+     (lines starting `Computing main repo mapping:`, `Loading:`, `Analyzing:`, `Fetching `,
+     `Building:`, `Testing:`, `[n / m]`; the same classes as scripts/w4/probe) are dropped.
+Nothing else is changed or dropped. Cases also record facts as text steps (for example "server
+pid unchanged: True"), compared like the rest.
+
+Cases (`list` prints them):
+"""
+
+# --------------------------------------------------------------------------------------------
+# The probe (scripts/w4/probe), imported for its scenario data and aquery summary; not edited.
+
+def load_probe():
+    path = os.path.join(ROOT, "scripts/w4/probe")
+    loader = importlib.machinery.SourceFileLoader("w4_probe", path)
+    spec = importlib.util.spec_from_loader("w4_probe", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+PROBE = load_probe()
+PROGRESS = PROBE.PROGRESS
+UUID = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
+DUR = re.compile(r"\b\d+(\.\d+)?m?s\b")
+PIDS = [
+    (re.compile(r"pid=\d+"), "pid=<PID>"),
+    (re.compile(r"server \(\d+\)"), "server (<PID>)"),
+    (re.compile(r"JVM process \d+"), "JVM process <PID>"),
+]
+SANDBOX = re.compile(r"/sandbox/([a-z-]+)/\d+/")
+LOG_TIME = re.compile(r"^\[([A-Z]+) \d\d:\d\d:\d\d\.\d{3} ", re.M)
+COMMON_COMMANDS = {"build", "query", "cquery", "aquery", "run", "test", "info"}
+
+
+def die(msg):
+    sys.stderr.write("interop-client: %s\n" % msg)
+    sys.exit(2)
+
+
+# --------------------------------------------------------------------------------------------
+# The workspace of the hand-written cases.
+
+TEMPLATE = {
+    "MODULE.bazel": 'module(name = "interop")\n',
+    "hello.sh.in": "#!/bin/sh\necho \"hi from run $*\"\necho to stderr >&2\nexit 3\n",
+    "BUILD.bazel": """\
+genrule(
+    name = "ok",
+    outs = ["ok.txt"],
+    cmd = "echo hello > $@",
+)
+
+genrule(
+    name = "fail",
+    outs = ["fail.txt"],
+    cmd = "echo failing >&2; exit 1",
+)
+
+genrule(
+    name = "sleep",
+    outs = ["sleep.txt"],
+    cmd = "sleep 60; touch $@",
+)
+
+genrule(
+    name = "sleep20",
+    outs = ["sleep20.txt"],
+    cmd = "sleep 20; touch $@",
+)
+
+genrule(
+    name = "hello_bin",
+    srcs = ["hello.sh.in"],
+    outs = ["hello.sh"],
+    cmd = "cp $< $@",
+    executable = True,
+)
+""",
+}
+
+
+def write_template(dest):
+    os.makedirs(dest)
+    for name, content in TEMPLATE.items():
+        with open(os.path.join(dest, name), "w") as f:
+            f.write(content)
+
+
+def rmtree(path):
+    if os.path.lexists(path):
+        subprocess.run(["chmod", "-R", "u+w", path], check=False)
+        shutil.rmtree(path)
+
+
+# --------------------------------------------------------------------------------------------
+# The shared install base copy.
+
+def blaze_binary():
+    return os.environ.get("BLAZE", os.path.join(ROOT, "target/debug/blaze"))
+
+
+def blaze_install_key():
+    """Blaze's install key: extract Blaze's own install base once and read it."""
+    probe_root = os.path.join(WORK, "keyprobe")
+    rmtree(probe_root)
+    os.makedirs(probe_root)
+    ib = os.path.join(probe_root, "ib")
+    env = {"HOME": HOME, "PATH": "/usr/bin:/bin", "BLAZE_SERVER_MODE": "inprocess"}
+    p = subprocess.run([blaze_binary(), "--output_user_root=" + os.path.join(probe_root, "ur"),
+                        "--install_base=" + ib, "--nohome_rc", "--nosystem_rc", "--batch",
+                        "version"], cwd=probe_root, env=env, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=600)
+    key_file = os.path.join(ib, "install_base_key")
+    if not os.path.exists(key_file):
+        die("could not extract Blaze's install base (exit %d):\n%s"
+            % (p.returncode, p.stderr.decode("latin-1")))
+    with open(key_file) as f:
+        key = f.read()
+    rmtree(probe_root)
+    return key
+
+
+def prepare_install_base():
+    """Copies the oracle's install base to INSTALL once (cp -a keeps the far-future mtimes)."""
+    if not os.path.exists(os.path.join(INSTALL, "A-server.jar")):
+        rmtree(INSTALL)
+        subprocess.run(["cp", "-a", ORACLE_INSTALL_BASE, INSTALL], check=True)
+    with open(os.path.join(ORACLE_INSTALL_BASE, "install_base_key")) as f:
+        oracle_key = f.read()
+    return {"A": oracle_key, "B": blaze_install_key()}
+
+
+def set_install_key(key):
+    path = os.path.join(INSTALL, "install_base_key")
+    st = os.stat(os.path.join(INSTALL, "daemonize"))
+    os.chmod(path, 0o755)
+    with open(path, "w") as f:
+        f.write(key)
+    os.utime(path, (st.st_atime, st.st_mtime))
+
+
+# --------------------------------------------------------------------------------------------
+# One side of a case.
+
+class Side:
+    def __init__(self, name):
+        self.name = name
+        self.binary = ORACLE if name == "A" else blaze_binary()
+        self.ur = os.path.join(WORK, "ur-" + name)
+        self.env = {"HOME": HOME, "PATH": "/usr/bin:/bin", "BLAZE_SERVER_MODE": "jvm"}
+        self.steps = []  # (title, text)
+
+    # Setup and teardown.
+
+    def fresh(self, ws_source=None):
+        self.cleanup()
+        rmtree(self.ur)
+        rmtree(WS)
+        if ws_source is None:
+            write_template(WS)
+        else:
+            shutil.copytree(ws_source, WS, symlinks=True)
+
+    def server_pid_files(self):
+        out = []
+        if os.path.isdir(self.ur):
+            for d in os.listdir(self.ur):
+                f = os.path.join(self.ur, d, "server", "server.pid.txt")
+                if os.path.exists(f):
+                    out.append(f)
+        return out
+
+    def server_pid(self):
+        for f in self.server_pid_files():
+            try:
+                with open(f) as fh:
+                    return int(fh.read().strip())
+            except (OSError, ValueError):
+                pass
+        return None
+
+    @staticmethod
+    def is_server(pid):
+        """pid is alive and is a Bazel server (its cmdline names A-server.jar)."""
+        try:
+            with open("/proc/%d/cmdline" % pid, "rb") as f:
+                return b"A-server.jar" in f.read()
+        except OSError:
+            return False
+
+    def cleanup(self):
+        """Shuts down the servers of this side's output user root with this side's client (the
+        install base must carry this side's key: another client would replace it); kills what
+        is left."""
+        if not os.path.isdir(self.ur):
+            return
+        for f in self.server_pid_files():
+            out_base = os.path.dirname(os.path.dirname(f))
+            try:
+                pid = int(open(f).read().strip())
+            except (OSError, ValueError):
+                continue
+            if not self.is_server(pid):
+                continue
+            try:
+                subprocess.run([self.binary, "--output_user_root=" + self.ur,
+                                "--output_base=" + out_base, "--install_base=" + INSTALL,
+                                "--nohome_rc", "--nosystem_rc", "shutdown"],
+                               cwd=WORK if os.path.isdir(WORK) else "/", env=self.env,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90)
+            except subprocess.TimeoutExpired:
+                pass
+            if self.is_server(pid):
+                kill_group(pid)
+
+    # Commands.
+
+    def argv(self, startup, command, args):
+        argv = [self.binary, "--output_user_root=" + self.ur, "--install_base=" + INSTALL,
+                "--nohome_rc", "--nosystem_rc"] + list(startup)
+        if command is not None:
+            argv.append(command)
+            if command in COMMON_COMMANDS:
+                argv += ["--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"]
+        return argv + list(args)
+
+    def spawn(self, startup=(), command=None, args=(), stdout=subprocess.PIPE):
+        return subprocess.Popen(self.argv(startup, command, args), cwd=WS, env=self.env,
+                                stdin=subprocess.DEVNULL, stdout=stdout, stderr=subprocess.PIPE)
+
+    def finish(self, title, p, timeout=900):
+        try:
+            out, err = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            out, err = p.communicate()
+            err += b"\n<interop-client: step timed out>\n"
+        self.record_run(title, p.returncode, out or b"", err)
+
+    def run(self, title, startup=(), command=None, args=(), timeout=900):
+        self.finish(title, self.spawn(startup, command, args), timeout)
+
+    def record_run(self, title, code, out, err):
+        self.steps.append((title, "exit %d\n--- stdout\n%s--- stderr\n%s"
+                           % (code, self.norm(out), self.norm_stderr(err))))
+
+    def fact(self, title, value):
+        self.steps.append((title, "%s\n" % value))
+
+    # Normalisation (see USAGE).
+
+    def norm(self, data):
+        text = data.decode("latin-1")
+        text = re.sub(re.escape(self.ur) + r"/[0-9a-f]{32}", "<OUTPUT_BASE>", text)
+        text = text.replace(self.ur, "<OUTPUT_USER_ROOT>")
+        for pattern, repl in PIDS:
+            text = pattern.sub(repl, text)
+        text = DUR.sub("<DUR>", text)
+        text = UUID.sub("<UUID>", text)
+        text = LOG_TIME.sub(r"[\1 <TIME> ", text)
+        text = SANDBOX.sub(r"/sandbox/\1/<N>/", text)
+        if text and not text.endswith("\n"):
+            text += "<no newline at end>\n"
+        return text
+
+    def norm_stderr(self, data):
+        lines = [l for l in data.decode("latin-1").split("\n") if not PROGRESS.match(l)]
+        return self.norm("\n".join(lines).encode("latin-1"))
+
+
+def kill_group(pid):
+    for sig_target in (lambda: os.killpg(pid, signal.SIGKILL), lambda: os.kill(pid, signal.SIGKILL)):
+        try:
+            sig_target()
+        except OSError:
+            pass
+    for _ in range(100):
+        if not Side.is_server(pid):
+            return
+        time.sleep(0.1)
+
+
+def wait_gone(pid, seconds):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if not Side.is_server(pid):
+            return True
+        time.sleep(0.1)
+    return not Side.is_server(pid)
+
+
+# --------------------------------------------------------------------------------------------
+# Cases. Each is a function run once per side; it records steps on the side.
+
+def case_plain(s):
+    """Plain commands on one server: version, info, help, build, query, a failing build (1), a
+    bad command (2), a bad startup option (2); only the first starts a server."""
+    s.fresh()
+    s.run("version", command="version")
+    pid = s.server_pid()
+    s.run("info release workspace", command="info", args=["release", "workspace"])
+    s.run("help", command="help")
+    s.run("build //:ok", command="build", args=["//:ok"])
+    s.run("query //...", command="query", args=["//..."])
+    s.run("build //:fail", command="build", args=["//:fail"])
+    s.run("nosuchcommand", command="nosuchcommand")
+    s.run("--bogus_startup_option info", startup=["--bogus_startup_option"], command="info")
+    s.fact("one server for all commands", pid is not None and s.server_pid() == pid
+           and Side.is_server(pid))
+
+
+def case_scenarios(s, only=None):
+    """The command sequences of scripts/w4/scenarios/* (COMMANDS: run, aquery, cat, stat), one
+    server per scenario, then shutdown."""
+    names = sorted(n for n in os.listdir(PROBE.SCENARIOS)
+                   if os.path.isfile(os.path.join(PROBE.SCENARIOS, n, "COMMANDS")))
+    if only:
+        names = [n for n in names if n in only]
+    for name in names:
+        sdir = os.path.join(PROBE.SCENARIOS, name)
+        s.fresh(os.path.join(sdir, "ws"))
+        n = 0
+        with open(os.path.join(sdir, "COMMANDS")) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                n += 1
+                title = "%s %d: %s" % (name, n, line)
+                parts = shlex.split(line)
+                kind, args = parts[0], parts[1:]
+                if kind == "run":
+                    p = s.spawn(command=args[0], args=args[1:])
+                    out, err = p.communicate(timeout=1800)
+                    out = PROBE.Run.raw_aquery(out.decode("latin-1")).encode("latin-1")
+                    s.record_run(title, p.returncode, out, err)
+                elif kind == "aquery":
+                    p = s.spawn(command="aquery", args=["--output=jsonproto", "--include_param_files",
+                                                        "--include_file_write_contents"] + args)
+                    out, err = p.communicate(timeout=1800)
+                    out = PROBE.Run.raw_aquery(out.decode("latin-1")).encode("latin-1")
+                    s.record_run(title, p.returncode, out, err)
+                elif kind == "cat":
+                    try:
+                        with open(os.path.join(WS, args[0]), "rb") as fh:
+                            s.fact(title, s.norm(fh.read()))
+                    except OSError as e:
+                        s.fact(title, "cannot read: %s" % type(e).__name__)
+                elif kind == "stat":
+                    path = os.path.join(WS, args[0])
+                    try:
+                        st = os.stat(path)
+                        s.fact(title, "%s %o" % ("dir" if os.path.isdir(path) else "file",
+                                                 st.st_mode & 0o7777))
+                    except OSError as e:
+                        s.fact(title, "cannot stat: %s" % type(e).__name__)
+                else:
+                    die("unknown step kind %r in %s" % (kind, name))
+        s.run("%s: shutdown" % name, command="shutdown")
+
+
+def case_shutdown(s):
+    """shutdown without a server, with one, and a command after it starts a new server."""
+    s.fresh()
+    s.run("shutdown (no server)", command="shutdown")
+    s.run("info release (starts a server)", command="info", args=["release"])
+    pid = s.server_pid()
+    s.run("shutdown", command="shutdown")
+    s.fact("server gone after shutdown", pid is not None and wait_gone(pid, 5))
+    s.run("shutdown (server gone)", command="shutdown")
+    s.run("info release (starts a new server)", command="info", args=["release"])
+    s.fact("new server", s.server_pid() not in (None, pid))
+
+
+def case_startup_options(s):
+    """A changed startup option restarts the server (warning text, Only in old/new server
+    lines); a changed volatile option (--max_idle_secs) does not."""
+    s.fresh()
+    s.run("info release", command="info", args=["release"])
+    s.run("--host_jvm_args=-Dfoo=1 info release", startup=["--host_jvm_args=-Dfoo=1"],
+          command="info", args=["release"])
+    s.run("--host_jvm_args=-Dfoo=1 --host_jvm_args=-Dbar=2 --io_nice_level=3 info release",
+          startup=["--host_jvm_args=-Dfoo=1", "--host_jvm_args=-Dbar=2", "--io_nice_level=3"],
+          command="info", args=["release"])
+    s.run("info release (back to the defaults)", command="info", args=["release"])
+    pid = s.server_pid()
+    s.run("--max_idle_secs=1000 info release", startup=["--max_idle_secs=1000"],
+          command="info", args=["release"])
+    s.fact("server kept for a volatile option", pid is not None and s.server_pid() == pid
+           and Side.is_server(pid))
+
+
+def case_sigkill(s):
+    """Server killed with SIGKILL between two commands, and while a command runs."""
+    s.fresh()
+    s.run("info release", command="info", args=["release"])
+    pid = s.server_pid()
+    kill_group(pid)
+    s.fact("server killed", not Side.is_server(pid))
+    s.run("info release (after SIGKILL)", command="info", args=["release"])
+    pid = s.server_pid()
+    p = s.spawn(command="build", args=["//:sleep"])
+    time.sleep(10)
+    kill_group(pid)
+    s.finish("build //:sleep, server killed after 10s", p)
+    s.run("info release (after the abrupt end)", command="info", args=["release"])
+
+
+def case_sigint(s):
+    """SIGINT to the client during a build: cancel, exit 8, server stays up; three SIGINTs kill
+    the server."""
+    s.fresh()
+    s.run("info release", command="info", args=["release"])
+    pid = s.server_pid()
+    p = s.spawn(command="build", args=["//:sleep"])
+    time.sleep(10)
+    p.send_signal(signal.SIGINT)
+    s.finish("build //:sleep, one SIGINT after 10s", p)
+    s.fact("server still up", Side.is_server(pid) and s.server_pid() == pid)
+    s.run("info release (same server)", command="info", args=["release"])
+    p = s.spawn(command="build", args=["//:sleep"])
+    time.sleep(10)
+    # 5 ms apart: the third arrives before the server can have answered the first cancel.
+    for _ in range(3):
+        p.send_signal(signal.SIGINT)
+        time.sleep(0.005)
+    s.finish("build //:sleep, three SIGINTs 5ms apart after 10s", p)
+    s.fact("server killed by the third SIGINT", wait_gone(pid, 15))
+    s.run("info release (new server)", command="info", args=["release"])
+
+
+def case_two_clients(s):
+    """Two clients on one output base: --noblock_for_lock exits 9; the default waits."""
+    s.fresh()
+    s.run("info release", command="info", args=["release"])
+    p = s.spawn(command="build", args=["//:sleep20"])
+    time.sleep(6)
+    s.run("--noblock_for_lock info release (while a build runs)", startup=["--noblock_for_lock"],
+          command="info", args=["release"])
+    s.run("info release (waits for the build)", command="info", args=["release"])
+    s.finish("build //:sleep20 (first client)", p)
+
+
+def case_run(s):
+    """`run` of an executable target: the client execs the ExecRequest."""
+    s.fresh()
+    s.run("run //:hello_bin -- a b", command="run", args=["//:hello_bin", "--", "a", "b"])
+
+
+def case_broken_pipe(s):
+    """stdout closed after the first line (`... | head -1`)."""
+    s.fresh()
+    s.run("info release", command="info", args=["release"])
+    for title, args in (("help | head -1", []), ("help completion | head -1", ["completion"])):
+        p = s.spawn(command="help", args=args)
+        first = p.stdout.readline()
+        p.stdout.close()
+        try:
+            err = p.stderr.read()
+            p.wait(timeout=300)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+            err = b"<interop-client: step timed out>\n"
+        s.record_run(title, p.returncode, first, err)
+
+
+def case_startup_crash(s):
+    """A server that dies during startup (bad JVM flag): Server crashed during startup, 37."""
+    s.fresh()
+    s.run("--host_jvm_args=-Xbogus info release", startup=["--host_jvm_args=-Xbogus"],
+          command="info", args=["release"])
+
+
+def case_cwd_deleted(s):
+    """The workspace (the server's cwd) deleted and re-created between two commands."""
+    s.fresh()
+    s.run("info release", command="info", args=["release"])
+    pid = s.server_pid()
+    rmtree(WS)
+    write_template(WS)
+    s.run("info release (workspace re-created)", command="info", args=["release"])
+    s.fact("server restarted", s.server_pid() not in (None, pid) and wait_gone(pid, 5))
+
+
+def case_idle(s):
+    """--max_idle_secs=5: the server exits when idle; the next command starts a new one."""
+    s.fresh()
+    s.run("--max_idle_secs=5 info release", startup=["--max_idle_secs=5"], command="info",
+          args=["release"])
+    pid = s.server_pid()
+    s.fact("server gone after 20s idle", pid is not None and wait_gone(pid, 20))
+    s.run("--max_idle_secs=5 info release (new server)", startup=["--max_idle_secs=5"],
+          command="info", args=["release"])
+
+
+CASES = [
+    ("plain", case_plain),
+    ("scenarios", case_scenarios),
+    ("shutdown", case_shutdown),
+    ("startup-options", case_startup_options),
+    ("sigkill", case_sigkill),
+    ("sigint", case_sigint),
+    ("two-clients", case_two_clients),
+    ("run", case_run),
+    ("broken-pipe", case_broken_pipe),
+    ("startup-crash", case_startup_crash),
+    ("cwd-deleted", case_cwd_deleted),
+    ("idle", case_idle),
+]
+
+
+# --------------------------------------------------------------------------------------------
+
+def compare(name, a, b):
+    """Prints MATCH/DIFF per step; returns (steps, identical steps)."""
+    titles = [t for t, _ in a.steps]
+    if titles != [t for t, _ in b.steps]:
+        print("%s: DIFF (different step lists)" % name)
+        for l in difflib.unified_diff(titles, [t for t, _ in b.steps], "oracle", "blaze", lineterm=""):
+            print(l)
+        return len(a.steps), 0
+    same = 0
+    for (title, ta), (_, tb) in zip(a.steps, b.steps):
+        if ta == tb:
+            same += 1
+            print("  MATCH  %s" % title)
+        else:
+            print("  DIFF   %s" % title)
+            sys.stdout.writelines(l + "\n" for l in difflib.unified_diff(
+                ta.splitlines(), tb.splitlines(), "oracle", "blaze", lineterm=""))
+    return len(a.steps), same
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("help", "--help", "-h"):
+        sys.stdout.write(USAGE)
+        for name, f in CASES:
+            print("  %-16s %s" % (name, " ".join(f.__doc__.split())))
+        return 0
+    if argv[1] == "list":
+        for name, f in CASES:
+            print("%-16s %s" % (name, " ".join(f.__doc__.split())))
+        return 0
+    if argv[1] != "run":
+        die("unknown command %r; see `interop-client help`" % argv[1])
+    args = argv[2:]
+    only = None
+    if "--scenarios" in args:
+        i = args.index("--scenarios")
+        only = set(args[i + 1].split(","))
+        del args[i:i + 2]
+    selected = [c for c in CASES if not args or c[0] in args]
+    unknown = set(args) - {c[0] for c in CASES}
+    if unknown:
+        die("unknown case(s): %s" % ", ".join(sorted(unknown)))
+    if not os.path.exists(blaze_binary()):
+        die("no Blaze binary at %s (set BLAZE)" % blaze_binary())
+
+    os.makedirs(WORK, exist_ok=True)
+    sides = {n: Side(n) for n in SIDES}
+
+    def on_signal(signum, _frame):
+        raise KeyboardInterrupt("signal %d" % signum)
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGHUP, on_signal)
+
+    keys = prepare_install_base()
+    print("interop-client: oracle %s; blaze %s" % (ORACLE, blaze_binary()))
+    results = []
+    try:
+        for name, f in selected:
+            run = {}
+            for n in SIDES:
+                side = Side(n)
+                sides[n] = side
+                set_install_key(keys[n])
+                try:
+                    if name == "scenarios":
+                        f(side, only)
+                    else:
+                        f(side)
+                finally:
+                    side.cleanup()
+                run[n] = side
+            tdir = os.path.join(WORK, "transcripts")
+            os.makedirs(tdir, exist_ok=True)
+            for n in SIDES:
+                with open(os.path.join(tdir, "%s-%s.txt" % (name, n)), "w", encoding="latin-1") as fh:
+                    for title, text in run[n].steps:
+                        fh.write("=== %s\n%s" % (title, text))
+            print("case %s:" % name)
+            steps, same = compare(name, run["A"], run["B"])
+            results.append((name, steps, same))
+            print("case %s: %s (%d of %d steps identical)"
+                  % (name, "IDENTICAL" if steps == same else "DIFFERENT", same, steps))
+            sys.stdout.flush()
+    finally:
+        for n, side in sides.items():
+            set_install_key(keys[n])
+            side.cleanup()
+        set_install_key(keys["A"])
+    print("interop-client: %d cases; identical: %s; different: %s"
+          % (len(results), ", ".join(n for n, t, s in results if t == s) or "none",
+             ", ".join(n for n, t, s in results if t != s) or "none"))
+    return 0 if all(t == s for _, t, s in results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

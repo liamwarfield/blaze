@@ -1,0 +1,8 @@
+GET http://origin.example/f HTTP/1.1
+Proxy-Authorization: Basic dXNlcjpwYXNz
+Accept-Encoding: gzip
+User-Agent: Bazel/release 9.3.2
+Host: origin.example
+Accept: */*
+Proxy-Connection: keep-alive
+

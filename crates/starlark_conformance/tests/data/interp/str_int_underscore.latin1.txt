@@ -1,1 +1,5 @@
 EVAL invalid base-10 literal: "1_000"
+TRACE Traceback (most recent call last):
+TRACE \x09File "str_int_underscore.star", line 1, column 4, in <toplevel>
+TRACE \x09\x09int("1_000")
+TRACE Error in int: invalid base-10 literal: "1_000"

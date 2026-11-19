@@ -1,0 +1,5 @@
+EVAL unsupported binary operation: NoneType + NoneType
+TRACE Traceback (most recent call last):
+TRACE \x09File "err_op_add_none.star", line 1, column 10, in <toplevel>
+TRACE \x09\x09x = None + None
+TRACE Error: unsupported binary operation: NoneType + NoneType

@@ -233,6 +233,12 @@ impl SkyframeExecutor {
         };
         // Bzlmod and repository fetching (Java: BazelRepositoryModule.beforeCommand and the
         // bzlmod / repository SkyFunctions).
+        // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:292 BazelRepositoryModule.beforeCommand
+        // (`fetchDisabled = pkgOptions != null && !pkgOptions.fetch`, for every command).
+        let mut repo_precomputed = inputs.repo_precomputed.clone();
+        repo_precomputed.fetch_disabled = options
+            .get_options::<PackageOptions>()
+            .is_some_and(|pkg_options| !pkg_options.fetch);
         let repo_options: RepositoryOptions = options
             .get_options::<RepositoryOptions>()
             .unwrap_or_else(Options::<RepositoryOptions>::get_defaults);
@@ -257,7 +263,7 @@ impl SkyframeExecutor {
                 client_env: inputs.client_env.clone(),
                 repo_env: inputs.repo_env.clone(),
                 nonstrict_repo_env: inputs.nonstrict_repo_env.clone(),
-                precomputed: inputs.repo_precomputed.clone(),
+                precomputed: repo_precomputed.clone(),
                 reporter: inputs.reporter.clone(),
             },
             &CommandInputs {
@@ -325,12 +331,11 @@ impl SkyframeExecutor {
             builder,
             repository_functions.services,
         );
-        builder = blaze_repo_rules::registration::inject_repo_precomputed(
-            builder,
-            &inputs.repo_precomputed,
-        );
+        builder =
+            blaze_repo_rules::registration::inject_repo_precomputed(builder, &repo_precomputed);
         builder = register_target_pattern_phase_functions(builder);
-        // Java: ProjectFilesLookupFunction (SkyFunctions.PROJECT_FILES_LOOKUP).
+        // Java: ProjectFilesLookupFunction (SkyFunctions.PROJECT_FILES_LOOKUP) and
+        // ProjectFunction (SkyFunctions.PROJECT).
         builder = crate::project::register(builder);
 
         let mut analysis_services = None;
@@ -397,8 +402,19 @@ impl SkyframeExecutor {
                 baseline_configuration: baseline.clone(),
                 baseline_exec_configuration: Arc::new(baseline_exec),
                 platforms,
+                main_repository_mapping: Arc::new(MainRepositoryMappingFromSkyframe),
             });
             builder = register_configuration_functions(builder).client(client.clone());
+            // Java: SkyFunctions.PARSED_FLAGS (ParsedFlagsFunction), requested by
+            // PLATFORM_MAPPING and PLATFORM (platform-based flags).
+            builder = blaze_sky_analysis::parsed_flags_function::register(
+                builder,
+                client
+                    .rule_class_provider
+                    .get_fragment_registry()
+                    .get_options_classes()
+                    .to_vec(),
+            );
             // Java: SkyFunctions.BUILD_OPTIONS_SCOPE (BuildOptionsScopeFunction), requested by
             // BUILD_CONFIGURATION_KEY for Starlark flags whose scope is not known yet.
             builder = blaze_sky_analysis::build_options_scope_function::register(builder);
@@ -1023,10 +1039,7 @@ impl SkyframeExecutor {
                         )
                     }
                     blaze_packages::exceptions::FailureCode::Other(other) => {
-                        blaze_util::unported!(
-                            "SkyframeExecutor.createBuildConfigurationKey",
-                            "NoSuchThingException with detailed exit code {other}"
-                        )
+                        InvalidConfigurationException::with_wrapped_failure_code(message, other)
                     }
                 });
             }
@@ -1633,4 +1646,27 @@ pub fn analysis_evaluation_context(
 // Java: com/google/devtools/build/lib/util/NetUtil.java:39 NetUtil.getCachedShortHostName
 pub fn short_host_name() -> String {
     blaze_exec::exec::local::local_spawn_runner::get_cached_short_host_name()
+}
+
+/// `env.getValue(RepositoryMappingValue.key(RepositoryName.MAIN))` for PlatformMappingFunction
+/// (blaze_build_config cannot name the key).
+struct MainRepositoryMappingFromSkyframe;
+
+impl blaze_build_config::skyframe::MainRepositoryMappingLookup
+    for MainRepositoryMappingFromSkyframe
+{
+    fn main_repository_mapping(
+        &self,
+        env: &mut blaze_skyframe::Environment<'_>,
+    ) -> Result<Option<blaze_cmdline::RepositoryMapping>, blaze_skyframe::ComputeError> {
+        let key = blaze_sky_loading::repos::RepositoryMappingKey::key(
+            blaze_cmdline::repository_name::MAIN.clone(),
+        );
+        Ok(env.get_value(key)?.map(|value| {
+            value
+                .repository_mapping()
+                .expect("NullPointerException: repositoryMapping()")
+                .clone()
+        }))
+    }
 }

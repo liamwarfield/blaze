@@ -1,0 +1,32 @@
+accept c1
+request 01-c1 CONNECT origin.example:443 HTTP/1.1
+response 01-c1 HTTP/1.1 407 Proxy Authentication Required
+close c1 by client
+accept c2
+request 02-c2 CONNECT origin.example:443 HTTP/1.1
+response 02-c2 HTTP/1.1 407 Proxy Authentication Required
+close c2 by client
+accept c3
+request 03-c3 CONNECT origin.example:443 HTTP/1.1
+response 03-c3 HTTP/1.1 407 Proxy Authentication Required
+close c3 by client
+accept c4
+request 04-c4 CONNECT origin.example:443 HTTP/1.1
+response 04-c4 HTTP/1.1 407 Proxy Authentication Required
+close c4 by client
+accept c5
+request 05-c5 CONNECT origin.example:443 HTTP/1.1
+response 05-c5 HTTP/1.1 407 Proxy Authentication Required
+close c5 by client
+accept c6
+request 06-c6 CONNECT origin.example:443 HTTP/1.1
+response 06-c6 HTTP/1.1 407 Proxy Authentication Required
+close c6 by client
+accept c7
+request 07-c7 CONNECT origin.example:443 HTTP/1.1
+response 07-c7 HTTP/1.1 407 Proxy Authentication Required
+close c7 by client
+accept c8
+request 08-c8 CONNECT origin.example:443 HTTP/1.1
+response 08-c8 HTTP/1.1 407 Proxy Authentication Required
+close c8 by client

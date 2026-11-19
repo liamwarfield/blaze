@@ -342,6 +342,15 @@ pub struct SkyframeActionExecutor {
     show_subcommands: ShowSubcommands,
     /// See [`SkyframeActionExecutor::with_lost_inputs_policy`].
     lost_inputs_policy: Option<LostInputsPolicy>,
+    /// Whether the policy's `purge_before_unported_rewinding` purged this build's action cache.
+    /// The purge holds the write lock; [`SkyframeActionExecutor::update_action_cache`] holds the
+    /// read lock while it writes the cache and writes nothing once this is set.
+    ///
+    /// PORT: no Java counterpart (Java rewinds instead of failing loudly; see
+    /// `handle_lost_inputs`). The build crashes after the purge, but actions in flight on other
+    /// evaluator threads still finish while the evaluation is torn down; an entry they put would
+    /// reach the cache's journal on disk and bring remote metadata back for the next command.
+    action_cache_purged: RwLock<bool>,
     /// Java: `perBuildFileCache` (`getPerBuildFileCache()`), set by
     /// [`SkyframeActionExecutor::configure_file_cache`]. It also carries
     /// `directories.getRelativeOutputPath()`, which `ActionExecutionFunction` hands the
@@ -382,6 +391,7 @@ impl SkyframeActionExecutor {
             output_filter: None,
             show_subcommands: ShowSubcommands::FALSE,
             lost_inputs_policy: None,
+            action_cache_purged: RwLock::new(false),
             per_build_file_cache: OnceLock::new(),
             build_action_map: Mutex::new(HashMap::new()),
             had_execution_error: AtomicBool::new(false),
@@ -456,11 +466,15 @@ impl SkyframeActionExecutor {
             );
         };
         if policy.rewinding_enabled {
-            // PORT: Java rewinds here. Before failing loudly, forget the remote metadata of the
-            // persistent action cache (what LeaseService.handleMissingInputs does without
-            // rewinding), so that a rerun does not trust the same stale entry again.
+            // PORT: Java rewinds here. Before failing loudly, forget the remote metadata of this
+            // build's action cache (what LeaseService.handleMissingInputs does without
+            // rewinding) and save it, so that a rerun does not trust the same stale entry again.
+            // No action writes the cache while the purge runs, and none after it (see
+            // action_cache_purged).
             if let Some(purge) = &policy.purge_before_unported_rewinding {
-                purge();
+                let mut purged = self.action_cache_purged.write();
+                purge(self.action_cache_checker.get_action_cache());
+                *purged = true;
             }
             blaze_util::unported!(
                 "ActionRewindStrategy.prepareRewindPlanForLostInputs",
@@ -770,6 +784,18 @@ impl SkyframeActionExecutor {
         store
     }
 
+    /// `actionFileSystemType().inMemoryFileSystem()`: the output service's file system type is
+    /// not `DISABLED`. The only ported output service with an action file system is the remote
+    /// module's (`RemoteOutputService.actionFileSystemType()` is `REMOTE_FILE_SYSTEM` when it has
+    /// an input fetcher), registered as the context `RemoteOutputTree`.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:401 SkyframeActionExecutor.actionFileSystemType
+    // Java: com/google/devtools/build/lib/vfs/OutputService.java:82 ActionFileSystemType.inMemoryFileSystem
+    pub fn action_file_system_type_in_memory_file_system(&self) -> bool {
+        self.contexts
+            .get_any(TypeId::of::<RemoteOutputTree>())
+            .is_some()
+    }
+
     /// `createActionFileSystem(relativeOutputPath, inputArtifactData, outputArtifacts)` when the
     /// output service has an action file system (`actionFileSystemType().isEnabled()`): the
     /// remote module registered the context `RemoteOutputTree` (`RemoteOutputService`), which
@@ -924,10 +950,11 @@ impl SkyframeActionExecutor {
             file_system.update_context(ActionMetadataSnapshot::of(action.as_ref()));
         }
         let context = ActionExecutionContextImpl {
-            exec_root: action_exec_root(self, Some(&output_metadata_store)),
+            exec_root: action_exec_root(self, output_metadata_store.get_action_file_system()),
             executor: self,
             input_metadata: input_metadata.clone(),
             output_metadata_store: Some(output_metadata_store.clone()),
+            action_file_system: output_metadata_store.get_action_file_system().cloned(),
             file_out_err: self
                 .generate_file_out_err(output_metadata_store.get_action_file_system()),
             rich_artifact_data: Mutex::new(None),
@@ -1619,6 +1646,12 @@ impl SkyframeActionExecutor {
         if !self.action_cache_checker.enabled() {
             return Ok(());
         }
+        // PORT: no Java counterpart: after the purge before the unported action rewinding, this
+        // build's action cache takes no new entry (see action_cache_purged).
+        let purged = self.action_cache_purged.read();
+        if *purged {
+            return Ok(());
+        }
         let adapter = CacheCheckActionAdapter::new(action.as_ref(), &self.action_key_context);
         match self.action_cache_checker.update_action_cache(
             &adapter,
@@ -1702,17 +1735,29 @@ impl SkyframeActionExecutor {
         listener: &dyn ExtendedEventHandler,
         action: &ActionRef,
         input_metadata: Arc<ActionInputMetadata>,
+        action_file_system: Option<Arc<RemoteActionFileSystem>>,
     ) -> Result<Option<NestedSet<Artifact>>, ExecutionFailure> {
+        // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:315 ActionExecutionContext.forInputDiscovery
         let context = ActionExecutionContextImpl {
-            exec_root: action_exec_root(self, None),
+            exec_root: action_exec_root(self, action_file_system.as_ref()),
             executor: self,
             input_metadata,
             // ActionExecutionContext.forInputDiscovery has no output metadata store.
             output_metadata_store: None,
-            file_out_err: self.generate_file_out_err(None),
+            file_out_err: self.generate_file_out_err(action_file_system.as_ref()),
+            action_file_system,
             rich_artifact_data: Mutex::new(None),
             clock: JavaClock,
         };
+        if let Some(action_file_system) = &context.action_file_system {
+            // updateActionFileSystemContext(action, actionFileSystem,
+            // THROWING_OUTPUT_METADATA_STORE_FOR_ACTIONFS): RemoteOutputService ignores the store.
+            // Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:112 RemoteOutputService.updateActionFileSystemContext
+            action_file_system.update_context(ActionMetadataSnapshot::of(action.as_ref()));
+            // Note that when not using ActionFS, a global setup of the parent directories of the
+            // OutErr streams is sufficient.
+            setup_action_fs_file_out_err(context.get_file_out_err(), action.as_ref())?;
+        }
         // PORT: ScanningActionEvent / StoppedScanningActionEvent feed the progress UI only.
         let Some(executable) = as_executable(action.as_ref()) else {
             blaze_util::unported!(&format!(
@@ -1721,24 +1766,61 @@ impl SkyframeActionExecutor {
                 action.get_mnemonic()
             ));
         };
-        match executable.discover_inputs(&context) {
+        let result = executable.discover_inputs(&context).and_then(|artifacts| {
+            // Input discovery may have been affected by lost inputs. If an action filesystem is
+            // used, it may know whether inputs were lost. We should fail fast if any were;
+            // rewinding may be able to fix it.
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:967 SkyframeActionExecutor.discoverInputs
+            Self::check_action_file_system_for_lost_inputs(
+                context.action_file_system.as_ref(),
+                action.as_ref(),
+            )?;
+            Ok(artifacts)
+        });
+        match result {
             Ok(artifacts) => Ok(artifacts),
             // Java: InterruptedException propagates unreported.
             Err(e) if e.is_interrupted() => Err(ExecutionFailure::Interrupted),
             Err(e) => {
-                // PORT: Java checks the action file system for lost inputs after input discovery
-                // and, for any other failure of it, before reporting
-                // (`checkActionFileSystemForLostInputs`, SkyframeActionExecutor.java:967 and
-                // :976; a lost input then becomes the LostInputsActionExecutionException marked
-                // `setFromInputDiscovery`, :983-989). Blaze's discovery context has no action
-                // file system: the `RemoteActionFileSystem` belongs to the output metadata store,
-                // which `ActionExecutionContext.forInputDiscovery` does not have
-                // (`output_metadata_store: None` above), so there is nothing to ask. Missing: an
-                // action file system created before discovery, as `ActionExecutionFunction`
-                // creates `state.actionFileSystem` (only reachable for actions that discover
-                // inputs with a remote output service).
-                // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:967 SkyframeActionExecutor.discoverInputs
+                // Input discovery failures may be caused by lost inputs. Lost input failures have
+                // higher priority because rewinding may be able to restore what was lost and allow
+                // the action to complete without error.
+                // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:976 SkyframeActionExecutor.discoverInputs
+                let e = if e.get_lost_inputs().is_none() {
+                    match Self::check_action_file_system_for_lost_inputs(
+                        context.action_file_system.as_ref(),
+                        action.as_ref(),
+                    ) {
+                        Ok(()) => e,
+                        Err(lost_inputs_exception) => lost_inputs_exception,
+                    }
+                } else {
+                    e
+                };
                 let primary_output_path = context.get_input_path(&action.get_primary_output());
+                if e.get_lost_inputs().is_some() {
+                    // If inputs were lost during input discovery, then enrich the exception,
+                    // informing action rewinding machinery that these lost inputs are now Skyframe
+                    // deps of the action.
+                    // PORT: setFromInputDiscovery() and enrichLostInputsException decorate the
+                    // exception for ActionExecutionFunction.handleLostInputs; the flag only
+                    // chooses the failed action's deps for the rewind plan, which is prepared
+                    // after checkRewindingEnabled (ActionExecutionFunction.java:471,
+                    // ActionRewindStrategy.java:239), and rewinding is not ported. The exception
+                    // goes to handleLostInputs here, as the execution path does (see
+                    // handle_lost_inputs), with the primary output path and out/err it would carry.
+                    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:983 SkyframeActionExecutor.discoverInputs
+                    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:509 ActionExecutionFunction.handleLostInputs
+                    return Err(self
+                        .handle_lost_inputs_of_completion(
+                            listener,
+                            &primary_output_path,
+                            action,
+                            &e,
+                            context.get_file_out_err(),
+                        )
+                        .into());
+                }
                 Err(self
                     .process_and_get_exception_to_throw(
                         listener,
@@ -3513,6 +3595,9 @@ struct ActionExecutionContextImpl<'a> {
     executor: &'a SkyframeActionExecutor,
     input_metadata: Arc<ActionInputMetadata>,
     output_metadata_store: Option<Arc<ActionOutputMetadataStore>>,
+    /// `actionFileSystem`: the action's `RemoteActionFileSystem` when the output service has one
+    /// (for execution, the one of the output metadata store; for input discovery, the same one).
+    action_file_system: Option<Arc<RemoteActionFileSystem>>,
     file_out_err: FileOutErr,
     rich_artifact_data: Mutex<Option<Arc<RunfilesArtifactValue>>>,
     clock: JavaClock,
@@ -3538,14 +3623,14 @@ impl ActionContextRegistry for ActionExecutionContextImpl<'_> {
 ///
 /// PORT: Java computes it on every call; the context returns a borrowed `Path`, so it is computed
 /// once when the context is created (the action file system of a context never changes). The
-/// action file system is the one of the action's output metadata store
-/// (`get_remote_action_file_system`); a context for input discovery has none.
+/// action file system is the one of the action's output metadata store, which input discovery
+/// shares (`get_remote_action_file_system`).
 // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:369 ActionExecutionContext.getExecRoot
 fn action_exec_root(
     executor: &SkyframeActionExecutor,
-    output_metadata_store: Option<&Arc<ActionOutputMetadataStore>>,
+    action_file_system: Option<&Arc<RemoteActionFileSystem>>,
 ) -> Path {
-    match output_metadata_store.and_then(|store| store.get_action_file_system()) {
+    match action_file_system {
         Some(action_file_system) => action_file_system.get_path(executor.exec_root.as_fragment()),
         None => executor.exec_root.clone(),
     }
@@ -3589,9 +3674,7 @@ impl ActionExecutionContext for ActionExecutionContextImpl<'_> {
     }
     // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:376 ActionExecutionContext.getActionFileSystem
     fn get_remote_action_file_system(&self) -> Option<Arc<RemoteActionFileSystem>> {
-        self.output_metadata_store
-            .as_ref()
-            .and_then(|store| store.get_action_file_system().cloned())
+        self.action_file_system.clone()
     }
     /// `lostInputsCheck.checkForLostInputs()` with the check the executor gives the context:
     /// `actionFileSystem == null ? LostInputsCheck.NONE : () ->
