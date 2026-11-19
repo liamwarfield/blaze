@@ -21,11 +21,17 @@ use blaze_events::ui::Clock;
 use blaze_events::{Event, EventHandler, ExtendedEventHandler};
 use blaze_exec::exec::abstract_spawn_strategy::AbstractSpawnStrategy;
 use blaze_exec::exec::action_execution_context::SpawnCache;
-use blaze_exec::exec::spawn_strategy_registry::AbruptExitException;
+use blaze_exec::exec::exec_command_environment::ExecCommandEnvironment;
+use blaze_exec::exec::executor_setup::RemoteModuleSpawnStrategies;
+use blaze_exec::exec::spawn_strategy_registry::{
+    AbruptExitException, SpawnStrategyRegistryBuilder,
+};
 use blaze_optdefs::command::execution_options::ExecutionOptions;
 use blaze_optdefs::misc::auth_and_tls_options::AuthAndTLSOptions;
 use blaze_optdefs::misc::remote_options::RemoteOptions;
+use blaze_optdefs::misc::remote_outputs_mode::RemoteOutputsMode;
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail};
+use blaze_util::fingerprint::Fingerprint;
 use blaze_vfs::{FileSystemRef, Path};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
@@ -68,6 +74,8 @@ use crate::scrubber::Scrubber;
 use crate::util::DigestUtil;
 use crate::util::temp_path_generator::TempPathGenerator;
 use crate::util::tracing_metadata_utils;
+use blaze_repo_fetch::authandtls::credentialhelper::{CredentialCache, CredentialModule};
+use blaze_repo_fetch::runtime::command_line_path_factory::CommandLinePathFactory;
 
 /// What `RemoteModule` reads from the `CommandEnvironment` of a command.
 pub struct RemoteModuleEnvironment {
@@ -97,6 +105,10 @@ pub struct RemoteModuleEnvironment {
     pub working_directory: Path,
     /// `env.getWorkspace()`.
     pub workspace: Option<Path>,
+    /// `env.getDirectories().getInstallBase()`, the `%install_base%` root of
+    /// `env.getCommandLinePathFactory()` (`--credential_helper`). `None` when the caller does not
+    /// pass it: a `%install_base%/` credential helper then fails loudly.
+    pub install_base: Option<Path>,
     /// `env.getWorkspaceName()`.
     pub workspace_name: String,
     /// `env.getActionTempsDirectory()`.
@@ -224,6 +236,64 @@ impl RemoteModule {
         self.remote_output_checker.as_ref()
     }
 
+    /// `registerActionContexts(registryBuilder, env, buildRequest)`: the `SpawnCache` this
+    /// module registers (`"remote-cache"`), `None` when `beforeCommand` created no provider.
+    ///
+    /// PORT: the `RemoteImportantOutputHandler` registration (Skymeld with an action input
+    /// fetcher) belongs to Build without the Bytes, which `executor_init` refuses.
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1190 RemoteModule.registerActionContexts
+    pub fn register_action_contexts(&self) -> Option<Arc<dyn SpawnCache>> {
+        let provider = self.action_context_provider.as_ref()?;
+        Some(provider.get_spawn_cache())
+    }
+
+    /// `executorInit(env, request, builder)`: returns the action execution salt the module sets
+    /// on the `ExecutorBuilder` (`None` when `beforeCommand` created no provider).
+    ///
+    /// PORT: with a cache, Java wires a `RemoteActionInputFetcher` (the executor's
+    /// `ActionInputPrefetcher`), a `LeaseService` and the `RemoteOutputService`. With
+    /// `--remote_download_outputs=all` every output a spawn produces is downloaded (an in-memory
+    /// output, which Java never writes to disk, is kept in the executor's remote output tree),
+    /// so no input of a local action is remote and the fetcher has nothing to fetch; the other
+    /// modes (Build without the Bytes) fail loudly here.
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1241 RemoteModule.executorInit
+    pub fn executor_init(&self, remote_options: &RemoteOptions) -> Option<String> {
+        let provider = self.action_context_provider.as_ref()?;
+        if provider.get_combined_cache().is_some()
+            && remote_options.remote_outputs_mode != RemoteOutputsMode::ALL
+        {
+            blaze_util::unported!(
+                "RemoteModule.executorInit (RemoteActionInputFetcher, RemoteOutputService: Build without the Bytes)",
+                "--remote_download_outputs={} with a remote or disk cache; pass --remote_download_outputs=all",
+                match remote_options.remote_outputs_mode {
+                    RemoteOutputsMode::MINIMAL => "minimal",
+                    _ => "toplevel",
+                }
+            );
+        }
+        Some(compute_action_execution_salt(Some(remote_options)))
+    }
+
+    /// `onBuildComplete(BuildCompleteEvent)` of the `RemoteExecutionService`, which Java
+    /// registers on the event bus.
+    pub fn on_build_complete(&self, success: bool) {
+        if let Some(provider) = &self.action_context_provider
+            && let Some(service) = provider.remote_execution_service.lock().as_ref()
+        {
+            service.on_build_complete(success);
+        }
+    }
+
+    /// `onBuildInterrupted(BuildInterruptedEvent)` of the `RemoteExecutionService`, which Java
+    /// registers on the event bus.
+    pub fn on_build_interrupted(&self) {
+        if let Some(provider) = &self.action_context_provider
+            && let Some(service) = provider.remote_execution_service.lock().as_ref()
+        {
+            service.on_build_interrupted();
+        }
+    }
+
     /// Sets up all requested remote functionality (caching, execution, downloader, ...) and
     /// returns whether any cache (disk or remote) is enabled.
     // Java: com/google/devtools/build/lib/remote/RemoteModule.java:437 RemoteModule.setup
@@ -241,6 +311,7 @@ impl RemoteModule {
             exec_root,
             working_directory,
             workspace,
+            install_base,
             workspace_name,
             action_temps_directory,
             build_request_id,
@@ -422,12 +493,20 @@ impl RemoteModule {
         clean_and_create_remote_logs_dir(&log_dir)?;
 
         let credentials = match create_credentials(
-            &CredentialHelperEnvironment {
-                event_reporter: reporter.as_ref(),
-                workspace_path: workspace,
-                client_environment: client_env,
-                helper_execution_timeout: auth_and_tls_options.credential_helper_timeout,
-            },
+            &CredentialHelperEnvironment::new_builder()
+                .set_event_reporter(reporter.clone())
+                .set_workspace_path(workspace.clone())
+                .set_client_environment(client_env)
+                .set_helper_execution_timeout(auth_and_tls_options.credential_helper_timeout)
+                .build(),
+            // credentialModule.getCredentialCache()
+            CredentialModule::instance().get_credential_cache(),
+            &command_line_path_factory(
+                &file_system,
+                workspace,
+                install_base,
+                &auth_and_tls_options,
+            ),
             &file_system,
             &auth_and_tls_options,
             &remote_options,
@@ -769,6 +848,49 @@ impl RemoteModule {
     }
 }
 
+impl RemoteModuleSpawnStrategies for RemoteModule {
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1176 RemoteModule.registerSpawnStrategies
+    fn register_spawn_strategies(
+        &self,
+        registry_builder: &mut SpawnStrategyRegistryBuilder,
+        env: &ExecCommandEnvironment,
+    ) {
+        let Some(action_context_provider) = &self.action_context_provider else {
+            return;
+        };
+        registry_builder.set_remote_local_fallback_strategy_identifier(
+            &env.remote_options.remote_local_fallback_strategy,
+        );
+        action_context_provider.register_remote_spawn_strategy(registry_builder);
+    }
+}
+
+/// `computeActionExecutionSalt(remoteOptions)`.
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1312 RemoteModule.computeActionExecutionSalt
+pub fn compute_action_execution_salt(remote_options: Option<&RemoteOptions>) -> String {
+    let mut fp = Fingerprint::new();
+
+    // When building without a remote cache following a build with one, cached actions may
+    // reference remotely stored files which cannot be downloaded. For simplicity we also
+    // invalidate in the reverse situation (building with a remote cache after building without
+    // one) even though cached local actions don't need it.
+    // TODO(chiwang): Solve this with build/action rewinding instead. The main difficulty is that
+    // if no remote options are set, we lack a prefetcher and cannot trigger rewinding.
+    fp.add_boolean(remote_options.is_some_and(|o| o.is_remote_cache_enabled()));
+
+    // The default exec properties may affect how a spawn is remotely executed without affecting
+    // the action key. In practice, only spawns with no execution platform or whose execution
+    // platform has no exec properties are affected, but we don't have access to this information
+    // at the time we're computing the action key, so we unconditionally include the defaults.
+    // This shouldn't be too bad, as we don't expect the defaults to change very often.
+    let defaults = remote_options
+        .map(|o| o.get_remote_default_exec_properties())
+        .unwrap_or_default();
+    fp.add_string_map(defaults.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+
+    fp.hex_digest_and_reset()
+}
+
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1215 RemoteModule.getTempPathGenerator
 fn get_temp_path_generator(
     action_temps_directory: &Path,
@@ -810,15 +932,47 @@ fn clean_and_create_remote_logs_dir(log_dir: &Path) -> Result<(), AbruptExitExce
     })
 }
 
+/// `env.getCommandLinePathFactory()`: `CommandLinePathFactory.create(fileSystem, directories)`
+/// with the roots `workspace` and `install_base`.
+///
+/// PORT: `install_base` is `None` when the caller of `RemoteModule::before_command` does not
+/// pass it (Bazel always has one); a `%install_base%/` helper then fails loudly instead of
+/// failing with "Unknown root install_base".
+// Java: com/google/devtools/build/lib/runtime/CommandLinePathFactory.java:60 CommandLinePathFactory.create
+fn command_line_path_factory(
+    file_system: &FileSystemRef,
+    workspace: Option<Path>,
+    install_base: Option<Path>,
+    auth_and_tls_options: &AuthAndTLSOptions,
+) -> CommandLinePathFactory {
+    if install_base.is_none()
+        && let Some(helper) = auth_and_tls_options
+            .credential_helpers
+            .iter()
+            .find(|h| h.path.starts_with("%install_base%/"))
+    {
+        blaze_util::unported!(
+            "CommandLinePathFactory.create (missing hook: RemoteModuleEnvironment.install_base, for %install_base%)",
+            "--credential_helper={}",
+            helper.path
+        );
+    }
+    CommandLinePathFactory::create_for_directories(file_system.clone(), workspace, install_base)
+}
+
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1448 RemoteModule.createCredentials
 fn create_credentials(
-    credential_helper_environment: &CredentialHelperEnvironment<'_>,
+    credential_helper_environment: &CredentialHelperEnvironment,
+    credential_cache: &Arc<CredentialCache>,
+    command_line_path_factory: &CommandLinePathFactory,
     file_system: &FileSystemRef,
     auth_and_tls_options: &AuthAndTLSOptions,
     remote_options: &RemoteOptions,
 ) -> io::Result<Arc<dyn crate::authandtls::Credentials>> {
     let credentials = google_auth_utils::new_credentials(
         credential_helper_environment,
+        credential_cache,
+        command_line_path_factory,
         file_system,
         auth_and_tls_options,
     )?;
@@ -922,6 +1076,13 @@ fn create_channel(
     let channel = match download_idle_timeout {
         Some(timeout) => channel.with_download_idle_timeout(timeout),
         None => channel,
+    };
+    // Calls wait for the verified capabilities unless the requirement is NONE.
+    // Java: com/google/devtools/build/lib/remote/GoogleChannelConnectionFactory.java:103 GoogleChannelConnectionFactory.create
+    let channel = if requirement != ServerCapabilitiesRequirement::None {
+        channel.with_capabilities_gate()
+    } else {
+        channel
     };
 
     // Eagerly start creating the channel and verifying the capabilities in the background.
@@ -1049,6 +1210,16 @@ impl RemoteActionContextProvider {
         // `on_build_interrupted` / `on_build_complete` (see `RemoteExecutionService`).
         *slot = Some(service.clone());
         service
+    }
+
+    /// Registers a remote spawn strategy (`"remote"`).
+    // Java: com/google/devtools/build/lib/remote/RemoteActionContextProvider.java:201 RemoteActionContextProvider.registerRemoteSpawnStrategy
+    pub fn register_remote_spawn_strategy(
+        &self,
+        registry_builder: &mut SpawnStrategyRegistryBuilder,
+    ) {
+        let (strategy, _spawn_runner) = self.get_remote_spawn_strategy();
+        registry_builder.register_strategy(Arc::new(strategy), &["remote"]);
     }
 
     /// `registerRemoteSpawnStrategy(registryBuilder)`: the strategy to register as `"remote"`,

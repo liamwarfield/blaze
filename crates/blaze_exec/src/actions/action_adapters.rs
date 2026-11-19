@@ -66,6 +66,18 @@ impl Artifact for BlazeArtifact {
     fn get_root_exec_path(&self) -> PathFragment {
         self.get_root().get_exec_path().clone()
     }
+    // Java: com/google/devtools/build/lib/actions/ArtifactRoot.java:238 ArtifactRoot.isExternal
+    fn is_root_external(&self) -> bool {
+        self.get_root().is_external()
+    }
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:437 Artifact.getOwner
+    fn get_owner(&self) -> Option<blaze_cmdline::Label> {
+        BlazeArtifact::get_owner(self)
+    }
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:636 Artifact.getRunfilesPath
+    fn get_runfiles_path(&self) -> PathFragment {
+        BlazeArtifact::get_runfiles_path(self)
+    }
 }
 
 /// `blaze_actions::Artifact` as an [`ActionInputRef`].
@@ -134,6 +146,7 @@ pub struct ActionMetadataSnapshot {
     platform: Option<PlatformInfo>,
     pretty_print: String,
     describe: String,
+    may_modify_spawn_outputs_after_execution: bool,
 }
 
 impl ActionMetadataSnapshot {
@@ -146,6 +159,13 @@ impl ActionMetadataSnapshot {
             platform: convert_platform(action),
             pretty_print: action.pretty_print(),
             describe: action.describe(),
+            // Java: virtual dispatch; of the ported actions only `TestRunnerAction` overrides
+            // `mayModifySpawnOutputsAfterExecution` (JavaCompileAction and
+            // JavaHeaderCompileAction, the others, are not ported).
+            may_modify_spawn_outputs_after_execution: action
+                .as_any()
+                .downcast_ref::<crate::analysis::test::test_runner_action::TestRunnerAction>()
+                .is_some_and(|a| a.may_modify_spawn_outputs_after_execution()),
         })
     }
 }
@@ -171,5 +191,8 @@ impl ActionExecutionMetadata for ActionMetadataSnapshot {
     }
     fn describe(&self) -> String {
         self.describe.clone()
+    }
+    fn may_modify_spawn_outputs_after_execution(&self) -> bool {
+        self.may_modify_spawn_outputs_after_execution
     }
 }

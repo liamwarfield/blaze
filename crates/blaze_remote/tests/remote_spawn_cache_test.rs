@@ -1,4 +1,3 @@
-#![cfg(feature = "wip")]
 // Options and protos are filled in field by field, as the Java tests set them.
 #![allow(clippy::field_reassign_with_default)]
 //! Port of `src/test/java/com/google/devtools/build/lib/remote/RemoteSpawnCacheTest.java`.
@@ -46,9 +45,9 @@ use blaze_collect::NestedSetBuilder;
 use blaze_events::{EventKind, StoredEventHandler};
 use blaze_exec::actions::execution_requirements;
 use blaze_exec::actions::{
-    ActionExecutionMetadata, ActionInputRef, BasicActionInput, ExecException, FakeOwner,
-    InputMapping, InputMetadataProvider, ResourceSet, SimpleSpawn, Spawn, SpawnResult,
-    SpawnResultBuilder, Status,
+    ActionInputRef, BasicActionInput, ExecException, FakeOwner, InputMapping,
+    InputMetadataProvider, ResourceSet, SimpleSpawn, Spawn, SpawnResult, SpawnResultBuilder,
+    Status,
 };
 use blaze_exec::exec::action_execution_context::SpawnCache;
 use blaze_exec::exec::{ProgressStatus, SpawnExecutionContext};
@@ -67,7 +66,7 @@ use blaze_remote::common::{
     RemoteCacheClient,
 };
 use blaze_remote::disk::disk_cache_client::DiskCacheClient;
-use blaze_remote::hooks::{MayModifySpawnOutputsAfterExecution, RemoteHooks, RemoteOutputInjector};
+use blaze_remote::hooks::{RemoteHooks, RemoteOutputInjector};
 use blaze_remote::reapi::{ActionResult, Digest, OutputFile, RequestMetadata, ServerCapabilities};
 use blaze_remote::remote_execution_service::RemoteExecutionService;
 use blaze_remote::remote_output_checker::RemoteOutputChecker;
@@ -592,10 +591,6 @@ impl Fixture {
             remote_output_injector: Some(
                 self.remote_output_injector.clone() as Arc<dyn RemoteOutputInjector>
             ),
-            may_modify_spawn_outputs_after_execution: Some(Arc::new(
-                |_spawn_owner: &dyn ActionExecutionMetadata| false,
-            )
-                as MayModifySpawnOutputsAfterExecution),
         });
         RemoteSpawnCache::new(
             options,

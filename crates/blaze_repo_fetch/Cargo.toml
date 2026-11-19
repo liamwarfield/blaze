@@ -10,6 +10,10 @@ publish.workspace = true
 blaze_util = { path = "../blaze_util" }
 blaze_vfs = { path = "../blaze_vfs" }
 blaze_events = { path = "../blaze_events" }
+# The credential helper (authandtls/credentialhelper): runs the helper through lib/shell and reads
+# `--credential_helper` options.
+blaze_shell = { path = "../blaze_shell" }
+blaze_optdefs = { path = "../blaze_optdefs" }
 thiserror.workspace = true
 indexmap.workspace = true
 parking_lot.workspace = true

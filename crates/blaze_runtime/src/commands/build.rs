@@ -25,7 +25,8 @@ use blaze_buildtool::buildtool::build_result_printer::{
     BuildRequestView, BuildResultPrinter, OutputFileGeneratingRule, TopLevelArtifactContext,
 };
 use blaze_buildtool::buildtool::execution_tool::{
-    ExecutionEventCollector, ExecutionToolConfig, build_complete_event, evaluate_build_driver_keys,
+    CommandRemoteModule, ExecutionEventCollector, ExecutionToolConfig,
+    RemoteModuleCommandEnvironment, build_complete_event, evaluate_build_driver_keys,
     report_build_summary_stats,
 };
 use blaze_buildtool::buildtool::output_directory_links_utils::{
@@ -138,14 +139,37 @@ fn run_build(
     options: &OptionsParsingResult,
     run_tests: bool,
 ) -> BlazeCommandResult {
+    // RemoteModule.beforeCommand (before the Build Event Service module, as in
+    // Bazel.BAZEL_MODULES).
+    // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:491 BlazeCommandDispatcher.execExclusively
+    let remote_module = match remote_module_before_command(env, options) {
+        Ok(m) => m,
+        Err(e) => {
+            env.get_reporter()
+                .handle(&Event::error(e.get_message().to_owned()));
+            return BlazeCommandResult::detailed_exit_code(DetailedExitCode::of(e.failure_detail));
+        }
+    };
     // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:337 BuildEventServiceModule.beforeCommand
     let bep = BepCommandSupport::before_command(env, options);
-    let result = run_build_with_bep(env, options, run_tests, bep.as_ref());
+    let mut result = run_build_with_bep(env, options, run_tests, bep.as_ref(), &remote_module);
+    if let Some(bep) = &bep {
+        // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:802 CommandEnvironment.precompleteCommand
+        bep.command_precomplete();
+    }
+    // BlazeRuntime.afterCommand: RemoteModule's afterCommand task runs in BlockWaitingModule's
+    // afterCommand, after the other modules' and before the Build Event Service module's.
+    // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:774 BlazeRuntime.afterCommand
+    if let Err(e) = remote_module.after_command() {
+        env.get_reporter()
+            .handle(&Event::error(e.get_message().to_owned()));
+        if !result.get_exit_code().is_infrastructure_failure() {
+            result = BlazeCommandResult::detailed_exit_code(DetailedExitCode::of(e.failure_detail));
+        }
+    }
     let Some(bep) = bep else {
         return result;
     };
-    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:802 CommandEnvironment.precompleteCommand
-    bep.command_precomplete();
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:750 BlazeRuntime.afterCommand
     match bep.after_command() {
         Ok(()) => result,
@@ -161,12 +185,57 @@ fn run_build(
     }
 }
 
+/// `RemoteModule.beforeCommand(env)` for `build` and `test`.
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:403 RemoteModule.beforeCommand
+fn remote_module_before_command(
+    env: &CommandEnvironment,
+    options: &OptionsParsingResult,
+) -> Result<Arc<CommandRemoteModule>, blaze_exec::exec::spawn_strategy_registry::AbruptExitException>
+{
+    let directories = env.get_directories();
+    let exec_root = env.get_exec_root();
+    blaze_buildtool::buildtool::execution_tool::remote_module_before_command(
+        RemoteModuleCommandEnvironment {
+            command_name: env.get_command_name().to_owned(),
+            remote_options: options_or_default::<blaze_optdefs::misc::remote_options::RemoteOptions>(
+                options,
+            ),
+            auth_and_tls_options: options_or_default::<
+                blaze_optdefs::misc::auth_and_tls_options::AuthAndTLSOptions,
+            >(options),
+            execution_options: Arc::new(options_or_default::<ExecutionOptions>(options)),
+            rewind_lost_inputs: options_or_default::<BuildRequestOptions>(options)
+                .rewind_lost_inputs,
+            experimental_sibling_repository_layout: options_or_default::<BuildLanguageOptions>(
+                options,
+            )
+            .experimental_sibling_repository_layout,
+            reporter: reporter(env),
+            file_system: env.get_output_base().get_file_system().clone(),
+            output_base: env.get_output_base().clone(),
+            exec_root: exec_root.clone(),
+            working_directory: env.get_working_directory().clone(),
+            workspace: env.get_workspace().cloned(),
+            workspace_name: env.get_workspace_name().to_owned(),
+            action_temps_directory: directories.get_action_temps_directory(&exec_root),
+            install_base: directories.get_install_base().clone(),
+            relative_output_path: directories.get_relative_output_path(),
+            build_request_id: env.get_build_request_id().to_owned(),
+            command_id: env.get_command_id().to_owned(),
+            product_name: env.get_runtime().get_product_name().to_owned(),
+            tool_version: crate::version_info::BlazeVersionInfo::instance().get_version(),
+            client_env: env.get_client_env().clone(),
+        },
+    )
+}
+
 /// `BuildCommand.exec` / `TestCommand.doTest`: builds (and tests) the targets of the residue.
 fn run_build_with_bep(
     env: &mut CommandEnvironment,
     options: &OptionsParsingResult,
     run_tests: bool,
     bep: Option<&Arc<BepCommandSupport>>,
+    remote_module: &Arc<CommandRemoteModule>,
 ) -> BlazeCommandResult {
     // BuildRequest.Builder.setStartTimeMillis(env.getCommandStartTime())
     let start_time_millis = env.get_command_start_time();
@@ -347,6 +416,7 @@ fn run_build_with_bep(
             .map(|o| o.experimental_writable_outputs)
             .unwrap_or(false),
         output_filter: reporter_output_filter.clone(),
+        remote_module: Some(remote_module.clone()),
     };
     let summary_for_contexts = Arc::new(test_summary_options.clone());
     let workspace_for_contexts = workspace.clone();
@@ -517,6 +587,8 @@ fn run_build_with_bep(
         .is_some_and(|f| matches!(f.category, Some(Category::Interrupted(_))))
     {
         blaze_events::EventBus::post(&**env.get_event_bus(), Arc::new(BuildInterruptedEvent));
+        // RemoteExecutionService.onBuildInterrupted (a subscriber of the event).
+        remote_module.on_build_interrupted();
         if let Some(test_support) = &test_support {
             test_support.listener().build_interrupted();
         }
@@ -591,6 +663,9 @@ fn run_build_with_bep(
     if let Some(test_support) = &test_support {
         test_support.build_complete_event(&build_result);
     }
+    // RemoteExecutionService.onBuildComplete (a subscriber of the BuildCompleteEvent).
+    // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:2096 RemoteExecutionService.onBuildComplete
+    remote_module.on_build_complete(build_result.get_success());
     report_build_summary_stats(
         reporter.as_ref(),
         &collector,
@@ -876,6 +951,7 @@ fn target_patterns_were_evaluated(
 struct BuildResultListener {
     // Also includes test targets.
     analyzed_targets: parking_lot::Mutex<Vec<ConfiguredTarget>>,
+    analyzed_tests: parking_lot::Mutex<Vec<ConfiguredTargetRef>>,
     // Also includes test targets.
     skipped_targets: parking_lot::Mutex<Vec<ConfiguredTarget>>,
 }
@@ -901,6 +977,11 @@ impl BuildResultListener {
         self.analyzed_targets.lock().clone()
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:93 BuildResultListener.getAnalyzedTests
+    fn get_analyzed_tests(&self) -> Vec<ConfiguredTargetRef> {
+        self.analyzed_tests.lock().clone()
+    }
+
     // Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:101 BuildResultListener.getSkippedTargets
     fn get_skipped_targets(&self) -> Vec<ConfiguredTarget> {
         self.skipped_targets.lock().clone()
@@ -919,6 +1000,19 @@ impl blaze_events::EventBus for BuildResultListener {
         {
             // Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:73 BuildResultListener.addSkippedTarget
             Self::add(&self.skipped_targets, &event.configured_target);
+        } else if let Some(event) =
+            blaze_sky_exec::events::downcast_event::<TestAnalyzedEvent>(&event)
+        {
+            // Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:61 BuildResultListener.addAnalyzedTest
+            // `Set.add`: one instance per configured target key (see `add`).
+            let mut tests = self.analyzed_tests.lock();
+            let target = &event.configured_target;
+            if !tests.iter().any(|t| {
+                t.get_label() == target.get_label()
+                    && t.get_configuration_checksum() == target.get_configuration_checksum()
+            }) {
+                tests.push(target.clone());
+            }
         }
     }
 }
@@ -1588,8 +1682,9 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         // failed after they were analyzed, which the analysis result leaves out.
         let analyzed_targets = self.build_result_listener.get_analyzed_targets();
         let views = configured_target_views(&analyzed_targets);
-        let test_targets =
-            configured_target_views(analysis_result.get_targets_to_test().unwrap_or(&[]));
+        // buildResultListener.getAnalyzedTests(): the tests whose TestAnalyzedEvent was posted
+        // (none when the execution failed before it started them).
+        let test_targets = self.build_result_listener.get_analyzed_tests();
         let skipped_targets =
             configured_target_views(&self.build_result_listener.get_skipped_targets());
         // Maintain the ordering by copying builtTargets in the same iteration order as

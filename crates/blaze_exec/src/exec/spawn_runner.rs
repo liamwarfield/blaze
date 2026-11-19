@@ -74,6 +74,15 @@ pub trait SpawnExecutionContext: Send + Sync {
     }
     /// `getClientEnv()`.
     fn get_client_env(&self) -> &IndexMap<String, String>;
+    /// `getContext(RemoteLocalFallbackRegistry.class)`: the command's
+    /// `SpawnStrategyRegistry` (which Java registers as the `RemoteLocalFallbackRegistry`
+    /// context), `None` where Java's `getContext` returns null.
+    // Java: com/google/devtools/build/lib/exec/SpawnRunner.java:259 SpawnRunner.SpawnExecutionContext.getContext
+    fn get_remote_local_fallback_registry(
+        &self,
+    ) -> Option<Arc<crate::exec::spawn_strategy_registry::SpawnStrategyRegistry>> {
+        None
+    }
 }
 
 /// A runner for spawns (`SpawnRunner`): local, sandboxed, remote, worker.

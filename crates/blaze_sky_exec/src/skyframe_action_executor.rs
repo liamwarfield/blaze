@@ -330,6 +330,14 @@ pub struct SkyframeActionExecutor {
     had_execution_error: AtomicBool,
     /// Java: `ActionLogBufferPathGenerator.actionUniquifier`.
     action_uniquifier: AtomicU64,
+    /// The remote output tree of the actions' `RemoteActionFileSystem`s when the remote module
+    /// set up a cache (`RemoteOutputService`), else `None` (`LocalOutputService`).
+    remote_output_tree: Option<Arc<crate::remote_output_tree::RemoteOutputTree>>,
+    /// The read view of the remote output tree that actions get as their action file system.
+    ///
+    /// PORT: one instance for the build (a `Path`'s identity includes its file system, so
+    /// every action must see the same one); Java creates one per action.
+    remote_action_file_system: Option<blaze_vfs::FileSystemRef>,
 }
 
 impl SkyframeActionExecutor {
@@ -359,7 +367,25 @@ impl SkyframeActionExecutor {
             build_action_map: Mutex::new(HashMap::new()),
             had_execution_error: AtomicBool::new(false),
             action_uniquifier: AtomicU64::new(0),
+            remote_output_tree: None,
+            remote_action_file_system: None,
         }
+    }
+
+    /// Sets the remote output tree the actions' output metadata stores and action file systems
+    /// read (see [`crate::remote_output_tree`]).
+    pub fn with_remote_output_tree(
+        mut self,
+        remote_output_tree: Arc<crate::remote_output_tree::RemoteOutputTree>,
+    ) -> SkyframeActionExecutor {
+        self.remote_action_file_system = Some(Arc::new(
+            crate::remote_output_tree::RemoteActionFileSystem::new(
+                self.exec_root.get_file_system().clone(),
+                remote_output_tree.clone(),
+            ),
+        ));
+        self.remote_output_tree = Some(remote_output_tree);
+        self
     }
 
     /// Sets the action cache checker and the salt of this build (the `actionCacheChecker` and
@@ -498,11 +524,15 @@ impl SkyframeActionExecutor {
     /// creates it.
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:713 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
     pub fn create_output_metadata_store(&self, action: &dyn Action) -> ActionOutputMetadataStore {
-        ActionOutputMetadataStore::create(
+        let store = ActionOutputMetadataStore::create(
             self.use_archived_tree_artifacts(action),
             self.output_permissions,
             action.get_outputs(),
-        )
+        );
+        match &self.remote_output_tree {
+            Some(tree) => store.with_remote_output_tree(tree.clone()),
+            None => store,
+        }
     }
 
     /// Executes `action` (shared actions run once), returning its value; `Ok(None)` when Skyframe
@@ -640,6 +670,12 @@ impl SkyframeActionExecutor {
                     action.get_mnemonic()
                 ));
             };
+            // PORT: the action's fresh RemoteActionFileSystem (see crate::remote_output_tree).
+            if let Some(tree) = &self.remote_output_tree {
+                for output in action.get_outputs() {
+                    tree.remove(output.get_path().as_fragment());
+                }
+            }
             if let Err(e) = executable.prepare(&self.exec_root) {
                 return Err(self
                     .to_action_execution_exception(
@@ -1558,6 +1594,9 @@ pub struct ActionOutputMetadataStore {
     omitted_outputs: Mutex<HashSet<Artifact>>,
     artifact_data: Mutex<HashMap<Artifact, FileArtifactValue>>,
     tree_artifact_data: Mutex<HashMap<Artifact, Option<Arc<TreeArtifactValue>>>>,
+    /// Java: `artifactPathResolver` over the action's `RemoteActionFileSystem` (see
+    /// [`crate::remote_output_tree`]); `None` without one.
+    remote_output_tree: Option<Arc<crate::remote_output_tree::RemoteOutputTree>>,
 }
 
 impl ActionOutputMetadataStore {
@@ -1575,7 +1614,17 @@ impl ActionOutputMetadataStore {
             omitted_outputs: Mutex::new(HashSet::new()),
             artifact_data: Mutex::new(HashMap::new()),
             tree_artifact_data: Mutex::new(HashMap::new()),
+            remote_output_tree: None,
         }
+    }
+
+    /// Stats the outputs through the action file system's remote output tree first.
+    pub fn with_remote_output_tree(
+        mut self,
+        remote_output_tree: Arc<crate::remote_output_tree::RemoteOutputTree>,
+    ) -> ActionOutputMetadataStore {
+        self.remote_output_tree = Some(remote_output_tree);
+        self
     }
 
     // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:130 ActionOutputMetadataStore.putArtifactData
@@ -1769,6 +1818,16 @@ impl ActionOutputMetadataStore {
             artifact
         );
 
+        // Java: the stat goes through `artifactPathResolver.toPath(artifact)`, the action's
+        // RemoteActionFileSystem, whose statInternal answers from the remote output tree first;
+        // the remote file's stat carries its metadata (a file with a digest), which is returned
+        // as is below.
+        // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:697 RemoteActionFileSystem.statInternal
+        if let Some(tree) = &self.remote_output_tree
+            && let Some(value) = tree.get(artifact.get_path().as_fragment())
+        {
+            return Ok(value);
+        }
         let stat_and_value = file_artifact_value_from_artifact(artifact)?;
         let value = stat_and_value.file_artifact_value;
 
@@ -2874,6 +2933,11 @@ impl ActionContextRegistry for ActionExecutionContextImpl<'_> {
 impl ActionExecutionContext for ActionExecutionContextImpl<'_> {
     fn get_exec_root(&self) -> &Path {
         &self.executor.exec_root
+    }
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:376 ActionExecutionContext.getActionFileSystem
+    // (RemoteOutputService.createActionFileSystem when the remote module set up a cache).
+    fn get_action_file_system(&self) -> Option<blaze_vfs::FileSystemRef> {
+        self.executor.remote_action_file_system.clone()
     }
     fn get_input_metadata_provider(&self) -> &dyn InputMetadataProvider {
         &*self.input_metadata

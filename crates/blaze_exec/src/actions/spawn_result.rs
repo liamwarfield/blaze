@@ -88,6 +88,9 @@ pub struct SpawnResult {
     failure_message: String,
     in_memory_output_file: Option<ActionInputRef>,
     in_memory_contents: Option<Vec<u8>>,
+    /// Set by [`SpawnResult::delegate_with_in_memory_output`]: `getInMemoryOutput(output)` then
+    /// compares `output.getExecPathString()` with this path instead of the output.
+    in_memory_output_exec_path: Option<String>,
     remote: bool,
     digest: Option<Digest>,
 }
@@ -177,10 +180,51 @@ impl SpawnResult {
     }
     /// `getInMemoryOutput(ActionInput)`.
     pub fn get_in_memory_output(&self, output: &ActionInputRef) -> Option<&[u8]> {
+        if let Some(exec_path) = &self.in_memory_output_exec_path {
+            return if output.get_exec_path_string() == *exec_path {
+                self.in_memory_contents.as_deref()
+            } else {
+                None
+            };
+        }
         match &self.in_memory_output_file {
             Some(f) if f == output => self.in_memory_contents.as_deref(),
             _ => None,
         }
+    }
+
+    /// `new SpawnResult.DelegateSpawnResult(this) { getRunnerName() { return runnerName; }
+    /// getMetrics() { return metrics; } }`: this result with another runner name and metrics.
+    ///
+    /// PORT: `SpawnResult` is immutable, so a copy with the two overridden getters behaves as
+    /// the delegate does.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:482 SpawnResult.DelegateSpawnResult
+    pub fn delegate_with_runner_name_and_metrics(
+        &self,
+        runner_name: &str,
+        metrics: SpawnMetrics,
+    ) -> SpawnResult {
+        let mut delegate = self.clone();
+        delegate.runner_name = runner_name.to_string();
+        delegate.spawn_metrics = metrics;
+        delegate
+    }
+
+    /// `new SpawnResult.DelegateSpawnResult(this) { getInMemoryOutput(output) { return
+    /// output.getExecPathString().equals(execPath) ? content : null; } }`.
+    ///
+    /// PORT: a copy with the overridden getter (see
+    /// [`SpawnResult::delegate_with_runner_name_and_metrics`]).
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:482 SpawnResult.DelegateSpawnResult
+    pub fn delegate_with_in_memory_output(
+        &self,
+        exec_path: String,
+        content: Option<Vec<u8>>,
+    ) -> SpawnResult {
+        let mut delegate = self.clone();
+        delegate.in_memory_output_exec_path = Some(exec_path);
+        delegate.in_memory_contents = content;
+        delegate
     }
     /// `wasRemote()`.
     pub fn was_remote(&self) -> bool {
@@ -327,6 +371,7 @@ impl SpawnResultBuilder {
             failure_message: self.failure_message.clone(),
             in_memory_output_file: self.in_memory_output_file.clone(),
             in_memory_contents: self.in_memory_contents.clone(),
+            in_memory_output_exec_path: None,
             remote: self.remote,
             digest: self.digest.clone(),
         }

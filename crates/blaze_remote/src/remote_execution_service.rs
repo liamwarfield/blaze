@@ -17,7 +17,6 @@ use std::sync::{Arc, OnceLock};
 
 use blaze_actions::actions::command_lines::ParamFileActionInput;
 use blaze_events::{Event, ExtendedEventHandler};
-use blaze_exec::actions::action_adapters::as_blaze_artifact;
 use blaze_exec::actions::{
     ActionExecutionMetadata, ActionInput, ActionInputRef, ActionOwner, ExecException,
     FileArtifactValue, FileContentsProxy, PlatformInfo, Spawn, SpawnResult,
@@ -666,6 +665,7 @@ struct SpawnOwner {
     execution_platform: Option<PlatformInfo>,
     pretty_print: String,
     describe: String,
+    may_modify_spawn_outputs_after_execution: bool,
 }
 
 impl SpawnOwner {
@@ -678,6 +678,8 @@ impl SpawnOwner {
             execution_platform: spawn_owner.get_execution_platform().cloned(),
             pretty_print: spawn_owner.pretty_print(),
             describe: spawn_owner.describe(),
+            may_modify_spawn_outputs_after_execution: spawn_owner
+                .may_modify_spawn_outputs_after_execution(),
         }
     }
 }
@@ -703,6 +705,9 @@ impl ActionExecutionMetadata for SpawnOwner {
     }
     fn describe(&self) -> String {
         self.describe.clone()
+    }
+    fn may_modify_spawn_outputs_after_execution(&self) -> bool {
+        self.may_modify_spawn_outputs_after_execution
     }
 }
 
@@ -903,12 +908,10 @@ fn pretty_print(action_input: &dyn ActionInput) -> String {
 /// `artifact.getRoot().isExternal()` for an input that is an `Artifact`.
 // Java: com/google/devtools/build/lib/actions/ArtifactRoot.java:238 ArtifactRoot.isExternal
 fn artifact_root_is_external(input: &ActionInputRef) -> bool {
-    match as_blaze_artifact(input) {
-        Some(artifact) => artifact.get_root().is_external(),
-        None => blaze_util::unported!(
-            "Artifact.getRoot().isExternal() (missing hook: blaze_exec::actions::Artifact has no root type; only blaze_actions artifacts can be asked)"
-        ),
-    }
+    input
+        .as_artifact()
+        .expect("ClassCastException: not an Artifact")
+        .is_root_external()
 }
 
 /// `metadata.wasModifiedSinceDigest(path)`.
@@ -1781,9 +1784,10 @@ impl RemoteExecutionService {
         // not ported).
         let force = false;
         if self.remote_options.remote_cache_async
-            && !self
-                .hooks
-                .may_modify_spawn_outputs_after_execution(action.get_spawn().get_resource_owner())
+            && !action
+                .get_spawn()
+                .get_resource_owner()
+                .may_modify_spawn_outputs_after_execution()
         {
             OutputUploadTask::new(self, action, spawn_result, force, on_upload_complete).start();
             Ok(())

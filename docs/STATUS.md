@@ -35,13 +35,17 @@ message). Opus fixers are on both. Integrity audit: open outside the referee.
 - Through the real `blaze` binary, both projects: query 162/162 + 1091/1091, cquery label_kind
   176/176 + 3295/3295, cquery jsonproto 16/16 + 37/37, aquery actions 60/60 + 1420/1420 (allow-
   listed runfiles-manifest keys only). Lockfiles byte-identical (both projects).
+- Remote, phase 1 (2026-11-19): the `blaze` binary does `--disk_cache`, `--remote_cache=grpc[s]://`
+  and `--remote_executor=grpc[s]://` for build and test with `--remote_download_outputs=all`, and
+  `--credential_helper`. Against Bazel's remote worker: outputs, process summary, JSON exec log and
+  gRPC log match the oracle in 13 scenarios; cache interchange with real Bazel 11/11 both ways.
+  Build without the bytes and `--bes_backend` fail loudly. Evidence and gaps: docs/remote.md.
 - Upstream integration tests: harness ready; oracle baseline 211/237 targets, 2,878 functions.
 
 ## In flight
 - Fixers (Opus): analysis round 2; execution round 2 (+ no_proxy split found by the gate).
-- Remote lead (Fable; Opus workers): crates/blaze_remote; round 1 integrated behind feature
-  `wip`, round 2 (RemoteExecutionService, gRPC cache, ByteStream, logging) compiling. No oracle
-  evidence yet.
+- Remote lead (Fable; Opus workers): phase 2, build without the bytes
+  (`--remote_download_outputs=toplevel|minimal`); Fable review of the phase 1 wiring.
 - Gate: name map covers 30 of 31 absent names; the last is the no_proxy divergence (being fixed).
 
 ## Next

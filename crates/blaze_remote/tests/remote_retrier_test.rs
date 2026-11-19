@@ -1,4 +1,3 @@
-#![cfg(feature = "wip")]
 //! Port of `src/test/java/com/google/devtools/build/lib/remote/RemoteRetrierTest.java`: tests
 //! for `RemoteRetrier`.
 

@@ -10,8 +10,9 @@
 //!   is returned as `abstract_spawn_strategy::exec_io_exception(e)`, which is what
 //!   `AbstractSpawnStrategy.exec` makes of it. Inside this file `IOException | ExecException |
 //!   InterruptedException` is a `SpawnCacheError` (docs/remote.md, convention 2).
-//! - `SpawnExecutionContext.getContext(RemoteLocalFallbackRegistry.class)` has no counterpart on
-//!   `blaze_exec::exec::SpawnExecutionContext`; the registry is handed to the runner instead
+//! - `SpawnExecutionContext.getContext(RemoteLocalFallbackRegistry.class)` is
+//!   `SpawnExecutionContext::get_remote_local_fallback_registry` (the command's
+//!   `SpawnStrategyRegistry`); a harness whose context has none hands the registry to the runner
 //!   (`RemoteSpawnRunner::set_remote_local_fallback_registry`), see [`RemoteLocalFallbackRegistry`].
 
 use std::fmt;
@@ -64,10 +65,11 @@ use crate::util::utils::{
 /// `RemoteLocalFallbackRegistry`: the action context that provides the strategy used for the
 /// local fallback of remote execution.
 ///
-/// PORT: Java's `RemoteSpawnRunner.execLocally` reads it with
-/// `context.getContext(RemoteLocalFallbackRegistry.class)`; `blaze_exec`'s
-/// `SpawnExecutionContext` has no `getContext` (missing hook), so the registry is given to the
-/// runner with [`RemoteSpawnRunner::set_remote_local_fallback_registry`]. Java's registry is the
+/// Java's `RemoteSpawnRunner.execLocally` reads it with
+/// `context.getContext(RemoteLocalFallbackRegistry.class)`
+/// (`SpawnExecutionContext::get_remote_local_fallback_registry`); a test harness whose context
+/// has no registry gives it to the runner with
+/// [`RemoteSpawnRunner::set_remote_local_fallback_registry`]. Java's registry is the
 /// `SpawnStrategyRegistry`, which implements this trait.
 // Java: com/google/devtools/build/lib/exec/RemoteLocalFallbackRegistry.java:23 RemoteLocalFallbackRegistry
 pub trait RemoteLocalFallbackRegistry: Send + Sync {
@@ -800,10 +802,16 @@ impl RemoteSpawnRunner {
         spawn: &dyn Spawn,
         context: &dyn SpawnExecutionContext,
     ) -> Result<SpawnResult, SpawnCacheError> {
-        let Some(local_fallback_registry) = self.remote_local_fallback_registry.get() else {
-            blaze_util::unported!(
-                "RemoteSpawnRunner.execLocally (missing hook: SpawnExecutionContext.getContext(RemoteLocalFallbackRegistry.class); RemoteSpawnRunner.set_remote_local_fallback_registry was not called)"
-            );
+        let local_fallback_registry: Arc<dyn RemoteLocalFallbackRegistry> = match context
+            .get_remote_local_fallback_registry()
+        {
+            Some(registry) => registry,
+            None => match self.remote_local_fallback_registry.get() {
+                Some(registry) => registry.clone(),
+                None => panic!(
+                    "NullPointerException: Expected a RemoteLocalFallbackRegistry to be registered"
+                ),
+            },
         };
         let remote_local_fallback_strategy = local_fallback_registry
             .get_remote_local_fallback_strategy(spawn)

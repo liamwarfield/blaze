@@ -309,12 +309,10 @@ fn artifact_path_resolver_to_path(
 /// `artifact.getRunfilesPath()`.
 // Java: com/google/devtools/build/lib/actions/Artifact.java:636 Artifact.getRunfilesPath
 fn artifact_get_runfiles_path(artifact: &ActionInputRef) -> PathFragment {
-    match artifact.0.as_any().downcast_ref::<BlazeArtifact>() {
-        Some(artifact) => artifact.get_runfiles_path(),
-        None => blaze_util::unported!(
-            "Artifact.getRunfilesPath (missing hook: blaze_exec::actions::Artifact has no get_runfiles_path; only blaze_actions artifacts have one)"
-        ),
-    }
+    artifact
+        .as_artifact()
+        .expect("ClassCastException: not an Artifact")
+        .get_runfiles_path()
 }
 
 /// `TreeFileArtifact.getParentRelativePath()`.

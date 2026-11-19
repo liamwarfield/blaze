@@ -2,7 +2,8 @@
 //! `buildtool/ExecutionTool.<init>`, calling each Bazel module's `registerSpawnStrategies` in
 //! `Bazel.BAZEL_MODULES` order:
 //!
-//! 1. `RemoteModule` (placeholder "remote" strategy and the remote-local fallback identifier),
+//! 1. `RemoteModule` ("remote" and the remote-local fallback identifier: the command's
+//!    [`RemoteModuleSpawnStrategies`] when the caller has one, else a placeholder),
 //! 2. `WorkerModule` ("worker"),
 //! 3. `StandaloneModule` ("standalone", "local"; default "standalone"),
 //! 4. `SandboxModule` ("sandboxed", "linux-sandbox", "processwrapper-sandbox", ...),
@@ -33,8 +34,27 @@ use crate::exec::spawn_strategy_registry::{
 };
 use crate::standalone::standalone_module::StandaloneModule;
 
+/// `RemoteModule.registerSpawnStrategies` of the command's `RemoteModule`.
+///
+/// Seam: `RemoteModule` lives in `blaze_remote`, which depends on this crate; the integrator
+/// (`blaze_buildtool`'s `ExecutionTool`) hands the command's module to
+/// [`build_spawn_strategy_registry_with_remote_module`], as Java's `ExecutionTool` calls every
+/// `BlazeModule`'s `registerSpawnStrategies`.
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1176 RemoteModule.registerSpawnStrategies
+pub trait RemoteModuleSpawnStrategies {
+    /// `registerSpawnStrategies(registryBuilder, env)`.
+    fn register_spawn_strategies(
+        &self,
+        registry_builder: &mut SpawnStrategyRegistryBuilder,
+        env: &ExecCommandEnvironment,
+    );
+}
+
 /// Builds the `SpawnStrategyRegistry` of a build command, as `ExecutionTool`'s constructor does:
 /// every module's `registerSpawnStrategies` in module order, then `Builder.build()`.
+///
+/// Without a remote module (test harnesses), `RemoteModule`'s registration is a placeholder
+/// that fails loudly when a remote cache, remote execution or a remote downloader is requested.
 ///
 /// Requires on [`ExecCommandEnvironment`] (seam): `remote_options`, `dynamic_execution_options`
 /// and `worker_options`.
@@ -43,13 +63,28 @@ pub fn build_spawn_strategy_registry(
     env: &ExecCommandEnvironment,
     sandbox_module: &mut crate::sandbox::sandbox_module::SandboxModule,
 ) -> Result<SpawnStrategyRegistry, AbruptExitException> {
+    build_spawn_strategy_registry_with_remote_module(env, sandbox_module, None)
+}
+
+/// [`build_spawn_strategy_registry`] with the command's `RemoteModule`.
+// Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:151 ExecutionTool.<init>
+pub fn build_spawn_strategy_registry_with_remote_module(
+    env: &ExecCommandEnvironment,
+    sandbox_module: &mut crate::sandbox::sandbox_module::SandboxModule,
+    remote_module: Option<&dyn RemoteModuleSpawnStrategies>,
+) -> Result<SpawnStrategyRegistry, AbruptExitException> {
     // PORT: Java uses SpawnStrategyRegistry.builder(env.getInvocationPolicy().getStrategyPolicy());
     // Blaze has no invocation policy, whose default strategy policy allows every strategy, which
     // is what builder() does.
     let mut spawn_strategy_registry_builder = SpawnStrategyRegistry::builder();
 
     // com.google.devtools.build.lib.remote.RemoteModule
-    remote_module_register_spawn_strategies(&mut spawn_strategy_registry_builder, env);
+    match remote_module {
+        Some(remote_module) => {
+            remote_module.register_spawn_strategies(&mut spawn_strategy_registry_builder, env)
+        }
+        None => remote_module_register_spawn_strategies(&mut spawn_strategy_registry_builder, env),
+    }
     // com.google.devtools.build.lib.worker.WorkerModule
     worker_module_register_spawn_strategies(&mut spawn_strategy_registry_builder, env);
     // com.google.devtools.build.lib.standalone.StandaloneModule
@@ -86,8 +121,9 @@ fn should_enable_remote_execution(options: &RemoteOptions) -> bool {
     !is_null_or_empty(&options.remote_executor)
 }
 
-/// `RemoteModule.registerSpawnStrategies` with the `RemoteActionContextProvider` that
-/// `RemoteModule.setup` creates for the command.
+/// `RemoteModule.registerSpawnStrategies` with the placeholder `RemoteActionContextProvider`
+/// that `RemoteModule.setup` creates when no cache and no executor are configured (callers
+/// without a [`RemoteModuleSpawnStrategies`]).
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1176 RemoteModule.registerSpawnStrategies
 fn remote_module_register_spawn_strategies(
     registry_builder: &mut SpawnStrategyRegistryBuilder,
@@ -106,7 +142,9 @@ fn remote_module_register_spawn_strategies(
         || !is_null_or_empty(&remote_options.remote_output_service)
         || !is_null_or_empty(&remote_options.remote_downloader);
     if any_remote {
-        blaze_util::unported!("RemoteModule.setup (remote caching, execution or downloader)");
+        blaze_util::unported!(
+            "RemoteModule.setup (remote caching, execution or downloader without the command's RemoteModule: build_spawn_strategy_registry_with_remote_module)"
+        );
     }
 
     registry_builder.set_remote_local_fallback_strategy_identifier(

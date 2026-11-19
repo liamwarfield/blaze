@@ -34,6 +34,8 @@ blaze_actions = { path = "../blaze_actions" }
 blaze_analysis = { path = "../blaze_analysis" }
 blaze_rules = { path = "../blaze_rules" }
 blaze_cmdline = { path = "../blaze_cmdline" }
+# CredentialModule.beforeCommand: the credential cache lives with the credential helper port.
+blaze_repo_fetch = { path = "../blaze_repo_fetch" }
 indexmap.workspace = true
 parking_lot.workspace = true
 libc.workspace = true

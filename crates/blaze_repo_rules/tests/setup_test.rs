@@ -762,18 +762,64 @@ fn unparsable_netrc_is_a_warning() {
     );
 }
 
-// Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:448 BazelRepositoryModule.beforeCommand
+// Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:463 BazelRepositoryModule.beforeCommand
 #[test]
-#[should_panic(
-    expected = "not ported yet: GoogleAuthUtils.newCredentialHelperProvider: --credential_helper=*.example.com=/bin/helper"
-)]
-fn credential_helper_fails_loudly() {
+fn credential_helper_headers_are_sent_to_registries() {
     let s = Scratch::new();
+    let root = root_of(&s);
+    let server = Server::start("ok");
+    let helper = root.join("helper");
+    std::fs::write(
+        &helper,
+        "#!/bin/sh\ncat > /dev/null\necho '{\"headers\":{\"Authorization\":[\"Bearer t\"]}}'\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // The runtime's CredentialModule.beforeCommand (default --credential_helper_cache_duration).
+    blaze_repo_fetch::authandtls::credentialhelper::CredentialModule::instance()
+        .before_command("build", Duration::from_secs(30 * 60));
     let command = Command::new(&s);
-    let _ = command.prepare(&[
-        "--repository_cache=",
-        "--credential_helper=*.example.com=/bin/helper",
-    ]);
+    let functions = command
+        .prepare(&[
+            "--repository_cache=",
+            &format!("--credential_helper={}", helper.display()),
+        ])
+        .unwrap();
+
+    assert_eq!(
+        registry_download(
+            &functions,
+            &format!("http://127.0.0.1:{}/bazel_registry.json", server.port)
+        ),
+        Ok(b"ok".to_vec())
+    );
+    let requests = server.requests();
+    assert!(
+        requests[0].contains("\r\nAuthorization: Bearer t\r\n"),
+        "{requests:?}"
+    );
+}
+
+// Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:473 BazelRepositoryModule.beforeCommand
+// Java: com/google/devtools/build/lib/runtime/CommandLinePathFactory.java:146 CommandLinePathFactory.create
+#[test]
+fn credential_helper_not_on_path_is_an_init_failure() {
+    let s = Scratch::new();
+    let mut command = Command::new(&s);
+    command.client_env = env(&[("PATH", "/does/not/exist")]);
+    // env.getReporter().handle(Event.error(e.getMessage())), then the AbruptExitException
+    // "Error initializing credential helper".
+    assert_eq!(
+        err(command.prepare(&["--repository_cache=", "--credential_helper=no-such-helper"])),
+        "Error initializing credential helper"
+    );
+    let events = s.events();
+    assert!(
+        events.iter().any(|e| e
+            == "Error: Could not find file with name 'no-such-helper' on PATH '/does/not/exist'"),
+        "{events:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------

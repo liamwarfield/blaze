@@ -85,6 +85,24 @@ pub trait Artifact: ActionInput {
     fn get_root_relative_path(&self) -> PathFragment;
     /// `getRoot().getExecPath()`.
     fn get_root_exec_path(&self) -> PathFragment;
+    /// `getRoot().isExternal()`. The default fails loudly: only artifacts with an
+    /// `ArtifactRoot` (`blaze_actions`) can answer.
+    // Java: com/google/devtools/build/lib/actions/ArtifactRoot.java:238 ArtifactRoot.isExternal
+    fn is_root_external(&self) -> bool {
+        blaze_util::unported!("ArtifactRoot.isExternal (an Artifact view without an ArtifactRoot)")
+    }
+    /// `getOwner()`: the label of the artifact's owner, `None` where Java returns null. The
+    /// default fails loudly: only `blaze_actions` artifacts have an owner.
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:437 Artifact.getOwner
+    fn get_owner(&self) -> Option<blaze_cmdline::Label> {
+        blaze_util::unported!("Artifact.getOwner (an Artifact view without an owner)")
+    }
+    /// `getRunfilesPath()`. The default fails loudly: only `blaze_actions` artifacts know their
+    /// repository.
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:636 Artifact.getRunfilesPath
+    fn get_runfiles_path(&self) -> PathFragment {
+        blaze_util::unported!("Artifact.getRunfilesPath (an Artifact view without a root)")
+    }
 }
 
 /// A shared `ActionInput`, with Java's `equals`/`hashCode` (inputs are equal when their exec

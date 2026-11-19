@@ -47,27 +47,32 @@ pub(crate) fn check_unported_options(command: &CommandAnnotation, options: &Opti
         }
     }
 
-    // RemoteModule.beforeCommand: the remote cache, remote execution, the disk cache and the
-    // remote output service act on the actions a command executes; the remote downloader on the
-    // repositories a command fetches.
+    // RemoteModule.beforeCommand: the remote cache, remote execution and the disk cache run for
+    // `build` and `test` (crate::commands::build); the HTTP cache and Build without the Bytes
+    // fail loudly where RemoteModule would set them up (blaze_remote), the remote output service
+    // here. The other commands that execute actions (`run`, `coverage`, ...) have no
+    // RemoteModule yet. The remote downloader acts on the repositories a command fetches.
     // Java: com/google/devtools/build/lib/remote/RemoteModule.java:403 RemoteModule.beforeCommand
     if let Some(remote_options) = options.get_options::<RemoteOptions>() {
         // Strings.isNullOrEmpty
         let set = |value: &Option<String>| value.as_ref().is_some_and(|v| !v.is_empty());
+        let remote_module_ported = command_name == "build" || command_name == "test";
         if command.build_phase.executes() {
-            if set(&remote_options.remote_cache) {
-                blaze_util::unported!("RemoteModule.beforeCommand", "--remote_cache");
-            }
-            if set(&remote_options.remote_executor) {
-                blaze_util::unported!("RemoteModule.beforeCommand", "--remote_executor");
-            }
-            // CombinedCacheClientFactory.isDiskCache
-            if remote_options
-                .disk_cache
-                .as_ref()
-                .is_some_and(|path| !path.0.is_empty())
-            {
-                blaze_util::unported!("RemoteModule.beforeCommand", "--disk_cache");
+            if !remote_module_ported {
+                if set(&remote_options.remote_cache) {
+                    blaze_util::unported!("RemoteModule.beforeCommand", "--remote_cache");
+                }
+                if set(&remote_options.remote_executor) {
+                    blaze_util::unported!("RemoteModule.beforeCommand", "--remote_executor");
+                }
+                // CombinedCacheClientFactory.isDiskCache
+                if remote_options
+                    .disk_cache
+                    .as_ref()
+                    .is_some_and(|path| !path.0.is_empty())
+                {
+                    blaze_util::unported!("RemoteModule.beforeCommand", "--disk_cache");
+                }
             }
             if set(&remote_options.remote_output_service) {
                 blaze_util::unported!(
@@ -218,9 +223,9 @@ mod tests {
         );
     }
 
+    // RemoteModule is ported for build and test.
     #[test]
-    #[should_panic(expected = "RemoteModule.beforeCommand")]
-    fn disk_cache_fails() {
+    fn disk_cache_is_accepted_for_build() {
         check_unported_options(&BUILD_COMMAND, &parser(&["--disk_cache=/tmp/cache"]));
     }
 
@@ -231,11 +236,22 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "RemoteModule.beforeCommand")]
-    fn remote_cache_fails() {
+    fn remote_cache_and_executor_are_accepted_for_build() {
         check_unported_options(
             &BUILD_COMMAND,
-            &parser(&["--remote_cache=grpc://localhost:1"]),
+            &parser(&[
+                "--remote_cache=grpc://localhost:1",
+                "--remote_executor=grpcs://localhost:2",
+            ]),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "--experimental_remote_output_service")]
+    fn remote_output_service_fails() {
+        check_unported_options(
+            &BUILD_COMMAND,
+            &parser(&["--experimental_remote_output_service=grpc://localhost:1"]),
         );
     }
 

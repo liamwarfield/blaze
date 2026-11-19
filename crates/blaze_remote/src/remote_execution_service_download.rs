@@ -1801,17 +1801,15 @@ impl RemoteExecutionService {
     /// `new SpawnResult.DelegateSpawnResult(previousSpawnResult) { getInMemoryOutput(output) {
     /// return output.getExecPathString().equals(finalInMemoryOutputPath) ?
     /// finalInMemoryOutputContent : null; } }`.
-    ///
-    /// PORT: missing hook. `blaze_exec`'s `SpawnResult` is a plain struct; it has no
-    /// `DelegateSpawnResult` and no way to give a built result another in-memory output.
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1689 RemoteExecutionService.waitForAndReuseOutputs
     fn delegate_spawn_result_with_in_memory_output(
-        _previous_spawn_result: SpawnResult,
-        _final_in_memory_output_path: String,
-        _final_in_memory_output_content: Option<bytes::Bytes>,
+        previous_spawn_result: SpawnResult,
+        final_in_memory_output_path: String,
+        final_in_memory_output_content: Option<bytes::Bytes>,
     ) -> SpawnResult {
-        blaze_util::unported!(
-            "RemoteExecutionService.waitForAndReuseOutputs (missing hook: SpawnResult.DelegateSpawnResult overriding getInMemoryOutput(ActionInput))"
+        previous_spawn_result.delegate_with_in_memory_output(
+            final_in_memory_output_path,
+            final_in_memory_output_content.map(|c| c.to_vec()),
         )
     }
 

@@ -1,0 +1,337 @@
+#!/usr/bin/env bash
+# Remote-execution benchmark: one tool (the oracle, Blaze, or another Bazel-compatible binary) on
+# one corpus project against Stairwell's RBE, with one agreed flag set. See `rbe-bench help`.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/../.." && pwd)"
+CACHE="$HOME/.cache/blaze"
+BENCH="$CACHE/bench"
+ORACLE="$CACHE/oracle/bazel-9.3.2-linux-x86_64"
+REPO_CACHE="$CACHE/repo-cache"
+ENDPOINT="aw-remote-ext.buildremote.stairwell.io"
+MEMORY_MAX=5G
+
+usage() {
+  cat <<EOF
+usage: scripts/remote/rbe-bench prepare <project>
+       scripts/remote/rbe-bench run <oracle|blaze|/path/to/binary> <project> [--cold|--warm] [extra flags...]
+       scripts/remote/rbe-bench flags <project>
+       scripts/remote/rbe-bench help
+
+Projects: brotli (build //...), re2 (test //:all //python:all).
+
+prepare   Recreates ~/.cache/blaze/bench/ws/<project> from the read-only checkout
+          ~/.cache/blaze/corpus/<project> plus scripts/remote/rbe-bench.d/<project>.patch (the
+          benchmark's C/C++ toolchain for the RBE container, package //bench_rbe). The copy gets
+          its own bookkeeping git repository: commit 1 is the pristine checkout, commit 2 the patch.
+          The patch also carries MODULE.bazel.lock as Bazel 9.3.2 writes it for that tree, so module
+          resolution reads the lockfile instead of the registry. \`run\` resets the copy to commit 2
+          (tracked and untracked files; the bazel-* symlinks stay) before every run.
+
+run       Runs the project's command with the flag set below, against
+          grpcs://$ENDPOINT, in the bench copy.
+            tool        oracle = $ORACLE
+                        blaze  = \$BLAZE, else <repo>/target/release/blaze
+                        any other value is a path to a binary
+            output base ~/.cache/blaze/bench/ob-<project>-<tool> (<tool> = oracle, blaze or the
+                        binary's basename)
+            results     ~/.cache/blaze/bench/runs/<project>-<tool>-<UTC timestamp>/:
+                          command.txt     the exact argv of the measured command
+                          stdout, stderr  the measured command's output
+                          time.txt        /usr/bin/time -v of the measured command (the client)
+                          server.txt      the Bazel server JVM's VmHWM/VmRSS (read from
+                                          /proc/<pid>/status before shutdown; "none" for a tool
+                                          without a server, such as Blaze)
+                          execlog.zstd    --execution_log_compact_file
+                          grpc.log        --remote_grpc_log
+                          outputs.sha256  sha256 of every regular file under bazel-out/*/bin
+                          summary.txt     exit code, mode, salt, the process summary line, elapsed
+                                          time, wall time, client and server peak RSS, host load
+                                          average at the start
+          Every run starts with no server running: the whole sequence runs in one transient
+          systemd unit (MemoryMax=$MEMORY_MAX, no swap) and the tool is shut down before the
+          measured command, and again after it.
+
+          Modes (cold/warm differ only in the remote cache's state):
+            --cold   a new random salt, passed as --action_env=BENCH_SALT=<salt> and
+                     --host_action_env=BENCH_SALT=<salt>. The salt is part of every action's
+                     environment, so every action key is new to the remote cache and every
+                     action executes remotely. (The server rejects other instance names and
+                     unknown platform properties, so neither can be the salt.) The salt is kept in
+                     ~/.cache/blaze/bench/salt-<project>-<tool>. \`clean\` runs before the
+                     measured command.
+            --warm   the salt of the last --cold run of the same tool and project, after
+                     \`clean\`: every action should be a remote cache hit.
+            neither  no salt, no clean (whatever the remote and local caches hold).
+          Extra flags are appended to the command's options (after the project's).
+
+flags     Prints the startup options and command options run would use (salt and log paths shown
+          as placeholders).
+
+Environment: BLAZE (the blaze binary), RBE_BENCH_JOBS (default 32, at most 32).
+EOF
+}
+
+die() { echo "rbe-bench: $*" >&2; exit 2; }
+
+project_command() {
+  case "$1" in
+    brotli) echo "build //..." ;;
+    re2) echo "test //:all //python:all" ;;
+    *) die "unknown project '$1' (brotli, re2)" ;;
+  esac
+}
+
+# Flags a project needs on top of the common set, and why.
+project_flags() {
+  case "$1" in
+    brotli)
+      # brotli compiles with -Wconversion -Werror; gcc 9 (the container's compiler) reports
+      # conversions that gcc 13 does not. -Wno-error=<w> wins over -Werror in any order.
+      echo "--copt=-Wno-error=conversion --copt=-Wno-error=sign-conversion"
+      ;;
+    re2) echo "" ;;
+  esac
+}
+
+startup_flags() {
+  local tool_name="$1" ob="$2"
+  local flags=(--nosystem_rc --nohome_rc "--output_base=$ob" --digest_function=blake3)
+  if [[ "$tool_name" == oracle || "$tool_name" == bazel* ]]; then
+    flags+=(--host_jvm_args=-Xmx2g)
+  fi
+  printf '%s\n' "${flags[@]}"
+}
+
+common_flags() {
+  local jobs="${RBE_BENCH_JOBS:-32}"
+  (( jobs <= 32 )) || die "RBE_BENCH_JOBS above 32"
+  printf '%s\n' \
+    "--repository_cache=$REPO_CACHE" \
+    --curses=no --color=no \
+    --bes_backend= \
+    "--remote_cache=grpcs://$ENDPOINT" \
+    "--remote_executor=grpcs://$ENDPOINT" \
+    "--credential_helper=$ENDPOINT=aspect" \
+    --remote_timeout=600 \
+    --remote_download_outputs=all \
+    --remote_default_exec_properties=container-image=docker://gcr.io/flame-public/rbe-ubuntu20-04:latest \
+    --remote_default_exec_properties=OSFamily=Linux \
+    --remote_default_exec_properties=dockerUser=nobody \
+    --remote_default_exec_properties=dockerRunAsRoot=False \
+    --extra_toolchains=//bench_rbe:cc_toolchain \
+    "--jobs=$jobs"
+}
+
+resolve_tool() {
+  case "$1" in
+    oracle) TOOL_BIN="$ORACLE"; TOOL_NAME=oracle ;;
+    blaze)
+      TOOL_BIN="${BLAZE:-$ROOT/target/release/blaze}"
+      TOOL_NAME=blaze
+      ;;
+    *)
+      TOOL_BIN="$(readlink -f "$1")"
+      TOOL_NAME="$(basename "$1")"
+      ;;
+  esac
+  [[ -x "$TOOL_BIN" ]] || die "not an executable: $TOOL_BIN"
+}
+
+cmd_prepare() {
+  local project="$1"
+  project_command "$project" >/dev/null
+  local src="$CACHE/corpus/$project" ws="$BENCH/ws/$project"
+  local patch="$HERE/rbe-bench.d/$project.patch"
+  [[ -d "$src" ]] || die "no checkout at $src"
+  [[ -f "$patch" ]] || die "no patch at $patch"
+  rm -rf "$ws"
+  mkdir -p "$ws"
+  rsync -a --exclude='/.git' --exclude='/bazel-*' "$src/" "$ws/"
+  (
+    cd "$ws"
+    git init -q
+    git -c user.name=rbe-bench -c user.email=rbe-bench@localhost add -A
+    git -c user.name=rbe-bench -c user.email=rbe-bench@localhost commit -q -m "pristine $project"
+    git apply "$patch"
+    git -c user.name=rbe-bench -c user.email=rbe-bench@localhost add -A
+    git -c user.name=rbe-bench -c user.email=rbe-bench@localhost commit -q -m "rbe-bench patch"
+  )
+  echo "prepared $ws"
+}
+
+cmd_flags() {
+  local project="$1"
+  project_command "$project" >/dev/null
+  echo "startup: $(startup_flags oracle "$BENCH/ob-$project-<tool>" | tr '\n' ' ')"
+  echo "command: $(project_command "$project")"
+  echo "options: $(common_flags | tr '\n' ' ')$(project_flags "$project")"
+  echo "logs:    --execution_log_compact_file=<run>/execlog.zstd --remote_grpc_log=<run>/grpc.log"
+  echo "--cold:  --action_env=BENCH_SALT=<new salt> --host_action_env=BENCH_SALT=<new salt>"
+  echo "--warm:  --action_env=BENCH_SALT=<last cold salt> --host_action_env=BENCH_SALT=<same>"
+}
+
+cmd_run() {
+  [[ $# -ge 2 ]] || die "run needs <tool> <project>"
+  resolve_tool "$1"
+  local project="$2"
+  shift 2
+  local mode=plain
+  if [[ $# -gt 0 && ( "$1" == --cold || "$1" == --warm ) ]]; then
+    mode="${1#--}"
+    shift
+  fi
+  local extra=("$@")
+  local ws="$BENCH/ws/$project"
+  [[ -f "$ws/MODULE.bazel" ]] || die "no bench copy at $ws; run: rbe-bench prepare $project"
+  local cmd
+  read -r -a cmd <<<"$(project_command "$project")"
+  local ob="$BENCH/ob-$project-$TOOL_NAME"
+  local stamp run
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  run="$BENCH/runs/$project-$TOOL_NAME-$stamp"
+
+  # Every run starts from the tree prepare left: undo what a previous run wrote (the lockfile),
+  # keeping only the convenience symlinks bazel-*.
+  git -C "$ws" checkout -q HEAD -- .
+  git -C "$ws" clean -fdq -e '/bazel-*'
+  if [[ -n "$(git -C "$ws" status --porcelain -- . ':!/bazel-*')" ]]; then
+    die "bench copy $ws differs from its prepared state"
+  fi
+  mkdir -p "$run"
+
+  local salt_file="$BENCH/salt-$project-$TOOL_NAME" salt="" do_clean=0
+  case "$mode" in
+    cold)
+      salt="$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+      echo "$salt" >"$salt_file"
+      do_clean=1
+      ;;
+    warm)
+      [[ -f "$salt_file" ]] || die "no cold run recorded for $project/$TOOL_NAME ($salt_file)"
+      salt="$(cat "$salt_file")"
+      do_clean=1
+      ;;
+  esac
+
+  local startup
+  mapfile -t startup < <(startup_flags "$TOOL_NAME" "$ob")
+  local options
+  mapfile -t options < <(common_flags)
+  local pflags
+  read -r -a pflags <<<"$(project_flags "$project")"
+  options+=("${pflags[@]}")
+  if [[ -n "$salt" ]]; then
+    options+=("--action_env=BENCH_SALT=$salt" "--host_action_env=BENCH_SALT=$salt")
+  fi
+  options+=("--execution_log_compact_file=$run/execlog.zstd" "--remote_grpc_log=$run/grpc.log")
+  options+=("${extra[@]}")
+
+  local argv=("$TOOL_BIN" "${startup[@]}" "${cmd[0]}" "${options[@]}" "${cmd[@]:1}")
+  printf '%q ' "${argv[@]}" >"$run/command.txt"
+  echo >>"$run/command.txt"
+
+  # The sequence inside the unit: shut down any server, clean if asked (then shut down again, so
+  # the measured command starts its own server), the measured command under /usr/bin/time, the
+  # server's peak RSS, shutdown. A tool with no server (Blaze) has no pid file.
+  # Written to a file: systemd-run expands ${...} in its arguments.
+  cat >"$run/inner.sh" <<'EOS'
+set -u
+run="$1"; ob="$2"; do_clean="$3"; nstartup="$4"; shift 4
+tool="$1"; shift
+startup=("${@:1:$nstartup}"); shift "$nstartup"
+"$tool" "${startup[@]}" shutdown >/dev/null 2>&1 || true
+if [[ "$do_clean" == 1 ]]; then
+  if ! "$tool" "${startup[@]}" clean >"$run/clean.log" 2>&1; then
+    echo "rbe-bench: clean failed (see $run/clean.log)" >&2
+    exit 3
+  fi
+  "$tool" "${startup[@]}" shutdown >/dev/null 2>&1 || true
+fi
+start=$(date +%s.%N)
+/usr/bin/time -v -o "$run/time.txt" "$tool" "${startup[@]}" "$@" >"$run/stdout" 2>"$run/stderr"
+rc=$?
+end=$(date +%s.%N)
+echo "$rc" >"$run/exit_code"
+echo "$start $end" >"$run/wall_clock"
+pidfile="$ob/server/server.pid.txt"
+if [[ -f "$pidfile" ]] && pid="$(cat "$pidfile")" && [[ -r "/proc/$pid/status" ]]; then
+  grep -E '^(VmHWM|VmRSS):' "/proc/$pid/status" >"$run/server.txt"
+else
+  echo none >"$run/server.txt"
+fi
+"$tool" "${startup[@]}" shutdown >/dev/null 2>&1 || true
+exit 0
+EOS
+
+  # Other work on the machine skews local times; record it.
+  cut -d' ' -f1-3 /proc/loadavg >"$run/loadavg"
+  echo "rbe-bench: $TOOL_NAME $project ($mode${salt:+, salt $salt}) -> $run" >&2
+  (
+    cd "$ws"
+    systemd-run --user --collect --wait --pipe --quiet --same-dir \
+      -p MemoryMax="$MEMORY_MAX" -p MemorySwapMax=0 \
+      --setenv=PATH="$PATH" --setenv=HOME="$HOME" \
+      /bin/bash "$run/inner.sh" "$run" "$ob" "$do_clean" "${#startup[@]}" \
+      "$TOOL_BIN" "${startup[@]}" "${cmd[0]}" "${options[@]}" "${cmd[@]:1}"
+  ) || die "the systemd unit failed"
+
+  local rc
+  rc="$(cat "$run/exit_code" 2>/dev/null || echo unknown)"
+
+  # Outputs: every regular file under bazel-out/*/bin of the execroot.
+  local execroot="$ob/execroot/_main"
+  if [[ -d "$execroot/bazel-out" ]]; then
+    (cd "$execroot" && find -P bazel-out/*/bin -type f -print0 2>/dev/null | LC_ALL=C sort -z \
+      | xargs -0 -r sha256sum) >"$run/outputs.sha256"
+  else
+    : >"$run/outputs.sha256"
+  fi
+
+  local wall client_rss server_rss
+  wall="$(awk '{printf "%.2f", $2 - $1}' "$run/wall_clock")"
+  client_rss="$(sed -n 's/^\tMaximum resident set size (kbytes): //p' "$run/time.txt")"
+  server_rss="$(sed -n 's/^VmHWM:[[:space:]]*//p' "$run/server.txt")"
+  {
+    echo "tool: $TOOL_NAME ($TOOL_BIN)"
+    echo "project: $project"
+    echo "mode: $mode"
+    echo "salt: ${salt:-none}"
+    echo "exit code: $rc"
+    echo "processes: $(grep -E '^INFO: [0-9]+ processes' "$run/stderr" | tail -1 | sed 's/^INFO: //')"
+    echo "elapsed (tool): $(grep -E '^INFO: Elapsed time' "$run/stderr" | tail -1 | sed 's/^INFO: Elapsed time: //')"
+    echo "wall (client, s): $wall"
+    echo "client max RSS (kB): ${client_rss:-unknown}"
+    echo "server VmHWM: ${server_rss:-none}"
+    echo "output files: $(wc -l <"$run/outputs.sha256")"
+    echo "host load at start (1/5/15 min): $(cat "$run/loadavg")"
+    if [[ "$project" == re2 ]]; then
+      echo "tests: $(grep -E '^Executed [0-9]+ out of' "$run/stdout" "$run/stderr" | tail -1 | sed 's/^[^:]*://')"
+    fi
+  } >"$run/summary.txt"
+  cat "$run/summary.txt"
+  [[ "$rc" == 0 ]]
+}
+
+main() {
+  [[ $# -ge 1 ]] || { usage; exit 2; }
+  case "$1" in
+    help | -h | --help) usage ;;
+    prepare)
+      [[ $# -eq 2 ]] || die "prepare needs <project>"
+      cmd_prepare "$2"
+      ;;
+    flags)
+      [[ $# -eq 2 ]] || die "flags needs <project>"
+      cmd_flags "$2"
+      ;;
+    run)
+      shift
+      cmd_run "$@"
+      ;;
+    *) usage; exit 2 ;;
+  esac
+}
+
+main "$@"

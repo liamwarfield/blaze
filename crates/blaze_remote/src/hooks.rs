@@ -1,15 +1,11 @@
-//! Integration seams: what `lib/remote` reads from classes that live in crates this one cannot
-//! change or depend on. Each field is `None` until the integrator (the execution phase's setup,
-//! or a test harness) provides it; a `None` hook that is needed fails loudly with `unported!`.
-//!
-//! These are the additive changes requested from the owners of `blaze_exec` /
-//! `blaze_sky_exec` (docs/remote.md, "Hooks"); once they exist the hook becomes a direct call.
+//! Integration seams: what `lib/remote` reads from classes that live in crates above this one.
+//! Each field is `None` until the integrator (`blaze_buildtool`'s `ExecutionTool`, or a test
+//! harness) provides it; a `None` hook that is needed fails loudly with `unported!`.
 
 use std::io;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use blaze_exec::actions::ActionExecutionMetadata;
 use blaze_vfs::PathFragment;
 
 /// The part of `RemoteActionFileSystem` that `RemoteExecutionService.downloadOutputs` writes
@@ -29,39 +25,19 @@ pub trait RemoteOutputInjector: Send + Sync {
     ) -> io::Result<()>;
 }
 
-/// `ActionExecutionMetadata.mayModifySpawnOutputsAfterExecution()` (true for
-/// `TestRunnerAction`, `JavaCompileAction`, `JavaHeaderCompileAction`).
-// Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:125 ActionExecutionMetadata.mayModifySpawnOutputsAfterExecution
-pub type MayModifySpawnOutputsAfterExecution =
-    Arc<dyn Fn(&dyn ActionExecutionMetadata) -> bool + Send + Sync>;
-
 /// The hooks of one build.
 #[derive(Clone, Default)]
 pub struct RemoteHooks {
-    /// Missing hook: `SpawnExecutionContext.getActionFileSystem()` as a
-    /// `RemoteActionFileSystem`.
+    /// `SpawnExecutionContext.getActionFileSystem()` as a `RemoteActionFileSystem`: the
+    /// executor's remote output tree (`blaze_sky_exec::remote_output_tree`), which
+    /// `blaze_sky_exec` provides above this crate.
     pub remote_output_injector: Option<Arc<dyn RemoteOutputInjector>>,
-    /// Missing hook: `blaze_exec::actions::ActionExecutionMetadata::may_modify_spawn_outputs_after_execution`.
-    pub may_modify_spawn_outputs_after_execution: Option<MayModifySpawnOutputsAfterExecution>,
 }
 
 impl RemoteHooks {
     /// No hook provided.
     pub fn new() -> RemoteHooks {
         RemoteHooks::default()
-    }
-
-    /// `spawnOwner.mayModifySpawnOutputsAfterExecution()`.
-    pub fn may_modify_spawn_outputs_after_execution(
-        &self,
-        spawn_owner: &dyn ActionExecutionMetadata,
-    ) -> bool {
-        match &self.may_modify_spawn_outputs_after_execution {
-            Some(f) => f(spawn_owner),
-            None => blaze_util::unported!(
-                "ActionExecutionMetadata.mayModifySpawnOutputsAfterExecution (missing hook: blaze_exec::actions::ActionExecutionMetadata::may_modify_spawn_outputs_after_execution; RemoteHooks.may_modify_spawn_outputs_after_execution is not set)"
-            ),
-        }
     }
 
     /// `remoteActionFileSystem.injectRemoteFile(...)`.

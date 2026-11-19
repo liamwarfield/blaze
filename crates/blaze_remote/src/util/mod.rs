@@ -2,10 +2,8 @@
 
 pub mod async_task_cache;
 pub mod digest_util;
-#[cfg(feature = "wip")]
 pub mod temp_path_generator;
 pub mod tracing_metadata_utils;
-#[cfg(feature = "wip")]
 pub mod utils;
 
 pub use digest_util::{DigestOutputStream, DigestUtil};

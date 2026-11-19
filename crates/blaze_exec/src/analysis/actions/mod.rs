@@ -154,15 +154,22 @@ where
 /// returns `artifact.getPath()` for an `Artifact` (a source artifact resolves to its source root,
 /// not to the execroot).
 ///
+/// With an action file system, `ArtifactPathResolver.TransformResolver.toPath` returns the same
+/// path on that file system.
+///
 /// PORT: the context's own `get_input_path` default resolves every input against the execroot,
 /// which is Java's behaviour only for non-artifact inputs; this is the artifact case.
 // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:401 ActionExecutionContext.getInputPath
 // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:75 IdentityResolver.toPath
+// Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:106 TransformResolver.toPath
 pub fn get_input_path(ctx: &dyn ActionExecutionContext, artifact: &BlazeArtifact) -> Path {
-    if ctx.get_action_file_system().is_some() {
-        blaze_util::unported!("ArtifactPathResolver.TransformResolver.toPath (action file system)");
+    match ctx.get_action_file_system() {
+        Some(file_system) => blaze_vfs::FileSystemExt::get_path_fragment(
+            &file_system,
+            artifact.get_path().as_fragment(),
+        ),
+        None => artifact.get_path(),
     }
-    artifact.get_path()
 }
 
 /// `getEventHandler().post(new RunningActionEvent(action, strategy))`: `RunningActionEvent` is

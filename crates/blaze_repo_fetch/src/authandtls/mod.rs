@@ -1,5 +1,8 @@
-//! Port of the parts of `com.google.devtools.build.lib.authandtls` the downloader uses.
+//! Port of the parts of `com.google.devtools.build.lib.authandtls` the downloader uses, and of
+//! `authandtls.credentialhelper` (shared with the gRPC side in `blaze_remote`).
 
+pub mod credentialhelper;
+pub mod google_auth_utils;
 pub mod netrc;
 pub mod netrc_parser;
 

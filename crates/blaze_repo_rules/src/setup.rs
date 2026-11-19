@@ -19,12 +19,18 @@ use blaze_optdefs::command::common_command_options::CommonCommandOptions;
 use blaze_optdefs::misc::auth_and_tls_options::AuthAndTLSOptions;
 use blaze_optdefs::misc::local_execution_options::LocalExecutionOptions;
 use blaze_optdefs::misc::repository_options::RepositoryOptions;
+use blaze_repo_fetch::authandtls::credentialhelper::{
+    CredentialHelperCredentials, CredentialHelperEnvironment, CredentialModule,
+};
+use blaze_repo_fetch::authandtls::google_auth_utils;
+use blaze_repo_fetch::authandtls::{Credentials, StaticCredentials};
 use blaze_repo_fetch::cache::local_repo_contents_cache::LocalRepoContentsCache;
 use blaze_repo_fetch::cache::repository_cache::RepositoryCache;
 use blaze_repo_fetch::downloader::download_manager::DownloadManager;
 use blaze_repo_fetch::downloader::http_downloader::DelegatingDownloader;
 use blaze_repo_fetch::downloader::http_downloader::HttpDownloader;
 use blaze_repo_fetch::downloader::url_rewriter::UrlRewriter;
+use blaze_repo_fetch::runtime::command_line_path_factory::CommandLinePathFactory;
 use blaze_sky_loading::directories::LoadingDirectories;
 use blaze_sky_loading::skyframe_executor::LoadingFunctionsConfig;
 use blaze_sky_loading::skyframe_executor::inject_loading_precomputed;
@@ -468,29 +474,53 @@ pub fn prepare_repository_functions_with(
         }
     }
 
-    // Java: GoogleAuthUtils.newCredentialHelperProvider(...) and
-    // downloadManager.setCredentialFactory(headers -> new CredentialHelperCredentials(...)).
-    // Without helpers the credentials are the static auth headers, the download manager's
-    // default factory.
-    if let Some(auth_and_tls_options) = inputs.auth_and_tls_options
-        && !auth_and_tls_options.credential_helpers.is_empty()
-    {
-        // PORT: the credential helper protocol (CredentialHelper, CredentialHelperProvider,
-        // CredentialHelperCredentials, CredentialCacheExpiry) is not ported. Ignoring the flag
-        // would send unauthenticated requests where Bazel authenticates, so fail loudly.
-        blaze_util::unported!(
-            "GoogleAuthUtils.newCredentialHelperProvider",
-            "--credential_helper={}",
-            auth_and_tls_options
-                .credential_helpers
-                .iter()
-                .map(|h| match &h.scope {
-                    Some(scope) => format!("{scope}={}", h.path),
-                    None => h.path.clone(),
-                })
-                .collect::<Vec<_>>()
-                .join(" --credential_helper=")
-        );
+    // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:448 BazelRepositoryModule.beforeCommand
+    let default_auth_and_tls_options;
+    let auth_and_tls_options = match inputs.auth_and_tls_options {
+        Some(o) => o,
+        None => {
+            default_auth_and_tls_options =
+                blaze_options::Options::<AuthAndTLSOptions>::get_defaults();
+            &default_auth_and_tls_options
+        }
+    };
+    let credential_helper_environment = CredentialHelperEnvironment::new_builder()
+        .set_event_reporter(reporter.clone())
+        .set_workspace_path(Some(workspace.clone()))
+        .set_client_environment(setup.client_env.clone())
+        .set_helper_execution_timeout(auth_and_tls_options.credential_helper_timeout)
+        .build();
+    // env.getCommandLinePathFactory(): CommandLinePathFactory.create(fileSystem, directories),
+    // with the roots `workspace` and `install_base`.
+    let command_line_path_factory = CommandLinePathFactory::create_for_directories(
+        fs.clone(),
+        Some(workspace.clone()),
+        Some(to_path(&fs, setup.install_base)),
+    );
+    match google_auth_utils::new_credential_helper_provider(
+        &credential_helper_environment,
+        &command_line_path_factory,
+        &auth_and_tls_options.credential_helpers,
+    ) {
+        Ok(credential_helper_provider) => {
+            let credential_helper_provider = Arc::new(credential_helper_provider);
+            // credentialModule.getCredentialCache()
+            let credential_cache = CredentialModule::instance().get_credential_cache().clone();
+            download_manager.set_credential_factory(Arc::new(move |headers| {
+                let fallback: Arc<dyn Credentials> =
+                    Arc::new(StaticCredentials::new(headers.clone()));
+                Arc::new(CredentialHelperCredentials::new(
+                    credential_helper_provider.clone(),
+                    credential_helper_environment.clone(),
+                    credential_cache.clone(),
+                    Some(fallback),
+                ))
+            }));
+        }
+        Err(e) => {
+            reporter.handle(&Event::error(e.get_message()));
+            return Err("Error initializing credential helper".to_string());
+        }
     }
 
     download_manager.set_distdir(

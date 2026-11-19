@@ -134,3 +134,23 @@ Each entry: date, decision, why, who decided.
   value is an abrupt exit with `DEFAULT_DIGEST_HASH_FUNCTION_INVALID_VALUE`. SHA-1 and GITSHA1 stay
   `unported!`. Evidence: `--digest_function=BLAKE3` execution log of a genrule identical to the
   oracle's (minus timings). User (request); root.
+- 2026-11-19. Remote phase 1: RemoteModule runs for build/test only. RemoteSpawnCache is
+  registered only when a cache is available (Java also registers the placeholder's, which does
+  nothing). In-memory outputs live in a build-wide remote output tree
+  (`blaze_sky_exec::remote_output_tree`), cleared per action before it runs, standing in for
+  Java's per-action RemoteActionFileSystem; actions see one shared read-only file system view.
+  The action execution salt (`computeActionExecutionSalt`) is applied to every build, as in Java.
+  `--remote_download_outputs=toplevel|minimal` with a cache fails loudly until phase 2. Remote
+  implementer; remote lead.
+- 2026-11-19. Credential helper: `lib/authandtls/credentialhelper` and
+  `lib/runtime/CommandLinePathFactory` are ported into `blaze_repo_fetch` (the one crate both
+  users, repository downloads and `blaze_remote`, depend on); `CredentialModule` is a
+  process-wide instance standing in for `runtime.getBlazeModule`. gRPC TLS keeps the 2026-11-18
+  trust ruling (webpki roots only, no system store). Remote lead.
+- 2026-11-19. Remote benchmark against a real RBE (`scripts/remote/rbe-bench`): brotli and re2
+  run in bench copies with a hand-written cc toolchain for the RBE container (`//bench_rbe`, no
+  extension or repository rule), because the host's auto-configured toolchain is wrong inside
+  the container. A cold cache is made with `--action_env=BENCH_SALT=<random>`; nothing is deleted
+  on the server. The Stairwell depot itself is not a target: Bazel 9.3.2 cannot analyse it
+  (`rule()` no longer accepts `incompatible_use_toolchain_transition`, used by its
+  aspect_rules_cypress toolchain repo), and Blaze stops at the same error. Remote lead.

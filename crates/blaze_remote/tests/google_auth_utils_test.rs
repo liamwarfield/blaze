@@ -1,4 +1,3 @@
-#![cfg(feature = "wip")]
 // Options and protos are filled in field by field, as the Java tests set them.
 #![allow(clippy::field_reassign_with_default)]
 //! Port of `src/test/java/com/google/devtools/build/lib/authandtls/GoogleAuthUtilsTest.java`.
@@ -7,19 +6,28 @@
 //! a temporary directory, so Java's absolute paths (`/home/foo`) are prefixed with that
 //! directory.
 //!
-//! The tests after the Java ones (`new_channel_*`, `is_tls_enabled_*`) have no Java counterpart:
-//! Java has no unit test for `GoogleAuthUtils.newChannel`. They pin the decisions the port has
-//! to take itself (which scheme encrypts, the texts of the TLS and proxy errors).
+//! The tests after the Java ones have no Java counterpart: Java has no unit test for
+//! `GoogleAuthUtils.newChannel` (`new_channel_*`, `is_tls_enabled_*` pin the decisions the port
+//! has to take itself: which scheme encrypts, the texts of the TLS and proxy errors), nor for
+//! `newCredentials` (`new_credentials_*`).
 
 use std::sync::Arc;
 
-use blaze_optdefs::misc::auth_and_tls_options::AuthAndTLSOptions;
+use std::time::Duration;
+
+use blaze_events::{Event, EventHandler, NullEventHandler};
+use blaze_optdefs::misc::auth_and_tls_options::{
+    AuthAndTLSOptions, CredentialHelperOption, CredentialHelperOptionConverter,
+};
 use blaze_remote::authandtls::Credentials;
 use blaze_remote::authandtls::google_auth_utils::{
-    is_tls_enabled, new_channel, new_credentials_from_netrc,
+    CredentialHelperEnvironment, is_tls_enabled, new_channel, new_credential_helper_provider,
+    new_credentials, new_credentials_from_netrc,
 };
+use blaze_repo_fetch::authandtls::credentialhelper::{self, CredentialModule};
 use blaze_repo_fetch::authandtls::{Headers, basic_http_authentication_encode};
 use blaze_repo_fetch::fs_utils;
+use blaze_repo_fetch::runtime::command_line_path_factory::CommandLinePathFactory;
 use blaze_repo_fetch::uri::JavaUri;
 use blaze_vfs::{DigestHashFunction, FileSystemRef, Path, UnixFileSystem};
 use indexmap::IndexMap;
@@ -170,13 +178,227 @@ fn test_netrc_netrc_from_netrc_env_not_exist_should_ignore() {
     );
 }
 
+/// `new Reporter(new EventBus())`: the test never looks at its events.
+struct Reporter;
+
+impl EventHandler for Reporter {
+    fn handle(&self, event: &Event) {
+        NullEventHandler::INSTANCE.handle(event);
+    }
+}
+
+// Java: com/google/devtools/build/lib/authandtls/GoogleAuthUtilsTest.java:323 GoogleAuthUtilsTest.createExecutable
+fn create_executable(path: &Path) -> Path {
+    path.get_parent_directory()
+        .unwrap()
+        .create_directory_and_parents()
+        .unwrap();
+    // Nothing to do.
+    drop(path.get_output_stream().unwrap());
+    path.set_executable(true).unwrap();
+    path.clone()
+}
+
+// Java: com/google/devtools/build/lib/authandtls/GoogleAuthUtilsTest.java:364 GoogleAuthUtilsTest.createCredentialHelperOption
+fn create_credential_helper_option(input: &str) -> CredentialHelperOption {
+    CredentialHelperOptionConverter
+        .convert_option(input)
+        .unwrap_or_else(|e| panic!("IllegalStateException: {e:?}"))
+}
+
+// Java: com/google/devtools/build/lib/authandtls/GoogleAuthUtilsTest.java:349 GoogleAuthUtilsTest.newCredentialHelperProvider
+fn new_credential_helper_provider_of(
+    credential_helper_environment: &credentialhelper::CredentialHelperEnvironment,
+    command_line_path_factory: &CommandLinePathFactory,
+    inputs: &[String],
+) -> credentialhelper::CredentialHelperProvider {
+    new_credential_helper_provider(
+        credential_helper_environment,
+        command_line_path_factory,
+        &inputs
+            .iter()
+            .map(|s| create_credential_helper_option(s))
+            .collect::<Vec<_>>(),
+    )
+    .unwrap()
+}
+
 #[test]
-#[ignore = "needs CommandLinePathFactory (blaze_runtime) and lib/authandtls/credentialhelper (CredentialHelperProvider.findCredentialHelper, CredentialHelper), which are not ported"]
 fn test_credential_helper_provider() {
-    // Every case of the Java test but the first resolves the path of a helper with
-    // `CommandLinePathFactory.create` and looks it up with
-    // `CredentialHelperProvider.findCredentialHelper`.
-    panic!("not ported: GoogleAuthUtils.newCredentialHelperProvider with helpers");
+    let f = Fixture::new();
+    let file_system = &f.file_system;
+    let at = |p: &str| Path::create_from_str(&format!("{}{p}", f.root), file_system);
+
+    let workspace = at("/workspace");
+    let path_value = at("/usr/local/bin");
+    path_value.create_directory_and_parents().unwrap();
+
+    let credential_helper_environment =
+        credentialhelper::CredentialHelperEnvironment::new_builder()
+            .set_event_reporter(Arc::new(Reporter))
+            .set_workspace_path(Some(workspace.clone()))
+            .set_client_environment(client_env(&[("PATH", path_value.get_path_string())]))
+            .set_helper_execution_timeout(Duration::ZERO)
+            .build();
+    let command_line_path_factory = CommandLinePathFactory::new(
+        file_system.clone(),
+        [("workspace".to_string(), workspace.clone())]
+            .into_iter()
+            .collect(),
+    );
+
+    let unused_helper = create_executable(&at("/unused/helper"));
+
+    let default_helper = create_executable(&at("/default/helper"));
+    let example_com_helper = create_executable(&at("/example/com/helper"));
+    let foo_example_com_helper = create_executable(&at("/foo/example/com/helper"));
+    let example_com_wildcard_helper = create_executable(&at("/example/com/wildcard/helper"));
+
+    let example_org_helper = create_executable(
+        &workspace.get_relative(&blaze_vfs::PathFragment::create("helpers/example-org")),
+    );
+
+    let find = |provider: &credentialhelper::CredentialHelperProvider, uri: &str| {
+        provider
+            .find_credential_helper(&JavaUri::create(uri).unwrap())
+            .map(|helper| helper.get_path().clone())
+    };
+    let new_provider = |inputs: &[String]| {
+        new_credential_helper_provider_of(
+            &credential_helper_environment,
+            &command_line_path_factory,
+            inputs,
+        )
+    };
+    let p = |path: &Path| path.get_path_string().to_string();
+    let scoped = |scope: &str, path: &Path| format!("{scope}={}", path.get_path_string());
+
+    // No helpers.
+    let credential_helper_provider1 = new_provider(&[]);
+    assert_eq!(
+        find(&credential_helper_provider1, "https://example.com"),
+        None
+    );
+    assert_eq!(
+        find(&credential_helper_provider1, "https://foo.example.com"),
+        None
+    );
+
+    // Default helper only.
+    let credential_helper_provider2 = new_provider(&[p(&default_helper)]);
+    assert_eq!(
+        find(&credential_helper_provider2, "https://example.com"),
+        Some(default_helper.clone())
+    );
+    assert_eq!(
+        find(&credential_helper_provider2, "https://foo.example.com"),
+        Some(default_helper.clone())
+    );
+
+    // Default and exact match.
+    let credential_helper_provider3 = new_provider(&[
+        p(&default_helper),
+        scoped("example.com", &example_com_helper),
+    ]);
+    assert_eq!(
+        find(&credential_helper_provider3, "https://example.com"),
+        Some(example_com_helper.clone())
+    );
+    assert_eq!(
+        find(&credential_helper_provider3, "https://foo.example.com"),
+        Some(default_helper.clone())
+    );
+
+    // Exact match without default.
+    let credential_helper_provider4 = new_provider(&[scoped("example.com", &example_com_helper)]);
+    assert_eq!(
+        find(&credential_helper_provider4, "https://example.com"),
+        Some(example_com_helper.clone())
+    );
+    assert_eq!(
+        find(&credential_helper_provider4, "https://foo.example.com"),
+        None
+    );
+
+    // Multiple scoped helpers with default.
+    let credential_helper_provider5 = new_provider(&[
+        p(&default_helper),
+        scoped("example.com", &example_com_helper),
+        scoped("*.foo.example.com", &foo_example_com_helper),
+        scoped("*.example.com", &example_com_wildcard_helper),
+        "example.org=%workspace%/helpers/example-org".to_string(),
+    ]);
+    assert_eq!(
+        find(&credential_helper_provider5, "https://anotherdomain.com"),
+        Some(default_helper.clone())
+    );
+    assert_eq!(
+        find(&credential_helper_provider5, "https://example.com"),
+        Some(example_com_helper.clone())
+    );
+    assert_eq!(
+        find(&credential_helper_provider5, "https://foo.example.com"),
+        Some(foo_example_com_helper.clone())
+    );
+    assert_eq!(
+        find(&credential_helper_provider5, "https://abc.foo.example.com"),
+        Some(foo_example_com_helper.clone())
+    );
+    assert_eq!(
+        find(&credential_helper_provider5, "https://bar.example.com"),
+        Some(example_com_wildcard_helper.clone())
+    );
+    assert_eq!(
+        find(&credential_helper_provider5, "https://abc.bar.example.com"),
+        Some(example_com_wildcard_helper.clone())
+    );
+    assert_eq!(
+        find(&credential_helper_provider5, "https://example.org"),
+        Some(example_org_helper.clone())
+    );
+
+    // Helpers override.
+    let credential_helper_provider6 = new_provider(&[
+        // <system .bazelrc>
+        p(&unused_helper),
+        // <user .bazelrc>
+        p(&default_helper),
+        scoped("example.com", &unused_helper),
+        scoped("*.example.com", &unused_helper),
+        scoped("example.org", &unused_helper),
+        scoped("*.example.org", &example_org_helper),
+        // <workspace .bazelrc>
+        scoped("*.example.com", &example_com_wildcard_helper),
+        scoped("example.org", &example_org_helper),
+        scoped("*.foo.example.com", &unused_helper),
+        // <command-line>
+        scoped("example.com", &example_com_helper),
+        scoped("*.foo.example.com", &foo_example_com_helper),
+    ]);
+    assert_eq!(
+        find(&credential_helper_provider6, "https://anotherdomain.com"),
+        Some(default_helper.clone())
+    );
+    assert_eq!(
+        find(&credential_helper_provider6, "https://example.com"),
+        Some(example_com_helper.clone())
+    );
+    assert_eq!(
+        find(&credential_helper_provider6, "https://foo.example.com"),
+        Some(foo_example_com_helper.clone())
+    );
+    assert_eq!(
+        find(&credential_helper_provider6, "https://bar.example.com"),
+        Some(example_com_wildcard_helper.clone())
+    );
+    assert_eq!(
+        find(&credential_helper_provider6, "https://example.org"),
+        Some(example_org_helper.clone())
+    );
+    assert_eq!(
+        find(&credential_helper_provider6, "https://foo.example.org"),
+        Some(example_org_helper.clone())
+    );
 }
 
 // The tests below have no Java counterpart (see the file comment).
@@ -319,4 +541,88 @@ fn new_channel_client_certificate_and_key_must_be_valid() {
     options.tls_client_key = None;
     let channel = new_channel("grpcs://localhost:1234", None, &options, None, None).unwrap();
     assert!(channel.tls);
+}
+
+/// `RemoteModule`'s call: a helper scoped to the host wins over `.netrc`, which stays the
+/// fallback for other hosts; `refresh()` drops the cached helper response.
+#[test]
+fn new_credentials_wrap_netrc_in_the_credential_helper() {
+    let f = Fixture::new();
+    let home = format!("{}/home/foo", f.root);
+    f.scratch_file(
+        &format!("{home}/.netrc"),
+        "machine foo.example.org login foouser password foopass",
+    );
+    let counter = format!("{}/count", f.root);
+    let helper = format!("{}/bin/helper", f.root);
+    f.scratch_file(
+        &helper,
+        &format!(
+            "#!/bin/sh\necho x >> '{counter}'\ncat > /dev/null\n\
+             echo '{{\"headers\":{{\"Authorization\":[\"Bearer t\"]}}}}'\n"
+        ),
+    );
+    Path::create_from_str(&helper, &f.file_system)
+        .set_executable(true)
+        .unwrap();
+
+    // The runtime's CredentialModule.beforeCommand (default --credential_helper_cache_duration).
+    let credential_module = CredentialModule::new();
+    credential_module.before_command("build", Duration::from_secs(30 * 60));
+    let mut options = AuthAndTLSOptions::default();
+    options.credential_helpers = vec![create_credential_helper_option(&format!(
+        "*.example.com={helper}"
+    ))];
+    let workspace = Path::create_from_str(&f.root, &f.file_system);
+    let credentials = new_credentials(
+        &CredentialHelperEnvironment::new_builder()
+            .set_event_reporter(Arc::new(Reporter))
+            .set_workspace_path(Some(workspace.clone()))
+            .set_client_environment(client_env(&[("HOME", &home)]))
+            .set_helper_execution_timeout(Duration::from_secs(10))
+            .build(),
+        credential_module.get_credential_cache(),
+        &CommandLinePathFactory::create_for_directories(
+            f.file_system.clone(),
+            Some(workspace),
+            None,
+        ),
+        &f.file_system,
+        &options,
+    )
+    .unwrap();
+
+    let bearer: Headers = [("Authorization".to_string(), vec!["Bearer t".to_string()])]
+        .into_iter()
+        .collect();
+    assert_eq!(
+        request_metadata(
+            &credentials,
+            "https://remote.example.com/build.bazel.remote.execution.v2.ContentAddressableStorage"
+        ),
+        bearer
+    );
+    assert_eq!(
+        request_metadata(
+            &credentials,
+            "https://remote.example.com/build.bazel.remote.execution.v2.ContentAddressableStorage"
+        ),
+        bearer
+    );
+    assert_eq!(std::fs::read_to_string(&counter).unwrap(), "x\n");
+    assert_request_metadata(
+        &request_metadata(&credentials, "https://foo.example.org"),
+        "foouser",
+        "foopass",
+    );
+
+    credentials.refresh().unwrap();
+    assert_eq!(
+        request_metadata(
+            &credentials,
+            "https://remote.example.com/build.bazel.remote.execution.v2.ContentAddressableStorage"
+        ),
+        bearer
+    );
+    assert_eq!(std::fs::read_to_string(&counter).unwrap(), "x\nx\n");
 }

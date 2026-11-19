@@ -1,4 +1,3 @@
-#![cfg(feature = "wip")]
 // Options and protos are filled in field by field, as the Java tests set them.
 #![allow(clippy::field_reassign_with_default)]
 // Java still reads and writes the deprecated REAPI fields (output_files, output_file_symlinks,
@@ -49,9 +48,9 @@ use blaze_cmdline::Label;
 use blaze_collect::{NestedSet, NestedSetBuilder, Order};
 use blaze_events::{EventKind, ExtendedEventHandler, StoredEventHandler};
 use blaze_exec::actions::{
-    ActionExecutionMetadata, ActionInputRef, BasicActionInput, FakeOwner, FileArtifactValue,
-    PathMapper, ResourceSet, RunfilesTree, SimpleSpawn, Spawn, SpawnResult, SpawnResultBuilder,
-    Status, SymlinkEntry, TreeArtifactValue, execution_requirements,
+    ActionInputRef, BasicActionInput, FakeOwner, FileArtifactValue, PathMapper, ResourceSet,
+    RunfilesTree, SimpleSpawn, Spawn, SpawnResult, SpawnResultBuilder, Status, SymlinkEntry,
+    TreeArtifactValue, execution_requirements,
 };
 use blaze_exec::exec::action_execution_context::SpawnCacheError;
 use blaze_exec::util::FileOutErr;
@@ -1012,9 +1011,6 @@ impl Fixture {
         )
         .with_hooks(RemoteHooks {
             remote_output_injector: Some(injector),
-            may_modify_spawn_outputs_after_execution: Some(Arc::new(
-                |_: &dyn ActionExecutionMetadata| false,
-            )),
         })
     }
 
@@ -4464,6 +4460,7 @@ fn build_remote_action_for_remote_persistent_workers() {
 
 // Java: com/google/devtools/build/lib/remote/RemoteExecutionServiceTest.java:3014 RemoteExecutionServiceTest.buildRemoteActionWithScrubbing
 #[test]
+#[ignore = "needs ActionOwner.getTargetKind / isBuildConfigurationForTool on blaze_exec's ActionOwner (Scrubber.SpawnScrubber.matches); --experimental_remote_scrubbing_config is not ported"]
 fn build_remote_action_with_scrubbing() {
     let mut f = Fixture::set_up();
     let kept_input = create_artifact_str(&f.artifact_root, "kept_input");

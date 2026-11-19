@@ -282,18 +282,12 @@ impl RemoteSpawnCache {
 
 /// `new SpawnResult.DelegateSpawnResult(previousResult) { getRunnerName() { return
 /// "deduplicated"; } getMetrics() { return buildMetrics; } }`.
-///
-/// PORT: missing hook. `blaze_exec`'s `SpawnResult` is a plain struct; it has no
-/// `DelegateSpawnResult`, and a copy through `SpawnResultBuilder` would lose the in-memory output
-/// (which has no getter for its `ActionInput`).
 // Java: com/google/devtools/build/lib/remote/RemoteSpawnCache.java:225 RemoteSpawnCache.lookup
 fn deduplicated_spawn_result(
-    _previous_result: SpawnResult,
-    _build_metrics: SpawnMetrics,
+    previous_result: SpawnResult,
+    build_metrics: SpawnMetrics,
 ) -> SpawnResult {
-    blaze_util::unported!(
-        "RemoteSpawnCache.lookup (missing hook: SpawnResult.DelegateSpawnResult overriding getRunnerName() and getMetrics())"
-    )
+    previous_result.delegate_with_runner_name_and_metrics("deduplicated", build_metrics)
 }
 
 impl SpawnCache for RemoteSpawnCache {
@@ -439,11 +433,10 @@ impl CacheHandle for RemoteCacheHandle {
             )?;
         if let Some(this_execution_final) = &self.this_execution_final
             && self
-                .remote_execution_service
-                .hooks
-                .may_modify_spawn_outputs_after_execution(
-                    self.action.get_spawn().get_resource_owner(),
-                )
+                .action
+                .get_spawn()
+                .get_resource_owner()
+                .may_modify_spawn_outputs_after_execution()
         {
             // In this case outputs have been uploaded synchronously and the callback above has
             // run, so no new executions will be deduplicated against this one. We can safely

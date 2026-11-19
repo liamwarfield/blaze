@@ -102,7 +102,34 @@ impl From<StatusRuntimeException> for io::Error {
 
 /// `new IOException(new StatusRuntimeException(status))`.
 pub fn status_to_io_error(status: tonic::Status) -> io::Error {
+    // A call that failed before it started with an `IOException` (see [`io_error_status`]) fails
+    // with that exception, as the Java future does.
+    if let Some(source) = Error::source(&status).and_then(|s| s.downcast_ref::<CallIoError>()) {
+        return shared(&source.0);
+    }
     StatusRuntimeException::new(status).into()
+}
+
+/// The `IOException` a call fails with before it reaches the server (Java: the
+/// `Single<ChannelConnection>` of `ReferenceCountedChannel.withChannelConnection` fails, and so
+/// does the call's future), carried as the source of a `tonic::Status` through the call API;
+/// [`status_to_io_error`] returns it.
+#[derive(Debug)]
+pub struct CallIoError(pub Arc<io::Error>);
+
+impl fmt::Display for CallIoError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl Error for CallIoError {}
+
+/// A `tonic::Status` (code UNKNOWN) that [`status_to_io_error`] turns back into `e`.
+pub fn io_error_status(e: io::Error) -> tonic::Status {
+    let mut status = tonic::Status::unknown(e.to_string());
+    status.set_source(Arc::new(CallIoError(Arc::new(e))));
+    status
 }
 
 /// `new IOException(message, cause)`: displays `message`; the cause stays reachable for

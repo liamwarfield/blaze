@@ -1,4 +1,3 @@
-#![cfg(feature = "wip")]
 // Options and protos are filled in field by field, as the Java tests set them.
 #![allow(clippy::field_reassign_with_default)]
 //! Port of `src/test/java/com/google/devtools/build/lib/remote/RemoteSpawnRunnerTest.java`.
@@ -777,9 +776,6 @@ impl RemoteSpawnRunnerTest {
         )
         .with_hooks(RemoteHooks {
             remote_output_injector: Some(self.injector.clone() as Arc<dyn RemoteOutputInjector>),
-            may_modify_spawn_outputs_after_execution: Some(Arc::new(
-                |_: &dyn ActionExecutionMetadata| false,
-            )),
         })
     }
 

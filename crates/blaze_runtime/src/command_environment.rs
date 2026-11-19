@@ -42,6 +42,8 @@ pub struct CommandEnvironment {
     relative_working_directory: PathFragment,
     client_env: IndexMap<String, String>,
     command_id: String,
+    /// Unique identifier for the build being run.
+    build_request_id: String,
     visible_action_env: std::collections::BTreeSet<String>,
     visible_test_env: std::collections::BTreeSet<String>,
     /// `blazeModuleEnvironment.exit(e)`: the first pending abrupt exit, checked in
@@ -119,7 +121,12 @@ impl CommandEnvironment {
             .expect("CommandEnvironment needs its options provider to have ClientOptions loaded.");
         let client_env = make_map_from_map_entries(&client_options.client_env);
         let command_id = Self::compute_command_id(&command_options, &client_env, warnings);
-        // PORT: buildRequestId is not ported.
+        // PORT: no client sends a `buildRequestIdOverride` (Bazel's own client never does).
+        // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:335 CommandEnvironment.<init>
+        let build_request_id = match &command_options.build_request_id {
+            Some(id) => id.clone(),
+            None => uuid::Uuid::new_v4().to_string(),
+        };
         // Java: ALWAYS_INHERITED_REPO_ENV (Linux: PATH).
         let mut repo_env_builder: std::collections::BTreeMap<String, String> = client_env
             .iter()
@@ -219,6 +226,7 @@ impl CommandEnvironment {
             relative_working_directory,
             client_env,
             command_id,
+            build_request_id,
             visible_action_env,
             visible_test_env,
             pending_exception,
@@ -477,6 +485,11 @@ impl CommandEnvironment {
     // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:668 CommandEnvironment.getCommandId
     pub fn get_command_id(&self) -> &str {
         &self.command_id
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:677 CommandEnvironment.getBuildRequestId
+    pub fn get_build_request_id(&self) -> &str {
+        &self.build_request_id
     }
 
     /// The working directory of the server (the workspace, or null outside one).

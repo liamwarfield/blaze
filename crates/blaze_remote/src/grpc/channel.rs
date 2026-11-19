@@ -258,6 +258,9 @@ struct Inner {
     download_idle_timeout: Option<Duration>,
     capabilities_fetcher: Option<CapabilitiesFetcher>,
     server_capabilities: tokio::sync::OnceCell<Result<ServerCapabilities, Arc<io::Error>>>,
+    /// Whether every call waits for the verified server capabilities (see
+    /// [`ReferenceCountedChannel::with_capabilities_gate`]).
+    capabilities_gate: bool,
     ref_cnt: AtomicI32,
     shutdown: AtomicBool,
 }
@@ -309,6 +312,7 @@ impl ReferenceCountedChannel {
                 download_idle_timeout: None,
                 capabilities_fetcher,
                 server_capabilities: tokio::sync::OnceCell::new(),
+                capabilities_gate: false,
                 ref_cnt: AtomicI32::new(1),
                 shutdown: AtomicBool::new(false),
             }),
@@ -344,6 +348,25 @@ impl ReferenceCountedChannel {
     pub fn with_download_idle_timeout(mut self, timeout: Duration) -> ReferenceCountedChannel {
         match Arc::get_mut(&mut self.inner) {
             Some(inner) => inner.download_idle_timeout = Some(timeout),
+            None => panic!("IllegalStateException: the channel is already shared"),
+        }
+        self
+    }
+
+    /// Makes every call (except `GetCapabilities` itself) wait for the fetched and verified
+    /// server capabilities, and fail with the verification's exception (a
+    /// `RemoteExecutionCapabilitiesException`) when they are incompatible. Must be called before
+    /// the channel is shared.
+    ///
+    /// PORT: Java creates the connection of every call through
+    /// `ChannelConnectionWithServerCapabilitiesFactory.create`, which for a requirement other
+    /// than `NONE` maps the verified capabilities into the connection; the capabilities are
+    /// fetched once (`getAndVerifyServerCapabilitiesStarted`) over the raw channel.
+    // Java: com/google/devtools/build/lib/remote/GoogleChannelConnectionFactory.java:103 GoogleChannelConnectionFactory.create
+    // Java: com/google/devtools/build/lib/remote/ReferenceCountedChannel.java:156 ReferenceCountedChannel.withChannelConnection
+    pub fn with_capabilities_gate(mut self) -> ReferenceCountedChannel {
+        match Arc::get_mut(&mut self.inner) {
+            Some(inner) => inner.capabilities_gate = true,
             None => panic!("IllegalStateException: the channel is already shared"),
         }
         self
@@ -440,6 +463,13 @@ impl ReferenceCountedChannel {
     ) -> Result<(MetadataMap, Listeners), tonic::Status> {
         if self.is_shutdown() {
             return Err(tonic::Status::unavailable("Channel shutdown invoked"));
+        }
+        // Java: com/google/devtools/build/lib/remote/ReferenceCountedChannel.java:156 ReferenceCountedChannel.withChannelConnection
+        if self.inner.capabilities_gate
+            && *method != methods::GET_CAPABILITIES
+            && let Err(e) = self.get_server_capabilities_async().await
+        {
+            return Err(crate::common::errors::io_error_status(e));
         }
         let mut headers = MetadataMap::new();
         // Java: TracingMetadataUtils.attachMetadataInterceptor

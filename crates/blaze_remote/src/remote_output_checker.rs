@@ -691,22 +691,14 @@ fn is_test_rule_name(name: &str) -> bool {
 
 /// `artifact.getOwner() == null || artifact.getOwner().getRepository().isMain()` for the source
 /// artifact `action_input`.
-///
-/// PORT: `blaze_exec`'s `Artifact` view has no `getOwner()`; the owner is read from the
-/// `blaze_actions` artifact behind the view. A source artifact of another type (a test double)
-/// has no owner to read.
 // Java: com/google/devtools/build/lib/remote/RemoteOutputChecker.java:301 RemoteOutputChecker.mayBeRemote
 fn source_artifact_owner_is_null_or_in_main_repository(action_input: &dyn ActionInput) -> bool {
     match action_input
-        .as_any()
-        .downcast_ref::<blaze_actions::actions::artifact::Artifact>()
+        .as_artifact()
+        .expect("ClassCastException: not an Artifact")
+        .get_owner()
     {
-        Some(artifact) => match artifact.get_owner() {
-            None => true,
-            Some(owner) => owner.get_repository().is_main(),
-        },
-        None => blaze_util::unported!(
-            "RemoteOutputChecker.mayBeRemote (missing hook: Artifact.getOwner() on blaze_exec::actions::Artifact)"
-        ),
+        None => true,
+        Some(owner) => owner.get_repository().is_main(),
     }
 }

@@ -160,10 +160,11 @@ impl BlazeModule for NoSpawnCacheModule {
     }
 }
 
-/// A module to manage credentials.
-/// PORT: skipped, incremental (beforeCommand resets the credential cache the server keeps
-/// between commands). The credential helpers of a command are set up with its repository
-/// functions (`blaze_repo_rules::setup`).
+/// A module whose sole purpose is to hold the credential cache which is shared by other modules.
+/// PORT: the cache and its state are
+/// `blaze_repo_fetch::authandtls::credentialhelper::CredentialModule::instance()`, which the
+/// repository set-up (`blaze_repo_rules::setup`) and `blaze_remote` reach directly; this is the
+/// module's registration and its `beforeCommand`.
 // Java: com/google/devtools/build/lib/authandtls/credentialhelper/CredentialModule.java:31 CredentialModule
 pub struct CredentialModule;
 
@@ -175,6 +176,21 @@ impl BlazeModule for CredentialModule {
     // Java: com/google/devtools/build/lib/authandtls/credentialhelper/CredentialModule.java:56 CredentialModule.getCommonCommandOptions
     fn get_common_command_options(&self) -> Vec<OptionsClassRef> {
         vec![AuthAndTLSOptions::class()]
+    }
+
+    // Java: com/google/devtools/build/lib/authandtls/credentialhelper/CredentialModule.java:61 CredentialModule.beforeCommand
+    fn before_command(
+        &self,
+        env: &mut crate::command_environment::CommandEnvironment,
+    ) -> Result<(), AbruptExitException> {
+        let default_cache_duration = env
+            .get_options()
+            .get_options::<AuthAndTLSOptions>()
+            .expect("AuthAndTLSOptions")
+            .credential_helper_cache_timeout;
+        blaze_repo_fetch::authandtls::credentialhelper::CredentialModule::instance()
+            .before_command(env.get_command_name(), default_cache_duration);
+        Ok(())
     }
 }
 

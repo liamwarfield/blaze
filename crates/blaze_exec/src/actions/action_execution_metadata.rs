@@ -73,6 +73,14 @@ pub trait ActionExecutionMetadata: Send + Sync + fmt::Debug {
         self.get_progress_message()
             .unwrap_or_else(|| format!("Executing {}", self.get_mnemonic()))
     }
+    /// Returns true if the action may modify spawn outputs after the spawn has executed.
+    ///
+    /// If this returns true, any kind of spawn output caching or reuse needs to happen
+    /// synchronously directly after the spawn execution.
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:125 ActionExecutionMetadata.mayModifySpawnOutputsAfterExecution
+    fn may_modify_spawn_outputs_after_execution(&self) -> bool {
+        false
+    }
 }
 
 /// A fixed `ActionExecutionMetadata` (Java tests use `FakeOwner`; the replay harness uses it to
@@ -85,6 +93,9 @@ pub struct FakeOwner {
     pub owner: ActionOwner,
     pub primary_output: ActionInputRef,
     pub platform: Option<PlatformInfo>,
+    /// `mayModifySpawnOutputsAfterExecution()` of the action this owner stands in for (Java's
+    /// `FakeOwner` inherits the default, false; the replay harness sets it for test actions).
+    pub may_modify_spawn_outputs_after_execution: bool,
 }
 
 impl FakeOwner {
@@ -103,6 +114,7 @@ impl FakeOwner {
                 "/dummy/output",
             )),
             platform: None,
+            may_modify_spawn_outputs_after_execution: false,
         }
     }
 }
@@ -125,5 +137,8 @@ impl ActionExecutionMetadata for FakeOwner {
     }
     fn pretty_print(&self) -> String {
         format!("action '{}'", self.describe())
+    }
+    fn may_modify_spawn_outputs_after_execution(&self) -> bool {
+        self.may_modify_spawn_outputs_after_execution
     }
 }

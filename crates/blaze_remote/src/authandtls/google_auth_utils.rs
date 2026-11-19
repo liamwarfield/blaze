@@ -15,10 +15,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use blaze_events::{Event, EventHandler};
-use blaze_optdefs::misc::auth_and_tls_options::{AuthAndTLSOptions, CredentialHelperOption};
+use blaze_events::Event;
+use blaze_optdefs::misc::auth_and_tls_options::AuthAndTLSOptions;
+/// Environment for running credential helpers in (the record lives with the credential helper
+/// port in `blaze_repo_fetch`).
+pub use blaze_repo_fetch::authandtls::credentialhelper::CredentialHelperEnvironment;
+use blaze_repo_fetch::authandtls::credentialhelper::{self, CredentialCache};
+pub use blaze_repo_fetch::authandtls::google_auth_utils::new_credential_helper_provider;
 use blaze_repo_fetch::authandtls::{Headers, NetrcCredentials, netrc_parser};
 use blaze_repo_fetch::errors::IoException;
+use blaze_repo_fetch::runtime::command_line_path_factory::CommandLinePathFactory;
 use blaze_repo_fetch::uri::JavaUri;
 use blaze_vfs::{FileSystemRef, Path};
 use indexmap::IndexMap;
@@ -527,10 +533,16 @@ impl CallCredentials for GoogleAuthLibraryCallCredentials {
             JavaUri::create(uri).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
         // Credentials is expected to manage caching internally if the metadata is fetched over
         // the network.
-        let metadata: Headers = self
-            .creds
-            .get_request_metadata(&uri)
-            .map_err(io::Error::other)?;
+        // Java: com/google/auth/Credentials.java Credentials.getRequestMetadata(URI, Executor, RequestMetadataCallback)
+        // runs the blocking getRequestMetadata(URI) on the executor: it may run a credential
+        // helper (a subprocess), which must not block the async runtime.
+        let creds = self.creds.clone();
+        let metadata: Headers =
+            match tokio::task::spawn_blocking(move || creds.get_request_metadata(&uri)).await {
+                Ok(metadata) => metadata.map_err(io::Error::other)?,
+                Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+                Err(e) => return Err(io::Error::other(e)),
+            };
         Ok(metadata.into_iter().collect())
     }
 }
@@ -561,96 +573,16 @@ pub fn new_call_credentials_provider(
     NO_CREDENTIALS.clone()
 }
 
-/// Environment for running credential helpers in.
-///
-/// PORT: the Java record lives in `lib/authandtls/credentialhelper`, which is not ported; this
-/// is the record itself, for the fields `GoogleAuthUtils` reads.
-// Java: com/google/devtools/build/lib/authandtls/credentialhelper/CredentialHelperEnvironment.java:39 CredentialHelperEnvironment
-pub struct CredentialHelperEnvironment<'a> {
-    /// The reporter for reporting events related to credential helpers.
-    pub event_reporter: &'a dyn EventHandler,
-    /// The absolute path to the workspace, or `None` if Bazel was invoked outside a workspace.
-    pub workspace_path: Option<Path>,
-    /// The environment from the Bazel client.
-    pub client_environment: IndexMap<String, String>,
-    /// The execution timeout for the helper subprocess.
-    pub helper_execution_timeout: Duration,
-}
-
-/// A provider for credential helpers.
-///
-/// PORT: only the provider without helpers exists: [`new_credential_helper_provider`] cannot
-/// resolve the path of a helper (`CommandLinePathFactory` is not ported) and there is no
-/// credential helper runner (`CredentialHelper.getCredentials`), so a configured helper fails
-/// loudly where its path would be resolved.
-// Java: com/google/devtools/build/lib/authandtls/credentialhelper/CredentialHelperProvider.java:37 CredentialHelperProvider
-#[derive(Debug)]
-pub struct CredentialHelperProvider {
-    _no_helpers: (),
-}
-
-/// `CommandLinePathFactory.create(env, value)`.
-fn command_line_path_factory_create(helper: &CredentialHelperOption) -> ! {
-    blaze_util::unported!(
-        "CommandLinePathFactory.create (missing hook: blaze_runtime CommandLinePathFactory; CredentialHelper.getCredentials, the credential helper runner, is not ported either)",
-        "--credential_helper={}",
-        match &helper.scope {
-            Some(scope) => format!("{scope}={}", helper.path),
-            None => helper.path.clone(),
-        }
-    )
-}
-
-/// `GoogleAuthUtils.newCredentialHelperProvider(environment, pathFactory, helpers)`.
-///
-/// PORT: the `CommandLinePathFactory` parameter is absent (see [`CredentialHelperProvider`]).
-// Java: com/google/devtools/build/lib/authandtls/GoogleAuthUtils.java:416 GoogleAuthUtils.newCredentialHelperProvider
-pub fn new_credential_helper_provider(
-    _environment: &CredentialHelperEnvironment<'_>,
-    helpers: &[CredentialHelperOption],
-) -> io::Result<CredentialHelperProvider> {
-    // CredentialHelperProvider.Builder builder = CredentialHelperProvider.builder();
-    if let Some(helper) = helpers.first() {
-        // Path path = pathFactory.create(environment.clientEnvironment(), helper.path());
-        command_line_path_factory_create(helper);
-    }
-    Ok(CredentialHelperProvider { _no_helpers: () })
-}
-
-/// Implementation of [`Credentials`] which fetches credentials by invoking a credential helper
-/// as subprocess, falling back to another [`Credentials`] if no suitable helper exists.
-///
-/// PORT: the provider never has a helper (see [`CredentialHelperProvider`]), so the credential
-/// cache (`Cache<URI, GetCredentialsResponse>`) would stay empty and is not kept.
-// Java: com/google/devtools/build/lib/authandtls/credentialhelper/CredentialHelperCredentials.java:33 CredentialHelperCredentials
-struct CredentialHelperCredentials {
-    _credential_helper_provider: CredentialHelperProvider,
-    fallback_credentials: Option<Arc<dyn Credentials>>,
-}
-
-impl blaze_repo_fetch::authandtls::Credentials for CredentialHelperCredentials {
-    // Java: com/google/devtools/build/lib/authandtls/credentialhelper/CredentialHelperCredentials.java:60 CredentialHelperCredentials.getRequestMetadata
-    fn get_request_metadata(&self, uri: &JavaUri) -> Result<Headers, IoException> {
-        // response = credentialCache.get(uri, this::getCredentialsFromHelper);
-        // `credentialHelperProvider.findCredentialHelper(uri)` is empty, so `response` is null.
-
-        if let Some(fallback_credentials) = &self.fallback_credentials {
-            return fallback_credentials.get_request_metadata(uri);
-        }
-
-        Ok(Headers::new())
-    }
-}
+/// The credentials `newCredentials` returns: the credential helpers, falling back to the Google
+/// or `.netrc` credentials.
+type CredentialHelperCredentials = credentialhelper::CredentialHelperCredentials<dyn Credentials>;
 
 impl Credentials for CredentialHelperCredentials {
     // Java: com/google/devtools/build/lib/authandtls/credentialhelper/CredentialHelperCredentials.java:114 CredentialHelperCredentials.refresh
     fn refresh(&self) -> io::Result<()> {
-        if let Some(fallback_credentials) = &self.fallback_credentials {
-            fallback_credentials.refresh()?;
-        }
-
-        // credentialCache.invalidateAll(): nothing is cached.
-        Ok(())
+        credentialhelper::CredentialHelperCredentials::refresh(self, |fallback_credentials| {
+            fallback_credentials.refresh()
+        })
     }
 }
 
@@ -662,12 +594,11 @@ impl Credentials for CredentialHelperCredentials {
 /// 3. Use `.netrc` to provide credentials if exists.
 ///
 /// Fails in case the credentials can't be constructed.
-///
-/// PORT: the `credentialCache` and `commandLinePathFactory` parameters are absent (see
-/// [`CredentialHelperProvider`]).
 // Java: com/google/devtools/build/lib/authandtls/GoogleAuthUtils.java:294 GoogleAuthUtils.newCredentials
 pub fn new_credentials(
-    credential_helper_environment: &CredentialHelperEnvironment<'_>,
+    credential_helper_environment: &CredentialHelperEnvironment,
+    credential_cache: &Arc<CredentialCache>,
+    command_line_path_factory: &CommandLinePathFactory,
     file_system: &FileSystemRef,
     auth_and_tls_options: &AuthAndTLSOptions,
 ) -> io::Result<Arc<dyn Credentials>> {
@@ -676,26 +607,32 @@ pub fn new_credentials(
     if fallback_credentials.is_none() {
         // Fallback to .netrc if it exists.
         match new_credentials_from_netrc(
-            &credential_helper_environment.client_environment,
+            credential_helper_environment.client_environment(),
             file_system,
         ) {
             Ok(credentials) => fallback_credentials = credentials,
             Err(e) => {
                 // TODO(yannic): Make this fail the build.
                 credential_helper_environment
-                    .event_reporter
+                    .event_reporter()
                     .handle(&Event::warn(e.to_string()));
             }
         }
     }
 
-    Ok(Arc::new(CredentialHelperCredentials {
-        _credential_helper_provider: new_credential_helper_provider(
-            credential_helper_environment,
-            &auth_and_tls_options.credential_helpers,
-        )?,
+    let credential_helper_provider = new_credential_helper_provider(
+        credential_helper_environment,
+        command_line_path_factory,
+        &auth_and_tls_options.credential_helpers,
+    )
+    .map_err(IoException::into_io_error)?;
+    let credentials: Arc<dyn Credentials> = Arc::new(CredentialHelperCredentials::new(
+        Arc::new(credential_helper_provider),
+        credential_helper_environment.clone(),
+        credential_cache.clone(),
         fallback_credentials,
-    }))
+    ));
+    Ok(credentials)
 }
 
 /// Create a new [`Credentials`] object from the authentication flags, or `None` if no flags are

@@ -451,4 +451,11 @@ impl SpawnExecutionContext for SpawnExecutionContextImpl<'_> {
     fn get_client_env(&self) -> &IndexMap<String, String> {
         self.action_execution_context.get_client_env()
     }
+
+    // Java: com/google/devtools/build/lib/exec/AbstractSpawnStrategy.java:309 SpawnExecutionContextImpl.getContext
+    fn get_remote_local_fallback_registry(
+        &self,
+    ) -> Option<Arc<crate::exec::spawn_strategy_registry::SpawnStrategyRegistry>> {
+        self.action_execution_context.get_spawn_strategy_registry()
+    }
 }

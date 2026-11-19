@@ -71,13 +71,11 @@ impl TemplateExpansionContext for LocalTemplateExpansionStrategy {
         ctx: &dyn ActionExecutionContext,
         template_metadata: &TemplateExpansionContextTemplateMetadata,
     ) -> Result<Vec<SpawnResult>, ExpandTemplateError> {
-        // PORT: Java passes `ctx.getPathResolver()`; without an action file system it is the
-        // identity resolver (`Artifact.getPath()`), which is what `Template::get_content` reads.
-        if ctx.get_action_file_system().is_some() {
-            blaze_util::unported!(
-                "LocalTemplateExpansionStrategy.expandTemplate (action file system)"
-            );
-        }
+        // PORT: Java passes `ctx.getPathResolver()`; `Template::get_content` reads
+        // `Artifact.getPath()` (the identity resolver). The only action file system Blaze has
+        // (blaze_sky_exec's RemoteActionFileSystem view, with --remote_download_outputs=all)
+        // reads every file that is not an in-memory output from the local file system, and a
+        // template is never an in-memory output, so both resolvers read the same bytes.
         let expanded_template = match get_expanded_template_unsafe(
             &template_metadata.template,
             &template_metadata.substitutions,
