@@ -1,0 +1,1288 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/work/blaze-before-errors
+# sha256 0ac2a4c8cda23a716bf35c55afe064eca1929ba3d0fc8d46a41ffb7c1028af05
+# tree 29f7510760145242aa5d13f9a82cd2674b6e4aba (dirty)
+# date 2026-11-19T14:03:59
+=== 1: run build //:dep_bad_package
+exit 1
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Traceback (most recent call last):
+	File "<WS>/badpkg/BUILD.bazel", line 5, column 5, in <toplevel>
+		fail("badpkg does not load")
+Error in fail: badpkg does not load
+ERROR: <WS>/BUILD.bazel:7:2: Target '//badpkg:x' contains an error and its package is in error and referenced by '//:dep_bad_package'
+ERROR: Analysis of target '//:dep_bad_package' failed; build aborted: Analysis failed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 2: run build //:dep_bad_package //:good --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Traceback (most recent call last):
+	File "<WS>/badpkg/BUILD.bazel", line 5, column 5, in <toplevel>
+		fail("badpkg does not load")
+Error in fail: badpkg does not load
+ERROR: <WS>/BUILD.bazel:7:2: Target '//badpkg:x' contains an error and its package is in error and referenced by '//:dep_bad_package'
+WARNING: errors encountered while analyzing target '//:dep_bad_package', it will not be built.
+Analysis failed
+INFO: Analyzed 2 targets (6 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+INFO: Build succeeded for only 1 of 2 top-level targets
+Target //:good up-to-date:
+  bazel-bin/good.txt
+ERROR: command succeeded, but there were loading phase errors
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 2 internal.
+ERROR: Build did NOT complete successfully
+=== 3: run cquery //:dep_bad_package
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Traceback (most recent call last):
+	File "<WS>/badpkg/BUILD.bazel", line 5, column 5, in <toplevel>
+		fail("badpkg does not load")
+Error in fail: badpkg does not load
+ERROR: <WS>/BUILD.bazel:7:2: Target '//badpkg:x' contains an error and its package is in error and referenced by '//:dep_bad_package'
+ERROR: Analysis of target '//:dep_bad_package' failed; build aborted: Analysis failed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 4: run cquery "//:dep_bad_package + //:good" --keep_going
+exit 1
+--- stdout
+//:good (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Traceback (most recent call last):
+	File "<WS>/badpkg/BUILD.bazel", line 5, column 5, in <toplevel>
+		fail("badpkg does not load")
+Error in fail: badpkg does not load
+ERROR: <WS>/BUILD.bazel:7:2: Target '//badpkg:x' contains an error and its package is in error and referenced by '//:dep_bad_package'
+WARNING: errors encountered while analyzing target '//:dep_bad_package', it will not be built.
+Analysis failed
+INFO: Analysis succeeded for only 1 of 2 top-level targets
+INFO: Analyzed 2 targets (6 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+ERROR: command succeeded, but there were loading phase errors
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 5: run aquery //:dep_bad_package --output=jsonproto
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Traceback (most recent call last):
+	File "<WS>/badpkg/BUILD.bazel", line 5, column 5, in <toplevel>
+		fail("badpkg does not load")
+Error in fail: badpkg does not load
+ERROR: <WS>/BUILD.bazel:7:2: Target '//badpkg:x' contains an error and its package is in error and referenced by '//:dep_bad_package'
+ERROR: Analysis of target '//:dep_bad_package' failed; build aborted: Analysis failed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 6: run aquery "//:dep_bad_package + //:good" --keep_going --output=jsonproto --noinclude_artifacts --noinclude_commandline
+exit 1
+--- stdout
+{
+  "actions": [
+    {
+      "targetId": 1,
+      "actionKey": "a2b05bf6f8608b9f2e5859dbba1b40713a634237a3fef30c007f315512220834",
+      "mnemonic": "FileWrite",
+      "configurationId": 1,
+      "executionPlatform": "@@platforms//host:host"
+    }
+  ],
+  "targets": [
+    {
+      "id": 1,
+      "label": "//:good",
+      "ruleClassId": 1
+    }
+  ],
+  "configuration": [
+    {
+      "id": 1,
+      "mnemonic": "k8-fastbuild",
+      "platformName": "k8",
+      "checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18"
+    }
+  ],
+  "ruleClasses": [
+    {
+      "id": 1,
+      "name": "w"
+    }
+  ]
+}
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Traceback (most recent call last):
+	File "<WS>/badpkg/BUILD.bazel", line 5, column 5, in <toplevel>
+		fail("badpkg does not load")
+Error in fail: badpkg does not load
+ERROR: <WS>/BUILD.bazel:7:2: Target '//badpkg:x' contains an error and its package is in error and referenced by '//:dep_bad_package'
+WARNING: errors encountered while analyzing target '//:dep_bad_package', it will not be built.
+Analysis failed
+INFO: Analysis succeeded for only 1 of 2 top-level targets
+INFO: Analyzed 2 targets (6 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+ERROR: command succeeded, but there were loading phase errors
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 7: run build //:dep_missing_target
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/ok/BUILD.bazel: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel
+ERROR: <WS>/BUILD.bazel:13:2: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel and referenced by '//:dep_missing_target'
+ERROR: Analysis of target '//:dep_missing_target' failed; build aborted: Analysis failed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 8: run build //:dep_missing_target //:good --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/ok/BUILD.bazel: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel
+ERROR: <WS>/BUILD.bazel:13:2: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel and referenced by '//:dep_missing_target'
+WARNING: errors encountered while analyzing target '//:dep_missing_target', it will not be built.
+Analysis failed
+INFO: Analyzed 2 targets (6 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+INFO: Build succeeded for only 1 of 2 top-level targets
+Target //:good up-to-date:
+  bazel-bin/good.txt
+ERROR: command succeeded, but there were loading phase errors
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+ERROR: Build did NOT complete successfully
+=== 9: run cquery //:dep_missing_target
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/ok/BUILD.bazel: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel
+ERROR: <WS>/BUILD.bazel:13:2: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel and referenced by '//:dep_missing_target'
+ERROR: Analysis of target '//:dep_missing_target' failed; build aborted: Analysis failed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 10: run cquery "//:dep_missing_target + //:good" --keep_going
+exit 1
+--- stdout
+//:good (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/ok/BUILD.bazel: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel
+ERROR: <WS>/BUILD.bazel:13:2: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel and referenced by '//:dep_missing_target'
+WARNING: errors encountered while analyzing target '//:dep_missing_target', it will not be built.
+Analysis failed
+INFO: Analysis succeeded for only 1 of 2 top-level targets
+INFO: Analyzed 2 targets (6 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+ERROR: command succeeded, but there were loading phase errors
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 11: run aquery //:dep_missing_target --output=jsonproto
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/ok/BUILD.bazel: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel
+ERROR: <WS>/BUILD.bazel:13:2: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel and referenced by '//:dep_missing_target'
+ERROR: Analysis of target '//:dep_missing_target' failed; build aborted: Analysis failed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 12: run aquery "//:dep_missing_target + //:good" --keep_going --output=jsonproto --noinclude_artifacts --noinclude_commandline
+exit 1
+--- stdout
+{
+  "actions": [
+    {
+      "targetId": 1,
+      "actionKey": "a2b05bf6f8608b9f2e5859dbba1b40713a634237a3fef30c007f315512220834",
+      "mnemonic": "FileWrite",
+      "configurationId": 1,
+      "executionPlatform": "@@platforms//host:host"
+    }
+  ],
+  "targets": [
+    {
+      "id": 1,
+      "label": "//:good",
+      "ruleClassId": 1
+    }
+  ],
+  "configuration": [
+    {
+      "id": 1,
+      "mnemonic": "k8-fastbuild",
+      "platformName": "k8",
+      "checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18"
+    }
+  ],
+  "ruleClasses": [
+    {
+      "id": 1,
+      "name": "w"
+    }
+  ]
+}
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/ok/BUILD.bazel: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel
+ERROR: <WS>/BUILD.bazel:13:2: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel and referenced by '//:dep_missing_target'
+WARNING: errors encountered while analyzing target '//:dep_missing_target', it will not be built.
+Analysis failed
+INFO: Analysis succeeded for only 1 of 2 top-level targets
+INFO: Analyzed 2 targets (6 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+ERROR: command succeeded, but there were loading phase errors
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 13: run build //:dep_missing_package
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ - nosuchpkg
+ERROR: <WS>/BUILD.bazel:19:2: no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ - nosuchpkg and referenced by '//:dep_missing_package'
+ERROR: Analysis of target '//:dep_missing_package' failed; build aborted: Analysis failed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 14: run build //:dep_missing_package //:good --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ - nosuchpkg
+ERROR: <WS>/BUILD.bazel:19:2: no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ - nosuchpkg and referenced by '//:dep_missing_package'
+WARNING: errors encountered while analyzing target '//:dep_missing_package', it will not be built.
+Analysis failed
+INFO: Analyzed 2 targets (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+INFO: Build succeeded for only 1 of 2 top-level targets
+Target //:good up-to-date:
+  bazel-bin/good.txt
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+ERROR: Build did NOT complete successfully
+=== 15: run cquery //:dep_missing_package
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ - nosuchpkg
+ERROR: <WS>/BUILD.bazel:19:2: no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ - nosuchpkg and referenced by '//:dep_missing_package'
+ERROR: Analysis of target '//:dep_missing_package' failed; build aborted: Analysis failed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 16: run cquery "//:dep_missing_package + //:good" --keep_going
+exit 1
+--- stdout
+//:good (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ - nosuchpkg
+ERROR: <WS>/BUILD.bazel:19:2: no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ - nosuchpkg and referenced by '//:dep_missing_package'
+WARNING: errors encountered while analyzing target '//:dep_missing_package', it will not be built.
+Analysis failed
+INFO: Analysis succeeded for only 1 of 2 top-level targets
+INFO: Analyzed 2 targets (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 17: run aquery //:dep_missing_package --output=jsonproto
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ - nosuchpkg
+ERROR: <WS>/BUILD.bazel:19:2: no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ - nosuchpkg and referenced by '//:dep_missing_package'
+ERROR: Analysis of target '//:dep_missing_package' failed; build aborted: Analysis failed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 18: run aquery "//:dep_missing_package + //:good" --keep_going --output=jsonproto --noinclude_artifacts --noinclude_commandline
+exit 1
+--- stdout
+{
+  "actions": [
+    {
+      "targetId": 1,
+      "actionKey": "a2b05bf6f8608b9f2e5859dbba1b40713a634237a3fef30c007f315512220834",
+      "mnemonic": "FileWrite",
+      "configurationId": 1,
+      "executionPlatform": "@@platforms//host:host"
+    }
+  ],
+  "targets": [
+    {
+      "id": 1,
+      "label": "//:good",
+      "ruleClassId": 1
+    }
+  ],
+  "configuration": [
+    {
+      "id": 1,
+      "mnemonic": "k8-fastbuild",
+      "platformName": "k8",
+      "checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18"
+    }
+  ],
+  "ruleClasses": [
+    {
+      "id": 1,
+      "name": "w"
+    }
+  ]
+}
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ - nosuchpkg
+ERROR: <WS>/BUILD.bazel:19:2: no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ - nosuchpkg and referenced by '//:dep_missing_package'
+WARNING: errors encountered while analyzing target '//:dep_missing_package', it will not be built.
+Analysis failed
+INFO: Analysis succeeded for only 1 of 2 top-level targets
+INFO: Analyzed 2 targets (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 19: run build //:dep_not_visible
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:25:2: in w rule //:dep_not_visible: Visibility error:
+target '//vis:private' is not visible from
+target '//:dep_not_visible'
+Recommendation: modify the visibility declaration if you think the dependency is legitimate. For more info see https://bazel.build/concepts/visibility
+ERROR: <WS>/BUILD.bazel:25:2: Analysis of target '//:dep_not_visible' (config: a7a71fd) failed
+ERROR: Analysis of target '//:dep_not_visible' failed; build aborted
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 20: run build //:dep_not_visible //:good --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:25:2: in w rule //:dep_not_visible: Visibility error:
+target '//vis:private' is not visible from
+target '//:dep_not_visible'
+Recommendation: modify the visibility declaration if you think the dependency is legitimate. For more info see https://bazel.build/concepts/visibility
+ERROR: <WS>/BUILD.bazel:25:2: Analysis of target '//:dep_not_visible' (config: a7a71fd) failed
+WARNING: errors encountered while analyzing target '//:dep_not_visible', it will not be built.
+INFO: Analyzed 2 targets (6 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+INFO: Build succeeded for only 1 of 2 top-level targets
+Target //:good up-to-date:
+  bazel-bin/good.txt
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+ERROR: Build did NOT complete successfully
+=== 21: run cquery //:dep_not_visible
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:25:2: in w rule //:dep_not_visible: Visibility error:
+target '//vis:private' is not visible from
+target '//:dep_not_visible'
+Recommendation: modify the visibility declaration if you think the dependency is legitimate. For more info see https://bazel.build/concepts/visibility
+ERROR: <WS>/BUILD.bazel:25:2: Analysis of target '//:dep_not_visible' (config: a7a71fd) failed
+ERROR: Analysis of target '//:dep_not_visible' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 22: run cquery "//:dep_not_visible + //:good" --keep_going
+exit 1
+--- stdout
+//:good (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:25:2: in w rule //:dep_not_visible: Visibility error:
+target '//vis:private' is not visible from
+target '//:dep_not_visible'
+Recommendation: modify the visibility declaration if you think the dependency is legitimate. For more info see https://bazel.build/concepts/visibility
+ERROR: <WS>/BUILD.bazel:25:2: Analysis of target '//:dep_not_visible' (config: a7a71fd) failed
+WARNING: errors encountered while analyzing target '//:dep_not_visible', it will not be built.
+INFO: Analysis succeeded for only 1 of 2 top-level targets
+INFO: Analyzed 2 targets (6 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 23: run aquery //:dep_not_visible --output=jsonproto
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:25:2: in w rule //:dep_not_visible: Visibility error:
+target '//vis:private' is not visible from
+target '//:dep_not_visible'
+Recommendation: modify the visibility declaration if you think the dependency is legitimate. For more info see https://bazel.build/concepts/visibility
+ERROR: <WS>/BUILD.bazel:25:2: Analysis of target '//:dep_not_visible' (config: a7a71fd) failed
+ERROR: Analysis of target '//:dep_not_visible' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 24: run aquery "//:dep_not_visible + //:good" --keep_going --output=jsonproto --noinclude_artifacts --noinclude_commandline
+exit 1
+--- stdout
+{
+  "actions": [
+    {
+      "targetId": 1,
+      "actionKey": "a2b05bf6f8608b9f2e5859dbba1b40713a634237a3fef30c007f315512220834",
+      "mnemonic": "FileWrite",
+      "configurationId": 1,
+      "executionPlatform": "@@platforms//host:host"
+    }
+  ],
+  "targets": [
+    {
+      "id": 1,
+      "label": "//:good",
+      "ruleClassId": 1
+    }
+  ],
+  "configuration": [
+    {
+      "id": 1,
+      "mnemonic": "k8-fastbuild",
+      "platformName": "k8",
+      "checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18"
+    }
+  ],
+  "ruleClasses": [
+    {
+      "id": 1,
+      "name": "w"
+    }
+  ]
+}
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:25:2: in w rule //:dep_not_visible: Visibility error:
+target '//vis:private' is not visible from
+target '//:dep_not_visible'
+Recommendation: modify the visibility declaration if you think the dependency is legitimate. For more info see https://bazel.build/concepts/visibility
+ERROR: <WS>/BUILD.bazel:25:2: Analysis of target '//:dep_not_visible' (config: a7a71fd) failed
+WARNING: errors encountered while analyzing target '//:dep_not_visible', it will not be built.
+INFO: Analysis succeeded for only 1 of 2 top-level targets
+INFO: Analyzed 2 targets (6 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 25: run build //:dep_cycle
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/cyc/BUILD.bazel:5:2: in w rule //cyc:a: cycle in dependency graph:
+    //:dep_cycle (e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a)
+    //:dep_cycle (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+.-> //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:b (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:c (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+`-- //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+ERROR: Analysis of target '//:dep_cycle' failed; build aborted
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 26: run build //:dep_cycle //:good --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/cyc/BUILD.bazel:5:2: in w rule //cyc:a: cycle in dependency graph:
+    //:dep_cycle (e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a)
+    //:dep_cycle (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+.-> //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:b (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:c (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+`-- //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+WARNING: errors encountered while analyzing target '//:dep_cycle', it will not be built.
+INFO: Analyzed 2 targets (6 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+INFO: Build succeeded for only 1 of 2 top-level targets
+Target //:good up-to-date:
+  bazel-bin/good.txt
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+ERROR: Build did NOT complete successfully
+=== 27: run cquery //:dep_cycle
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/cyc/BUILD.bazel:5:2: in w rule //cyc:a: cycle in dependency graph:
+    //:dep_cycle (e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a)
+    //:dep_cycle (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+.-> //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:b (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:c (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+`-- //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+ERROR: Analysis of target '//:dep_cycle' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 28: run cquery "//:dep_cycle + //:good" --keep_going
+exit 1
+--- stdout
+//:good (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/cyc/BUILD.bazel:5:2: in w rule //cyc:a: cycle in dependency graph:
+    //:dep_cycle (e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a)
+    //:dep_cycle (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+.-> //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:b (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:c (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+`-- //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+WARNING: errors encountered while analyzing target '//:dep_cycle', it will not be built.
+INFO: Analysis succeeded for only 1 of 2 top-level targets
+INFO: Analyzed 2 targets (6 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 29: run aquery //:dep_cycle --output=jsonproto
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/cyc/BUILD.bazel:5:2: in w rule //cyc:a: cycle in dependency graph:
+    //:dep_cycle (e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a)
+    //:dep_cycle (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+.-> //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:b (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:c (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+`-- //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+ERROR: Analysis of target '//:dep_cycle' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 30: run aquery "//:dep_cycle + //:good" --keep_going --output=jsonproto --noinclude_artifacts --noinclude_commandline
+exit 1
+--- stdout
+{
+  "actions": [
+    {
+      "targetId": 1,
+      "actionKey": "a2b05bf6f8608b9f2e5859dbba1b40713a634237a3fef30c007f315512220834",
+      "mnemonic": "FileWrite",
+      "configurationId": 1,
+      "executionPlatform": "@@platforms//host:host"
+    }
+  ],
+  "targets": [
+    {
+      "id": 1,
+      "label": "//:good",
+      "ruleClassId": 1
+    }
+  ],
+  "configuration": [
+    {
+      "id": 1,
+      "mnemonic": "k8-fastbuild",
+      "platformName": "k8",
+      "checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18"
+    }
+  ],
+  "ruleClasses": [
+    {
+      "id": 1,
+      "name": "w"
+    }
+  ]
+}
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/cyc/BUILD.bazel:5:2: in w rule //cyc:a: cycle in dependency graph:
+    //:dep_cycle (e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a)
+    //:dep_cycle (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+.-> //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:b (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:c (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+`-- //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+WARNING: errors encountered while analyzing target '//:dep_cycle', it will not be built.
+INFO: Analysis succeeded for only 1 of 2 top-level targets
+INFO: Analyzed 2 targets (6 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 31: run build //:self_cycle
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:37:2: in w rule //:self_cycle: cycle in dependency graph:
+    //:self_cycle (e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a)
+.-> //:self_cycle (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18) [self-edge]
+`--
+ERROR: Analysis of target '//:self_cycle' failed; build aborted
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 32: run build //:self_cycle //:good --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:37:2: in w rule //:self_cycle: cycle in dependency graph:
+    //:self_cycle (e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a)
+.-> //:self_cycle (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18) [self-edge]
+`--
+WARNING: errors encountered while analyzing target '//:self_cycle', it will not be built.
+INFO: Analyzed 2 targets (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+INFO: Build succeeded for only 1 of 2 top-level targets
+Target //:good up-to-date:
+  bazel-bin/good.txt
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+ERROR: Build did NOT complete successfully
+=== 33: run cquery //:self_cycle
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:37:2: in w rule //:self_cycle: cycle in dependency graph:
+    //:self_cycle (e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a)
+.-> //:self_cycle (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18) [self-edge]
+`--
+ERROR: Analysis of target '//:self_cycle' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 34: run build //cyc:a
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/cyc/BUILD.bazel:5:2: in w rule //cyc:a: cycle in dependency graph:
+    //cyc:a (e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a)
+.-> //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:b (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:c (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+`-- //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+ERROR: Analysis of target '//cyc:a' failed; build aborted
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 35: run build //cyc:a //:good --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/cyc/BUILD.bazel:5:2: in w rule //cyc:a: cycle in dependency graph:
+    //cyc:a (e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a)
+.-> //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:b (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:c (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+`-- //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+WARNING: errors encountered while analyzing target '//cyc:a', it will not be built.
+INFO: Analyzed 2 targets (6 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+INFO: Build succeeded for only 1 of 2 top-level targets
+Target //:good up-to-date:
+  bazel-bin/good.txt
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+ERROR: Build did NOT complete successfully
+=== 36: run build //:impl_fails
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:43:6: in fails rule //:impl_fails:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 14, column 9, in _fails_impl
+		fail("boom from " + ctx.label.name)
+Error in fail: boom from impl_fails
+ERROR: <WS>/BUILD.bazel:43:6: Analysis of target '//:impl_fails' (config: a7a71fd) failed
+ERROR: Analysis of target '//:impl_fails' failed; build aborted
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 37: run build //:impl_fails //:good --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:43:6: in fails rule //:impl_fails:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 14, column 9, in _fails_impl
+		fail("boom from " + ctx.label.name)
+Error in fail: boom from impl_fails
+ERROR: <WS>/BUILD.bazel:43:6: Analysis of target '//:impl_fails' (config: a7a71fd) failed
+WARNING: errors encountered while analyzing target '//:impl_fails', it will not be built.
+INFO: Analyzed 2 targets (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+INFO: Build succeeded for only 1 of 2 top-level targets
+Target //:good up-to-date:
+  bazel-bin/good.txt
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+ERROR: Build did NOT complete successfully
+=== 38: run cquery //:impl_fails
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:43:6: in fails rule //:impl_fails:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 14, column 9, in _fails_impl
+		fail("boom from " + ctx.label.name)
+Error in fail: boom from impl_fails
+ERROR: <WS>/BUILD.bazel:43:6: Analysis of target '//:impl_fails' (config: a7a71fd) failed
+ERROR: Analysis of target '//:impl_fails' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 39: run cquery "//:impl_fails + //:good" --keep_going
+exit 1
+--- stdout
+//:good (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:43:6: in fails rule //:impl_fails:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 14, column 9, in _fails_impl
+		fail("boom from " + ctx.label.name)
+Error in fail: boom from impl_fails
+ERROR: <WS>/BUILD.bazel:43:6: Analysis of target '//:impl_fails' (config: a7a71fd) failed
+WARNING: errors encountered while analyzing target '//:impl_fails', it will not be built.
+INFO: Analysis succeeded for only 1 of 2 top-level targets
+INFO: Analyzed 2 targets (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 40: run aquery //:impl_fails --output=jsonproto
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:43:6: in fails rule //:impl_fails:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 14, column 9, in _fails_impl
+		fail("boom from " + ctx.label.name)
+Error in fail: boom from impl_fails
+ERROR: <WS>/BUILD.bazel:43:6: Analysis of target '//:impl_fails' (config: a7a71fd) failed
+ERROR: Analysis of target '//:impl_fails' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 41: run aquery "//:impl_fails + //:good" --keep_going --output=jsonproto --noinclude_artifacts --noinclude_commandline
+exit 1
+--- stdout
+{
+  "actions": [
+    {
+      "targetId": 1,
+      "actionKey": "a2b05bf6f8608b9f2e5859dbba1b40713a634237a3fef30c007f315512220834",
+      "mnemonic": "FileWrite",
+      "configurationId": 1,
+      "executionPlatform": "@@platforms//host:host"
+    }
+  ],
+  "targets": [
+    {
+      "id": 1,
+      "label": "//:good",
+      "ruleClassId": 1
+    }
+  ],
+  "configuration": [
+    {
+      "id": 1,
+      "mnemonic": "k8-fastbuild",
+      "platformName": "k8",
+      "checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18"
+    }
+  ],
+  "ruleClasses": [
+    {
+      "id": 1,
+      "name": "w"
+    }
+  ]
+}
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:43:6: in fails rule //:impl_fails:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 14, column 9, in _fails_impl
+		fail("boom from " + ctx.label.name)
+Error in fail: boom from impl_fails
+ERROR: <WS>/BUILD.bazel:43:6: Analysis of target '//:impl_fails' (config: a7a71fd) failed
+WARNING: errors encountered while analyzing target '//:impl_fails', it will not be built.
+INFO: Analysis succeeded for only 1 of 2 top-level targets
+INFO: Analyzed 2 targets (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 42: run build //:dep_impl_fails
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:43:6: in fails rule //:impl_fails:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 14, column 9, in _fails_impl
+		fail("boom from " + ctx.label.name)
+Error in fail: boom from impl_fails
+ERROR: <WS>/BUILD.bazel:43:6: Analysis of target '//:impl_fails' (config: a7a71fd) failed
+ERROR: Analysis of target '//:dep_impl_fails' failed; build aborted: Analysis failed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 43: run build //:dep_impl_fails //:good --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:43:6: in fails rule //:impl_fails:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 14, column 9, in _fails_impl
+		fail("boom from " + ctx.label.name)
+Error in fail: boom from impl_fails
+ERROR: <WS>/BUILD.bazel:43:6: Analysis of target '//:impl_fails' (config: a7a71fd) failed
+WARNING: errors encountered while analyzing target '//:dep_impl_fails', it will not be built.
+Analysis failed
+INFO: Analyzed 2 targets (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+INFO: Build succeeded for only 1 of 2 top-level targets
+Target //:good up-to-date:
+  bazel-bin/good.txt
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+ERROR: Build did NOT complete successfully
+=== 44: run cquery //:dep_impl_fails
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:43:6: in fails rule //:impl_fails:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 14, column 9, in _fails_impl
+		fail("boom from " + ctx.label.name)
+Error in fail: boom from impl_fails
+ERROR: <WS>/BUILD.bazel:43:6: Analysis of target '//:impl_fails' (config: a7a71fd) failed
+ERROR: Analysis of target '//:dep_impl_fails' failed; build aborted: Analysis failed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 45: run build //:dep_dep_impl_fails
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:43:6: in fails rule //:impl_fails:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 14, column 9, in _fails_impl
+		fail("boom from " + ctx.label.name)
+Error in fail: boom from impl_fails
+ERROR: <WS>/BUILD.bazel:43:6: Analysis of target '//:impl_fails' (config: a7a71fd) failed
+ERROR: Analysis of target '//:dep_dep_impl_fails' failed; build aborted: Analysis failed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 46: run build //:dep_dep_impl_fails //:good --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:43:6: in fails rule //:impl_fails:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 14, column 9, in _fails_impl
+		fail("boom from " + ctx.label.name)
+Error in fail: boom from impl_fails
+ERROR: <WS>/BUILD.bazel:43:6: Analysis of target '//:impl_fails' (config: a7a71fd) failed
+WARNING: errors encountered while analyzing target '//:dep_dep_impl_fails', it will not be built.
+Analysis failed
+INFO: Analyzed 2 targets (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+INFO: Build succeeded for only 1 of 2 top-level targets
+Target //:good up-to-date:
+  bazel-bin/good.txt
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+ERROR: Build did NOT complete successfully
+=== 47: run cquery "//:dep_dep_impl_fails + //:good" --keep_going
+exit 1
+--- stdout
+//:good (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:43:6: in fails rule //:impl_fails:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 14, column 9, in _fails_impl
+		fail("boom from " + ctx.label.name)
+Error in fail: boom from impl_fails
+ERROR: <WS>/BUILD.bazel:43:6: Analysis of target '//:impl_fails' (config: a7a71fd) failed
+WARNING: errors encountered while analyzing target '//:dep_dep_impl_fails', it will not be built.
+Analysis failed
+INFO: Analysis succeeded for only 1 of 2 top-level targets
+INFO: Analyzed 2 targets (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 48: run build //:attr_error
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:58:11: in src attribute of needs_file rule //:attr_error: source file '//:wrong.bin' is misplaced here (expected .txt)
+ERROR: <WS>/BUILD.bazel:58:11: in src attribute of needs_file rule //:attr_error: '//:wrong.bin' does not produce any needs_file src files (expected .txt)
+ERROR: <WS>/BUILD.bazel:58:11: Analysis of target '//:attr_error' (config: a7a71fd) failed
+ERROR: Analysis of target '//:attr_error' failed; build aborted
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 49: run build //:attr_error //:good --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:58:11: in src attribute of needs_file rule //:attr_error: source file '//:wrong.bin' is misplaced here (expected .txt)
+ERROR: <WS>/BUILD.bazel:58:11: in src attribute of needs_file rule //:attr_error: '//:wrong.bin' does not produce any needs_file src files (expected .txt)
+ERROR: <WS>/BUILD.bazel:58:11: Analysis of target '//:attr_error' (config: a7a71fd) failed
+WARNING: errors encountered while analyzing target '//:attr_error', it will not be built.
+INFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+INFO: Build succeeded for only 1 of 2 top-level targets
+Target //:good up-to-date:
+  bazel-bin/good.txt
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+ERROR: Build did NOT complete successfully
+=== 50: run cquery //:attr_error
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:58:11: in src attribute of needs_file rule //:attr_error: source file '//:wrong.bin' is misplaced here (expected .txt)
+ERROR: <WS>/BUILD.bazel:58:11: in src attribute of needs_file rule //:attr_error: '//:wrong.bin' does not produce any needs_file src files (expected .txt)
+ERROR: <WS>/BUILD.bazel:58:11: Analysis of target '//:attr_error' (config: a7a71fd) failed
+ERROR: Analysis of target '//:attr_error' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 51: run cquery "//:attr_error + //:good" --keep_going
+exit 1
+--- stdout
+//:good (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:58:11: in src attribute of needs_file rule //:attr_error: source file '//:wrong.bin' is misplaced here (expected .txt)
+ERROR: <WS>/BUILD.bazel:58:11: in src attribute of needs_file rule //:attr_error: '//:wrong.bin' does not produce any needs_file src files (expected .txt)
+ERROR: <WS>/BUILD.bazel:58:11: Analysis of target '//:attr_error' (config: a7a71fd) failed
+WARNING: errors encountered while analyzing target '//:attr_error', it will not be built.
+INFO: Analysis succeeded for only 1 of 2 top-level targets
+INFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 52: run aquery //:attr_error --output=jsonproto
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:58:11: in src attribute of needs_file rule //:attr_error: source file '//:wrong.bin' is misplaced here (expected .txt)
+ERROR: <WS>/BUILD.bazel:58:11: in src attribute of needs_file rule //:attr_error: '//:wrong.bin' does not produce any needs_file src files (expected .txt)
+ERROR: <WS>/BUILD.bazel:58:11: Analysis of target '//:attr_error' (config: a7a71fd) failed
+ERROR: Analysis of target '//:attr_error' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 53: run build //:impl_fails //:dep_not_visible //:dep_missing_target
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/ok/BUILD.bazel: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel
+ERROR: <WS>/BUILD.bazel:13:2: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel and referenced by '//:dep_missing_target'
+ERROR: Analysis of target '//:dep_missing_target' failed; build aborted: Analysis failed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 54: run build //:impl_fails //:dep_not_visible //:dep_missing_target //:dep_cycle //:good --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/ok/BUILD.bazel: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel
+ERROR: <WS>/BUILD.bazel:13:2: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel and referenced by '//:dep_missing_target'
+ERROR: <WS>/BUILD.bazel:43:6: in fails rule //:impl_fails:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 14, column 9, in _fails_impl
+		fail("boom from " + ctx.label.name)
+Error in fail: boom from impl_fails
+ERROR: <WS>/BUILD.bazel:43:6: Analysis of target '//:impl_fails' (config: a7a71fd) failed
+ERROR: <WS>/BUILD.bazel:25:2: in w rule //:dep_not_visible: Visibility error:
+target '//vis:private' is not visible from
+target '//:dep_not_visible'
+Recommendation: modify the visibility declaration if you think the dependency is legitimate. For more info see https://bazel.build/concepts/visibility
+ERROR: <WS>/BUILD.bazel:25:2: Analysis of target '//:dep_not_visible' (config: a7a71fd) failed
+WARNING: errors encountered while analyzing target '//:impl_fails', it will not be built.
+WARNING: errors encountered while analyzing target '//:dep_not_visible', it will not be built.
+WARNING: errors encountered while analyzing target '//:dep_missing_target', it will not be built.
+Analysis failed
+ERROR: <WS>/cyc/BUILD.bazel:5:2: in w rule //cyc:a: cycle in dependency graph:
+    //:dep_cycle (e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a)
+    //:dep_cycle (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+.-> //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:b (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:c (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+`-- //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+WARNING: errors encountered while analyzing target '//:dep_cycle', it will not be built.
+INFO: Analyzed 5 targets (8 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+INFO: Build succeeded for only 1 of 5 top-level targets
+Target //:good up-to-date:
+  bazel-bin/good.txt
+ERROR: command succeeded, but there were loading phase errors
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+ERROR: Build did NOT complete successfully
+=== 55: run cquery "//:impl_fails + //:dep_not_visible + //:dep_missing_target + //:dep_cycle + //:good" --keep_going
+exit 1
+--- stdout
+//:good (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:43:6: in fails rule //:impl_fails:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 14, column 9, in _fails_impl
+		fail("boom from " + ctx.label.name)
+Error in fail: boom from impl_fails
+ERROR: <WS>/BUILD.bazel:43:6: Analysis of target '//:impl_fails' (config: a7a71fd) failed
+ERROR: <WS>/BUILD.bazel:25:2: in w rule //:dep_not_visible: Visibility error:
+target '//vis:private' is not visible from
+target '//:dep_not_visible'
+Recommendation: modify the visibility declaration if you think the dependency is legitimate. For more info see https://bazel.build/concepts/visibility
+ERROR: <WS>/BUILD.bazel:25:2: Analysis of target '//:dep_not_visible' (config: a7a71fd) failed
+ERROR: <WS>/ok/BUILD.bazel: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel
+ERROR: <WS>/BUILD.bazel:13:2: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel and referenced by '//:dep_missing_target'
+WARNING: errors encountered while analyzing target '//:impl_fails', it will not be built.
+WARNING: errors encountered while analyzing target '//:dep_not_visible', it will not be built.
+WARNING: errors encountered while analyzing target '//:dep_missing_target', it will not be built.
+Analysis failed
+ERROR: <WS>/cyc/BUILD.bazel:5:2: in w rule //cyc:a: cycle in dependency graph:
+    //:dep_cycle (e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a)
+    //:dep_cycle (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+.-> //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:b (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:c (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+`-- //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+WARNING: errors encountered while analyzing target '//:dep_cycle', it will not be built.
+INFO: Analysis succeeded for only 1 of 5 top-level targets
+INFO: Analyzed 5 targets (8 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+ERROR: command succeeded, but there were loading phase errors
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 56: run build //:all --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:43:6: in fails rule //:impl_fails:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 14, column 9, in _fails_impl
+		fail("boom from " + ctx.label.name)
+Error in fail: boom from impl_fails
+ERROR: <WS>/BUILD.bazel:43:6: Analysis of target '//:impl_fails' (config: a7a71fd) failed
+ERROR: <WS>/BUILD.bazel:25:2: in w rule //:dep_not_visible: Visibility error:
+target '//vis:private' is not visible from
+target '//:dep_not_visible'
+Recommendation: modify the visibility declaration if you think the dependency is legitimate. For more info see https://bazel.build/concepts/visibility
+ERROR: <WS>/BUILD.bazel:25:2: Analysis of target '//:dep_not_visible' (config: a7a71fd) failed
+ERROR: no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ - nosuchpkg
+ERROR: <WS>/BUILD.bazel:19:2: no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ - nosuchpkg and referenced by '//:dep_missing_package'
+ERROR: <WS>/BUILD.bazel:58:11: in src attribute of needs_file rule //:attr_error: source file '//:wrong.bin' is misplaced here (expected .txt)
+ERROR: <WS>/BUILD.bazel:58:11: in src attribute of needs_file rule //:attr_error: '//:wrong.bin' does not produce any needs_file src files (expected .txt)
+ERROR: <WS>/BUILD.bazel:58:11: Analysis of target '//:attr_error' (config: a7a71fd) failed
+ERROR: Traceback (most recent call last):
+	File "<WS>/badpkg/BUILD.bazel", line 5, column 5, in <toplevel>
+		fail("badpkg does not load")
+Error in fail: badpkg does not load
+ERROR: <WS>/BUILD.bazel:7:2: Target '//badpkg:x' contains an error and its package is in error and referenced by '//:dep_bad_package'
+ERROR: <WS>/ok/BUILD.bazel: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel
+ERROR: <WS>/BUILD.bazel:13:2: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel and referenced by '//:dep_missing_target'
+WARNING: errors encountered while analyzing target '//:attr_error', it will not be built.
+WARNING: errors encountered while analyzing target '//:dep_bad_package', it will not be built.
+Analysis failed
+WARNING: errors encountered while analyzing target '//:dep_dep_impl_fails', it will not be built.
+Analysis failed
+WARNING: errors encountered while analyzing target '//:dep_impl_fails', it will not be built.
+Analysis failed
+WARNING: errors encountered while analyzing target '//:dep_missing_package', it will not be built.
+Analysis failed
+WARNING: errors encountered while analyzing target '//:dep_missing_target', it will not be built.
+Analysis failed
+WARNING: errors encountered while analyzing target '//:dep_not_visible', it will not be built.
+WARNING: errors encountered while analyzing target '//:impl_fails', it will not be built.
+ERROR: <WS>/cyc/BUILD.bazel:5:2: in w rule //cyc:a: cycle in dependency graph:
+    //:dep_cycle (e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a)
+    //:dep_cycle (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+.-> //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:b (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:c (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+`-- //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+WARNING: errors encountered while analyzing target '//:dep_cycle', it will not be built.
+ERROR: <WS>/BUILD.bazel:37:2: in w rule //:self_cycle: cycle in dependency graph:
+    //:self_cycle (e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a)
+.-> //:self_cycle (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18) [self-edge]
+`--
+WARNING: errors encountered while analyzing target '//:self_cycle', it will not be built.
+INFO: Analyzed 11 targets (9 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+INFO: Build succeeded for only 1 of 11 top-level targets
+Target //:good up-to-date:
+  bazel-bin/good.txt
+ERROR: command succeeded, but there were loading phase errors
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+ERROR: Build did NOT complete successfully
+=== 57: run cquery //:all --keep_going
+exit 1
+--- stdout
+//:good (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:43:6: in fails rule //:impl_fails:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 14, column 9, in _fails_impl
+		fail("boom from " + ctx.label.name)
+Error in fail: boom from impl_fails
+ERROR: <WS>/BUILD.bazel:43:6: Analysis of target '//:impl_fails' (config: a7a71fd) failed
+ERROR: <WS>/ok/BUILD.bazel: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel
+ERROR: <WS>/BUILD.bazel:13:2: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel and referenced by '//:dep_missing_target'
+ERROR: <WS>/BUILD.bazel:58:11: in src attribute of needs_file rule //:attr_error: source file '//:wrong.bin' is misplaced here (expected .txt)
+ERROR: <WS>/BUILD.bazel:58:11: in src attribute of needs_file rule //:attr_error: '//:wrong.bin' does not produce any needs_file src files (expected .txt)
+ERROR: <WS>/BUILD.bazel:58:11: Analysis of target '//:attr_error' (config: a7a71fd) failed
+ERROR: Traceback (most recent call last):
+	File "<WS>/badpkg/BUILD.bazel", line 5, column 5, in <toplevel>
+		fail("badpkg does not load")
+Error in fail: badpkg does not load
+ERROR: <WS>/BUILD.bazel:7:2: Target '//badpkg:x' contains an error and its package is in error and referenced by '//:dep_bad_package'
+ERROR: no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ - nosuchpkg
+ERROR: <WS>/BUILD.bazel:19:2: no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
+ - nosuchpkg and referenced by '//:dep_missing_package'
+ERROR: <WS>/BUILD.bazel:25:2: in w rule //:dep_not_visible: Visibility error:
+target '//vis:private' is not visible from
+target '//:dep_not_visible'
+Recommendation: modify the visibility declaration if you think the dependency is legitimate. For more info see https://bazel.build/concepts/visibility
+ERROR: <WS>/BUILD.bazel:25:2: Analysis of target '//:dep_not_visible' (config: a7a71fd) failed
+WARNING: errors encountered while analyzing target '//:attr_error', it will not be built.
+WARNING: errors encountered while analyzing target '//:dep_bad_package', it will not be built.
+Analysis failed
+WARNING: errors encountered while analyzing target '//:dep_dep_impl_fails', it will not be built.
+Analysis failed
+WARNING: errors encountered while analyzing target '//:dep_impl_fails', it will not be built.
+Analysis failed
+WARNING: errors encountered while analyzing target '//:dep_missing_package', it will not be built.
+Analysis failed
+WARNING: errors encountered while analyzing target '//:dep_missing_target', it will not be built.
+Analysis failed
+WARNING: errors encountered while analyzing target '//:dep_not_visible', it will not be built.
+WARNING: errors encountered while analyzing target '//:impl_fails', it will not be built.
+ERROR: <WS>/cyc/BUILD.bazel:5:2: in w rule //cyc:a: cycle in dependency graph:
+    //:dep_cycle (e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a)
+    //:dep_cycle (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+.-> //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:b (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+|   //cyc:c (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+`-- //cyc:a (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18)
+WARNING: errors encountered while analyzing target '//:dep_cycle', it will not be built.
+ERROR: <WS>/BUILD.bazel:37:2: in w rule //:self_cycle: cycle in dependency graph:
+    //:self_cycle (e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a)
+.-> //:self_cycle (a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18) [self-edge]
+`--
+WARNING: errors encountered while analyzing target '//:self_cycle', it will not be built.
+INFO: Analysis succeeded for only 1 of 11 top-level targets
+INFO: Analyzed 11 targets (9 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+ERROR: command succeeded, but there were loading phase errors
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 58: run build //:good
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:good (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:good up-to-date:
+  bazel-bin/good.txt
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 59: cat bazel-bin/good.txt
+good

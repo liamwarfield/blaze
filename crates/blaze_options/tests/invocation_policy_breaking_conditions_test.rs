@@ -17,12 +17,20 @@ fn test_flag_policy_does_not_apply() {
         .parse(&[&format!("--test_string={TEST_STRING_USER_VALUE}")])
         .unwrap();
 
-    assert_eq!(get_test_options(&parser).test_string, TEST_STRING_USER_VALUE);
+    assert_eq!(
+        get_test_options(&parser).test_string,
+        TEST_STRING_USER_VALUE
+    );
 
-    enforcer.enforce(&mut parser, "test", &mut Vec::new()).unwrap();
+    enforcer
+        .enforce(&mut parser, "test", &mut Vec::new())
+        .unwrap();
 
     // Still user value.
-    assert_eq!(get_test_options(&parser).test_string, TEST_STRING_USER_VALUE);
+    assert_eq!(
+        get_test_options(&parser).test_string,
+        TEST_STRING_USER_VALUE
+    );
 }
 
 // Java: InvocationPolicyBreakingConditionsTest.testNonExistantFlagFromPolicy
@@ -39,12 +47,20 @@ fn test_non_existant_flag_from_policy() {
         .parse(&[&format!("--test_string={TEST_STRING_USER_VALUE}")])
         .unwrap();
 
-    assert_eq!(get_test_options(&parser).test_string, TEST_STRING_USER_VALUE);
+    assert_eq!(
+        get_test_options(&parser).test_string,
+        TEST_STRING_USER_VALUE
+    );
 
-    enforcer.enforce(&mut parser, "test", &mut Vec::new()).unwrap();
+    enforcer
+        .enforce(&mut parser, "test", &mut Vec::new())
+        .unwrap();
 
     // Still user value.
-    assert_eq!(get_test_options(&parser).test_string, TEST_STRING_POLICY_VALUE_2);
+    assert_eq!(
+        get_test_options(&parser).test_string,
+        TEST_STRING_POLICY_VALUE_2
+    );
 }
 
 // Java: InvocationPolicyBreakingConditionsTest.testOperationNotSet
@@ -57,11 +73,19 @@ fn test_operation_not_set() {
         .parse(&[&format!("--test_string={TEST_STRING_USER_VALUE}")])
         .unwrap();
 
-    assert_eq!(get_test_options(&parser).test_string, TEST_STRING_USER_VALUE);
+    assert_eq!(
+        get_test_options(&parser).test_string,
+        TEST_STRING_USER_VALUE
+    );
 
     // Shouldn't throw.
-    enforcer.enforce(&mut parser, "test", &mut Vec::new()).unwrap();
+    enforcer
+        .enforce(&mut parser, "test", &mut Vec::new())
+        .unwrap();
 
     // Still user value.
-    assert_eq!(get_test_options(&parser).test_string, TEST_STRING_USER_VALUE);
+    assert_eq!(
+        get_test_options(&parser).test_string,
+        TEST_STRING_USER_VALUE
+    );
 }

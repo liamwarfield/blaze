@@ -656,6 +656,11 @@ pub(crate) fn add_assign<'v>(
         match rhs.get_ref().radd(lhs, heap) {
             Some(v) => v,
             _ => {
+                // BLAZE PATCH 0051: Java Eval.inplaceBinaryOp (Eval.java:492): only `list += list`
+                // extends; anything else is the binary `+` (and its error).
+                if crate::values::list::ListRef::from_value(rhs).is_none() { // BLAZE PATCH 0051
+                    return lhs.add(rhs, heap); // BLAZE PATCH 0051
+                } // BLAZE PATCH 0051
                 let list = ListData::from_value_mut(lhs)?;
                 if lhs.ptr_eq(rhs) {
                     list.double(heap);

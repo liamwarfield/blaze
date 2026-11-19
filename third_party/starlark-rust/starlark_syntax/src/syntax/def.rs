@@ -184,6 +184,79 @@ impl<'a, P: AstPayload> DefParams<'a, P> {
             State::Normal
         };
 
+        // BLAZE PATCH 0055: Java's parameter checks, order and texts (Resolver.java:1049
+        // resolveFunction, :1137 bindParam); the first error is reported.
+        { // BLAZE PATCH 0055
+            let mut star: Option<Option<&str>> = None; // BLAZE PATCH 0055
+            let mut star_span = None; // BLAZE PATCH 0055
+            let mut star_star: Option<&str> = None; // BLAZE PATCH 0055
+            let mut seen_optional = false; // BLAZE PATCH 0055
+            let mut num_kw_only = 0; // BLAZE PATCH 0055
+            let mut bound: Vec<&str> = Vec::new(); // BLAZE PATCH 0055
+            let fail = |span, msg: String| -> Result<(), EvalException> { // BLAZE PATCH 0055
+                Err(EvalException::parser_error(msg, span, codemap)) // BLAZE PATCH 0055
+            }; // BLAZE PATCH 0055
+            let mut bind = |name: &'a str, span| -> Result<(), EvalException> { // BLAZE PATCH 0055
+                if bound.contains(&name) { // BLAZE PATCH 0055
+                    return fail(span, format!("duplicate parameter: {name}")); // BLAZE PATCH 0055
+                } // BLAZE PATCH 0055
+                bound.push(name); // BLAZE PATCH 0055
+                Ok(()) // BLAZE PATCH 0055
+            }; // BLAZE PATCH 0055
+            for param in ast_params { // BLAZE PATCH 0055
+                match &param.node { // BLAZE PATCH 0055
+                    ParameterP::Normal(n, _, None) => { // BLAZE PATCH 0055
+                        let name = n.node.ident.as_str(); // BLAZE PATCH 0055
+                        if let Some(ss) = star_star { // BLAZE PATCH 0055
+                            fail(param.span, format!("required parameter {name} may not follow **{ss}"))?; // BLAZE PATCH 0055
+                        } else if star.is_some() { // BLAZE PATCH 0055
+                            num_kw_only += 1; // BLAZE PATCH 0055
+                        } else if seen_optional { // BLAZE PATCH 0055
+                            fail(param.span, format!("required positional parameter {name} may not follow an optional parameter"))?; // BLAZE PATCH 0055
+                        } // BLAZE PATCH 0055
+                        bind(name, param.span)?; // BLAZE PATCH 0055
+                    } // BLAZE PATCH 0055
+                    ParameterP::Normal(n, _, Some(_)) => { // BLAZE PATCH 0055
+                        seen_optional = true; // BLAZE PATCH 0055
+                        if let Some(ss) = star_star { // BLAZE PATCH 0055
+                            fail(param.span, format!("optional parameter may not follow **{ss}"))?; // BLAZE PATCH 0055
+                        } else if star.is_some() { // BLAZE PATCH 0055
+                            num_kw_only += 1; // BLAZE PATCH 0055
+                        } // BLAZE PATCH 0055
+                        bind(n.node.ident.as_str(), param.span)?; // BLAZE PATCH 0055
+                    } // BLAZE PATCH 0055
+                    ParameterP::NoArgs | ParameterP::Args(..) => { // BLAZE PATCH 0055
+                        if let Some(ss) = star_star { // BLAZE PATCH 0055
+                            fail(param.span, format!("* parameter may not follow **{ss}"))?; // BLAZE PATCH 0055
+                        } else if star.is_some() { // BLAZE PATCH 0055
+                            fail(param.span, "multiple * parameters not allowed".to_owned())?; // BLAZE PATCH 0055
+                        } else { // BLAZE PATCH 0055
+                            star = Some(param.ident().map(|n| n.node.ident.as_str())); // BLAZE PATCH 0055
+                            star_span = Some(param.span); // BLAZE PATCH 0055
+                        } // BLAZE PATCH 0055
+                    } // BLAZE PATCH 0055
+                    ParameterP::KwArgs(n, _) => { // BLAZE PATCH 0055
+                        if star_star.is_some() { // BLAZE PATCH 0055
+                            fail(param.span, "multiple ** parameters not allowed".to_owned())?; // BLAZE PATCH 0055
+                        } // BLAZE PATCH 0055
+                        star_star = Some(n.node.ident.as_str()); // BLAZE PATCH 0055
+                    } // BLAZE PATCH 0055
+                    ParameterP::Slash => {} // BLAZE PATCH 0055
+                } // BLAZE PATCH 0055
+            } // BLAZE PATCH 0055
+            if let (Some(s), Some(span)) = (star, star_span) { // BLAZE PATCH 0055
+                match s { // BLAZE PATCH 0055
+                    Some(name) => bind(name, span)?, // BLAZE PATCH 0055
+                    None if num_kw_only == 0 => fail(span, "bare * must be followed by keyword-only parameters".to_owned())?, // BLAZE PATCH 0055
+                    None => {} // BLAZE PATCH 0055
+                } // BLAZE PATCH 0055
+            } // BLAZE PATCH 0055
+            if let Some(ss) = star_star { // BLAZE PATCH 0055
+                let span = ast_params.iter().rev().find(|p| matches!(p.node, ParameterP::KwArgs(..))).map(|p| p.span).unwrap(); // BLAZE PATCH 0055
+                bind(ss, span)?; // BLAZE PATCH 0055
+            } // BLAZE PATCH 0055
+        } // BLAZE PATCH 0055
+
         for (i, param) in ast_params.iter().enumerate() {
             let span = param.span;
 
@@ -319,7 +392,7 @@ impl<'a, P: AstPayload> DefParams<'a, P> {
         if let Some(index_of_star) = index_of_star {
             let Some(next) = ast_params.get(index_of_star + 1) else {
                 return Err(EvalException::parser_error(
-                    "`*` parameter must not be last",
+                    "bare * must be followed by keyword-only parameters", // BLAZE PATCH 0055: Java Resolver.java:1111
                     ast_params[index_of_star].span,
                     codemap,
                 ));

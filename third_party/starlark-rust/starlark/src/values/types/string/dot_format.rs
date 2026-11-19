@@ -134,7 +134,139 @@ impl<'v, T: Iterator<Item = Value<'v>>> FormatArgs<'v, T> {
     }
 }
 
+/// BLAZE PATCH 0051: Java's `FormatParser.format` (the algorithm and its texts), replacing
+/// starlark-rust's parser for `str.format` (f-strings keep it).
+// Java: net/starlark/java/eval/FormatParser.java:51 FormatParser.format
 pub(crate) fn format<'v>(
+    this: &str,
+    args: impl Iterator<Item = Value<'v>>,
+    kwargs: Dict<'v>,
+    string_pool: &mut StringPool,
+    heap: Heap<'v>,
+) -> anyhow::Result<StringValue<'v>> {
+    let args: Vec<Value<'v>> = args.collect();
+    let chars: Vec<char> = this.chars().collect();
+    let mut output = string_pool.alloc();
+    // Java FormatParser.History: NONE (0), MANUAL (1), AUTOMATIC (2); last automatic index.
+    let mut history_type = 0u8;
+    let mut position: i32 = -1;
+    let mixed = || anyhow::anyhow!("Cannot mix manual and automatic numbering of positional fields");
+    let get_kwarg = |key: &str| -> anyhow::Result<Value<'v>> {
+        match kwargs.get_str(key) {
+            Some(v) => Ok(v),
+            None => Err(anyhow::anyhow!("Missing argument '{key}'")),
+        }
+    };
+    let mut pos = 0;
+    while pos < chars.len() {
+        let current = chars[pos];
+        let mut advance = 0;
+        if current == '{' {
+            // Java: FormatParser.java:85 processOpeningBrace
+            if chars.get(pos + 1) == Some(&'{') {
+                output.push('{');
+                advance = 1;
+            } else {
+                // Java: FormatParser.java:181 getFieldName
+                let mut key = String::new();
+                let mut found_closing = false;
+                for &c in &chars[pos + 1..] {
+                    if c == '}' {
+                        found_closing = true;
+                        break;
+                    }
+                    if c == '{' {
+                        return Err(anyhow::anyhow!(
+                            "Nested replacement fields are not supported"
+                        ));
+                    } else if matches!(c, '.' | '[' | ']' | ',') {
+                        return Err(anyhow::anyhow!(
+                            "Invalid character '{c}' inside replacement field"
+                        ));
+                    }
+                    key.push(c);
+                }
+                if !found_closing {
+                    return Err(anyhow::anyhow!("Found '{{' without matching '}}'"));
+                }
+                let value = if key.is_empty()
+                    || key.chars().all(|c| c.is_ascii_digit() || c == '-')
+                {
+                    // Java: FormatParser.java:218 parsePositional (Integer.parseInt).
+                    let index = if key.is_empty() {
+                        if history_type == 1 {
+                            return Err(mixed());
+                        }
+                        history_type = 2;
+                        position += 1;
+                        Some(position)
+                    } else {
+                        match java_parse_int(&key) {
+                            Some(i) => {
+                                if history_type == 2 {
+                                    return Err(mixed());
+                                }
+                                history_type = 1;
+                                Some(i)
+                            }
+                            None => None,
+                        }
+                    };
+                    match index {
+                        Some(index) => {
+                            if index < 0 || index as usize >= args.len() {
+                                return Err(anyhow::anyhow!(
+                                    "No replacement found for index {index}"
+                                ));
+                            }
+                            args[index as usize]
+                        }
+                        // NumberFormatException: a keyword.
+                        None => get_kwarg(&key)?,
+                    }
+                } else {
+                    get_kwarg(&key)?
+                };
+                value.collect_str(&mut output);
+                advance = key.chars().count() + 1;
+            }
+        } else if current == '}' {
+            // Java: FormatParser.java:150 processClosingBrace
+            if chars.get(pos + 1) != Some(&'}') {
+                return Err(anyhow::anyhow!("Found '}}' without matching '{{'"));
+            }
+            output.push('}');
+            advance = 1;
+        } else {
+            output.push(current);
+        }
+        pos += advance + 1;
+    }
+    let r = heap.alloc_str(&output);
+    string_pool.release(output);
+    Ok(r)
+}
+
+/// Java `Integer.parseInt` on a string of ASCII digits and `-` (BLAZE PATCH 0051).
+fn java_parse_int(s: &str) -> Option<i32> {
+    let (neg, digits) = match s.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, s),
+    };
+    if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let v: i64 = if digits.len() > 11 {
+        return None;
+    } else {
+        digits.parse().ok()?
+    };
+    let v = if neg { -v } else { v };
+    i32::try_from(v).ok()
+}
+
+#[allow(dead_code)] // BLAZE PATCH 0051: starlark-rust's `str.format`, replaced by `format`.
+fn format_upstream<'v>(
     this: &str,
     args: impl Iterator<Item = Value<'v>>,
     kwargs: Dict<'v>,

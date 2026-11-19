@@ -208,8 +208,10 @@ impl BlazeCommand for CanonicalizeCommand {
         };
 
         let result = (|| -> Result<(), blaze_options::OptionsParsingException> {
-            let invocation_policy_enforcer =
-                InvocationPolicyEnforcer::new(policy.clone(), parser.get_conversion_context().cloned());
+            let invocation_policy_enforcer = InvocationPolicyEnforcer::new(
+                policy.clone(),
+                parser.get_conversion_context().cloned(),
+            );
             invocation_policy_enforcer.enforce(
                 &mut parser,
                 &command_name,

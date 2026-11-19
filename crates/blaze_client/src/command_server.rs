@@ -43,15 +43,6 @@ impl GrpcStatus {
     }
 
     fn from_tonic(status: &tonic::Status) -> Self {
-        if std::env::var_os("BLAZE_TMP_GRPC_DEBUG").is_some() {
-            let mut src: Option<&(dyn std::error::Error + 'static)> =
-                std::error::Error::source(status);
-            eprintln!("TMPDEBUG status {:?}", status);
-            while let Some(e) = src {
-                eprintln!("TMPDEBUG source {:?} / {}", e, e);
-                src = e.source();
-            }
-        }
         if Self::is_connection_closed(status) {
             // PORT: a call whose connection was closed by the peer (the server process died)
             // ends in grpc-c++ with UNAVAILABLE (14) and the transport's text "Socket closed"
@@ -75,7 +66,11 @@ impl GrpcStatus {
         let mut source: Option<&(dyn std::error::Error + 'static)> =
             std::error::Error::source(status);
         while let Some(e) = source {
-            if let Some(io) = e.downcast_ref::<std::io::Error>() {
+            let io = match e.downcast_ref::<h2::Error>() {
+                Some(h2_error) => h2_error.get_io(),
+                None => e.downcast_ref::<std::io::Error>(),
+            };
+            if let Some(io) = io {
                 return matches!(
                     io.kind(),
                     std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::UnexpectedEof

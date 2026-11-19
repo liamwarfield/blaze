@@ -346,7 +346,7 @@ fn compute_build_configuration_key(
     // Java: com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyProducer.java:122 BuildConfigurationKeyProducer.step
     // Short-circuit if there are no platform options.
     let Some(platform_options) = options.get::<PlatformOptions>() else {
-        return find_build_options_scopes(options.clone(), env);
+        return find_build_options_scopes(options.clone(), key.producer_label(), env);
     };
 
     let target_platforms = &platform_options.platforms;
@@ -398,14 +398,18 @@ fn compute_build_configuration_key(
             Some(parsed_flags) => {
                 let post_platform_processed_options =
                     parsed_flags.merge_with(options).get_options().clone();
-                return find_build_options_scopes(post_platform_processed_options, env);
+                return find_build_options_scopes(
+                    post_platform_processed_options,
+                    key.producer_label(),
+                    env,
+                );
             }
             None => {}
         }
-        merge_from_platform_mapping(options, env)
+        merge_from_platform_mapping(options, key.producer_label(), env)
     } else {
         blaze_util::check_state!(target_platforms.is_empty());
-        merge_from_platform_mapping(options, env)
+        merge_from_platform_mapping(options, key.producer_label(), env)
     }
 }
 
@@ -791,6 +795,7 @@ fn read_flags(it: &mut LineIterator) -> Result<Vec<String>, PlatformMappingParsi
 // Java: com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyProducer.java:209 BuildConfigurationKeyProducer.mergeFromPlatformMapping
 fn merge_from_platform_mapping(
     options: &Arc<BuildOptions>,
+    label: Option<&Label>,
     env: &mut Environment<'_>,
 ) -> Result<Option<BuildConfigurationKey>, ComputeError> {
     let mapping_key = PlatformMappingSkyKey(
@@ -815,7 +820,7 @@ fn merge_from_platform_mapping(
     };
     // Java: BuildConfigurationKeyProducer.applyPlatformMapping
     match platform_mapping_value.map(options) {
-        Ok(key) => find_build_options_scopes(key.get_options().clone(), env),
+        Ok(key) => find_build_options_scopes(key.get_options().clone(), label, env),
         Err(e) => Err(persistent(ConfigurationError::OptionsParsing(e))),
     }
 }
@@ -826,6 +831,7 @@ fn merge_from_platform_mapping(
 /// `ScopeType.PROJECT` or its `ScopeType` is not yet resolved.
 fn find_build_options_scopes(
     post_platform_processed_options: Arc<BuildOptions>,
+    label: Option<&Label>,
     env: &mut Environment<'_>,
 ) -> Result<Option<BuildConfigurationKey>, ComputeError> {
     // including platform-based flags in skykey for scopes lookUp
@@ -833,7 +839,7 @@ fn find_build_options_scopes(
         .get_starlark_options()
         .is_empty()
     {
-        return possibly_apply_scopes(env, post_platform_processed_options, None);
+        return possibly_apply_scopes(env, post_platform_processed_options, None, label);
     }
 
     // the list of flags that are either project scoped or their scopes are not yet resolved.
@@ -856,7 +862,7 @@ fn find_build_options_scopes(
     // if flagsWithIncompleteScopeInfo is empty, we do not need to do any further lookUp for the
     // ScopeType and ScopeDefinition
     if flags_with_incomplete_scope_info.is_empty() {
-        return possibly_apply_scopes(env, post_platform_processed_options, None);
+        return possibly_apply_scopes(env, post_platform_processed_options, None, label);
     }
 
     let build_options_scope_value_key = BuildOptionsScopeKey::create(
@@ -872,6 +878,7 @@ fn find_build_options_scopes(
         env,
         post_platform_processed_options,
         Some(build_options_scope_value),
+        label,
     )
 }
 
@@ -880,6 +887,7 @@ fn possibly_apply_scopes(
     env: &mut Environment<'_>,
     post_platform_processed_options: Arc<BuildOptions>,
     build_options_scope_value: Option<Arc<BuildOptionsScopeValue>>,
+    label: Option<&Label>,
 ) -> Result<Option<BuildConfigurationKey>, ComputeError> {
     // This is not the same as null associated with Skyframe lookUp. This happens when scoping
     // logic is not enabled. This means the lookup via BuildOptionsScopesFunction was not
@@ -910,12 +918,10 @@ fn possibly_apply_scopes(
     // TODO: b/390669368 - The same performance issue still exists if we reach this point.
     // Java: tasks.lookUp(PrecomputedValue.BASELINE_CONFIGURATION.getKey(), ...)
     let baseline_configuration = client(env).baseline_configuration.clone();
-    // PORT: BuildConfigurationKeyFunction passes a null label; the analysis producers
-    // (BuildConfigurationKeyMapProducer) pass the target's label, but Blaze maps their options
-    // through this node (blaze_sky_analysis transition_applier), which has no label. Only
-    // PROJECT-scoped flags read it, and those stop at
-    // `unported!("BuildOptionsScopeFunction.findProjectFiles")` before this point.
-    apply_scopes(&build_options_scope_value, &baseline_configuration, None)
+    // BuildConfigurationKeyFunction passes a null label; the analysis producers
+    // (BuildConfigurationKeyMapProducer) pass the target's label, which Blaze carries in the
+    // request (`BuildConfigurationKeyValueKey::producer_label`).
+    apply_scopes(&build_options_scope_value, &baseline_configuration, label)
 }
 
 // Java: com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyProducer.java:292 BuildConfigurationKeyProducer.applyScopes

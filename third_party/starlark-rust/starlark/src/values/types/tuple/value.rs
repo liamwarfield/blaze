@@ -171,7 +171,13 @@ where
     fn compare(&self, other: Value<'v>) -> crate::Result<Ordering> {
         match Tuple::from_value(other) {
             None => ValueError::unsupported_with(self, "cmp()", other),
-            Some(other) => compare_slice(self.content(), other.content(), |x, y| x.compare(*y)),
+            Some(other) => compare_slice(self.content(), other.content(), |x, y| { // BLAZE PATCH 0051
+                // BLAZE PATCH 0051: Java Sequence.compare tests equality first.
+                if x.equals(*y)? { // BLAZE PATCH 0051
+                    return Ok(Ordering::Equal); // BLAZE PATCH 0051
+                } // BLAZE PATCH 0051
+                x.compare(*y) // BLAZE PATCH 0051
+            }), // BLAZE PATCH 0051
         }
     }
 
@@ -235,6 +241,12 @@ where
     }
 
     fn mul(&self, other: Value, heap: Heap<'v>) -> Option<crate::Result<Value<'v>>> {
+        // BLAZE PATCH 0051: Java `n.toInt("repeat")` (StarlarkList.java:282, EvalUtils.java:430).
+        if crate::values::types::int::int_or_big::StarlarkIntRef::unpack(other).is_some() { // BLAZE PATCH 0051
+            if let Err(e) = crate::values::index::java_to_int(other, "repeat") { // BLAZE PATCH 0051
+                return Some(Err(e)); // BLAZE PATCH 0051
+            } // BLAZE PATCH 0051
+        } // BLAZE PATCH 0051
         let l = match i32::unpack_value(other) {
             Ok(Some(l)) => l,
             Ok(None) => return None,

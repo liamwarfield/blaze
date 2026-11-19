@@ -24,19 +24,6 @@ fn built_in_attributes_are_not_starlark_defined() {}
 #[ignore = "inspects the RuleClass behind ev.lookup (getRuleClass); portable with the .bzl harness of starlark_defs/tests.rs (get_rule_class), not ported yet"]
 fn test_implicit_args_attribute() {}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 // Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_macroFunctionApi
 #[test]
 #[ignore = "inspects the MacroFunction object behind ev.lookup (getName, getDocumentation, getMacroClass attributes); portable with the .bzl harness of starlark_defs/tests.rs, not ported yet"]

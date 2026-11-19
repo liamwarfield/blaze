@@ -31,6 +31,9 @@ pub struct CommandEnvironment {
     invocation_policy: InvocationPolicy,
     /// Java `invocationPolicyFlags`.
     invocation_policy_flags: Vec<OptionAndRawValue>,
+    /// Java `responseExtensions`. Shared, so that a handler that outlives a borrow of the
+    /// environment (`RemoteRequestedInfoItemHandler`) can add to it.
+    response_extensions: Arc<parking_lot::Mutex<Vec<blaze_protos::google::protobuf::Any>>>,
     /// The client's command line (`BlazeCommandDispatcher.execExclusively`'s `args`).
     client_args: Vec<String>,
     /// The client's startup options tagged with the rc file that set them.
@@ -219,6 +222,7 @@ impl CommandEnvironment {
             event_bus,
             invocation_policy,
             invocation_policy_flags: Vec::new(),
+            response_extensions: Arc::default(),
             client_args: Vec::new(),
             startup_options_tagged_with_bazel_rc: None,
             repo_env,
@@ -259,6 +263,26 @@ impl CommandEnvironment {
         invocation_policy_flags: Vec<OptionAndRawValue>,
     ) {
         self.invocation_policy_flags = invocation_policy_flags;
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:1097 CommandEnvironment.getResponseExtensions
+    pub fn get_response_extensions(&self) -> Vec<blaze_protos::google::protobuf::Any> {
+        self.response_extensions.lock().clone()
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:1101 CommandEnvironment.addResponseExtensions
+    pub fn add_response_extensions(
+        &self,
+        extensions: impl IntoIterator<Item = blaze_protos::google::protobuf::Any>,
+    ) {
+        self.response_extensions.lock().extend(extensions);
+    }
+
+    /// The list [`CommandEnvironment::add_response_extensions`] adds to.
+    pub(crate) fn response_extensions_sink(
+        &self,
+    ) -> Arc<parking_lot::Mutex<Vec<blaze_protos::google::protobuf::Any>>> {
+        self.response_extensions.clone()
     }
 
     // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:552 CommandEnvironment.getInvocationPolicyFlags

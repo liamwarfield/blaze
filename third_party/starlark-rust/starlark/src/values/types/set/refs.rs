@@ -125,7 +125,7 @@ impl<'v> SetMut<'v> {
             Some(ptr) if ptr.0.immutable.get() => Err(frozen_set_error()),
             Some(ptr) => match ptr.0.cell.try_borrow_mut() { // BLAZE PATCH 0025
                 Ok(x) => Ok(SetMut { aref: x }),
-                Err(_) => Err(ValueError::MutationDuringIteration.into()),
+                Err(_) => Err(ValueError::Bazel("set value is temporarily immutable due to active for-loop iteration".to_owned()).into()), // BLAZE PATCH 0051
             },
         }
     }

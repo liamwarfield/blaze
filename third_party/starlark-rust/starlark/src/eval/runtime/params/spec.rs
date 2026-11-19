@@ -124,6 +124,7 @@ enum CurrentParameterStyle {
 /// Builder for [`ParametersSpec`]
 pub(crate) struct ParametersSpecBuilder<V> {
     function_name: String,
+    java_def_name: Option<String>, // BLAZE PATCH 0052
     params: Vec<(String, ParameterKind<V>)>,
     names: SymbolMap<u32>,
     /// Number of parameters that can be filled only positionally.
@@ -147,6 +148,10 @@ pub(crate) struct ParametersSpecBuilder<V> {
 pub struct ParametersSpec<V> {
     /// Only used in error messages
     function_name: String,
+    /// BLAZE PATCH 0052: the name of the `def` or `lambda` these are the parameters of (Java
+    /// `StarlarkFunction.getName`); `None` for a builtin. Selects Java's argument errors of
+    /// `StarlarkFunction` or of `BuiltinFunction`.
+    java_def_name: Option<String>, // BLAZE PATCH 0052
 
     /// Parameters in the order they occur.
     param_kinds: Box<[ParameterKind<V>]>,
@@ -161,7 +166,22 @@ pub struct ParametersSpec<V> {
     indices: DefParamIndices,
 }
 
+impl<V> ParametersSpec<V> {
+    /// BLAZE PATCH 0052: the function's name as Java's errors give it (a builtin's name).
+    pub(crate) fn function_name(&self) -> &str {
+        match &self.java_def_name {
+            Some(n) => n,
+            None => &self.function_name,
+        }
+    }
+}
+
 impl<V> ParametersSpecBuilder<V> {
+    /// BLAZE PATCH 0052: these are the parameters of the `def` or `lambda` named `name`.
+    pub(crate) fn set_java_def_name(&mut self, name: &str) {
+        self.java_def_name = Some(name.to_owned());
+    }
+
     fn add(&mut self, name: &str, val: ParameterKind<V>) {
         assert!(
             !matches!(val, ParameterKind::Args | ParameterKind::KWargs),
@@ -312,6 +332,7 @@ impl<V> ParametersSpecBuilder<V> {
     pub(crate) fn finish(self) -> ParametersSpec<V> {
         let ParametersSpecBuilder {
             function_name,
+            java_def_name, // BLAZE PATCH 0052
             positional_only,
             positional,
             args,
@@ -328,6 +349,7 @@ impl<V> ParametersSpecBuilder<V> {
             params.into_iter().unzip();
         ParametersSpec {
             function_name,
+            java_def_name, // BLAZE PATCH 0052
             param_kinds: param_kinds.into_boxed_slice(),
             param_names: param_names.into_boxed_slice(),
             names,
@@ -349,6 +371,7 @@ impl<V> ParametersSpec<V> {
     ) -> ParametersSpecBuilder<V> {
         ParametersSpecBuilder {
             function_name,
+            java_def_name: None, // BLAZE PATCH 0052
             params: Vec::with_capacity(capacity),
             names: SymbolMap::with_capacity(capacity),
             positional_only: 0,
@@ -623,8 +646,69 @@ impl<'v> ParametersSpec<Value<'v>> {
             return Ok(());
         }
 
+        // BLAZE PATCH 0052: on failure, Java's error for the same call.
         self.collect_slow(args, slots, heap)
+            .map_err(|e| self.java_argument_error(args, heap).unwrap_or(e))
     }
+
+    /// BLAZE PATCH 0052: the error Java reports for a call of a function with these parameters
+    /// with `args`, if Java rejects it: Java's argument processing replayed in Java's order
+    /// (`Eval.evalCall`: positional arguments, named arguments, `*args`, `**kwargs`; then the
+    /// callee's `call`). `None` when Java's processing accepts the arguments.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn java_argument_error<'a, A: ArgumentsImpl<'v, 'a>>(
+        &self,
+        args: &A,
+        heap: Heap<'v>,
+    ) -> Option<crate::Error>
+    where
+        'v: 'a,
+    {
+        let mut p = JavaArgs::new(self);
+        let mut run = || -> Result<(), String> {
+            for _ in args.pos() {
+                p.add_positional()?;
+            }
+            for (_, name) in args.names().names() {
+                p.add_named(name.as_str())?;
+            }
+            if let Some(star) = args.args() {
+                // Java: net/starlark/java/eval/Eval.java:733 Eval.evalCall
+                let iter = star.iterate(heap).map_err(|_| {
+                    format!(
+                        "argument after * must be an iterable, not {}",
+                        star.get_type()
+                    )
+                })?;
+                for _ in iter {
+                    p.add_positional()?;
+                }
+            }
+            if let Some(kwargs) = args.kwargs() {
+                let Some(dict) = DictRef::from_value(kwargs) else {
+                    return Err(format!(
+                        "argument after ** must be a dict, not {}",
+                        kwargs.get_type()
+                    ));
+                };
+                let keys: Vec<Value<'v>> = dict.keys().collect();
+                drop(dict);
+                for k in keys {
+                    let Some(k) = k.unpack_str() else {
+                        return Err(format!("keywords must be strings, not {}", k.get_type()));
+                    };
+                    p.add_named(k)?;
+                }
+            }
+            p.call()
+        };
+        match run() {
+            Ok(()) => None,
+            Err(message) => Some(FunctionError::Bazel(message).into()),
+        }
+    }
+
 
     fn collect_slow<'a, A: ArgumentsImpl<'v, 'a>>(
         &self,
@@ -1003,5 +1087,275 @@ impl<'v, V: ValueLike<'v>> ParametersSpec<V> {
     /// Check if current parameters can be filled with given arguments signature.
     pub fn can_fill_with_args(&self, pos: usize, names: &[&str]) -> bool {
         self.as_value().can_fill_with_args_impl(pos, names)
+    }
+}
+
+/// BLAZE PATCH 0052: Java's argument processors without the values: which parameters are set,
+/// and the errors in Java's order and wording.
+// Java: net/starlark/java/eval/StarlarkFunction.java:302 StarlarkFunction.ArgumentProcessor
+// Java: net/starlark/java/eval/BuiltinFunction.java:229 BuiltinFunction.ArgumentProcessor
+struct JavaArgs<'s, V> {
+    spec: &'s ParametersSpec<V>,
+    /// Java `locals` / `vector`: which of the non-residual parameters are set.
+    filled: Vec<bool>,
+    /// def: numNonSurplusPositionalArgs. builtin: argIndex.
+    positional: usize,
+    /// builtin: unexpectedPositionalArgCount.
+    unexpected_positional: usize,
+    /// def: unexpectedNamedArgs.
+    unexpected_named: Vec<String>,
+    /// Names bound to `**kwargs`.
+    kwargs: Vec<String>,
+}
+
+impl<'s, V> JavaArgs<'s, V> {
+    fn new(spec: &'s ParametersSpec<V>) -> Self {
+        JavaArgs {
+            spec,
+            filled: vec![false; spec.param_kinds.len()],
+            positional: 0,
+            unexpected_positional: 0,
+            unexpected_named: Vec::new(),
+            kwargs: Vec::new(),
+        }
+    }
+
+    fn is_residual(&self, i: usize) -> bool {
+        matches!(
+            self.spec.param_kinds[i],
+            ParameterKind::Args | ParameterKind::KWargs
+        )
+    }
+
+    /// The number of parameters before `*args`/`**kwargs` that can be set positionally
+    /// (Java `getNumOrdinaryParameters`; for a builtin, its `isPositional` parameters).
+    fn num_positional(&self) -> usize {
+        self.spec.indices.num_positional as usize
+    }
+
+    /// Indices of the parameters that are not `*args`/`**kwargs`, in order.
+    fn non_residual(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.spec.param_kinds.len()).filter(|i| !self.is_residual(*i))
+    }
+
+    fn name(&self) -> &str {
+        match &self.spec.java_def_name {
+            Some(n) => n,
+            None => &self.spec.function_name,
+        }
+    }
+
+    fn plural(n: usize) -> &'static str {
+        if n == 1 { "" } else { "s" }
+    }
+
+    fn add_positional(&mut self) -> Result<(), String> {
+        let n = self.num_positional();
+        if self.spec.java_def_name.is_some() {
+            // Java: StarlarkFunction.java:432 addPositionalArg
+            if self.positional < n {
+                self.filled[self.positional] = true;
+                self.positional += 1;
+            } else if self.spec.indices.args.is_some() {
+            } else {
+                self.positional += 1;
+            }
+        } else {
+            // Java: BuiltinFunction.java:309 addPositionalArg
+            if self.positional < n {
+                self.filled[self.positional] = true;
+                self.positional += 1;
+            } else if self.spec.indices.args.is_some() {
+            } else {
+                self.unexpected_positional += 1;
+            }
+        }
+        Ok(())
+    }
+
+    fn param_index(&self, name: &str) -> Option<usize> {
+        self.non_residual()
+            .find(|i| self.spec.param_names[*i] == name)
+    }
+
+    fn add_named(&mut self, name: &str) -> Result<(), String> {
+        let f = self.name().to_owned();
+        let has_kwargs = self.spec.indices.kwargs.is_some();
+        if self.spec.java_def_name.is_some() {
+            // Java: StarlarkFunction.java:458 addNamedArg
+            match self.param_index(name) {
+                Some(i) => {
+                    if self.filled[i] {
+                        return Err(format!(
+                            "{f}() got multiple values for parameter '{name}'"
+                        ));
+                    }
+                    self.filled[i] = true;
+                }
+                None if has_kwargs => {
+                    if self.kwargs.iter().any(|k| k == name) {
+                        return Err(format!(
+                            "{f}() got multiple values for parameter '{name}'"
+                        ));
+                    }
+                    self.kwargs.push(name.to_owned());
+                }
+                None => self.unexpected_named.push(name.to_owned()),
+            }
+            return Ok(());
+        }
+        // Java: BuiltinFunction.java:322 addNamedArg
+        let spill = |this: &mut Self| -> Result<(), String> {
+            if this.kwargs.iter().any(|k| k == name) {
+                return Err(format!(
+                    "{f}() got multiple values for keyword argument '{name}'"
+                ));
+            }
+            this.kwargs.push(name.to_owned());
+            Ok(())
+        };
+        match self.param_index(name) {
+            None => {
+                if !has_kwargs {
+                    let all: Vec<&str> = self
+                        .non_residual()
+                        .map(|i| self.spec.param_names[i].as_str())
+                        .collect();
+                    return Err(format!(
+                        "{f}() got unexpected keyword argument '{name}'{}",
+                        crate::errors::spell_checker::did_you_mean(name, all)
+                    ));
+                }
+                spill(self)
+            }
+            Some(i) if i < self.spec.indices.num_positional_only as usize => {
+                if !has_kwargs {
+                    return Err(format!(
+                        "{f}() got named argument for positional-only parameter '{name}'"
+                    ));
+                }
+                spill(self)
+            }
+            Some(i) => {
+                if self.filled[i] {
+                    return Err(format!(
+                        "{f}() got multiple values for argument '{name}'"
+                    ));
+                }
+                self.filled[i] = true;
+                Ok(())
+            }
+        }
+    }
+
+    fn call(&mut self) -> Result<(), String> {
+        let f = self.name().to_owned();
+        let n = self.num_positional();
+        let required = |i: usize| matches!(self.spec.param_kinds[i], ParameterKind::Required);
+        if self.spec.java_def_name.is_some() {
+            // Java: StarlarkFunction.java:497 ArgumentProcessor.call
+            if self.positional > n {
+                if n > 0 {
+                    return Err(format!(
+                        "{f}() accepts no more than {n} positional argument{} but got {}",
+                        Self::plural(n),
+                        self.positional
+                    ));
+                }
+                return Err(format!(
+                    "{f}() does not accept positional arguments, but got {}",
+                    self.positional
+                ));
+            }
+            if !self.unexpected_named.is_empty() {
+                let u = &self.unexpected_named;
+                let hint = if u.len() == 1 {
+                    let names: Vec<&str> = self
+                        .non_residual()
+                        .map(|i| self.spec.param_names[i].as_str())
+                        .collect();
+                    crate::errors::spell_checker::did_you_mean(&u[0], names)
+                } else {
+                    String::new()
+                };
+                return Err(format!(
+                    "{f}() got unexpected keyword argument{}: {}{hint}",
+                    Self::plural(u.len()),
+                    u.join(", ")
+                ));
+            }
+            // Java: StarlarkFunction.java:399 applyDefaultsReportMissingArgs
+            let mut missing_positional = Vec::new();
+            let mut missing_kwonly = Vec::new();
+            for i in self.non_residual().filter(|i| *i >= self.positional) {
+                if self.filled[i] || !required(i) {
+                    continue;
+                }
+                if i < n {
+                    missing_positional.push(self.spec.param_names[i].clone());
+                } else {
+                    missing_kwonly.push(self.spec.param_names[i].clone());
+                }
+            }
+            if !missing_positional.is_empty() {
+                return Err(format!(
+                    "{f}() missing {} required positional argument{}: {}",
+                    missing_positional.len(),
+                    Self::plural(missing_positional.len()),
+                    missing_positional.join(", ")
+                ));
+            }
+            if !missing_kwonly.is_empty() {
+                return Err(format!(
+                    "{f}() missing {} required keyword-only argument{}: {}",
+                    missing_kwonly.len(),
+                    Self::plural(missing_kwonly.len()),
+                    missing_kwonly.join(", ")
+                ));
+            }
+            return Ok(());
+        }
+        // Java: BuiltinFunction.java:420 ArgumentProcessor.call
+        if self.unexpected_positional > 0 {
+            if self.positional == 0 {
+                return Err(format!("{f}() got unexpected positional argument"));
+            }
+            return Err(format!(
+                "{f}() accepts no more than {} positional argument{} but got {}",
+                self.positional,
+                Self::plural(self.positional),
+                self.positional + self.unexpected_positional
+            ));
+        }
+        // Java: BuiltinFunction.java:455 applyDefaultsReportMissingArgs
+        let mut missing_positional = Vec::new();
+        let mut missing_named = Vec::new();
+        for i in self.non_residual() {
+            if self.filled[i] || !required(i) {
+                continue;
+            }
+            if i < n {
+                missing_positional.push(self.spec.param_names[i].clone());
+            } else {
+                missing_named.push(self.spec.param_names[i].clone());
+            }
+        }
+        if !missing_positional.is_empty() {
+            return Err(format!(
+                "{f}() missing {} required positional argument{}: {}",
+                missing_positional.len(),
+                Self::plural(missing_positional.len()),
+                missing_positional.join(", ")
+            ));
+        }
+        if !missing_named.is_empty() {
+            return Err(format!(
+                "{f}() missing {} required named argument{}: {}",
+                missing_named.len(),
+                Self::plural(missing_named.len()),
+                missing_named.join(", ")
+            ));
+        }
+        Ok(())
     }
 }

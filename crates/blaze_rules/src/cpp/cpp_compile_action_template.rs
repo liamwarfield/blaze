@@ -444,6 +444,11 @@ impl Action for CppCompileActionTemplate {
         false
     }
 
+    /// Not an `AbstractAction`, so not an `ActionApi`.
+    fn is_action_api(&self) -> bool {
+        false
+    }
+
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionTemplate.java:338 CppCompileActionTemplate.isShareable
     fn is_shareable(&self) -> bool {
         false

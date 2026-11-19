@@ -78,7 +78,7 @@ fn testing_methods(builder: &mut MethodsBuilder) {
     // Java: com/google/devtools/build/lib/rules/test/StarlarkTestingModule.java:52 StarlarkTestingModule.testEnvironment
     fn TestEnvironment<'v>(
         this: Value<'v>,
-        #[starlark(require = pos)] environment: Value<'v>,
+        environment: Value<'v>,
         #[starlark(default = NoneOr::None)] inherited_environment: NoneOr<Value<'v>>,
     ) -> starlark::Result<RunEnvironmentInfo> {
         let _ = this;

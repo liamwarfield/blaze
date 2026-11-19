@@ -113,7 +113,7 @@ impl CriticalPathComponent {
     /// with the total spawn metrics. To make sure not to add the last phase's duration multiple
     /// times, only add if there is duration and reset the phase metrics once it has been
     /// aggregated.
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:102 CriticalPathComponent.finishActionExecution
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:101 CriticalPathComponent.finishActionExecution
     pub fn finish_action_execution(
         &self,
         start_nanos: i64,
@@ -154,13 +154,13 @@ impl CriticalPathComponent {
     /// PORT: Java compares references ("the keys in the CriticalPathComputer are exactly the
     /// values returned from action.getPrimaryOutput()"); the map's keys are unique by `equals`,
     /// so `==` selects the same entries.
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:130 CriticalPathComponent.isPrimaryOutput
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:127 CriticalPathComponent.isPrimaryOutput
     pub fn is_primary_output(&self, possible_primary_output: &Artifact) -> bool {
         *possible_primary_output == self.primary_output
     }
 
     /// The action for which we are storing the stat.
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:137 CriticalPathComponent.getAction
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:135 CriticalPathComponent.getAction
     pub fn get_action(&self) -> &ActionRef {
         &self.action
     }
@@ -171,33 +171,33 @@ impl CriticalPathComponent {
     /// 1. A new CriticalPathComponent is created and should start running.
     /// 2. A CriticalPathComponent has been created with discover inputs and beginning to execute.
     /// 3. An action was rewound and starts again.
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:151 CriticalPathComponent.startRunning
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:149 CriticalPathComponent.startRunning
     pub fn start_running(&self) {
         self.is_running.store(true, Ordering::SeqCst);
     }
 
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:155 CriticalPathComponent.isRunning
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:153 CriticalPathComponent.isRunning
     pub fn is_running(&self) -> bool {
         self.is_running.load(Ordering::SeqCst)
     }
 
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:159 CriticalPathComponent.prettyPrintAction
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:157 CriticalPathComponent.prettyPrintAction
     pub fn pretty_print_action(&self) -> String {
         self.action.pretty_print()
     }
 
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:164 CriticalPathComponent.getOwner
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:161 CriticalPathComponent.getOwner
     pub fn get_owner(&self) -> Option<Label> {
         self.action.get_owner().get_label().cloned()
     }
 
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:172 CriticalPathComponent.getMnemonic
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:170 CriticalPathComponent.getMnemonic
     pub fn get_mnemonic(&self) -> String {
         self.action.get_mnemonic()
     }
 
     /// An unique identifier of the component for one build execution.
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:177 CriticalPathComponent.getId
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:175 CriticalPathComponent.getId
     pub fn get_id(&self) -> i32 {
         self.id
     }
@@ -207,7 +207,7 @@ impl CriticalPathComponent {
     /// multiples of the same action run in parallel, we keep the maximum runtime SpawnMetrics. We
     /// will also set the longestPhaseSpawnRunnerName to the longest running spawn runner name
     /// across all phases if it exists.
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:188 CriticalPathComponent.addSpawnResult
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:186 CriticalPathComponent.addSpawnResult
     pub fn add_spawn_result(
         &self,
         metrics: &SpawnMetrics,
@@ -244,14 +244,14 @@ impl CriticalPathComponent {
     }
 
     /// Set the phaseChange flag as true so we will aggregate incoming spawnMetrics.
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:214 CriticalPathComponent.changePhase
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:212 CriticalPathComponent.changePhase
     pub fn change_phase(&self) {
         self.state.lock().phase_change = true;
     }
 
     /// Returns total spawn metrics of the maximum (longest running) spawn metrics of all phases
     /// for the execution of the action.
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:222 CriticalPathComponent.getSpawnMetrics
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:220 CriticalPathComponent.getSpawnMetrics
     pub fn get_spawn_metrics(&self) -> AggregatedSpawnMetrics {
         self.state.lock().total_spawn_metrics.clone()
     }
@@ -259,13 +259,13 @@ impl CriticalPathComponent {
     /// Returns name of the maximum runner used for the finished spawn which took most time, null
     /// if no spawns have finished for this action (either there are no spawns or we asked before
     /// any have finished).
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:232 CriticalPathComponent.getLongestPhaseSpawnRunnerName
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:229 CriticalPathComponent.getLongestPhaseSpawnRunnerName
     pub fn get_longest_phase_spawn_runner_name(&self) -> Option<String> {
         self.state.lock().longest_phase_spawn_runner_name.clone()
     }
 
     /// Like getLongestPhaseSpawnRunnerName(), but returns the runner details.
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:238 CriticalPathComponent.getLongestPhaseSpawnRunnerSubtype
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:235 CriticalPathComponent.getLongestPhaseSpawnRunnerSubtype
     pub fn get_longest_phase_spawn_runner_subtype(&self) -> Option<String> {
         self.state.lock().longest_phase_spawn_runner_subtype.clone()
     }
@@ -277,7 +277,7 @@ impl CriticalPathComponent {
     ///
     /// PORT: the dependency's fields are read before this component's lock is taken (Java reads
     /// them without holding the dependency's monitor).
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:248 CriticalPathComponent.addDepInfo
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:245 CriticalPathComponent.addDepInfo
     pub fn add_dep_info(
         self: &Arc<Self>,
         dep: &Arc<CriticalPathComponent>,
@@ -304,25 +304,25 @@ impl CriticalPathComponent {
         }
     }
 
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:262 CriticalPathComponent.getStartTimeNanos
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:258 CriticalPathComponent.getStartTimeNanos
     pub fn get_start_time_nanos(&self) -> i64 {
         self.state.lock().start_nanos
     }
 
     /// PORT: `NanosToMillisSinceEpochConverter` is a function from a `nanoTime()` value to
     /// milliseconds since the epoch.
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:266 CriticalPathComponent.getStartTimeMillisSinceEpoch
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:262 CriticalPathComponent.getStartTimeMillisSinceEpoch
     pub fn get_start_time_millis_since_epoch(&self, converter: &dyn Fn(i64) -> i64) -> i64 {
         converter(self.get_start_time_nanos())
     }
 
     /// `getElapsedTime()` in nanoseconds (`Duration.ofNanos(getElapsedTimeNanos())`).
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:270 CriticalPathComponent.getElapsedTime
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:266 CriticalPathComponent.getElapsedTime
     pub fn get_elapsed_time(&self) -> i64 {
         self.get_elapsed_time_nanos()
     }
 
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:274 CriticalPathComponent.getElapsedTimeNanos
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:270 CriticalPathComponent.getElapsedTimeNanos
     pub fn get_elapsed_time_nanos(&self) -> i64 {
         let st = self.state.lock();
         self.get_elapsed_time_nanos_locked(&st)
@@ -346,7 +346,7 @@ impl CriticalPathComponent {
     /// Returns the current critical path for the action, in nanoseconds.
     ///
     /// Critical path is defined as : action_execution_time + max(child_critical_path).
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:306 CriticalPathComponent.getAggregatedElapsedTime
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:300 CriticalPathComponent.getAggregatedElapsedTime
     pub fn get_aggregated_elapsed_time(&self) -> i64 {
         self.state.lock().aggregated_elapsed_time
     }
@@ -354,28 +354,28 @@ impl CriticalPathComponent {
     /// Get the child critical path component.
     ///
     /// The component dependency with the maximum total critical path time.
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:316 CriticalPathComponent.getChild
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:309 CriticalPathComponent.getChild
     pub fn get_child(&self) -> Option<Arc<CriticalPathComponent>> {
         self.state.lock().child.clone()
     }
 
     /// Returns a string representation of the action. Only for use in crash messages and the
     /// like.
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:321 CriticalPathComponent.getActionString
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:315 CriticalPathComponent.getActionString
     fn get_action_string(&self) -> String {
         self.action.pretty_print()
     }
 }
 
 /// To be used only in debugging: skips state invariance checks to avoid crash-looping.
-// Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:296 CriticalPathComponent.getElapsedTimeNanosNoCheck
+// Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:290 CriticalPathComponent.getElapsedTimeNanosNoCheck
 fn get_elapsed_time_nanos_no_check(st: &State) -> i64 {
     // The delta value may be negative, see note in {@link Clock#nanoTime}.
     0.max(st.finish_nanos - st.start_nanos)
 }
 
 /// Returns a user readable representation of the critical path stats with all the details.
-// Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:326 CriticalPathComponent.toString
+// Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComponent.java:320 CriticalPathComponent.toString
 impl std::fmt::Display for CriticalPathComponent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (elapsed_no_check, remote) = {

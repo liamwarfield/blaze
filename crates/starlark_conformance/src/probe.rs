@@ -172,7 +172,8 @@ pub fn compare_case(dir: &std::path::Path, name: &str) -> CaseDiff {
             let n = v.iter().position(is_error).unwrap_or(v.len());
             (
                 v[..n].to_vec(),
-                v.get(n).map(|l| l.split(' ').next().unwrap_or("").to_owned()),
+                v.get(n)
+                    .map(|l| l.split(' ').next().unwrap_or("").to_owned()),
             )
         };
         if split(&java) == split(&rust) {

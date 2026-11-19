@@ -51,7 +51,8 @@ use crate::syntax::type_expr::TypeExprUnpackP;
 enum GrammarUtilError {
     #[error("left-hand-side of assignment must take the form `a`, `a.b` or `a[b]`")]
     InvalidLhs,
-    #[error("left-hand-side of modifying assignment cannot be a list or tuple")]
+    // BLAZE PATCH 0055: Java's text (Resolver.java:869), at the operator.
+    #[error("cannot perform augmented assignment on a list or tuple expression")] // BLAZE PATCH 0055
     InvalidModifyLhs,
     #[error("type annotations not allowed on augmented assignments")]
     TypeAnnotationOnAssignOp,
@@ -59,7 +60,7 @@ enum GrammarUtilError {
     TypeAnnotationOnTupleAssign,
     #[error("`load` statement requires at least two arguments")]
     LoadRequiresAtLeastTwoArguments,
-    #[error("unparenthesized tuple with trailing comma")]
+    #[error("Trailing comma is allowed only in parenthesized tuples.")] // BLAZE PATCH 0055: Java Parser.java:635
     UnparenthesizedTupleTrailingComma,
 }
 
@@ -86,8 +87,12 @@ pub fn check_assign(codemap: &CodeMap, x: AstExpr) -> Result<AstAssignTarget, Ev
                 payload: (),
             })),
             _ => {
-                return Err(EvalException::new_anyhow(
-                    GrammarUtilError::InvalidLhs.into(),
+                // BLAZE PATCH 0055: Java's text (Resolver.java:671 assign, "cannot assign to
+                // '<expr>'"). PORT: Java prints the expression with NodePrinter; the source
+                // text stands in (equal for expressions written in canonical form).
+                let _ = GrammarUtilError::InvalidLhs; // BLAZE PATCH 0055
+                return Err(EvalException::new_anyhow( // BLAZE PATCH 0055
+                    anyhow::anyhow!("cannot assign to '{}'", codemap.source_span(x.span)), // BLAZE PATCH 0055
                     x.span,
                     codemap,
                 ));
@@ -107,9 +112,15 @@ pub fn check_assignment(
         // for augmented assignment, Starlark doesn't allow tuple/list
         match &lhs.node {
             Expr::Tuple(_) | Expr::List(_) => {
+                // BLAZE PATCH 0055: located at the operator (Java getOperatorLocation).
+                let src = codemap.source(); // BLAZE PATCH 0055
+                let mut at = lhs.span.end().get() as usize; // BLAZE PATCH 0055
+                while at < src.len() && matches!(src.as_bytes()[at], b' ' | b'\t' | b'\\' | b'\n' | b'\r' | b')') { // BLAZE PATCH 0055
+                    at += 1; // BLAZE PATCH 0055
+                } // BLAZE PATCH 0055
                 return Err(EvalException::new_anyhow(
                     GrammarUtilError::InvalidModifyLhs.into(),
-                    lhs.span,
+                    Span::new(Pos::new(at as u32), Pos::new(at as u32)), // BLAZE PATCH 0055
                     codemap,
                 ));
             }
@@ -144,9 +155,16 @@ pub(crate) fn reject_unparenthesized_tuple_trailing_comma<T>(
     begin: usize,
     end: usize,
 ) -> Result<T, EvalException> {
+    // BLAZE PATCH 0055: Java reports the token after the trailing comma (Parser.java:635).
+    let _ = begin; // BLAZE PATCH 0055
+    let src = codemap.source(); // BLAZE PATCH 0055
+    let mut at = end; // BLAZE PATCH 0055
+    while at < src.len() && matches!(src.as_bytes()[at], b' ' | b'\t' | b'\\') { // BLAZE PATCH 0055
+        at += 1; // BLAZE PATCH 0055
+    } // BLAZE PATCH 0055
     Err(EvalException::new_anyhow(
         GrammarUtilError::UnparenthesizedTupleTrailingComma.into(),
-        Span::new(Pos::new(begin as _), Pos::new(end as _)),
+        Span::new(Pos::new(at as _), Pos::new(at as _)), // BLAZE PATCH 0055
         codemap,
     ))
 }
@@ -226,6 +244,7 @@ enum DialectError {
     Types,
 }
 
+#[allow(dead_code)] // BLAZE PATCH 0055
 fn err<T>(codemap: &CodeMap, span: Span, err: DialectError) -> Result<T, EvalException> {
     Err(EvalException::new_anyhow(err.into(), span, codemap))
 }
@@ -240,7 +259,20 @@ pub(crate) fn dialect_check_type(
 ) -> Result<Spanned<TypeExpr>, EvalException> {
     let span = x.span;
     if state.dialect.enable_types == DialectTypes::Disable {
-        return err(state.codemap, x.span, DialectError::Types);
+        // BLAZE PATCH 0055: Java's text and position (Parser.java:1066 checkAllowTypeSyntax):
+        // the `:` or `->` before the annotation.
+        let src = state.codemap.source(); // BLAZE PATCH 0055
+        let mut i = x.span.begin().get() as usize; // BLAZE PATCH 0055
+        while i > 0 && matches!(src.as_bytes()[i - 1], b' ' | b'\t' | b'\n' | b'\r' | b'\\') { // BLAZE PATCH 0055
+            i -= 1; // BLAZE PATCH 0055
+        } // BLAZE PATCH 0055
+        let (at, tok) = if src[..i].ends_with("->") { (i - 2, "->") } else { (i.saturating_sub(1), ":") }; // BLAZE PATCH 0055
+        let _ = DialectError::Types; // BLAZE PATCH 0055
+        return Err(EvalException::new_anyhow( // BLAZE PATCH 0055
+            anyhow::anyhow!("syntax error at '{tok}': type annotations are disallowed"), // BLAZE PATCH 0055
+            Span::new(Pos::new(at as u32), Pos::new(at as u32 + tok.len() as u32)), // BLAZE PATCH 0055
+            state.codemap, // BLAZE PATCH 0055
+        )); // BLAZE PATCH 0055
     }
 
     // BLAZE PATCH 0020: Bazel 9.3.2 parses annotations as arbitrary expressions unless type

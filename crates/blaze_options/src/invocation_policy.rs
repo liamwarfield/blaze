@@ -140,7 +140,8 @@ impl InvocationPolicyParser {
             // If the flag value can't be decoded from base64, try decoding the policy as a text
             // formatted proto.
             Err(Base64DecodingException) => {
-                blaze_protos::text_format::parse::<InvocationPolicy>(policy).map_err(|_| malformed())
+                blaze_protos::text_format::parse::<InvocationPolicy>(policy)
+                    .map_err(|_| malformed())
             }
         }
     }
@@ -932,9 +933,7 @@ impl<'a> FilterValueOperation<'a> {
         converted_policy_values: &[Option<Value>],
         value: Option<&Value>,
     ) -> bool {
-        let contains = converted_policy_values
-            .iter()
-            .any(|v| v.as_ref() == value);
+        let contains = converted_policy_values.iter().any(|v| v.as_ref() == value);
         if self.policy_type == "Allow" {
             contains
         } else {
@@ -1119,10 +1118,7 @@ impl<'a> FilterValueOperation<'a> {
         invocation_policy_flag_list_builder: &mut Vec<OptionAndRawValue>,
     ) -> Result<(), OptionsParsingException> {
         let option = option_description.get_option_definition();
-        if option_description
-            .get_option_definition()
-            .allows_multiple()
-        {
+        if option_description.get_option_definition().allows_multiple() {
             // allowMultiple requires that the type of the option be List<T>, so cast from
             // Object to List<?>.
             let option_values = value_description

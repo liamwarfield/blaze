@@ -283,17 +283,22 @@ impl<'v> StarlarkValue<'v> for StarlarkStr {
     fn at(&self, index: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
         // This method is disturbingly hot. Use the logic from `convert_index`,
         // but modified to be UTF8 string friendly.
-        let i = i32::unpack_param(index)?;
+        let i = crate::values::index::java_to_int(index, "string index")?; // BLAZE PATCH 0051
+        // BLAZE PATCH 0051: Java EvalUtils.getSequenceIndex's text.
+        let out_of_range = |i: i32| {
+            crate::values::index::java_sequence_index(i, fast_string::len(self).0 as i32)
+                .unwrap_err()
+        };
         if i >= 0 {
             match fast_string::at(self, CharIndex(i as usize)) {
-                None => Err(ValueError::IndexOutOfBound(i).into()),
+                None => Err(out_of_range(i)), // BLAZE PATCH 0051
                 Some(c) => Ok(heap.alloc(c)),
             }
         } else {
             let len_chars = fast_string::len(self);
             let ind = CharIndex((-i) as usize); // Index from the end, minimum of 1
             if ind > len_chars {
-                Err(ValueError::IndexOutOfBound(i).into())
+                Err(out_of_range(i)) // BLAZE PATCH 0051
             } else if len_chars.0 == self.len() {
                 // We are a 7bit ASCII string, so take the fast-path
                 Ok(heap.alloc(self.as_bytes()[(len_chars - ind).0] as char))
@@ -308,7 +313,14 @@ impl<'v> StarlarkValue<'v> for StarlarkStr {
     }
 
     fn is_in(&self, other: Value) -> crate::Result<bool> {
-        let s = <&str>::unpack_param(other)?;
+        // BLAZE PATCH 0051: Java's text (EvalUtils.java:384 binaryOp).
+        let Some(s) = other.unpack_str() else { // BLAZE PATCH 0051
+            return Err(ValueError::Bazel(format!( // BLAZE PATCH 0051
+                "'in <string>' requires string as left operand, not '{}'", // BLAZE PATCH 0051
+                other.get_type() // BLAZE PATCH 0051
+            )) // BLAZE PATCH 0051
+            .into()); // BLAZE PATCH 0051
+        }; // BLAZE PATCH 0051
         Ok(fast_string::contains(self, s))
     }
 
@@ -328,17 +340,20 @@ impl<'v> StarlarkValue<'v> for StarlarkStr {
         }
 
         #[inline(always)]
-        fn start_stop_to_none_or(v: Option<Value>) -> crate::Result<NoneOr<i32>> {
+        fn start_stop_to_none_or(v: Option<Value>, what: &str) -> crate::Result<NoneOr<i32>> { // BLAZE PATCH 0051
             match v {
                 None => Ok(NoneOr::None),
                 // BLAZE PATCH 0042: an explicit `None` bound is the default (Java
                 // Starlark.slice, net/starlark/java/eval/Starlark.java:692, :698).
                 Some(v) if v.is_none() => Ok(NoneOr::None), // BLAZE PATCH 0042
-                Some(v) => Ok(NoneOr::Other(i32::unpack_value_err(v)?)),
+                Some(v) => Ok(NoneOr::Other(crate::values::index::java_to_int(v, what)?)), // BLAZE PATCH 0051
             }
         }
 
-        let (start, stop) = (start_stop_to_none_or(start)?, start_stop_to_none_or(stop)?);
+        let (start, stop) = ( // BLAZE PATCH 0051
+            start_stop_to_none_or(start, "start index")?, // BLAZE PATCH 0051
+            start_stop_to_none_or(stop, "stop index")?, // BLAZE PATCH 0051
+        ); // BLAZE PATCH 0051
 
         match fast_string::convert_str_indices(self, start.into_option(), stop.into_option()) {
             Some(StrIndices { haystack, .. }) => Ok(heap.alloc_str(haystack).to_value()),
@@ -359,6 +374,12 @@ impl<'v> StarlarkValue<'v> for StarlarkStr {
     }
 
     fn mul(&self, other: Value<'v>, heap: Heap<'v>) -> Option<crate::Result<Value<'v>>> {
+        // BLAZE PATCH 0051: Java `n.toInt("repeat")` (StarlarkList.java:282, EvalUtils.java:430).
+        if crate::values::types::int::int_or_big::StarlarkIntRef::unpack(other).is_some() { // BLAZE PATCH 0051
+            if let Err(e) = crate::values::index::java_to_int(other, "repeat") { // BLAZE PATCH 0051
+                return Some(Err(e)); // BLAZE PATCH 0051
+            } // BLAZE PATCH 0051
+        } // BLAZE PATCH 0051
         let l = match i32::unpack_value(other) {
             Ok(Some(l)) => l,
             Ok(None) => return None,

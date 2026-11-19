@@ -361,8 +361,11 @@ impl<'p> BlazeOptionHandler<'p> {
         args: &[String],
         event_handler: &mut StoredEventHandler,
     ) -> Result<(), OptionsParseFailure> {
-        let (result, _) =
-            self.parse_options_internal(args, event_handler, /* get_config_definitions= */ false);
+        let (result, _) = self.parse_options_internal(
+            args,
+            event_handler,
+            /* get_config_definitions= */ false,
+        );
         if result.is_err() {
             self.options_parser.set_error();
         }
@@ -380,8 +383,11 @@ impl<'p> BlazeOptionHandler<'p> {
         Result<(), OptionsParseFailure>,
         Vec<(String, RcChunkOfArgs)>,
     ) {
-        let (result, config_definitions) =
-            self.parse_options_internal(args, event_handler, /* get_config_definitions= */ true);
+        let (result, config_definitions) = self.parse_options_internal(
+            args,
+            event_handler,
+            /* get_config_definitions= */ true,
+        );
         if result.is_err() {
             self.options_parser.set_error();
         }

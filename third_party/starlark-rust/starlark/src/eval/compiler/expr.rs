@@ -38,7 +38,7 @@ use crate as starlark;
 use crate::codemap::Spanned;
 use crate::collections::symbol::symbol::Symbol;
 use crate::environment::slots::ModuleSlotId;
-use crate::errors::did_you_mean::did_you_mean;
+// BLAZE PATCH 0051: `did_you_mean` replaced by `ValueError::bazel_no_attr`.
 use crate::eval::Arguments;
 use crate::eval::Evaluator;
 use crate::eval::compiler::Compiler;
@@ -1019,7 +1019,8 @@ impl ExprCompiled {
 
 #[derive(Debug, Clone, Error)]
 pub(crate) enum EvalError {
-    #[error("Dictionary key repeated for `{0}`")]
+    /// BLAZE PATCH 0051: Java's text (Eval.java:650 evalDict).
+    #[error("dictionary expression has duplicate key: {0}")]
     DuplicateDictionaryKey(String),
 }
 
@@ -1112,15 +1113,7 @@ fn get_attr_no_attr_error<'v>(x: Value<'v>, attribute: &Symbol) -> crate::Error 
     if let Some(message) = x.get_attr_error_message(attribute.as_str()) { // BLAZE PATCH 0013
         return crate::Error::new_other(anyhow::anyhow!("{message}")); // BLAZE PATCH 0013
     } // BLAZE PATCH 0013
-    match did_you_mean(attribute.as_str(), x.dir_attr().iter().map(|s| s.as_str())) {
-        None => ValueError::NoAttr(x.get_type().to_owned(), attribute.as_str().to_owned()).into(),
-        Some(better) => ValueError::NoAttrDidYouMean(
-            x.get_type().to_owned(),
-            attribute.as_str().to_owned(),
-            better.to_owned(),
-        )
-        .into(),
-    }
+    ValueError::bazel_no_attr(x, attribute.as_str()) // BLAZE PATCH 0051
 }
 
 pub(crate) enum MemberOrValue<'v, 'a> {

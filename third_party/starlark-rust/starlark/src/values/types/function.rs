@@ -104,7 +104,13 @@ impl NativeFunc {
         eval: &mut Evaluator<'v, '_, '_>,
         args: &Arguments<'v, '_>,
     ) -> crate::Result<Value<'v>> {
-        (self.0)(eval, &self.1, args)
+        (self.0)(eval, &self.1, args).map_err(|e| self.java_error(e)) // BLAZE PATCH 0052
+    }
+
+    /// BLAZE PATCH 0052: names the builtin in Java's parameter type errors.
+    #[cold]
+    fn java_error(&self, e: crate::Error) -> crate::Error {
+        crate::values::unpack::BazelParamTypeError::with_function(e, self.1.function_name())
     }
 }
 
@@ -273,7 +279,13 @@ impl NativeMeth {
         this: Value<'v>,
         args: &Arguments<'v, '_>,
     ) -> crate::Result<Value<'v>> {
-        (self.0)(eval, this, &self.1, args)
+        (self.0)(eval, this, &self.1, args).map_err(|e| self.java_error(e)) // BLAZE PATCH 0052
+    }
+
+    /// BLAZE PATCH 0052: names the builtin in Java's parameter type errors.
+    #[cold]
+    fn java_error(&self, e: crate::Error) -> crate::Error {
+        crate::values::unpack::BazelParamTypeError::with_function(e, self.1.function_name())
     }
 }
 

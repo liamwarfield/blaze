@@ -24,9 +24,9 @@ use starlark::values::list::ListRef;
 use crate::attribute::Attribute;
 use crate::attribute::AttributeProvider;
 use crate::attribute::attr;
-use crate::exceptions::PackageLoadingCode;
 use crate::attribute::string_util::did_you_mean;
 use crate::build::package_factory::DebugPrintHandler;
+use crate::exceptions::PackageLoadingCode;
 use crate::macros::MacroInstance;
 use crate::package::MacroFrame;
 use crate::package::Package;
@@ -401,7 +401,9 @@ impl MacroClass {
         // generator owner is the macro's unique id.
         let metadata = target_definition_context.get_metadata().clone();
         let events = Arc::new(DebugPrintHandler::new(
-            target_definition_context.get_local_event_handler_arc().clone(),
+            target_definition_context
+                .get_local_event_handler_arc()
+                .clone(),
         ));
         let thread = ThreadContext::new(Phase::Loading, semantics.clone(), events)
             .with_file_label(metadata.build_file_label.clone())

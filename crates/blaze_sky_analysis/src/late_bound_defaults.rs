@@ -94,6 +94,10 @@ pub fn resolve(
             let configuration = input.configuration()?;
             Some(AttrValue::LabelList(get_action_listeners(configuration)))
         }
+        // Java: com/google/devtools/build/lib/rules/java/JavaSemantics.java:50 JavaSemantics.JAVA_PLUGINS
+        "JavaSemantics.JAVA_PLUGINS" => Some(AttrValue::LabelList(
+            input.fragment::<JavaConfiguration>().get_plugins().to_vec(),
+        )),
         // Java: com/google/devtools/build/lib/analysis/BaseRuleClasses.java:128 BaseRuleClasses.COVERAGE_SUPPORT_CONFIGURATION_RESOLVER
         "BaseRuleClasses.coverageSupportAttribute" => Some(AttrValue::Label(
             input

@@ -212,7 +212,7 @@ fn build_configuration_key_lookup_rounds(options: &BuildOptions) -> usize {
 pub fn build_configuration_key_map(
     env: &mut Environment<'_>,
     options: IndexMap<String, BuildOptions>,
-    _label: &Label,
+    label: &Label,
 ) -> Produced<Result<IndexMap<String, BuildConfigurationKey>, TransitionApplierError>> {
     // Java enqueues one BuildConfigurationKeyProducer per entry; they run in parallel.
     // PORT: BuildConfigurationKeyProducer's work (platform flags, platform mappings, scopes) is
@@ -223,7 +223,11 @@ pub fn build_configuration_key_map(
         .map(|(context, build_options)| {
             (
                 context,
-                BuildConfigurationKeyValueKey::create(Arc::new(build_options)),
+                // Java: new BuildConfigurationKeyProducer(.., label)
+                BuildConfigurationKeyValueKey::create_for_producer(
+                    Arc::new(build_options),
+                    Some(label),
+                ),
             )
         })
         .collect();

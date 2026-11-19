@@ -120,7 +120,7 @@ pub fn compile_with_options(
 /// Resolves every name of `compiled` against `globals` without executing it and returns all
 /// resolution errors as one syntax error list (Java resolves when compiling and reports every
 /// undefined name: `Program.compileFile` → `Resolver.resolveFile`, Resolver.java:1313). `Ok` when every name
-/// resolves. Messages are starlark-rust's ("Variable `x` not found[, did you mean `y`?]"),
+/// resolves. Messages are Java's ("name 'x' is not defined[ (did you mean 'y'?)]", vendored patch 0050),
 /// located at the identifier. Execution (`exec_module`) still resolves too and stops at the
 /// first unresolved name, so callers that want Java's full list call this first.
 // Java: net/starlark/java/syntax/Resolver.java:941 Resolver.use

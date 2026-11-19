@@ -179,12 +179,8 @@ pub(crate) fn dict_methods(registry: &mut MethodsBuilder) {
                 Some(v) => Ok(v),
                 None => {
                     mem::drop(me);
-                    Err(anyhow::anyhow!(
-                        "Key `{}` not found in dictionary `{}`",
-                        key.to_repr(),
-                        this.to_repr()
-                    )
-                    .into())
+                    // BLAZE PATCH 0051: Java's text (Dict.java:279 pop).
+                    Err(anyhow::anyhow!("KeyError: {}", key.to_repr()).into())
                 }
             },
         }
@@ -227,7 +223,8 @@ pub(crate) fn dict_methods(registry: &mut MethodsBuilder) {
 
         match this.aref.content.shift_remove_index(0) {
             Some((k, v)) => Ok((k, v)),
-            None => Err(anyhow::anyhow!("Cannot .popitem() on an empty dictionary")),
+            // BLAZE PATCH 0051: Java's text (Dict.java:291 popitem).
+            None => Err(anyhow::anyhow!("popitem: empty dictionary")),
         }
     }
 
@@ -324,6 +321,7 @@ pub(crate) fn dict_methods(registry: &mut MethodsBuilder) {
             pairs.map(|x| x.get())
         };
 
+        let this_value = this; // BLAZE PATCH 0051
         let mut this = DictMut::from_value(this)?;
         if let Some(pairs) = pairs {
             match DictRef::from_value(pairs) {
@@ -333,14 +331,16 @@ pub(crate) fn dict_methods(registry: &mut MethodsBuilder) {
                     }
                 }
                 _ => {
-                    for v in pairs.iterate(heap)? {
-                        let mut it = v.iterate(heap)?;
-                        // `StarlarkIterator` is fused.
-                        let (Some(k), Some(v), None) = (it.next(), it.next(), it.next()) else {
-                            return Err(anyhow::anyhow!(
-                            "dict.update expect a list of pairs or a dictionary as first argument, got a list of non-pairs.",
-                        ).into());
-                        };
+                    // BLAZE PATCH 0051: Java Dict.update's checks and texts (Dict.java:355).
+                    let pairs = { // BLAZE PATCH 0051
+                        drop(this); // BLAZE PATCH 0051
+                        let p = crate::values::types::dict::globals::java_update_pairs( // BLAZE PATCH 0051
+                            "update", pairs, heap, // BLAZE PATCH 0051
+                        )?; // BLAZE PATCH 0051
+                        this = DictMut::from_value(this_value)?; // BLAZE PATCH 0051
+                        p // BLAZE PATCH 0051
+                    }; // BLAZE PATCH 0051
+                    for (k, v) in pairs { // BLAZE PATCH 0051
                         this.aref.insert_hashed(k.get_hashed()?, v);
                     }
                 }

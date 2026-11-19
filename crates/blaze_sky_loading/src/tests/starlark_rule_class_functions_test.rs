@@ -2344,7 +2344,10 @@ fn test_json_invalid_structure() {
 fn load_package_or_none(
     t: &PackageLoadingTestCase,
     pkg: &str,
-) -> (Option<std::sync::Arc<blaze_packages::package::Package>>, Vec<Event>) {
+) -> (
+    Option<std::sync::Arc<blaze_packages::package::Package>>,
+    Vec<Event>,
+) {
     let (result, events) = t.evaluate_package(pkg);
     if result.has_error() {
         return (None, events);
@@ -2467,8 +2470,7 @@ fn package_in_error_events(t: &PackageLoadingTestCase, build: &[&str]) -> Vec<Ev
 fn test_symbolic_macro_requires_name_attribute() {
     let t = PackageLoadingTestCase::new();
     empty_macro_bzl(&t);
-    let events =
-        package_in_error_events(&t, &["load(\":foo.bzl\", \"my_macro\")", "my_macro()"]);
+    let events = package_in_error_events(&t, &["load(\":foo.bzl\", \"my_macro\")", "my_macro()"]);
     assert_contains_event(
         &events,
         "missing value for mandatory attribute 'name' in 'my_macro' macro",
@@ -2568,7 +2570,10 @@ fn test_symbolic_macro_rejects_reserved_attribute_name() {
         "    },",
         ")",
     ]);
-    assert_contains_error(&events, "Cannot declare a macro attribute named 'visibility'");
+    assert_contains_error(
+        &events,
+        "Cannot declare a macro attribute named 'visibility'",
+    );
 }
 
 // Java: StarlarkRuleClassFunctionsTest.testSymbolicMacro_requiresMandatoryAttribute

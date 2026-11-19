@@ -81,6 +81,8 @@ pub(crate) struct ParserRd<'a, I: Iterator<Item = Lexeme>> {
     /// BLAZE PATCH 0047: Java Parser.insideTypeExpr (Parser.java:120), set while parsing a type
     /// annotation.
     in_type_expr: bool, // BLAZE PATCH 0047
+    /// BLAZE PATCH 0054: the last consumed token was a string literal.
+    prev_was_string: bool, // BLAZE PATCH 0054
 }
 
 impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
@@ -100,6 +102,7 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
             type_syntax,
             def_depth: 0,
             in_type_expr: false, // BLAZE PATCH 0047
+            prev_was_string: false, // BLAZE PATCH 0054
         }
     }
 
@@ -117,6 +120,7 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
     /// produce for the return value.
     #[inline]
     fn advance(&mut self) {
+        self.prev_was_string = matches!(self.current, Some((_, Token::String(_), _))); // BLAZE PATCH 0054
         if let Some((_, _, end)) = &self.current {
             self.last_end = *end;
         }
@@ -134,6 +138,7 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
     #[inline]
     fn take_current(&mut self) -> Option<(usize, Token, usize)> {
         let old = self.current.take();
+        self.prev_was_string = matches!(old, Some((_, Token::String(_), _))); // BLAZE PATCH 0054
         if let Some((_, _, end)) = &old {
             self.last_end = *end;
         }
@@ -200,18 +205,64 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
             return err;
         }
 
+        // BLAZE PATCH 0054: Java's text (Parser.java:334 syntaxError): "syntax error at
+        // 'TOKEN': expected KIND", or "indentation error" at an unexpected indent.
+        // BLAZE PATCH 0054: Java Parser.java:1688 parseSuite reports this text alone.
+        if what == "new indentation block" { // BLAZE PATCH 0054
+            let pos = self.pos(); // BLAZE PATCH 0054
+            return self.error_at(pos, pos, "expected an indented block".to_owned()); // BLAZE PATCH 0054
+        } // BLAZE PATCH 0054
+        // BLAZE PATCH 0054: Java Parser.java:597, :751: a `for` after a call argument or a
+        // parenthesized expression.
+        if what == "symbol ')'" && self.peek() == Some(&Token::For) { // BLAZE PATCH 0054
+            return self.error_java("Starlark does not support Python-style generator expressions"); // BLAZE PATCH 0054
+        } // BLAZE PATCH 0054
+        // BLAZE PATCH 0054: Java Parser.java:673 parseStringLiteral: a string literal right
+        // after another.
+        if matches!(self.peek(), Some(Token::String(_))) && self.prev_was_string { // BLAZE PATCH 0054
+            let pos = self.pos(); // BLAZE PATCH 0054
+            return self.error_at(pos, pos, "Implicit string concatenation is forbidden, use the + operator".to_owned()); // BLAZE PATCH 0054
+        } // BLAZE PATCH 0054
+        let what = java_expected(what); // BLAZE PATCH 0054
         let pos = self.pos();
         let (span, msg) = match &self.current {
+            // Java Lexer.java:256: the last char of the indentation.
+            Some((_, Token::Indent, end)) => ( // BLAZE PATCH 0054
+                Span::new(Pos::new(end.saturating_sub(1) as u32), Pos::new(*end as u32)), // BLAZE PATCH 0054
+                "indentation error".to_owned(), // BLAZE PATCH 0054
+            ), // BLAZE PATCH 0054
             Some((start, tok, end)) => (
                 Span::new(Pos::new(*start as u32), Pos::new(*end as u32)),
-                format!("Parse error: unexpected {}, expected {}", tok, what),
+                format!("syntax error at '{}': {}", java_token_string(tok), what), // BLAZE PATCH 0054
             ),
             None => (
                 Span::new(Pos::new(pos as u32), Pos::new(pos as u32)),
-                format!("Parse error: unexpected end of file, expected {}", what),
+                format!("syntax error at 'EOF': {}", what), // BLAZE PATCH 0054
             ),
         };
         EvalException::parser_error(msg, span, self.state.codemap)
+    }
+
+    /// BLAZE PATCH 0054: `expect` with Java's message for this context
+    /// (`syntax error at 'TOKEN': <message>`).
+    fn expect_java(&mut self, expected: &Token, message: &str) -> Result<(usize, usize), EvalException> {
+        if self.peek() == Some(expected) {
+            return self.expect(expected);
+        }
+        Err(self.error_java(message))
+    }
+
+    /// BLAZE PATCH 0054: Java's `syntaxError(message)` at the current token.
+    fn error_java(&mut self, message: &str) -> EvalException {
+        if let Some(err) = self.pending_error.take() {
+            return err;
+        }
+        let pos = self.pos();
+        let (start, end, tok) = match &self.current {
+            Some((s, t, e)) => (*s, *e, java_token_string(t)),
+            None => (pos, pos, "EOF".to_owned()),
+        };
+        self.error_at(start, end, format!("syntax error at '{tok}': {message}"))
     }
 
     fn error_at(&self, start: usize, end: usize, msg: String) -> EvalException {
@@ -483,7 +534,7 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
             let body = Spanned { span: id_span, node: assign }; // BLAZE PATCH 0030
             Ok(Stmt::If(zero(id_span), Box::new(body)).ast(l, r)) // BLAZE PATCH 0030
         } else if lhs_is_expr_list || ty.is_some() {
-            Err(self.error_expected("assignment operator"))
+            Err(self.error_expected("newline")) // BLAZE PATCH 0054: Java parses an expression statement
         } else {
             // Expression statement
             let r = self.last_end;
@@ -518,6 +569,10 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
         let module = self.parse_string_literal()?;
 
         // Check for empty load: load("module")
+        // BLAZE PATCH 0054: Java Parser.java:1407 parseLoadStatement.
+        if self.peek() == Some(&Token::ClosingRound) { // BLAZE PATCH 0054
+            return Err(self.error_java("expected at least one symbol to load")); // BLAZE PATCH 0054
+        } // BLAZE PATCH 0054
         if self.eat(&Token::ClosingRound) {
             let r = self.last_end;
             let stmt = grammar_util::check_load_0(module, &mut self.state);
@@ -604,6 +659,10 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
                 let (id_l, ident, id_r) = take_payload!(self, Token::Identifier);
                 if self.eat(&Token::Equal) {
                     // Named form: ident = "string"
+                    // BLAZE PATCH 0054: Java Parser.java:1457 parseLoadSymbol.
+                    if !matches!(self.peek(), Some(Token::String(_))) { // BLAZE PATCH 0054
+                        return Err(self.error_java("expected string")); // BLAZE PATCH 0054
+                    } // BLAZE PATCH 0054
                     let their = self.parse_string_literal()?;
                     let local = Spanned {
                         span: Span::new(Pos::new(id_l as u32), Pos::new(id_r as u32)),
@@ -631,7 +690,7 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
                 };
                 Ok((local, s))
             }
-            _ => Err(self.error_expected("string literal or identifier")),
+            _ => Err(self.error_expected("either a literal string or an identifier")), // BLAZE PATCH 0054: Java Parser.java:1437
         }
     }
 
@@ -672,7 +731,7 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
         if items.len() == 1 && !trailing_comma {
             Ok(items.pop().expect("non-empty after parsing"))
         } else if trailing_comma && !allow_trailing_comma {
-            grammar_util::reject_unparenthesized_tuple_trailing_comma(self.state.codemap, l, r)
+            grammar_util::reject_unparenthesized_tuple_trailing_comma(self.state.codemap, l, self.pos()) // BLAZE PATCH 0055
         } else {
             Ok(Expr::Tuple(items).ast(l, r))
         }
@@ -705,7 +764,7 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
         if items.len() == 1 && !trailing_comma {
             Ok(items.pop().expect("non-empty after parsing"))
         } else if trailing_comma {
-            grammar_util::reject_unparenthesized_tuple_trailing_comma(self.state.codemap, l, r)
+            grammar_util::reject_unparenthesized_tuple_trailing_comma(self.state.codemap, l, self.pos()) // BLAZE PATCH 0055
         } else {
             Ok(Expr::Tuple(items).ast(l, r))
         }
@@ -789,12 +848,18 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
 
     /// Reject a comparison directly following another comparison: Starlark forbids
     /// chains like `a < b < c` because comparisons are not associative.
-    fn reject_chained_comparison(&mut self) -> Result<(), EvalException> {
+    fn reject_chained_comparison(&mut self, prev_op: Option<BinOp>) -> Result<(), EvalException> { // BLAZE PATCH 0054
         if let Some(next_tok) = self.peek() {
             if let Some((next_op, _, _)) = Self::infix_binding_power(next_tok) {
                 if Self::is_comparison(next_op) {
-                    return Err(self.error_expected(
-                        "end of expression (comparisons are not associative in Starlark)",
+                    // BLAZE PATCH 0054: Java's text (Parser.java:1028 parseBinOpExpression).
+                    let (start, end) = self.current.as_ref().map(|(s, _, e)| (*s, *e)).unwrap(); // BLAZE PATCH 0054
+                    let this = java_token_string(next_tok); // BLAZE PATCH 0054
+                    let prev = prev_op.map(java_binop).unwrap_or_default(); // BLAZE PATCH 0054
+                    return Err(self.error_at( // BLAZE PATCH 0054
+                        start, // BLAZE PATCH 0054
+                        end, // BLAZE PATCH 0054
+                        format!("Operator '{prev}' is not associative with operator '{this}'. Use parens."), // BLAZE PATCH 0054
                     ));
                 }
             }
@@ -866,14 +931,14 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
                 let l = lhs.span.begin();
                 self.consume(&Token::Not);
                 if self.peek() != Some(&Token::In) {
-                    return Err(self.error_expected("'in' after 'not'"));
+                    return Err(self.error_expected("'in'")); // BLAZE PATCH 0054: Java Parser.java:1015
                 }
                 self.consume(&Token::In);
                 let rhs = self.parse_expr(right_bp)?;
                 let r = rhs.span.end();
                 lhs = Expr::Op(Box::new(lhs), BinOp::NotIn, Box::new(rhs))
                     .ast(l.get() as usize, r.get() as usize);
-                self.reject_chained_comparison()?;
+                self.reject_chained_comparison(Some(BinOp::NotIn))?; // BLAZE PATCH 0054
                 continue;
             }
 
@@ -890,7 +955,7 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
             lhs =
                 Expr::Op(Box::new(lhs), op, Box::new(rhs)).ast(l.get() as usize, r.get() as usize);
             if Self::is_comparison(op) {
-                self.reject_chained_comparison()?;
+                self.reject_chained_comparison(Some(op))?; // BLAZE PATCH 0054
             }
         }
 
@@ -942,6 +1007,13 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
                     let l = lhs.span.begin().get() as usize;
                     self.consume(&Token::OpeningRound);
                     let args = self.parse_comma_separated_args()?;
+                    // BLAZE PATCH 0054: Java Parser.parseArguments expects `,` between
+                    // arguments (Parser.java:583).
+                    if !args.is_empty() // BLAZE PATCH 0054
+                        && !matches!(self.peek(), Some(Token::ClosingRound | Token::For)) // BLAZE PATCH 0054
+                    { // BLAZE PATCH 0054
+                        return Err(self.error_java("expected ,")); // BLAZE PATCH 0054
+                    } // BLAZE PATCH 0054
                     self.expect(&Token::ClosingRound)?;
                     let r = self.last_end;
                     lhs = Expr::check_call(lhs, args, &mut self.state).ast(l, r);
@@ -1117,7 +1189,7 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
                     let err = self.error_at( // BLAZE PATCH 0047
                         l, // BLAZE PATCH 0047
                         r, // BLAZE PATCH 0047
-                        "ellipsis ('...') is not allowed outside type expressions".to_owned(), // BLAZE PATCH 0047
+                        "syntax error at '...': ellipsis ('...') is not allowed outside type expressions".to_owned(), // BLAZE PATCH 0047 0054: Java's syntaxError prefix
                     ); // BLAZE PATCH 0047
                     self.state.errors.push(err); // BLAZE PATCH 0047
                 } // BLAZE PATCH 0047
@@ -1154,7 +1226,7 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
         // Check for comprehension
         if self.peek() == Some(&Token::For) {
             let (for_clause, clauses) = self.parse_comp_clauses()?;
-            self.expect(&Token::ClosingSquare)?;
+            self.expect_java(&Token::ClosingSquare, "expected ']', 'for' or 'if'")?; // BLAZE PATCH 0054: Java Parser.java:889
             let r = self.last_end;
             return Ok(
                 Expr::ListComprehension(Box::new(first), Box::new(for_clause), clauses).ast(l, r),
@@ -1162,6 +1234,10 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
         }
 
         // Regular list
+        // BLAZE PATCH 0054: Java Parser.java:949 parseListMaker.
+        if !matches!(self.peek(), Some(Token::Comma | Token::ClosingSquare)) { // BLAZE PATCH 0054
+            return Err(self.error_java("expected ',', 'for' or ']'")); // BLAZE PATCH 0054
+        } // BLAZE PATCH 0054
         let mut items = vec![first];
         while self.eat(&Token::Comma) {
             if self.peek() == Some(&Token::ClosingSquare) {
@@ -1190,7 +1266,7 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
         // Check for comprehension
         if self.peek() == Some(&Token::For) {
             let (for_clause, clauses) = self.parse_comp_clauses()?;
-            self.expect(&Token::ClosingCurly)?;
+            self.expect_java(&Token::ClosingCurly, "expected '}', 'for' or 'if'")?; // BLAZE PATCH 0054: Java Parser.java:889
             let r = self.last_end;
             return Ok(Expr::DictComprehension(
                 Box::new((key, value)),
@@ -1596,6 +1672,13 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
                     let l = lhs.span.begin().get() as usize;
                     self.advance();
                     let args = self.parse_comma_separated_args()?;
+                    // BLAZE PATCH 0054: Java Parser.parseArguments expects `,` between
+                    // arguments (Parser.java:583).
+                    if !args.is_empty() // BLAZE PATCH 0054
+                        && !matches!(self.peek(), Some(Token::ClosingRound | Token::For)) // BLAZE PATCH 0054
+                    { // BLAZE PATCH 0054
+                        return Err(self.error_java("expected ,")); // BLAZE PATCH 0054
+                    } // BLAZE PATCH 0054
                     self.expect(&Token::ClosingRound)?;
                     let r = self.last_end;
                     lhs = Expr::check_call(lhs, args, &mut self.state).ast(l, r);
@@ -1622,14 +1705,14 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
                 let l = lhs.span.begin();
                 self.advance();
                 if self.peek() != Some(&Token::In) {
-                    return Err(self.error_expected("'in' after 'not'"));
+                    return Err(self.error_expected("'in'")); // BLAZE PATCH 0054: Java Parser.java:1015
                 }
                 self.advance();
                 let rhs = self.parse_expr(right_bp)?;
                 let r = rhs.span.end();
                 lhs = Expr::Op(Box::new(lhs), BinOp::NotIn, Box::new(rhs))
                     .ast(l.get() as usize, r.get() as usize);
-                self.reject_chained_comparison()?;
+                self.reject_chained_comparison(Some(BinOp::NotIn))?; // BLAZE PATCH 0054
                 continue;
             }
 
@@ -1646,7 +1729,7 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
             lhs =
                 Expr::Op(Box::new(lhs), op, Box::new(rhs)).ast(l.get() as usize, r.get() as usize);
             if Self::is_comparison(op) {
-                self.reject_chained_comparison()?;
+                self.reject_chained_comparison(Some(op))?; // BLAZE PATCH 0054
             }
         }
         Ok(lhs)
@@ -1658,6 +1741,13 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
             let l = expr.span.begin().get() as usize;
             self.advance();
             let cond = self.parse_or_test()?;
+            // BLAZE PATCH 0054: Java Parser.java:1306 parseTest, at the start of the expression.
+            if self.peek() != Some(&Token::Else) { // BLAZE PATCH 0054
+                if let Some(err) = self.pending_error.take() { // BLAZE PATCH 0054
+                    return Err(err); // BLAZE PATCH 0054
+                } // BLAZE PATCH 0054
+                return Err(self.error_at(l, l, "missing else clause in conditional expression or semicolon before if".to_owned())); // BLAZE PATCH 0054
+            } // BLAZE PATCH 0054
             self.expect(&Token::Else)?;
             let else_expr = self.parse_test()?;
             let r = self.last_end;
@@ -1684,4 +1774,158 @@ pub(crate) fn parse_module<I: Iterator<Item = Lexeme>>(
         errors: &mut *state.errors,
     };
     ParserRd::new(tokens, temp_state).parse_module()
+}
+
+/// BLAZE PATCH 0054: Java `TokenKind.toString` of the token kind (net/starlark/java/syntax/
+/// TokenKind.java), as `syntax error at 'TOKEN'` prints a token without a value.
+fn java_kind(tok: &Token) -> Option<&'static str> {
+    Some(match tok {
+        Token::Indent => "indent",
+        Token::Dedent => "outdent",
+        Token::Newline => "newline",
+        Token::And => "and",
+        Token::Else => "else",
+        Token::Load => "load",
+        Token::Break => "break",
+        Token::For => "for",
+        Token::Not => "not",
+        Token::Continue => "continue",
+        Token::If => "if",
+        Token::Or => "or",
+        Token::Def => "def",
+        Token::In => "in",
+        Token::Pass => "pass",
+        Token::Elif => "elif",
+        Token::Return => "return",
+        Token::Lambda => "lambda",
+        Token::Comma => ",",
+        Token::Semicolon => ";",
+        Token::Colon => ":",
+        Token::PlusEqual => "+=",
+        Token::MinusEqual => "-=",
+        Token::StarEqual => "*=",
+        Token::SlashEqual => "/=",
+        Token::SlashSlashEqual => "//=",
+        Token::PercentEqual => "%=",
+        Token::EqualEqual => "==",
+        Token::BangEqual => "!=",
+        Token::LessEqual => "<=",
+        Token::GreaterEqual => ">=",
+        Token::StarStar => "**",
+        Token::MinusGreater => "->",
+        Token::Equal => "=",
+        Token::LessThan => "<",
+        Token::GreaterThan => ">",
+        Token::Minus => "-",
+        Token::Plus => "+",
+        Token::Star => "*",
+        Token::Percent => "%",
+        Token::Slash => "/",
+        Token::SlashSlash => "//",
+        Token::Dot => ".",
+        Token::Ampersand => "&",
+        Token::Pipe => "|",
+        Token::Caret => "^",
+        Token::LessLess => "<<",
+        Token::GreaterGreater => ">>",
+        Token::Tilde => "~",
+        Token::AmpersandEqual => "&=",
+        Token::PipeEqual => "|=",
+        Token::CaretEqual => "^=",
+        Token::LessLessEqual => "<<=",
+        Token::GreaterGreaterEqual => ">>=",
+        Token::Ellipsis => "...",
+        Token::OpeningSquare => "[",
+        Token::OpeningCurly => "{",
+        Token::OpeningRound => "(",
+        Token::ClosingSquare => "]",
+        Token::ClosingCurly => "}",
+        Token::ClosingRound => ")",
+        _ => return None,
+    })
+}
+
+/// BLAZE PATCH 0054: Java `Parser.tokenString` (Parser.java:188): a string literal's value in
+/// double quotes, an identifier's name, a number's value, else the kind.
+fn java_token_string(tok: &Token) -> String {
+    match tok {
+        Token::String(s) => format!("\"{s}\""),
+        Token::Identifier(s) => s.clone(),
+        Token::Int(i) => match i {
+            crate::lexer::TokenInt::I32(i) => i.to_string(),
+            crate::lexer::TokenInt::BigInt(i) => i.to_string(),
+        },
+        Token::Float(f) => java_double_to_string(*f),
+        _ => match java_kind(tok) {
+            Some(k) => k.to_owned(),
+            None => tok.to_string(),
+        },
+    }
+}
+
+/// BLAZE PATCH 0054: Java `Double.toString` (shortest digits; plain notation for 1e-3 <= |d| <
+/// 1e7 with at least one fraction digit, else `d.dddE[-]n`).
+fn java_double_to_string(d: f64) -> String {
+    if d.is_nan() {
+        return "NaN".to_owned();
+    }
+    if d.is_infinite() {
+        return if d > 0.0 { "Infinity" } else { "-Infinity" }.to_owned();
+    }
+    if d == 0.0 {
+        return if d.is_sign_negative() { "-0.0" } else { "0.0" }.to_owned();
+    }
+    let e = format!("{:e}", d.abs());
+    let (mant, exp) = e.split_once('e').unwrap();
+    let exp: i32 = exp.parse().unwrap();
+    let digits: String = mant.chars().filter(|c| *c != '.').collect();
+    let sign = if d < 0.0 { "-" } else { "" };
+    let a = d.abs();
+    if (1e-3..1e7).contains(&a) {
+        let s = if exp >= 0 {
+            let int_len = exp as usize + 1;
+            let mut ds = digits.clone();
+            while ds.len() < int_len {
+                ds.push('0');
+            }
+            let (i, f) = ds.split_at(int_len);
+            format!("{i}.{}", if f.is_empty() { "0" } else { f })
+        } else {
+            format!("0.{}{}", "0".repeat((-exp - 1) as usize), digits)
+        };
+        format!("{sign}{s}")
+    } else {
+        let (i, f) = digits.split_at(1);
+        format!("{sign}{i}.{}E{exp}", if f.is_empty() { "0" } else { f })
+    }
+}
+
+/// BLAZE PATCH 0054: Java's spelling of what the parser expected (`expected <TokenKind>` and
+/// the parser's own phrases).
+fn java_expected(what: &str) -> String {
+    let w = what
+        .strip_prefix("symbol '")
+        .and_then(|s| s.strip_suffix('\''))
+        .or_else(|| what.strip_prefix("keyword '").and_then(|s| s.strip_suffix('\'')));
+    match (w, what) {
+        (Some(k), _) => format!("expected {k}"),
+        (None, "new line") => "expected newline".to_owned(),
+        (None, "new indentation block") => "expected an indented block".to_owned(),
+        (None, w) => format!("expected {w}"),
+    }
+}
+
+/// BLAZE PATCH 0054: Java `TokenKind.toString` of a binary operator.
+fn java_binop(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Equal => "==",
+        BinOp::NotEqual => "!=",
+        BinOp::Less => "<",
+        BinOp::Greater => ">",
+        BinOp::LessOrEqual => "<=",
+        BinOp::GreaterOrEqual => ">=",
+        BinOp::In => "in",
+        BinOp::NotIn => "not in",
+        _ => "",
+    }
 }

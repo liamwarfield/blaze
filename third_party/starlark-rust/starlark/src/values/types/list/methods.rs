@@ -25,7 +25,7 @@ use crate as starlark;
 use crate::environment::MethodsBuilder;
 use crate::values::Heap;
 use crate::values::Value;
-use crate::values::ValueError;
+// BLAZE PATCH 0051: `ValueError` no longer used here.
 use crate::values::ValueOfUnchecked;
 use crate::values::list::ListRef;
 use crate::values::none::NoneOr;
@@ -54,9 +54,10 @@ pub(crate) fn list_methods(builder: &mut MethodsBuilder) {
     /// ```
     fn append<'v>(
         this: Value<'v>,
-        #[starlark(require = pos)] el: Value<'v>,
+        #[starlark(require = pos)] item: Value<'v>, // BLAZE PATCH 0052
         heap: Heap<'v>,
     ) -> anyhow::Result<NoneType> {
+        let el = item; // BLAZE PATCH 0052: Java parameter name `item`
         let this = ListData::from_value_mut(this)?;
         this.push(el, heap);
         Ok(NoneType)
@@ -102,9 +103,11 @@ pub(crate) fn list_methods(builder: &mut MethodsBuilder) {
     /// ```
     fn extend<'v>(
         this: Value<'v>,
-        #[starlark(require = pos)] other: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
+        #[starlark(require = pos)] items: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>, // BLAZE PATCH 0052
         heap: Heap<'v>,
     ) -> starlark::Result<NoneType> {
+        let other = items; // BLAZE PATCH 0052: Java parameter name `items`
+        crate::values::unpack::java_check_iterable("extend", "items", other.get(), heap)?; // BLAZE PATCH 0052
         let res = ListData::from_value_mut(this)?;
         if this.ptr_eq(other.get()) {
             // If the types alias, we can't borrow the `other` for iteration.
@@ -155,10 +158,11 @@ pub(crate) fn list_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn index<'v>(
         this: &ListRef<'v>,
-        #[starlark(require = pos)] needle: Value<'v>,
+        #[starlark(require = pos)] x: Value<'v>, // BLAZE PATCH 0052
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
     ) -> starlark::Result<i32> {
+        let needle = x; // BLAZE PATCH 0052: Java parameter name `x`
         let (start, end) =
             convert_indices(this.len() as i32, start.into_option(), end.into_option());
         if let Some(haystack) = this.get(start..end) {
@@ -168,7 +172,8 @@ pub(crate) fn list_methods(builder: &mut MethodsBuilder) {
                 }
             }
         }
-        Err(anyhow::anyhow!("Element '{}' not found in '{}'", needle, this).into())
+        // BLAZE PATCH 0051: Java's text (StarlarkList.java:424 index).
+        Err(anyhow::anyhow!("item {} not found in list", needle.to_repr()).into())
     }
 
     /// [list.insert](
@@ -195,9 +200,10 @@ pub(crate) fn list_methods(builder: &mut MethodsBuilder) {
     fn insert<'v>(
         this: Value<'v>,
         #[starlark(require = pos)] index: i32,
-        #[starlark(require = pos)] el: Value<'v>,
+        #[starlark(require = pos)] item: Value<'v>, // BLAZE PATCH 0052
         heap: Heap<'v>,
     ) -> anyhow::Result<NoneType> {
+        let el = item; // BLAZE PATCH 0052: Java parameter name `item`
         let this = ListData::from_value_mut(this)?;
         let index = convert_index(this.len() as i32, index);
         this.insert(index, el, heap);
@@ -227,8 +233,9 @@ pub(crate) fn list_methods(builder: &mut MethodsBuilder) {
     /// ```
     fn pop<'v>(
         this: Value<'v>,
-        #[starlark(require = pos)] index: Option<i32>,
+        #[starlark(require = pos)] i: Option<i32>, // BLAZE PATCH 0052
     ) -> anyhow::Result<Value<'v>> {
+        let index = i; // BLAZE PATCH 0052: Java parameter name `i`
         let this = ListData::from_value_mut(this)?;
         let index = index.unwrap_or_else(|| (this.len() as i32) - 1);
         // BLAZE PATCH 0006: a negative index counts from the end, as in Bazel
@@ -239,7 +246,10 @@ pub(crate) fn list_methods(builder: &mut MethodsBuilder) {
             index
         };
         if resolved < 0 || resolved >= this.len() as i32 {
-            return Err(ValueError::IndexOutOfBound(index).into());
+            // BLAZE PATCH 0051: Java's text (EvalUtils.getSequenceIndex).
+            return Err(crate::values::index::java_sequence_index(index, this.len() as i32)
+                .unwrap_err()
+                .into_anyhow());
         }
         Ok(this.remove(resolved as usize))
     }
@@ -280,8 +290,9 @@ pub(crate) fn list_methods(builder: &mut MethodsBuilder) {
     /// ```
     fn remove<'v>(
         this: Value<'v>,
-        #[starlark(require = pos)] needle: Value<'v>,
+        #[starlark(require = pos)] x: Value<'v>, // BLAZE PATCH 0052
     ) -> anyhow::Result<NoneType> {
+        let needle = x; // BLAZE PATCH 0052: Java parameter name `x`
         // Written in two separate blocks so we ensure we give up the
         // immutable borrow before making the mutable borrow.
         let position = {
@@ -290,11 +301,9 @@ pub(crate) fn list_methods(builder: &mut MethodsBuilder) {
             match position {
                 Some(i) => i,
                 None => {
-                    return Err(anyhow::anyhow!(
-                        "Element '{}' not found in list '{}'",
-                        needle,
-                        this
-                    ));
+                    // BLAZE PATCH 0051: Java's text (StarlarkList.java:363 removeElement).
+                    let _ = &this; // BLAZE PATCH 0051
+                    return Err(anyhow::anyhow!("item {} not found in list", needle.to_repr()));
                 }
             }
         };

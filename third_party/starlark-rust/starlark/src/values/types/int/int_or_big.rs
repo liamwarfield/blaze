@@ -65,6 +65,12 @@ enum StarlarkIntError {
     ShiftCountTooLarge(StarlarkInt),
     #[error("Negative right shift")]
     RightShiftNegative,
+    /// BLAZE PATCH 0051: Java StarlarkInt.shiftLeft / shiftRight (StarlarkInt.java:627, :649).
+    #[error("negative shift count: {0}")]
+    BazelNegativeShiftCount(i32),
+    /// BLAZE PATCH 0051: Java StarlarkInt.toInt("shift count") (StarlarkInt.java:339).
+    #[error("got {0} for shift count, want value in signed 32-bit range")]
+    BazelShiftCountRange(StarlarkInt),
 }
 
 #[derive(
@@ -348,16 +354,22 @@ impl<'v> StarlarkIntRef<'v> {
             }
         }
 
-        if other.is_negative() {
-            return Err(StarlarkIntError::LeftShiftNegative.into());
-        }
-        if self.is_zero() || other.is_zero() {
-            return Ok(self.to_owned());
+        // BLAZE PATCH 0051: Java's order and texts (StarlarkInt.java:647 shiftLeft): the count
+        // must be an int32, not negative, below 512; then the shift.
+        let Some(yi) = other.to_i32() else { // BLAZE PATCH 0051
+            return Err(StarlarkIntError::BazelShiftCountRange(other.to_owned()).into()); // BLAZE PATCH 0051
+        }; // BLAZE PATCH 0051
+        if yi < 0 { // BLAZE PATCH 0051
+            let _ = StarlarkIntError::LeftShiftNegative; // BLAZE PATCH 0051
+            return Err(StarlarkIntError::BazelNegativeShiftCount(yi).into()); // BLAZE PATCH 0051
         }
         // BLAZE PATCH 0001: Bazel rejects shift counts >= 512
         // (net/starlark/java/eval/StarlarkInt.java:650 StarlarkInt.shiftLeft).
         if other >= 512 {
             return Err(StarlarkIntError::ShiftCountTooLarge(other.to_owned()).into());
+        }
+        if self.is_zero() || other.is_zero() { // BLAZE PATCH 0051: after the checks
+            return Ok(self.to_owned());
         }
 
         match other {
@@ -381,8 +393,13 @@ impl<'v> StarlarkIntRef<'v> {
             }
         }
 
-        if other.is_negative() {
-            return Err(StarlarkIntError::RightShiftNegative.into());
+        // BLAZE PATCH 0051: Java's checks and texts (StarlarkInt.java:625 shiftRight).
+        let Some(yi) = other.to_i32() else { // BLAZE PATCH 0051
+            return Err(StarlarkIntError::BazelShiftCountRange(other.to_owned()).into()); // BLAZE PATCH 0051
+        }; // BLAZE PATCH 0051
+        if yi < 0 { // BLAZE PATCH 0051
+            let _ = StarlarkIntError::RightShiftNegative; // BLAZE PATCH 0051
+            return Err(StarlarkIntError::BazelNegativeShiftCount(yi).into()); // BLAZE PATCH 0051
         }
         if self.is_zero() || other.is_zero() {
             return Ok(self.to_owned());

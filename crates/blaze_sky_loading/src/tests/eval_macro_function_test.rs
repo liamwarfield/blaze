@@ -75,7 +75,10 @@ fn get_package_piece(
         .expect("the piece")
         .for_macro
         .clone();
-    assert_eq!(value.get_identifier(), PackagePieceIdentifier::ForMacro(key));
+    assert_eq!(
+        value.get_identifier(),
+        PackagePieceIdentifier::ForMacro(key)
+    );
     (value, events)
 }
 
@@ -106,13 +109,9 @@ fn get_exception_message_for_package_piece<E: std::error::Error + 'static>(
     let error = result
         .get_error(&SkyKey::new(EvalMacroKey(key)))
         .expect("an error");
-    let exception = error.exception_as::<E>().unwrap_or_else(|| {
-        panic!(
-            "expected {}, got {:?}",
-            std::any::type_name::<E>(),
-            error
-        )
-    });
+    let exception = error
+        .exception_as::<E>()
+        .unwrap_or_else(|| panic!("expected {}, got {:?}", std::any::type_name::<E>(), error));
     exception.to_string()
 }
 
@@ -138,7 +137,10 @@ fn valid_macro() {
     );
     t.scratch_file(
         "pkg/BUILD",
-        &["load(\":my_macro.bzl\", \"my_macro\")", "my_macro(name = \"foo\")"],
+        &[
+            "load(\":my_macro.bzl\", \"my_macro\")",
+            "my_macro(name = \"foo\")",
+        ],
     );
     let for_macro = get_package_piece_without_errors(&t, "pkg", &["foo"]);
     assert!(for_macro.get_targets().contains_key("foo"));
@@ -189,7 +191,9 @@ fn valid_nested_macro() {
         let a = for_outer_macro
             .get_macro_by_name(&inner_macro_instance_name)
             .expect("the inner macro");
-        let b = for_inner_macro.get_evaluated_macro().expect("evaluated macro");
+        let b = for_inner_macro
+            .get_evaluated_macro()
+            .expect("evaluated macro");
         assert_eq!(a.get_id(), b.get_id());
         assert_eq!(
             a.get_macro_class().get_name(),
@@ -217,8 +221,11 @@ fn max_computation_steps_enforced() {}
 #[test]
 fn no_build_file_fails_cleanly() {
     let t = PackageLoadingTestCase::new();
-    let message =
-        get_exception_message_for_package_piece::<NoSuchPackageException>(&t, "no_such_pkg", &["foo"]);
+    let message = get_exception_message_for_package_piece::<NoSuchPackageException>(
+        &t,
+        "no_such_pkg",
+        &["foo"],
+    );
     assert!(
         message.contains("no such package 'no_such_pkg': BUILD file not found"),
         "{message}"
@@ -267,7 +274,10 @@ fn no_macro_instance_fails_cleanly() {
     );
     t.scratch_file(
         "pkg/BUILD",
-        &["load(\":my_macro.bzl\", \"my_macro\")", "my_macro(name = \"foo\")"],
+        &[
+            "load(\":my_macro.bzl\", \"my_macro\")",
+            "my_macro(name = \"foo\")",
+        ],
     );
     let message = get_exception_message_for_package_piece::<NoSuchMacroInstanceException>(
         &t,
@@ -295,7 +305,10 @@ fn bad_macro_implementation_produces_package_piece_with_errors() {
     );
     t.scratch_file(
         "pkg/BUILD",
-        &["load(\":my_macro.bzl\", \"my_macro\")", "my_macro(name = \"foo\")"],
+        &[
+            "load(\":my_macro.bzl\", \"my_macro\")",
+            "my_macro(name = \"foo\")",
+        ],
     );
     let (for_macro, events) = get_package_piece(&t, "pkg", &["foo"]);
     assert!(for_macro.contains_errors());
@@ -368,8 +381,10 @@ fn finalizers_see_non_finalizer_defined_rules_ordered_by_name() {
         ],
     );
     let finalizer_piece = get_package_piece_without_errors(&t, "pkg", &["finalize"]);
-    let existing_rules =
-        string_list_attr(finalizer_piece.get_target("finalize").unwrap(), "existing_rules");
+    let existing_rules = string_list_attr(
+        finalizer_piece.get_target("finalize").unwrap(),
+        "existing_rules",
+    );
     assert_eq!(
         existing_rules,
         vec![
@@ -412,8 +427,11 @@ fn finalizers_do_not_see_finalizer_defined_targets() {
     );
     let finalizer_piece = get_package_piece_without_errors(&t, "pkg", &["finalize"]);
     assert!(
-        string_list_attr(finalizer_piece.get_target("finalize").unwrap(), "existing_rules")
-            .is_empty()
+        string_list_attr(
+            finalizer_piece.get_target("finalize").unwrap(),
+            "existing_rules"
+        )
+        .is_empty()
     );
     let other_finalizer_piece = get_package_piece_without_errors(&t, "pkg", &["other_finalize"]);
     assert!(
@@ -434,7 +452,11 @@ fn assert_contains_events_in_order(events: &[blaze_events::Event], expected: &[&
             i += 1;
         }
     }
-    assert_eq!(i, expected.len(), "events in order {expected:#?}; got {strings:#?}");
+    assert_eq!(
+        i,
+        expected.len(),
+        "events in order {expected:#?}; got {strings:#?}"
+    );
 }
 
 // Java: EvalMacroFunctionTest.finalizers_notEvaluated_ifNonFinalizerPackagePieceInError
@@ -485,7 +507,11 @@ fn finalizers_not_evaluated_if_non_finalizer_package_piece_in_error() {
         ),
         "{message}"
     );
-    assert!(get_package_piece(&t, "pkg", &["failing_macro"]).0.contains_errors());
+    assert!(
+        get_package_piece(&t, "pkg", &["failing_macro"])
+            .0
+            .contains_errors()
+    );
     let build = t.workspace_path("pkg/BUILD");
     let bzl = t.workspace_path("pkg/fail_macro.bzl");
     assert_contains_events_in_order(
@@ -586,7 +612,8 @@ fn finalizers_not_evaluated_if_name_conflict_between_non_finalizer_package_piece
 #[test]
 fn identifier_equality() {
     let pkg = || PackageIdentifier::create_in_main_repo_str("test_pkg");
-    let build = || PackagePieceIdentifier::ForBuildFile(PackagePieceIdentifierForBuildFile::new(pkg()));
+    let build =
+        || PackagePieceIdentifier::ForBuildFile(PackagePieceIdentifierForBuildFile::new(pkg()));
     let foo = || {
         PackagePieceIdentifier::ForMacro(PackagePieceIdentifierForMacro::new(
             pkg(),

@@ -116,9 +116,13 @@ pub(crate) fn register_list(globals: &mut GlobalsBuilder) {
     ty_custom_function = ListType,
     )]
     fn list<'v>(
-        #[starlark(require = pos)] a: Option<ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>>,
+        #[starlark(require = pos)] x: Option<ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>>, // BLAZE PATCH 0052
         heap: Heap<'v>,
     ) -> starlark::Result<ValueOfUnchecked<'v, &'v ListRef<'v>>> {
+        let a = x; // BLAZE PATCH 0052: Java parameter name `x`
+        if let Some(a) = &a { // BLAZE PATCH 0052
+            crate::values::unpack::java_check_iterable("list", "x", a.get(), heap)?; // BLAZE PATCH 0052
+        } // BLAZE PATCH 0052
         Ok(ValueOfUnchecked::new(if let Some(a) = a {
             if let Some(xs) = ListRef::from_value(a.get()) {
                 heap.alloc_list(xs.content())

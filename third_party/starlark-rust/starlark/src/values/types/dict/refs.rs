@@ -114,7 +114,7 @@ impl<'v> DictMut<'v> {
             Some(ptr) if unlikely(ptr.0.immutable.get()) => Err(frozen_dict_error()),
             Some(ptr) => match ptr.0.cell.try_borrow_mut() { // BLAZE PATCH 0018
                 Ok(x) => Ok(DictMut { aref: x }),
-                Err(_) => Err(ValueError::MutationDuringIteration.into()),
+                Err(_) => Err(ValueError::Bazel("dict value is temporarily immutable due to active for-loop iteration".to_owned()).into()), // BLAZE PATCH 0051
             },
         }
     }

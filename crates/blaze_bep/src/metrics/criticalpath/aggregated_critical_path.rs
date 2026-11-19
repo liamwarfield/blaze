@@ -9,7 +9,7 @@ use crate::metrics::aggregated_spawn_metrics::AggregatedSpawnMetrics;
 
 /// Aggregates all the critical path components in one object. This allows us to easily access
 /// the components data and have a proper toString().
-// Java: com/google/devtools/build/lib/metrics/criticalpath/AggregatedCriticalPath.java:29 AggregatedCriticalPath
+// Java: com/google/devtools/build/lib/metrics/criticalpath/AggregatedCriticalPath.java:28 AggregatedCriticalPath
 #[derive(Clone, Debug)]
 pub struct AggregatedCriticalPath {
     /// `totalTime`, in nanoseconds.
@@ -113,20 +113,20 @@ impl AggregatedCriticalPath {
 
     /// Returns a summary version of the critical path stats that omits stats that are not useful
     /// to the user.
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/AggregatedCriticalPath.java:101 AggregatedCriticalPath.toStringSummary
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/AggregatedCriticalPath.java:99 AggregatedCriticalPath.toStringSummary
     pub fn to_string_summary(&self) -> String {
         self.to_string_with(true, true)
     }
 
     /// Same as toStringSummary but also omits remote stats. This is to be used in Bazel because
     /// currently the Remote stats are not calculated correctly.
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/AggregatedCriticalPath.java:109 AggregatedCriticalPath.toStringSummaryNoRemote
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/AggregatedCriticalPath.java:107 AggregatedCriticalPath.toStringSummaryNoRemote
     pub fn to_string_summary_no_remote(&self) -> String {
         self.to_string_with(true, false)
     }
 }
 
-// Java: com/google/devtools/build/lib/metrics/criticalpath/AggregatedCriticalPath.java:75 AggregatedCriticalPath.toString
+// Java: com/google/devtools/build/lib/metrics/criticalpath/AggregatedCriticalPath.java:74 AggregatedCriticalPath.toString
 impl std::fmt::Display for AggregatedCriticalPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.to_string_with(false, true))

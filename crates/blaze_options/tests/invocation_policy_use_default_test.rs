@@ -24,7 +24,10 @@ fn test_use_default() {
         .unwrap();
 
     // Options should be the user specified value before enforcing policy.
-    assert_eq!(get_test_options(&parser).test_string, TEST_STRING_USER_VALUE);
+    assert_eq!(
+        get_test_options(&parser).test_string,
+        TEST_STRING_USER_VALUE
+    );
 
     enforce(&enforcer, &mut parser).unwrap();
 
@@ -200,7 +203,10 @@ fn test_use_default_with_flag_with_implicit_requirements() {
     enforce(&enforcer, &mut parser).unwrap();
 
     let t = get_test_options(&parser);
-    assert_eq!(t.test_implicit_requirement, TEST_IMPLICIT_REQUIREMENT_DEFAULT);
+    assert_eq!(
+        t.test_implicit_requirement,
+        TEST_IMPLICIT_REQUIREMENT_DEFAULT
+    );
     assert_eq!(t.implicit_requirement_a, IMPLICIT_REQUIREMENT_A_DEFAULT);
 }
 
@@ -251,8 +257,14 @@ fn test_use_default_with_flag_with_recursive_implicit_requirements() {
     // test_implicit_requirement gets its value from test_recursive_implicit_requirement, and
     // implicit_requirement_a gets its value from test_implicit_requirement.
     let t = get_test_options(&parser);
-    assert_eq!(t.test_recursive_implicit_requirement, TEST_STRING_USER_VALUE);
-    assert_eq!(t.test_implicit_requirement, TEST_IMPLICIT_REQUIREMENT_REQUIRED);
+    assert_eq!(
+        t.test_recursive_implicit_requirement,
+        TEST_STRING_USER_VALUE
+    );
+    assert_eq!(
+        t.test_implicit_requirement,
+        TEST_IMPLICIT_REQUIREMENT_REQUIRED
+    );
     assert_eq!(t.implicit_requirement_a, IMPLICIT_REQUIREMENT_A_REQUIRED);
 
     enforce(&enforcer, &mut parser).unwrap();
@@ -263,6 +275,9 @@ fn test_use_default_with_flag_with_recursive_implicit_requirements() {
         t.test_recursive_implicit_requirement,
         TEST_RECURSIVE_IMPLICIT_REQUIREMENT_DEFAULT
     );
-    assert_eq!(t.test_implicit_requirement, TEST_IMPLICIT_REQUIREMENT_DEFAULT);
+    assert_eq!(
+        t.test_implicit_requirement,
+        TEST_IMPLICIT_REQUIREMENT_DEFAULT
+    );
     assert_eq!(t.implicit_requirement_a, IMPLICIT_REQUIREMENT_A_DEFAULT);
 }

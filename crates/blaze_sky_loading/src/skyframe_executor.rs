@@ -315,9 +315,10 @@ pub fn register_loading_functions(
         config.bazel_starlark_environment.clone(),
         config.external_repos.clone(),
     );
-    let eval_macro_function = config.package_factory.clone().map(|package_factory| {
-        crate::package_pieces::EvalMacroFunction { package_factory }
-    });
+    let eval_macro_function = config
+        .package_factory
+        .clone()
+        .map(|package_factory| crate::package_pieces::EvalMacroFunction { package_factory });
     let package_function = config.package_factory.clone().map(|package_factory| {
         PackageFunction::new(Arc::new(PackageFunctionConfig {
             package_factory,
@@ -385,13 +386,14 @@ pub fn register_loading_functions(
                     )
                 };
                 if let Some(k) = key.downcast::<PackageKey>() {
-                    return Ok(f.compute(k, env)?.map(|v| Arc::new(v) as blaze_skyframe::SkyValue));
+                    return Ok(f
+                        .compute(k, env)?
+                        .map(|v| Arc::new(v) as blaze_skyframe::SkyValue));
                 }
                 let k = key
                     .downcast::<crate::package_pieces::PackagePieceForBuildFileKey>()
                     .expect("a PACKAGE key");
-                Ok(f
-                    .compute_package_piece(k, env)?
+                Ok(f.compute_package_piece(k, env)?
                     .map(|v| Arc::new(v) as blaze_skyframe::SkyValue))
             }
         })
@@ -463,9 +465,11 @@ pub fn inject_loading_precomputed_with_package_options(
     );
     // setLazyMacroExpansionPackages(packageOptions.lazyMacroExpansionPackages);
     let lazy_macro_expansion_packages = match &package_options.lazy_macro_expansion_packages {
-        LazyMacroExpansionPackages::Set(ids) => crate::precomputed::LazyMacroExpansionPackages::Set(
-            ids.iter().map(|p| p.0.clone()).collect::<HashSet<_>>(),
-        ),
+        LazyMacroExpansionPackages::Set(ids) => {
+            crate::precomputed::LazyMacroExpansionPackages::Set(
+                ids.iter().map(|p| p.0.clone()).collect::<HashSet<_>>(),
+            )
+        }
         LazyMacroExpansionPackages::All => crate::precomputed::LazyMacroExpansionPackages::All,
     };
     inject_loading_precomputed_impl(

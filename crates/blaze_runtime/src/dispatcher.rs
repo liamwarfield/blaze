@@ -7,12 +7,12 @@ use blaze_events::ui::{UiEventHandler, UiEventHandlerOptions};
 use blaze_events::{Event, EventHandler, EventKind, EventKindSet, OutErr};
 use blaze_optdefs::command::common_command_options::CommonCommandOptions;
 use blaze_optdefs::command::ui_options::UiOptions;
+use blaze_options::invocation_policy::OptionAndRawValue;
 use blaze_options::rc::handler::{
     BAD_OPTION_TAG, BlazeOptionHandler, ERROR_SEPARATOR, EventKind as HandlerEventKind,
     HandlerEvent, OptionsParseFailure, StoredEventHandler,
 };
 use blaze_options::{OptionsParser, OptionsParsingException, PriorityCategory};
-use blaze_options::invocation_policy::OptionAndRawValue;
 use blaze_protos::blaze::invocation_policy::InvocationPolicy;
 use blaze_protos::failure_details::{self, FailureDetail};
 use blaze_sky_loading::package_manager::RepositoryMappingResolutionOrInterrupted;
@@ -775,7 +775,11 @@ impl BlazeCommandDispatcher {
         // Swallow IOException, as we are already in a finally clause
         let _ = out_err.get_output_stream().flush();
         let _ = out_err.get_error_stream().flush();
-        final_command_result
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:836 BlazeRuntime.afterCommand
+        BlazeCommandResult::with_response_extensions(
+            final_command_result,
+            env.get_response_extensions(),
+        )
     }
 
     /// Creates an option parser using the common options classes and the command-specific
@@ -867,7 +871,10 @@ impl BlazeCommandDispatcher {
         );
         let result = option_handler.parse_options(args, event_handler);
         let invocation_policy_flags = option_handler.get_invocation_policy_flags().to_vec();
-        (options_parse_result_exit_code(result), invocation_policy_flags)
+        (
+            options_parse_result_exit_code(result),
+            invocation_policy_flags,
+        )
     }
 
     // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:323 BlazeCommandDispatcher.setShutdownReason

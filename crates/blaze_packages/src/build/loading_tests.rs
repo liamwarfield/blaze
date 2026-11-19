@@ -15,37 +15,6 @@ mod package_factory_test {
     #[ignore = "asserts through a GlobCache built in the test on the package directory (Java new GlobCache(...).globUnsorted(include, exclude, FILES_AND_DIRS, true)); a unit test of build/glob_cache.rs, not of package loading"]
     fn test_recursive_glob() {}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     #[test]
     #[ignore = "unit test of PackageFactory.checkBuildSyntax's glob pattern extraction on a parsed file; the port is blaze_starlark::syntax (dot_bazel.rs) and its test belongs to that crate"]
     fn test_glob_pattern_extractor() {}

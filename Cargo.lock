@@ -431,6 +431,7 @@ dependencies = [
  "blaze_options",
  "blaze_protos",
  "blaze_util",
+ "h2",
  "hex",
  "libc",
  "md-5",

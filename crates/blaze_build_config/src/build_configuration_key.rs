@@ -5,7 +5,9 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use crate::build_options::BuildOptions;
+use blaze_cmdline::Label;
+
+use crate::build_options::{BuildOptions, ScopeType};
 
 // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKey.java:29 BuildConfigurationKey
 /// `SkyKey` for `BuildConfigurationValue`.
@@ -56,27 +58,62 @@ impl fmt::Debug for BuildConfigurationKey {
 #[derive(Clone)]
 pub struct BuildConfigurationKeyValueKey {
     build_options: Arc<BuildOptions>,
+    /// PORT: the `label` of a `BuildConfigurationKeyProducer` started by
+    /// `BuildConfigurationKeyMapProducer` (the target whose transition produced the options).
+    /// Java runs that producer inside the analysis state machine; Blaze maps the options through
+    /// this node, so the label is part of the request. `BuildConfigurationKeyFunction` passes
+    /// null (`create`). The producer reads the label only to reset project-scoped flags
+    /// (`resetFlags`), so `create_for_producer` keeps it only when the options have a Starlark
+    /// flag whose scope is PROJECT or not known yet; other requests share the label-less node.
+    producer_label: Option<Label>,
 }
 
 impl BuildConfigurationKeyValueKey {
     pub fn create(build_options: Arc<BuildOptions>) -> Self {
-        BuildConfigurationKeyValueKey { build_options }
+        BuildConfigurationKeyValueKey {
+            build_options,
+            producer_label: None,
+        }
+    }
+
+    /// The request of a `BuildConfigurationKeyProducer` of `BuildConfigurationKeyMapProducer`
+    /// for the target `label` (see `producer_label`).
+    pub fn create_for_producer(build_options: Arc<BuildOptions>, label: Option<&Label>) -> Self {
+        // Java: com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyProducer.java:170 BuildConfigurationKeyProducer.findBuildOptionsScopes
+        // (the condition under which the scope lookup, and so resetFlags, can happen).
+        let may_reset_flags = build_options.get_starlark_options().keys().any(|key| {
+            let scope_type = build_options.get_scope_type_map().get(key);
+            scope_type.is_none() || scope_type == Some(&ScopeType::PROJECT)
+        });
+        BuildConfigurationKeyValueKey {
+            build_options,
+            producer_label: if may_reset_flags {
+                label.cloned()
+            } else {
+                None
+            },
+        }
     }
 
     pub fn build_options(&self) -> &Arc<BuildOptions> {
         &self.build_options
     }
+
+    pub fn producer_label(&self) -> Option<&Label> {
+        self.producer_label.as_ref()
+    }
 }
 
 impl PartialEq for BuildConfigurationKeyValueKey {
     fn eq(&self, other: &Self) -> bool {
-        *self.build_options == *other.build_options
+        *self.build_options == *other.build_options && self.producer_label == other.producer_label
     }
 }
 impl Eq for BuildConfigurationKeyValueKey {}
 impl Hash for BuildConfigurationKeyValueKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.build_options.hash(state)
+        self.build_options.hash(state);
+        self.producer_label.hash(state);
     }
 }
 

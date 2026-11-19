@@ -10,7 +10,7 @@ use std::sync::LazyLock;
 use blaze_actions::Artifact;
 use blaze_collect::{NestedSet, NestedSetBuilder, Order};
 use blaze_packages::rule_class::ProviderKey;
-use starlark::values::{Heap, Value};
+use starlark::values::{Heap, Value, ValueLike};
 
 use super::java_output::JavaOutput;
 use super::provider_util::{
@@ -95,6 +95,12 @@ impl JavaPluginData {
     // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:165 JavaPluginInfo.JavaPluginData.wrap
     pub fn wrap<'v>(obj: Option<Value<'v>>, heap: Heap<'v>) -> starlark::Result<JavaPluginData> {
         if let Some(obj) = obj
+            && let Some(data) =
+                obj.downcast_ref::<super::java_plugins_flag_alias::JavaPluginDataValue>()
+        {
+            return Ok(data.0.clone());
+        }
+        if let Some(obj) = obj
             && is_struct_impl(obj)
         {
             let get = |k: &str| struct_get_value(obj, k, heap).unwrap_or_else(Value::new_none);
@@ -160,6 +166,11 @@ impl JavaPluginInfo {
     pub fn wrap<'v>(info: Value<'v>, heap: Heap<'v>) -> starlark::Result<JavaPluginInfo> {
         // Java: PROVIDER.wrap(info)
         // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:108 JavaPluginInfo.Provider.wrap
+        if let Some(native) =
+            info.downcast_ref::<super::java_plugins_flag_alias::JavaPluginInfoValue>()
+        {
+            return Ok(native.0.clone());
+        }
         if is_struct_impl(info) {
             let w = StarlarkInfoWrapper::new(info, heap);
             let java_outputs_value =

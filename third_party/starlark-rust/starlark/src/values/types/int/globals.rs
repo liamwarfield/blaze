@@ -74,10 +74,11 @@ pub(crate) fn register_int(globals: &mut GlobalsBuilder) {
     #[starlark(as_type = PointerI32, speculative_exec_safe)]
     fn int<'v>(
         // BLAZE PATCH 0044: `x` is required (Java MethodLibrary.java:551-570: no default).
-        #[starlark(require = pos)] a: ValueOf<'v, Either<Either<NumRef<'v>, bool>, &'v str>>, // BLAZE PATCH 0044
+        #[starlark(require = pos)] x: ValueOf<'v, Either<Either<NumRef<'v>, bool>, &'v str>>, // BLAZE PATCH 0044 0052
         base: Option<i32>,
         heap: Heap<'v>,
     ) -> starlark::Result<ValueOfUnchecked<'v, StarlarkInt>> {
+        let a = x; // BLAZE PATCH 0052: Java parameter name `x`
         let num_or_bool = match a.typed {
             Either::Left(num_or_bool) => num_or_bool,
             // BLAZE PATCH 0044: Java MethodLibrary.intForStarlark (MethodLibrary.java:613):

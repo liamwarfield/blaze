@@ -951,9 +951,12 @@ pub trait StarlarkValue<'v>:
     /// # "#);
     /// ```
     fn set_at(&self, _index: Value<'v>, _new_value: Value<'v>) -> crate::Result<()> {
-        Err(crate::Error::new_other(
-            ValueError::CannotMutateImmutableValue,
+        // BLAZE PATCH 0051: Java's text (EvalUtils.java:523 setIndex).
+        Err(ValueError::Bazel(format!(
+            "can only assign an element in a dictionary or a list, not in a '{}'",
+            Self::TYPE
         ))
+        .into())
     }
 
     /// Set the attribute named `attribute` of the current value to

@@ -71,6 +71,7 @@ use blaze_bep::runtime::command_line_event::{
 };
 use blaze_bep::runtime::got_options_event::GotOptionsEvent;
 use blaze_bep::runtime::runtime_events::{BuildMetadataEvent, ExecRootEvent};
+use blaze_bep::runtime::synchronized_output_stream::SynchronizedOutputStream;
 use blaze_bep::runtime::target_summary_publisher::{
     TargetSummaryKey, TargetSummaryPublisher, TargetSummarySink, TargetSummaryTarget,
 };
@@ -84,6 +85,7 @@ use blaze_buildtool::runtime::test_command_support::{
 };
 use blaze_buildtool::runtime::test_summary::{TestSummary, get_test_params};
 use blaze_cmdline::Label;
+use blaze_events::OutErr;
 use blaze_events::{Clock, Event, EventBus, EventHandler, JavaClock, Postable, Reporter};
 use blaze_exec::actions::cache::PostableActionCacheStats;
 use blaze_exec::analysis::actions::bazel_workspace_status_module::BuildInfoEvent as ExecBuildInfoEvent;
@@ -97,8 +99,6 @@ use blaze_optdefs::command::ui_options::UiOptions;
 use blaze_optdefs::common::test_size::TestSize;
 use blaze_optdefs::common::test_timeout::TestTimeout;
 use blaze_optdefs::fragment::test_configuration::TestConfigurationTestOptions;
-use blaze_bep::runtime::synchronized_output_stream::SynchronizedOutputStream;
-use blaze_events::OutErr;
 use blaze_optdefs::misc::build_event_protocol_options::BuildEventProtocolOptions;
 use blaze_optdefs::misc::build_event_service_options::BuildEventServiceOptions;
 use blaze_optdefs::misc::build_event_stream_options::BuildEventStreamOptions;
@@ -760,8 +760,8 @@ pub struct BepCommandSupport {
     reporter: Arc<Reporter>,
     exec_root: Path,
     ui: UiFacts,
-    /// `BuildTool.shouldStopOnFailure(request)`.
-    stop_on_first_failure: bool,
+    /// `BuildTool.shouldStopOnFailure(request)` (`None` for a command without `ExecutionOptions`).
+    stop_on_first_failure: Option<bool>,
     publish_package_metrics_in_bep: bool,
     /// The uploader factory map of the file transports with path conversion.
     uploader_factory_map: Arc<DeferredUploaderFactory>,
@@ -1124,10 +1124,11 @@ impl BepCommandSupport {
             .get_options::<KeepGoingOption>()
             .map(|o| o.keep_going)
             .unwrap_or(false);
+        // Read by BuildTool (build, test, run, fetch with targets) only; the other commands have
+        // no ExecutionOptions.
         let test_keep_going = options
             .get_options::<ExecutionOptions>()
-            .map(|o| o.test_keep_going)
-            .unwrap_or_else(|| panic!("NullPointerException: ExecutionOptions"));
+            .map(|o| o.test_keep_going);
         let quiet = env
             .get_runtime()
             .get_startup_options_provider()
@@ -1145,7 +1146,8 @@ impl BepCommandSupport {
                 show_timestamp: ui_options.show_timestamp,
             },
             // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1127 BuildTool.shouldStopOnFailure
-            stop_on_first_failure: !(keep_going && test_keep_going),
+            stop_on_first_failure: test_keep_going
+                .map(|test_keep_going| !(keep_going && test_keep_going)),
             publish_package_metrics_in_bep,
             uploader_factory_map,
             output_listener,
@@ -1599,7 +1601,9 @@ impl BepCommandSupport {
                     success: build_result.get_success(),
                     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1121 BuildTool.maybeSetStopOnFirstFailure
                     stop_on_first_failure: build_result.get_stop_on_first_failure()
-                        || self.stop_on_first_failure,
+                        || self
+                            .stop_on_first_failure
+                            .unwrap_or_else(|| panic!("NullPointerException: ExecutionOptions")),
                 },
                 vec![
                     build_event_id_util::build_tool_logs(),

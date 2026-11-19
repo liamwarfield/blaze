@@ -168,7 +168,7 @@ fn patch_0007_set_semantics() {
     );
     assert_eq!(
         eval("s = set([1])\nt = s\ns |= [2]\nr = t"),
-        Err("Operation `|` not supported for types `set` and `list`".into())
+        Err("unsupported binary operation: set | list".into())
     );
     // Variadic methods; dicts contribute keys.
     assert_eq!(
@@ -546,7 +546,7 @@ fn patch_0013_unknown_field_message() {
     assert!(
         eval_with_probe("r = [].foo")
             .unwrap_err()
-            .contains("has no attribute")
+            .contains("value has no field or method")
     );
 }
 
@@ -652,7 +652,7 @@ fn patch_0016_immutable_list() {
     ] {
         fails(m, "trying to mutate a frozen list value");
     }
-    fails("r = {x: 1}", "Value of type `list` is not hashable");
+    fails("r = {x: 1}", "unhashable type: 'list'");
     ok(
         "r = (list_is_immutable([1]), list_is_immutable((1,)), list_is_immutable(immutable_list([])))",
         "(False, None, True)",
@@ -799,7 +799,7 @@ fn patch_0018_immutable_dict() {
     assert!(
         eval_with_probe("r = {immutable_dict({1: 2}): 1}")
             .unwrap_err()
-            .contains("not hashable")
+            .contains("unhashable type")
     );
 }
 
@@ -1174,7 +1174,7 @@ fn patch_0025_immutable_set() {
     assert!(
         eval_with_probe("r = {immutable_set([1]): 1}")
             .unwrap_err()
-            .contains("not hashable")
+            .contains("unhashable type")
     );
 
     // Frozen with its module: a set on a frozen heap (was "Immutable"), and a flagged set that
@@ -1748,7 +1748,7 @@ fn patch_0040_no_bytes_literals() {
     for src in ["r = b\"abc\"\n", "r = rb\"abc\"\n", "r = br'abc'\n"] {
         let e = AstModule::parse("t.bzl", src.to_owned(), &dialect::bzl_dialect()).unwrap_err();
         assert!(
-            bare_message(&e).contains("unexpected string literal"),
+            bare_message(&e).starts_with("syntax error at '\"abc\"'"),
             "{src}: {}",
             bare_message(&e)
         );
@@ -1872,7 +1872,10 @@ fn patch_0046_strip_none_chars() {
 fn patch_0047_ellipsis_only_in_type_expressions() {
     assert_eq!(
         eval_with_type_syntax("x = ...\nr = 1"),
-        Err("ellipsis ('...') is not allowed outside type expressions".into())
+        Err(
+            "syntax error at '...': ellipsis ('...') is not allowed outside type expressions"
+                .into()
+        )
     );
     assert_eq!(
         eval_with_type_syntax(
@@ -1901,4 +1904,462 @@ fn patch_0048_type_keywords_in_arguments() {
     let mut d = dialect::bzl_dialect();
     d.enable_types = starlark::syntax::DialectTypes::ParseOnly;
     assert!(AstModule::parse("t.bzl", "load(':x.bzl', cast = 'y')\n".to_owned(), &d).is_err());
+}
+
+/// Parses `src` with the `.bzl` dialect; the first syntax error's `line:col: message`.
+fn parse_error(src: &str) -> String {
+    match AstModule::parse("t.bzl", src.to_owned(), &dialect::bzl_dialect()) {
+        Ok(_) => "<parsed>".to_owned(),
+        Err(e) => {
+            let pos = e
+                .span()
+                .map(|s| {
+                    let p = s.resolve_span().begin;
+                    format!("{}:{}", p.line + 1, p.column + 1)
+                })
+                .unwrap_or_default();
+            format!("{pos}: {}", bare_message(&e))
+        }
+    }
+}
+
+// Java: src/test/java/net/starlark/java/spelling/SpellCheckerTest.java
+#[test]
+fn patch_0049_spell_checker() {
+    use starlark::errors::spell_checker::edit_distance;
+    use starlark::errors::spell_checker::suggest;
+    let d = |a: &str, b: &str, m: i32| {
+        edit_distance(
+            &a.chars().collect::<Vec<_>>(),
+            &b.chars().collect::<Vec<_>>(),
+            m,
+        )
+    };
+    let assert_distance = |a: &str, b: &str, n: i32| {
+        assert_eq!(d(a, b, 100), n, "{a} {b}");
+        assert_eq!(d(a, b, n), n, "{a} {b}");
+        assert_eq!(d(b, a, 100), n, "{b} {a}");
+        assert_eq!(d(b, a, n), n, "{b} {a}");
+    };
+    // editDistance_1
+    for (a, b) in [
+        ("abcdef", "abdef"),
+        ("abcdef", "abcde"),
+        ("abcdef", "bcdef"),
+        ("abcdef", "_bcdef"),
+        ("abcdef", "abc_ef"),
+        ("abcdef", "abcde_"),
+        ("abcdef", "_abcdef"),
+        ("abcdef", "abcd_ef"),
+        ("abcdef", "abcdef_"),
+    ] {
+        assert_distance(a, b, 1);
+    }
+    // editDistance_general
+    assert_distance("", "", 0);
+    assert_distance("abcd", "abcd", 0);
+    assert_distance("abcde", "", 5);
+    assert_distance("abcde", "12345", 5);
+    assert_distance("ab", "ba", 2);
+    assert_distance("abba", "acca", 2);
+    assert_distance("abaa", "aaca", 2);
+    assert_distance("kitten", "sitting", 3);
+    assert_distance("kitten kitten", "sitting sitting", 6);
+    assert_distance("flaw", "lawn", 2);
+    // editDistance_maxDistance
+    assert_eq!(d("kitten", "sitting", 0), -1);
+    assert_eq!(d("kitten", "sitting", 1), -1);
+    assert_eq!(d("kitten", "sitting", 2), -1);
+    assert_eq!(d("kitten", "sitting", 3), 3);
+    assert_eq!(d("kitten", "sitting", 4), 3);
+    assert_eq!(d("abcdefg", "s", 2), -1);
+    // suggest
+    let dict = [
+        "isalnum",
+        "isalpha",
+        "isdigit",
+        "islower",
+        "isupper",
+        "find",
+        "join",
+        "range",
+        "rsplit",
+        "rstrip",
+        "split",
+        "splitlines",
+        "startswith",
+        "strip",
+        "title",
+        "upper",
+        "x",
+        "xyz",
+    ];
+    for (input, want) in [
+        ("isdfit", Some("isdigit")),
+        ("rspit", Some("rsplit")),
+        ("IS_LOWER", Some("islower")),
+        ("sartwigh", Some("startswith")),
+        ("SplitAllLines", Some("splitlines")),
+        ("fird", Some("find")),
+        ("stip", Some("strip")),
+        ("isAln", Some("isalnum")),
+        ("targe", Some("range")),
+        ("rarget", Some("range")),
+        ("xyw", Some("xyz")),
+        ("target", None),
+        ("isAl", None),
+        ("", None),
+        ("f", None),
+        ("fir", None),
+        ("wqevxc", None),
+        ("ialsnuaip", None),
+        ("xy", None),
+    ] {
+        assert_eq!(suggest(input, dict), want, "{input}");
+    }
+    // java.util.HashSet<String> order: buckets by spread hash, 16 buckets.
+    assert_eq!(
+        starlark::errors::spell_checker::java_hash_set_order(["b", "a", "c"].map(str::to_owned)),
+        ["a", "b", "c"]
+    );
+}
+
+#[test]
+fn patch_0050_name_errors() {
+    assert_eq!(eval("r = foo"), Err("name 'foo' is not defined".into()));
+    assert_eq!(
+        eval("r = lenn([])"),
+        Err("name 'lenn' is not defined (did you mean 'len'?)".into())
+    );
+    assert_eq!(
+        eval("def f():\n  print(x)\n  x = 1\nf()"),
+        Err("local variable 'x' is referenced before assignment.".into())
+    );
+    assert_eq!(
+        eval("def f():\n  return y\nr = f()\ny = 1"),
+        Err("global variable 'y' is referenced before assignment.".into())
+    );
+}
+
+#[test]
+fn patch_0051_value_errors() {
+    for (src, want) in [
+        ("r = 1 + 'a'", "unsupported binary operation: int + string"),
+        ("r = -'a'", "unsupported unary operation: -string"),
+        ("r = 1 < 'a'", "unsupported comparison: int <=> string"),
+        (
+            "r = 1 in 'a'",
+            "'in <string>' requires string as left operand, not 'int'",
+        ),
+        ("r = 1 in 2", "unsupported binary operation: int in int"),
+        ("r = 1[0]", "type 'int' has no operator [](int)"),
+        ("r = 1()", "'int' object is not callable"),
+        ("r = [x for x in 1]", "type 'int' is not iterable"),
+        (
+            "r = [1][5]",
+            "index out of range (index is 5, but sequence has 1 elements)",
+        ),
+        (
+            "r = 'ab'[-3]",
+            "index out of range (index is -3, but sequence has 2 elements)",
+        ),
+        ("r = [1]['a']", "got string for sequence index, want int"),
+        ("r = {}['a']", "key \"a\" not found in dictionary"),
+        ("r = {}[[]]", "key [] not found in dictionary"),
+        ("r = {[]: 1}", "unhashable type: 'list'"),
+        (
+            "r = {1: 1, 1: 2}",
+            "dictionary expression has duplicate key: 1",
+        ),
+        ("r = (1).foo", "'int' value has no field or method 'foo'"),
+        (
+            "r = 'a'.uper()",
+            "'string' value has no field or method 'uper' (did you mean 'upper'?)",
+        ),
+        (
+            "a, b = 1",
+            "got 'int' in sequence assignment (want 2-element sequence)",
+        ),
+        ("a, b = [1]", "too few values to unpack (got 1, want 2)"),
+        (
+            "a, b = [1, 2, 3]",
+            "too many values to unpack (got 3, want 2)",
+        ),
+        ("r = (1,)[1:2:0]", "slice step cannot be zero"),
+        ("r = 1 >> -1", "negative shift count: -1"),
+        (
+            "r = 1 << (1 << 40)",
+            "got 1099511627776 for shift count, want value in signed 32-bit range",
+        ),
+        (
+            "r = '%z' % (1,)",
+            "unsupported format character \"z\" at index 1 in \"%z\"",
+        ),
+        (
+            "r = '%s %s' % (1,)",
+            "not enough arguments for format pattern \"%s %s\": (1,)",
+        ),
+        (
+            "r = '%s' % (1, 2)",
+            "not all arguments converted during string formatting",
+        ),
+        ("r = '{}'.format()", "No replacement found for index 0"),
+        ("r = '{x}'.format()", "Missing argument 'x'"),
+        (
+            "r = '{} {0}'.format(1, 2)",
+            "Cannot mix manual and automatic numbering of positional fields",
+        ),
+        ("r = float('x')", "invalid float literal: x"),
+        ("r = float('1e999')", "floating-point number too large"),
+        ("r = range(1, 2, 0)", "step cannot be 0"),
+        (
+            "r = [].pop()",
+            "index out of range (index is -1, but sequence has 0 elements)",
+        ),
+        ("r = [1].index(2)", "item 2 not found in list"),
+        ("r = {}.pop('a')", "KeyError: \"a\""),
+        ("r = {}.popitem()", "popitem: empty dictionary"),
+        (
+            "r = dict([1])",
+            "in dict, dictionary update sequence element #0 is not iterable (int)",
+        ),
+        ("r = 'a'.index('b')", "substring not found"),
+        ("r = 'a'.partition('')", "empty separator"),
+        ("r = max([])", "expected at least one item"),
+        (
+            "r = 'a'.startswith((1,))",
+            "at index 0 of sub, got element of type int, want string",
+        ),
+    ] {
+        assert_eq!(eval(src), Err(want.to_owned()), "{src}");
+    }
+    assert_eq!(
+        eval("def f():\n  l = [1]\n  for x in l:\n    l.append(x)\nf()"),
+        Err("list value is temporarily immutable due to active for-loop iteration".into())
+    );
+    // Java Sequence.compare tests equality first; `list += tuple` is the binary `+`.
+    assert_eq!(eval("r = (None,) < (None,)"), Ok("False".into()));
+    assert_eq!(
+        eval("def f():\n  l = [1]\n  l += (2,)\nf()"),
+        Err("unsupported binary operation: list + tuple".into())
+    );
+    assert_eq!(eval("r = float(' 1.5 ')"), Ok("1.5".into()));
+}
+
+#[test]
+fn patch_0052_argument_errors() {
+    for (src, want) in [
+        (
+            "def f(a, b):\n  pass\nf(1)",
+            "f() missing 1 required positional argument: b",
+        ),
+        (
+            "def f(*, a, b):\n  pass\nf()",
+            "f() missing 2 required keyword-only arguments: a, b",
+        ),
+        (
+            "def f(a):\n  pass\nf(1, 2)",
+            "f() accepts no more than 1 positional argument but got 2",
+        ),
+        (
+            "def f():\n  pass\nf(1)",
+            "f() does not accept positional arguments, but got 1",
+        ),
+        (
+            "def f(a):\n  pass\nf(b = 1, c = 2)",
+            "f() got unexpected keyword arguments: b, c",
+        ),
+        (
+            "def f(alpha):\n  pass\nf(alpah = 1)",
+            "f() got unexpected keyword argument: alpah (did you mean 'alpha'?)",
+        ),
+        (
+            "def f(a):\n  pass\nf(1, a = 2)",
+            "f() got multiple values for parameter 'a'",
+        ),
+        (
+            "f = lambda a: a\nf()",
+            "lambda() missing 1 required positional argument: a",
+        ),
+        ("len()", "len() missing 1 required positional argument: x"),
+        (
+            "len([], [])",
+            "len() accepts no more than 1 positional argument but got 2",
+        ),
+        (
+            "len(x = [])",
+            "len() got named argument for positional-only parameter 'x'",
+        ),
+        (
+            "'a'.split(maxsplt = 1)",
+            "split() got unexpected keyword argument 'maxsplt' (did you mean 'maxsplit'?)",
+        ),
+        ("'a'.elems(1)", "elems() got unexpected positional argument"),
+        (
+            "len(1)",
+            "in call to len(), parameter 'x' got value of type 'int', want 'iterable or string'",
+        ),
+        (
+            "'a'.startswith(1)",
+            "in call to startswith(), parameter 'sub' got value of type 'int', want 'string or tuple'",
+        ),
+        (
+            "int([])",
+            "in call to int(), parameter 'x' got value of type 'list', want 'string, bool, int, or float'",
+        ),
+        (
+            "list(1)",
+            "in call to list(), parameter 'x' got value of type 'int', want 'iterable'",
+        ),
+        (
+            "','.join([1])",
+            "expected string for sequence element 0, got '1' of type int",
+        ),
+        (
+            "def f(*a):\n  pass\nf(*1)",
+            "argument after * must be an iterable, not int",
+        ),
+        (
+            "def f(**a):\n  pass\nf(**1)",
+            "argument after ** must be a dict, not int",
+        ),
+        (
+            "def f(**a):\n  pass\nf(**{1: 2})",
+            "keywords must be strings, not int",
+        ),
+        (
+            "range('a')",
+            "in call to range(), parameter 'start_or_stop' got value of type 'string', want 'int'",
+        ),
+        (
+            "range(1 << 40)",
+            "got 1099511627776 for stop, want value in signed 32-bit range",
+        ),
+    ] {
+        assert_eq!(eval(src), Err(want.to_owned()), "{src}");
+    }
+}
+
+#[test]
+fn patch_0053_lexer_errors() {
+    for (src, want) in [
+        ("x = 1 $ 2\n", "1:7: invalid character: '$'"),
+        (
+            "def f():\n        x = 1\n    y = 2\n",
+            "3:4: indentation error",
+        ),
+        ("x = 0x\n", "1:5: invalid hex literal"),
+        ("x = 0o9\n", "1:5: invalid base-8 integer literal: 0o9"),
+        ("x = 1e\n", "1:5: invalid float literal"),
+        (
+            "import os\n",
+            "1:1: 'import' not supported, use 'load' instead",
+        ),
+        ("class X: pass\n", "1:1: keyword 'class' not supported"),
+    ] {
+        assert_eq!(parse_error(src), want, "{src:?}");
+    }
+}
+
+#[test]
+fn patch_0054_parser_errors() {
+    for (src, want) in [
+        (
+            "x = \n",
+            "1:5: syntax error at 'newline': expected expression",
+        ),
+        ("x = (1, 2\ny = 3\n", "2:1: syntax error at 'y': expected )"),
+        (
+            "x = [1 2]\n",
+            "1:8: syntax error at '2': expected ',', 'for' or ']'",
+        ),
+        (
+            "x = [y for y in z :]\n",
+            "1:19: syntax error at ':': expected ']', 'for' or 'if'",
+        ),
+        (
+            "x = f(y for y in z)\n",
+            "1:9: syntax error at 'for': Starlark does not support Python-style generator expressions",
+        ),
+        (
+            "x = \"a\" \"b\"\n",
+            "1:9: Implicit string concatenation is forbidden, use the + operator",
+        ),
+        (
+            "x = 1 < 2 < 3\n",
+            "1:11: Operator '<' is not associative with operator '<'. Use parens.",
+        ),
+        (
+            "x = 1 if 2\n",
+            "1:5: missing else clause in conditional expression or semicolon before if",
+        ),
+        (
+            "load(\":a.bzl\")\n",
+            "1:14: syntax error at ')': expected at least one symbol to load",
+        ),
+        (
+            "load(\":a.bzl\", x = 1)\n",
+            "1:20: syntax error at '1': expected string",
+        ),
+        ("def f():\nx = 1\n", "2:1: expected an indented block"),
+        ("x = 1\n  y = 2\n", "2:2: indentation error"),
+        ("print(1 2)\n", "1:9: syntax error at '2': expected ,"),
+    ] {
+        assert_eq!(parse_error(src), want, "{src:?}");
+    }
+}
+
+#[test]
+fn patch_0055_static_errors() {
+    for (src, want) in [
+        (
+            "f(*a, 1)\n",
+            "1:7: positional argument may not follow *args",
+        ),
+        ("f(a = 1, a = 2)\n", "1:10: duplicate keyword argument: a"),
+        (
+            "f(**a, b = 1)\n",
+            "1:8: keyword argument b may not follow **kwargs",
+        ),
+        ("def f(a, a):\n  pass\n", "1:10: duplicate parameter: a"),
+        (
+            "def f(a = 1, b):\n  pass\n",
+            "1:14: required positional parameter b may not follow an optional parameter",
+        ),
+        (
+            "def f(**k, a):\n  pass\n",
+            "1:12: required parameter a may not follow **k",
+        ),
+        (
+            "def f(*a, *b):\n  pass\n",
+            "1:11: multiple * parameters not allowed",
+        ),
+        (
+            "def f(*):\n  pass\n",
+            "1:7: bare * must be followed by keyword-only parameters",
+        ),
+        (
+            "for x in []:\n  pass\n",
+            "1:1: for loops are not allowed at the top level. You may move it inside a function or use a comprehension, [f(x) for x in sequence]",
+        ),
+        (
+            "def f():\n  break\n",
+            "2:3: break statement must be inside a for loop",
+        ),
+        ("1 = 2\n", "1:1: cannot assign to '1'"),
+        (
+            "[a, b] += 1\n",
+            "1:8: cannot perform augmented assignment on a list or tuple expression",
+        ),
+        (
+            "x = 1, 2,\n",
+            "1:10: Trailing comma is allowed only in parenthesized tuples.",
+        ),
+        (
+            "def f(x: int):\n  pass\n",
+            "1:8: syntax error at ':': type annotations are disallowed",
+        ),
+    ] {
+        assert_eq!(parse_error(src), want, "{src:?}");
+    }
 }

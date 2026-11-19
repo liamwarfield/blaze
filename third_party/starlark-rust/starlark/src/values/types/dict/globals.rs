@@ -44,6 +44,41 @@ fn unpack_pair<'v>(pair: Value<'v>, heap: Heap<'v>) -> crate::Result<(Value<'v>,
     .into())
 }
 
+/// BLAZE PATCH 0051: the pairs of `x` as Java `Dict.update` reads them (Dict.java:355), with its
+/// texts; `funcname` is `dict` or `update`.
+pub(crate) fn java_update_pairs<'v>(
+    funcname: &str,
+    pairs: Value<'v>,
+    heap: Heap<'v>,
+) -> crate::Result<Vec<(Value<'v>, Value<'v>)>> {
+    let it = pairs.iterate(heap).map_err(|_| {
+        crate::Error::new_other(anyhow::anyhow!(
+            "in {funcname}, got {}, want iterable",
+            pairs.get_type()
+        ))
+    })?;
+    let mut out = Vec::new();
+    for (pos, item) in it.enumerate() {
+        let elems: Vec<Value<'v>> = match item.iterate(heap) {
+            Ok(i) => i.collect(),
+            Err(_) => {
+                return Err(crate::Error::new_other(anyhow::anyhow!(
+                    "in {funcname}, dictionary update sequence element #{pos} is not iterable ({})",
+                    item.get_type()
+                )));
+            }
+        };
+        if elems.len() != 2 {
+            return Err(crate::Error::new_other(anyhow::anyhow!(
+                "in {funcname}, item #{pos} has length {}, but exactly two elements are required",
+                elems.len()
+            )));
+        }
+        out.push((elems[0], elems[1]));
+    }
+    Ok(out)
+}
+
 #[starlark_module]
 pub(crate) fn register_dict(globals: &mut GlobalsBuilder) {
     /// [dict](
@@ -88,6 +123,13 @@ pub(crate) fn register_dict(globals: &mut GlobalsBuilder) {
         // It might have one positional argument, which could be a dict or an array of pairs.
         // It might have named/kwargs arguments, which we copy over (afterwards).
 
+        // BLAZE PATCH 0051: Java's arity text (BuiltinFunction, `dict(pairs=[], **kwargs)`).
+        let npos = args.positions(heap)?.count(); // BLAZE PATCH 0051
+        if npos > 1 { // BLAZE PATCH 0051
+            return Err(crate::Error::new_other(anyhow::anyhow!( // BLAZE PATCH 0051
+                "dict() accepts no more than 1 positional argument but got {npos}" // BLAZE PATCH 0051
+            ))); // BLAZE PATCH 0051
+        } // BLAZE PATCH 0051
         let pos = args.optional1(heap)?;
         let kwargs = args.names()?;
 
@@ -101,10 +143,11 @@ pub(crate) fn register_dict(globals: &mut GlobalsBuilder) {
                         result
                     }
                     None => {
-                        let it = pos.iterate(heap)?;
-                        let mut result = SmallMap::with_capacity(it.size_hint().0 + kwargs.len());
-                        for el in it {
-                            let (k, v) = unpack_pair(el, heap)?;
+                        // BLAZE PATCH 0051: Java Dict.update's checks and texts.
+                        let it = java_update_pairs("dict", pos, heap)?; // BLAZE PATCH 0051
+                        let mut result = SmallMap::with_capacity(it.len() + kwargs.len()); // BLAZE PATCH 0051
+                        for (k, v) in it { // BLAZE PATCH 0051
+                            let _ = unpack_pair; // BLAZE PATCH 0051
                             let k = k.get_hashed()?;
                             result.insert_hashed(k, v);
                         }

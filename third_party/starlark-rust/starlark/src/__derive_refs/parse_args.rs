@@ -45,6 +45,28 @@ pub fn parse_positional<'v, const R: usize, const O: usize>(
     args.optional(heap)
 }
 
+/// BLAZE PATCH 0052: [`parse_positional`] with Java's argument errors (from `signature`).
+#[inline(always)]
+pub fn parse_positional_spec<'v, const R: usize, const O: usize>(
+    signature: &ParametersSpec<FrozenValue>,
+    args: &Arguments<'v, '_>,
+    heap: Heap<'v>,
+) -> crate::Result<([Value<'v>; R], [Option<Value<'v>>; O])> {
+    parse_positional(args, heap)
+        .map_err(|e| signature.as_value().java_argument_error(&args.0, heap).unwrap_or(e))
+}
+
+/// BLAZE PATCH 0052: [`parse_positional_kwargs_alloc`] with Java's argument errors.
+#[inline(always)]
+pub fn parse_positional_kwargs_alloc_spec<'v, 'a, const R: usize, const O: usize>(
+    signature: &ParametersSpec<FrozenValue>,
+    args: &'a Arguments<'v, 'a>,
+    heap: Heap<'v>,
+) -> crate::Result<([Value<'v>; R], [Option<Value<'v>>; O], Value<'v>)> {
+    parse_positional_kwargs_alloc(args, heap)
+        .map_err(|e| signature.as_value().java_argument_error(&args.0, heap).unwrap_or(e))
+}
+
 #[inline(always)]
 pub fn parse_positional_kwargs_alloc<'v, 'a, const R: usize, const O: usize>(
     args: &'a Arguments<'v, 'a>,

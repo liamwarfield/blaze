@@ -233,14 +233,18 @@ fn test_allow_values_with_null_default_accepted_value() {
     // Check the value before invocation policy enforcement.
     parser.parse(&["--test_string_null_by_default=a"]).unwrap();
     assert_eq!(
-        get_test_options(&parser).test_string_null_by_default.as_deref(),
+        get_test_options(&parser)
+            .test_string_null_by_default
+            .as_deref(),
         Some("a")
     );
 
     // Check the value afterwards.
     enforce(&enforcer, &mut parser).unwrap();
     assert_eq!(
-        get_test_options(&parser).test_string_null_by_default.as_deref(),
+        get_test_options(&parser)
+            .test_string_null_by_default
+            .as_deref(),
         Some("a")
     );
 }
@@ -254,7 +258,9 @@ fn test_allow_values_with_null_default_uses_null_default_to_override_unaccepted_
     // Check the value before invocation policy enforcement.
     parser.parse(&["--test_string_null_by_default=b"]).unwrap();
     assert_eq!(
-        get_test_options(&parser).test_string_null_by_default.as_deref(),
+        get_test_options(&parser)
+            .test_string_null_by_default
+            .as_deref(),
         Some("b")
     );
 

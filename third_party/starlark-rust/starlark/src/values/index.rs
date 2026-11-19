@@ -15,9 +15,49 @@
  * limitations under the License.
  */
 
-use crate::values::UnpackValue;
+// BLAZE PATCH 0051: `UnpackValue` no longer used here.
 use crate::values::Value;
 use crate::values::ValueError;
+
+/// BLAZE PATCH 0051: Java `Starlark.toInt(x, what)`: the signed 32-bit value of an int, with
+/// Java's texts ("got T for WHAT, want int", "got N for WHAT, want value in signed 32-bit
+/// range").
+// Java: net/starlark/java/eval/Starlark.java:755 Starlark.toInt
+// Java: net/starlark/java/eval/StarlarkInt.java:338 StarlarkInt.toInt
+pub(crate) fn java_to_int(v: Value, what: &str) -> crate::Result<i32> {
+    match crate::values::types::int::int_or_big::StarlarkIntRef::unpack(v) {
+        Some(i) => match i.to_i32() {
+            Some(i) => Ok(i),
+            None => Err(ValueError::Bazel(format!(
+                "got {v} for {what}, want value in signed 32-bit range"
+            ))
+            .into()),
+        },
+        None => Err(ValueError::Bazel(format!("got {} for {what}, want int", v.get_type())).into()),
+    }
+}
+
+/// BLAZE PATCH 0051: Java `EvalUtils.getSequenceIndex`.
+// Java: net/starlark/java/eval/EvalUtils.java:44 EvalUtils.getSequenceIndex
+pub(crate) fn java_sequence_index(index: i32, length: i32) -> crate::Result<i32> {
+    let mut actual = index as i64;
+    if actual < 0 {
+        actual += length as i64;
+    }
+    if actual < 0 || actual >= length as i64 {
+        return Err(ValueError::Bazel(format!(
+            "index out of range (index is {index}, but sequence has {length} elements)"
+        ))
+        .into());
+    }
+    Ok(actual as i32)
+}
+
+/// BLAZE PATCH 0051: [`convert_index`] with Java's description of the index (`string index`,
+/// `list index`; `sequence index` in [`convert_index`]).
+pub(crate) fn convert_index_what(v: Value, len: i32, what: &str) -> crate::Result<i32> {
+    java_sequence_index(java_to_int(v, what)?, len)
+}
 
 // Helper for convert_slice_indices
 fn convert_index_aux(
@@ -26,12 +66,13 @@ fn convert_index_aux(
     default: i32,
     min: i32,
     max: i32,
+    what: &str, // BLAZE PATCH 0051
 ) -> crate::Result<i32> {
     if let Some(v) = v1 {
         if v.is_none() {
             Ok(default)
         } else {
-            let x = i32::unpack_value_err(v)?;
+            let x = java_to_int(v, what)?; // BLAZE PATCH 0051
             let i = if x < 0 { len + x } else { x };
             if i < min {
                 Ok(min)
@@ -52,17 +93,8 @@ fn convert_index_aux(
 /// and len. Raise the correct errors if the value is not numeric or the
 /// index is out of bound.
 pub(crate) fn convert_index(v: Value, len: i32) -> crate::Result<i32> {
-    let x = i32::unpack_value_err(v)?;
-    let i = if x < 0 {
-        len.checked_add(x).ok_or(ValueError::IntegerOverflow)?
-    } else {
-        x
-    };
-    if i < 0 || i >= len {
-        Err(ValueError::IndexOutOfBound(i).into())
-    } else {
-        Ok(i)
-    }
+    // BLAZE PATCH 0051: Java Sequence.getIndex (Sequence.java:51).
+    convert_index_what(v, len, "sequence index")
 }
 
 /// Parse indices for slicing.
@@ -80,16 +112,18 @@ pub(crate) fn convert_slice_indices(
     let stride = match stride {
         None => 1,
         Some(v) if v.is_none() => 1,
-        Some(v) => i32::unpack_value_err(v)?,
+        Some(v) => java_to_int(v, "slice step")?, // BLAZE PATCH 0051
     };
     match stride {
-        0 => Err(ValueError::IndexOutOfBound(0).into()),
+        // BLAZE PATCH 0051: Java Starlark.slice (Starlark.java:685).
+        0 => Err(ValueError::Bazel("slice step cannot be zero".to_owned()).into()),
         stride => {
             let def_start = if stride < 0 { len - 1 } else { 0 };
             let def_end = if stride < 0 { -1 } else { len };
             let clamp = if stride < 0 { -1 } else { 0 };
-            let start = convert_index_aux(len, start, def_start, clamp, len + clamp);
-            let stop = convert_index_aux(len, stop, def_end, clamp, len + clamp);
+            let start =
+                convert_index_aux(len, start, def_start, clamp, len + clamp, "start index"); // BLAZE PATCH 0051
+            let stop = convert_index_aux(len, stop, def_end, clamp, len + clamp, "stop index"); // BLAZE PATCH 0051
             match (start, stop) {
                 (Ok(s1), Ok(s2)) => Ok((s1, s2, stride)),
                 (Err(x), ..) => Err(x),

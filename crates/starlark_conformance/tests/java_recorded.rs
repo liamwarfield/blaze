@@ -84,74 +84,62 @@ fn java_recorded_unicode_latin1_chars() {
     assert!(Path::new(&data_dir().join("latin1_chars.unicode.txt")).exists());
 }
 
-/// Cases of `tests/data/interp` whose error text is Bazel's in Blaze too (texts Blaze ports:
-/// `fail`, `int()` parsing, the lexer's tab and number-literal errors). Elsewhere the error text
-/// is starlark-rust's (accepted, docs/decisions.md) and only its kind is compared.
-const INTERP_TEXT_COMPARED: &[&str] = &[
-    "lex_tab_",
-    "lex_binary_literal",
-    "lex_float_too_large",
-    "lex_int_00",
-    "str_fail_",
-    "str_int_",
-    "more_i_base0_dec",
-    "more_i_base_neg",
-    "more_i_big_base0_octal",
-    "more_i_double_sign",
-    "more_i_float_str",
-    "more_i_only_prefix",
-    "more_i_sign_after_prefix",
-    "more_i_space_inner",
-];
-
-/// `tests/data/interp/NAME.star` against `NAME.latin1.txt`, recorded on Bazel's interpreter by
-/// `scripts/starlark/interp-diff record-java`. Printed lines must be equal; then Java's first
-/// error line (Java reports every syntax error of a file, starlark-rust the first) must have the
-/// same kind (`SYNTAX`, a lexer/parser/resolver error, or `EVAL`), and for the cases of
-/// [`INTERP_TEXT_COMPARED`] the same text.
-fn compare_interp(name: &str) -> Vec<String> {
-    let dir = data_dir().join("interp");
-    let bytes = std::fs::read(dir.join(name)).unwrap();
-    let got = starlark_conformance::probe::run(name, &bytes, ScriptMode::Latin1);
-    let stem = name.strip_suffix(".star").unwrap();
-    let want: Vec<String> = std::fs::read_to_string(dir.join(format!("{stem}.latin1.txt")))
+/// `tests/data/interp/KNOWN_DIFFERENCES`: case name -> `text` (printed output and the kind of
+/// the first error must still match) or `kind` (may differ entirely).
+fn known_differences() -> std::collections::BTreeMap<String, String> {
+    std::fs::read_to_string(data_dir().join("interp/KNOWN_DIFFERENCES"))
         .unwrap()
         .lines()
-        .map(str::to_owned)
-        .collect();
-    let is_error = |l: &String| l.starts_with("SYNTAX ") || l.starts_with("EVAL ");
-    let split = |v: &[String]| {
-        let n = v.iter().position(is_error).unwrap_or(v.len());
-        (v[..n].to_vec(), v.get(n).cloned())
-    };
-    let (want_out, want_err) = split(&want);
-    let (got_out, got_err) = split(&got);
-    let text = INTERP_TEXT_COMPARED.iter().any(|p| stem.starts_with(p));
-    let same_err = match (&want_err, &got_err) {
-        (None, None) => true,
-        (Some(w), Some(g)) if text => w == g,
-        (Some(w), Some(g)) => w.split(' ').next() == g.split(' ').next(),
-        _ => false,
-    };
-    if want_out == got_out && same_err {
-        Vec::new()
-    } else {
-        vec![format!("{name}:\n  java {want:?}\n  rust {got:?}")]
-    }
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .map(|l| {
+            let mut it = l.split_whitespace();
+            (
+                it.next().unwrap().to_owned(),
+                it.next().unwrap_or("text").to_owned(),
+            )
+        })
+        .collect()
 }
 
+/// `tests/data/interp/NAME.star` against `NAME.latin1.txt`, recorded on Bazel's interpreter by
+/// `scripts/starlark/interp-diff record-java`: every line must be equal (printed output, every
+/// `SYNTAX` line, the `EVAL` message and Bazel's traceback as `TRACE` lines), except for the
+/// cases listed in `KNOWN_DIFFERENCES`, which must still differ (a case that matches must be
+/// removed from the list) and, when listed as `text`, match in printed output and the kind of
+/// the first error.
 #[test]
 fn java_recorded_interp() {
-    let mut files: Vec<String> = std::fs::read_dir(data_dir().join("interp"))
-        .unwrap()
-        .filter_map(|e| {
-            let n = e.unwrap().file_name().into_string().unwrap();
-            n.ends_with(".star").then_some(n)
-        })
-        .collect();
-    files.sort();
-    assert!(files.len() >= 140, "{files:?}");
-    let bad: Vec<String> = files.iter().flat_map(|f| compare_interp(f)).collect();
+    use starlark_conformance::probe::CaseResult;
+    let dir = data_dir().join("interp");
+    let files = starlark_conformance::probe::case_names(&dir);
+    assert!(files.len() >= 500, "{files:?}");
+    let known = known_differences();
+    let mut bad = Vec::new();
+    for f in &files {
+        let c = starlark_conformance::probe::compare_case(&dir, f);
+        let ok = match (known.get(f).map(String::as_str), &c.result) {
+            (None, CaseResult::Match) => true,
+            (Some(_), CaseResult::Match) => {
+                bad.push(format!(
+                    "{f}: matches Bazel now, remove it from KNOWN_DIFFERENCES"
+                ));
+                continue;
+            }
+            (Some("kind"), _) => true,
+            (Some(_), CaseResult::TextDiffers) => true,
+            _ => false,
+        };
+        if !ok {
+            bad.push(format!("{f}:\n  java {:?}\n  rust {:?}", c.java, c.rust));
+        }
+    }
+    for k in known.keys() {
+        if !files.contains(k) {
+            bad.push(format!(
+                "{k}: listed in KNOWN_DIFFERENCES but there is no such case"
+            ));
+        }
+    }
     assert!(
         bad.is_empty(),
         "{} of {} cases differ from Java:\n{}",

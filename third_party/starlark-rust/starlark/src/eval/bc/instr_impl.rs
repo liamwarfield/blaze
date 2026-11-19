@@ -295,11 +295,26 @@ impl InstrNoFlowImpl for InstrUnpackImpl {
         (source, target): &(BcSlotIn, FrozenAnyArray<BcSlotOut>),
     ) -> crate::Result<()> {
         let v = frame.get_bc_slot(*source);
-        let nvl = v.length()?;
-        if nvl != target.len() as i32 {
-            return Err(crate::Error::new_other(
-                AssignError::IncorrectNumberOfValueToUnpack(target.len() as i32, nvl),
-            ));
+        // BLAZE PATCH 0051: Java's texts (Eval.java:387 assignSequence; strings are not
+        // iterable).
+        let nlhs = target.len() as i32; // BLAZE PATCH 0051
+        let nvl = match v.length() { // BLAZE PATCH 0051
+            Ok(n) if v.unpack_str().is_none() => n, // BLAZE PATCH 0051
+            _ => { // BLAZE PATCH 0051
+                return Err(crate::values::ValueError::Bazel(format!( // BLAZE PATCH 0051
+                    "got '{}' in sequence assignment (want {nlhs}-element sequence)", // BLAZE PATCH 0051
+                    v.get_type() // BLAZE PATCH 0051
+                )) // BLAZE PATCH 0051
+                .into()); // BLAZE PATCH 0051
+            } // BLAZE PATCH 0051
+        }; // BLAZE PATCH 0051
+        if nvl != nlhs {
+            let _ = AssignError::IncorrectNumberOfValueToUnpack; // BLAZE PATCH 0051
+            return Err(crate::values::ValueError::Bazel(format!( // BLAZE PATCH 0051
+                "too {} values to unpack (got {nvl}, want {nlhs})", // BLAZE PATCH 0051
+                if nvl < nlhs { "few" } else { "many" } // BLAZE PATCH 0051
+            )) // BLAZE PATCH 0051
+            .into()); // BLAZE PATCH 0051
         }
         let mut i = 0;
         for item in v.iterate(eval.heap())? {
@@ -1458,6 +1473,7 @@ impl InstrNoFlowImpl for InstrDefImpl {
             def_data.function_name.clone(),
             def_data.params.params.len(),
         );
+        parameters.set_java_def_name(def_data.info.name.as_str()); // BLAZE PATCH 0052
         let mut parameter_types = Vec::new();
 
         let mut pop_index = 0;

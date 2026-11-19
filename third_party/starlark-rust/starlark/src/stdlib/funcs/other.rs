@@ -80,9 +80,11 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn any<'v>(
-        #[starlark(require = pos)] x: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
+        #[starlark(require = pos)] elements: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>, // BLAZE PATCH 0052
         heap: Heap<'v>,
     ) -> starlark::Result<bool> {
+        let x = elements; // BLAZE PATCH 0052: Java parameter name `elements`
+        crate::values::unpack::java_check_iterable("any", "elements", x.get(), heap)?; // BLAZE PATCH 0052
         for i in x.get().iterate(heap)? {
             if i.to_bool() {
                 return Ok(true);
@@ -110,9 +112,11 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn all<'v>(
-        #[starlark(require = pos)] x: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
+        #[starlark(require = pos)] elements: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>, // BLAZE PATCH 0052
         heap: Heap<'v>,
     ) -> starlark::Result<bool> {
+        let x = elements; // BLAZE PATCH 0052: Java parameter name `elements`
+        crate::values::unpack::java_check_iterable("all", "elements", x.get(), heap)?; // BLAZE PATCH 0052
         for i in x.get().iterate(heap)? {
             if !i.to_bool() {
                 return Ok(false);
@@ -158,10 +162,11 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn enumerate<'v>(
-        #[starlark(require = pos)] it: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
+        #[starlark(require = pos)] list: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>, // BLAZE PATCH 0052
         #[starlark(default = 0)] start: i32,
         heap: Heap<'v>,
     ) -> starlark::Result<impl AllocValue<'v>> {
+        let it = list; // BLAZE PATCH 0052: Java parameter name `list`
         let v = it
             .get()
             .iterate(heap)?
@@ -189,11 +194,13 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// ```
     // BLAZE PATCH 0026: not `speculative_exec_safe`: a field may fail or read the evaluator.
     fn getattr<'v>(
-        #[starlark(require = pos)] a: Value<'v>,
-        #[starlark(require = pos)] attr: &str,
+        #[starlark(require = pos)] x: Value<'v>, // BLAZE PATCH 0052
+        #[starlark(require = pos)] name: &str, // BLAZE PATCH 0052
         #[starlark(require = pos)] default: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
     ) -> starlark::Result<Value<'v>> {
+        let a = x; // BLAZE PATCH 0052: Java parameter name `x`
+        let attr = name; // BLAZE PATCH 0052: Java parameter name `name`
         // Java: net/starlark/java/eval/Starlark.java:978 Starlark.getattr: an error computing a
         // field propagates; the default only replaces a missing field.
         match a.get_attr_fallible(attr, eval)? { // BLAZE PATCH 0026
@@ -204,7 +211,7 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
                     if let Some(message) = a.get_attr_error_message(attr) { // BLAZE PATCH 0013
                         return Err(starlark::Error::new_other(anyhow::anyhow!("{message}"))); // BLAZE PATCH 0013
                     } // BLAZE PATCH 0013
-                    ValueError::unsupported_owned(a.get_type(), &format!(".{attr}"), None)
+                    Err(ValueError::bazel_no_attr(a, attr)) // BLAZE PATCH 0051
                 }
             },
         }
@@ -218,10 +225,12 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// named `name`.
     // BLAZE PATCH 0026: not `speculative_exec_safe`: a field may fail or read the evaluator.
     fn hasattr<'v>(
-        #[starlark(require = pos)] a: Value<'v>,
-        #[starlark(require = pos)] attr: &str,
+        #[starlark(require = pos)] x: Value<'v>, // BLAZE PATCH 0052
+        #[starlark(require = pos)] name: &str, // BLAZE PATCH 0052
         eval: &mut Evaluator<'v, '_, '_>, // BLAZE PATCH 0026
-    ) -> starlark::Result<bool> { // BLAZE PATCH 0026
+    ) -> starlark::Result<bool> { // BLAZE PATCH 0052
+        let a = x; // BLAZE PATCH 0052: Java parameter name `x`
+        let attr = name; // BLAZE PATCH 0052: Java parameter name `name` // BLAZE PATCH 0026
         // Java: net/starlark/java/eval/Starlark.java:967 Starlark.hasattr
         a.has_attr_fallible(attr, eval) // BLAZE PATCH 0026
     }
@@ -242,7 +251,8 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// # "#);
     /// ```
     #[starlark(speculative_exec_safe)]
-    fn hash(#[starlark(require = pos)] a: &str) -> anyhow::Result<i32> {
+    fn hash(#[starlark(require = pos)] value: &str) -> anyhow::Result<i32> { // BLAZE PATCH 0052
+        let a = value; // BLAZE PATCH 0052: Java parameter name `value`
         // From the starlark spec:
         // > the hash function for strings is the same as that implemented by java.lang.String.hashCode,
         // > a simple polynomial accumulator over the UTF-16 transcoding of the string:
@@ -290,7 +300,8 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// # "#, "not supported");
     /// ```
     #[starlark(speculative_exec_safe)]
-    fn len(#[starlark(require = pos)] a: Value) -> starlark::Result<i32> {
+    fn len(#[starlark(require = pos)] x: Value) -> starlark::Result<i32> { // BLAZE PATCH 0052
+        let a = x; // BLAZE PATCH 0052: Java parameter name `x`
         a.length()
     }
 
@@ -311,9 +322,11 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn reversed<'v>(
-        #[starlark(require = pos)] a: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
+        #[starlark(require = pos)] sequence: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>, // BLAZE PATCH 0052
         heap: Heap<'v>,
     ) -> starlark::Result<Vec<Value<'v>>> {
+        let a = sequence; // BLAZE PATCH 0052: Java parameter name `sequence`
+        crate::values::unpack::java_check_iterable("reversed", "sequence", a.get(), heap)?; // BLAZE PATCH 0052
         let mut v: Vec<Value> = a.get().iterate(heap)?.collect();
         v.reverse();
         Ok(v)
@@ -344,11 +357,14 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     // This function is not spec-safe, because it may call `key` function
     // which might be not spec-safe.
     fn sorted<'v>(
-        #[starlark(require = pos)] x: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>,
+        #[starlark(require = pos)] iterable: ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>, // BLAZE PATCH 0052
         #[starlark(require = named)] key: Option<Value<'v>>,
         #[starlark(require = named, default = false)] reverse: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<AllocList<impl IntoIterator<Item = Value<'v>> + use<'v>>> {
+        let x = iterable; // BLAZE PATCH 0052: Java parameter name `iterable`
+        crate::values::unpack::java_check_iterable("sorted", "iterable", x.get(), eval.heap())?; // BLAZE PATCH 0052
+        let key = key.filter(|k| !k.is_none()); // BLAZE PATCH 0052: Java's `key` is callable or NoneType
         let it = x.get().iterate(eval.heap())?;
         let mut it = match key {
             None => it.map(|x| (x, x)).collect(),
@@ -397,7 +413,8 @@ pub(crate) fn register_other(builder: &mut GlobalsBuilder) {
     /// # "#);
     /// ```
     #[starlark(speculative_exec_safe, as_type = AbstractType)]
-    fn r#type<'v>(#[starlark(require = pos)] a: Value) -> anyhow::Result<FrozenStringValue> {
+    fn r#type<'v>(#[starlark(require = pos)] x: Value) -> anyhow::Result<FrozenStringValue> { // BLAZE PATCH 0052
+        let a = x; // BLAZE PATCH 0052: Java parameter name `x`
         Ok(a.get_type_value())
     }
 }

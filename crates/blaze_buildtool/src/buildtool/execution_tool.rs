@@ -107,7 +107,7 @@ pub struct ExecutionToolConfig {
 ///
 /// PORT: the `CriticalPathComputer` that `executorInit` registers on the event bus is called from
 /// here (its `@Subscribe` methods take the events' parts, see `blaze_bep::metrics::criticalpath`).
-// Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:56 BuildSummaryStatsModule
+// Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:52 BuildSummaryStatsModule
 pub struct ExecutionEventCollector {
     pub spawn_stats: SpawnStats,
     /// `UiStateTracker.actionsCompleted`.
@@ -145,7 +145,7 @@ impl ExecutionEventCollector {
     }
 
     /// `beforeCommand` with an injectable clock (Java's `BlazeClock.instance()`).
-    // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:71 BuildSummaryStatsModule.beforeCommand
+    // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:70 BuildSummaryStatsModule.beforeCommand
     pub fn with_clock(clock: Arc<dyn Clock>) -> ExecutionEventCollector {
         ExecutionEventCollector {
             spawn_stats: SpawnStats::new(),
@@ -174,7 +174,7 @@ impl ExecutionEventCollector {
     /// `--experimental_enable_critical_path_profiling` (the default) a `CriticalPathComputer` is
     /// registered; `can_be_shared` is `Actions.canBeShared` with the executor's action key
     /// context (see [`can_be_shared_with_executor`]).
-    // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:91 BuildSummaryStatsModule.executorInit
+    // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:90 BuildSummaryStatsModule.executorInit
     pub fn executor_init(
         &self,
         enable_critical_path_profiling: bool,
@@ -215,7 +215,7 @@ impl ExecutionEventCollector {
     ///
     /// PORT: the `ExecutionFinishedEvent` (`ExecutionTool.unconditionalExecutionPhaseFinalizations`)
     /// is not posted by the execution side; the command calls this where Java posts it.
-    // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:132 BuildSummaryStatsModule.executionPhaseFinish
+    // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:131 BuildSummaryStatsModule.executionPhaseFinish
     pub fn execution_phase_finish(&self) {
         self.execution_end_millis
             .store(self.clock.current_time_millis(), Ordering::SeqCst);
@@ -232,24 +232,24 @@ impl ExecutionEventCollector {
             return;
         };
         if let Some(e) = downcast_event::<ActionStartedEvent>(event) {
-            // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:234 CriticalPathComputer.actionStarted
+            // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:232 CriticalPathComputer.actionStarted
             computer.action_started(&e.action, nano_time_of(e.nano_time_start));
         } else if let Some(e) = downcast_event::<ActionCompletionEvent>(event) {
-            // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:307 CriticalPathComputer.actionComplete
+            // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:305 CriticalPathComputer.actionComplete
             computer.action_complete(
                 &e.action,
                 nano_time_of(e.related_time_start),
                 nano_time_of(e.finish_time),
             );
         } else if let Some(e) = downcast_event::<CachedActionEvent>(event) {
-            // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:293 CriticalPathComputer.actionCached
+            // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:291 CriticalPathComputer.actionCached
             computer.action_cached(
                 &e.action,
                 nano_time_of(e.nano_time_start),
                 nano_time_of(e.nano_time_finish),
             );
         } else if let Some(e) = downcast_event::<SpawnExecutedEvent>(event) {
-            // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:150 CriticalPathComputer.spawnExecuted
+            // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:148 CriticalPathComputer.spawnExecuted
             // getActionMetadata().getPrimaryOutput(): the action's primary output artifact.
             let primary_output = e
                 .get_action_primary_output()
@@ -264,7 +264,7 @@ impl ExecutionEventCollector {
                 spawn_result.was_remote(),
             );
         } else if let Some(e) = downcast_event::<SpawnExecutedEventChangePhase>(event) {
-            // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:139 CriticalPathComputer.nextCriticalPathPhase
+            // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:137 CriticalPathComputer.nextCriticalPathPhase
             computer.next_critical_path_phase(&blaze_actions::Action::get_primary_output(
                 &**e.get_action(),
             ));
@@ -279,16 +279,16 @@ impl EventBus for ExecutionEventCollector {
     fn post(&self, event: Arc<dyn Postable>) {
         self.post_to_critical_path_computer(&event);
         if let Some(e) = downcast_event::<ActionResultReceivedEvent>(&event) {
-            // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:139 BuildSummaryStatsModule.actionResultReceived
+            // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:136 BuildSummaryStatsModule.actionResultReceived
             self.spawn_stats
                 .count_action_result(e.action_result.spawn_results());
         } else if downcast_event::<ActionCompletionEvent>(&event).is_some() {
-            // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:145 BuildSummaryStatsModule.actionCompletion
+            // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:142 BuildSummaryStatsModule.actionCompletion
             self.spawn_stats.increment_action_count();
-            // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:620 UiStateTracker.actionCompletion
+            // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:619 UiStateTracker.actionCompletion
             self.actions_completed.fetch_add(1, Ordering::SeqCst);
         } else if let Some(e) = downcast_event::<PostableActionCacheStats>(&event) {
-            // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:149 BuildSummaryStatsModule.actionCacheStats
+            // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:148 BuildSummaryStatsModule.actionCacheStats
             self.spawn_stats
                 .record_action_cache_stats(e.as_proto().hits);
         } else if let Some(e) = downcast_event::<TargetCompleteEvent>(&event) {
@@ -297,7 +297,7 @@ impl EventBus for ExecutionEventCollector {
             // Skymeld-specific marking of the start of execution. Multiple instances of this
             // event might be fired during the build, but we make sure to only mark the start of
             // the execution phase when the first one is received.
-            // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:114 BuildSummaryStatsModule.executionPhaseStarting
+            // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:113 BuildSummaryStatsModule.executionPhaseStarting
             if self
                 .execution_started
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -355,7 +355,7 @@ pub fn can_be_shared_with_executor(executor: Arc<SkyframeActionExecutor>) -> Can
     })
 }
 
-// Java: com/google/devtools/build/lib/actions/Actions.java:146 Actions.artifactsEqualWithoutOwner
+// Java: com/google/devtools/build/lib/actions/Actions.java:145 Actions.artifactsEqualWithoutOwner
 fn artifacts_equal_without_owner(collection1: &[Artifact], collection2: &[Artifact]) -> bool {
     if collection1.len() != collection2.len() {
         return false;
@@ -476,7 +476,7 @@ impl Default for ActionCacheOptions {
 /// The action cache is disabled (`--nouse_action_cache`), as before the action cache was wired;
 /// builds use [`prepare_for_execution_with_action_cache`].
 // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:151 ExecutionTool.<init>
-// Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:264 ExecutionTool.prepareForExecution
+// Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:261 ExecutionTool.prepareForExecution
 pub fn prepare_for_execution(
     config: &ExecutionToolConfig,
     reporter: Arc<dyn ExtendedEventHandler>,
@@ -506,7 +506,7 @@ pub fn prepare_for_execution(
 ///
 /// An `Err` that starts with `Couldn't create action cache: ` is Java's `AbruptExitException`
 /// with `FailureDetails.ActionCache.Code.INITIALIZATION_FAILURE`.
-// Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:264 ExecutionTool.prepareForExecution
+// Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:261 ExecutionTool.prepareForExecution
 pub fn prepare_for_execution_with_action_cache(
     config: &ExecutionToolConfig,
     reporter: Arc<dyn ExtendedEventHandler>,
@@ -516,7 +516,7 @@ pub fn prepare_for_execution_with_action_cache(
 ) -> Result<PreparedExecution, String> {
     // outputService.startBuild(...) (startBuildAndDetermineModifiedOutputFiles), before the
     // action log directory is created under the output path.
-    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:291 ExecutionTool.prepareForExecution
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:261 ExecutionTool.prepareForExecution
     start_build(config)?;
     let action_out_dir = create_action_log_directory(config)?;
 
@@ -534,7 +534,7 @@ pub fn prepare_for_execution_with_action_cache(
             o
         }
     };
-    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:915 ExecutionTool.createBuilder
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:917 ExecutionTool.createBuilder
     // PORT: the ActionCacheOptions flags are kept for callers that set them there.
     let execution_filter = check_up_to_date_filter_from_options(
         execution_options.test_check_up_to_date || action_cache_options.test_check_up_to_date,
@@ -626,7 +626,7 @@ pub fn prepare_for_execution_with_action_cache(
     contexts.spawn_log_context = spawn_log_context.clone();
     // NoSpawnCacheModule.registerActionContexts, then RemoteModule.registerActionContexts (the
     // last registered SpawnCache wins) and the contexts of RemoteModule.executorInit.
-    // Java: com/google/devtools/build/lib/runtime/NoSpawnCacheModule.java:26 NoSpawnCacheModule.registerActionContexts
+    // Java: com/google/devtools/build/lib/runtime/NoSpawnCacheModule.java:25 NoSpawnCacheModule.registerActionContexts
     contexts.spawn_cache = Some(blaze_exec::exec::action_execution_context::no_cache());
     {
         let mut spawn_cache = contexts.spawn_cache.take();
@@ -672,7 +672,7 @@ pub fn prepare_for_execution_with_action_cache(
             .unwrap_or_default(),
         explain: action_cache_options.explain,
         containing_package_root_lookup: action_cache_options.containing_package_root_lookup,
-        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:782 SkyframeActionExecutor.checkActionCache
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:759 SkyframeActionExecutor.checkActionCache
         output_checker: config.remote.output_checker.clone(),
     })
     .with_show_subcommands(show_subcommands)
@@ -701,10 +701,10 @@ pub fn prepare_for_execution_with_action_cache(
 /// PORT: the returned `ModifiedFileSet` (`EVERYTHING_MODIFIED` for both) is not used: Blaze has
 /// no incremental output-file checking. The product name is "bazel" (the relative output path is
 /// `bazel-out`).
-// Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:125 RemoteOutputService.startBuild
-// Java: com/google/devtools/build/lib/vfs/LocalOutputService.java:59 LocalOutputService.startBuild
+// Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:124 RemoteOutputService.startBuild
+// Java: com/google/devtools/build/lib/vfs/LocalOutputService.java:58 LocalOutputService.startBuild
 fn start_build(config: &ExecutionToolConfig) -> Result<(), String> {
-    // Java: com/google/devtools/build/lib/analysis/BlazeDirectories.java:232 BlazeDirectories.getRelativeOutputPath
+    // Java: com/google/devtools/build/lib/analysis/BlazeDirectories.java:248 BlazeDirectories.getRelativeOutputPath
     let output_path = config.exec_root.get_relative_str("bazel-out");
     if config.remote.output_checker.is_some() {
         // One of the responsibilities of OutputService.startBuild() is that it ensures the output
@@ -777,7 +777,7 @@ fn check_up_to_date_filter_from_options(
     // build is up-to-date or if we are checking that tests are up-to-date (and test execution is
     // not allowed).
     let allow_build_action_execution = allow_test_action_execution && !check_up_to_date;
-    // Java: com/google/devtools/build/lib/exec/CheckUpToDateFilter.java:64 CheckUpToDateFilter.apply
+    // Java: com/google/devtools/build/lib/exec/CheckUpToDateFilter.java:60 CheckUpToDateFilter.apply
     Box::new(move |action: &dyn CacheCheckAction| {
         if action.is_test_runner_action() {
             allow_test_action_execution
@@ -792,7 +792,7 @@ fn check_up_to_date_filter_from_options(
 /// `action_cache.bad` and `action_cache.tmp`).
 ///
 /// PORT: Blaze runs one command per server process, so the cache is always loaded from disk.
-// Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:896 ExecutionTool.getOrLoadActionCache
+// Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:897 ExecutionTool.getOrLoadActionCache
 // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:387 BlazeWorkspace.getOrLoadPersistentActionCache
 fn get_or_load_action_cache(
     output_base: &Path,
@@ -890,7 +890,7 @@ pub fn run_exclusive_test_skymeld(
 /// ([`ExecutionEventCollector::critical_path_tool_log`]). The profiler (`ProfilerStartedEvent`,
 /// `Profiler.instance().stop()`, the critical path profile tasks) is not ported. The logger
 /// lines go to the server log, which is not ported.
-// Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:154 BuildSummaryStatsModule.buildComplete
+// Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:153 BuildSummaryStatsModule.buildComplete
 pub fn report_build_summary_stats(
     reporter: &dyn ExtendedEventHandler,
     collector: &ExecutionEventCollector,

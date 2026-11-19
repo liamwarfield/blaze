@@ -102,7 +102,7 @@ pub trait BlazeCommand: Send + Sync {
 
 /// The result of a command, an exit code plus whether the server should shut down, and the
 /// `run` command's `ExecRequest`.
-/// PORT: response extensions and idle tasks are not ported yet.
+/// PORT: idle tasks are not ported yet.
 // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:36 BlazeCommandResult
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlazeCommandResult {
@@ -110,6 +110,8 @@ pub struct BlazeCommandResult {
     /// `execDescription`.
     exec_description: Option<blaze_protos::command_server::ExecRequest>,
     shutdown: bool,
+    /// `responseExtensions`.
+    response_extensions: Vec<blaze_protos::google::protobuf::Any>,
 }
 
 impl BlazeCommandResult {
@@ -133,12 +135,29 @@ impl BlazeCommandResult {
         self.shutdown
     }
 
+    // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:88 BlazeCommandResult.getResponseExtensions
+    pub fn get_response_extensions(&self) -> &[blaze_protos::google::protobuf::Any] {
+        &self.response_extensions
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:127 BlazeCommandResult.withResponseExtensions
+    pub fn with_response_extensions(
+        result: BlazeCommandResult,
+        response_extensions: Vec<blaze_protos::google::protobuf::Any>,
+    ) -> BlazeCommandResult {
+        BlazeCommandResult {
+            response_extensions,
+            ..result
+        }
+    }
+
     // Java: com/google/devtools/build/lib/runtime/BlazeCommandResult.java:111 BlazeCommandResult.createShutdown
     pub fn create_shutdown(crash: &crate::bugreport::Crash) -> Self {
         BlazeCommandResult {
             detailed_exit_code: crash.get_detailed_exit_code().clone(),
             exec_description: None,
             shutdown: true,
+            response_extensions: Vec::new(),
         }
     }
 
@@ -148,6 +167,7 @@ impl BlazeCommandResult {
             detailed_exit_code: DetailedExitCode::success(),
             exec_description: None,
             shutdown: true,
+            response_extensions: Vec::new(),
         }
     }
 
@@ -157,6 +177,7 @@ impl BlazeCommandResult {
             detailed_exit_code: DetailedExitCode::success(),
             exec_description: None,
             shutdown: false,
+            response_extensions: Vec::new(),
         }
     }
 
@@ -166,6 +187,7 @@ impl BlazeCommandResult {
             detailed_exit_code: DetailedExitCode::of(failure_detail),
             exec_description: None,
             shutdown: false,
+            response_extensions: Vec::new(),
         }
     }
 
@@ -175,6 +197,7 @@ impl BlazeCommandResult {
             detailed_exit_code,
             exec_description: None,
             shutdown: false,
+            response_extensions: Vec::new(),
         }
     }
 
@@ -189,6 +212,7 @@ impl BlazeCommandResult {
             detailed_exit_code: DetailedExitCode::success(),
             exec_description: Some(exec_description),
             shutdown: false,
+            response_extensions: Vec::new(),
         }
     }
 
@@ -201,6 +225,7 @@ impl BlazeCommandResult {
             detailed_exit_code,
             exec_description: Some(exec_description),
             shutdown: false,
+            response_extensions: Vec::new(),
         }
     }
 }

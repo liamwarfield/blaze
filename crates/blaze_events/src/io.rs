@@ -584,6 +584,14 @@ impl DelegatingOutErr {
         self.err.add_sink(out_err_sink.get_error_stream().clone());
     }
 
+    /// Remove the sink, that is, after calling this method, `out_err_sink` will no longer receive
+    /// output / errors written to this object.
+    // Java: com/google/devtools/build/lib/util/io/DelegatingOutErr.java:59 DelegatingOutErr.removeSink
+    pub fn remove_sink(&self, out_err_sink: &OutErr) {
+        self.out.remove_sink(out_err_sink.get_output_stream());
+        self.err.remove_sink(out_err_sink.get_error_stream());
+    }
+
     /// This object as the `OutErr` it is in Java.
     pub fn as_out_err(&self) -> OutErr {
         OutErr::create(self.out.clone(), self.err.clone())
@@ -600,6 +608,18 @@ impl DelegatingOutputStream {
     // Java: com/google/devtools/build/lib/util/io/DelegatingOutErr.java:68 DelegatingOutputStream.addSink
     fn add_sink(&self, sink: Arc<dyn OutputStream>) {
         self.sinks.lock().push(sink);
+    }
+
+    // Java: com/google/devtools/build/lib/util/io/DelegatingOutErr.java:72 DelegatingOutputStream.removeSink
+    fn remove_sink(&self, sink: &Arc<dyn OutputStream>) {
+        // List.remove(Object): the first equal element (identity for streams).
+        let mut sinks = self.sinks.lock();
+        if let Some(i) = sinks
+            .iter()
+            .position(|s| std::ptr::addr_eq(Arc::as_ptr(s), Arc::as_ptr(sink)))
+        {
+            sinks.remove(i);
+        }
     }
 
     fn sinks(&self) -> Vec<Arc<dyn OutputStream>> {

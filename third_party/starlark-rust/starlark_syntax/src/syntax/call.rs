@@ -47,6 +47,53 @@ impl<'a, P: AstPayload> CallArgsUnpack<'a, P> {
 
         let args = &args.args;
 
+        // BLAZE PATCH 0055: Java's checks, order and texts (Resolver.java:708
+        // visit(CallExpression)); the first error is reported.
+        { // BLAZE PATCH 0055
+            let mut seen_varargs = false; // BLAZE PATCH 0055
+            let mut seen_kwargs = false; // BLAZE PATCH 0055
+            let mut keywords: Option<HashSet<&str>> = None; // BLAZE PATCH 0055
+            for arg in args { // BLAZE PATCH 0055
+                let msg = match &arg.node { // BLAZE PATCH 0055
+                    ArgumentP::Positional(_) if seen_varargs => Some("positional argument may not follow *args".to_owned()), // BLAZE PATCH 0055
+                    ArgumentP::Positional(_) if seen_kwargs => Some("positional argument may not follow **kwargs".to_owned()), // BLAZE PATCH 0055
+                    ArgumentP::Positional(_) if keywords.is_some() => Some("positional argument may not follow keyword argument".to_owned()), // BLAZE PATCH 0055
+                    ArgumentP::Positional(_) => None, // BLAZE PATCH 0055
+                    ArgumentP::Named(n, _) => { // BLAZE PATCH 0055
+                        let k = n.node.as_str(); // BLAZE PATCH 0055
+                        if seen_varargs { // BLAZE PATCH 0055
+                            Some(format!("keyword argument {k} may not follow *args")) // BLAZE PATCH 0055
+                        } else if seen_kwargs { // BLAZE PATCH 0055
+                            Some(format!("keyword argument {k} may not follow **kwargs")) // BLAZE PATCH 0055
+                        } else if !keywords.get_or_insert_with(HashSet::new).insert(k) { // BLAZE PATCH 0055
+                            Some(format!("duplicate keyword argument: {k}")) // BLAZE PATCH 0055
+                        } else { // BLAZE PATCH 0055
+                            None // BLAZE PATCH 0055
+                        } // BLAZE PATCH 0055
+                    } // BLAZE PATCH 0055
+                    ArgumentP::Args(_) => { // BLAZE PATCH 0055
+                        let m = if seen_kwargs { // BLAZE PATCH 0055
+                            Some("*args may not follow **kwargs".to_owned()) // BLAZE PATCH 0055
+                        } else if seen_varargs { // BLAZE PATCH 0055
+                            Some("multiple *args not allowed".to_owned()) // BLAZE PATCH 0055
+                        } else { // BLAZE PATCH 0055
+                            None // BLAZE PATCH 0055
+                        }; // BLAZE PATCH 0055
+                        seen_varargs = true; // BLAZE PATCH 0055
+                        m // BLAZE PATCH 0055
+                    } // BLAZE PATCH 0055
+                    ArgumentP::KwArgs(_) => { // BLAZE PATCH 0055
+                        let m = seen_kwargs.then(|| "multiple **kwargs not allowed".to_owned()); // BLAZE PATCH 0055
+                        seen_kwargs = true; // BLAZE PATCH 0055
+                        m // BLAZE PATCH 0055
+                    } // BLAZE PATCH 0055
+                }; // BLAZE PATCH 0055
+                if let Some(msg) = msg { // BLAZE PATCH 0055
+                    return err(arg.span, &msg); // BLAZE PATCH 0055
+                } // BLAZE PATCH 0055
+            } // BLAZE PATCH 0055
+        } // BLAZE PATCH 0055
+
         let mut stage = ArgsStage::Positional;
         let mut named_args = HashSet::new();
         let mut num_pos = 0;

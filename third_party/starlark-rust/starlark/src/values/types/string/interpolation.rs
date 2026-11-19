@@ -27,6 +27,7 @@ use num_traits::ToPrimitive; // BLAZE PATCH 0008
 use thiserror::Error;
 
 use crate::values::Heap;
+use crate::values::string::repr::string_repr; // BLAZE PATCH 0051
 use crate::values::StringValue;
 #[allow(unused_imports)] // BLAZE PATCH 0008
 use crate::values::UnpackValue;
@@ -256,7 +257,96 @@ fn java_float_arg(value: Value, conv: char) -> crate::Result<f64> { // BLAZE PAT
     } // BLAZE PATCH 0008
 } // BLAZE PATCH 0008
 
+/// BLAZE PATCH 0051: Java's `Printer.formatWithList` (its algorithm, order of checks and
+/// texts) for `pattern % value`.
+// Java: net/starlark/java/eval/Printer.java:312 Printer.formatWithList
 pub(crate) fn percent(format: &str, value: Value) -> crate::Result<String> {
+    let tuple = Tuple::from_value(value);
+    let one = &[value];
+    let values = match &tuple {
+        Some(xs) => xs.content(),
+        None => one,
+    };
+    let err = |m: String| crate::Error::new_other(anyhow::anyhow!("{m}"));
+    let pattern_repr = || {
+        let mut r = String::new();
+        string_repr(format, &mut r);
+        r
+    };
+    let chars: Vec<char> = format.chars().collect();
+    let length = chars.len();
+    let mut res: String = String::with_capacity(format.len() + 20);
+    let mut a = 0;
+    let mut i = 0;
+    while i < length {
+        let Some(p) = chars[i..].iter().position(|c| *c == '%').map(|p| p + i) else {
+            res.extend(&chars[i..]);
+            break;
+        };
+        res.extend(&chars[i..p]);
+        if p == length - 1 {
+            return Err(err(format!(
+                "incomplete format pattern ends with %: {}",
+                pattern_repr()
+            )));
+        }
+        let conv = chars[p + 1];
+        i = p + 2;
+        if conv == '%' {
+            res.push('%');
+            continue;
+        }
+        if a >= values.len() {
+            let args = match &tuple {
+                Some(_) => value.to_repr(),
+                // Java: Tuple.copyOf(arguments) of the single argument.
+                None => format!("({},)", value.to_repr()),
+            };
+            return Err(err(format!(
+                "not enough arguments for format pattern {}: {}",
+                pattern_repr(),
+                args
+            )));
+        }
+        let arg = values[a];
+        a += 1;
+        match conv {
+            'd' | 'o' | 'x' | 'X' => java_int_conv(&mut res, arg, conv)?,
+            'e' | 'E' | 'f' | 'F' | 'g' | 'G' => {
+                let v = java_float_arg(arg, conv)?;
+                match conv {
+                    'e' => float::write_scientific(&mut res, v, 'e', false).unwrap(),
+                    'E' => float::write_scientific(&mut res, v, 'E', false).unwrap(),
+                    // Java StarlarkFloat.format: 'F' is an alias of 'f'.
+                    'f' | 'F' => float::write_decimal(&mut res, v).unwrap(),
+                    'g' => float::write_compact(&mut res, v, 'e').unwrap(),
+                    _ => float::write_compact(&mut res, v, 'E').unwrap(),
+                }
+            }
+            'r' => arg.collect_repr(&mut res),
+            's' => match arg.unpack_str() {
+                None => arg.collect_str(&mut res),
+                Some(s) => res.push_str(s),
+            },
+            _ => {
+                return Err(err(format!(
+                    "unsupported format character \"{conv}\" at index {} in {}",
+                    p + 1,
+                    pattern_repr()
+                )));
+            }
+        }
+    }
+    if a < values.len() {
+        return Err(err(
+            "not all arguments converted during string formatting".to_owned()
+        ));
+    }
+    Ok(res)
+}
+
+#[allow(dead_code)] // BLAZE PATCH 0051: starlark-rust's `%`, replaced by `percent`.
+fn percent_upstream(format: &str, value: Value) -> crate::Result<String> {
     // NOTE(nga): use could reuse `Evaluator::string_pool` here, but
     //   * we don't have access to `Evaluator` in `StarlarkValue::percent`
     //   * after single %s made intrinsic, this code is not that hot now
@@ -369,17 +459,16 @@ pub(crate) fn percent_s_one<'v>(
         None => {
             let one = match Tuple::from_value(arg) {
                 Some(tuple) => match tuple.content() {
-                    [] => {
-                        return Err(crate::Error::new_other(
-                            StringInterpolationError::NotEnoughParameters,
-                        ));
+                    // BLAZE PATCH 0051: Java's texts (Printer.formatWithList).
+                    [] | [_, _, ..] => { // BLAZE PATCH 0051
+                        let pattern = format!( // BLAZE PATCH 0051
+                            "{}%s{}", // BLAZE PATCH 0051
+                            before.replace('%', "%%"), // BLAZE PATCH 0051
+                            after.replace('%', "%%") // BLAZE PATCH 0051
+                        ); // BLAZE PATCH 0051
+                        return Err(percent(&pattern, arg).unwrap_err()); // BLAZE PATCH 0051
                     }
                     [value] => *value,
-                    [_, _, ..] => {
-                        return Err(crate::Error::new_other(
-                            StringInterpolationError::TooManyParameters,
-                        ));
-                    }
                 },
                 None => arg,
             };

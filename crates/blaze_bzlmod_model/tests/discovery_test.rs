@@ -939,3 +939,51 @@ fn missing_module_reports_dependency_chain() {
          registries:\n* module not found: ccc@2.0"
     );
 }
+
+/// A loader whose first key's module file is not available yet (Java: `getOrThrow` returns
+/// null) and whose second key fails.
+struct MissingThenFailingLoader;
+
+const MISSING: &str = "values missing (test sentinel)";
+
+impl ModuleFileLoader for MissingThenFailingLoader {
+    fn get_module_file(
+        &self,
+        key: &ModuleKey,
+    ) -> Result<NonRootModuleFileValue, ExternalDepsException> {
+        if key.name() == "aaa" {
+            Err(ExternalDepsException::with_message(
+                ExternalDepsCode::ExternalDepsUnknown,
+                MISSING,
+            ))
+        } else {
+            Err(ExternalDepsException::with_message(
+                ExternalDepsCode::ModuleNotFound,
+                format!("module {key} not found in registries:"),
+            ))
+        }
+    }
+
+    fn is_values_missing(&self, e: &ExternalDepsException) -> bool {
+        e.get_message() == MISSING
+    }
+}
+
+/// Java `DiscoveryRound.run` goes on after a missing module file (`depGraph.put(depKey, null)`)
+/// and throws the next dependency's `ExternalDepsException` with its dependency chain; this is
+/// what no-keep-going error bubbling reports.
+// Java: com/google/devtools/build/lib/bazel/bzlmod/Discovery.java:122 DiscoveryRound.run
+#[test]
+fn missing_value_does_not_hide_a_later_failure_in_the_round() {
+    let root_module = InterimModuleBuilder::create("root", "0.1")
+        .set_key(ModuleKey::root())
+        .add_dep("aaa", create_module_key("aaa", "1.0"))
+        .add_dep("ss", create_module_key("ss", "1.0"))
+        .build();
+    let e = Discovery::run(&MissingThenFailingLoader, &root(root_module)).unwrap_err();
+    assert_eq!(e.get_code(), ExternalDepsCode::BadModule);
+    assert_eq!(
+        e.get_message(),
+        "in module dependency chain <root> -> ss@1.0: module ss@1.0 not found in registries:"
+    );
+}

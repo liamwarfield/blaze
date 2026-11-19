@@ -522,6 +522,8 @@ impl BlazeRuntime {
             exit_code: result.get_exit_code().get_numeric_exit_code(),
             exec_request: result.get_exec_request().cloned(),
             failure_detail: result.get_failure_detail().cloned(),
+            // Java: com/google/devtools/build/lib/server/GrpcServerImpl.java:665 GrpcServerImpl.executeCommand
+            command_extensions: result.get_response_extensions().to_vec(),
             ..Default::default()
         }
     }

@@ -255,6 +255,8 @@ FIELDS = ["exit", "processes", "spawns", "files", "stdout"]
 
 
 def compare(o, b):
+    # Both records as stored (JSON turns tuples into lists).
+    o, b = json.loads(json.dumps(o)), json.loads(json.dumps(b))
     return {f: ("MATCH" if o.get(f) == b.get(f) else "DIFF") for f in FIELDS}
 
 

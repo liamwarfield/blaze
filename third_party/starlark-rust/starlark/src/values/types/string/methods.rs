@@ -104,6 +104,34 @@ enum StringOrTuple<'v> {
     Tuple(UnpackTuple<&'v str>),
 }
 
+/// BLAZE PATCH 0052: the `sub` parameter of `startswith`/`endswith` checked as Java does: a
+/// string or tuple (BuiltinFunction.checkParamValue), each tuple element a string
+/// (Sequence.cast, Sequence.java:141).
+fn java_string_or_tuple<'v>(function: &str, sub: Value<'v>) -> anyhow::Result<StringOrTuple<'v>> {
+    if let Some(s) = sub.unpack_str() {
+        return Ok(StringOrTuple::String(s));
+    }
+    if let Some(t) = crate::values::tuple::TupleRef::from_value(sub) {
+        let mut items = Vec::new();
+        for (i, x) in t.content().iter().enumerate() {
+            match x.unpack_str() {
+                Some(s) => items.push(s),
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "at index {i} of sub, got element of type {}, want string",
+                        x.get_type()
+                    ));
+                }
+            }
+        }
+        return Ok(StringOrTuple::Tuple(UnpackTuple { items }));
+    }
+    Err(anyhow::anyhow!(
+        "in call to {function}(), parameter 'sub' got value of type '{}', want 'string or tuple'",
+        sub.get_type()
+    ))
+}
+
 // BLAZE PATCH 0033: java.lang.Character, as net/starlark/java/eval/StringModule.java applies it to
 // each UTF-16 char of a string. Blaze's strings are "internal" (every char <= U+00FF, one per
 // byte), for which these are exact (JDK CharacterDataLatin1; checked against the JDK of Bazel
@@ -322,10 +350,11 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn count(
         this: &str,
-        #[starlark(require = pos)] needle: &str,
+        #[starlark(require = pos)] sub: &str, // BLAZE PATCH 0052
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
     ) -> anyhow::Result<i32> {
+        let needle = sub; // BLAZE PATCH 0052: Java parameter name `sub`
         if let Some(StrIndices { haystack, .. }) =
             convert_str_indices(this, start.into_option(), end.into_option())
         {
@@ -350,12 +379,13 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// # "#);
     /// ```
     #[starlark(speculative_exec_safe)]
-    fn endswith(
+    fn endswith<'v>( // BLAZE PATCH 0052
         this: &str,
-        #[starlark(require = pos)] suffix: StringOrTuple,
+        #[starlark(require = pos)] sub: Value<'v>, // BLAZE PATCH 0052
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
     ) -> anyhow::Result<bool> {
+        let suffix = java_string_or_tuple("endswith", sub)?; // BLAZE PATCH 0052: Java parameter name `sub`
         let haystack = match convert_str_indices(this, start.into_option(), end.into_option()) {
             Some(StrIndices { haystack, .. }) => haystack,
             None => return Ok(false),
@@ -390,10 +420,11 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn find(
         this: &str,
-        #[starlark(require = pos)] needle: &str,
+        #[starlark(require = pos)] sub: &str, // BLAZE PATCH 0052
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
     ) -> anyhow::Result<i32> {
+        let needle = sub; // BLAZE PATCH 0052: Java parameter name `sub`
         if let Some(StrIndices { start, haystack }) =
             convert_str_indices(this, start.into_option(), end.into_option())
         {
@@ -492,10 +523,11 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn index(
         this: &str,
-        #[starlark(require = pos)] needle: &str,
+        #[starlark(require = pos)] sub: &str, // BLAZE PATCH 0052
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
     ) -> anyhow::Result<i32> {
+        let needle = sub; // BLAZE PATCH 0052: Java parameter name `sub`
         if let Some(StrIndices { start, haystack }) =
             convert_str_indices(this, start.into_option(), end.into_option())
         {
@@ -504,11 +536,8 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
                 return Ok((start + index).0 as i32);
             }
         }
-        Err(anyhow::anyhow!(
-            "Substring '{}' not found in '{}'",
-            needle,
-            this
-        ))
+        // BLAZE PATCH 0051: Java's text (StringModule.java:676, :710).
+        Err(anyhow::anyhow!("substring not found"))
     }
 
     /// [string.isalnum](
@@ -717,11 +746,27 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn join<'v>(
         this: &str,
-        #[starlark(require = pos)] to_join: ValueOfUnchecked<'v, StarlarkIter<String>>,
+        #[starlark(require = pos)] elements: ValueOfUnchecked<'v, StarlarkIter<String>>, // BLAZE PATCH 0052
         heap: Heap<'v>,
     ) -> starlark::Result<ValueOfUnchecked<'v, String>> {
+        let to_join = elements; // BLAZE PATCH 0052: Java parameter name `elements`
+        crate::values::unpack::java_check_iterable("join", "elements", to_join.get(), heap)?; // BLAZE PATCH 0052
+        // BLAZE PATCH 0052: Java's element check (StringModule.java:161 join).
+        let mut index = 0usize; // BLAZE PATCH 0052
+        let mut as_str = |x: Value<'v>| -> crate::Result<StringValue<'v>> { // BLAZE PATCH 0052
+            let i = index; // BLAZE PATCH 0052
+            index += 1; // BLAZE PATCH 0052
+            StringValue::new(x).ok_or_else(|| { // BLAZE PATCH 0052
+                crate::Error::new_other(anyhow::anyhow!( // BLAZE PATCH 0052
+                    "expected string for sequence element {i}, got '{}' of type {}", // BLAZE PATCH 0052
+                    x.to_str(), // BLAZE PATCH 0052
+                    x.get_type() // BLAZE PATCH 0052
+                )) // BLAZE PATCH 0052
+            }) // BLAZE PATCH 0052
+        }; // BLAZE PATCH 0052
+        #[allow(dead_code)] // BLAZE PATCH 0052
         #[inline(always)]
-        fn as_str<'v>(x: Value<'v>) -> crate::Result<StringValue<'v>> {
+        fn as_str_upstream<'v>(x: Value<'v>) -> crate::Result<StringValue<'v>> { // BLAZE PATCH 0052
             StringValue::unpack_named_param(x, "to_join")
         }
 
@@ -809,13 +854,13 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn partition<'v>(
         this: StringValue<'v>,
-        #[starlark(require = pos)] needle: StringValue<'v>,
+        #[starlark(require = pos)] sep: StringValue<'v>, // BLAZE PATCH 0052
         heap: Heap<'v>,
     ) -> anyhow::Result<(StringValue<'v>, StringValue<'v>, StringValue<'v>)> {
+        let needle = sep; // BLAZE PATCH 0052: Java parameter name `sep`
         if needle.is_empty() {
-            return Err(anyhow::anyhow!(
-                "Empty separator cannot be used for partitioning"
-            ));
+            // BLAZE PATCH 0051: Java's text (StringModule.java:497 partitionCommon).
+            return Err(anyhow::anyhow!("empty separator"));
         }
         if let Some(offset) = this.find(needle.as_str()) {
             let offset2 = offset + needle.len();
@@ -905,10 +950,11 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn rfind(
         this: &str,
-        #[starlark(require = pos)] needle: &str,
+        #[starlark(require = pos)] sub: &str, // BLAZE PATCH 0052
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
     ) -> anyhow::Result<i32> {
+        let needle = sub; // BLAZE PATCH 0052: Java parameter name `sub`
         if let Some(StrIndices { start, haystack }) =
             convert_str_indices(this, start.into_option(), end.into_option())
         {
@@ -940,10 +986,11 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn rindex(
         this: &str,
-        #[starlark(require = pos)] needle: &str,
+        #[starlark(require = pos)] sub: &str, // BLAZE PATCH 0052
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
     ) -> anyhow::Result<i32> {
+        let needle = sub; // BLAZE PATCH 0052: Java parameter name `sub`
         if let Some(StrIndices { start, haystack }) =
             convert_str_indices(this, start.into_option(), end.into_option())
         {
@@ -952,11 +999,8 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
                 return Ok((start + index).0 as i32);
             }
         }
-        Err(anyhow::anyhow!(
-            "Substring '{}' not found in '{}'",
-            needle,
-            this
-        ))
+        // BLAZE PATCH 0051: Java's text (StringModule.java:676, :710).
+        Err(anyhow::anyhow!("substring not found"))
     }
 
     /// [string.rpartition](
@@ -975,13 +1019,13 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     #[starlark(speculative_exec_safe)]
     fn rpartition<'v>(
         this: StringValue<'v>,
-        #[starlark(require = pos)] needle: StringValue<'v>,
+        #[starlark(require = pos)] sep: StringValue<'v>, // BLAZE PATCH 0052
         heap: Heap<'v>,
     ) -> anyhow::Result<(StringValue<'v>, StringValue<'v>, StringValue<'v>)> {
+        let needle = sep; // BLAZE PATCH 0052: Java parameter name `sep`
         if needle.is_empty() {
-            return Err(anyhow::anyhow!(
-                "Empty separator cannot be used for partitioning"
-            ));
+            // BLAZE PATCH 0051: Java's text (StringModule.java:497 partitionCommon).
+            return Err(anyhow::anyhow!("empty separator"));
         }
         if let Some(offset) = this.rfind(needle.as_str()) {
             let offset2 = offset + needle.len();
@@ -1216,12 +1260,13 @@ pub(crate) fn string_methods(builder: &mut MethodsBuilder) {
     /// # "#);
     /// ```
     #[starlark(speculative_exec_safe)]
-    fn startswith(
+    fn startswith<'v>( // BLAZE PATCH 0052
         this: &str,
-        #[starlark(require = pos)] prefix: StringOrTuple,
+        #[starlark(require = pos)] sub: Value<'v>, // BLAZE PATCH 0052
         #[starlark(require = pos, default = NoneOr::None)] start: NoneOr<i32>,
         #[starlark(require = pos, default = NoneOr::None)] end: NoneOr<i32>,
     ) -> anyhow::Result<bool> {
+        let prefix = java_string_or_tuple("startswith", sub)?; // BLAZE PATCH 0052: Java parameter name `sub`
         let haystack = match convert_str_indices(this, start.into_option(), end.into_option()) {
             Some(StrIndices { haystack, .. }) => haystack,
             None => return Ok(false),

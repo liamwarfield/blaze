@@ -1,0 +1,49 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/int-bin/ui-wave/blaze-before-a0242b7
+# sha256 716d4642f77cdfa8239090ecea0b84bb87c6ffa359a04ad9d14fb38705b82299
+# tree 4f9291238f7a0a99cb35285087c401a64df5f29b (dirty)
+# date 2026-11-19T13:53:39
+=== 1: run build --noexperimental_enable_starlark_set //:mentions
+exit 0
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:mentions (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:mentions up-to-date:
+  bazel-bin/mentions.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 2: cat bazel-bin/mentions.txt
+ok
+=== 3: run build --noexperimental_enable_starlark_set //:calls
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:5:6: in probe rule //:calls:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 8, column 26, in _impl
+		content = str(set([1, 2]))
+Error in set: Use of set() requires --experimental_enable_starlark_set
+ERROR: <WS>/BUILD.bazel:5:6: Analysis of target '//:calls' (config: a7a71fd) failed
+ERROR: Analysis of target '//:calls' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 4: run build //:calls
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:calls (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:calls up-to-date:
+  bazel-bin/calls.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 5: cat bazel-bin/calls.txt
+set([1, 2])

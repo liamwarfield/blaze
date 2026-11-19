@@ -10,6 +10,25 @@ use parking_lot::Mutex;
 
 use crate::runtime::build_event_streamer::BuildEventStreamer;
 
+/// What the stream calls on its `BuildEventStreamer` (a trait so that tests can stand in for the
+/// streamer, as Java's tests mock it).
+pub trait ProgressStreamer: Send + Sync {
+    /// `canBufferProgressWrite(isStderr)`.
+    fn can_buffer_progress_write(&self, is_stderr: bool) -> bool;
+    /// `flush()`.
+    fn flush(&self);
+}
+
+impl ProgressStreamer for BuildEventStreamer {
+    fn can_buffer_progress_write(&self, is_stderr: bool) -> bool {
+        BuildEventStreamer::can_buffer_progress_write(self, is_stderr)
+    }
+
+    fn flush(&self) {
+        BuildEventStreamer::flush(self)
+    }
+}
+
 /// `OutputStream` suitably synchronized for producer-consumer use cases. The method
 /// [`SynchronizedOutputStream::read_and_reset`] allows to read the bytes accumulated so far and
 /// simultaneously truncate precisely the bytes read. Moreover, upon such a reset the amount of
@@ -28,7 +47,7 @@ pub struct SynchronizedOutputStream {
     is_stderr: bool,
     buf: Mutex<Vec<u8>>,
     /// The event streamer that is supposed to flush stdout/stderr.
-    streamer: OnceLock<Arc<BuildEventStreamer>>,
+    streamer: OnceLock<Arc<dyn ProgressStreamer>>,
 }
 
 impl SynchronizedOutputStream {
@@ -45,7 +64,7 @@ impl SynchronizedOutputStream {
     }
 
     // Java: com/google/devtools/build/lib/runtime/SynchronizedOutputStream.java:67 SynchronizedOutputStream.registerStreamer
-    pub fn register_streamer(&self, streamer: Arc<BuildEventStreamer>) {
+    pub fn register_streamer(&self, streamer: Arc<dyn ProgressStreamer>) {
         let _ = self.streamer.set(streamer);
     }
 
@@ -106,5 +125,93 @@ impl OutputStream for SynchronizedOutputStream {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Java: src/test/java/com/google/devtools/build/lib/runtime/SynchronizedOutputStreamTest.java
+    use super::*;
+
+    /// The mocked streamer: always accepts buffering; `flush` runs the given callback.
+    struct MockStreamer {
+        on_flush: Mutex<Option<Box<dyn FnMut() + Send>>>,
+    }
+
+    impl ProgressStreamer for MockStreamer {
+        fn can_buffer_progress_write(&self, is_stderr: bool) -> bool {
+            assert!(!is_stderr);
+            true
+        }
+
+        fn flush(&self) {
+            if let Some(f) = self.on_flush.lock().as_mut() {
+                f();
+            }
+        }
+    }
+
+    #[test]
+    fn test_read_and_reset_returns_chunked_writes_since_last_call() {
+        let under_test = SynchronizedOutputStream::new(5, 5, false);
+        under_test.register_streamer(Arc::new(MockStreamer {
+            on_flush: Mutex::new(None),
+        }));
+
+        under_test.write(b"abcdefgh").unwrap();
+        assert_eq!(under_test.read_and_reset(), vec!["abcde", "fgh"]);
+
+        assert!(under_test.read_and_reset().is_empty());
+
+        under_test.write(b"ijk").unwrap();
+        assert_eq!(under_test.read_and_reset(), vec!["ijk"]);
+    }
+
+    #[test]
+    fn test_write_flushes_streamer_when_max_buffered_length_reached() {
+        let under_test = Arc::new(SynchronizedOutputStream::new(3, 3, false));
+        let writes: Arc<Mutex<Vec<Vec<String>>>> = Arc::default();
+        let (stream, sink) = (under_test.clone(), writes.clone());
+        under_test.register_streamer(Arc::new(MockStreamer {
+            on_flush: Mutex::new(Some(Box::new(move || {
+                sink.lock().push(stream.read_and_reset());
+            }))),
+        }));
+
+        under_test.write(b"abcdefgh").unwrap();
+        under_test.write(b"ij").unwrap();
+        under_test.write(b"kl").unwrap();
+
+        assert_eq!(
+            *writes.lock(),
+            vec![
+                vec!["abc".to_string(), "def".to_string(), "gh".to_string()],
+                // The write of {'k', 'j'} would have put the buffer over size, so {'i', 'j'} was
+                // flushed.
+                vec!["ij".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn test_uses_max_of_max_buffered_size_and_max_chunk_size_for_chunking() {
+        let under_test = SynchronizedOutputStream::new(2, 1, false);
+        under_test.register_streamer(Arc::new(MockStreamer {
+            on_flush: Mutex::new(None),
+        }));
+
+        under_test.write(b"abcd").unwrap();
+        assert_eq!(under_test.read_and_reset(), vec!["ab", "cd"]);
+    }
+
+    #[test]
+    #[ignore = "@Ignore in Java: b/154242266 - BES doesn't handle binary stdout/err correctly"]
+    fn test_handles_arbitrary_binary_data_correctly() {
+        let under_test = SynchronizedOutputStream::new(1, 1, false);
+        let input = [0xffu8];
+        under_test.write(&input).unwrap();
+        let result = under_test.read_and_reset();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].as_bytes(), &input);
     }
 }

@@ -137,7 +137,7 @@ impl CriticalPathComputer {
 
     /// Changes the phase of the action (`SpawnExecutedEvent.ChangePhase`; `primary_output` is
     /// `phase.getAction().getPrimaryOutput()`).
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:139 CriticalPathComputer.nextCriticalPathPhase
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:137 CriticalPathComputer.nextCriticalPathPhase
     pub fn next_critical_path_phase(&self, primary_output: &Artifact) {
         let stats = self
             .output_artifact_to_component
@@ -151,7 +151,7 @@ impl CriticalPathComputer {
 
     /// Adds spawn metrics to the action stats (`SpawnExecutedEvent`: the action's primary output,
     /// the spawn result's metrics, runner name and subtype, and `wasRemote()`).
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:150 CriticalPathComputer.spawnExecuted
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:148 CriticalPathComputer.spawnExecuted
     pub fn spawn_executed(
         &self,
         primary_output: Option<&Artifact>,
@@ -231,7 +231,7 @@ impl CriticalPathComputer {
 
     /// Creates a CriticalPathComponent and adds the duration of input discovery and changes
     /// phase (`DiscoveredInputsEvent`).
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:219 CriticalPathComputer.discoverInputs
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:217 CriticalPathComputer.discoverInputs
     pub fn discover_inputs(
         &self,
         action: &ActionRef,
@@ -245,7 +245,7 @@ impl CriticalPathComputer {
 
     /// Record an action that has started to run. If the CriticalPathComponent has not been
     /// created, initialize it and then start running (`ActionStartedEvent`).
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:234 CriticalPathComputer.actionStarted
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:232 CriticalPathComputer.actionStarted
     pub fn action_started(&self, action: &ActionRef, nano_time_start: i64) {
         self.try_add_component(self.create_component(action, nano_time_start))
             .start_running();
@@ -255,7 +255,7 @@ impl CriticalPathComputer {
     /// component for its primary output it uses that to update the rest of the outputs.
     ///
     /// Returns the component to be used for updating the time stats.
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:246 CriticalPathComputer.tryAddComponent
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:245 CriticalPathComputer.tryAddComponent
     fn try_add_component(
         &self,
         new_component: CriticalPathComponent,
@@ -325,7 +325,7 @@ impl CriticalPathComputer {
     /// Record an action that was not executed because it was in the (disk) cache. This is needed
     /// so that we can calculate correctly the dependencies tree if we have some cached actions in
     /// the middle of the critical path (`CachedActionEvent`).
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:293 CriticalPathComputer.actionCached
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:291 CriticalPathComputer.actionCached
     pub fn action_cached(&self, action: &ActionRef, nano_time_start: i64, nano_time_finish: i64) {
         let component = self.try_add_component(self.create_component(action, nano_time_start));
         self.finalize_action_stat(
@@ -339,7 +339,7 @@ impl CriticalPathComputer {
 
     /// Records the elapsed time stats for the action. For each input artifact, it finds the real
     /// dependent artifacts and records the critical path stats (`ActionCompletionEvent`).
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:307 CriticalPathComputer.actionComplete
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:305 CriticalPathComputer.actionComplete
     pub fn action_complete(
         &self,
         action: &ActionRef,
@@ -367,7 +367,7 @@ impl CriticalPathComputer {
     /// (`Actions.getAction(graph, event.actionLookupData())`) and returns when there is no graph
     /// or the value is not an `Action`; the caller does that lookup and passes the result as
     /// `action`.
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:318 CriticalPathComputer.actionChangePruned
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:316 CriticalPathComputer.actionChangePruned
     pub fn action_change_pruned(&self, action: Option<&ActionRef>, finish_time_nanos: i64) {
         let Some(action) = action else {
             return;
@@ -385,7 +385,7 @@ impl CriticalPathComputer {
 
     /// Record that the failed rewound action is no longer running. The action may or may not
     /// start again later (`ActionRewoundEvent`).
-    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:339 CriticalPathComputer.actionRewound
+    // Java: com/google/devtools/build/lib/metrics/criticalpath/CriticalPathComputer.java:337 CriticalPathComputer.actionRewound
     pub fn action_rewound(
         &self,
         failed_rewound_action: &ActionRef,
@@ -466,7 +466,7 @@ fn greatest(
 ) -> Vec<Arc<CriticalPathComponent>> {
     let mut keyed: Vec<(i64, Arc<CriticalPathComponent>)> =
         components.into_iter().map(|c| (key(&c), c)).collect();
-    keyed.sort_by(|a, b| b.0.cmp(&a.0));
+    keyed.sort_by_key(|b| std::cmp::Reverse(b.0));
     keyed.truncate(k);
     keyed.into_iter().map(|(_, c)| c).collect()
 }

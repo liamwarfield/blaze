@@ -9,7 +9,7 @@ use crate::terminal::{AnsiTerminal, AnsiTerminalWriter};
 /// Wrap an `AnsiTerminalWriter` into one that is aware of the position within the current line.
 /// Newline characters, written separately or as part of a string, are recognized and
 /// translated into the newline operation of the underlying writer.
-// Java: com/google/devtools/build/lib/util/io/PositionAwareAnsiTerminalWriter.java:24 PositionAwareAnsiTerminalWriter
+// Java: com/google/devtools/build/lib/util/io/PositionAwareAnsiTerminalWriter.java:25 PositionAwareAnsiTerminalWriter
 pub struct PositionAwareAnsiTerminalWriter<'a> {
     terminal_writer: &'a mut dyn AnsiTerminalWriter,
     position: i32,
@@ -24,14 +24,14 @@ impl<'a> PositionAwareAnsiTerminalWriter<'a> {
         }
     }
 
-    // Java: com/google/devtools/build/lib/util/io/PositionAwareAnsiTerminalWriter.java:84 PositionAwareAnsiTerminalWriter.getPosition
+    // Java: com/google/devtools/build/lib/util/io/PositionAwareAnsiTerminalWriter.java:85 PositionAwareAnsiTerminalWriter.getPosition
     pub fn get_position(&self) -> i32 {
         self.position
     }
 }
 
 impl AnsiTerminalWriter for PositionAwareAnsiTerminalWriter<'_> {
-    // Java: com/google/devtools/build/lib/util/io/PositionAwareAnsiTerminalWriter.java:36 PositionAwareAnsiTerminalWriter.append
+    // Java: com/google/devtools/build/lib/util/io/PositionAwareAnsiTerminalWriter.java:35 PositionAwareAnsiTerminalWriter.append
     fn append(&mut self, text: &str) -> io::Result<&mut dyn AnsiTerminalWriter> {
         // Java's String indices count chars.
         let chars: Vec<char> = text.chars().collect();
@@ -64,19 +64,19 @@ impl AnsiTerminalWriter for PositionAwareAnsiTerminalWriter<'_> {
         Ok(self)
     }
 
-    // Java: com/google/devtools/build/lib/util/io/PositionAwareAnsiTerminalWriter.java:63 PositionAwareAnsiTerminalWriter.okStatus
+    // Java: com/google/devtools/build/lib/util/io/PositionAwareAnsiTerminalWriter.java:64 PositionAwareAnsiTerminalWriter.okStatus
     fn ok_status(&mut self) -> io::Result<&mut dyn AnsiTerminalWriter> {
         self.terminal_writer.ok_status()?;
         Ok(self)
     }
 
-    // Java: com/google/devtools/build/lib/util/io/PositionAwareAnsiTerminalWriter.java:70 PositionAwareAnsiTerminalWriter.failStatus
+    // Java: com/google/devtools/build/lib/util/io/PositionAwareAnsiTerminalWriter.java:71 PositionAwareAnsiTerminalWriter.failStatus
     fn fail_status(&mut self) -> io::Result<&mut dyn AnsiTerminalWriter> {
         self.terminal_writer.fail_status()?;
         Ok(self)
     }
 
-    // Java: com/google/devtools/build/lib/util/io/PositionAwareAnsiTerminalWriter.java:77 PositionAwareAnsiTerminalWriter.normal
+    // Java: com/google/devtools/build/lib/util/io/PositionAwareAnsiTerminalWriter.java:78 PositionAwareAnsiTerminalWriter.normal
     fn normal(&mut self) -> io::Result<&mut dyn AnsiTerminalWriter> {
         self.terminal_writer.normal()?;
         Ok(self)
@@ -84,7 +84,7 @@ impl AnsiTerminalWriter for PositionAwareAnsiTerminalWriter<'_> {
 }
 
 /// An `AnsiTerminalWriter` for an `AnsiTerminal` that counts the number of lines written.
-// Java: com/google/devtools/build/lib/util/io/LineCountingAnsiTerminalWriter.java:22 LineCountingAnsiTerminalWriter
+// Java: com/google/devtools/build/lib/util/io/LineCountingAnsiTerminalWriter.java:23 LineCountingAnsiTerminalWriter
 pub struct LineCountingAnsiTerminalWriter<'a> {
     terminal: &'a AnsiTerminal,
     line_count: i32,
@@ -99,20 +99,20 @@ impl<'a> LineCountingAnsiTerminalWriter<'a> {
         }
     }
 
-    // Java: com/google/devtools/build/lib/util/io/LineCountingAnsiTerminalWriter.java:67 LineCountingAnsiTerminalWriter.getWrittenLines
+    // Java: com/google/devtools/build/lib/util/io/LineCountingAnsiTerminalWriter.java:70 LineCountingAnsiTerminalWriter.getWrittenLines
     pub fn get_written_lines(&self) -> i32 {
         self.line_count
     }
 }
 
 impl AnsiTerminalWriter for LineCountingAnsiTerminalWriter<'_> {
-    // Java: com/google/devtools/build/lib/util/io/LineCountingAnsiTerminalWriter.java:34 LineCountingAnsiTerminalWriter.append
+    // Java: com/google/devtools/build/lib/util/io/LineCountingAnsiTerminalWriter.java:33 LineCountingAnsiTerminalWriter.append
     fn append(&mut self, text: &str) -> io::Result<&mut dyn AnsiTerminalWriter> {
         self.terminal.write_string(text)?;
         Ok(self)
     }
 
-    // Java: com/google/devtools/build/lib/util/io/LineCountingAnsiTerminalWriter.java:41 LineCountingAnsiTerminalWriter.newline
+    // Java: com/google/devtools/build/lib/util/io/LineCountingAnsiTerminalWriter.java:40 LineCountingAnsiTerminalWriter.newline
     fn newline(&mut self) -> io::Result<&mut dyn AnsiTerminalWriter> {
         // System.lineSeparator() on Linux.
         self.terminal.write_string("\n")?;
@@ -120,7 +120,7 @@ impl AnsiTerminalWriter for LineCountingAnsiTerminalWriter<'_> {
         Ok(self)
     }
 
-    // Java: com/google/devtools/build/lib/util/io/LineCountingAnsiTerminalWriter.java:49 LineCountingAnsiTerminalWriter.okStatus
+    // Java: com/google/devtools/build/lib/util/io/LineCountingAnsiTerminalWriter.java:48 LineCountingAnsiTerminalWriter.okStatus
     fn ok_status(&mut self) -> io::Result<&mut dyn AnsiTerminalWriter> {
         self.terminal.text_green()?;
         Ok(self)
@@ -133,7 +133,7 @@ impl AnsiTerminalWriter for LineCountingAnsiTerminalWriter<'_> {
         Ok(self)
     }
 
-    // Java: com/google/devtools/build/lib/util/io/LineCountingAnsiTerminalWriter.java:62 LineCountingAnsiTerminalWriter.normal
+    // Java: com/google/devtools/build/lib/util/io/LineCountingAnsiTerminalWriter.java:63 LineCountingAnsiTerminalWriter.normal
     fn normal(&mut self) -> io::Result<&mut dyn AnsiTerminalWriter> {
         self.terminal.reset_terminal()?;
         Ok(self)
@@ -145,7 +145,7 @@ impl AnsiTerminalWriter for LineCountingAnsiTerminalWriter<'_> {
 /// have a lower bound on the number of columns of the underlying terminal. To simplify copy and
 /// paste of the terminal output, a continuation character is written into the last usable
 /// column when we break a line.
-// Java: com/google/devtools/build/lib/util/io/LineWrappingAnsiTerminalWriter.java:26 LineWrappingAnsiTerminalWriter
+// Java: com/google/devtools/build/lib/util/io/LineWrappingAnsiTerminalWriter.java:29 LineWrappingAnsiTerminalWriter
 pub struct LineWrappingAnsiTerminalWriter<'a> {
     terminal_writer: &'a mut dyn AnsiTerminalWriter,
     width: i32,
@@ -173,7 +173,7 @@ impl<'a> LineWrappingAnsiTerminalWriter<'a> {
         Self::with_continuation_character(terminal_writer, width, '\\')
     }
 
-    // Java: com/google/devtools/build/lib/util/io/LineWrappingAnsiTerminalWriter.java:45 LineWrappingAnsiTerminalWriter.appendChar
+    // Java: com/google/devtools/build/lib/util/io/LineWrappingAnsiTerminalWriter.java:48 LineWrappingAnsiTerminalWriter.appendChar
     fn append_char(&mut self, c: char) -> io::Result<()> {
         if c == '\n' {
             self.terminal_writer.newline()?;
@@ -195,7 +195,7 @@ impl<'a> LineWrappingAnsiTerminalWriter<'a> {
 }
 
 impl AnsiTerminalWriter for LineWrappingAnsiTerminalWriter<'_> {
-    // Java: com/google/devtools/build/lib/util/io/LineWrappingAnsiTerminalWriter.java:62 LineWrappingAnsiTerminalWriter.append
+    // Java: com/google/devtools/build/lib/util/io/LineWrappingAnsiTerminalWriter.java:65 LineWrappingAnsiTerminalWriter.append
     fn append(&mut self, text: &str) -> io::Result<&mut dyn AnsiTerminalWriter> {
         for c in text.chars() {
             self.append_char(c)?;
@@ -203,26 +203,26 @@ impl AnsiTerminalWriter for LineWrappingAnsiTerminalWriter<'_> {
         Ok(self)
     }
 
-    // Java: com/google/devtools/build/lib/util/io/LineWrappingAnsiTerminalWriter.java:70 LineWrappingAnsiTerminalWriter.newline
+    // Java: com/google/devtools/build/lib/util/io/LineWrappingAnsiTerminalWriter.java:74 LineWrappingAnsiTerminalWriter.newline
     fn newline(&mut self) -> io::Result<&mut dyn AnsiTerminalWriter> {
         self.terminal_writer.newline()?;
         self.position = 0;
         Ok(self)
     }
 
-    // Java: com/google/devtools/build/lib/util/io/LineWrappingAnsiTerminalWriter.java:77 LineWrappingAnsiTerminalWriter.okStatus
+    // Java: com/google/devtools/build/lib/util/io/LineWrappingAnsiTerminalWriter.java:82 LineWrappingAnsiTerminalWriter.okStatus
     fn ok_status(&mut self) -> io::Result<&mut dyn AnsiTerminalWriter> {
         self.terminal_writer.ok_status()?;
         Ok(self)
     }
 
-    // Java: com/google/devtools/build/lib/util/io/LineWrappingAnsiTerminalWriter.java:84 LineWrappingAnsiTerminalWriter.failStatus
+    // Java: com/google/devtools/build/lib/util/io/LineWrappingAnsiTerminalWriter.java:89 LineWrappingAnsiTerminalWriter.failStatus
     fn fail_status(&mut self) -> io::Result<&mut dyn AnsiTerminalWriter> {
         self.terminal_writer.fail_status()?;
         Ok(self)
     }
 
-    // Java: com/google/devtools/build/lib/util/io/LineWrappingAnsiTerminalWriter.java:91 LineWrappingAnsiTerminalWriter.normal
+    // Java: com/google/devtools/build/lib/util/io/LineWrappingAnsiTerminalWriter.java:96 LineWrappingAnsiTerminalWriter.normal
     fn normal(&mut self) -> io::Result<&mut dyn AnsiTerminalWriter> {
         self.terminal_writer.normal()?;
         Ok(self)
@@ -263,20 +263,20 @@ impl LoggingTerminalWriter {
         self.transcript.clear();
     }
 
-    // Java: com/google/devtools/build/lib/util/io/LoggingTerminalWriter.java:88 LoggingTerminalWriter.getTranscript
+    // Java: com/google/devtools/build/lib/util/io/LoggingTerminalWriter.java:91 LoggingTerminalWriter.getTranscript
     pub fn get_transcript(&self) -> &str {
         &self.transcript
     }
 }
 
 impl AnsiTerminalWriter for LoggingTerminalWriter {
-    // Java: com/google/devtools/build/lib/util/io/LoggingTerminalWriter.java:48 LoggingTerminalWriter.append
+    // Java: com/google/devtools/build/lib/util/io/LoggingTerminalWriter.java:46 LoggingTerminalWriter.append
     fn append(&mut self, text: &str) -> io::Result<&mut dyn AnsiTerminalWriter> {
         self.transcript.push_str(text);
         Ok(self)
     }
 
-    // Java: com/google/devtools/build/lib/util/io/LoggingTerminalWriter.java:55 LoggingTerminalWriter.newline
+    // Java: com/google/devtools/build/lib/util/io/LoggingTerminalWriter.java:53 LoggingTerminalWriter.newline
     fn newline(&mut self) -> io::Result<&mut dyn AnsiTerminalWriter> {
         if !self.discard_highlight {
             self.transcript.push_str(Self::NEWLINE);
@@ -286,7 +286,7 @@ impl AnsiTerminalWriter for LoggingTerminalWriter {
         Ok(self)
     }
 
-    // Java: com/google/devtools/build/lib/util/io/LoggingTerminalWriter.java:66 LoggingTerminalWriter.okStatus
+    // Java: com/google/devtools/build/lib/util/io/LoggingTerminalWriter.java:64 LoggingTerminalWriter.okStatus
     fn ok_status(&mut self) -> io::Result<&mut dyn AnsiTerminalWriter> {
         if !self.discard_highlight {
             self.transcript.push_str(Self::OK);
@@ -294,7 +294,7 @@ impl AnsiTerminalWriter for LoggingTerminalWriter {
         Ok(self)
     }
 
-    // Java: com/google/devtools/build/lib/util/io/LoggingTerminalWriter.java:74 LoggingTerminalWriter.failStatus
+    // Java: com/google/devtools/build/lib/util/io/LoggingTerminalWriter.java:73 LoggingTerminalWriter.failStatus
     fn fail_status(&mut self) -> io::Result<&mut dyn AnsiTerminalWriter> {
         if !self.discard_highlight {
             self.transcript.push_str(Self::FAIL);

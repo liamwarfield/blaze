@@ -18,4 +18,10 @@ pub fn register(builder: &mut ConfiguredRuleClassProviderBuilder) {
     builder.add_factory("TestSuite", Arc::new(test_suite::TestSuite));
     // Java: com/google/devtools/build/lib/bazel/rules/genrule/BazelGenRuleRule.java:51 BazelGenRuleRule.getMetadata
     builder.add_factory("BazelGenRule", Arc::new(genrule::BazelGenRule));
+    // Java: com/google/devtools/build/lib/analysis/constraints/EnvironmentRule.java:73 EnvironmentRule.getMetadata
+    // (the `environment` rule of CoreRules, factory analysis/constraints/Environment).
+    builder.add_factory(
+        "Environment",
+        Arc::new(blaze_analysis::constraints::environment::Environment),
+    );
 }

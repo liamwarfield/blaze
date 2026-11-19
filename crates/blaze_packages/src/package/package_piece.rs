@@ -393,7 +393,9 @@ impl PackagePiece {
     pub fn get_canonical_form_defined_by(&self) -> String {
         match &self.kind {
             // Java: com/google/devtools/build/lib/packages/PackagePiece.java:180 PackagePiece.ForBuildFile.getCanonicalFormDefinedBy
-            PackagePieceKind::ForBuildFile { .. } => self.metadata.build_file_label.get_canonical_form(),
+            PackagePieceKind::ForBuildFile { .. } => {
+                self.metadata.build_file_label.get_canonical_form()
+            }
             // Java: com/google/devtools/build/lib/packages/PackagePiece.java:344 PackagePiece.ForMacro.getCanonicalFormDefinedBy
             PackagePieceKind::ForMacro {
                 evaluated_macro, ..
@@ -577,7 +579,8 @@ impl TargetDefinitionContext {
     ) -> TargetDefinitionContext {
         // Java: PackagePiece.ForMacro.<init>
         blaze_util::check_argument!(
-            metadata.package_identifier == evaluated_macro.get_package_metadata().package_identifier
+            metadata.package_identifier
+                == evaluated_macro.get_package_metadata().package_identifier
         );
         blaze_util::check_argument!(
             metadata.package_identifier == *parent_identifier.get_package_identifier()
@@ -791,9 +794,7 @@ impl TargetDefinitionContext {
         );
         // Java: the builder is a Package.Builder; its BUILD file target is the piece's.
         builder.build_file = Some(build_file.clone());
-        builder
-            .recorder
-            .add_input_file_unchecked(build_file);
+        builder.recorder.add_input_file_unchecked(build_file);
         builder
     }
 

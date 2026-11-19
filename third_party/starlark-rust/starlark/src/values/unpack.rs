@@ -226,17 +226,26 @@ pub trait UnpackValue<'v>: Sized + StarlarkTypeRepr {
     fn unpack_named_param(value: Value<'v>, param_name: &str) -> crate::Result<Self> {
         #[cold]
         fn error<'v>(value: Value<'v>, param_name: &str, ty: fn() -> Ty) -> crate::Error {
-            #[derive(thiserror::Error, Debug)]
-            #[error("Type of parameter `{0}` doesn't match, expected `{1}`, actual `{2}`")]
-            struct IncorrectParameterTypeNamedWithExpected(String, Ty, String);
-
-            crate::Error::new_value(IncorrectParameterTypeNamedWithExpected(
-                param_name.to_owned(),
-                ty(),
-                value.to_string_for_type_error(),
-            ))
+            // BLAZE PATCH 0052: Java's text (BuiltinFunction.java:404 checkParamValue); the
+            // function name is filled in by the native function's call (`NativeFunc::invoke`).
+            crate::Error::new_value(BazelParamTypeError {
+                function: None,
+                param: param_name.to_owned(),
+                actual: value.get_type().to_owned(),
+                ty: ty(),
+            })
         }
 
+        // BLAZE PATCH 0052: an int beyond the parameter's 32-bit range is Java's
+        // `Starlark.toInt(x, param)` error (Starlark.java:755, StarlarkInt.java:339).
+        if let Err(e) = Self::unpack_value(value) { // BLAZE PATCH 0052
+            if crate::values::types::int::int_or_big::StarlarkIntRef::unpack(value).is_some() { // BLAZE PATCH 0052
+                let _ = e; // BLAZE PATCH 0052
+                return Err(crate::Error::new_value(anyhow::anyhow!( // BLAZE PATCH 0052
+                    "got {value} for {param_name}, want value in signed 32-bit range" // BLAZE PATCH 0052
+                ))); // BLAZE PATCH 0052
+            } // BLAZE PATCH 0052
+        } // BLAZE PATCH 0052
         Self::unpack_value(value)
             .into_anyhow_result()
             .with_context(|| {
@@ -272,4 +281,141 @@ impl<'v, TLeft: UnpackValue<'v>, TRight: UnpackValue<'v>> UnpackValue<'v>
                 .map(Self::Right)),
         }
     }
+}
+
+/// BLAZE PATCH 0052: a builtin's argument of the wrong type, Java's
+/// "in call to F(), parameter 'P' got value of type 'T', want 'W'"
+/// (BuiltinFunction.java:404 checkParamValue, ParamDescriptor.java:123 getTypeErrorMessage).
+#[derive(Debug, Clone)]
+pub(crate) struct BazelParamTypeError {
+    /// The builtin's name; set by the call (`NativeFunc::invoke`, `NativeMeth::invoke`).
+    pub(crate) function: Option<String>,
+    pub(crate) param: String,
+    /// `type(value)`.
+    pub(crate) actual: String,
+    /// The parameter's starlark-rust type.
+    pub(crate) ty: Ty,
+}
+
+impl std::error::Error for BazelParamTypeError {}
+
+impl std::fmt::Display for BazelParamTypeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let function = self.function.as_deref().unwrap_or("function");
+        write!(
+            f,
+            "in call to {function}(), parameter '{}' got value of type '{}', want '{}'",
+            self.param,
+            self.actual,
+            java_allowed_types(function, &self.param, &self.ty)
+        )
+    }
+}
+
+impl BazelParamTypeError {
+    /// `e` with the builtin's name set, if `e` is a parameter type error without one.
+    pub(crate) fn with_function(e: crate::Error, function: &str) -> crate::Error {
+        if let crate::ErrorKind::Value(a) = e.kind() {
+            if let Some(p) = a.downcast_ref::<BazelParamTypeError>() {
+                if p.function.is_none() {
+                    let mut p = p.clone();
+                    p.function = Some(function.to_owned());
+                    return crate::Error::new_value(p);
+                }
+            }
+        }
+        e
+    }
+}
+
+/// BLAZE PATCH 0052: Java `ParamDescriptor.getTypeErrorMessage` for a parameter of a builtin:
+/// the Java class names of its allowed types, "a", "a or b", "a, b, or c".
+///
+/// PORT: Java lists the types in the order of the parameter's `@Param(allowedTypes)`, which
+/// starlark-rust's types do not keep. The parameters of the core builtins whose order differs
+/// from the rule below are listed (from MethodLibrary.java and StringModule.java); for the rest
+/// the types are starlark-rust's, with `NoneType` last (Java's usual order).
+pub(crate) fn java_allowed_types(function: &str, param: &str, ty: &Ty) -> String {
+    let listed: Option<&[&str]> = match (function, param) {
+        ("int" | "float", "x") => Some(&["string", "bool", "int", "float"]),
+        ("abs", "x") => Some(&["int", "float"]),
+        ("startswith" | "endswith", "sub") => Some(&["string", "tuple"]),
+        _ => None,
+    };
+    let names: Vec<String> = match listed {
+        Some(l) => l.iter().map(|s| (*s).to_owned()).collect(),
+        None => {
+            let text = ty.to_string();
+            let mut parts = Vec::new();
+            let mut depth = 0;
+            let mut cur = String::new();
+            for c in text.chars() {
+                match c {
+                    '[' | '(' => depth += 1,
+                    ']' | ')' => depth -= 1,
+                    _ => {}
+                }
+                if c == '|' && depth == 0 {
+                    parts.push(std::mem::take(&mut cur));
+                } else {
+                    cur.push(c);
+                }
+            }
+            parts.push(cur);
+            let mut names: Vec<String> = parts
+                .iter()
+                .map(|p| {
+                    let p = p.trim();
+                    let base = p.split('[').next().unwrap_or(p);
+                    match base {
+                        "str" => "string",
+                        "None" => "NoneType",
+                        "typing.Iterable" => "iterable",
+                        "typing.Callable" => "callable",
+                        "typing.Any" => "Object",
+                        other => other,
+                    }
+                    .to_owned()
+                })
+                .collect();
+            names.dedup();
+            if let Some(i) = names.iter().position(|n| n == "NoneType") {
+                let n = names.remove(i);
+                names.push(n);
+            }
+            names
+        }
+    };
+    let n = names.len();
+    let mut buf = String::new();
+    for (i, name) in names.iter().enumerate() {
+        if i > 0 {
+            buf.push_str(if n == 2 {
+                " or "
+            } else if i < n - 1 {
+                ", "
+            } else {
+                ", or "
+            });
+        }
+        buf.push_str(name);
+    }
+    buf
+}
+
+/// BLAZE PATCH 0052: Java's check of a builtin parameter declared `StarlarkIterable` (strings
+/// are not iterable): "in call to F(), parameter 'P' got value of type 'T', want 'iterable'".
+pub(crate) fn java_check_iterable<'v>(
+    function: &str,
+    param: &str,
+    value: Value<'v>,
+    heap: crate::values::Heap<'v>,
+) -> crate::Result<()> {
+    if value.unpack_str().is_none() && value.iterate(heap).is_ok() {
+        return Ok(());
+    }
+    Err(crate::Error::new_other(anyhow::anyhow!(
+        "in call to {function}(), parameter '{param}' got value of type '{}', want 'iterable'",
+        value.get_type()
+    )))
 }

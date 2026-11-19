@@ -1,0 +1,488 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/work/blaze-before-errors
+# sha256 0ac2a4c8cda23a716bf35c55afe064eca1929ba3d0fc8d46a41ffb7c1028af05
+# tree 4f9291238f7a0a99cb35285087c401a64df5f29b (dirty)
+# date 2026-11-19T13:52:58
+=== 1: run build //pkg:bad
+exit 1
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Analysis of target '//pkg:bad' failed; build aborted: Target //pkg:bad is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:bad (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible
+Target //pkg:bad failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 2: run build //pkg:all
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 15 targets (81 packages loaded, 843 targets configured).
+INFO: Found 15 targets...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 7 processes: 7 internal.
+INFO: Build completed successfully, 7 total actions
+=== 3: run build //pkg/...
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 15 targets (81 packages loaded, 843 targets configured).
+INFO: Found 15 targets...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 6 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 4: run build //pkg:ok //pkg:bad
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Analysis of target '//pkg:bad' failed; build aborted: Target //pkg:bad is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:bad (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 5: run build //pkg:ok //pkg:bad --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+WARNING: errors encountered while analyzing target '//pkg:bad', it will not be built.
+Target //pkg:bad is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:bad (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible
+INFO: Analyzed 2 targets (6 packages loaded, 10 targets configured).
+INFO: Found 1 target...
+INFO: Build succeeded for only 1 of 2 top-level targets
+Target //pkg:bad failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully
+=== 6: run build //pkg:ok //pkg:bad --skip_incompatible_explicit_targets
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (6 packages loaded, 10 targets configured).
+INFO: Found 2 targets...
+Target //pkg:bad was skipped
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 7: run build //pkg:dep_on_bad
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Analysis of target '//pkg:dep_on_bad' failed; build aborted: Target //pkg:dep_on_bad is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:dep_on_bad (a7a71f)
+    //pkg:bad_starlark (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible
+Target //pkg:dep_on_bad failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 8: run build //pkg:dep_on_dep_on_bad
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Analysis of target '//pkg:dep_on_dep_on_bad' failed; build aborted: Target //pkg:dep_on_dep_on_bad is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:dep_on_dep_on_bad (a7a71f)
+    //pkg:dep_on_bad (a7a71f)
+    //pkg:bad_starlark (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible
+Target //pkg:dep_on_dep_on_bad failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 9: run build //pkg:gen_on_bad
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Analysis of target '//pkg:gen_on_bad' failed; build aborted: Target //pkg:gen_on_bad is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:gen_on_bad (a7a71f)
+    //pkg:bad (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible
+Target //pkg:gen_on_bad failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 10: run build //pkg:bad_alias
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Analysis of target '//pkg:bad_alias' failed; build aborted: Target //pkg:bad_alias is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:bad_alias (e722a2)
+    //pkg:bad (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible
+Target //pkg:bad_alias failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 11: run build //pkg:needs_vanilla
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Analysis of target '//pkg:needs_vanilla' failed; build aborted: Target //pkg:needs_vanilla is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:needs_vanilla (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint //pkg:vanilla
+Target //pkg:needs_vanilla failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 12: run build //pkg:needs_two
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Analysis of target '//pkg:needs_two' failed; build aborted: Target //pkg:needs_two is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:needs_two (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraints [//pkg:vanilla, @@platforms//:incompatible]
+Target //pkg:needs_two failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 13: run build //pkg:select_vanilla
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Analysis of target '//pkg:select_vanilla' failed; build aborted: Target //pkg:select_vanilla is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:select_vanilla (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible
+Target //pkg:select_vanilla failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 14: run build //pkg:select_opt
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //pkg:select_opt (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+Target //pkg:select_opt up-to-date:
+  bazel-bin/pkg/select_opt.out
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 15: run build //pkg:select_opt -c opt
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Analysis of target '//pkg:select_opt' failed; build aborted: Target //pkg:select_opt is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:select_opt (bf3a44)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible
+Target //pkg:select_opt failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 16: run build //pkg:bad_gen.out
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Analysis of target '//pkg:bad_gen.out' failed; build aborted: Target //pkg:bad_gen.out is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:bad_gen.out (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible
+Target //pkg:bad_gen.out failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 17: run cquery //pkg:all --output=label_kind
+exit 0
+--- stdout
+filegroup rule //pkg:bad (a7a71fd)
+alias rule //pkg:bad_alias (e722a21)
+genrule rule //pkg:bad_gen (a7a71fd)
+simple rule //pkg:bad_starlark (a7a71fd)
+simple_test rule //pkg:bad_test (e722a21)
+constraint_value rule //pkg:chocolate (3030ed4)
+simple rule //pkg:dep_on_bad (a7a71fd)
+simple rule //pkg:dep_on_dep_on_bad (a7a71fd)
+constraint_setting rule //pkg:flavor (3030ed4)
+genrule rule //pkg:gen_on_bad (a7a71fd)
+config_setting rule //pkg:is_opt (a7a71fd)
+config_setting rule //pkg:is_vanilla (a7a71fd)
+simple rule //pkg:needs_two (a7a71fd)
+simple rule //pkg:needs_vanilla (a7a71fd)
+filegroup rule //pkg:ok (a7a71fd)
+simple_test rule //pkg:ok_test (e722a21)
+simple rule //pkg:select_opt (a7a71fd)
+simple rule //pkg:select_vanilla (a7a71fd)
+simple_test rule //pkg:test_on_bad (e722a21)
+constraint_value rule //pkg:vanilla (3030ed4)
+platform rule //pkg:vanilla_platform (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 21 targets (81 packages loaded, 846 targets configured).
+INFO: Found 21 targets...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 18: run cquery "deps(//pkg:dep_on_bad)"
+exit 0
+--- stdout
+//pkg:dep_on_bad (a7a71fd)
+@bazel_tools//tools:host_platform (3030ed4)
+//pkg:bad_starlark (a7a71fd)
+@platforms//host:host (3030ed4)
+@platforms//os:linux (3030ed4)
+@platforms//cpu:x86_64 (3030ed4)
+@platforms//:incompatible (3030ed4)
+@platforms//cpu:cpu (3030ed4)
+@platforms//:incompatible_setting (3030ed4)
+@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //pkg:dep_on_bad (6 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 19: run cquery //pkg:bad
+exit 0
+--- stdout
+//pkg:bad (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //pkg:bad (6 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 20: run build //pkg:needs_vanilla //pkg:select_vanilla --platforms=//pkg:vanilla_platform
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (5 packages loaded, 12 targets configured).
+INFO: Found 2 targets...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 3 processes: 3 internal.
+INFO: Build completed successfully, 3 total actions
+=== 21: run cquery //pkg:all --output=label_kind --platforms=//pkg:vanilla_platform
+exit 0
+--- stdout
+filegroup rule //pkg:bad (617a539)
+alias rule //pkg:bad_alias (6c5e286)
+genrule rule //pkg:bad_gen (617a539)
+simple rule //pkg:bad_starlark (617a539)
+simple_test rule //pkg:bad_test (6c5e286)
+constraint_value rule //pkg:chocolate (3030ed4)
+simple rule //pkg:dep_on_bad (617a539)
+simple rule //pkg:dep_on_dep_on_bad (617a539)
+constraint_setting rule //pkg:flavor (3030ed4)
+genrule rule //pkg:gen_on_bad (617a539)
+config_setting rule //pkg:is_opt (617a539)
+config_setting rule //pkg:is_vanilla (617a539)
+simple rule //pkg:needs_two (617a539)
+simple rule //pkg:needs_vanilla (617a539)
+filegroup rule //pkg:ok (617a539)
+simple_test rule //pkg:ok_test (6c5e286)
+simple rule //pkg:select_opt (617a539)
+simple rule //pkg:select_vanilla (617a539)
+simple_test rule //pkg:test_on_bad (6c5e286)
+constraint_value rule //pkg:vanilla (3030ed4)
+platform rule //pkg:vanilla_platform (3030ed4)
+platform rule //pkg:vanilla_platform (617a539)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 21 targets (81 packages loaded, 848 targets configured).
+INFO: Found 21 targets...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 22: aquery //pkg:all
+exit 0
+--- stdout
+{"actionKey": "09b4472158b137a594b2695d9607f20d0e1c052282764ef381e13603c76f408b", "argv": [], "aspects": [], "configuration": {"checksum": "e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "#!/bin/sh\nexit 0\n", "inputs": [], "isExecutable": true, "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/pkg/ok_test.sh"], "primaryOutput": "bazel-out/k8-fastbuild/bin/pkg/ok_test.sh", "ruleClass": "simple_test", "target": "//pkg:ok_test"}
+{"actionKey": "fb9fdbb50249304dfc0a40fb7da997616c8b9aee876eff4f14b00f45b2ce980f", "argv": [], "aspects": [], "configuration": {"checksum": "e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": ",incompat_toplevel,_main\n", "inputs": [], "mnemonic": "RepoMappingManifest", "outputs": ["bazel-out/k8-fastbuild/bin/pkg/ok_test.sh.repo_mapping"], "primaryOutput": "bazel-out/k8-fastbuild/bin/pkg/ok_test.sh.repo_mapping", "ruleClass": "simple_test", "target": "//pkg:ok_test"}
+{"actionKey": "<path-dependent>", "argv": [], "aspects": [], "configuration": {"checksum": "e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "_main/pkg/ok_test.sh <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/bin/pkg/ok_test.sh\n_repo_mapping <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/bin/pkg/ok_test.sh.repo_mapping\n", "inputs": [], "mnemonic": "SourceSymlinkManifest", "outputs": ["bazel-out/k8-fastbuild/bin/pkg/ok_test.sh.runfiles_manifest"], "primaryOutput": "bazel-out/k8-fastbuild/bin/pkg/ok_test.sh.runfiles_manifest", "ruleClass": "simple_test", "target": "//pkg:ok_test"}
+{"actionKey": "<path-dependent>", "argv": [], "aspects": [], "configuration": {"checksum": "e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-fastbuild/bin/pkg/ok_test.sh.runfiles_manifest"], "mnemonic": "SymlinkTree", "outputs": ["bazel-out/k8-fastbuild/bin/pkg/ok_test.sh.runfiles/MANIFEST"], "primaryOutput": "bazel-out/k8-fastbuild/bin/pkg/ok_test.sh.runfiles/MANIFEST", "ruleClass": "simple_test", "target": "//pkg:ok_test"}
+{"actionKey": "64524680ae352918974e5de22f89166472d4f41ef8c12369e8c62a2141413139", "argv": [], "aspects": [], "configuration": {"checksum": "e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-fastbuild/bin/pkg/ok_test.sh", "bazel-out/k8-fastbuild/bin/pkg/ok_test.sh.repo_mapping", "bazel-out/k8-fastbuild/bin/pkg/ok_test.sh.runfiles/MANIFEST"], "mnemonic": "RunfilesTree", "outputs": ["bazel-out/k8-fastbuild/bin/pkg/ok_test.sh.runfiles"], "primaryOutput": "bazel-out/k8-fastbuild/bin/pkg/ok_test.sh.runfiles", "ruleClass": "simple_test", "target": "//pkg:ok_test"}
+{"actionKey": "75243d40e17d6f4bd838768951c4a164efb13ed52ac96f36179c51d4059c093d", "argv": ["external/bazel_tools/tools/test/test-setup.sh", "pkg/ok_test.sh"], "aspects": [], "configuration": {"checksum": "e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {"PATH": "/bin:/usr/bin:/usr/local/bin"}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-fastbuild/bin/pkg/ok_test.sh.runfiles", "external/bazel_tools/tools/test/generate-xml.sh", "external/bazel_tools/tools/test/test-setup.sh"], "mnemonic": "TestRunner", "outputs": ["bazel-out/k8-fastbuild/testlogs/pkg/ok_test/test.cache_status", "bazel-out/k8-fastbuild/testlogs/pkg/ok_test/test.log", "bazel-out/k8-fastbuild/testlogs/pkg/ok_test/test.outputs/", "bazel-out/k8-fastbuild/testlogs/pkg/ok_test/test.xml"], "primaryOutput": "bazel-out/k8-fastbuild/testlogs/pkg/ok_test/test.log", "ruleClass": "simple_test", "target": "//pkg:ok_test"}
+{"actionKey": "e12d7f74c346d38e9fd27a13103d1db9f9ecc11b9ee9f9eaacce529d60c4fc3b", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "select_opt\n", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/pkg/select_opt.out"], "primaryOutput": "bazel-out/k8-fastbuild/bin/pkg/select_opt.out", "ruleClass": "simple", "target": "//pkg:select_opt"}
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 15 targets (81 packages loaded, 843 targets configured).
+INFO: Found 15 targets...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 23: aquery //pkg:bad
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Target //pkg:bad is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:bad (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 24: aquery //pkg:dep_on_dep_on_bad
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Target //pkg:dep_on_dep_on_bad is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:dep_on_dep_on_bad (a7a71f)
+    //pkg:dep_on_bad (a7a71f)
+    //pkg:bad_starlark (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 25: run aquery //pkg:bad_test
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Target //pkg:bad_test is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:bad_test (e722a2)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 26: run test //pkg:all
+exit 0
+--- stdout
+//pkg:bad_test                                                          SKIPPED
+//pkg:test_on_bad                                                       SKIPPED
+//pkg:ok_test                                                            PASSED in <DUR>
+
+Executed 1 out of 3 tests: 1 test passes and 2 were skipped.
+There were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 15 targets (81 packages loaded, 843 targets configured).
+INFO: Found 12 targets and 3 test targets...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 2 processes: 6 action cache hit, 1 internal, 2 linux-sandbox.
+INFO: Build completed successfully, 2 total actions
+=== 27: run test //pkg:bad_test
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Analysis of target '//pkg:bad_test' failed; build aborted: Target //pkg:bad_test is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:bad_test (e722a2)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible
+Target //pkg:bad_test failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+ERROR: No test targets were found, yet testing was requested
+=== 28: run test //pkg:test_on_bad
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Analysis of target '//pkg:test_on_bad' failed; build aborted: Target //pkg:test_on_bad is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:test_on_bad (e722a2)
+    //pkg:bad_gen (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible
+Target //pkg:test_on_bad failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+ERROR: No test targets were found, yet testing was requested
+=== 29: run test //pkg:ok_test //pkg:bad_test --keep_going
+exit 1
+--- stdout
+//pkg:ok_test                                                   (cached) PASSED in <DUR>
+
+Executed 0 out of 1 test: 1 test passes.
+There were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.
+All tests passed but there were other errors during the build.
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+WARNING: errors encountered while analyzing target '//pkg:bad_test', it will not be built.
+Target //pkg:bad_test is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:bad_test (e722a2)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible
+INFO: Analyzed 2 targets (80 packages loaded, 835 targets configured).
+INFO: Found 1 test target...
+INFO: Build succeeded for only 1 of 2 top-level targets
+Use --verbose_failures to see the command lines of failed build steps.
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 6 action cache hit, 1 internal.
+ERROR: Build did NOT complete successfully
+=== 30: run test //pkg:ok_test //pkg:bad_test --skip_incompatible_explicit_targets
+exit 0
+--- stdout
+//pkg:ok_test                                                   (cached) PASSED in <DUR>
+//pkg:bad_test                                                          SKIPPED
+
+Executed 0 out of 2 tests: 1 test passes and 1 was skipped.
+There were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (80 packages loaded, 835 targets configured).
+INFO: Found 2 test targets...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 6 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 31: run build //pkg:ok //pkg:bad --noexperimental_merged_skyframe_analysis_execution
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Target //pkg:bad is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:bad (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 32: run build //pkg:ok //pkg:bad --keep_going --noexperimental_merged_skyframe_analysis_execution
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+WARNING: Target //pkg:bad is incompatible and cannot be built, but was explicitly requested.
+Dependency chain:
+    //pkg:bad (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible
+INFO: Analyzed 2 targets (6 packages loaded, 10 targets configured).
+INFO: Found 1 target...
+Target //pkg:ok up-to-date (nothing to build)
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 1 internal.
+ERROR: Build did NOT complete successfully
+=== 33: run build //pkg:all --noexperimental_merged_skyframe_analysis_execution
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 15 targets (81 packages loaded, 843 targets configured).
+INFO: Found 15 targets...
+INFO: Elapsed time: <DUR>, Critical Path: <DUR>
+INFO: 1 process: 6 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action

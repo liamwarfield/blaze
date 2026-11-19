@@ -21,6 +21,10 @@ prost.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true
 tokio.workspace = true
+# Not a workspace dependency: pinned here (the version tonic's transport already uses, see
+# Cargo.lock) to read the I/O error of a failed HTTP/2 stream (command_server.rs,
+# GrpcStatus::from_tonic).
+h2 = "0.4.20"
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -1,0 +1,523 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/int-bin/ui-wave/blaze-before-a0242b7
+# sha256 716d4642f77cdfa8239090ecea0b84bb87c6ffa359a04ad9d14fb38705b82299
+# tree 4f9291238f7a0a99cb35285087c401a64df5f29b (dirty)
+# date 2026-11-19T13:43:49
+=== 1: run cquery "deps(//:t_list)"
+exit 0
+--- stdout
+//:t_list (7223fb8)
+@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist (null)
+@bazel_tools//tools:host_platform (3030ed4)
+@@platforms//host:host (3030ed4)
+//:leaf (7223fb8)
+@@platforms//os:linux (3030ed4)
+@@platforms//cpu:x86_64 (3030ed4)
+@@platforms//cpu:cpu (3030ed4)
+@@platforms//os:os (3030ed4)
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+DEBUG: <WS>/defs.bzl:29:10: copts was ["-DX", "-DY"]
+DEBUG: <WS>/defs.bzl:29:10: copts was ["c0"]
+DEBUG: <WS>/defs.bzl:29:10: copts was ["-DX", "-DY"]
+INFO: Analyzed target //:t_list (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 2: run cquery "deps(//:t_list)" --//:copts=-DX,-DY
+exit 0
+--- stdout
+//:t_list (c3adc31)
+//:leaf (c3adc31)
+@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist (null)
+@bazel_tools//tools:host_platform (3030ed4)
+@@platforms//host:host (3030ed4)
+@@platforms//os:linux (3030ed4)
+@@platforms//cpu:x86_64 (3030ed4)
+@@platforms//cpu:cpu (3030ed4)
+@@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+DEBUG: <WS>/defs.bzl:29:10: copts was ["-DX", "-DY"]
+DEBUG: <WS>/defs.bzl:29:10: copts was ["-DX", "-DY"]
+DEBUG: <WS>/defs.bzl:29:10: copts was ["-DX", "-DY"]
+INFO: Analyzed target //:t_list (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 3: run cquery "deps(//:t_tuple)"
+exit 0
+--- stdout
+//:t_tuple (56746da)
+//:leaf (56746da)
+@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist (null)
+@bazel_tools//tools:host_platform (3030ed4)
+@@platforms//host:host (3030ed4)
+@@platforms//os:linux (3030ed4)
+@@platforms//cpu:x86_64 (3030ed4)
+@@platforms//cpu:cpu (3030ed4)
+@@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:t_tuple (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 4: run cquery "deps(//:t_list_default)"
+exit 0
+--- stdout
+//:t_list_default (a7a71fd)
+@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist (null)
+@bazel_tools//tools:host_platform (3030ed4)
+//:leaf (a7a71fd)
+@@platforms//host:host (3030ed4)
+@@platforms//os:linux (3030ed4)
+@@platforms//cpu:x86_64 (3030ed4)
+@@platforms//cpu:cpu (3030ed4)
+@@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:t_list_default (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 5: run cquery "deps(//:t_list_empty)"
+exit 0
+--- stdout
+//:t_list_empty (782d514)
+//:leaf (782d514)
+@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist (null)
+@bazel_tools//tools:host_platform (3030ed4)
+@@platforms//host:host (3030ed4)
+@@platforms//os:linux (3030ed4)
+@@platforms//cpu:x86_64 (3030ed4)
+@@platforms//cpu:cpu (3030ed4)
+@@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:t_list_empty (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 6: run cquery "deps(//:t_list_empty)" --//:copts=
+exit 0
+--- stdout
+//:t_list_empty (782d514)
+//:leaf (782d514)
+@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist (null)
+@bazel_tools//tools:host_platform (3030ed4)
+@@platforms//host:host (3030ed4)
+@@platforms//os:linux (3030ed4)
+@@platforms//cpu:x86_64 (3030ed4)
+@@platforms//cpu:cpu (3030ed4)
+@@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:t_list_empty (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 7: run cquery "deps(//:t_multi_default)"
+exit 0
+--- stdout
+//:t_multi_default (9e6eb09)
+@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist (null)
+@bazel_tools//tools:host_platform (3030ed4)
+//:leaf (9e6eb09)
+@@platforms//host:host (3030ed4)
+@@platforms//os:linux (3030ed4)
+@@platforms//cpu:x86_64 (3030ed4)
+@@platforms//cpu:cpu (3030ed4)
+@@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:t_multi_default (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 8: run cquery "deps(//:t_multi_default)" --//:multi=a
+exit 0
+--- stdout
+//:t_multi_default (1108066)
+//:leaf (1108066)
+@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist (null)
+@bazel_tools//tools:host_platform (3030ed4)
+@@platforms//host:host (3030ed4)
+@@platforms//os:linux (3030ed4)
+@@platforms//cpu:x86_64 (3030ed4)
+@@platforms//cpu:cpu (3030ed4)
+@@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:t_multi_default (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 9: run cquery "deps(//:t_multi_two)"
+exit 0
+--- stdout
+//:t_multi_two (49c071d)
+@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist (null)
+@bazel_tools//tools:host_platform (3030ed4)
+//:leaf (49c071d)
+@@platforms//host:host (3030ed4)
+@@platforms//os:linux (3030ed4)
+@@platforms//cpu:x86_64 (3030ed4)
+@@platforms//cpu:cpu (3030ed4)
+@@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:t_multi_two (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 10: run cquery "deps(//:t_multi_two)" --//:multi=a --//:multi=b
+exit 0
+--- stdout
+//:t_multi_two (c483b1d)
+@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist (null)
+@bazel_tools//tools:host_platform (3030ed4)
+//:leaf (c483b1d)
+@@platforms//host:host (3030ed4)
+@@platforms//os:linux (3030ed4)
+@@platforms//cpu:x86_64 (3030ed4)
+@@platforms//cpu:cpu (3030ed4)
+@@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:t_multi_two (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 11: run cquery "deps(//:t_multi_scalar)"
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:45:18: '//:multi' allows multiple values and must be set in transition using a starlark list instead of single value 'a'
+ERROR: Analysis of target '//:t_multi_scalar' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 12: run cquery "deps(//:t_int)"
+exit 0
+--- stdout
+//:t_int (a5761cf)
+@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist (null)
+@bazel_tools//tools:host_platform (3030ed4)
+@@platforms//host:host (3030ed4)
+//:leaf (a5761cf)
+@@platforms//os:linux (3030ed4)
+@@platforms//cpu:x86_64 (3030ed4)
+@@platforms//cpu:cpu (3030ed4)
+@@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:t_int (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 13: run cquery "deps(//:t_int)" --//:level=0
+exit 0
+--- stdout
+//:t_int (a7a71fd)
+@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist (null)
+@bazel_tools//tools:host_platform (3030ed4)
+//:leaf (a7a71fd)
+@@platforms//host:host (3030ed4)
+@@platforms//os:linux (3030ed4)
+@@platforms//cpu:x86_64 (3030ed4)
+@@platforms//cpu:cpu (3030ed4)
+@@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:t_int (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 14: run cquery "deps(//:t_int_default)" --//:level=7
+exit 0
+--- stdout
+//:t_int_default (a7a71fd)
+@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist (null)
+@bazel_tools//tools:host_platform (3030ed4)
+//:leaf (a7a71fd)
+@@platforms//host:host (3030ed4)
+@@platforms//os:linux (3030ed4)
+@@platforms//cpu:x86_64 (3030ed4)
+@@platforms//cpu:cpu (3030ed4)
+@@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:t_int_default (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 15: run cquery "deps(//:t_bad_int)"
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:48:13: expected value of type 'int' for //:level, but got "abc" (string)
+ERROR: Analysis of target '//:t_bad_int' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 16: run cquery "deps(//:t_bad_int_bool)"
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:49:18: expected value of type 'int' for //:level, but got True (bool)
+ERROR: Analysis of target '//:t_bad_int_bool' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 17: run cquery "deps(//:t_bad_list_elem)"
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:50:19: expected value of type 'string' for element 1 of //:copts, but got 1 (int)
+ERROR: Analysis of target '//:t_bad_list_elem' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 18: run cquery "deps(//:t_bad_list)"
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:51:14: expected value of type 'list(string)' for //:copts, but got "a" (string)
+ERROR: Analysis of target '//:t_bad_list' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 19: run cquery "deps(//:t_bad_bool)"
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:52:14: expected one of [False, True, 0, 1] for //:enabled, but got "yes" (string)
+ERROR: Analysis of target '//:t_bad_bool' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 20: run cquery "deps(//:t_bool_int)"
+exit 0
+--- stdout
+//:t_bool_int (b3dfdbb)
+//:leaf (b3dfdbb)
+@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist (null)
+@bazel_tools//tools:host_platform (3030ed4)
+@@platforms//host:host (3030ed4)
+@@platforms//os:linux (3030ed4)
+@@platforms//cpu:x86_64 (3030ed4)
+@@platforms//cpu:cpu (3030ed4)
+@@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:t_bool_int (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 21: run cquery "deps(//:t_bad_string)"
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:54:16: expected value of type 'string' for //:mode, but got 5 (int)
+ERROR: Analysis of target '//:t_bad_string' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 22: run cquery "deps(//:t_print_only)" --//:mode=fast
+exit 0
+--- stdout
+//:t_print_only (e8ec9a7)
+@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist (null)
+@bazel_tools//tools:host_platform (3030ed4)
+@@platforms//host:host (3030ed4)
+//:leaf (e8ec9a7)
+@@platforms//os:linux (3030ed4)
+@@platforms//cpu:x86_64 (3030ed4)
+@@platforms//cpu:cpu (3030ed4)
+@@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+DEBUG: <WS>/defs.bzl:78:10: mode is fast, level is 1
+DEBUG: <WS>/defs.bzl:78:10: mode is fast, level is 1
+DEBUG: <WS>/defs.bzl:78:10: mode is fast, level is 1
+INFO: Analyzed target //:t_print_only (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 23: run cquery "deps(//:t_fail_after_print)"
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+DEBUG: <WS>/defs.bzl:82:10: about to fail
+ERROR: Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 83, column 9, in _fail_after_print_impl
+		fail("transition failed")
+Error in fail: transition failed
+ERROR: <WS>/BUILD.bazel:56:22: Errors encountered while applying Starlark transition
+ERROR: Analysis of target '//:t_fail_after_print' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 24: run cquery "deps(//:t_split_bad_list)"
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/defs.bzl:104:5: invalid result from transition function: at index 1 of dictionary of options dictionaries, got element of type string, want dict
+ERROR: <WS>/BUILD.bazel:57:20: on dependency edge //:t_split_bad_list (a7a71fd) -|dep|-> //:leaf: Errors encountered while applying Starlark transition
+ERROR: Analysis of target '//:t_split_bad_list' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 25: run cquery "deps(//:t_split_bad_key)"
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/defs.bzl:107:5: invalid result from transition function: got dict<int, int> for 'dictionary of options', want dict<string, unknown>
+ERROR: <WS>/BUILD.bazel:58:19: on dependency edge //:t_split_bad_key (a7a71fd) -|dep|-> //:leaf: Errors encountered while applying Starlark transition
+ERROR: Analysis of target '//:t_split_bad_key' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 26: run cquery "deps(//:t_split_ok)"
+exit 0
+--- stdout
+//:t_split_ok (a7a71fd)
+@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist (null)
+@bazel_tools//tools:host_platform (3030ed4)
+@@platforms//host:host (3030ed4)
+//:leaf (a5761cf)
+//:leaf (8eb2d03)
+@@platforms//os:linux (3030ed4)
+@@platforms//cpu:x86_64 (3030ed4)
+@@platforms//cpu:cpu (3030ed4)
+@@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:t_split_ok (6 packages loaded, 10 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 27: run cquery "deps(//:sel_hex)" --//:level=16
+exit 0
+--- stdout
+//:sel_hex (d0e84ef)
+//:level_hex (d0e84ef)
+//:sixteen (d0e84ef)
+@bazel_tools//tools:host_platform (3030ed4)
+@@platforms//host:host (3030ed4)
+@@platforms//os:linux (3030ed4)
+@@platforms//cpu:x86_64 (3030ed4)
+//:level (d0e84ef)
+@@platforms//cpu:cpu (3030ed4)
+@@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:sel_hex (5 packages loaded, 10 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 28: run cquery "deps(//:sel_hex)"
+exit 0
+--- stdout
+//:sel_hex (a7a71fd)
+//:level_hex (a7a71fd)
+@bazel_tools//tools:host_platform (3030ed4)
+//:other (a7a71fd)
+@@platforms//host:host (3030ed4)
+@@platforms//os:linux (3030ed4)
+@@platforms//cpu:x86_64 (3030ed4)
+//:level (a7a71fd)
+@@platforms//cpu:cpu (3030ed4)
+@@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:sel_hex (5 packages loaded, 10 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 29: run cquery "deps(//:sel_oct)" --//:level=8
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:62:15: in flag_values attribute of config_setting rule //:level_oct: error while parsing user-defined configuration values: '010' cannot be converted to //:level type int
+ERROR: <WS>/BUILD.bazel:62:15: Analysis of target '//:level_oct' (config: f202899) failed
+ERROR: <WS>/BUILD.bazel:75:10: errors encountered resolving select() keys for //:sel_oct
+ERROR: Analysis of target '//:sel_oct' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 30: run cquery "deps(//:sel_space)" --//:level=5
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:63:15: in flag_values attribute of config_setting rule //:level_space: error while parsing user-defined configuration values: ' 5' cannot be converted to //:level type int
+ERROR: <WS>/BUILD.bazel:63:15: Analysis of target '//:level_space' (config: d60b708) failed
+ERROR: <WS>/BUILD.bazel:79:10: errors encountered resolving select() keys for //:sel_space
+ERROR: Analysis of target '//:sel_space' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 31: run cquery "deps(//:sel_enabled_no)" --no//:enabled
+exit 0
+--- stdout
+//:sel_enabled_no (702c5eb)
+@bazel_tools//tools:host_platform (3030ed4)
+//:enabled_no (702c5eb)
+@@platforms//host:host (3030ed4)
+//:disabled (702c5eb)
+@@platforms//os:linux (3030ed4)
+@@platforms//cpu:x86_64 (3030ed4)
+//:enabled (702c5eb)
+@@platforms//cpu:cpu (3030ed4)
+@@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:sel_enabled_no (5 packages loaded, 10 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 32: run cquery "deps(//:sel_enabled_bad)"
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:65:15: in flag_values attribute of config_setting rule //:enabled_bad: error while parsing user-defined configuration values: 'maybe' cannot be converted to //:enabled type boolean
+ERROR: <WS>/BUILD.bazel:65:15: Analysis of target '//:enabled_bad' (config: a7a71fd) failed
+ERROR: <WS>/BUILD.bazel:87:10: errors encountered resolving select() keys for //:sel_enabled_bad
+ERROR: Analysis of target '//:sel_enabled_bad' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully

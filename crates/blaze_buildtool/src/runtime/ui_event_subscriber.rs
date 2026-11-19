@@ -38,7 +38,7 @@ const TEST_STATUS_TO_IGNORE_FOR_NEW_INFORMATION: [BlazeTestStatus; 4] = [
 
 /// Return true, if the test summary provides information that is both worth being shown in the
 /// scroll-back buffer and new with respect to the alreay shown failure messages.
-// Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:925 UiEventHandler.testSummaryProvidesNewInformation
+// Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:928 UiEventHandler.testSummaryProvidesNewInformation
 pub fn test_summary_provides_new_information(summary: &TestSummary) -> bool {
     if TEST_STATUS_TO_IGNORE_FOR_NEW_INFORMATION.contains(&summary.get_status()) {
         return false;
@@ -85,7 +85,7 @@ impl UiEventSubscriber {
 
     /// `@Subscribe buildComplete(BuildCompleteEvent)`, then the events deferred since
     /// [`UiEventSubscriber::begin_build_complete`].
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:715 UiEventHandler.buildComplete
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:714 UiEventHandler.buildComplete
     pub fn build_complete(&self, success: bool) {
         self.handler.build_complete(success);
         let deferred = self.deferred.lock().take().unwrap_or_default();
@@ -96,22 +96,22 @@ impl UiEventSubscriber {
 
     fn dispatch(&self, event: &Arc<dyn Postable>) {
         if let Some(e) = downcast_event::<ActionStartedEvent>(event) {
-            // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:807 UiEventHandler.actionStarted
+            // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:819 UiEventHandler.actionStarted
             self.tracker
                 .action_started(&e.action, nano_time_of(e.nano_time_start));
             self.handler.refresh_progress();
         } else if let Some(e) = downcast_event::<ActionCompletionEvent>(event) {
-            // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:856 UiEventHandler.actionCompletion
+            // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:868 UiEventHandler.actionCompletion
             self.tracker
                 .action_completion(&e.action, &e.action_lookup_data);
             self.handler.refresh_soon();
         } else if let Some(e) = downcast_event::<TestAnalyzedEvent>(event) {
-            // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:917 UiEventHandler.singleTestAnalyzed
+            // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:918 UiEventHandler.singleTestAnalyzed
             let label = e.configured_target.get_label();
             self.tracker.single_test_analyzed(Some(&label));
             self.handler.refresh_soon();
         } else if let Some(summary) = downcast_event::<TestSummary>(event) {
-            // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:935 UiEventHandler.testSummary
+            // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:938 UiEventHandler.testSummary
             self.tracker
                 .test_summary(&summary.get_label(), summary.get_status());
             if test_summary_provides_new_information(summary) {

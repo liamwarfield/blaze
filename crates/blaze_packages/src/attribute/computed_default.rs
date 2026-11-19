@@ -559,20 +559,65 @@ impl LateBoundDefault {
     }
 }
 
-/// Java `packages/MaterializingDefault`: a dormant-dependency materializer (placeholder; only
-/// its identity matters during loading).
-// Java: com/google/devtools/build/lib/packages/MaterializingDefault.java MaterializingDefault
+/// Java `StarlarkAttrModule.StarlarkMaterializer`: the Starlark materializer function of a
+/// dormant-dependency attribute, with the semantics it runs under. Resolving it (calling the
+/// function with the rule's attributes and prerequisites) is analysis
+/// (`DependencyProducer.evaluateMaterializerTargets`).
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAttrModule.java:219 StarlarkAttrModule.StarlarkMaterializer
 #[derive(Debug, Clone)]
-pub struct MaterializingDefault {
+pub struct StarlarkMaterializer {
+    pub type_: Type,
+    pub semantics: Arc<StarlarkSemantics>,
     /// The materializer implementation function.
     pub implementation: StarlarkCallable,
 }
 
+impl StarlarkMaterializer {
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAttrModule.java:226 StarlarkAttrModule.StarlarkMaterializer.<init>
+    pub fn new(
+        type_: Type,
+        semantics: Arc<StarlarkSemantics>,
+        implementation: StarlarkCallable,
+    ) -> Self {
+        StarlarkMaterializer {
+            type_,
+            semantics,
+            implementation,
+        }
+    }
+}
+
+/// Java `packages/MaterializingDefault`: the default of a materializing (dormant-dependency)
+/// attribute.
+// Java: com/google/devtools/build/lib/packages/MaterializingDefault.java:31 MaterializingDefault
+#[derive(Debug, Clone)]
+pub struct MaterializingDefault {
+    type_: Type,
+    /// Java `resolver` (a `StarlarkMaterializer`; its analysis context class is `ImmutableMap`).
+    resolver: StarlarkMaterializer,
+}
+
 impl MaterializingDefault {
-    /// The value used when the materializer has not run (Java `MaterializingDefault.getDefault`).
-    // Java: com/google/devtools/build/lib/packages/MaterializingDefault.java MaterializingDefault.getDefault
+    // Java: com/google/devtools/build/lib/packages/MaterializingDefault.java:46 MaterializingDefault.<init>
+    pub fn new(type_: Type, resolver: StarlarkMaterializer) -> Self {
+        blaze_util::check_argument!(type_ == Type::Label || type_ == Type::LabelList);
+        MaterializingDefault { type_, resolver }
+    }
+
+    /// The value used when the materializer has not run: the type's default.
+    // Java: com/google/devtools/build/lib/packages/MaterializingDefault.java:57 MaterializingDefault.getDefault
     pub fn get_default(&self) -> Option<AttrValue> {
-        blaze_util::unported!("MaterializingDefault.getDefault")
+        self.type_.get_default_value()
+    }
+
+    /// The materializer (for `MaterializingDefault.resolve` at analysis).
+    pub fn get_resolver(&self) -> &StarlarkMaterializer {
+        &self.resolver
+    }
+
+    /// The materializer implementation function.
+    pub fn implementation(&self) -> StarlarkCallable {
+        self.resolver.implementation
     }
 }
 

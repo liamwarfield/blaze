@@ -60,6 +60,10 @@ pub enum ValueError {
     NoAttr(String, String),
     #[error("Object of type `{0}` has no attribute `{1}`, did you mean `{2}`?")]
     NoAttrDidYouMean(String, String, String),
+    /// BLAZE PATCH 0051: an error whose text is Bazel's (the Java site is named where it is
+    /// created).
+    #[error("{0}")]
+    Bazel(String),
 }
 
 impl From<ValueError> for crate::Error {
@@ -70,7 +74,8 @@ impl From<ValueError> for crate::Error {
 
 #[derive(Debug, Error)]
 pub(crate) enum ControlError {
-    #[error("Value of type `{0}` is not hashable")]
+    /// BLAZE PATCH 0051: Java's text (StarlarkValue.java:120 checkHashable).
+    #[error("unhashable type: '{0}'")]
     NotHashableValue(String),
     #[error("Too many recursion levels")]
     TooManyRecursionLevel,
@@ -83,6 +88,10 @@ impl ValueError {
         op: &str,
         right: Option<&str>,
     ) -> crate::Result<T> {
+        // BLAZE PATCH 0051: Java's texts for the operations Starlark defines.
+        if let Some(message) = Self::bazel_unsupported_message(left, op, right) {
+            return Err(ValueError::Bazel(message).into());
+        }
         match right {
             None => Err(ValueError::OperationNotSupported {
                 op: op.to_owned(),
@@ -96,6 +105,66 @@ impl ValueError {
             }
             .into()),
         }
+    }
+
+    /// BLAZE PATCH 0051: Bazel's text for an unsupported operation `op` on values of type `left`
+    /// (and `right`), or `None` for an operation Bazel does not have.
+    #[cold]
+    pub(crate) fn bazel_unsupported_message(
+        left: &str,
+        op: &str,
+        right: Option<&str>,
+    ) -> Option<String> {
+        Some(match (op, right) {
+            // Java: net/starlark/java/eval/EvalUtils.java:472 EvalUtils.unaryOp
+            ("+" | "-" | "~", None) => format!("unsupported unary operation: {op}{left}"),
+            // Java: net/starlark/java/eval/Starlark.java:904 Starlark.getStarlarkCallable
+            ("call()", None) => format!("'{left}' object is not callable"),
+            // Java: net/starlark/java/eval/Starlark.java:284 Starlark.toIterable
+            ("(iter)", None) => format!("type '{left}' is not iterable"),
+            // Java: net/starlark/java/eval/Starlark.java:672 Starlark.slice
+            ("[::]", None) => format!("invalid slice operand: {left}"),
+            // Java: net/starlark/java/eval/EvalUtils.java:499 EvalUtils.index
+            ("[]", Some(right)) => format!("type '{left}' has no operator []({right})"),
+            // Java: net/starlark/java/eval/Starlark.java:516 Starlark.compareUnchecked
+            ("compare" | "cmp()" | "<>", Some(right)) => {
+                format!("unsupported comparison: {left} <=> {right}")
+            }
+            // Java: net/starlark/java/eval/EvalUtils.java:416 EvalUtils.binaryOp
+            (
+                "+" | "-" | "*" | "/" | "//" | "%" | "&" | "|" | "^" | "<<" | ">>" | "in",
+                Some(right),
+            ) => format!("unsupported binary operation: {left} {op} {right}"),
+            // Java: net/starlark/java/eval/Eval.java:486 inplaceBinaryOp falls back to `|`.
+            ("|=", Some(right)) => format!("unsupported binary operation: {left} | {right}"),
+            // Java: net/starlark/java/eval/MethodLibrary.java len (the parameter's type check).
+            ("len()", None) => format!(
+                "in call to len(), parameter 'x' got value of type '{left}', want 'iterable or string'"
+            ),
+            // Java: net/starlark/java/eval/EvalUtils.java:534 EvalUtils.setField
+            (op, None) if op.starts_with('.') && op.ends_with('=') && op.len() > 2 => format!(
+                "cannot set .{} field of {left} value",
+                &op[1..op.len() - 1]
+            ),
+            _ => return None,
+        })
+    }
+
+    /// BLAZE PATCH 0051: Java's error for a missing field or method `name` of `x`, with a
+    /// spelling suggestion among `dir(x)` (sorted, Java's TreeSet).
+    // Java: net/starlark/java/eval/Starlark.java:1014 Starlark.getattr
+    #[cold]
+    pub(crate) fn bazel_no_attr(x: Value, name: &str) -> crate::Error {
+        let mut dir = x.dir_attr();
+        dir.sort();
+        dir.dedup();
+        ValueError::Bazel(format!(
+            "'{}' value has no field or method '{}'{}",
+            x.get_type(),
+            name,
+            crate::errors::spell_checker::did_you_mean(name, dir.iter().map(|s| s.as_str()))
+        ))
+        .into()
     }
 
     /// Helper to create an [`OperationNotSupported`](ValueError::OperationNotSupported) error.

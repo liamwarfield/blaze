@@ -103,7 +103,7 @@ impl StrategyIds {
     }
 
     /// Computes the ID of a strategy given its name.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:145 StrategyIds.getId
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:144 StrategyIds.getId
     pub fn get_id(&self, strategy: &str) -> i32 {
         let mut maps = self.maps.lock();
         let id = match maps.0.get(strategy) {
@@ -129,7 +129,7 @@ impl StrategyIds {
     }
 
     /// Flattens a bitmap of strategy IDs into a human-friendly string.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:162 StrategyIds.formatNames
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:161 StrategyIds.formatNames
     pub fn format_names(&self, bitmap: i32) -> String {
         let maps = self.maps.lock();
         let mut bitmap = bitmap;
@@ -173,7 +173,7 @@ enum ActionPhase {
 
 impl ActionPhase {
     /// Returns a human-readable description of this phase.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:209 ActionPhase.describe
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:207 ActionPhase.describe
     fn describe(self) -> &'static str {
         match self {
             ActionPhase::Preparing => "Preparing",
@@ -237,19 +237,19 @@ impl ActionState {
     }
 
     /// Returns the phase this action is currently in.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:264 ActionState.getPhase
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:260 ActionState.getPhase
     fn get_phase(&self) -> ActionPhase {
         self.inner.lock().current_phase
     }
 
     /// Returns the set of strategies currently applied to this action.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:269 ActionState.getStrategyBitmap
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:265 ActionState.getStrategyBitmap
     fn get_strategy_bitmap(&self) -> i32 {
         self.inner.lock().strategy_bitmap
     }
 
     /// Marks the action as scanning.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:279 ActionState.setScanning
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:275 ActionState.setScanning
     fn set_scanning(&self, nano_change_time: i64) {
         let mut st = self.inner.lock();
         if st.current_phase < ActionPhase::Scanning {
@@ -259,7 +259,7 @@ impl ActionState {
     }
 
     /// Marks the action as no longer scanning.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:292 ActionState.setStopScanning
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:288 ActionState.setStopScanning
     fn set_stop_scanning(&self, nano_change_time: i64) {
         let mut st = self.inner.lock();
         if st.current_phase < ActionPhase::Caching {
@@ -269,7 +269,7 @@ impl ActionState {
     }
 
     /// Marks the action as caching with the given strategy.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:305 ActionState.setCaching
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:301 ActionState.setCaching
     fn set_caching(&self, strategy: &str, nano_change_time: i64) {
         let mut st = self.inner.lock();
         st.strategy_bitmap |= STRATEGY_IDS.get_id(strategy);
@@ -280,7 +280,7 @@ impl ActionState {
     }
 
     /// Marks the action as scheduling with the given strategy.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:319 ActionState.setScheduling
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:315 ActionState.setScheduling
     fn set_scheduling(&self, strategy: &str, nano_change_time: i64) {
         let mut st = self.inner.lock();
         st.strategy_bitmap |= STRATEGY_IDS.get_id(strategy);
@@ -291,7 +291,7 @@ impl ActionState {
     }
 
     /// Marks the action as running with the given strategy.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:333 ActionState.setRunning
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:329 ActionState.setRunning
     fn set_running(&self, strategy: &str, nano_change_time: i64) {
         let mut st = self.inner.lock();
         st.strategy_bitmap |= STRATEGY_IDS.get_id(strategy);
@@ -302,7 +302,7 @@ impl ActionState {
     }
 
     /// Handles the progress event for the action.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:342 ActionState.onProgressEvent
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:338 ActionState.onProgressEvent
     fn on_progress_event(&self, progress_id: &str, progress: &str, finished: bool) {
         let mut st = self.inner.lock();
         let id = progress_id.to_owned();
@@ -322,7 +322,7 @@ impl ActionState {
         state.latest_progress = progress.to_owned();
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:354 ActionState.firstProgress
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:350 ActionState.firstProgress
     fn first_progress(&self) -> Option<ProgressState> {
         self.inner
             .lock()
@@ -407,7 +407,7 @@ struct State {
 
 /// Tracks state for the UI.
 // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:84 UiStateTracker
-// Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:30 SkymeldUiStateTracker
+// Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:32 SkymeldUiStateTracker
 pub struct UiStateTracker {
     clock: Arc<dyn Clock>,
     /// Whether this is a `SkymeldUiStateTracker`.
@@ -463,18 +463,18 @@ impl UiStateTracker {
     }
 
     /// Set the progress bar sample size.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:415 UiStateTracker.setProgressSampleSize
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:409 UiStateTracker.setProgressSampleSize
     pub fn set_progress_sample_size(&self, sample_size: i32) {
         self.state.lock().sample_size = sample_size.max(1);
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:424 UiStateTracker.setNewStatsSummary
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:418 UiStateTracker.setNewStatsSummary
     pub fn set_new_stats_summary(&self, new_stats_summary: bool) {
         self.state.lock().new_stats_summary = new_stats_summary;
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:428 UiStateTracker.mainRepoMappingComputationStarted
-    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:154 SkymeldUiStateTracker.mainRepoMappingComputationStarted
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:422 UiStateTracker.mainRepoMappingComputationStarted
+    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:161 SkymeldUiStateTracker.mainRepoMappingComputationStarted
     pub fn main_repo_mapping_computation_started(&self) {
         let mut st = self.state.lock();
         if self.skymeld {
@@ -485,8 +485,8 @@ impl UiStateTracker {
         st.additional_message = String::new();
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:433 UiStateTracker.buildStarted
-    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:159 SkymeldUiStateTracker.buildStarted
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:427 UiStateTracker.buildStarted
+    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:166 SkymeldUiStateTracker.buildStarted
     pub fn build_started(&self) {
         let mut st = self.state.lock();
         if self.skymeld {
@@ -498,8 +498,8 @@ impl UiStateTracker {
     }
 
     /// `loadingStarted(LoadingPhaseStartedEvent)`: the event's package progress receiver.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:438 UiStateTracker.loadingStarted
-    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:164 SkymeldUiStateTracker.loadingStarted
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:432 UiStateTracker.loadingStarted
+    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:171 SkymeldUiStateTracker.loadingStarted
     pub fn loading_started(&self, package_progress_receiver: Option<Arc<dyn PackageProgress>>) {
         let mut st = self.state.lock();
         if self.skymeld {
@@ -511,7 +511,7 @@ impl UiStateTracker {
     }
 
     /// `configurationStarted(ConfigurationPhaseStartedEvent)`.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:443 UiStateTracker.configurationStarted
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:437 UiStateTracker.configurationStarted
     // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:189 SkymeldUiStateTracker.configurationStarted
     pub fn configuration_started(
         &self,
@@ -526,8 +526,8 @@ impl UiStateTracker {
 
     /// `loadingComplete(LoadingPhaseCompleteEvent)`: the event's labels and main repository
     /// mapping.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:447 UiStateTracker.loadingComplete
-    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:170 SkymeldUiStateTracker.loadingComplete
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:441 UiStateTracker.loadingComplete
+    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:177 SkymeldUiStateTracker.loadingComplete
     pub fn loading_complete(
         &self,
         labels: &[Label],
@@ -553,15 +553,15 @@ impl UiStateTracker {
         self.state.lock().additional_message = additional_message.to_owned();
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:458 UiStateTracker.executionPhaseStarted
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:452 UiStateTracker.executionPhaseStarted
     pub fn execution_phase_started(&self) {
         self.state.lock().execution_phase_started = true;
     }
 
     /// Make the state tracker aware of the fact that the analysis has finished. Return a summary
     /// of the work done in the analysis phase.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:466 UiStateTracker.analysisComplete
-    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:201 SkymeldUiStateTracker.analysisComplete
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:460 UiStateTracker.analysisComplete
+    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:199 SkymeldUiStateTracker.analysisComplete
     pub fn analysis_complete(&self) -> String {
         let mut st = self.state.lock();
         if self.skymeld {
@@ -595,8 +595,8 @@ impl UiStateTracker {
     }
 
     /// `progressReceiverAvailable(ExecutionProgressReceiverAvailableEvent)`.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:483 UiStateTracker.progressReceiverAvailable
-    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:224 SkymeldUiStateTracker.progressReceiverAvailable
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:477 UiStateTracker.progressReceiverAvailable
+    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:223 SkymeldUiStateTracker.progressReceiverAvailable
     pub fn progress_receiver_available(
         &self,
         execution_progress_receiver: Arc<dyn ExecutionProgress>,
@@ -615,8 +615,8 @@ impl UiStateTracker {
     }
 
     /// `buildComplete(BuildCompleteEvent)`; `success` is `event.getResult().getSuccess()`.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:487 UiStateTracker.buildComplete
-    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:236 SkymeldUiStateTracker.buildComplete
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:481 UiStateTracker.buildComplete
+    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:234 SkymeldUiStateTracker.buildComplete
     pub fn build_complete_event(&self, success: bool) -> Event {
         if self.skymeld {
             self.state.lock().build_status = BuildStatus::BUILD_COMPLETED;
@@ -653,8 +653,8 @@ impl UiStateTracker {
         }
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:520 UiStateTracker.buildCompleted
-    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:250 SkymeldUiStateTracker.buildCompleted
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:516 UiStateTracker.buildCompleted
+    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:248 SkymeldUiStateTracker.buildCompleted
     fn build_completed(&self, st: &State) -> bool {
         if self.skymeld {
             return st.build_status == BuildStatus::BUILD_COMPLETED;
@@ -662,7 +662,7 @@ impl UiStateTracker {
         st.build_complete
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:524 UiStateTracker.setBuildComplete
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:520 UiStateTracker.setBuildComplete
     fn set_build_complete_impl(&self) {
         let now = self.clock.current_time_millis();
         let mut st = self.state.lock();
@@ -671,7 +671,7 @@ impl UiStateTracker {
     }
 
     /// `downloadProgress(FetchProgress)`.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:529 UiStateTracker.downloadProgress
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:525 UiStateTracker.downloadProgress
     pub fn download_progress(&self, resource_identifier: &str, progress: &str, finished: bool) {
         let now = self.clock.nano_time();
         let mut st = self.state.lock();
@@ -693,7 +693,7 @@ impl UiStateTracker {
         }
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:539 UiStateTracker.getActionState
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:535 UiStateTracker.getActionState
     fn get_action_state(
         &self,
         action: &ActionRef,
@@ -708,13 +708,13 @@ impl UiStateTracker {
             .clone()
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:545 UiStateTracker.getActionStateIfPresent
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:540 UiStateTracker.getActionStateIfPresent
     fn get_action_state_if_present(&self, action_id: &Artifact) -> Option<Arc<ActionState>> {
         self.state.lock().active_actions.get(action_id).cloned()
     }
 
     /// `actionStarted(ActionStartedEvent)`.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:550 UiStateTracker.actionStarted
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:545 UiStateTracker.actionStarted
     pub fn action_started(&self, action: &ActionRef, nano_time_start: i64) {
         let action_id = action.get_primary_output();
 
@@ -728,7 +728,7 @@ impl UiStateTracker {
         }
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:567 UiStateTracker.scanningAction
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:563 UiStateTracker.scanningAction
     pub fn scanning_action(&self, action: &ActionRef) {
         let action_id = action.get_primary_output();
         let now = self.clock.nano_time();
@@ -736,7 +736,7 @@ impl UiStateTracker {
             .set_scanning(now);
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:574 UiStateTracker.stopScanningAction
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:570 UiStateTracker.stopScanningAction
     pub fn stop_scanning_action(&self, action: &ActionRef) {
         let action_id = action.get_primary_output();
         let now = self.clock.nano_time();
@@ -744,7 +744,7 @@ impl UiStateTracker {
             .set_stop_scanning(now);
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:581 UiStateTracker.cachingAction
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:577 UiStateTracker.cachingAction
     pub fn caching_action(&self, action: &ActionRef, strategy: &str) {
         let action_id = action.get_primary_output();
         let now = self.clock.nano_time();
@@ -752,7 +752,7 @@ impl UiStateTracker {
             .set_caching(strategy, now);
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:588 UiStateTracker.schedulingAction
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:584 UiStateTracker.schedulingAction
     pub fn scheduling_action(&self, action: &ActionRef, strategy: &str) {
         let action_id = action.get_primary_output();
         let now = self.clock.nano_time();
@@ -760,7 +760,7 @@ impl UiStateTracker {
             .set_scheduling(strategy, now);
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:595 UiStateTracker.runningAction
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:591 UiStateTracker.runningAction
     pub fn running_action(&self, action: &ActionRef, strategy: &str) {
         let action_id = action.get_primary_output();
         let now = self.clock.nano_time();
@@ -770,7 +770,7 @@ impl UiStateTracker {
 
     /// `actionProgress(ActionProgressEvent)`: the event's progress id, progress and finished
     /// flag.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:602 UiStateTracker.actionProgress
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:598 UiStateTracker.actionProgress
     pub fn action_progress(
         &self,
         action: &ActionRef,
@@ -785,7 +785,7 @@ impl UiStateTracker {
     }
 
     /// `actionCompletion(ActionScanningCompletedEvent)`.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:610 UiStateTracker.actionCompletion
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:606 UiStateTracker.actionCompletion
     pub fn action_scanning_completed(
         &self,
         action: &ActionRef,
@@ -812,7 +812,7 @@ impl UiStateTracker {
     }
 
     /// `actionCompletion(ActionCompletionEvent)`.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:624 UiStateTracker.actionCompletion
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:619 UiStateTracker.actionCompletion
     pub fn action_completion(&self, action: &ActionRef, action_lookup_data: &ActionLookupData) {
         self.actions_completed.fetch_add(1, Ordering::SeqCst);
         let action_id = action.get_primary_output();
@@ -841,12 +841,12 @@ impl UiStateTracker {
         }
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:649 UiStateTracker.actionUploadStarted
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:645 UiStateTracker.actionUploadStarted
     pub fn action_upload_started(&self) {
         self.state.lock().active_action_uploads += 1;
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:653 UiStateTracker.actionUploadFinished
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:649 UiStateTracker.actionUploadFinished
     pub fn action_upload_finished(&self) {
         self.state.lock().active_action_uploads -= 1;
     }
@@ -866,7 +866,7 @@ impl UiStateTracker {
     ///
     /// PORT: skipped, logging: the log line. The result is the `InflightActionInfo` proto's
     /// fields.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:657 UiStateTracker.logAndGetInflightActions
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:653 UiStateTracker.logAndGetInflightActions
     pub fn log_and_get_inflight_actions(&self) -> (i32, Vec<(String, i32)>) {
         let st = self.state.lock();
         let mut histogram: IndexMap<String, i32> = IndexMap::new();
@@ -883,7 +883,7 @@ impl UiStateTracker {
     }
 
     /// From a string, take a suffix of at most the given length.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:684 UiStateTracker.suffix
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:677 UiStateTracker.suffix
     pub fn suffix(s: &str, len: i32) -> String {
         if len <= 0 {
             return String::new();
@@ -898,7 +898,7 @@ impl UiStateTracker {
 
     /// If possible come up with a human-readable description of the label that fits within the
     /// given width; a non-positive width indicates not no restriction at all.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:699 UiStateTracker.shortenedLabelString
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:692 UiStateTracker.shortenedLabelString
     fn shortened_label_string(st: &State, label: &Label, width: i32) -> String {
         if width <= 0 {
             return label.get_display_form(st.main_repository_mapping.as_ref());
@@ -924,7 +924,7 @@ impl UiStateTracker {
         label.to_string()
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:723 UiStateTracker.shortenedString
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:716 UiStateTracker.shortenedString
     fn shortened_string(s: &str, max_width: i32) -> String {
         if max_width <= 3 * char_len(ELLIPSIS) || char_len(s) <= max_width {
             return s.to_owned();
@@ -937,7 +937,7 @@ impl UiStateTracker {
     }
 
     // Describe a group of actions running for the same test.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:731 UiStateTracker.describeTestGroup
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:724 UiStateTracker.describeTestGroup
     fn describe_test_group(
         st: &State,
         owner: &Label,
@@ -1023,7 +1023,7 @@ impl UiStateTracker {
     // Describe an action by a string of the desired length; if describing that action includes
     // describing other actions, add those to the to set of actions to skip in further samples of
     // actions.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:795 UiStateTracker.describeAction
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:794 UiStateTracker.describeAction
     fn describe_action(
         st: &State,
         action_state: &ActionState,
@@ -1157,7 +1157,7 @@ impl UiStateTracker {
         format!("{prefix}{message}{postfix}")
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:899 UiStateTracker.getOldestAction
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:908 UiStateTracker.getOldestAction
     fn get_oldest_action(st: &State) -> Option<Arc<ActionState>> {
         let mut min_running_start = i64::MAX;
         let mut oldest_running = None;
@@ -1180,7 +1180,7 @@ impl UiStateTracker {
         oldest_running.or(oldest_scheduled)
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:922 UiStateTracker.countActions
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:931 UiStateTracker.countActions
     fn count_actions(st: &State) -> String {
         // TODO(djasper): Iterating over the actions here is slow, but it's only done once per
         // refresh and thus might be faster than trying to update these values in the critical
@@ -1203,7 +1203,7 @@ impl UiStateTracker {
         }
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:944 UiStateTracker.printActionState
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:953 UiStateTracker.printActionState
     fn print_action_state(
         &self,
         st: &State,
@@ -1212,7 +1212,7 @@ impl UiStateTracker {
         self.sample_oldest_actions(st, terminal_writer)
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:948 UiStateTracker.sampleOldestActions
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:957 UiStateTracker.sampleOldestActions
     fn sample_oldest_actions(
         &self,
         st: &State,
@@ -1270,7 +1270,7 @@ impl UiStateTracker {
 
     /// `testFilteringComplete(TestFilteringCompleteEvent)`: the labels of the event's test
     /// targets (`None` when `getTestTargets()` is null).
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:999 UiStateTracker.testFilteringComplete
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:1008 UiStateTracker.testFilteringComplete
     pub fn test_filtering_complete(&self, test_targets: Option<&[Option<Label>]>) {
         let mut st = self.state.lock();
         if let Some(test_targets) = test_targets {
@@ -1282,7 +1282,7 @@ impl UiStateTracker {
     }
 
     /// `singleTestAnalyzed(TestAnalyzedEvent)`: the label of the event's configured target.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:1010 UiStateTracker.singleTestAnalyzed
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:1019 UiStateTracker.singleTestAnalyzed
     pub fn single_test_analyzed(&self, label: Option<&Label>) {
         let mut st = self.state.lock();
         // Only register the count towards totalTests once.
@@ -1295,7 +1295,7 @@ impl UiStateTracker {
     }
 
     /// `testSummary(TestSummary)`: the summary's label and status.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:1019 UiStateTracker.testSummary
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:1028 UiStateTracker.testSummary
     pub fn test_summary(&self, label: &Label, status: BlazeTestStatus) {
         let mut st = self.state.lock();
         st.completed_tests += 1;
@@ -1305,7 +1305,7 @@ impl UiStateTracker {
         }
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:1028 UiStateTracker.buildEventTransportsAnnounced
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:1037 UiStateTracker.buildEventTransportsAnnounced
     pub fn build_event_transports_announced(&self, transports: &[TransportId]) {
         self.state
             .lock()
@@ -1313,7 +1313,7 @@ impl UiStateTracker {
             .extend(transports.iter().cloned());
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:1032 UiStateTracker.buildEventTransportClosed
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:1041 UiStateTracker.buildEventTransportClosed
     pub fn build_event_transport_closed(&self, transport: &TransportId) {
         self.state
             .lock()
@@ -1321,7 +1321,7 @@ impl UiStateTracker {
             .shift_remove(transport);
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:1036 UiStateTracker.hasActivities
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:1045 UiStateTracker.hasActivities
     fn has_activities_locked(&self, st: &State) -> bool {
         !(self.build_completed(st)
             && st.bep_open_transports.is_empty()
@@ -1333,7 +1333,7 @@ impl UiStateTracker {
     /// Predicate indicating whether the contents of the progress bar can change, if the only
     /// thing that happens is that time passes; this is the case, e.g., if the progress bar shows
     /// time information relative to the current time.
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:1049 UiStateTracker.progressBarTimeDependent
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:1058 UiStateTracker.progressBarTimeDependent
     fn progress_bar_time_dependent_locked(&self, st: &State) -> bool {
         if st.package_progress_receiver.is_some() {
             return true;
@@ -1382,7 +1382,7 @@ impl UiStateTracker {
         }
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:1102 UiStateTracker.shortenUrl
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:1103 UiStateTracker.shortenUrl
     fn shorten_url(url: &str, width: i32) -> String {
         if char_len(url) < width {
             return url.to_owned();
@@ -1800,7 +1800,7 @@ impl UiStateTracker {
     }
 
     /// `SkymeldUiStateTracker.writeProgressBar`.
-    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:66 SkymeldUiStateTracker.writeProgressBar
+    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:71 SkymeldUiStateTracker.writeProgressBar
     fn write_progress_bar_skymeld(
         &self,
         st: &State,
@@ -1870,7 +1870,7 @@ impl UiStateTracker {
         Ok(())
     }
 
-    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:118 SkymeldUiStateTracker.writeBaseProgress
+    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:123 SkymeldUiStateTracker.writeBaseProgress
     fn write_base_progress(
         st: &State,
         status: &str,
@@ -1889,7 +1889,7 @@ impl UiStateTracker {
         Ok(())
     }
 
-    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:129 SkymeldUiStateTracker.writeLoadingAnalysisPhaseProgress
+    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:134 SkymeldUiStateTracker.writeLoadingAnalysisPhaseProgress
     fn write_loading_analysis_phase_progress(
         st: &State,
         status: &str,
@@ -1925,12 +1925,12 @@ impl UiStateTracker {
     }
 
     /// `SkymeldUiStateTracker.getBuildStatus()`.
-    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:241 SkymeldUiStateTracker.getBuildStatus
+    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:240 SkymeldUiStateTracker.getBuildStatus
     pub fn get_build_status(&self) -> BuildStatus {
         self.state.lock().build_status
     }
 
-    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:245 SkymeldUiStateTracker.setBuildStatusForTestingOnly
+    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:244 SkymeldUiStateTracker.setBuildStatusForTestingOnly
     pub fn set_build_status_for_testing_only(&self, new_status: BuildStatus) {
         self.state.lock().build_status = new_status;
     }
@@ -1977,12 +1977,12 @@ impl UiStateTrackerView for UiStateTracker {
         self.progress_bar_time_dependent_locked(&st)
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:420 UiStateTracker.setTargetWidth
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:414 UiStateTracker.setTargetWidth
     fn set_target_width(&self, target_width: i32) {
         self.state.lock().target_width = target_width;
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:524 UiStateTracker.setBuildComplete
+    // Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:520 UiStateTracker.setBuildComplete
     fn set_build_complete(&self) {
         self.set_build_complete_impl();
     }
@@ -2004,7 +2004,7 @@ impl UiStateTrackerView for UiStateTracker {
     }
 }
 
-// Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:516 UiStateTracker.pluralize
+// Java: com/google/devtools/build/lib/runtime/UiStateTracker.java:512 UiStateTracker.pluralize
 fn pluralize(noun: &str, count: i32) -> String {
     format!("{}{}", noun, if count == 1 { "" } else { "s" })
 }

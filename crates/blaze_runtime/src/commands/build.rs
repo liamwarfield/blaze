@@ -624,9 +624,7 @@ fn run_build_with_bep(
         ));
         handler.set_state_tracker(tracker.clone());
         let subscriber = Arc::new(
-            blaze_buildtool::runtime::ui_event_subscriber::UiEventSubscriber::new(
-                handler, tracker,
-            ),
+            blaze_buildtool::runtime::ui_event_subscriber::UiEventSubscriber::new(handler, tracker),
         );
         env.get_event_bus().register(subscriber.clone());
         subscriber
@@ -1494,7 +1492,11 @@ impl RuntimeExecutionPhase {
                 exclusive.push((index, hash_code, key));
             }
             let distinct_keys: std::collections::HashSet<&blaze_skyframe::SkyKey> =
-                main_evaluation_result.values.iter().map(|(k, _)| k).collect();
+                main_evaluation_result
+                    .values
+                    .iter()
+                    .map(|(k, _)| k)
+                    .collect();
             let order = super::exclusive_test_order::evaluation_result_values_order(
                 distinct_keys.len(),
                 exclusive

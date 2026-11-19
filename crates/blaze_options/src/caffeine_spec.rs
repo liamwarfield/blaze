@@ -92,7 +92,10 @@ pub struct IllegalArgumentException(pub String);
 
 /// `Caffeine.requireArgument(expression, template, args)`:
 /// `String.format(Locale.US, template, args)`.
-fn require_argument(expression: bool, message: impl FnOnce() -> String) -> Result<(), IllegalArgumentException> {
+fn require_argument(
+    expression: bool,
+    message: impl FnOnce() -> String,
+) -> Result<(), IllegalArgumentException> {
     if !expression {
         return Err(IllegalArgumentException(message()));
     }
@@ -181,7 +184,9 @@ fn duration_parse(text: &str) -> JavaDuration {
         fail("")
     };
     // check for letter T but no time sections
-    if m.get(3).is_some_and(|t| t.as_str().eq_ignore_ascii_case("T")) {
+    if m.get(3)
+        .is_some_and(|t| t.as_str().eq_ignore_ascii_case("T"))
+    {
         fail("");
     }
     let negate = m.get(1).is_some_and(|g| g.as_str() == "-");
@@ -271,7 +276,11 @@ impl CaffeineSpec {
     }
 
     // Java (Caffeine 3.1.8): CaffeineSpec.configure
-    fn configure(&mut self, key: &str, value: Option<&str>) -> Result<(), IllegalArgumentException> {
+    fn configure(
+        &mut self,
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<(), IllegalArgumentException> {
         match key {
             "initialCapacity" => self.initial_capacity(key, value),
             "maximumSize" => self.maximum_size(key, value),
@@ -306,7 +315,11 @@ impl CaffeineSpec {
     }
 
     // Java (Caffeine 3.1.8): CaffeineSpec.initialCapacity
-    fn initial_capacity(&mut self, key: &str, value: Option<&str>) -> Result<(), IllegalArgumentException> {
+    fn initial_capacity(
+        &mut self,
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<(), IllegalArgumentException> {
         require_argument(self.initial_capacity == UNSET_INT as i32, || {
             format!(
                 "initial capacity was already set to {}",
@@ -318,7 +331,11 @@ impl CaffeineSpec {
     }
 
     // Java (Caffeine 3.1.8): CaffeineSpec.maximumSize
-    fn maximum_size(&mut self, key: &str, value: Option<&str>) -> Result<(), IllegalArgumentException> {
+    fn maximum_size(
+        &mut self,
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<(), IllegalArgumentException> {
         require_argument(self.maximum_size == UNSET_INT, || {
             format!(
                 "maximum size was already set to {}",
@@ -336,7 +353,11 @@ impl CaffeineSpec {
     }
 
     // Java (Caffeine 3.1.8): CaffeineSpec.maximumWeight
-    fn maximum_weight(&mut self, key: &str, value: Option<&str>) -> Result<(), IllegalArgumentException> {
+    fn maximum_weight(
+        &mut self,
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<(), IllegalArgumentException> {
         require_argument(self.maximum_weight == UNSET_INT, || {
             format!(
                 "maximum weight was already set to {}",
@@ -404,7 +425,9 @@ impl CaffeineSpec {
 // Java (Caffeine 3.1.8): CaffeineSpec.parseInt
 fn parse_int(key: &str, value: Option<&str>) -> Result<i32, IllegalArgumentException> {
     let value = value.filter(|v| !v.is_empty());
-    require_argument(value.is_some(), || format!("value of key {key} was omitted"))?;
+    require_argument(value.is_some(), || {
+        format!("value of key {key} was omitted")
+    })?;
     let value = value.unwrap();
     java_parse_int(value).ok_or_else(|| {
         IllegalArgumentException(format!(
@@ -416,15 +439,22 @@ fn parse_int(key: &str, value: Option<&str>) -> Result<i32, IllegalArgumentExcep
 // Java (Caffeine 3.1.8): CaffeineSpec.parseLong
 fn parse_long(key: &str, value: Option<&str>) -> Result<i64, IllegalArgumentException> {
     let value = value.filter(|v| !v.is_empty());
-    require_argument(value.is_some(), || format!("value of key {key} was omitted"))?;
+    require_argument(value.is_some(), || {
+        format!("value of key {key} was omitted")
+    })?;
     let value = value.unwrap();
     java_parse_long(value).ok_or_else(|| {
-        IllegalArgumentException(format!("key {key} value was set to {value}, must be a long"))
+        IllegalArgumentException(format!(
+            "key {key} value was set to {value}, must be a long"
+        ))
     })
 }
 
 // Java (Caffeine 3.1.8): CaffeineSpec.parseDuration
-fn parse_duration(key: &str, value: Option<&str>) -> Result<JavaDuration, IllegalArgumentException> {
+fn parse_duration(
+    key: &str,
+    value: Option<&str>,
+) -> Result<JavaDuration, IllegalArgumentException> {
     let value = value.filter(|v| !v.is_empty());
     require_argument(value.is_some(), || format!("value of key {key} omitted"))?;
     let value = value.unwrap();

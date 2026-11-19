@@ -33,23 +33,26 @@ enum LookupFailure {
 /// The [`ModuleFileLoader`] and [`YankedVersionsLookup`] given to the model's
 /// `discover_and_select`: each call is a Skyframe request on `env`.
 ///
-/// PORT: Java's `Discovery.run(env, root)` keeps going after a missing MODULE_FILE value and
-/// returns null at the end of the round; the model's loader interface has no "missing" result,
-/// so a missing value (or an interrupt) is recorded here, the model is stopped with a sentinel
-/// exception, and the caller returns null (or rethrows the interrupt). Missing values only occur
-/// when a dependency failed in a way that is not an `ExternalDepsException` (a cycle or an
-/// abort), so the observable difference is limited to which of several errors is reported.
+/// PORT: a missing value (or an interrupt) is recorded here and handed to the model as a
+/// sentinel exception. For a missing MODULE_FILE value the model goes on with the round, as
+/// Java's `Discovery.run(env, root)` does ([`ModuleFileLoader::is_values_missing`]), so a
+/// dependency's `ExternalDepsException` later in the round is still thrown with its dependency
+/// chain (no-keep-going error bubbling, where values not computed yet are missing); otherwise
+/// the caller returns null (or rethrows the interrupt).
 struct SkyframeLookups<'e, 'a> {
     env: RefCell<&'e mut Environment<'a>>,
     failure: Cell<Option<LookupFailure>>,
 }
+
+/// The message of the sentinel exception of [`SkyframeLookups::fail`].
+const VALUES_MISSING: &str = "values missing";
 
 impl SkyframeLookups<'_, '_> {
     fn fail(&self, failure: LookupFailure) -> ExternalDepsException {
         if self.failure.get() != Some(LookupFailure::Interrupted) {
             self.failure.set(Some(failure));
         }
-        ExternalDepsException::with_message(ExternalDepsCode::ExternalDepsUnknown, "values missing")
+        ExternalDepsException::with_message(ExternalDepsCode::ExternalDepsUnknown, VALUES_MISSING)
     }
 }
 
@@ -63,15 +66,23 @@ impl ModuleFileLoader for SkyframeLookups<'_, '_> {
             .expect("one result per key")
     }
 
+    /// The sentinel of [`SkyframeLookups::fail`] for a missing value (not for an interrupt,
+    /// which Java propagates at once).
+    fn is_values_missing(&self, e: &ExternalDepsException) -> bool {
+        self.failure.get() == Some(LookupFailure::ValuesMissing)
+            && e.get_code() == ExternalDepsCode::ExternalDepsUnknown
+            && e.get_message() == VALUES_MISSING
+    }
+
     // Java: com/google/devtools/build/lib/bazel/bzlmod/Discovery.java:114 DiscoveryRound.run
     fn get_module_files(
         &self,
         keys: &[ModuleKey],
     ) -> Vec<Result<NonRootModuleFileValue, ExternalDepsException>> {
-        if self.failure.get().is_some() {
+        if self.failure.get() == Some(LookupFailure::Interrupted) {
             return keys
                 .iter()
-                .map(|_| Err(self.fail(LookupFailure::ValuesMissing)))
+                .map(|_| Err(self.fail(LookupFailure::Interrupted)))
                 .collect();
         }
         let module_file_keys: Vec<ModuleFileKey> =
@@ -246,10 +257,20 @@ fn discover_and_select(
         );
         (result, lookups.failure.get())
     };
-    match failure {
-        Some(LookupFailure::Interrupted) => return Err(Interrupted.into()),
-        Some(LookupFailure::ValuesMissing) => return Ok(None),
-        None => {}
+    if failure == Some(LookupFailure::Interrupted) {
+        return Err(Interrupted.into());
+    }
+    // Java: Discovery throws a dependency's ExternalDepsException even when other values of the
+    // round are missing; only then does `env.valuesMissing()` make it return null.
+    if let Err(e) = &result
+        && !(failure == Some(LookupFailure::ValuesMissing)
+            && e.get_code() == ExternalDepsCode::ExternalDepsUnknown
+            && e.get_message() == VALUES_MISSING)
+    {
+        return Err(throw(e.clone(), Transience::Persistent));
+    }
+    if failure == Some(LookupFailure::ValuesMissing) {
+        return Ok(None);
     }
     events.replay_on(env.listener());
     match result {

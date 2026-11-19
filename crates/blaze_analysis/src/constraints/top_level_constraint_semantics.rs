@@ -181,10 +181,10 @@ pub struct ViewCreationFailedException {
 
 /// Constraint semantics that apply to top-level targets.
 ///
-/// PORT: Java's instance holds the `RuleContextConstraintSemantics`, the `PackageManager` and the
-/// evaluator for the target environment checks (`checkTargetEnvironmentRestrictions`); those are
-/// not ported (see [`TopLevelConstraintSemantics::compatibility_with_target_environment`]), so
-/// the instance only holds the event handler.
+/// PORT: Java's instance holds the `RuleContextConstraintSemantics` (stateless), the
+/// `PackageManager` and the evaluator; the target environment checks
+/// (`checkTargetEnvironmentRestrictions`) take the evaluator lookup and a `TargetLookup` (the
+/// package manager) as arguments instead, so the instance only holds the event handler.
 // Java: com/google/devtools/build/lib/analysis/constraints/TopLevelConstraintSemantics.java:65 TopLevelConstraintSemantics
 pub struct TopLevelConstraintSemantics<'a> {
     event_handler: &'a dyn ExtendedEventHandler,
@@ -384,6 +384,9 @@ impl<'a> TopLevelConstraintSemantics<'a> {
         // environments they're missing. These targets trigger a ViewCreationFailedException,
         // which halts the build. Targets with missing *implicitly* required environments don't
         // belong here, since the build continues while skipping them.
+        // PORT: java-hash-order. Java's ArrayListMultimap keys its entries in a HashMap by the
+        // ConfiguredTarget's identity hash code, so Bazel's order of the targets in the message
+        // differs from run to run; the targets are kept in the order of `top_level_targets`.
         let mut exception_inducing_targets: Vec<(ConfiguredTarget, Vec<MissingEnvironment>)> =
             Vec::new();
         for top_level_target in top_level_targets {
@@ -396,8 +399,16 @@ impl<'a> TopLevelConstraintSemantics<'a> {
             ) {
                 Ok(c) => c.expect("NullPointerException: compatibilityWithTargetEnvironment"),
                 Err(e) => {
+                    // new ViewCreationFailedException(e.getMessage(), e.getFailureDetail(), e):
+                    // the message is combineMessages(message, cause).
+                    // Java: com/google/devtools/build/lib/analysis/ViewCreationFailedException.java:49 ViewCreationFailedException.combineMessages
+                    let message = if e.get_message().is_empty() {
+                        e.get_message().to_owned()
+                    } else {
+                        format!("{}: {}", e.get_message(), e.get_message())
+                    };
                     return Err(ViewCreationFailedException {
-                        message: e.get_message().to_owned(),
+                        message,
                         failure_detail: e.get_failure_detail().clone(),
                     });
                 }
@@ -440,7 +451,7 @@ impl<'a> TopLevelConstraintSemantics<'a> {
 /// Returns the environment group that owns the given environment. Both must belong to the same
 /// package.
 // Java: com/google/devtools/build/lib/analysis/constraints/ConstraintSemantics.java:136 ConstraintSemantics.getEnvironmentGroup
-fn get_environment_group(
+pub fn get_environment_group(
     env_target: &Target,
     package_environment_groups: &[Arc<EnvironmentGroup>],
 ) -> Result<Arc<EnvironmentGroup>, TargetLookupException> {

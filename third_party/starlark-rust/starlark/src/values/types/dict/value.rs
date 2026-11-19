@@ -446,7 +446,7 @@ impl<'v> DictLike<'v> for MutableDictData<'v> {
                 xs.content.insert_hashed(index, alloc_value);
                 Ok(())
             }
-            Err(_) => Err(crate::Error::new_other(ValueError::MutationDuringIteration)),
+            Err(_) => Err(crate::Error::new_other(ValueError::Bazel("dict value is temporarily immutable due to active for-loop iteration".to_owned()))), // BLAZE PATCH 0051
         }
     }
 }
@@ -524,11 +524,19 @@ where
     }
 
     fn at(&self, index: Value<'v>, _heap: Heap<'v>) -> crate::Result<Value<'v>> {
-        match self.0.content().get_hashed_by_value(index.get_hashed()?) {
+        // BLAZE PATCH 0051: Java Dict.getIndex (Dict.java:696): an unhashable key is not found.
+        let content = self.0.content();
+        let found = match index.get_hashed() {
+            Ok(k) => content.get_hashed_by_value(k),
+            Err(_) => None,
+        };
+        match found {
             Some(v) => Ok(v.to_value()),
-            None => Err(crate::Error::new_other(ValueError::KeyNotFound(
-                index.to_repr(),
-            ))),
+            None => Err(ValueError::Bazel(format!(
+                "key {} not found in dictionary",
+                index.to_repr()
+            ))
+            .into()),
         }
     }
 

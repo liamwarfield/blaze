@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package probe;
+
+option java_package = "probe.proto";
+
+message Ping {
+  string text = 1;
+}

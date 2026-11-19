@@ -8,6 +8,13 @@ use blaze_events::OutErr;
 use blaze_events::OutputStream as _;
 use blaze_optdefs::command::info_item_handler::InfoItemOutputType;
 
+use std::sync::Arc;
+
+use blaze_protos::JavaMessage as _;
+use blaze_protos::command_server::{InfoItem, InfoResponse, PathToReplace};
+use blaze_protos::google::protobuf::Any;
+use parking_lot::Mutex;
+
 use crate::command_environment::CommandEnvironment;
 use crate::module::AbruptExitException;
 
@@ -117,31 +124,57 @@ impl InfoItemHandler for StdoutInfoItemHandler {
 }
 
 /// Collects `InfoItem`s and sends them to the remote client via response extensions.
-///
-/// PORT: response extensions and `PathToReplaceUtils` are not ported; creating this handler
-/// (`--info_output_type=response_proto`) fails loudly.
 // Java: com/google/devtools/build/lib/runtime/commands/info/RemoteRequestedInfoItemHandler.java:28 RemoteRequestedInfoItemHandler
-pub struct RemoteRequestedInfoItemHandler;
+pub struct RemoteRequestedInfoItemHandler {
+    /// `env.addResponseExtensions` (the environment's list; the handler outlives the borrow of
+    /// `env` it is created with).
+    response_extensions: Arc<Mutex<Vec<Any>>>,
+    /// `PathToReplaceUtils.getPathsToReplace(env)`.
+    /// PORT: computed when the handler is created, not in `close()`: it reads the output base,
+    /// working directory and workspace, which do not change during the command.
+    paths_to_replace: Vec<PathToReplace>,
+    info_items_builder: Vec<InfoItem>,
+    print_keys: bool,
+}
 
 impl RemoteRequestedInfoItemHandler {
     // Java: com/google/devtools/build/lib/runtime/commands/info/RemoteRequestedInfoItemHandler.java:35 RemoteRequestedInfoItemHandler.<init>
-    pub fn new(_env: &CommandEnvironment, _print_keys: bool) -> Self {
-        blaze_util::unported!(
-            "RemoteRequestedInfoItemHandler.<init>",
-            "response extensions (InfoResponse) are not ported"
-        )
+    pub fn new(env: &CommandEnvironment, print_keys: bool) -> Self {
+        RemoteRequestedInfoItemHandler {
+            response_extensions: env.response_extensions_sink(),
+            paths_to_replace: crate::commands::run::path_to_replace_utils_get_paths_to_replace(env),
+            info_items_builder: Vec::new(),
+            print_keys,
+        }
     }
 }
 
 impl InfoItemHandler for RemoteRequestedInfoItemHandler {
     // Java: com/google/devtools/build/lib/runtime/commands/info/RemoteRequestedInfoItemHandler.java:42 RemoteRequestedInfoItemHandler.addInfoItem
-    fn add_info_item(&mut self, _key: &str, _value: &[u8]) -> Result<(), InfoItemHandlerException> {
-        blaze_util::unported!("RemoteRequestedInfoItemHandler.addInfoItem")
+    fn add_info_item(&mut self, key: &str, value: &[u8]) -> Result<(), InfoItemHandlerException> {
+        self.info_items_builder.push(InfoItem {
+            key: key.to_string(),
+            value: value.to_vec(),
+        });
+        Ok(())
     }
 
     // Java: com/google/devtools/build/lib/runtime/commands/info/RemoteRequestedInfoItemHandler.java:48 RemoteRequestedInfoItemHandler.close
     fn close(&mut self) -> io::Result<()> {
-        blaze_util::unported!("RemoteRequestedInfoItemHandler.close")
+        let info_items = std::mem::take(&mut self.info_items_builder);
+        let info_response = InfoResponse {
+            path_to_replace: self.paths_to_replace.clone(),
+            info_item: info_items,
+            print_keys: self.print_keys,
+        };
+        // PORT: the logger.atFine() line (the response in single-line text format) goes to the
+        // server log only; Blaze has none.
+        // `Any.pack(infoResponse)`.
+        self.response_extensions.lock().push(Any {
+            type_url: format!("type.googleapis.com/{}", InfoResponse::FULL_NAME),
+            value: info_response.to_byte_array(),
+        });
+        Ok(())
     }
 }
 
@@ -180,18 +213,18 @@ mod tests {
 
     // Java: src/test/java/com/google/devtools/build/lib/runtime/commands/info/RemoteRequestedInfoItemHandlerTest.java
     #[test]
-    #[ignore = "needs response extensions (InfoResponse) and a CommandEnvironment fixture"]
+    #[ignore = "needs a CommandEnvironment fixture (BuildIntegrationTestCase.runtimeWrapper)"]
     fn test_remote_requested_info_item_handler_creation() {}
 
     #[test]
-    #[ignore = "needs response extensions (InfoResponse) and a CommandEnvironment fixture"]
+    #[ignore = "needs a CommandEnvironment fixture (BuildIntegrationTestCase.runtimeWrapper)"]
     fn test_remote_requested_info_item_handler_no_extension_if_nothing_added() {}
 
     #[test]
-    #[ignore = "needs response extensions (InfoResponse) and a CommandEnvironment fixture"]
+    #[ignore = "needs a CommandEnvironment fixture (BuildIntegrationTestCase.runtimeWrapper)"]
     fn test_remote_requested_info_item_handler_add_one_item_without_print_key() {}
 
     #[test]
-    #[ignore = "needs response extensions (InfoResponse) and a CommandEnvironment fixture"]
+    #[ignore = "needs a CommandEnvironment fixture (BuildIntegrationTestCase.runtimeWrapper)"]
     fn test_remote_requested_info_item_handler_add_two_items() {}
 }

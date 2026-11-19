@@ -48,9 +48,13 @@ pub(crate) fn register_tuple(globals: &mut GlobalsBuilder) {
         special_builtin_function = SpecialBuiltinFunction::Tuple,
     )]
     fn tuple<'v>(
-        #[starlark(require = pos)] a: Option<ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>>,
+        #[starlark(require = pos)] x: Option<ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>>, // BLAZE PATCH 0052
         heap: Heap<'v>,
     ) -> starlark::Result<ValueOfUnchecked<'v, &'v TupleRef<'v>>> {
+        let a = x; // BLAZE PATCH 0052: Java parameter name `x`
+        if let Some(a) = &a { // BLAZE PATCH 0052
+            crate::values::unpack::java_check_iterable("tuple", "x", a.get(), heap)?; // BLAZE PATCH 0052
+        } // BLAZE PATCH 0052
         if let Some(a) = a {
             if TupleRef::from_value(a.get()).is_some() {
                 return Ok(ValueOfUnchecked::new(a.get()));

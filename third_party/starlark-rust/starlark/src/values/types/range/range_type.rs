@@ -120,33 +120,22 @@ impl<'v> StarlarkValue<'v> for Range {
     }
 
     fn length(&self) -> crate::Result<i32> {
-        if self.start == self.stop {
-            return Ok(0);
-        }
-
-        // If step is into opposite direction of stop, then length is zero.
-        if (self.stop >= self.start) != (self.step.get() > 0) {
-            return Ok(0);
-        }
-
-        // Convert range and step to `u64`
-        let (dist, step) = if self.step.get() >= 0 {
-            (
-                self.stop.wrapping_sub(self.start) as u64,
-                self.step.get() as u64,
-            )
-        } else {
-            (
-                self.start.wrapping_sub(self.stop) as u64,
-                self.step.get().wrapping_neg() as u64,
-            )
-        };
-        let i = ((dist - 1) / step + 1) as i32;
-        if i >= 0 {
-            Ok(i)
-        } else {
-            Err(ValueError::IntegerOverflow.into())
-        }
+        // BLAZE PATCH 0051: Java RangeList's size (RangeList.java:70-90), in 64-bit arithmetic
+        // (starlark-rust's wrapped for spans beyond int32).
+        let step = self.step.get() as i64; // BLAZE PATCH 0051
+        let (low, high, abs_step) = if step > 0 { // BLAZE PATCH 0051
+            (self.start as i64, self.stop as i64, step) // BLAZE PATCH 0051
+        } else { // BLAZE PATCH 0051
+            (self.stop as i64, self.start as i64, -step) // BLAZE PATCH 0051
+        }; // BLAZE PATCH 0051
+        if low >= high { // BLAZE PATCH 0051
+            return Ok(0); // BLAZE PATCH 0051
+        } // BLAZE PATCH 0051
+        let size = (high - low - 1) / abs_step + 1; // BLAZE PATCH 0051
+        match i32::try_from(size) { // BLAZE PATCH 0051
+            Ok(n) => Ok(n), // BLAZE PATCH 0051
+            Err(_) => Err(ValueError::Bazel(format!("len({self}) exceeds signed 32-bit range")).into()), // BLAZE PATCH 0051
+        } // BLAZE PATCH 0051
     }
 
     fn at(&self, index: Value, heap: Heap<'v>) -> crate::Result<Value<'v>> {

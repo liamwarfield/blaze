@@ -36,6 +36,7 @@ of the same binary or that names the binary itself):
   * buildMetrics: removed except the action and target counts (the referee drops the rest);
   * actionExecuted / action completions: start and end times (wall clock);
   * testResult: timing and the test log digests (the referee does the same);
+  * execRequest: its bytes fields are base64-decoded (Latin-1) so that paths are normalised;
   * named sets: the set id numbering follows the order in which targets complete, which is
     thread-dependent; sets are inlined by the normaliser and ids are renumbered by first use.
 Python 3 standard library only.
@@ -288,8 +289,27 @@ def sequence(ctx, events):
     return out
 
 
+def decode_bytes_fields(events):
+    """JSON prints proto bytes fields as base64; decode the execRequest ones (paths, argv) so the
+    normaliser can replace the paths in them."""
+    import base64
+    out = json.loads(json.dumps(events))
+    for e in out:
+        er = e.get("execRequest")
+        if not isinstance(er, dict):
+            continue
+        dec = lambda b: base64.b64decode(b).decode("latin-1")
+        if "workingDirectory" in er:
+            er["workingDirectory"] = dec(er["workingDirectory"])
+        er["argv"] = [dec(a) for a in er.get("argv", [])]
+        for v in er.get("environmentVariable", []):
+            v["name"], v["value"] = dec(v.get("name", "")), dec(v.get("value", ""))
+        er["environmentVariableToClear"] = [dec(a) for a in er.get("environmentVariableToClear", [])]
+    return out
+
+
 def payloads(ctx, events):
-    items = surfaces.normalise_bep(ctx, json.loads(json.dumps(events)))
+    items = surfaces.normalise_bep(ctx, decode_bytes_fields(events))
     for k, p in items.items():
         mask_command_lines(p)
         for t in ("actionExecuted", "action"):

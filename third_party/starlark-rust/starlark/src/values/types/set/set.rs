@@ -40,6 +40,9 @@ pub(crate) fn register_set(globals: &mut GlobalsBuilder) {
         #[starlark(require = pos)] arg: Option<ValueOfUnchecked<'v, StarlarkIter<Value<'v>>>>,
         heap: Heap<'v>,
     ) -> starlark::Result<SetData<'v>> {
+        if let Some(a) = &arg { // BLAZE PATCH 0052
+            crate::values::unpack::java_check_iterable("set", "elements", a.get(), heap)?; // BLAZE PATCH 0052
+        } // BLAZE PATCH 0052
         let set = match arg {
             Some(pos) => match SetRef::unpack_value_opt(pos.get()) {
                 Some(set) => (set.aref).clone(),

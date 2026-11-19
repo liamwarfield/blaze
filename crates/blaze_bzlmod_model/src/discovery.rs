@@ -66,6 +66,13 @@ pub trait ModuleFileLoader {
     ) -> Vec<Result<NonRootModuleFileValue, ExternalDepsException>> {
         keys.iter().map(|k| self.get_module_file(k)).collect()
     }
+
+    /// Whether `e` stands for a value that is not available yet (Java: `getOrThrow` returned
+    /// null) rather than a failure. Discovery then goes on with the rest of the round, as Java
+    /// does, and returns `e` at its end (Java: `if (env.valuesMissing()) return null`).
+    fn is_values_missing(&self, _e: &ExternalDepsException) -> bool {
+        false
+    }
 }
 
 /// The result of discovery.
@@ -116,6 +123,8 @@ struct DiscoveryRound<'a> {
     predecessors: HashMap<ModuleKey, ModuleKey>,
     /// Module names of the unfulfilled nodep edges seen during this round.
     unfulfilled_nodep_edge_module_names: HashSet<String>,
+    /// The keys whose module file is missing: Java puts them in `depGraph` with a null value.
+    missing: HashSet<ModuleKey>,
 }
 
 impl<'a> DiscoveryRound<'a> {
@@ -131,6 +140,7 @@ impl<'a> DiscoveryRound<'a> {
             dep_graph: IndexMap::new(),
             predecessors: HashMap::new(),
             unfulfilled_nodep_edge_module_names: HashSet::new(),
+            missing: HashSet::new(),
         }
     }
 
@@ -144,6 +154,7 @@ impl<'a> DiscoveryRound<'a> {
             .with_deps_transformed(|d| self.apply_overrides(d));
         self.dep_graph.insert(ModuleKey::root(), root_module);
         let mut horizon: Vec<ModuleKey> = vec![ModuleKey::root()];
+        let mut values_missing: Option<ExternalDepsException> = None;
         while !horizon.is_empty() {
             let next_horizon_keys = self.advance_horizon(&horizon);
             let results = self.loader.get_module_files(&next_horizon_keys);
@@ -151,6 +162,13 @@ impl<'a> DiscoveryRound<'a> {
             for (dep_key, result) in next_horizon_keys.into_iter().zip(results) {
                 let module_file_value = match result {
                     Ok(v) => v,
+                    Err(e) if self.loader.is_values_missing(&e) => {
+                        // Don't return yet. Try to expand any other unexpanded nodes before
+                        // returning.
+                        self.missing.insert(dep_key);
+                        values_missing.get_or_insert(e);
+                        continue;
+                    }
                     Err(e) => return Err(self.maybe_report_dependency_chain(e, &dep_key)),
                 };
                 let module = module_file_value
@@ -163,6 +181,9 @@ impl<'a> DiscoveryRound<'a> {
                 next_horizon.push(dep_key);
             }
             horizon = next_horizon;
+        }
+        if let Some(e) = values_missing {
+            return Err(e);
         }
 
         // Remove all unfulfilled nodep edges from the dep graph. It should be just as if they
@@ -218,7 +239,7 @@ impl<'a> DiscoveryRound<'a> {
             // The main group of module keys to discover are the current horizon's normal deps.
             for dep_spec in module.deps.values() {
                 let dep_key = dep_spec.to_module_key();
-                if self.dep_graph.contains_key(&dep_key) {
+                if self.dep_graph.contains_key(&dep_key) || self.missing.contains(&dep_key) {
                     continue;
                 }
                 self.predecessors
@@ -230,7 +251,7 @@ impl<'a> DiscoveryRound<'a> {
             // exists in the dep graph. Otherwise, record them.
             for dep_spec in &module.nodep_deps {
                 let dep_key = dep_spec.to_module_key();
-                if self.dep_graph.contains_key(&dep_key) {
+                if self.dep_graph.contains_key(&dep_key) || self.missing.contains(&dep_key) {
                     continue;
                 }
                 if !self.prev_round_module_names.contains(&dep_spec.name) {

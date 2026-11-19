@@ -75,8 +75,7 @@ fn real_main() -> anyhow::Result<()> {
     if cmd == "probe-diff" {
         let mut verbose = false;
         let mut only: Option<String> = None;
-        let mut dir =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/interp");
+        let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/interp");
         let mut it = args[1..].iter();
         while let Some(a) = it.next() {
             match a.as_str() {
@@ -116,7 +115,10 @@ fn real_main() -> anyhow::Result<()> {
                 }
             }
         }
-        println!("{} cases: {m} match, {t} differ in error text only, {d} differ", m + t + d);
+        println!(
+            "{} cases: {m} match, {t} differ in error text only, {d} differ",
+            m + t + d
+        );
         return Ok(());
     }
     if cmd == "parse" {

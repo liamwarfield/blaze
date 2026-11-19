@@ -1011,7 +1011,7 @@ impl<'v> Value<'v> {
                 if let Some(message) = self.get_attr_error_message(attribute) { // BLAZE PATCH 0013
                     return Err(crate::Error::new_other(anyhow::anyhow!("{message}"))); // BLAZE PATCH 0013
                 } // BLAZE PATCH 0013
-                ValueError::unsupported_owned(self.get_type(), &format!(".{attribute}"), None)
+                Err(ValueError::bazel_no_attr(self, attribute)) // BLAZE PATCH 0051
             }
             Some(x) => Ok(x),
         }

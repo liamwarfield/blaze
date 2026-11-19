@@ -441,7 +441,20 @@ fn create_attribute<'v>(
                 "The 'materializer' and 'configurable' parameters are incompatible",
             ));
         }
-        blaze_util::unported!("StarlarkAttrModule.StarlarkMaterializer");
+        // This method doesn't have a type parameter so we can't supply one to
+        // MaterializingDefault, either.
+        let callback = PendingValue::new(materializer, eval);
+        let semantics = blaze_starlark::ThreadContext::get(eval)?.semantics.clone();
+        let starlark_materializer = crate::attribute::computed_default::StarlarkMaterializer::new(
+            type_,
+            semantics,
+            callback.handle,
+        );
+        builder.value_materializer(Arc::new(crate::attribute::MaterializingDefault::new(
+            type_,
+            starlark_materializer,
+        )));
+        pending.push(callback);
     } else if let Some(default_value) = default_value {
         if is_starlark_function(default_value) {
             // Computed attribute. Non label type attributes already caused a type check error.

@@ -25,10 +25,13 @@ use blaze_analysis::configured_target_key::ConfiguredTargetKey;
 use blaze_analysis::providers::alias_provider::AliasProvider;
 use blaze_analysis::providers::file_provider::FilesToRunProvider;
 use blaze_analysis::test::test_provider::TestProvider;
+use blaze_bep::buildeventstream::build_event_id_util;
+use blaze_bep::events::buildtool_events::{ExecRequestEvent, run_build_complete_event};
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_buildtool::buildtool::output_directory_links_utils::get_symlink_prefix;
 use blaze_buildtool::buildtool::path_pretty_printer::PathPrettyPrinter;
 use blaze_cmdline::repository_name::MAIN;
+use blaze_events::{Clock as _, JavaClock};
 use blaze_events::{Event, EventHandler};
 use blaze_exec::actions::{ExecException, ExecutableAction as _};
 use blaze_exec::analysis::actions::runfiles_tree_action::RunfilesTreeAdapter;
@@ -43,13 +46,10 @@ use blaze_optdefs::command::execution_options::ExecutionOptions;
 use blaze_optdefs::command::run_command::RunCommandRunOptions;
 use blaze_optdefs::fragment::core_options::CoreOptions;
 use blaze_optdefs::fragment::run_under::RunUnder;
+use blaze_optdefs::misc::build_event_protocol_options::BuildEventProtocolOptions;
 use blaze_options::EnvVar;
 use blaze_packages::target::Target;
 use blaze_packages::target::target_utils;
-use blaze_bep::buildeventstream::build_event_id_util;
-use blaze_bep::events::buildtool_events::{ExecRequestEvent, run_build_complete_event};
-use blaze_events::{Clock as _, JavaClock};
-use blaze_optdefs::misc::build_event_protocol_options::BuildEventProtocolOptions;
 use blaze_protos::command_server::{
     EnvironmentVariable, ExecRequest, PathToReplace, ScriptPath, path_to_replace,
 };
@@ -457,7 +457,10 @@ where
                     post_run_build_complete_event(
                         outcome.env,
                         blaze_util::ExitCode::for_code(
-                            outcome.detailed_exit_code.get_exit_code().get_numeric_exit_code(),
+                            outcome
+                                .detailed_exit_code
+                                .get_exit_code()
+                                .get_numeric_exit_code(),
                         )
                         .unwrap_or_else(|| panic!("unknown exit code")),
                         outcome.build_result.get_stop_time(),
@@ -753,7 +756,9 @@ fn get_paths_to_replace(
 
 /// Returns the common required `PathToReplace` list.
 // Java: com/google/devtools/build/lib/runtime/commands/PathToReplaceUtils.java:28 PathToReplaceUtils.getPathsToReplace
-fn path_to_replace_utils_get_paths_to_replace(env: &CommandEnvironment) -> Vec<PathToReplace> {
+pub(crate) fn path_to_replace_utils_get_paths_to_replace(
+    env: &CommandEnvironment,
+) -> Vec<PathToReplace> {
     vec![
         PathToReplace {
             r#type: path_to_replace::Type::OutputBase as i32,

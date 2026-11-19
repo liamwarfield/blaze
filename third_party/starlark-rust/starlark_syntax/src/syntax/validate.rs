@@ -113,7 +113,8 @@ pub(crate) fn validate_module(stmt: &AstStmt, parser_state: &mut ParserState) {
             }
             Stmt::For(ForP { body, .. }) => {
                 if top_level && !parser_state.dialect.enable_top_level_stmt {
-                    parser_state.error(span, "`for` cannot be used outside `def` in this dialect")
+                    // BLAZE PATCH 0055: Java's text (Resolver.java:759).
+                    parser_state.error(span, "for loops are not allowed at the top level. You may move it inside a function or use a comprehension, [f(x) for x in sequence]") // BLAZE PATCH 0055
                 } else {
                     f(body, parser_state, false, true, inside_def)
                 }
@@ -122,24 +123,25 @@ pub(crate) fn validate_module(stmt: &AstStmt, parser_state: &mut ParserState) {
             Stmt::If(..) if stmt.blaze_var_statement().is_some() => {} // BLAZE PATCH 0030
             Stmt::If(..) | Stmt::IfElse(..) => {
                 if top_level && !parser_state.dialect.enable_top_level_stmt {
-                    parser_state.error(span, "`if` cannot be used outside `def` in this dialect")
+                    // BLAZE PATCH 0055: Java's text (Resolver.java:854).
+                    parser_state.error(span, "if statements are not allowed at the top level. You may move it inside a function or use an if expression (x if condition else y).") // BLAZE PATCH 0055
                 } else {
                     stmt.node
                         .visit_stmt(|x| f(x, parser_state, false, inside_for, inside_def))
                 }
             }
             Stmt::Break if !inside_for => {
-                parser_state.error(span, "`break` cannot be used outside of a `for` loop")
+                parser_state.error(span, "break statement must be inside a for loop") // BLAZE PATCH 0055: Java Resolver.java:783
             }
             Stmt::Continue if !inside_for => {
-                parser_state.error(span, "`continue` cannot be used outside of a `for` loop")
+                parser_state.error(span, "continue statement must be inside a for loop") // BLAZE PATCH 0055: Java Resolver.java:783
             }
             Stmt::Return(_) if !inside_def => {
-                parser_state.error(span, "`return` cannot be used outside of a `def` function")
+                parser_state.error(span, "return statements must be inside a function") // BLAZE PATCH 0055: Java Resolver.java:702
             }
             Stmt::Load(..) => {
                 if !top_level {
-                    parser_state.error(span, "`load` must only occur at the top of a module");
+                    parser_state.error(span, "load statement not at top level"); // BLAZE PATCH 0055: Java Resolver.java:775
                 }
                 if !parser_state.dialect.enable_load {
                     parser_state.error(span, "`load` is not allowed in this dialect");
@@ -155,7 +157,8 @@ pub(crate) fn validate_module(stmt: &AstStmt, parser_state: &mut ParserState) {
         match &x.node {
             Expr::Literal(AstLiteral::Ellipsis) => {
                 if parser_state.dialect.enable_types == DialectTypes::Disable {
-                    parser_state.error(x.span, "`...` is not allowed in this dialect");
+                    // BLAZE PATCH 0055: Java's text (Parser.java:777 parsePrimary).
+                    parser_state.error(x.span, "syntax error at '...': ellipsis ('...') is not allowed outside type expressions"); // BLAZE PATCH 0055
                 }
             }
             Expr::Lambda(LambdaP { params, .. }) => {

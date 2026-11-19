@@ -24,3 +24,4 @@ pub use crate::analysis::EvalSeverity;
 pub use crate::analysis::Lint;
 
 pub(crate) mod did_you_mean;
+pub mod spell_checker; // BLAZE PATCH 0049

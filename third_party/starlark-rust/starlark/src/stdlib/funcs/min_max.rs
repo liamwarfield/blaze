@@ -35,10 +35,8 @@ fn min_max_iter<'v>(
     let mut max = match it.next() {
         Some(x) => x,
         None => {
-            return Err(anyhow::anyhow!(
-                "Argument is an empty iterable, max() expect a non empty iterable"
-            )
-            .into());
+            // BLAZE PATCH 0051: Java's text (MethodLibrary.java:134 findExtreme).
+            return Err(anyhow::anyhow!("expected at least one item").into());
         }
     };
     let update_max_ordering = if min {
@@ -111,6 +109,7 @@ pub(crate) fn register_min_max(globals: &mut GlobalsBuilder) {
         key: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
+        let key = key.filter(|k| !k.is_none()); // BLAZE PATCH 0052: Java's `key` is callable or NoneType
         min_max(args, key, eval, false)
     }
 
@@ -136,6 +135,7 @@ pub(crate) fn register_min_max(globals: &mut GlobalsBuilder) {
         key: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
+        let key = key.filter(|k| !k.is_none()); // BLAZE PATCH 0052: Java's `key` is callable or NoneType
         min_max(args, key, eval, true)
     }
 }

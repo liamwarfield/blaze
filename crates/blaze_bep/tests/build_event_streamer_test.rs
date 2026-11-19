@@ -1606,28 +1606,124 @@ fn test_chunked_flush() {
     assert_eq!(out_err.err_calls(), 1);
 }
 
+/// `testFlushPreservesStdoutStderrOrder` for one (maxBufferedLength, maxChunkSize).
+fn flush_preserves_stdout_stderr_order(max_buffered_length: i32, max_chunk_size: i32) {
+    use blaze_bep::runtime::synchronized_output_stream::SynchronizedOutputStream;
+    use blaze_events::OutputStream as _;
+
+    let artifact_group_namer = Arc::new(CountingArtifactGroupNamer::new());
+    let transport = Arc::new(RecordingBuildEventTransport::new(
+        artifact_group_namer.clone(),
+    ));
+    let streamer = Arc::new(
+        Builder::new()
+            .artifact_group_namer(artifact_group_namer)
+            .build_event_transports(vec![transport.clone() as Arc<dyn BuildEventTransport>])
+            .bes_stream_options(new_build_event_stream_options())
+            .oom_message(OOM_MESSAGE.to_string())
+            .build(),
+    );
+    let stdout = Arc::new(SynchronizedOutputStream::new(
+        max_buffered_length,
+        max_chunk_size,
+        /* is_stderr= */ false,
+    ));
+    let stderr = Arc::new(SynchronizedOutputStream::new(
+        max_buffered_length,
+        max_chunk_size,
+        /* is_stderr= */ true,
+    ));
+    struct Provider(Arc<SynchronizedOutputStream>, Arc<SynchronizedOutputStream>);
+    impl OutErrProvider for Provider {
+        fn get_out(&self) -> Option<Vec<String>> {
+            Some(self.0.read_and_reset())
+        }
+        fn get_err(&self) -> Option<Vec<String>> {
+            Some(self.1.read_and_reset())
+        }
+    }
+    streamer.register_out_err_provider(Arc::new(Provider(stdout.clone(), stderr.clone())));
+    stdout.register_streamer(streamer.clone());
+    stderr.register_streamer(streamer.clone());
+
+    let start_event = generic(
+        test_id("Initial"),
+        vec![ProgressEvent::initial_progress_update()],
+    );
+    streamer.build_event(start_event);
+
+    stderr.write(b"[0 / 3] 3 actions running\n").unwrap();
+    stderr
+        .write(b"INFO: From Executing genrule //:1:\n")
+        .unwrap();
+    stdout
+        .write(b"Hello from genrule //:1 on stdout\n")
+        .unwrap();
+    stderr
+        .write(b"Hello from genrule //:1 on stderr\n")
+        .unwrap();
+    stderr.write(b"[1 / 3] 2 actions running\n").unwrap();
+    stderr
+        .write(b"INFO: From Executing genrule //:2:\n")
+        .unwrap();
+    stdout
+        .write(b"Hello from genrule //:2 on stderr\n")
+        .unwrap();
+    stderr
+        .write(b"Hello from genrule //:2 on stdout\n")
+        .unwrap();
+    stderr.write(b"[2 / 3] 1 actions running\n").unwrap();
+    stderr
+        .write(b"INFO: From Executing genrule //:3:\n")
+        .unwrap();
+    stdout
+        .write(b"Hello from genrule //:3 on stdout\n")
+        .unwrap();
+    stderr
+        .write(b"Hello from genrule //:3 on stderr\n")
+        .unwrap();
+    stdout
+        .write(b"Hello again from genrule //:3 on stdout\n")
+        .unwrap();
+    stderr
+        .write(b"INFO: Build completed successfully, 3 total actions\n")
+        .unwrap();
+    streamer.close();
+
+    let reconstructed_output: String = transport
+        .get_event_protos()
+        .iter()
+        .map(progress)
+        .flat_map(|p| [p.stderr, p.stdout])
+        .collect();
+    assert_eq!(
+        reconstructed_output,
+        "[0 / 3] 3 actions running\n\
+         INFO: From Executing genrule //:1:\n\
+         Hello from genrule //:1 on stdout\n\
+         Hello from genrule //:1 on stderr\n\
+         [1 / 3] 2 actions running\n\
+         INFO: From Executing genrule //:2:\n\
+         Hello from genrule //:2 on stderr\n\
+         Hello from genrule //:2 on stdout\n\
+         [2 / 3] 1 actions running\n\
+         INFO: From Executing genrule //:3:\n\
+         Hello from genrule //:3 on stdout\n\
+         Hello from genrule //:3 on stderr\n\
+         Hello again from genrule //:3 on stdout\n\
+         INFO: Build completed successfully, 3 total actions\n",
+        "maxBufferedLength={max_buffered_length}, maxChunkSize={max_chunk_size}"
+    );
+}
+
+// @TestParameter maxBufferedLength, maxChunkSize in {5, 30, 10000}.
 #[test]
-#[ignore = "needs SynchronizedOutputStream (runtime/SynchronizedOutputStream.java, not ported) \
-            and @TestParameter maxBufferedLength/maxChunkSize in {5, 30, 10000}"]
 fn test_flush_preserves_stdout_stderr_order() {
-    // Java: for each (maxBufferedLength, maxChunkSize), stdout/stderr SynchronizedOutputStreams
-    // registered with the streamer receive the interleaved genrule output below; after
-    // streamer.close(), concatenating (stderr, stdout) of every progress event reproduces it:
-    //
-    // [0 / 3] 3 actions running
-    // INFO: From Executing genrule //:1:
-    // Hello from genrule //:1 on stdout
-    // Hello from genrule //:1 on stderr
-    // [1 / 3] 2 actions running
-    // INFO: From Executing genrule //:2:
-    // Hello from genrule //:2 on stderr
-    // Hello from genrule //:2 on stdout
-    // [2 / 3] 1 actions running
-    // INFO: From Executing genrule //:3:
-    // Hello from genrule //:3 on stdout
-    // Hello from genrule //:3 on stderr
-    // Hello again from genrule //:3 on stdout
-    // INFO: Build completed successfully, 3 total actions
+    for max_buffered_length in [5, 30, 10000] {
+        for max_chunk_size in [5, 30, 10000] {
+            flush_preserves_stdout_stderr_order(max_buffered_length, max_chunk_size);
+        }
+    }
 }
 
 #[test]

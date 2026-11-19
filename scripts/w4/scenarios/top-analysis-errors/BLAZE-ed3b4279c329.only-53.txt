@@ -1,0 +1,17 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/work/crash-fix/blaze-before
+# sha256 ed3b4279c3299fbc8c3a5ae6a65e0bc012e1f3f83f47464ae8c9a80846872651
+# tree 29f7510760145242aa5d13f9a82cd2674b6e4aba (dirty)
+# date 2026-11-19T14:08:12
+=== 53: run build //:impl_fails //:dep_not_visible //:dep_missing_target
+exit 1
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/ok/BUILD.bazel: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel
+ERROR: <WS>/BUILD.bazel:13:2: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel and referenced by '//:dep_missing_target'
+ERROR: Analysis of target '//:dep_missing_target' failed; build aborted: Analysis failed
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully

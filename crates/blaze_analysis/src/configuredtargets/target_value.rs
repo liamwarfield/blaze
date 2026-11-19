@@ -179,18 +179,34 @@ impl StarlarkTarget {
         match target {
             // Java: com/google/devtools/build/lib/analysis/configuredtargets/RuleConfiguredTarget.java:271 RuleConfiguredTarget.rawGetStarlarkProvider
             // Only expose actions which are legitimate Starlark values, otherwise they will
-            // later cause a Bazel crash. (PORT: every Blaze action is one; see
-            // `actions_to_starlark`.)
-            ConfiguredTarget::Rule(r) => Some(r.get_actions().to_vec()),
+            // later cause a Bazel crash.
+            ConfiguredTarget::Rule(r) => Some(
+                r.get_actions()
+                    .iter()
+                    .filter(|action| action.is_action_api())
+                    .cloned()
+                    .collect(),
+            ),
             // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:172 MergedConfiguredTarget.rawGetStarlarkProvider
             ConfiguredTarget::Merged(m) => {
                 let mut actions: Vec<ActionRef> = Vec::new();
                 // Only expose actions which are StarlarkValues.
                 for aspect in m.get_aspects() {
-                    actions.extend(aspect.get_actions().iter().cloned());
+                    actions.extend(
+                        aspect
+                            .get_actions()
+                            .iter()
+                            .filter(|action| action.is_action_api())
+                            .cloned(),
+                    );
                 }
                 if let ConfiguredTarget::Rule(base) = &m.base_configured_target {
-                    actions.extend(base.get_actions().iter().cloned());
+                    actions.extend(
+                        base.get_actions()
+                            .iter()
+                            .filter(|action| action.is_action_api())
+                            .cloned(),
+                    );
                 }
                 Some(actions)
             }

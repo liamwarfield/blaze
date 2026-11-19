@@ -1,0 +1,670 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/int-bin/ui-wave/blaze-before-a0242b7
+# sha256 716d4642f77cdfa8239090ecea0b84bb87c6ffa359a04ad9d14fb38705b82299
+# tree 99a74d0fe098387e6fd2a298c9167416bdb1587c (dirty)
+# date 2026-11-19T14:02:13
+=== 1: run build //:none
+exit 0
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:none (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:none up-to-date (nothing to build)
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 2: run build //:one
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:one (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:one up-to-date:
+  bazel-bin/one.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 3: run build //:several
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:several (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:several up-to-date:
+  bazel-bin/several_b.txt
+  bazel-bin/several_a.txt
+  bazel-bin/dir/several_c.txt
+INFO: Elapsed time: <DUR>
+INFO: 4 processes: 4 internal.
+INFO: Build completed successfully, 4 total actions
+=== 4: run build //:groups
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:groups (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:groups up-to-date:
+  bazel-bin/groups.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 5: run build //:groups --output_groups=extra
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:groups (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:groups up-to-date:
+  bazel-bin/groups_extra.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 6: run build //:groups --output_groups=+extra
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:groups (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:groups up-to-date:
+  bazel-bin/groups.txt
+  bazel-bin/groups_extra.txt
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 2 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 7: run build //:one_alias
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:one_alias (5 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+Target //:one up-to-date:
+  bazel-bin/one.txt
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 8: run build //:gen
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:gen (6 packages loaded, 8 targets configured).
+INFO: Found 1 target...
+Target //:gen up-to-date:
+  bazel-bin/gen_a.txt
+  bazel-bin/gen_b.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 1 internal, 1 linux-sandbox.
+INFO: Build completed successfully, 2 total actions
+=== 9: run build //:gen_a.txt
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:gen_a.txt (6 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+Target //:gen_a.txt up-to-date:
+  bazel-bin/gen_a.txt
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 10: run build //:gen_a.txt //:gen
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (6 packages loaded, 9 targets configured).
+INFO: Found 2 targets...
+Target //:gen up-to-date:
+  bazel-bin/gen_a.txt
+  bazel-bin/gen_b.txt
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 11: run build //:source.txt
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:source.txt (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+WARNING: <WS>/BUILD.bazel:3:14: //:source.txt is a source file, nothing will be built for it. If you want to build a target that consumes this file, try --compile_one_dependency
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 12: run build //pkg:sub
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //pkg:sub (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //pkg:sub up-to-date:
+  bazel-bin/pkg/sub.txt
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+INFO: Build completed successfully, 2 total actions
+=== 13: run build //:one //:several
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).
+INFO: Found 2 targets...
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 4 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 14: run build //:one //:several --show_result=2
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).
+INFO: Found 2 targets...
+Target //:one up-to-date:
+  bazel-bin/one.txt
+Target //:several up-to-date:
+  bazel-bin/several_b.txt
+  bazel-bin/several_a.txt
+  bazel-bin/dir/several_c.txt
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 4 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 15: run build //:one //:none //:several --show_result=2
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 3 targets (5 packages loaded, 9 targets configured).
+INFO: Found 3 targets...
+Target //:one up-to-date:
+  bazel-bin/one.txt
+Target //:several up-to-date:
+  bazel-bin/several_b.txt
+  bazel-bin/several_a.txt
+  bazel-bin/dir/several_c.txt
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 4 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 16: run build //:one --show_result=0
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:one (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 17: run build //:one --symlink_prefix=probe-
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:one (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:one up-to-date:
+  probe-bin/one.txt
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 18: run build //:one --symlink_prefix=/
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:one (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:one up-to-date:
+  <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/bin/one.txt
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 19: run build //:one --experimental_convenience_symlinks=ignore
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:one (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:one up-to-date:
+  <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/bin/one.txt
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 20: run build //:fails
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:fails (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+ERROR: <WS>/BUILD.bazel:41:8: Action fails.out failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:fails) /bin/bash -c 'echo failing action of fails >&2; exit 1'
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+failing action of fails
+Target //:fails failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+ERROR: Build did NOT complete successfully
+=== 21: run build //:fails --verbose_failures
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:fails (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+ERROR: <WS>/BUILD.bazel:41:8: Action fails.out failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:fails)
+  (cd <OUTPUT_BASE>/sandbox/linux-sandbox/<N>/execroot/_main && \
+  exec env - \
+  /bin/bash -c 'echo failing action of fails >&2; exit 1')
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+failing action of fails
+Target //:fails failed to build
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 2 internal.
+ERROR: Build did NOT complete successfully
+=== 22: run build //:fails //:one --show_result=5
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).
+INFO: Found 2 targets...
+ERROR: <WS>/BUILD.bazel:41:8: Action fails.out failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:fails) /bin/bash -c 'echo failing action of fails >&2; exit 1'
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+failing action of fails
+Target //:one up-to-date:
+  bazel-bin/one.txt
+Target //:fails failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 1 action cache hit, 2 internal.
+ERROR: Build did NOT complete successfully
+=== 23: run build //:fails //:one --show_result=5 --keep_going
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).
+INFO: Found 2 targets...
+ERROR: <WS>/BUILD.bazel:41:8: Action fails.out failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:fails) /bin/bash -c 'echo failing action of fails >&2; exit 1'
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+failing action of fails
+INFO: Build succeeded for only 1 of 2 top-level targets
+Target //:one up-to-date:
+  bazel-bin/one.txt
+Target //:fails failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 1 action cache hit, 2 internal.
+ERROR: Build did NOT complete successfully
+=== 24: run build //:fails //:fails2 --keep_going --show_result=5
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).
+INFO: Found 2 targets...
+ERROR: <WS>/BUILD.bazel:41:8: Action fails.out failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:fails) /bin/bash -c 'echo failing action of fails >&2; exit 1'
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+failing action of fails
+ERROR: <WS>/BUILD.bazel:43:8: Action fails2.out failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:fails2) /bin/bash -c 'echo failing action of fails2 >&2; exit 1'
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+failing action of fails2
+Target //:fails failed to build
+Target //:fails2 failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>
+INFO: 3 processes: 3 internal.
+ERROR: Build did NOT complete successfully
+=== 25: run build //:bad_analysis
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:45:15: in analysis_error rule //:bad_analysis:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 38, column 9, in _analysis_error_impl
+		fail("analysis error of " + ctx.label.name)
+Error in fail: analysis error of bad_analysis
+ERROR: <WS>/BUILD.bazel:45:15: Analysis of target '//:bad_analysis' (config: a7a71fd) failed
+ERROR: Analysis of target '//:bad_analysis' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 26: run build //:bad_analysis //:one --keep_going --show_result=5
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:45:15: in analysis_error rule //:bad_analysis:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 38, column 9, in _analysis_error_impl
+		fail("analysis error of " + ctx.label.name)
+Error in fail: analysis error of bad_analysis
+ERROR: <WS>/BUILD.bazel:45:15: Analysis of target '//:bad_analysis' (config: a7a71fd) failed
+WARNING: errors encountered while analyzing target '//:bad_analysis', it will not be built.
+INFO: Analyzed 2 targets (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+INFO: Build succeeded for only 1 of 2 top-level targets
+Target //:one up-to-date:
+  bazel-bin/one.txt
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+ERROR: Build did NOT complete successfully
+=== 27: run build //:nosuchtarget
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+WARNING: Target pattern parsing failed.
+ERROR: Skipping '//:nosuchtarget': no such target '//:nosuchtarget': target 'nosuchtarget' not declared in package '' defined by <WS>/BUILD.bazel
+ERROR: no such target '//:nosuchtarget': target 'nosuchtarget' not declared in package '' defined by <WS>/BUILD.bazel
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 28: run build //:one --nobuild
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:one (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 29: run build
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+WARNING: Usage: bazel build <options> <targets>.
+Invoke `bazel help build` for full description of usage and options.
+Your request is correct, but requested an empty set of targets. Nothing will be built.
+INFO: Analyzed 0 targets (4 packages loaded, 6 targets configured).
+INFO: Found 0 targets...
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 30: run build --target_pattern_file=patterns.txt --show_result=5
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (6 packages loaded, 8 targets configured).
+INFO: Found 2 targets...
+Target //:one up-to-date:
+  bazel-bin/one.txt
+Target //pkg:sub up-to-date:
+  bazel-bin/pkg/sub.txt
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 2 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 31: run build //:one --target_pattern_file=patterns.txt
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Command-line target pattern and --target_pattern_file cannot both be specified
+=== 32: run build --target_pattern_file=missing.txt
+exit 2
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: I/O error reading from <WS>/missing.txt: <WS>/missing.txt (No such file or directory)
+=== 33: run build //:pass_test
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:pass_test (80 packages loaded, 835 targets configured).
+INFO: Found 1 target...
+Target //:pass_test up-to-date:
+  bazel-bin/pass_test.sh
+INFO: Elapsed time: <DUR>
+INFO: 6 processes: 6 internal.
+INFO: Build completed successfully, 6 total actions
+=== 34: run test //:pass_test
+exit 0
+--- stdout
+//:pass_test                                                             PASSED in <DUR>
+
+Executed 1 out of 1 test: 1 test passes.
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:pass_test (80 packages loaded, 835 targets configured).
+INFO: Found 1 test target...
+Target //:pass_test up-to-date:
+  bazel-bin/pass_test.sh
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 5 action cache hit, 1 internal, 2 linux-sandbox.
+INFO: Build completed successfully, 2 total actions
+=== 35: run test //:fail_test
+exit 3
+--- stdout
+//:fail_test                                                             FAILED in <DUR>
+  <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/test.log
+
+Executed 1 out of 1 test: 1 fails locally.
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:fail_test (80 packages loaded, 835 targets configured).
+INFO: Found 1 test target...
+FAIL: //:fail_test (Exit 1) (see <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/test.log)
+Target //:fail_test up-to-date:
+  bazel-bin/fail_test.sh
+INFO: Elapsed time: <DUR>
+INFO: 7 processes: 6 internal, 2 linux-sandbox.
+INFO: Build completed, 1 test FAILED, 7 total actions
+=== 36: run test //:pass_test //:fail_test
+exit 3
+--- stdout
+//:pass_test                                                    (cached) PASSED in <DUR>
+//:fail_test                                                             FAILED in <DUR>
+  <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/test.log
+
+Executed 1 out of 2 tests: 1 test passes and 1 fails locally.
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (80 packages loaded, 836 targets configured).
+INFO: Found 2 test targets...
+FAIL: //:fail_test (Exit 1) (see <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/test.log)
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 11 action cache hit, 1 internal, 2 linux-sandbox.
+INFO: Build completed, 1 test FAILED, 2 total actions
+=== 37: run test //:unbuildable_test
+exit 1
+--- stdout
+//:unbuildable_test                                             FAILED TO BUILD
+
+Executed 0 out of 1 test: 1 fails to build.
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:unbuildable_test (80 packages loaded, 836 targets configured).
+INFO: Found 1 test target...
+ERROR: <WS>/BUILD.bazel:41:8: Action fails.out failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:fails) /bin/bash -c 'echo failing action of fails >&2; exit 1'
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+failing action of fails
+Target //:unbuildable_test failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>
+INFO: 6 processes: 6 internal.
+ERROR: Build did NOT complete successfully
+=== 38: run test //:unbuildable_test //:pass_test
+exit 1
+--- stdout
+//:pass_test                                                    (cached) PASSED in <DUR>
+//:unbuildable_test                                             FAILED TO BUILD
+
+Executed 0 out of 2 tests: 1 test passes and 1 fails to build.
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (80 packages loaded, 837 targets configured).
+INFO: Found 2 test targets...
+ERROR: <WS>/BUILD.bazel:41:8: Action fails.out failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:fails) /bin/bash -c 'echo failing action of fails >&2; exit 1'
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+failing action of fails
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 10 action cache hit, 2 internal.
+ERROR: Build did NOT complete successfully
+=== 39: run test //:unbuildable_test //:pass_test --keep_going
+exit 1
+--- stdout
+//:pass_test                                                    (cached) PASSED in <DUR>
+//:unbuildable_test                                             FAILED TO BUILD
+
+Executed 0 out of 2 tests: 1 test passes and 1 fails to build.
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 2 targets (80 packages loaded, 837 targets configured).
+INFO: Found 2 test targets...
+ERROR: <WS>/BUILD.bazel:41:8: Action fails.out failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:fails) /bin/bash -c 'echo failing action of fails >&2; exit 1'
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+failing action of fails
+INFO: Build succeeded for only 1 of 2 top-level targets
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <DUR>
+INFO: 2 processes: 10 action cache hit, 2 internal.
+ERROR: Build did NOT complete successfully
+=== 40: run test //:bad_analysis_test
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:66:20: in analysis_error_test rule //:bad_analysis_test:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 38, column 9, in _analysis_error_impl
+		fail("analysis error of " + ctx.label.name)
+Error in fail: analysis error of bad_analysis_test
+ERROR: <WS>/BUILD.bazel:66:20: Analysis of target '//:bad_analysis_test' (config: e722a21) failed
+ERROR: Analysis of target '//:bad_analysis_test' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+ERROR: No test targets were found, yet testing was requested
+=== 41: run test //:bad_analysis_test //:pass_test --keep_going
+exit 1
+--- stdout
+//:pass_test                                                    (cached) PASSED in <DUR>
+
+Executed 0 out of 1 test: 1 test passes.
+All tests passed but there were other errors during the build.
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/BUILD.bazel:66:20: in analysis_error_test rule //:bad_analysis_test:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 38, column 9, in _analysis_error_impl
+		fail("analysis error of " + ctx.label.name)
+Error in fail: analysis error of bad_analysis_test
+ERROR: <WS>/BUILD.bazel:66:20: Analysis of target '//:bad_analysis_test' (config: e722a21) failed
+WARNING: errors encountered while analyzing target '//:bad_analysis_test', it will not be built.
+INFO: Analyzed 2 targets (80 packages loaded, 835 targets configured).
+INFO: Found 1 test target...
+INFO: Build succeeded for only 1 of 2 top-level targets
+Target //:pass_test up-to-date:
+  bazel-bin/pass_test.sh
+ERROR: command succeeded, but not all targets were analyzed
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 6 action cache hit, 1 internal.
+ERROR: Build did NOT complete successfully
+=== 42: run test //:nosuchtarget
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: Skipping '//:nosuchtarget': no such target '//:nosuchtarget': target 'nosuchtarget' not declared in package '' defined by <WS>/BUILD.bazel
+ERROR: no such target '//:nosuchtarget': target 'nosuchtarget' not declared in package '' defined by <WS>/BUILD.bazel
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+ERROR: Couldn't start the build. Unable to run tests
+=== 43: run test //:one
+exit 4
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:one (5 packages loaded, 7 targets configured).
+INFO: Found 1 target and 0 test targets...
+Target //:one up-to-date:
+  bazel-bin/one.txt
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+ERROR: No test targets were found, yet testing was requested
+=== 44: run test
+exit 4
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 0 targets (4 packages loaded, 6 targets configured).
+INFO: Found 0 test targets...
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action
+ERROR: No test targets were found, yet testing was requested
+=== 45: run build //:one --notrack_incremental_state
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+WARNING: --notrack_incremental_state was specified, but without --nokeep_state_after_build. Inmemory state from this build will not be reusable, but it will not get fully wiped until the beginning of the next build. Use --nokeep_state_after_build to clean up eagerly.
+INFO: Analyzed target //:one (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:one up-to-date:
+  bazel-bin/one.txt
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 46: run build //:one --notrack_incremental_state --nokeep_state_after_build
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:one (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:one up-to-date:
+  bazel-bin/one.txt
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 47: run build //:one --heuristically_drop_nodes
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+WARNING: --heuristically_drop_nodes was specified with track incremental state also being true. The flag is ignored and no node is heuristically dropped in the track incremental mode.
+INFO: Analyzed target //:one (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+Target //:one up-to-date:
+  bazel-bin/one.txt
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 48: run build //pkg:sub --explain=explain.log
+exit 0
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //pkg:sub (5 packages loaded, 7 targets configured).
+INFO: Found 1 target...
+INFO: Writing explanation of rebuilds to 'explain.log'
+Target //pkg:sub up-to-date:
+  bazel-bin/pkg/sub.txt
+INFO: Elapsed time: <DUR>
+INFO: 1 process: 1 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+=== 49: cat explain.log
+Build options: --flag_alias='build_python_zip=@@rules_python+//python/config_settings:build_python_zip' --flag_alias='incompatible_default_to_explicit_init_py=@@rules_python+//python/config_settings:incompatible_default_to_explicit_init_py' --flag_alias='python_path=@@rules_python+//python/config_settings:python_path' --flag_alias='experimental_python_import_all_repositories=@@rules_python+//python/config_settings:experimental_python_import_all_repositories' --repository_cache=<HOME>/.cache/blaze/repo-cache --color=no --curses=no --explain=explain.log
+Executing action 'BazelWorkspaceStatusAction stable-status.txt': unconditional execution is requested.

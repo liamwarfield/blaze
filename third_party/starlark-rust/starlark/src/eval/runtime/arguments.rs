@@ -63,6 +63,9 @@ pub(crate) enum FunctionError {
     #[error("Wrong number of positional arguments, expected {}, got {got}",
         if min == max {min.to_string()} else {format!("between {min} and {max}")})]
     WrongNumberOfArgs { min: usize, max: usize, got: usize },
+    /// BLAZE PATCH 0052: an argument error with Java's text.
+    #[error("{0}")]
+    Bazel(String),
 }
 
 impl From<FunctionError> for crate::Error {
@@ -294,7 +297,12 @@ impl<'v, 'a> Arguments<'v, 'a> {
                 if self.0.names().names().is_empty() {
                     match kwargs.downcast_ref_key_string() {
                         Some(kwargs) => Ok(kwargs.clone()),
-                        None => Err(FunctionError::ArgsValueIsNotString.into()),
+                        // BLAZE PATCH 0052: Java's text (Eval.java:754 evalCall).
+                        None => Err(FunctionError::Bazel(format!( // BLAZE PATCH 0052
+                            "keywords must be strings, not {}", // BLAZE PATCH 0052
+                            kwargs.keys().find(|k| k.unpack_str().is_none()).map_or("?", |k| k.get_type()) // BLAZE PATCH 0052
+                        )) // BLAZE PATCH 0052
+                        .into()),
                     }
                 } else {
                     // We have to insert the names before the kwargs since the iteration order is observable
@@ -352,7 +360,13 @@ impl<'v, 'a> Arguments<'v, 'a> {
     ) -> crate::Result<impl Iterator<Item = Value<'v>> + 'b> {
         let tail = match self.0.args {
             None => Either::Left(iter::empty()),
-            Some(args) => Either::Right(args.iterate(heap)?),
+            // BLAZE PATCH 0052: Java's text (Eval.java:735 evalCall).
+            Some(args) => Either::Right(args.iterate(heap).map_err(|_| { // BLAZE PATCH 0052
+                crate::Error::from(FunctionError::Bazel(format!( // BLAZE PATCH 0052
+                    "argument after * must be an iterable, not {}", // BLAZE PATCH 0052
+                    args.get_type() // BLAZE PATCH 0052
+                ))) // BLAZE PATCH 0052
+            })?), // BLAZE PATCH 0052
         };
         Ok(self.0.pos.iter().copied().chain(tail))
     }
@@ -366,7 +380,8 @@ impl<'v, 'a> Arguments<'v, 'a> {
         match self.0.kwargs {
             None => Ok(None),
             Some(kwargs) => match DictRef::from_value(kwargs) {
-                None => Err(FunctionError::KwArgsIsNotDict.into()),
+                // BLAZE PATCH 0052: Java's text (Eval.java:749 evalCall).
+                None => Err(FunctionError::Bazel(format!("argument after ** must be a dict, not {}", kwargs.get_type())).into()), // BLAZE PATCH 0052
                 Some(x) => Ok(Some(x)),
             },
         }
@@ -376,7 +391,8 @@ impl<'v, 'a> Arguments<'v, 'a> {
     #[inline(always)]
     pub(crate) fn unpack_kwargs_key_as_value(k: Value<'v>) -> crate::Result<StringValue<'v>> {
         match StringValue::new(k) {
-            None => Err(FunctionError::ArgsValueIsNotString.into()),
+            // BLAZE PATCH 0052: Java's text (Eval.java:754 evalCall).
+            None => Err(FunctionError::Bazel(format!("keywords must be strings, not {}", k.get_type())).into()), // BLAZE PATCH 0052
             Some(k) => Ok(k),
         }
     }
@@ -452,7 +468,13 @@ impl<'v, 'a> Arguments<'v, 'a> {
             // with a *args is very rare.
             let args = match x.0.args {
                 None => StarlarkIterator::empty(heap),
-                Some(args) => args.iterate(heap)?,
+                // BLAZE PATCH 0052: Java's text (Eval.java:735 evalCall).
+                Some(args) => args.iterate(heap).map_err(|_| { // BLAZE PATCH 0052
+                    crate::Error::from(FunctionError::Bazel(format!( // BLAZE PATCH 0052
+                        "argument after * must be an iterable, not {}", // BLAZE PATCH 0052
+                        args.get_type() // BLAZE PATCH 0052
+                    ))) // BLAZE PATCH 0052
+                })?, // BLAZE PATCH 0052
             };
             let xs = x.0.pos.iter().copied().chain(args).collect::<Vec<_>>();
             if xs.len() >= REQUIRED && xs.len() <= REQUIRED + OPTIONAL {

@@ -1,0 +1,18 @@
+load("@protobuf//bazel:java_proto_library.bzl", "java_proto_library")
+load("@protobuf//bazel:proto_library.bzl", "proto_library")
+load("@rules_java//java:java_library.bzl", "java_library")
+
+proto_library(
+    name = "probe_proto",
+    srcs = ["probe.proto"],
+)
+
+java_proto_library(
+    name = "probe_java_proto",
+    deps = [":probe_proto"],
+)
+
+java_library(
+    name = "uses_proto",
+    exports = [":probe_java_proto"],
+)

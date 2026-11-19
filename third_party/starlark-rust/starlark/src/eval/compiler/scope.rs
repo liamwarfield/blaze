@@ -54,7 +54,7 @@ use crate::codemap::Span;
 use crate::environment::Module;
 use crate::environment::names::MutableNames;
 use crate::environment::slots::ModuleSlotId;
-use crate::errors::did_you_mean::did_you_mean;
+// BLAZE PATCH 0050: `errors::did_you_mean` replaced by `errors::spell_checker` here.
 use crate::eval::compiler::def::CopySlotFromParent;
 use crate::eval::compiler::scope::payload::CstAssignIdent;
 use crate::eval::compiler::scope::payload::CstAssignTarget;
@@ -78,9 +78,14 @@ use crate::values::any::FrozenAnyValue;
 #[derive(Debug, thiserror::Error)]
 enum ScopeError {
     #[error("Variable `{0}` not found")]
+    #[allow(dead_code)] // BLAZE PATCH 0050
     VariableNotFound(String),
     #[error("Variable `{0}` not found, did you mean `{1}`?")]
+    #[allow(dead_code)] // BLAZE PATCH 0050
     VariableNotFoundDidYouMean(String, String),
+    /// BLAZE PATCH 0050: Java's text (Module.java:256 resolve, Resolver.java:950 use).
+    #[error("name '{0}' is not defined{1}")]
+    NameNotDefined(String, String),
     #[error("Identifiers in type expressions can only refer globals or builtins: `{0}`")]
     TypeExpressionGlobalOrBuiltin(String),
 }
@@ -660,29 +665,29 @@ impl<'f> ModuleScopeBuilder<'f> {
             let scope = self.scope_data.get_scope(scope_id);
             r.extend(scope.mp.keys().map(|s| s.as_str().to_owned()));
         }
+        // BLAZE PATCH 0050: Java's order (Resolver.getAllSymbols: locals, then the module's
+        // candidates (globals, predeclared, universe), then the file's toplevel names).
+        r.extend(self.globals.names()?); // BLAZE PATCH 0050
         r.extend(self.module_bindings.keys().map(|s| s.as_str().to_owned()));
-        r.extend(self.globals.names()?);
         Some(r)
     }
 
+    /// BLAZE PATCH 0050: Java's text and spelling suggestion: "name 'x' is not defined" with
+    /// SpellChecker.didYouMean over a `HashSet` of every symbol in scope.
+    // Java: net/starlark/java/syntax/Resolver.java:937 Resolver.use
+    // Java: net/starlark/java/eval/Module.java:256 Module.resolve
     #[cold]
     fn variable_not_found_err(&self, ident: &CstIdent) -> EvalException {
         let variants = self
             .current_scope_all_visible_names_for_did_you_mean()
             .unwrap_or_default();
-        let better = did_you_mean(
+        let variants = crate::errors::spell_checker::java_hash_set_order(variants);
+        let suggestion = crate::errors::spell_checker::did_you_mean(
             ident.node.ident.as_str(),
             variants.iter().map(|s| s.as_str()),
         );
         EvalException::new(
-            match better {
-                Some(better) => ScopeError::VariableNotFoundDidYouMean(
-                    ident.node.ident.clone(),
-                    better.to_owned(),
-                ),
-                None => ScopeError::VariableNotFound(ident.node.ident.clone()),
-            }
-            .into(),
+            ScopeError::NameNotDefined(ident.node.ident.clone(), suggestion).into(),
             ident.span,
             &self.codemap,
         )

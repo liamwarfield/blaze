@@ -23,12 +23,18 @@ fn final_value_ignore_overrides_overwrites_user_setting() {
         .parse(&[&format!("--test_string={TEST_STRING_USER_VALUE}")])
         .unwrap();
 
-    assert_eq!(get_test_options(&parser).test_string, TEST_STRING_USER_VALUE);
+    assert_eq!(
+        get_test_options(&parser).test_string,
+        TEST_STRING_USER_VALUE
+    );
 
     enforce(&enforcer, &mut parser).unwrap();
 
     // Get the options again after policy enforcement.
-    assert_eq!(get_test_options(&parser).test_string, TEST_STRING_POLICY_VALUE);
+    assert_eq!(
+        get_test_options(&parser).test_string,
+        TEST_STRING_POLICY_VALUE
+    );
     assert_eq!(
         command_line_forms(&parser),
         vec![
@@ -55,7 +61,10 @@ fn final_value_ignore_overrides_overwrites_default() {
     enforce(&enforcer, &mut parser).unwrap();
 
     // Get the options again after policy enforcement.
-    assert_eq!(get_test_options(&parser).test_string, TEST_STRING_POLICY_VALUE);
+    assert_eq!(
+        get_test_options(&parser).test_string,
+        TEST_STRING_POLICY_VALUE
+    );
 }
 
 /// Tests that SetValue overwrites the user's value when the flag allows multiple values.
@@ -270,7 +279,10 @@ fn allow_overrides_flag_expanding_to_repeating_flag_appends_repeated_values() {
     // Unrelated flag, but --test_expansion is not set
     parser.parse(&["--test_multiple_string=foo"]).unwrap();
 
-    assert_eq!(get_test_options(&parser).test_multiple_string, vec![s("foo")]);
+    assert_eq!(
+        get_test_options(&parser).test_multiple_string,
+        vec![s("foo")]
+    );
 
     enforce(&enforcer, &mut parser).unwrap();
 
@@ -286,7 +298,8 @@ fn allow_overrides_flag_expanding_to_repeating_flag_appends_repeated_values() {
 
 // Java: InvocationPolicySetValueTest.finalValueIgnoreOverrides_setFlagWithExpansion_overwritesUserSettingForExpandedFlag
 #[test]
-fn final_value_ignore_overrides_set_flag_with_expansion_overwrites_user_setting_for_expanded_flag() {
+fn final_value_ignore_overrides_set_flag_with_expansion_overwrites_user_setting_for_expanded_flag()
+{
     let mut parser = set_parser();
     // SetValue must have no values for a Void flag.
     let enforcer = create_options_policy_enforcer(&policy(
@@ -396,7 +409,9 @@ fn test_set_value_with_implicitly_required_flags() {
              set_value { behavior: FINAL_VALUE_IGNORE_OVERRIDES flag_value: "policy value" } }"#,
     ));
     parser
-        .parse(&[&format!("--implicit_requirement_a={TEST_STRING_USER_VALUE}")])
+        .parse(&[&format!(
+            "--implicit_requirement_a={TEST_STRING_USER_VALUE}"
+        )])
         .unwrap();
 
     assert_eq!(
@@ -423,13 +438,19 @@ fn allow_overrides_leaves_user_setting() {
         .parse(&[&format!("--test_string={TEST_STRING_USER_VALUE}")])
         .unwrap();
 
-    assert_eq!(get_test_options(&parser).test_string, TEST_STRING_USER_VALUE);
+    assert_eq!(
+        get_test_options(&parser).test_string,
+        TEST_STRING_USER_VALUE
+    );
 
     enforce(&enforcer, &mut parser).unwrap();
 
     // Even though the policy sets the value for test_string, the policy is overridable and the
     // user set the value, so it should be the user's value.
-    assert_eq!(get_test_options(&parser).test_string, TEST_STRING_USER_VALUE);
+    assert_eq!(
+        get_test_options(&parser).test_string,
+        TEST_STRING_USER_VALUE
+    );
 }
 
 // Java: InvocationPolicySetValueTest.setFlagValueWithNoValue_fails
@@ -445,7 +466,10 @@ fn set_flag_value_with_no_value_fails() {
             .parse(&[&format!("--test_string={TEST_STRING_USER_VALUE}")])
             .unwrap();
 
-        assert_eq!(get_test_options(&parser).test_string, TEST_STRING_USER_VALUE);
+        assert_eq!(
+            get_test_options(&parser).test_string,
+            TEST_STRING_USER_VALUE
+        );
 
         assert!(enforce(&enforcer, &mut parser).is_err(), "{behavior}");
     }
@@ -455,11 +479,7 @@ fn set_flag_value_with_no_value_fails() {
 #[test]
 fn enforce_set_value_with_undefined_behavior_fails() {
     for has_behavior in [false, true] {
-        for flag_name in [
-            "test_string",
-            "test_expansion",
-            "test_implicit_requirement",
-        ] {
+        for flag_name in ["test_string", "test_expansion", "test_implicit_requirement"] {
             let mut parser = set_parser();
             let behavior = if has_behavior {
                 "behavior: UNDEFINED"
@@ -543,7 +563,10 @@ fn final_value_throw_on_override_throws_on_user_override() {
         .parse(&[&format!("--test_string={TEST_STRING_USER_VALUE}")])
         .unwrap();
 
-    assert_eq!(get_test_options(&parser).test_string, TEST_STRING_USER_VALUE);
+    assert_eq!(
+        get_test_options(&parser).test_string,
+        TEST_STRING_USER_VALUE
+    );
 
     let e = enforce(&enforcer, &mut parser).unwrap_err();
     assert_eq!(
@@ -568,7 +591,10 @@ fn final_value_throw_on_override_success_on_no_user_override() {
 
     enforce(&enforcer, &mut parser).unwrap();
 
-    assert_eq!(get_test_options(&parser).test_string, TEST_STRING_POLICY_VALUE);
+    assert_eq!(
+        get_test_options(&parser).test_string,
+        TEST_STRING_POLICY_VALUE
+    );
     assert_eq!(
         command_line_forms(&parser),
         vec![Some(format!("--test_string={TEST_STRING_POLICY_VALUE}"))]

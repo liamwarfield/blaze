@@ -727,7 +727,7 @@ impl BuildViewTestCase {
             .create_configuration(self.event_handler(), build_options.clone(), false)
             .unwrap_or_else(|e| panic!("InvalidConfigurationException: {}", e.get_message()));
         // Java: AnalysisTestUtil.execOptions.
-        let exec_options = exec_options(target_config.get_options(), self.event_handler());
+        let exec_options = exec_options(&executor, target_config.get_options(), self.event_handler());
         let exec_config = executor
             .get_configuration(self.event_handler(), Arc::new(exec_options), false)
             .unwrap_or_else(|e| panic!("InvalidConfigurationException: {}", e.get_message()));
@@ -1556,20 +1556,39 @@ impl BuildViewTestCase {
 }
 
 /// `AnalysisTestUtil.execOptions(targetOptions, skyframeExecutor, handler)`.
-///
-/// PORT: the Starlark flags' scope step (`BuildOptionsScopeValue`) is only needed with Starlark
-/// options, which the harness does not parse yet (module documentation).
 // Java: com/google/devtools/build/lib/analysis/util/AnalysisTestUtil.java:393 AnalysisTestUtil.execOptions
 pub fn exec_options(
+    skyframe_executor: &SkyframeExecutor,
     target_options: &Arc<BuildOptions>,
     handler: Arc<dyn ExtendedEventHandler>,
 ) -> BuildOptions {
-    if !target_options.get_starlark_options().is_empty() {
-        blaze_util::unported!("BuildOptionsScopeValue.Key.create");
-    }
+    // Get Starlark flags' "scope = '<string>'" info, which can control whether the flags propagate
+    // to the exec config.
+    let scope_key = blaze_build_config::build_options_scope_value::BuildOptionsScopeKey::create(
+        target_options.clone(),
+        target_options.get_starlark_options().keys().cloned().collect(),
+    );
+    let starlark_flag_scope_info = skyframe_executor
+        .evaluate(
+            &[SkyKey::new(scope_key.clone())],
+            false,
+            DEFAULT_THREAD_COUNT,
+            handler.clone(),
+        )
+        .unwrap_or_else(|_| panic!("InterruptedException"));
+    let target_options_with_scope_info = match starlark_flag_scope_info.get(&scope_key) {
+        Some(value) => value.get_resolved_build_options_with_scope_types().clone(),
+        None => panic!(
+            "{:?}",
+            starlark_flag_scope_info.get_error(&SkyKey::new(scope_key))
+        ),
+    };
+
+    // PORT: `skyframeExecutor.getStarlarkExecTransition` is the `@_builtins` exec transition of
+    // the default semantics, as in `SkyframeExecutor`'s exec baseline.
     let semantics = Arc::new(blaze_starlark::StarlarkSemantics::default());
     let exec_transition = blaze_build_config::starlark_transition::load_starlark_exec_transition(
-        Some(target_options),
+        Some(&target_options_with_scope_info),
         &semantics,
     )
     .unwrap_or_else(|e| panic!("{e}"))
@@ -1578,7 +1597,7 @@ pub fn exec_options(
         .get::<blaze_optdefs::fragment::platform_options::PlatformOptions>()
         .map(|p| p.host_platform.0.clone());
     blaze_build_config::function_transition_util::adjust_for_exec(
-        target_options,
+        &target_options_with_scope_info,
         &exec_transition,
         host_platform.as_ref(),
         &semantics,

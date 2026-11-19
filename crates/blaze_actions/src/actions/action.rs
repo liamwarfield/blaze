@@ -265,6 +265,13 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
         self.abstract_action().owner()
     }
 
+    /// `this instanceof ActionApi` (the Starlark `Action` type, implemented by `AbstractAction`):
+    /// false for action templates, which override it.
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/ActionApi.java ActionApi
+    fn is_action_api(&self) -> bool {
+        true
+    }
+
     /// `this instanceof ActionExecutionMetadata`: true for every action; false for action
     /// templates (`ActionTemplate` is only an `ActionAnalysisMetadata`), which override it.
     // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:27 ActionExecutionMetadata

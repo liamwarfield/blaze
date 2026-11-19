@@ -9,25 +9,17 @@
 //! is not: a build whose targets resolve to a project file fails with `unported!`. A build
 //! without project files goes on unchanged, as in Java.
 
-use std::fmt;
 use std::sync::Arc;
 
 use blaze_build_config::build_options::BuildOptions;
-use blaze_cmdline::{Label, PackageIdentifier};
+use blaze_cmdline::Label;
 use blaze_events::ExtendedEventHandler;
 use blaze_optdefs::command::build_request_options::BuildRequestOptions;
 use blaze_optdefs::command::remote_analysis_caching_options::{
     RemoteAnalysisCacheMode, RemoteAnalysisCachingOptions,
 };
 use blaze_optdefs::fragment::core_options::CoreOptions;
-use blaze_sky_loading::actions::FileValue;
-use blaze_sky_loading::containing_package_lookup::ContainingPackageLookupKey;
-use blaze_sky_loading::file::FileKey;
-use blaze_sky_loading::io::IOException;
-use blaze_skyframe::{
-    ComputeError, Environment, EvaluatorBuilder, Key, SkyFunctionException, SkyFunctionName, SkyKey,
-};
-use blaze_vfs::RootedPath;
+use blaze_skyframe::SkyKey;
 use indexmap::IndexSet;
 
 use crate::skyframe_executor::{DEFAULT_THREAD_COUNT, SkyframeExecutor};

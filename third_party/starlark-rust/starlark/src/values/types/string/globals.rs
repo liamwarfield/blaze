@@ -123,9 +123,10 @@ pub(crate) fn register_str(globals: &mut GlobalsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn repr<'v>(
-        #[starlark(require = pos)] a: Value<'v>,
+        #[starlark(require = pos)] x: Value<'v>, // BLAZE PATCH 0052
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<StringValue<'v>> {
+        let a = x; // BLAZE PATCH 0052: Java parameter name `x`
         let mut s = eval.string_pool.alloc();
         a.collect_repr(&mut s);
         let r = eval.heap().alloc_str(&s);
@@ -150,9 +151,10 @@ pub(crate) fn register_str(globals: &mut GlobalsBuilder) {
     /// ```
     #[starlark(as_type = StarlarkStr, speculative_exec_safe)]
     fn str<'v>(
-        #[starlark(require = pos)] a: Value<'v>,
+        #[starlark(require = pos)] x: Value<'v>, // BLAZE PATCH 0052
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<StringValue<'v>> {
+        let a = x; // BLAZE PATCH 0052: Java parameter name `x`
         if let Some(a) = StringValue::new(a) {
             return Ok(a);
         }

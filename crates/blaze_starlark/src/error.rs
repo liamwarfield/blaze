@@ -48,6 +48,13 @@ impl Location {
     pub fn bazel_position(span: &FileSpan) -> Location {
         let start = Location::of_span_start(span);
         let text = span.source_span();
+        // starlark-rust's span of an expression excludes the parentheses around an operand
+        // (`[1] + (1,)` ends before the `)`, `(1, 2)[2]` starts after the `(`): extend the text
+        // over them so that it parses alone.
+        let (text, start) = match operator_offset(text) {
+            Some(_) => (text, start),
+            None => balanced_text(span).unwrap_or((text, start)),
+        };
         match operator_offset(text) {
             Some(off) => {
                 let before = &text[..off];
@@ -79,6 +86,57 @@ impl fmt::Display for Location {
         }
         Ok(())
     }
+}
+
+/// The source of `span` extended over the unbalanced parentheses at its ends (`(` before it,
+/// `)` after it, whitespace and line continuations between), with the location of the new
+/// start; `None` when it is balanced.
+fn balanced_text(span: &FileSpan) -> Option<(&str, Location)> {
+    let src = span.file.source();
+    let text = span.source_span();
+    let opens = text.matches('(').count() as isize;
+    let closes = text.matches(')').count() as isize;
+    let mut begin = span.span.begin().get() as usize;
+    let mut end = span.span.end().get() as usize;
+    let blank = |c: u8| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | b'\\');
+    let mut need = opens - closes;
+    while need > 0 {
+        let mut i = end;
+        while i < src.len() && blank(src.as_bytes()[i]) {
+            i += 1;
+        }
+        if src.as_bytes().get(i) != Some(&b')') {
+            return None;
+        }
+        end = i + 1;
+        need -= 1;
+    }
+    while need < 0 {
+        let mut i = begin;
+        while i > 0 && blank(src.as_bytes()[i - 1]) {
+            i -= 1;
+        }
+        if i == 0 || src.as_bytes()[i - 1] != b'(' {
+            return None;
+        }
+        begin = i - 1;
+        need += 1;
+    }
+    if begin == span.span.begin().get() as usize && end == span.span.end().get() as usize {
+        return None;
+    }
+    let line = span
+        .file
+        .find_line(starlark::codemap::Pos::new(begin as u32));
+    let start = Location {
+        file: span.filename().to_owned(),
+        line: line + 1,
+        column: src[src[..begin].rfind('\n').map_or(0, |i| i + 1)..begin]
+            .chars()
+            .count()
+            + 1,
+    };
+    Some((&src[begin..end], start))
 }
 
 /// Byte offset, within `text` (the source of one expression), of the token Bazel uses as the
@@ -118,7 +176,8 @@ fn operator_offset(text: &str) -> Option<usize> {
                 in_comment = true;
             } else if c == want {
                 return Some(from + i);
-            } else if !c.is_ascii_whitespace() && c != '\\' {
+            // The `)` closing a parenthesized operand (its span excludes the parentheses).
+            } else if !c.is_ascii_whitespace() && c != '\\' && c != ')' {
                 return None;
             }
         }

@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use base64::Engine as _;
-use blaze_options::{OptionsClass, OptionsParser};
 use blaze_options::invocation_policy::{
     CommandNameCache, CommandNameCacheInstance, InvocationPolicyEnforcer, InvocationPolicyParser,
 };
+use blaze_options::{OptionsClass, OptionsParser};
 use blaze_protos::JavaMessage;
 use blaze_protos::blaze::invocation_policy::InvocationPolicy;
 
@@ -40,7 +40,9 @@ pub fn policy(text: &str) -> InvocationPolicy {
 /// PORT: the Java test parses `--invocation_policy=<base64>` with a startup-options parser
 /// (BlazeServerStartupOptions, which lives in blaze_optdefs, above this crate) and hands the
 /// option value to `parsePolicy`; here the value goes to `parsePolicy` directly.
-pub fn create_options_policy_enforcer(invocation_policy: &InvocationPolicy) -> InvocationPolicyEnforcer {
+pub fn create_options_policy_enforcer(
+    invocation_policy: &InvocationPolicy,
+) -> InvocationPolicyEnforcer {
     let mut out = Vec::new();
     invocation_policy.java_encode_raw(&mut out);
     let policy_base64 = base64::engine::general_purpose::STANDARD.encode(&out);

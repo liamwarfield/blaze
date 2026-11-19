@@ -1,0 +1,208 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/work/crash-fix/blaze-after
+# sha256 09bb4e56b0e4dc51ddccf6b8304fc26fd237eefa979b194d5f0179d59d494f0c
+# tree 4f9291238f7a0a99cb35285087c401a64df5f29b (dirty)
+# date 2026-11-19T13:54:58
+=== 1: aquery --noimplicit_deps "rdeps(//a/..., //a:tool)"
+exit 0
+--- stdout
+{"actionKey": "22f61f685255a8697cf8bc035e97518d4c7adcc27d1ad692559f244525d5ed01", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "\n", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/a/tool.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a/tool.txt", "ruleClass": "tool", "target": "//a:tool"}
+{"actionKey": "a3c795bcf53d8bb87b6efecabd458ada9c61a61dbbc1e5bae556a003fec728a3", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "@@//a:tool\n", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/a/implicit.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a/implicit.txt", "ruleClass": "implicit_user", "target": "//a:implicit"}
+{"actionKey": "f14c3653f5ad2739dfe9c18113bac36f8589a5d3d58ad681fc614f3c27840744", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "@@//a:implicit\n", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/a/over_implicit.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a/over_implicit.txt", "ruleClass": "explicit_user", "target": "//a:over_implicit"}
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 10 targets (6 packages loaded, 20 targets configured).
+INFO: Found 10 targets...
+WARNING: Targets were missing from graph: [ConfiguredTargetKey{label=//a:over_implicit, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 2: aquery "rdeps(//a/..., //a:tool)"
+exit 0
+--- stdout
+{"actionKey": "22f61f685255a8697cf8bc035e97518d4c7adcc27d1ad692559f244525d5ed01", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "\n", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/a/tool.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a/tool.txt", "ruleClass": "tool", "target": "//a:tool"}
+{"actionKey": "a3c795bcf53d8bb87b6efecabd458ada9c61a61dbbc1e5bae556a003fec728a3", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "@@//a:tool\n", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/a/implicit.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a/implicit.txt", "ruleClass": "implicit_user", "target": "//a:implicit"}
+{"actionKey": "f14c3653f5ad2739dfe9c18113bac36f8589a5d3d58ad681fc614f3c27840744", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "@@//a:implicit\n", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/a/over_implicit.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a/over_implicit.txt", "ruleClass": "explicit_user", "target": "//a:over_implicit"}
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 10 targets (6 packages loaded, 20 targets configured).
+INFO: Found 10 targets...
+WARNING: Targets were missing from graph: [ConfiguredTargetKey{label=//a:over_implicit, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 3: run cquery --noimplicit_deps "rdeps(//a/..., //a:tool)" --output=label_kind
+exit 0
+--- stdout
+tool rule //a:tool (a7a71fd)
+implicit_user rule //a:implicit (a7a71fd)
+explicit_user rule //a:over_implicit (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 10 targets (6 packages loaded, 20 targets configured).
+INFO: Found 10 targets...
+WARNING: Targets were missing from graph: [ConfiguredTargetKey{label=//a:over_implicit, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 4: run cquery "rdeps(//a/..., //a:tool)" --output=label_kind
+exit 0
+--- stdout
+tool rule //a:tool (a7a71fd)
+implicit_user rule //a:implicit (a7a71fd)
+explicit_user rule //a:over_implicit (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 10 targets (6 packages loaded, 20 targets configured).
+INFO: Found 10 targets...
+WARNING: Targets were missing from graph: [ConfiguredTargetKey{label=//a:over_implicit, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 5: aquery --noimplicit_deps "rdeps(//a/..., //a:other_tool)"
+exit 0
+--- stdout
+{"actionKey": "22f61f685255a8697cf8bc035e97518d4c7adcc27d1ad692559f244525d5ed01", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "\n", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/a/other_tool.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a/other_tool.txt", "ruleClass": "tool", "target": "//a:other_tool"}
+{"actionKey": "740f6afb2d224be850e6cf8d16d9a5fab57f5cfaade6b9073b4cacb9cf924e57", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "@@//a:other_tool\n", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/a/explicit.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a/explicit.txt", "ruleClass": "explicit_user", "target": "//a:explicit"}
+{"actionKey": "137aade77270218ac6f3e245a018fa9f1da7fc9cd49bee7478051126d7d31108", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "@@//a:explicit\n", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/a/over_explicit.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a/over_explicit.txt", "ruleClass": "explicit_user", "target": "//a:over_explicit"}
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 10 targets (6 packages loaded, 20 targets configured).
+INFO: Found 10 targets...
+WARNING: Targets were missing from graph: [ConfiguredTargetKey{label=//a:over_explicit, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 6: run cquery --noimplicit_deps "rdeps(//a/..., //a:other_tool)" --output=label_kind
+exit 0
+--- stdout
+tool rule //a:other_tool (a7a71fd)
+explicit_user rule //a:explicit (a7a71fd)
+explicit_user rule //a:over_explicit (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 10 targets (6 packages loaded, 20 targets configured).
+INFO: Found 10 targets...
+WARNING: Targets were missing from graph: [ConfiguredTargetKey{label=//a:over_explicit, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 7: run cquery "rdeps(//a/..., //a:other_tool, 1)" --output=label_kind
+exit 0
+--- stdout
+tool rule //a:other_tool (a7a71fd)
+explicit_user rule //a:explicit (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 10 targets (6 packages loaded, 20 targets configured).
+INFO: Found 10 targets...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 8: run cquery --noimplicit_deps "deps(//a:over_implicit)" --output=label_kind
+exit 0
+--- stdout
+explicit_user rule //a:over_implicit (a7a71fd)
+implicit_user rule //a:implicit (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //a:over_implicit (5 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 9: aquery --noimplicit_deps "deps(//a:over_implicit)"
+exit 0
+--- stdout
+{"actionKey": "f14c3653f5ad2739dfe9c18113bac36f8589a5d3d58ad681fc614f3c27840744", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "@@//a:implicit\n", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/a/over_implicit.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a/over_implicit.txt", "ruleClass": "explicit_user", "target": "//a:over_implicit"}
+{"actionKey": "a3c795bcf53d8bb87b6efecabd458ada9c61a61dbbc1e5bae556a003fec728a3", "argv": [], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "fileContents": "@@//a:tool\n", "inputs": [], "mnemonic": "FileWrite", "outputs": ["bazel-out/k8-fastbuild/bin/a/implicit.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a/implicit.txt", "ruleClass": "implicit_user", "target": "//a:implicit"}
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //a:over_implicit (5 packages loaded, 9 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 10: run cquery "rdeps(//a/..., //a:over_explicit)" --output=label_kind
+exit 0
+--- stdout
+explicit_user rule //a:over_explicit (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 10 targets (6 packages loaded, 20 targets configured).
+INFO: Found 10 targets...
+WARNING: Targets were missing from graph: [ConfiguredTargetKey{label=//a:over_explicit, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 11: aquery --noimplicit_deps "rdeps(//a/..., //a:data.txt, 1)"
+exit 0
+--- stdout
+{"actionKey": "df57eef8f8f23d23482d43e24f91a616c78089b02b7bdb2a42adf6aed8184e7a", "argv": ["/bin/bash", "-c", "cat \"$@\" > bazel-out/k8-fastbuild/bin/a/reader.txt", "", "a/data.txt"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["a/data.txt"], "mnemonic": "Reader", "outputs": ["bazel-out/k8-fastbuild/bin/a/reader.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a/reader.txt", "ruleClass": "reader", "target": "//a:reader"}
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 11 targets (6 packages loaded, 20 targets configured).
+INFO: Found 11 targets...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 12: run cquery --noimplicit_deps "rdeps(//a/..., //a:data.txt, 1)" --output=label_kind
+exit 0
+--- stdout
+source file //a:data.txt (null)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 11 targets (6 packages loaded, 20 targets configured).
+INFO: Found 11 targets...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 13: run cquery "rdeps(//a/..., //a:data.txt, 1)" --output=label_kind
+exit 0
+--- stdout
+source file //a:data.txt (null)
+reader rule //a:reader (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 11 targets (6 packages loaded, 20 targets configured).
+INFO: Found 11 targets...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 14: aquery --noimplicit_deps "rdeps(//a/..., //a:gen.out)"
+exit 0
+--- stdout
+{"actionKey": "66673206a62fcc6dc7dd63a84d8051ffaf6cb4e4ace1f57c5597197bb01f905b", "argv": ["/bin/bash", "-c", "cat \"$@\" > bazel-out/k8-fastbuild/bin/a/gen_reader.txt", "", "bazel-out/k8-fastbuild/bin/a/gen.out"], "aspects": [], "configuration": {"checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18", "mnemonic": "k8-fastbuild", "platformName": "k8"}, "env": {}, "executionInfo": {}, "executionPlatform": "@@platforms//host:host", "inputs": ["bazel-out/k8-fastbuild/bin/a/gen.out"], "mnemonic": "Reader", "outputs": ["bazel-out/k8-fastbuild/bin/a/gen_reader.txt"], "primaryOutput": "bazel-out/k8-fastbuild/bin/a/gen_reader.txt", "ruleClass": "reader", "target": "//a:gen_reader"}
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 11 targets (6 packages loaded, 20 targets configured).
+INFO: Found 11 targets...
+WARNING: Targets were missing from graph: [ConfiguredTargetKey{label=//a:gen_reader, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 15: run cquery --noimplicit_deps "rdeps(//a/..., //a:gen.out)" --output=label_kind
+exit 0
+--- stdout
+generated file //a:gen.out (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 11 targets (6 packages loaded, 20 targets configured).
+INFO: Found 11 targets...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 16: run cquery "rdeps(//a/..., //a:gen.out)" --output=label_kind
+exit 0
+--- stdout
+generated file //a:gen.out (a7a71fd)
+reader rule //a:gen_reader (a7a71fd)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed 11 targets (6 packages loaded, 20 targets configured).
+INFO: Found 11 targets...
+WARNING: Targets were missing from graph: [ConfiguredTargetKey{label=//a:gen_reader, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}]
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions

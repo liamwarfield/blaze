@@ -27,18 +27,32 @@ same order; the server is shut down at the end.
 Compared per step (after replacing the workspace copy, output base, execroot, output user root,
 install base and $HOME by placeholders, scripts/oracle/normalise.py):
   exit       the exit code of every step
-  cquery     `cquery --output=label_kind //...`: stdout, line by line
-  aquery     `aquery --output=jsonproto 'deps(//...)'`: every action (mnemonic, argv, inputs,
+  cquery     `cquery --output=label_kind //:all`: stdout, line by line
+  aquery     `aquery --output=jsonproto 'deps(//:all)'`: every action (mnemonic, argv, inputs,
              outputs, environment, execution info, action key, owner, configuration) and the
              order of every list, as the referee's extractor (scripts/oracle/surfaces.py
              aquery_summary/aquery_order) resolves them; the action key of runfiles manifest
              actions is allow-listed as in scripts/oracle/allow.json, nothing else
-  build      `build //...` with --spawn_strategy=linux-sandbox (Blaze has no persistent
-             workers; the oracle would run Javac in a worker otherwise): the
-             "INFO: N processes: ..." line and the "Build completed" line
-  outputs    sha256 of every *.jar and of the launcher scripts under bazel-bin of the build
-  test       `test //:greeter_test`: exit code and the per-target result lines
-  run        `run //:hello -- probe`: the program's stdout
+  build      `build //:all //:hello_deploy.jar //:app_deploy.jar` with
+             --spawn_strategy=linux-sandbox (Blaze has no persistent workers; the oracle would
+             run Javac in a worker otherwise): the "INFO: N processes: ..." line and the
+             "Build completed" line
+  outputs    sha256 of every *.jar and of the launcher scripts under bazel-bin after build
+  aquery-X, build-X
+             the same for deps(//:app) / //:app under one flag: lang17
+             (--java_language_version=17), tool21 (--tool_java_runtime_version=remotejdk_21),
+             noturbine (--nojava_header_compilation), toolchain (the custom java_toolchain of
+             //toolchain, --extra_toolchains)
+  aquery-proto
+             `aquery 'deps(//proto:uses_proto)'` (java_proto_library; protoc is not built)
+  test       `test //:greeter_test`: exit code, the processes line and the per-target result
+             lines (timings removed)
+  run, run-app
+             `run //:hello -- probe` and `run //:app`: the processes line and the program's
+             stdout
+             test and run start from a fresh server on both sides (Blaze's server does not keep
+             the graph between commands yet, docs/decisions.md D2), so both report the on-disk
+             action cache hits
 
 Output: a table on stdout; raw outputs under ~/.cache/blaze/java-compare/<label>/<side>/ and
 results.json there. Exit 0 when every compared field matches, 1 otherwise.
@@ -58,20 +72,35 @@ REPO_CACHE = os.path.join(CACHE, "repo-cache")
 PROBE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe")
 TIMEOUT = 3600
 
+SB = "--spawn_strategy=linux-sandbox"
+JP = "--output=jsonproto"
+LANG17 = "--java_language_version=17"
+TOOL21 = "--tool_java_runtime_version=remotejdk_21"
+NOTURBINE = "--nojava_header_compilation"
+TOOLCHAIN = "--extra_toolchains=//toolchain:custom_definition"
+# (id, args). The kind of a step is its id up to the first "-" (cquery, aquery, build, test,
+# run); steps of one kind are compared alike.
 STEPS = [
-    ("cquery", ["cquery", "--output=label_kind", "//..."]),
-    ("aquery", ["aquery", "--output=jsonproto", "deps(//...)"]),
-    ("build", ["build", "--spawn_strategy=linux-sandbox", "//..."]),
-    ("test", ["test", "--spawn_strategy=linux-sandbox", "//:greeter_test"]),
-    ("run", ["run", "--spawn_strategy=linux-sandbox", "//:hello", "--", "probe"]),
+    ("cquery", ["cquery", "--output=label_kind", "//:all"]),
+    ("aquery", ["aquery", JP, "deps(//:all)"]),
+    ("build", ["build", SB, "//:all", "//:hello_deploy.jar", "//:app_deploy.jar"]),
+    ("aquery-lang17", ["aquery", JP, LANG17, "deps(//:app)"]),
+    ("build-lang17", ["build", SB, LANG17, "//:app"]),
+    ("aquery-tool21", ["aquery", JP, TOOL21, "deps(//:app)"]),
+    ("build-tool21", ["build", SB, TOOL21, "//:app"]),
+    ("aquery-noturbine", ["aquery", JP, NOTURBINE, "deps(//:app)"]),
+    ("build-noturbine", ["build", SB, NOTURBINE, "//:app"]),
+    ("aquery-toolchain", ["aquery", JP, TOOLCHAIN, "deps(//:app)"]),
+    ("build-toolchain", ["build", SB, TOOLCHAIN, "//:app"]),
+    ("aquery-proto", ["aquery", JP, "deps(//proto:uses_proto)"]),
+    ("test", ["test", SB, "//:greeter_test"]),
+    ("run", ["run", SB, "//:hello", "--", "probe"]),
+    ("run-app", ["run", SB, "//:app"]),
 ]
+LAUNCHERS = ("hello", "greeter_test", "app", "hello_imported")
 RUNFILES_MANIFEST_RE = re.compile(r"\.runfiles(_manifest|/MANIFEST)$")
 SUMMARY_RE = re.compile(r"^(INFO: \d+ process(es)?:.*|INFO: Build completed.*|INFO: Build did NOT.*"
                         r"|//\S+\s+(PASSED|FAILED|NO STATUS|TIMEOUT|FLAKY).*|Executed .*)$")
-
-
-def clean_env():
-    return {"HOME": HOME, "PATH": "/usr/bin:/bin"}
 
 
 def make_writable_and_remove(path):
@@ -85,10 +114,11 @@ def make_writable_and_remove(path):
 
 def run_cmd(binary, ws, our, args):
     cmd = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "-p", "MemoryMax=12G",
-           "-p", "MemorySwapMax=0", binary, "--output_user_root=" + our, "--nohome_rc",
+           "-p", "MemorySwapMax=0", "env", "-i", "HOME=" + HOME, "PATH=/usr/bin:/bin",
+           binary, "--output_user_root=" + our, "--nohome_rc",
            "--nosystem_rc"] + args[:1] + ["--repository_cache=" + REPO_CACHE, "--color=no",
                                           "--curses=no"] + args[1:]
-    p = subprocess.run(cmd, cwd=ws, env=clean_env(), stdout=subprocess.PIPE,
+    p = subprocess.run(cmd, cwd=ws, stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE, timeout=TIMEOUT)
     return p.returncode, p.stdout, p.stderr
 
@@ -112,6 +142,10 @@ def side_run(side, binary, label, steps):
     for sid, args in STEPS:
         if steps and sid not in steps and not (sid == "build" and "outputs" in steps):
             continue
+        if sid.split("-")[0] in ("test", "run"):
+            # Both sides start these from a fresh server with the on-disk action cache: Blaze's
+            # server does not keep the graph between commands yet (decisions D2), Bazel's does.
+            run_cmd(binary, ws, our, ["shutdown"])
         rc, out, err = run_cmd(binary, ws, our, args)
         open(os.path.join(outdir, sid + ".stdout"), "wb").write(out)
         open(os.path.join(outdir, sid + ".stderr"), "wb").write(err)
@@ -123,7 +157,7 @@ def side_run(side, binary, label, steps):
                 rel = os.path.relpath(path, bin_dir)
                 if ".runfiles" in rel or os.path.isdir(path):
                     continue
-                if rel.endswith(".jar") or rel in ("hello", "greeter_test"):
+                if rel.endswith(".jar") or rel in LAUNCHERS:
                     with open(path, "rb") as f:
                         hashes[rel] = hashlib.sha256(f.read()).hexdigest()
             results["outputs"] = hashes
@@ -153,8 +187,12 @@ def read(outdir, name):
     return open(p, "rb").read().decode("latin-1") if os.path.exists(p) else ""
 
 
+TEST_TIME_RE = re.compile(r" in \d+\.\d+s$")
+
+
 def summary_lines(ctx, text):
-    return [ctx.text(l) for l in text.splitlines() if SUMMARY_RE.match(l)]
+    return [TEST_TIME_RE.sub(" in <T>s", ctx.text(l)) for l in text.splitlines()
+            if SUMMARY_RE.match(l)]
 
 
 def aquery_items(ctx, text):
@@ -181,15 +219,16 @@ def compare(label, steps):
             continue
         oe, be = o["steps"][sid]["exit"], b["steps"][sid]["exit"]
         row(sid + " exit", oe == be, "oracle %d, blaze %d" % (oe, be))
-        if sid == "cquery":
-            ol = octx.text(read(odir, "cquery.stdout")).splitlines()
-            bl = bctx.text(read(bdir, "cquery.stdout")).splitlines()
-            row("cquery stdout", ol == bl, "%d vs %d lines" % (len(ol), len(bl)))
-        elif sid == "aquery":
-            oi = aquery_items(octx, read(odir, "aquery.stdout"))
-            bi = aquery_items(bctx, read(bdir, "aquery.stdout"))
+        kind = sid.split("-")[0]
+        if kind == "cquery":
+            ol = octx.text(read(odir, sid + ".stdout")).splitlines()
+            bl = bctx.text(read(bdir, sid + ".stdout")).splitlines()
+            row(sid + " stdout", ol == bl, "%d vs %d lines" % (len(ol), len(bl)))
+        elif kind == "aquery":
+            oi = aquery_items(octx, read(odir, sid + ".stdout"))
+            bi = aquery_items(bctx, read(bdir, sid + ".stdout"))
             if oi is None or bi is None:
-                row("aquery", False, "no jsonproto on %s" % ("oracle" if oi is None else "blaze"))
+                row(sid, False, "no jsonproto on %s" % ("oracle" if oi is None else "blaze"))
                 continue
             same = diff = missing = extra = allowed = 0
             diffs = []
@@ -211,19 +250,19 @@ def compare(label, steps):
                 if k not in oi:
                     extra += 1
                     diffs.append("extra " + k)
-            with open(os.path.join(bdir, "aquery.diffs.txt"), "w") as f:
+            with open(os.path.join(bdir, sid + ".diffs.txt"), "w") as f:
                 f.write("\n".join(diffs) + "\n")
-            row("aquery items", diff == missing == extra == 0,
+            row(sid + " items", diff == missing == extra == 0,
                 "%d items: %d same, %d allowed, %d diff, %d missing, %d extra" % (
                     len(oi), same, allowed, diff, missing, extra))
-        elif sid in ("build", "test", "run"):
-            ol = summary_lines(octx, read(odir, sid + ".stderr"))
-            bl = summary_lines(bctx, read(bdir, sid + ".stderr"))
+        elif kind in ("build", "test", "run"):
+            ol = summary_lines(octx, read(odir, sid + ".stderr") + read(odir, sid + ".stdout"))
+            bl = summary_lines(bctx, read(bdir, sid + ".stderr") + read(bdir, sid + ".stdout"))
             row(sid + " summary", ol == bl, " | ".join(bl) if ol != bl else " | ".join(ol))
-            if sid == "run":
-                os_ = read(odir, "run.stdout")
-                bs = read(bdir, "run.stdout")
-                row("run stdout", os_ == bs, repr(bs[:60]))
+            if kind == "run":
+                os_ = read(odir, sid + ".stdout")
+                bs = read(bdir, sid + ".stdout")
+                row(sid + " stdout", os_ == bs, repr(bs[:60]))
     if "outputs" in o and "outputs" in b:
         oh, bh = o["outputs"], b["outputs"]
         for k in sorted(set(oh) | set(bh)):

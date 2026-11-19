@@ -1,0 +1,9 @@
+load("@rules_java//toolchains:default_java_toolchain.bzl", "default_java_toolchain")
+
+# A custom java_toolchain, registered with --extra_toolchains=//toolchain:custom_definition.
+default_java_toolchain(
+    name = "custom",
+    javacopts = ["-Xlint:-options"],
+    source_version = "17",
+    target_version = "17",
+)

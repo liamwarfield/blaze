@@ -19,7 +19,8 @@ fn options_also_apply_to_host() {
         .expect("ShellConfiguration.Options")
         .shell_executable = Some(Foreign(PathFragment::create("/my/shell/binary")));
 
-    let exec = exec_options(&Arc::new(options), t.event_handler());
+    let handler = t.event_handler();
+    let exec = exec_options(t.skyframe_executor(), &Arc::new(options), handler);
     let exec_options = exec
         .get::<ShellConfigurationOptions>()
         .expect("ShellConfiguration.Options");

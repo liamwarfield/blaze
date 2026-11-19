@@ -142,7 +142,7 @@ fn crlf(terminal: &AnsiTerminal) -> io::Result<()> {
 /// PORT: lines 463-483 of `UiEventHandler.handleLocked`, extracted unchanged so the text can be
 /// produced without the rest of the UI. `timestamp` is `format_timestamp(now)` when
 /// `--show_timestamps` is set.
-// Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:463 UiEventHandler.handleLocked
+// Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:424 UiEventHandler.handleLocked
 pub fn write_event_text(
     terminal: &AnsiTerminal,
     event: &Event,
@@ -323,7 +323,7 @@ impl LocationPrinter {
         }
     }
 
-    // Java: com/google/devtools/build/lib/runtime/LocationPrinter.java:49 LocationPrinter.getRelativeLocationString
+    // Java: com/google/devtools/build/lib/runtime/LocationPrinter.java:48 LocationPrinter.getRelativeLocationString
     pub fn get_relative_location_string(
         location: &Location,
         workspace_path_fragment: Option<&str>,
@@ -340,11 +340,11 @@ impl LocationPrinter {
                 _ => {
                     for package_path_root in package_path_roots {
                         let root = path_fragment_create(package_path_root);
-                        // Java: com/google/devtools/build/lib/vfs/Root.java:118 PathRoot.contains
+                        // Java: com/google/devtools/build/lib/vfs/Root.java:117 PathRoot.contains
                         if is_absolute(location_path_fragment)
                             && fragment_starts_with(location_path_fragment, root)
                         {
-                            // Java: com/google/devtools/build/lib/vfs/Root.java:107 PathRoot.relativize
+                            // Java: com/google/devtools/build/lib/vfs/Root.java:106 PathRoot.relativize
                             relative_path_to_use =
                                 Some(fragment_relative_to(location_path_fragment, root));
                             break;
@@ -457,7 +457,7 @@ const NO_CURSES_MINIMAL_PROGRESS_RATE_LIMIT: i64 = 1000;
 // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:102 UiEventHandler.SHORT_REFRESH_MILLIS
 const SHORT_REFRESH_MILLIS: i64 = 1000;
 
-// Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:261 UiEventHandler.normalizeTerminalWidth
+// Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:267 UiEventHandler.normalizeTerminalWidth
 fn normalize_terminal_width(columns: i32) -> i32 {
     if columns > 0 { columns } else { 80 }
 }
@@ -482,7 +482,7 @@ impl OutputStream for FullyBufferedOutputStream {
         Ok(())
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:162 FullyBufferedOutputStream.flush
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:161 FullyBufferedOutputStream.flush
     fn flush(&self) -> io::Result<()> {
         // If we failed to write our current buffered contents to the output, there is not much
         // we can do because reporting an error would require another write, and that write would
@@ -628,12 +628,12 @@ impl UiEventHandler {
         self.cursor_control
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:265 UiEventHandler.getProgressTargetWidth
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:271 UiEventHandler.getProgressTargetWidth
     pub fn get_progress_target_width(&self) -> i32 {
         0.max(self.state.lock().terminal_width - 2)
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:269 UiEventHandler.getWrappingWidth
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:275 UiEventHandler.getWrappingWidth
     fn get_wrapping_width(&self, st: &UiState) -> i32 {
         1.max(st.terminal_width - 1)
     }
@@ -661,7 +661,7 @@ impl UiEventHandler {
     }
 
     /// `@Subscribe buildStarted(BuildStartingEvent)`.
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:656 UiEventHandler.buildStarted
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:657 UiEventHandler.buildStarted
     pub fn build_started(&self) {
         self.maybe_add_date(&mut self.state.lock());
         self.state_tracker("UiStateTracker.buildStarted")
@@ -683,7 +683,7 @@ impl UiEventHandler {
 
     /// `@Subscribe buildComplete(BuildCompleteEvent)`; `success` is
     /// `event.getResult().getSuccess()`.
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:715 UiEventHandler.buildComplete
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:714 UiEventHandler.buildComplete
     pub fn build_complete(&self, success: bool) {
         // The final progress bar will flow into the scroll-back buffer, to if treat
         // it as an event and add a timestamp, if events are supposed to have a timestamp.
@@ -717,7 +717,7 @@ impl UiEventHandler {
     /// `summary.getStatus()`'s name, `flaky` whether it is `FLAKY`, `failed_logs` the paths of
     /// `summary.getFailedLogs()`. The caller has told the state tracker (`testSummary`); a
     /// summary without new information only refreshes ([`UiEventHandler::refresh_progress`]).
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:935 UiEventHandler.testSummary
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:938 UiEventHandler.testSummary
     pub fn test_summary_new_information(
         &self,
         status: &str,
@@ -759,14 +759,14 @@ impl UiEventHandler {
     /// `refresh()`, for the `@Subscribe` methods whose only effect on the handler is a refresh
     /// (`loadingComplete`, `executionPhaseStarted`, `actionStarted`, the action phase events,
     /// `testFilteringComplete`, and `testSummary` without new information).
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:990 UiEventHandler.refresh
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:991 UiEventHandler.refresh
     pub fn refresh_progress(&self) {
         self.refresh(None);
     }
 
     /// `refreshSoon()`, for the `@Subscribe` methods that schedule a refresh (`actionProgress`,
     /// `actionCompletion`, `singleTestAnalyzed`, `actionUploadStarted`).
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:1030 UiEventHandler.refreshSoon
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:1034 UiEventHandler.refreshSoon
     pub fn refresh_soon(&self) {
         // Schedule an update of the progress bar in the near future, unless there is already
         // a future update scheduled.
@@ -783,7 +783,7 @@ impl UiEventHandler {
 
     /// `checkActivities()`, for `downloadProgress` of a finished fetch, `actionUploadFinished`
     /// and `buildEventTransportClosed`.
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:868 UiEventHandler.checkActivities
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:888 UiEventHandler.checkActivities
     pub fn check_activities(&self) {
         if self
             .state_tracker("UiStateTracker.hasActivities")
@@ -798,7 +798,7 @@ impl UiEventHandler {
         }
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:772 UiEventHandler.packageLocatorCreated
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:771 UiEventHandler.packageLocatorCreated
     pub fn package_locator_created(&self, path_entries: Vec<String>) {
         self.location_printer.package_locator_created(path_entries);
     }
@@ -1008,7 +1008,7 @@ impl UiEventHandler {
         Ok(())
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:518 UiEventHandler.getContentIfSmallEnough
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:517 UiEventHandler.getContentIfSmallEnough
     fn get_content_if_small_enough(
         &self,
         name: &str,
@@ -1090,7 +1090,7 @@ impl UiEventHandler {
     }
 
     /// `handle(event)` for a caller that already holds the state (Java's re-entrant monitor).
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:583 UiEventHandler.handle
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:582 UiEventHandler.handle
     fn handle_with_state(&self, event: &Event, held: Option<&mut UiState>) {
         if !self.debug_all_events
             && !self.show_timestamp
@@ -1202,7 +1202,7 @@ impl UiEventHandler {
     }
 
     /// `@Subscribe noBuild(NoBuildEvent)`; `show_progress` is `event.showProgress()`.
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:777 UiEventHandler.noBuild
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:776 UiEventHandler.noBuild
     pub fn no_build(&self, show_progress: bool) {
         if show_progress {
             self.state.lock().build_running = true;
@@ -1212,12 +1212,12 @@ impl UiEventHandler {
     }
 
     /// `@Subscribe noBuildFinished(NoBuildRequestFinishedEvent)`.
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:788 UiEventHandler.noBuildFinished
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:787 UiEventHandler.noBuildFinished
     pub fn no_build_finished(&self) {
         self.complete_build();
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:990 UiEventHandler.refresh
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:991 UiEventHandler.refresh
     fn refresh(&self, held: Option<&mut UiState>) {
         let show_progress = match &held {
             Some(st) => st.show_progress,
@@ -1230,7 +1230,7 @@ impl UiEventHandler {
         }
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:997 UiEventHandler.doRefresh
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:998 UiEventHandler.doRefresh
     fn do_refresh(&self, held: Option<&mut UiState>, from_update_thread: bool) {
         let build_running = match &held {
             Some(st) => st.build_running,
@@ -1276,7 +1276,7 @@ impl UiEventHandler {
 
     /// Decide whether the progress bar should be redrawn only for the reason that time has
     /// passed.
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:1042 UiEventHandler.timeBasedRefresh
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:1045 UiEventHandler.timeBasedRefresh
     fn time_based_refresh(&self) -> bool {
         if !self
             .state_tracker("UiStateTracker.progressBarTimeDependent")
@@ -1303,7 +1303,7 @@ impl UiEventHandler {
         last_refresh_millis + SHORT_REFRESH_MILLIS < now_millis
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:1062 UiEventHandler.ignoreRefreshLimitOnce
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:1064 UiEventHandler.ignoreRefreshLimitOnce
     fn ignore_refresh_limit_once(&self) {
         // Set refresh time variables in a state such that the next progress bar
         // update will definitely be written out.
@@ -1313,7 +1313,7 @@ impl UiEventHandler {
         );
     }
 
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:1068 UiEventHandler.startUpdateThread
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:1070 UiEventHandler.startUpdateThread
     fn start_update_thread(&self) {
         let build_running = self.state.lock().build_running;
         self.start_update_thread_with(build_running);
@@ -1370,7 +1370,7 @@ impl UiEventHandler {
 
     /// PORT: Java's `@Subscribe afterCommand(AfterCommandEvent)`; the event carries nothing the
     /// handler reads.
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:793 UiEventHandler.afterCommand
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:792 UiEventHandler.afterCommand
     pub fn after_command(&self) {
         self.state.lock().build_running = false;
         self.complete_build();
@@ -1464,7 +1464,7 @@ impl UiEventHandler {
 }
 
 impl EventHandler for UiEventHandler {
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:583 UiEventHandler.handle
+    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:582 UiEventHandler.handle
     fn handle(&self, event: &Event) {
         self.handle_with_state(event, None);
     }

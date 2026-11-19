@@ -1,0 +1,59 @@
+# probe transcript of Blaze (scripts/w4/probe compare)
+# binary /home/liamwarfield/.cache/blaze/work/crash-fix/blaze-after
+# sha256 09bb4e56b0e4dc51ddccf6b8304fc26fd237eefa979b194d5f0179d59d494f0c
+# tree 99a74d0fe098387e6fd2a298c9167416bdb1587c (dirty)
+# date 2026-11-19T14:02:15
+=== 1: run cquery "deps(//:dict_of_dicts_int_key)"
+exit 1
+--- stdout
+--- stderr
+Extracting Bazel installation...
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/defs.bzl:3:5: invalid result from transition function: transition function returned undeclared output 'a'
+ERROR: <WS>/BUILD.bazel:5:3: on dependency edge //:dict_of_dicts_int_key (a7a71fd) -|dep|-> //:leaf: Errors encountered while applying Starlark transition
+ERROR: Analysis of target '//:dict_of_dicts_int_key' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 2: run cquery "deps(//:dict_of_dicts_second_int_key)"
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/defs.bzl:3:5: invalid result from transition function: transition function returned undeclared output 'a'
+ERROR: <WS>/BUILD.bazel:5:3: on dependency edge //:dict_of_dicts_second_int_key (a7a71fd) -|dep|-> //:leaf: Errors encountered while applying Starlark transition
+ERROR: Analysis of target '//:dict_of_dicts_second_int_key' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully
+=== 3: run cquery "deps(//:dict_of_dicts_ok)"
+exit 0
+--- stdout
+//:dict_of_dicts_ok (a7a71fd)
+//:leaf (543bbee)
+//:leaf (9bf3f78)
+@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist (null)
+@bazel_tools//tools:host_platform (3030ed4)
+@@platforms//host:host (3030ed4)
+@@platforms//os:linux (3030ed4)
+@@platforms//cpu:x86_64 (3030ed4)
+@@platforms//cpu:cpu (3030ed4)
+@@platforms//os:os (3030ed4)
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+INFO: Analyzed target //:dict_of_dicts_ok (6 packages loaded, 10 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions
+=== 4: run cquery "deps(//:dict_of_dicts_first_undeclared)"
+exit 1
+--- stdout
+--- stderr
+Starting local Bazel server (9.3.2) and connecting to it...
+ERROR: <WS>/defs.bzl:3:5: invalid result from transition function: transition function returned undeclared output '//command_line_option:cpu'
+ERROR: <WS>/BUILD.bazel:5:3: on dependency edge //:dict_of_dicts_first_undeclared (a7a71fd) -|dep|-> //:leaf: Errors encountered while applying Starlark transition
+ERROR: Analysis of target '//:dict_of_dicts_first_undeclared' failed; build aborted
+INFO: Elapsed time: <DUR>
+INFO: 0 processes.
+ERROR: Build did NOT complete successfully

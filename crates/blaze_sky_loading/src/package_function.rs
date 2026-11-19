@@ -55,12 +55,12 @@ use crate::ignored_subdirectories::{
     IgnoredSubdirectories, IgnoredSubdirectoriesKey, InvalidIgnorePathException,
 };
 use crate::io::IOException;
+use crate::package_lookup::{
+    ErrorReason, PackageLookupFunction, PackageLookupKey, PackageLookupValue,
+};
 use crate::package_pieces::{
     NoSuchMacroInstanceException, NonFinalizerPackagePiecesKey, PackagePieceForBuildFileKey,
     PackagePieceValueForBuildFile, PieceException, RecursiveExpander,
-};
-use crate::package_lookup::{
-    ErrorReason, PackageLookupFunction, PackageLookupKey, PackageLookupValue,
 };
 use crate::pkgcache::PathPackageLocator;
 use crate::precomputed::{
@@ -433,11 +433,13 @@ fn handle_package_piece_dependency_error(pkg_builder: &mut TargetDefinitionConte
         .get_metadata()
         .package_identifier
         .get_canonical_form();
-    pkg_builder.get_local_event_handler().handle(&Package::error(
-        Some(&location),
-        &format!("cannot compute package {package_id}: {message}"),
-        PackageLoadingCode::StarlarkEvalError,
-    ));
+    pkg_builder
+        .get_local_event_handler()
+        .handle(&Package::error(
+            Some(&location),
+            &format!("cannot compute package {package_id}: {message}"),
+            PackageLoadingCode::StarlarkEvalError,
+        ));
 }
 
 /// What PACKAGE computes (Java `Packageoid`): a package, or the BUILD file piece of a package.
@@ -483,15 +485,13 @@ impl PackageFunction {
         key: &PackageKey,
         env: &mut Environment<'_>,
     ) -> Result<Option<PackageValue>, ComputeError> {
-        Ok(
-            match self.compute_packageoid(key.argument(), None, env)? {
-                None => None,
-                Some(Packageoid::Package(pkg)) => Some(pkg),
-                Some(Packageoid::PieceForBuildFile(_)) => {
-                    unreachable!("a package key computes a package")
-                }
-            },
-        )
+        Ok(match self.compute_packageoid(key.argument(), None, env)? {
+            None => None,
+            Some(Packageoid::Package(pkg)) => Some(pkg),
+            Some(Packageoid::PieceForBuildFile(_)) => {
+                unreachable!("a package key computes a package")
+            }
+        })
     }
 
     /// PACKAGE for the key of a BUILD file piece (lazy macro expansion).
@@ -815,8 +815,8 @@ impl PackageFunction {
                 &mut pkg_builder,
                 &format!("error in {}", error_piece.get_short_description()),
             );
-        } else if let Some(e) = &non_finalizer_package_pieces_value
-            .name_conflict_between_package_pieces_exception
+        } else if let Some(e) =
+            &non_finalizer_package_pieces_value.name_conflict_between_package_pieces_exception
         {
             // Name conflict between non-finalizer package pieces. It was already reported as an
             // event with stack trace by the computation of the NonFinalizerPackagePiecesValue, so

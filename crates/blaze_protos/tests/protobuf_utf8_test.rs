@@ -48,12 +48,10 @@ fn actual(kind: &str, b: &[u8]) -> String {
     match kind {
         "parse" => hex(parse_output_file(b).path.as_bytes()),
         "print" => hex(printer().print_to_string(&parse_output_file(b)).as_bytes()),
-        "print_raw" => hex(
-            printer()
-                .escaping_non_ascii(false)
-                .print_to_string(&parse_output_file(b))
-                .as_bytes(),
-        ),
+        "print_raw" => hex(printer()
+            .escaping_non_ascii(false)
+            .print_to_string(&parse_output_file(b))
+            .as_bytes()),
         "unescape_text" => hex(unescape_text(&octal(b)).unwrap().as_bytes()),
         "dynamic_proto2" => {
             let d = pool()

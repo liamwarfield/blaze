@@ -98,6 +98,8 @@ fn piece_sky_key(id: &PackagePieceIdentifier) -> SkyKey {
 /// Java `PackagePieceValue.ForBuildFile`.
 // Java: com/google/devtools/build/lib/skyframe/PackagePieceValue.java:42 PackagePieceValue.ForBuildFile
 pub struct PackagePieceValueForBuildFile {
+    /// Java `getPackagePiece()` / `forBuildFile()` (and `getPackageoid()`).
+    // Java: com/google/devtools/build/lib/skyframe/PackagePieceValue.java:69 PackagePieceValue.ForBuildFile.getPackagePiece
     pub for_build_file: Arc<PackagePiece>,
     pub starlark_semantics: Arc<StarlarkSemantics>,
     pub main_repository_mapping: RepositoryMapping,
@@ -109,7 +111,9 @@ impl fmt::Debug for PackagePieceValueForBuildFile {
         write!(
             f,
             "<PackagePieceValue.ForBuildFile name={}>",
-            self.for_build_file.get_identifier().get_canonical_form_name()
+            self.for_build_file
+                .get_identifier()
+                .get_canonical_form_name()
         )
     }
 }
@@ -117,6 +121,9 @@ impl fmt::Debug for PackagePieceValueForBuildFile {
 /// Java `PackagePieceValue.ForMacro`.
 // Java: com/google/devtools/build/lib/skyframe/PackagePieceValue.java:77 PackagePieceValue.ForMacro
 pub struct PackagePieceValueForMacro {
+    /// Java `getPackagePiece()` / `forMacro()` (and `getPackageoid()`).
+    // Java: com/google/devtools/build/lib/skyframe/PackagePieceValue.java:89 PackagePieceValue.ForMacro.getPackagePiece
+    // Java: com/google/devtools/build/lib/skyframe/PackagePieceValue.java:42 PackagePieceValue.getPackageoid
     pub for_macro: Arc<PackagePiece>,
 }
 
@@ -227,11 +234,20 @@ pub struct NonFinalizerPackagePiecesValue {
 impl NonFinalizerPackagePiecesValue {
     // Java: com/google/devtools/build/lib/skyframe/NonFinalizerPackagePiecesValue.java:94 NonFinalizerPackagePiecesValue.containsErrors
     pub fn contains_errors(&self) -> bool {
-        !self.error_keys.is_empty() || self.name_conflict_between_package_pieces_exception.is_some()
+        !self.error_keys.is_empty()
+            || self
+                .name_conflict_between_package_pieces_exception
+                .is_some()
     }
 }
 
-/// Java `PackagePieces`: a set of package pieces, the BUILD file piece first.
+/// Java `PackagePieces`: a set of package pieces, the BUILD file piece first. Java's accessors
+/// `getPackagePieces()` / `getErrorKeys()` (of the interface, `NonFinalizerPackagePiecesValue` and
+/// `RecursiveExpander`) are the public fields.
+// Java: com/google/devtools/build/lib/skyframe/NonFinalizerPackagePiecesValue.java:86 NonFinalizerPackagePiecesValue.getPackagePieces
+// Java: com/google/devtools/build/lib/skyframe/NonFinalizerPackagePiecesValue.java:96 NonFinalizerPackagePiecesValue.getErrorKeys
+// Java: com/google/devtools/build/lib/skyframe/EvalMacroFunction.java:248 EvalMacroFunction.RecursiveExpander.getPackagePieces
+// Java: com/google/devtools/build/lib/skyframe/EvalMacroFunction.java:258 EvalMacroFunction.RecursiveExpander.getErrorKeys
 // Java: com/google/devtools/build/lib/skyframe/PackagePieces.java:31 PackagePieces
 #[derive(Clone, Default)]
 pub struct PackagePieces {
@@ -241,6 +257,8 @@ pub struct PackagePieces {
 
 impl PackagePieces {
     // Java: com/google/devtools/build/lib/skyframe/PackagePieces.java:37 PackagePieces.getPackagePieceForBuildFile
+    // Java: com/google/devtools/build/lib/skyframe/NonFinalizerPackagePiecesValue.java:91 NonFinalizerPackagePiecesValue.getPackagePieceForBuildFile
+    // Java: com/google/devtools/build/lib/skyframe/EvalMacroFunction.java:253 EvalMacroFunction.RecursiveExpander.getPackagePieceForBuildFile
     pub fn get_package_piece_for_build_file(&self) -> &Arc<PackagePiece> {
         self.package_pieces
             .values()
@@ -375,7 +393,12 @@ impl PieceException {
             .map(|e| PieceException::MacroInstance(e.clone()))
     }
 
-    /// Java `throw new XFunctionException(cause)` (Transience.PERSISTENT).
+    /// Java `throw new XFunctionException(cause)` (Transience.PERSISTENT): the exception classes
+    /// of the piece functions, each a SkyFunctionException wrapping one of these causes.
+    // Java: com/google/devtools/build/lib/skyframe/EvalMacroFunction.java:403 EvalMacroFunction.EvalMacroFunctionException.<init>
+    // Java: com/google/devtools/build/lib/skyframe/MacroInstanceFunction.java:69 MacroInstanceFunction.MacroInstanceFunctionException.<init>
+    // Java: com/google/devtools/build/lib/skyframe/NonFinalizerPackagePiecesFunction.java:107 NonFinalizerPackagePiecesFunction.NonFinalizerPackagePiecesFunctionException.<init>
+    // Java: com/google/devtools/build/lib/skyframe/PackageDeclarationsFunction.java:65 PackageDeclarationsFunction.PackageDeclarationsFunctionException.<init>
     fn rethrow(self) -> ComputeError {
         match self {
             PieceException::Package(e) => SkyFunctionException::new(e, Transience::Persistent),
@@ -413,7 +436,10 @@ pub fn package_declarations_function(
     };
     Ok(Some(PackageDeclarationsValue {
         metadata: package_piece_value.for_build_file.get_metadata().clone(),
-        declarations: package_piece_value.for_build_file.get_declarations().clone(),
+        declarations: package_piece_value
+            .for_build_file
+            .get_declarations()
+            .clone(),
         starlark_semantics: package_piece_value.starlark_semantics.clone(),
         main_repository_mapping: package_piece_value.main_repository_mapping.clone(),
     }))
@@ -634,7 +660,9 @@ fn handle_finalizer_dependency_error(
 #[derive(Default)]
 pub struct RecursiveExpander {
     pieces: PackagePieces,
+    // Java: com/google/devtools/build/lib/skyframe/EvalMacroFunction.java:263 EvalMacroFunction.RecursiveExpander.getStarlarkSemantics
     starlark_semantics: Option<Arc<StarlarkSemantics>>,
+    // Java: com/google/devtools/build/lib/skyframe/EvalMacroFunction.java:268 EvalMacroFunction.RecursiveExpander.getMainRepositoryMapping
     main_repository_mapping: Option<RepositoryMapping>,
 }
 
@@ -723,18 +751,16 @@ impl RecursiveExpander {
                 }
             } else {
                 for child_macro_instance in piece.get_macros() {
-                    let child_key = PackagePieceIdentifier::ForMacro(
-                        PackagePieceIdentifierForMacro::new(
+                    let child_key =
+                        PackagePieceIdentifier::ForMacro(PackagePieceIdentifierForMacro::new(
                             key.get_package_identifier().clone(),
                             key.clone(),
                             child_macro_instance.get_name().to_owned(),
-                        ),
-                    );
+                        ));
                     if self.pieces.package_pieces.contains_key(&child_key) {
                         continue;
                     }
-                    if expand_finalizers || !child_macro_instance.get_macro_class().is_finalizer()
-                    {
+                    if expand_finalizers || !child_macro_instance.get_macro_class().is_finalizer() {
                         child_keys.push(child_key);
                     }
                 }

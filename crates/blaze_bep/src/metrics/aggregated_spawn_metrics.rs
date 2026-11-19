@@ -16,7 +16,7 @@ const EXEC_KINDS: [ExecKind; 4] = [
 ];
 
 /// Metrics aggregated per execution kind.
-// Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:31 AggregatedSpawnMetrics
+// Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:29 AggregatedSpawnMetrics
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct AggregatedSpawnMetrics {
     metrics_map: IndexMap<ExecKind, SpawnMetrics>,
@@ -74,7 +74,7 @@ impl AggregatedSpawnMetrics {
     }
 
     /// Returns the total duration across all execution kinds.
-    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:116 AggregatedSpawnMetrics.getTotalDuration
+    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:117 AggregatedSpawnMetrics.getTotalDuration
     pub fn get_total_duration(&self, extract: impl Fn(&SpawnMetrics) -> i32) -> i32 {
         let mut result: i32 = 0;
         for metric in self.metrics_map.values() {
@@ -84,7 +84,7 @@ impl AggregatedSpawnMetrics {
     }
 
     /// Returns the maximum value of a non-duration metric across all execution kinds.
-    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:130 AggregatedSpawnMetrics.getMaxNonDuration
+    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:131 AggregatedSpawnMetrics.getMaxNonDuration
     pub fn get_max_non_duration(
         &self,
         initial_value: i64,
@@ -98,7 +98,7 @@ impl AggregatedSpawnMetrics {
     }
 
     /// `toString(Duration total, boolean summary)`; `total_millis` is `total.toMillis()`.
-    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:138 AggregatedSpawnMetrics.toString
+    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:139 AggregatedSpawnMetrics.toString
     pub fn to_string_with_total(&self, total_millis: i64, summary: bool) -> String {
         // For now keep compatibility with the old output and only report the remote execution.
         // TODO(michalt): Change this once the local and worker executions populate more metrics.
@@ -124,7 +124,7 @@ impl AggregatedSpawnMetricsBuilder {
         AggregatedSpawnMetricsBuilder::default()
     }
 
-    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:151 Builder.build
+    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:153 Builder.build
     pub fn build(&self) -> AggregatedSpawnMetrics {
         let mut metrics_map = IndexMap::new();
         for kind in EXEC_KINDS {
@@ -135,13 +135,13 @@ impl AggregatedSpawnMetricsBuilder {
         AggregatedSpawnMetrics { metrics_map }
     }
 
-    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:160 Builder.addDurations
+    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:161 Builder.addDurations
     pub fn add_durations(&mut self, metrics: &SpawnMetrics) -> &mut Self {
         add_durations(self.get_builder(metrics.exec_kind()), metrics);
         self
     }
 
-    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:166 Builder.addDurations
+    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:167 Builder.addDurations
     pub fn add_durations_aggregated(&mut self, aggregated: &AggregatedSpawnMetrics) -> &mut Self {
         for metrics in aggregated.get_all_metrics() {
             self.add_durations(metrics);
@@ -149,13 +149,13 @@ impl AggregatedSpawnMetricsBuilder {
         self
     }
 
-    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:172 Builder.addNonDurations
+    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:173 Builder.addNonDurations
     pub fn add_non_durations(&mut self, metrics: &SpawnMetrics) -> &mut Self {
         add_non_durations(self.get_builder(metrics.exec_kind()), metrics);
         self
     }
 
-    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:178 Builder.addNonDurations
+    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:179 Builder.addNonDurations
     pub fn add_non_durations_aggregated(
         &mut self,
         aggregated: &AggregatedSpawnMetrics,
@@ -166,13 +166,13 @@ impl AggregatedSpawnMetricsBuilder {
         self
     }
 
-    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:184 Builder.maxNonDurations
+    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:185 Builder.maxNonDurations
     pub fn max_non_durations(&mut self, metrics: &SpawnMetrics) -> &mut Self {
         max_non_durations(self.get_builder(metrics.exec_kind()), metrics);
         self
     }
 
-    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:190 Builder.maxNonDurations
+    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:191 Builder.maxNonDurations
     pub fn max_non_durations_aggregated(
         &mut self,
         aggregated: &AggregatedSpawnMetrics,
@@ -183,7 +183,7 @@ impl AggregatedSpawnMetricsBuilder {
         self
     }
 
-    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:196 Builder.getBuilder
+    // Java: com/google/devtools/build/lib/actions/AggregatedSpawnMetrics.java:197 Builder.getBuilder
     fn get_builder(&mut self, kind: ExecKind) -> &mut SpawnMetrics {
         self.builder_map
             .entry(kind)
@@ -192,7 +192,7 @@ impl AggregatedSpawnMetricsBuilder {
 }
 
 /// `SpawnMetrics.Builder.addDurations`.
-// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:582 SpawnMetrics.Builder.addDurations
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:581 SpawnMetrics.Builder.addDurations
 fn add_durations(builder: &mut SpawnMetrics, metric: &SpawnMetrics) {
     builder.total_time_in_ms = builder
         .total_time_in_ms
@@ -229,7 +229,7 @@ fn add_durations(builder: &mut SpawnMetrics, metric: &SpawnMetrics) {
 }
 
 /// `SpawnMetrics.Builder.addNonDurations`.
-// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:599 SpawnMetrics.Builder.addNonDurations
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:598 SpawnMetrics.Builder.addNonDurations
 fn add_non_durations(builder: &mut SpawnMetrics, metric: &SpawnMetrics) {
     builder.input_files = builder.input_files.wrapping_add(metric.input_files);
     builder.input_bytes = builder.input_bytes.wrapping_add(metric.input_bytes);
@@ -250,7 +250,7 @@ fn add_non_durations(builder: &mut SpawnMetrics, metric: &SpawnMetrics) {
 }
 
 /// `SpawnMetrics.Builder.maxNonDurations`.
-// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:614 SpawnMetrics.Builder.maxNonDurations
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:613 SpawnMetrics.Builder.maxNonDurations
 fn max_non_durations(builder: &mut SpawnMetrics, metric: &SpawnMetrics) {
     builder.input_files = builder.input_files.max(metric.input_files);
     builder.input_bytes = builder.input_bytes.max(metric.input_bytes);

@@ -227,9 +227,13 @@ fn test_allow_values_with_null_default_does_not_confuse_null_for_default() {
     ));
 
     // Check the value before invocation policy enforcement.
-    parser.parse(&["--test_string_null_by_default=null"]).unwrap();
+    parser
+        .parse(&["--test_string_null_by_default=null"])
+        .unwrap();
     assert_eq!(
-        get_test_options(&parser).test_string_null_by_default.as_deref(),
+        get_test_options(&parser)
+            .test_string_null_by_default
+            .as_deref(),
         Some("null")
     );
 

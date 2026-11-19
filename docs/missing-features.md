@@ -34,7 +34,7 @@ Partly ported:
 | Command | Missing |
 | --- | --- |
 | `mod` | `dump_repo_mapping` (33 upstream tests need it), `show_repo`, `tidy` |
-| `help`, `fetch`, `canonicalize-flags`, `license` | ported after v0.1.0 (132 of 137 oracle invocations byte-identical by `scripts/cmds/compare`, which the auditor found can record a signal death as exit 0; upstream test counts to be re-measured under the fixed harness); missing: `canonicalize-flags --invocation_policy`, `fetch --force` with target patterns |
+| `help`, `fetch`, `canonicalize-flags`, `license` | ported after v0.1.0 (132 of 137 oracle invocations byte-identical by `scripts/cmds/compare`, which the auditor found can record a signal death as exit 0; upstream test counts to be re-measured under the fixed harness); missing: `fetch --force` with target patterns |
 | `info` | 15 of 57 compared cases: `info` with no key, JVM-only keys (heap sizes, `java-home`), `build-language`, `peak-heap-size`, `starlark-semantics` |
 | `query` | `--output=graph` and other formatters that need the dependency graph, `--query_file`, SkyQuery (`--universe_scope`), definition and instantiation stacks in proto output, rule class info, native aspects |
 | `cquery` | `--show_config_fragments`, some output formats' start/process hooks |
@@ -48,7 +48,9 @@ Partly ported:
   Incremental speed comes only from the on-disk action cache and repository cache.
 - Waiting for the command lock (Blaze behaves as `--noblock_for_lock`).
 - `command.log` (`--write_command_log`).
-- Invocation policy (`--invocation_policy`).
+- Invocation policy: ported after v0.1.0 (parser and enforcer; 63 oracle invocations
+  byte-identical by `scripts/cmds/compare`, before that tool's hardening); a non-default
+  strategy policy still fails loudly.
 - Server idle tasks (disk cache garbage collection).
 - Thread dumps, memory options that need a JVM (`--iff_heap_size_greater_than`).
 

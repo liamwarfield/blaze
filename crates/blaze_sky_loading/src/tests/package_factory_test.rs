@@ -2115,9 +2115,7 @@ fn assert_visibility_is(pkg: &LoadedPackage, target: &str, visibility_labels: &[
         .collect();
     let mut expected: Vec<String> = visibility_labels
         .iter()
-        .map(|l| {
-            blaze_cmdline::Label::parse_canonical_unchecked(l).get_canonical_form()
-        })
+        .map(|l| blaze_cmdline::Label::parse_canonical_unchecked(l).get_canonical_form())
         .collect();
     actual.sort();
     expected.sort();

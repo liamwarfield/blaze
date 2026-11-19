@@ -100,7 +100,12 @@ enum EvaluatorError {
     #[error("Coverage not enabled")]
     CoverageNotEnabled,
     #[error("Local variable `{0}` referenced before assignment")]
+    #[allow(dead_code)] // BLAZE PATCH 0050
     LocalVariableReferencedBeforeAssignment(String),
+    /// BLAZE PATCH 0050: Java's text (Eval.java:825 evalIdentifier); the scope is `local` or
+    /// `global` (Resolver.Scope.toString).
+    #[error("{0} variable '{1}' is referenced before assignment.")]
+    VariableReferencedBeforeAssignment(&'static str, String),
     #[error("Max callstack size is already set")]
     CallstackSizeAlreadySet,
     #[error("Max callstack size cannot be zero")]
@@ -593,7 +598,8 @@ impl<'v, 'a, 'e: 'a> Evaluator<'v, 'a, 'e> {
                 Ok(Some(e)) => e.get_slot_name(slot).map(|s| s.as_str().to_owned()),
             }
             .unwrap_or_else(|| "<unknown>".to_owned());
-            crate::Error::new_other(EvaluatorError::LocalVariableReferencedBeforeAssignment(
+            crate::Error::new_other(EvaluatorError::VariableReferencedBeforeAssignment(
+                "global", // BLAZE PATCH 0050
                 name,
             ))
         }
@@ -615,8 +621,10 @@ impl<'v, 'a, 'e: 'a> Evaluator<'v, 'a, 'e> {
         };
         let names = &def_info.used;
         let name = names[slot.0 as usize].as_str().to_owned();
-        crate::Error::new_other(EvaluatorError::LocalVariableReferencedBeforeAssignment(
-            name,
+        // BLAZE PATCH 0050. PORT: Java says `cell` / `free` for a variable captured by a nested
+        // function; starlark-rust's local slots do not record that.
+        crate::Error::new_other(EvaluatorError::VariableReferencedBeforeAssignment(
+            "local", name,
         ))
     }
 

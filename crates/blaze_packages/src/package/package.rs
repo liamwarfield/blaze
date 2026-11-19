@@ -1254,8 +1254,9 @@ impl TargetDefinitionContext {
                     .get(&id)
                     .expect("macro id")
                     .clone();
-                let (builder, result) =
-                    crate::macros::MacroClass::execute_macro_implementation(&macro_, self, semantics);
+                let (builder, result) = crate::macros::MacroClass::execute_macro_implementation(
+                    &macro_, self, semantics,
+                );
                 self = builder;
                 if let Err(ex) = result {
                     return (self, Err(ex));

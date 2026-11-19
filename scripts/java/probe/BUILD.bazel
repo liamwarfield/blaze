@@ -1,5 +1,7 @@
 load("@rules_java//java:java_binary.bzl", "java_binary")
+load("@rules_java//java:java_import.bzl", "java_import")
 load("@rules_java//java:java_library.bzl", "java_library")
+load("@rules_java//java:java_plugin.bzl", "java_plugin")
 load("@rules_java//java:java_test.bzl", "java_test")
 
 java_library(
@@ -20,4 +22,98 @@ java_test(
     main_class = "probe.GreeterTest",
     use_testrunner = False,
     deps = [":greeter"],
+)
+
+
+# Annotation processing: a java_plugin used through `plugins` and through `exported_plugins`.
+java_library(
+    name = "gen_annotation",
+    srcs = ["src/probe/proc/Gen.java"],
+)
+
+java_plugin(
+    name = "proc",
+    srcs = ["src/probe/proc/ProbeProcessor.java"],
+    processor_class = "probe.proc.ProbeProcessor",
+    deps = [":gen_annotation"],
+)
+
+java_library(
+    name = "annotated",
+    srcs = ["src/probe/app/Annotated.java"],
+    plugins = [":proc"],
+    deps = [":gen_annotation"],
+)
+
+java_library(
+    name = "proc_exporter",
+    exported_plugins = [":proc"],
+    exports = [":gen_annotation"],
+)
+
+java_library(
+    name = "annotated_via_export",
+    srcs = ["src/probe/app/Annotated.java"],
+    deps = [":proc_exporter"],
+)
+
+# Resources (maven layout), runtime_deps, exports, neverlink.
+java_library(
+    name = "resources",
+    resources = ["src/main/resources/probe/greeting.txt"],
+)
+
+java_library(
+    name = "runtime_only",
+    srcs = ["src/probe/Runtime.java"],
+)
+
+java_library(
+    name = "exporter",
+    exports = [":greeter"],
+)
+
+java_library(
+    name = "compile_only",
+    srcs = ["src/probe/Compile.java"],
+    neverlink = True,
+)
+
+java_library(
+    name = "uses_neverlink",
+    srcs = ["src/probe/UsesNeverlink.java"],
+    deps = [":compile_only"],
+)
+
+java_binary(
+    name = "app",
+    srcs = ["src/probe/app/Main.java"],
+    main_class = "probe.app.Main",
+    runtime_deps = [
+        ":resources",
+        ":runtime_only",
+    ],
+    deps = [
+        ":annotated",
+        ":exporter",
+        ":uses_neverlink",
+    ],
+)
+
+# java_import of another target's jar (through a filegroup: java_import rejects Java targets).
+filegroup(
+    name = "greeter_jar",
+    srcs = [":greeter"],
+)
+
+java_import(
+    name = "imported",
+    jars = [":greeter_jar"],
+)
+
+java_binary(
+    name = "hello_imported",
+    srcs = ["src/probe/Hello.java"],
+    main_class = "probe.Hello",
+    deps = [":imported"],
 )

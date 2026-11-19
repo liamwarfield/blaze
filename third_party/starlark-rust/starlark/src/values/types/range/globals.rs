@@ -58,24 +58,48 @@ pub(crate) fn register_range(globals: &mut GlobalsBuilder) {
     /// # "#);
     /// ```
     #[starlark(as_type = Range, speculative_exec_safe)]
-    fn range(
-        #[starlark(require = pos)] a1: i32,
-        #[starlark(require = pos)] a2: Option<i32>,
-        #[starlark(require = pos, default = 1)] step: i32,
+    fn range<'v>( // BLAZE PATCH 0052
+        #[starlark(require = pos)] start_or_stop: crate::values::Value<'v>, // BLAZE PATCH 0052
+        #[starlark(require = pos)] stop: Option<crate::values::Value<'v>>, // BLAZE PATCH 0052
+        #[starlark(require = pos)] step: Option<crate::values::Value<'v>>, // BLAZE PATCH 0052
     ) -> anyhow::Result<Range> {
-        let start = match a2 {
-            None => 0,
-            Some(_) => a1,
-        };
-        let stop = a2.unwrap_or(a1);
+        // BLAZE PATCH 0052: Java MethodLibrary.range (MethodLibrary.java:765): the parameters
+        // are ints (checked in order), then converted with toInt("start"/"stop"/"step").
+        let is_int = |v: crate::values::Value<'v>| { // BLAZE PATCH 0052
+            crate::values::types::int::int_or_big::StarlarkIntRef::unpack(v).is_some() // BLAZE PATCH 0052
+        }; // BLAZE PATCH 0052
+        for (name, v) in [("start_or_stop", Some(start_or_stop)), ("stop", stop), ("step", step)] { // BLAZE PATCH 0052
+            if let Some(v) = v { // BLAZE PATCH 0052
+                if !is_int(v) { // BLAZE PATCH 0052
+                    return Err(anyhow::anyhow!( // BLAZE PATCH 0052
+                        "in call to range(), parameter '{name}' got value of type '{}', want 'int'", // BLAZE PATCH 0052
+                        v.get_type() // BLAZE PATCH 0052
+                    )); // BLAZE PATCH 0052
+                } // BLAZE PATCH 0052
+            } // BLAZE PATCH 0052
+        } // BLAZE PATCH 0052
+        let to_int = |v, what| crate::values::index::java_to_int(v, what).map_err(|e| e.into_anyhow()); // BLAZE PATCH 0052
+        let (start, stop) = match stop { // BLAZE PATCH 0052
+            None => (0, to_int(start_or_stop, "stop")?), // BLAZE PATCH 0052
+            Some(stop) => (to_int(start_or_stop, "start")?, to_int(stop, "stop")?), // BLAZE PATCH 0052
+        }; // BLAZE PATCH 0052
+        let step = match step { // BLAZE PATCH 0052
+            None => 1, // BLAZE PATCH 0052
+            Some(v) => to_int(v, "step")?, // BLAZE PATCH 0052
+        }; // BLAZE PATCH 0052
         let step = match NonZeroI32::new(step) {
             Some(step) => step,
             None => {
-                return Err(anyhow::anyhow!(
-                    "Third argument of range (step) cannot be zero"
-                ));
+                // BLAZE PATCH 0051: Java's text (MethodLibrary.java:779 range).
+                return Err(anyhow::anyhow!("step cannot be 0"));
             }
         };
-        Ok(Range::new(start, stop, step))
+        // BLAZE PATCH 0051: Java RangeList's constructor (RangeList.java:89) rejects a length
+        // beyond int32.
+        let r = Range::new(start, stop, step); // BLAZE PATCH 0051
+        if crate::values::StarlarkValue::length(&r).is_err() { // BLAZE PATCH 0051
+            return Err(anyhow::anyhow!("len({r}) exceeds signed 32-bit range")); // BLAZE PATCH 0051
+        } // BLAZE PATCH 0051
+        Ok(r) // BLAZE PATCH 0051
     }
 }

@@ -250,12 +250,12 @@ fn resolve_reports_every_undefined_name() {
     let got: Vec<String> = errors.iter().map(|e| format!("{}", e.location)).collect();
     assert_eq!(got, ["test.bzl:1:5", "test.bzl:3:12", "test.bzl:3:17"]);
     assert!(
-        errors[0].message.starts_with("Variable `y` not found"),
+        errors[0].message.starts_with("name 'y' is not defined"),
         "{}",
         errors[0].message
     );
     assert!(
-        errors[2].message.starts_with("Variable `w` not found"),
+        errors[2].message.starts_with("name 'w' is not defined"),
         "{}",
         errors[2].message
     );

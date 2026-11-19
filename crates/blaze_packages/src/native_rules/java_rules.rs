@@ -22,8 +22,12 @@ use crate::types::Type;
 
 /// Java `JavaSemantics.JAVA_PLUGINS` (the `--plugin` labels, resolved during analysis).
 // Java: com/google/devtools/build/lib/rules/java/JavaSemantics.java:50 JavaSemantics.JAVA_PLUGINS
-pub static JAVA_PLUGINS: LazyLock<Arc<LateBoundDefault>> =
-    LazyLock::new(|| Arc::new(LateBoundDefault::label_list(Some("JavaConfiguration"))));
+pub static JAVA_PLUGINS: LazyLock<Arc<LateBoundDefault>> = LazyLock::new(|| {
+    Arc::new(
+        LateBoundDefault::label_list(Some("JavaConfiguration"))
+            .with_resolver_name("JavaSemantics.JAVA_PLUGINS"),
+    )
+});
 
 // Java: com/google/devtools/build/lib/rules/java/JavaSemantics.java:32 JavaSemantics.RULES_JAVA_PROVIDER_LABELS_PREFIX
 const RULES_JAVA_PROVIDER_LABELS_PREFIX: &str = "@@rules_java+//";

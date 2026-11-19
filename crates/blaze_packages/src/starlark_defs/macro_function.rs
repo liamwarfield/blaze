@@ -8,8 +8,8 @@ use std::sync::OnceLock;
 
 use allocative::Allocative;
 use blaze_cmdline::Label;
-use blaze_starlark::Location;
 use blaze_starlark::EvalError;
+use blaze_starlark::Location;
 use blaze_starlark::ThreadContext;
 use blaze_starlark::error::EvalErrorKind;
 use blaze_starlark::error::EvalErrorWithStack;

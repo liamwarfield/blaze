@@ -66,9 +66,10 @@ enum BazelEscapeError { // BLAZE PATCH 0032
 
 #[derive(Error, Debug)]
 pub enum LexemeError {
-    #[error("Parse error: incorrect indentation")]
+    #[error("indentation error")] // BLAZE PATCH 0053: Java's text (Lexer.java:256)
     Indentation,
-    #[error("Parse error: invalid input `{0}`")]
+    // BLAZE PATCH 0053: Java's text (Lexer.java:876), the first char of the input.
+    #[error("invalid character: '{}'", .0.chars().next().unwrap_or(' '))] // BLAZE PATCH 0053
     InvalidInput(String),
     // BLAZE PATCH 0037: Java's text (net/starlark/java/syntax/Lexer.java:220).
     #[error("Tab characters are not allowed for indentation. Use spaces instead.")] // BLAZE PATCH 0037
@@ -84,7 +85,8 @@ pub enum LexemeError {
     BlazeInvalidEscape(char), // BLAZE PATCH 0032
     #[error("octal escape sequence out of range (maximum is \\377)")] // BLAZE PATCH 0032
     BlazeOctalOutOfRange, // BLAZE PATCH 0032
-    #[error("Parse error: cannot use reserved keyword `{0}`")]
+    // BLAZE PATCH 0053: Java's texts (Parser.java:425 checkForbiddenKeywords).
+    #[error("{}", java_forbidden_keyword(.0))] // BLAZE PATCH 0053
     ReservedKeyword(String),
     #[error("Parse error: integer cannot have leading 0, got `{0}`")]
     StartsZero(String),
@@ -101,6 +103,8 @@ pub enum LexemeError {
     BlazeInvalidOctalLiteral(String, String), // BLAZE PATCH 0038
     #[error("floating-point literal too large")] // BLAZE PATCH 0038
     BlazeFloatTooLarge, // BLAZE PATCH 0038
+    #[error("{0}")] // BLAZE PATCH 0053
+    BlazeNumber(String), // BLAZE PATCH 0053
 }
 
 impl From<LexemeError> for crate::error::Error {
@@ -302,8 +306,10 @@ impl<'a> Lexer<'a> {
                     dedents += 1;
                     self.indent_levels.pop().unwrap();
                 } else {
-                    let pos = self.lexer.span();
-                    return self.err_span(LexemeError::Indentation, pos.start, pos.end);
+                    // BLAZE PATCH 0053: Java reports the last char of the indentation
+                    // (Lexer.java:256 `pos - 1`).
+                    let pos = self.lexer.span().end.saturating_sub(1); // BLAZE PATCH 0053
+                    return self.err_pos(LexemeError::Indentation, pos); // BLAZE PATCH 0053
                 }
             }
             for _ in 0..dedents {
@@ -880,6 +886,18 @@ impl<'a> Lexer<'a> {
                                 Token::Float(f) if !f.is_finite() => { // BLAZE PATCH 0038
                                     Some(self.err_now(|_| LexemeError::BlazeFloatTooLarge)) // BLAZE PATCH 0038
                                 } // BLAZE PATCH 0038
+                                // BLAZE PATCH 0053: Java's texts and positions (the literal's start).
+                                Token::BlazeBadNumber => { // BLAZE PATCH 0053
+                                    let s = self.lexer.slice(); // BLAZE PATCH 0053
+                                    let msg = match s.as_bytes().get(1) { // BLAZE PATCH 0053
+                                        Some(b'x' | b'X') if s.starts_with('0') => "invalid hex literal".to_owned(), // BLAZE PATCH 0053
+                                        Some(b'b' | b'B') if s.starts_with('0') => "invalid binary literal".to_owned(), // BLAZE PATCH 0053
+                                        Some(b'o' | b'O') if s.starts_with('0') => format!("invalid base-8 integer literal: {s}"), // BLAZE PATCH 0053
+                                        _ => "invalid float literal".to_owned(), // BLAZE PATCH 0053
+                                    }; // BLAZE PATCH 0053
+                                    let start = self.lexer.span().start; // BLAZE PATCH 0053
+                                    Some(self.err_pos(LexemeError::BlazeNumber(msg), start)) // BLAZE PATCH 0053
+                                } // BLAZE PATCH 0053
                                 Token::Int(..) => unreachable!("Lexer does not produce Int tokens"),
                                 Token::RawDoubleQuote => {
                                     let raw = self.lexer.span().len() == 2;
@@ -1468,6 +1486,16 @@ pub enum Token {
     RawBinInt,
     #[regex("0[oO][0-7]+")]
     RawOctInt,
+    /// BLAZE PATCH 0053: number literals Java's lexer rejects (Lexer.java:930-1010): `0x`
+    /// without a hex digit, `0b` without a binary digit, `0o` with no digit or a digit 8/9,
+    /// an exponent without digits.
+    #[regex("0[xX]")] // BLAZE PATCH 0053
+    #[regex("0[bB]")] // BLAZE PATCH 0053
+    #[regex("0[oO]([0-7]*[89][0-9]*)?")] // BLAZE PATCH 0053
+    #[regex("[0-9]+[eE][-+]?")] // BLAZE PATCH 0053
+    #[regex("[0-9]+\\.[0-9]*[eE][-+]?")] // BLAZE PATCH 0053
+    #[regex("\\.[0-9]+[eE][-+]?")] // BLAZE PATCH 0053
+    BlazeBadNumber, // BLAZE PATCH 0053
 
     Int(TokenInt), // An integer literal (123, 0x1, 0b1011, 0o755, ...)
 
@@ -1716,6 +1744,7 @@ impl Display for Token {
             Token::RawHexInt => write!(f, "hexadecimal integer literal"),
             Token::RawOctInt => write!(f, "octal integer literal"),
             Token::RawBinInt => write!(f, "binary integer literal"),
+            Token::BlazeBadNumber => write!(f, "invalid number literal"), // BLAZE PATCH 0053
             Token::Float(n) => write!(f, "float literal '{n}'"),
             Token::String(s) => write!(f, "string literal {s:?}"),
             Token::RawSingleQuote => write!(f, "starting '"),
@@ -1779,5 +1808,22 @@ mod tests {
             "expected a lex error for b\"\\400\" but got: {:?}",
             result
         );
+    }
+}
+
+/// BLAZE PATCH 0053: Java `Parser.checkForbiddenKeywords` (Parser.java:425).
+fn java_forbidden_keyword(kw: &str) -> String {
+    match kw {
+        "assert" => "'assert' not supported, use 'fail' instead".to_owned(),
+        "del" => {
+            "'del' not supported, use '.pop()' to delete an item from a dictionary or a list"
+                .to_owned()
+        }
+        "import" => "'import' not supported, use 'load' instead".to_owned(),
+        "is" => "'is' not supported, use '==' instead".to_owned(),
+        "raise" => "'raise' not supported, use 'fail' instead".to_owned(),
+        "try" => "'try' not supported, all exceptions are fatal".to_owned(),
+        "while" => "'while' not supported, use 'for' instead".to_owned(),
+        kw => format!("keyword '{kw}' not supported"),
     }
 }

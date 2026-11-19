@@ -330,8 +330,9 @@ fn render_binding(x: &StarFun) -> syn::Result<Bindings> {
             Ok(Bindings {
                 prepare: quote! {
                     let (__required, __optional): ([_; #required], [_; #optional]) =
-                        starlark::__derive_refs::parse_args::parse_positional(
-                            &parameters, eval.heap())?;
+                        // BLAZE PATCH 0052: Java's argument errors.
+                        starlark::__derive_refs::parse_args::parse_positional_spec(
+                            signature, &parameters, eval.heap())?;
                 },
                 bindings: bind_args,
             })
@@ -351,8 +352,9 @@ fn render_binding(x: &StarFun) -> syn::Result<Bindings> {
             Ok(Bindings {
                 prepare: quote! {
                     let (__required, __optional, s_kwargs_value): ([_; #required], [_; #optional], _) =
-                        starlark::__derive_refs::parse_args::parse_positional_kwargs_alloc(
-                            &parameters, eval.heap())?;
+                        // BLAZE PATCH 0052: Java's argument errors.
+                        starlark::__derive_refs::parse_args::parse_positional_kwargs_alloc_spec(
+                            signature, &parameters, eval.heap())?;
                 },
                 bindings: bind_args,
             })
