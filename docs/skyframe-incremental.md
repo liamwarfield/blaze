@@ -355,8 +355,9 @@ written yet).
 All numbers: `scripts/cargo-capped test -p blaze_skyframe` on the final I1 tree (base `de5a476`
 plus the uncommitted phase-3 work; the tree of the hand-back). Expected values come from the Java
 tests; the model's expectations are derived from the Java algorithm (`tests/model/`, citations at
-each rule). Whole crate: **426 passed, 0 failed, 153 ignored**. Before I1 (`48b61bb`): 204 passed,
-124 ignored.
+each rule). Whole crate: **426 passed, 0 failed, 153 ignored**, and the same in each of 30
+consecutive full runs on that tree (the false-cycle stress tests included). Before I1
+(`48b61bb`): 204 passed, 124 ignored. `clippy -D warnings` on the crate is clean.
 
 | Java test class (`@Test` methods) | Rust file under `src/tests/` | Passing | Ignored, with reason |
 | --- | --- | --- | --- |
@@ -395,7 +396,8 @@ evaluation was exact; otherwise bounds. Fixed seeds in the normal run: 0..500 (2
 runs, 14,656 evaluations, 13,552 exact). Long mode (`BLAZE_SKYFRAME_MODEL_SEEDS`,
 `BLAZE_SKYFRAME_MODEL_SEED_START`; run the test binary directly, `scripts/cargo-capped` does not
 pass the environment): seeds 0..24,000, 704,000 evaluations, 654,890 exact, 0 failures on the
-worker's tree. It found one engine defect (section 5.3, `cycle_rdeps`) and one gap of the model
+worker's tree, and seeds 24,000..32,000 (8,000 new seeds, 234,000 evaluations compared with
+the model's graph) with 0 failures on the final merged tree. It found one engine defect (section 5.3, `cycle_rdeps`) and one gap of the model
 (a parent re-run in error bubbling may throw its own exception), both fixed with Java proof and
 kept as single-seed regression tests.
 
@@ -405,6 +407,29 @@ depends on graph state, `J:SimpleCycleDetector.java:196-257`); with `FULL_STORAG
 functions that ran is checked by bounds (the model does not simulate stored-event equality,
 `J:ValueWithMetadata.java:105-124`); interrupts come from inside a function only; catastrophes,
 `keep_edges(false)` and hermetic keys are not generated; the six restart-model tests above.
+
+### 7.1 Regression guard (other crates unchanged)
+
+Measured in the shared checkout with the final crate in place (HEAD `de5a476` plus uncommitted
+work, mine and other agents').
+
+- `scripts/cargo-capped check --workspace --all-targets`: exit 0. No file outside
+  `crates/blaze_skyframe` was changed for it.
+- Oracle: brotli and re2 recorded with `target/debug/blaze` under label
+  `blaze-de5a476dac54-dirty-954e44cd-i1`, `scripts/oracle/scoreboard --json`, then
+  `scripts/gate/compare-scores corpus/scores/blaze-ef66f55e904e.referee2.json <new>`:
+  "rows 39 gained 2 regressed 0, result: PASS" (13,852 matching; the 2 gained items come from
+  other agents' work in the same tree). The phase-2 state of the crate was recorded earlier as
+  `blaze-031e9a1d9341-dirty-29a06983-i1a`: "gained 0 regressed 0", 13,850 matching.
+- Timing, `scripts/skyframe/cold-timing` (fresh output user root per run, the two binaries
+  alternated, under `systemd-run` with the 12G cap; the machine was shared, load average 12 to
+  75). Binaries that differ only in `blaze_skyframe` (same tree built before and after the crate
+  was copied in), best and median of 9 runs: brotli `build --nobuild //...` 5.51 s / 7.60 s
+  before, 5.61 s / 6.69 s after; re2 `build --nobuild //:all //python:all` 7.57 s / 9.38 s
+  before, 7.62 s / 9.55 s after. brotli `build //...`, 5 runs: 7.45 s / 8.06 s before, 7.81 s /
+  8.55 s after. Cold re2 `build //:all`, 2 runs each: 36.8 s and 47.2 s before, 61.5 s and
+  29.3 s after (load noise larger than any difference). Differences are inside the run-to-run spread (several seconds); no slowdown is
+  measurable at this noise level, and one smaller than about 5 % would not be seen.
 
 ## 8. Invariants SkyFunctions must keep (input to I2)
 

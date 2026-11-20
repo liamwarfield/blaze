@@ -323,3 +323,21 @@ Each entry: date, decision, why, who decided.
   run is confirmed as a harness effect by a second route: a stress tool with six Blaze
   processes on one cache passes, and with the old harness's mid-run cache reset both Bazel and
   Blaze fail the same way. Not a Blaze bug. Root.
+- 2026-11-19. Incremental evaluator, package I1: implemented in `crates/blaze_skyframe`, not
+  yet reviewed (`docs/skyframe-incremental.md` is the reviewer's entry point). The blocking
+  evaluator now runs on Java's node-entry state machine (versions, dirtiness, change pruning,
+  invalidation, stored events, progress receivers). Evidence, lead-measured: 426 tests passed,
+  0 failed, 153 ignored, the same in 30 consecutive runs; a randomized model test (704,000
+  evaluations, incremental against fresh and engine against a model written from the Java) with
+  0 failures after it found one engine defect; referee guard regressed 0; cold timings within
+  noise under load. Root accepts the lead's decisions: `Key::HERMETICITY` is optional until I2
+  declares every key; the default event filter stays `NO_STORAGE` until I3; `inject` and
+  `invalidate_transient_errors` apply at the next `evaluate`; in-flight nodes stay until the
+  next `evaluate`; `get_reverse_deps` returns Java's registration order; one
+  `Precomputed<T: PartialEq>` is the first I2 item. I2 (84 keys in six crate groups,
+  `docs/skyframe-incremental.d/i2-worklist.md`) is prepared and not started. Root.
+- 2026-11-19. Paused at the user's request, to save usage. Running agents were told to stop at
+  their next compiling point and hand back with what is done, what is half-done and the next
+  steps; no new agents, reviews or measurements are started. The detached full-suite run
+  (`root-suite-v010-r3`) uses no model usage and is left queued. Resumption list:
+  `docs/STATUS.md`. Root.
