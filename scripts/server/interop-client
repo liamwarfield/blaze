@@ -32,7 +32,7 @@ USAGE = """\
 usage: scripts/server/interop-client help
        scripts/server/interop-client list
        scripts/server/interop-client run [CASE...] [--mode jvm|daemon] [--scenarios a,b,...]
-                                         [--control] [--no-unit]
+                                         [--reference cold|default] [--control] [--no-unit]
 
 Runs every case (or the named ones) twice, on separate fresh output user roots and separate
 fresh copies of the same small workspace, and compares the two step by step:
@@ -47,6 +47,20 @@ fresh copies of the same small workspace, and compares the two step by step:
 `--control` runs the oracle client on both sides (B too): the differences it shows are the real
 server's own nondeterminism, the noise floor of the A/B comparison. `--scenarios` limits the
 `scenarios` case to the named probe scenarios (an empty match is an error).
+`--reference cold` (default: `default`) makes the oracle drop its graph after every command, as
+the first Blaze server does (it keeps none), so that what remains is a server difference, not
+the kept graph: build, test, run, coverage and query get --notrack_incremental_state
+--nokeep_state_after_build; cquery and aquery get only --nokeep_state_after_build (the oracle
+refuses them with --notrack_incremental_state: "Queries based on analysis results are not
+allowed if incrementality state is not being kept", exit 2; --nokeep_state_after_build alone
+still resets the graph at the end of every command). As in scripts/server/seq, both sides get
+the same command lines (B too: if Blaze rejects a flag, that is the finding).
+
+Expected, named deviations (reported as EXPECTED-DEVIATION with the reason, counted on their
+own, never as matches; the diff is still printed):
+  startup-crash, --mode daemon: `--host_jvm_args=-Xbogus` kills a JVM server at startup (the
+     oracle prints "Server crashed during startup" and exits 37); the Blaze server is not a JVM
+     and skips JVM flags (crates/blaze/src/main.rs server_args, PORT note).
 
 The tool runs itself inside `systemd-run --user --collect --wait --pipe -p MemoryMax=12G
 -p MemorySwapMax=0` under scripts/remote/unit-supervisor (its own status is recorded inside the
@@ -66,7 +80,7 @@ Setup (scratch state under ~/.cache/blaze/work/server/s1, deleted per case excep
   ws/           the workspace, re-created from its template before each side (same path for A
                 and B, so the output base hash is the same).
   ur-A/, ur-B/  the output user roots, deleted and re-created for each case.
-  transcripts-<mode>/ (transcripts-<mode>-control/ for --control): <case>-A.txt and
+  transcripts-<mode>[-cold][-control]/ (-cold for --reference cold, -control for --control): <case>-A.txt and
                 <case>-B.txt, every normalised step of the last run.
 Both sides: cwd ws/, environment exactly HOME=$HOME PATH=/usr/bin:/bin BLAZE_SERVER_MODE=<mode>
 (the oracle ignores the variable; setting it on both sides keeps --client_env equal), startup
@@ -173,6 +187,18 @@ def set_install_key(key):
 
 CONTROL = False
 MODE = "jvm"
+REFERENCE = "default"
+# --reference cold: the flags that drop the oracle's graph after each command (scripts/server/seq).
+REF_FLAGS = ["--notrack_incremental_state", "--nokeep_state_after_build"]
+REF_BOTH = {"build", "test", "run", "coverage", "query"}
+REF_NOKEEP_ONLY = {"cquery", "aquery"}
+EXPECTED = "EXPECTED-DEV"
+# (case, mode) -> the reason a difference in that case is an expected, named deviation.
+EXPECTED_DEVIATIONS = {
+    ("startup-crash", "daemon"): "the Blaze server is not a JVM and ignores JVM flags "
+                                 "(--host_jvm_args=-Xbogus starts it normally; a JVM server "
+                                 "dies at startup, exit 37)",
+}
 BINARIES = {}  # "A"/"B" -> the client binary that runs
 
 
@@ -230,6 +256,11 @@ class Side:
             argv.append(command)
             if command in COMMON_COMMANDS:
                 argv += ["--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"]
+            if REFERENCE == "cold":
+                if command in REF_BOTH:
+                    argv += REF_FLAGS
+                elif command in REF_NOKEEP_ONLY:
+                    argv += ["--nokeep_state_after_build"]
         return argv + list(args)
 
     def spawn(self, startup=(), command=None, args=(), stdout=subprocess.PIPE):
@@ -606,8 +637,16 @@ CASES = [
 
 # --------------------------------------------------------------------------------------------
 
-def compare(a, b, counts):
-    """Prints the class of each step; returns True when no step is DIFFERENT."""
+def counts_case_expected(a, b):
+    """True when some step of the case differs (it is then an expected deviation)."""
+    ta = [t for _, t, _ in a.steps]
+    tb = [t for _, t, _ in b.steps]
+    return ta != tb
+
+
+def compare(a, b, counts, expected=None):
+    """Prints the class of each step; returns True when no step is DIFFERENT. With `expected`
+    (the reason of a named deviation), a differing step is EXPECTED-DEVIATION, not DIFFERENT."""
     titles = [t for t, _, _ in a.steps]
     if titles != [t for t, _, _ in b.steps]:
         print("  DIFFERENT step lists")
@@ -619,17 +658,22 @@ def compare(a, b, counts):
     ok = True
     for (title, ta, fa), (_, tb, fb) in zip(a.steps, b.steps):
         cls = C.classify(ta, tb, fa, fb)
+        if cls == C.DIFFERENT and expected:
+            cls = EXPECTED
+            print("  %-12s %s (%s)" % (cls, title, expected))
+        else:
+            print("  %-12s %s" % (cls, title))
         counts[cls] += 1
-        print("  %-12s %s" % (cls, title))
-        if cls == C.DIFFERENT:
-            ok = False
+        if cls in (C.DIFFERENT, EXPECTED):
+            if cls == C.DIFFERENT:
+                ok = False
             sys.stdout.writelines("    " + l + "\n" for l in difflib.unified_diff(
                 ta.splitlines(), tb.splitlines(), "oracle", "blaze", lineterm=""))
     return ok
 
 
 def parse(args):
-    global CONTROL, MODE
+    global CONTROL, MODE, REFERENCE
     only = None
     names, no_unit = [], False
     i = 0
@@ -639,13 +683,17 @@ def parse(args):
             CONTROL = True
         elif a == "--no-unit":
             no_unit = True
-        elif a in ("--mode", "--scenarios"):
+        elif a in ("--mode", "--scenarios", "--reference"):
             if i + 1 >= len(args):
                 die("%s needs a value" % a)
             if a == "--mode":
                 MODE = args[i + 1]
                 if MODE not in ("jvm", "daemon"):
                     die("--mode must be jvm or daemon")
+            elif a == "--reference":
+                REFERENCE = args[i + 1]
+                if REFERENCE not in ("cold", "default"):
+                    die("--reference must be cold or default")
             else:
                 only = set(x for x in args[i + 1].split(",") if x)
             i += 1
@@ -653,6 +701,10 @@ def parse(args):
             MODE = a.split("=", 1)[1]
             if MODE not in ("jvm", "daemon"):
                 die("--mode must be jvm or daemon")
+        elif a.startswith("--reference="):
+            REFERENCE = a.split("=", 1)[1]
+            if REFERENCE not in ("cold", "default"):
+                die("--reference must be cold or default")
         elif a.startswith("-"):
             die("unknown option %r" % a)
         else:
@@ -717,8 +769,9 @@ def main(argv):
         print("\n".join(C.header(TOOL, [("A (oracle, pinned)", oracle, C.ORACLE_SHA256),
                                        ("B (blaze %s, run from %s)" % (blaze_src, staged),
                                         blaze_src, bsha)], blaze=blaze_src)))
-    print("%s: mode %s%s; cases selected: %s%s" % (
-        TOOL, MODE, " (--control: B runs the oracle client and server)" if CONTROL else "",
+    print("%s: mode %s, reference %s%s; cases selected: %s%s" % (
+        TOOL, MODE, REFERENCE,
+        " (--control: B runs the oracle client and server)" if CONTROL else "",
         ", ".join(n for n, _ in selected),
         ("; scenarios: " + ", ".join(scenario_names(only))) if only else ""))
     sys.stdout.flush()
@@ -730,9 +783,10 @@ def main(argv):
 
     keys = prepare_install_base(staged) if MODE == "jvm" else None
     results = []
-    counts = {C.IDENTICAL: 0, C.SAME_FAILURE: 0, C.DIFFERENT: 0, C.NOT_RUN: 0}
+    counts = {C.IDENTICAL: 0, C.SAME_FAILURE: 0, C.DIFFERENT: 0, C.NOT_RUN: 0, EXPECTED: 0}
     sides = {}
-    tdir = os.path.join(WORK, "transcripts-%s%s" % (MODE, "-control" if CONTROL else ""))
+    tdir = os.path.join(WORK, "transcripts-%s%s%s" % (
+        MODE, "-cold" if REFERENCE == "cold" else "", "-control" if CONTROL else ""))
     os.makedirs(tdir, exist_ok=True)
     try:
         for name, f in selected:
@@ -766,9 +820,12 @@ def main(argv):
                 print("  ERROR %s (transcripts kept in %s)" % (error, tdir))
                 results.append((name, "ERROR"))
             else:
-                ok = compare(run["A"], run["B"], counts)
+                expected = None if CONTROL else EXPECTED_DEVIATIONS.get((name, MODE))
+                ok = compare(run["A"], run["B"], counts, expected)
                 timed = [n for n in SIDES if run[n].timed_out]
                 verdict = "IDENTICAL" if ok else "DIFFERENT"
+                if expected and counts_case_expected(run["A"], run["B"]):
+                    verdict = "EXPECTED-DEVIATION"
                 if timed:
                     verdict += " (a step timed out on side %s)" % ",".join(timed)
                 results.append((name, verdict))
@@ -788,15 +845,18 @@ def main(argv):
             rmtree(WS)
         if staged:
             C.unstage_binary(staged)
-    print("%s: denominator: %d cases selected, %d run; identical: %s; different: %s; errors: %s"
+    print("%s: denominator: %d cases selected, %d run; identical: %s; different: %s; "
+          "expected deviations: %s; errors: %s"
           % (TOOL, len(selected), len(results),
              ", ".join(n for n, v in results if v == "IDENTICAL") or "none",
              ", ".join(n for n, v in results if v.startswith("DIFFERENT")) or "none",
+             ", ".join(n for n, v in results if v == "EXPECTED-DEVIATION") or "none",
              ", ".join(n for n, v in results if v == "ERROR") or "none"))
     print("%s: steps: %d identical, %d same-failure (identical non-zero exits; not matches), "
-          "%d different, %d not run" % (TOOL, counts[C.IDENTICAL], counts[C.SAME_FAILURE],
-                                        counts[C.DIFFERENT], counts[C.NOT_RUN]))
-    bad = [n for n, v in results if v != "IDENTICAL"]
+          "%d different, %d expected deviations (named; not matches), %d not run"
+          % (TOOL, counts[C.IDENTICAL], counts[C.SAME_FAILURE], counts[C.DIFFERENT],
+             counts[EXPECTED], counts[C.NOT_RUN]))
+    bad = [n for n, v in results if v not in ("IDENTICAL", "EXPECTED-DEVIATION")]
     return 0 if not bad and len(results) == len(selected) else 1
 
 

@@ -159,12 +159,6 @@ pub(crate) fn check_unported_options(command: &CommandAnnotation, options: &Opti
                 "--experimental_enable_thread_dump"
             );
         }
-        // CommandLogModule.getOutputListener: the copy of the command's output in
-        // <output_base>/command.log.
-        // Java: com/google/devtools/build/lib/runtime/CommandLogModule.java:52 CommandLogModule.getOutputListener
-        if common_options.write_command_log && command_name != "clean" {
-            blaze_util::unported!("CommandLogModule.getOutputListener", "--write_command_log");
-        }
     }
 }
 
@@ -256,11 +250,5 @@ mod tests {
             &BUILD_COMMAND,
             &parser(&["--bes_backend=grpc://localhost:1"]),
         );
-    }
-
-    #[test]
-    #[should_panic(expected = "CommandLogModule.getOutputListener")]
-    fn write_command_log_fails() {
-        check_unported_options(&BUILD_COMMAND, &parser(&["--write_command_log"]));
     }
 }

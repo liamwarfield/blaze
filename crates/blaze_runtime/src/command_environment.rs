@@ -53,9 +53,9 @@ pub struct CommandEnvironment {
     command_id: String,
     visible_action_env: std::collections::BTreeSet<String>,
     visible_test_env: std::collections::BTreeSet<String>,
-    /// `blazeModuleEnvironment.exit(e)`: the first pending abrupt exit, checked in
-    /// `beforeCommand` (Java: `BlazeModuleEnvironment.pendingException`).
-    pending_exception: Option<AbruptExitException>,
+    /// `blazeModuleEnvironment`: the module environment, whose `exit` sets the pending
+    /// exception (`pendingException`) and interrupts the command thread.
+    blaze_module_environment: BlazeModuleEnvironment,
     has_synced_package_loading: bool,
     /// Java `configFlagDefinitions`: the `--config` definitions of the rc files for this
     /// command.
@@ -75,6 +75,54 @@ pub struct CommandEnvironment {
     track_incremental_state: bool,
     /// Java `commandStartTime`, in milliseconds since the epoch.
     command_start_time: i64,
+    /// Java `waitTime`: the time this command waited for the command lock plus the client's
+    /// `--command_wait_time` (`CommonCommandOptions.waitTime`), in milliseconds.
+    wait_time_millis: i64,
+}
+
+/// The state behind `pendingException`: `None` if neither [`BlazeModuleEnvironment::exit`] nor
+/// [`CommandEnvironment::precomplete_command`] has been called; `Some(Some(e))` if `exit` has
+/// been called with `e`; `Some(None)` if `precomplete_command` was called before any call to
+/// `exit`.
+// Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:164 CommandEnvironment.pendingException
+type PendingException = parking_lot::Mutex<Option<Option<AbruptExitException>>>;
+
+/// The environment modules use to request an abrupt exit of the running command, from any
+/// thread. Cloning shares the command's state.
+// Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:195 CommandEnvironment.BlazeModuleEnvironment
+#[derive(Clone)]
+pub struct BlazeModuleEnvironment {
+    pending_exception: Arc<PendingException>,
+    /// `commandThread`: the thread that runs the command (the one that created the
+    /// environment).
+    command_thread: blaze_shell::thread_interrupt::ThreadInterrupt,
+}
+
+impl BlazeModuleEnvironment {
+    /// Exits Blaze as early as possible by sending an interrupt to the command's main thread.
+    /// The first exception wins; only the first call interrupts, and only from another thread.
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:207 BlazeModuleEnvironment.exit
+    pub fn exit(&self, exception: AbruptExitException) {
+        // checkNotNull(exception), checkNotNull(exception.getExitCode()): both by type.
+        let first = {
+            let mut pending = self.pending_exception.lock();
+            if pending.is_none() {
+                *pending = Some(Some(exception));
+                true
+            } else {
+                false
+            }
+        };
+        if first
+            && !blaze_shell::thread_interrupt::ThreadInterrupt::current()
+                .same_thread(&self.command_thread)
+        {
+            // There was no exception, so we're the first one to ask for an exit. Interrupt the
+            // command if this exit is coming from a different thread, so that the command
+            // terminates promptly.
+            self.command_thread.interrupt();
+        }
+    }
 }
 
 impl CommandEnvironment {
@@ -88,6 +136,8 @@ impl CommandEnvironment {
         options: Arc<OptionsParsingResult>,
         invocation_policy: InvocationPolicy,
         warnings: &mut Vec<String>,
+        wait_time_in_ms: i64,
+        command_start_time: i64,
     ) -> CommandEnvironment {
         let directories = workspace.get_directories().clone();
         // Java: new Reporter(eventBus, ...) with the command's EventBus.
@@ -97,25 +147,19 @@ impl CommandEnvironment {
         let command_options = options.get_options::<CommonCommandOptions>().expect(
             "CommandEnvironment needs its options provider to have CommonCommandOptions loaded.",
         );
-        // PORT: Java's dispatcher passes the time of the client's first contact with the server
-        // (`firstContactTimeMillis`, or `runtime.getClock().currentTimeMillis()` in
-        // `execExclusively`); in-process the dispatcher creates the environment right after the
-        // client calls it.
-        // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:298 CommandEnvironment.<init>
-        let command_start_time = {
-            use blaze_events::Clock;
-            blaze_events::JavaClock.current_time_millis()
-        } - command_options.startup_time;
-        let mut pending_exception = None;
+        // The thread that creates the environment runs the command (Java passes
+        // Thread.currentThread() from BlazeWorkspace.initCommand).
+        let blaze_module_environment = BlazeModuleEnvironment {
+            pending_exception: Arc::new(parking_lot::Mutex::new(None)),
+            command_thread: blaze_shell::thread_interrupt::ThreadInterrupt::current(),
+        };
         let working_directory =
             match Self::compute_working_directory(&directories, &command_options) {
                 Ok(wd) => wd,
                 Err(e) => {
+                    blaze_module_environment.exit(e);
                     // We'll exit very soon, but set the working directory to something reasonable so
                     // remainder of setup can finish.
-                    if pending_exception.is_none() {
-                        pending_exception = Some(e);
-                    }
                     directories
                         .get_working_directory()
                         .cloned()
@@ -126,6 +170,10 @@ impl CommandEnvironment {
             Some(ws) => working_directory.relative_to(ws),
             None => PathFragment::empty_fragment(),
         };
+
+        // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:297 CommandEnvironment.<init>
+        let wait_time_millis = wait_time_in_ms + command_options.wait_time;
+        let command_start_time = command_start_time - command_options.startup_time;
 
         // PORT: http timeout scaling, downloader setup and the parallel-download check are
         // not ported (no downloader in W1).
@@ -245,7 +293,7 @@ impl CommandEnvironment {
             command_id,
             visible_action_env,
             visible_test_env,
-            pending_exception,
+            blaze_module_environment,
             has_synced_package_loading: false,
             config_flag_definitions: Arc::default(),
             ui_event_handler: None,
@@ -256,6 +304,7 @@ impl CommandEnvironment {
             // decideKeepIncrementalState.
             track_incremental_state: true,
             command_start_time,
+            wait_time_millis,
         }
     }
 
@@ -298,8 +347,16 @@ impl CommandEnvironment {
         &self.invocation_policy_flags
     }
 
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:886 CommandEnvironment.getCommandStartTime
     pub fn get_command_start_time(&self) -> i64 {
         self.command_start_time
+    }
+
+    /// The time this command waited for the command lock plus `--command_wait_time`, in
+    /// milliseconds.
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:648 CommandEnvironment.getWaitTime
+    pub fn get_wait_time(&self) -> i64 {
+        self.wait_time_millis
     }
 
     /// Calls `SkyframeExecutor.decideKeepIncrementalState` with this command's options.
@@ -653,17 +710,110 @@ impl CommandEnvironment {
         self.bep.as_ref()
     }
 
-    /// The pending abrupt exit recorded by `BlazeModuleEnvironment.exit`.
-    pub(crate) fn take_pending_exception(&mut self) -> Option<AbruptExitException> {
-        self.pending_exception.take()
+    /// Returns the module environment, which modules use to request an abrupt exit of this
+    /// command from any thread.
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:556 CommandEnvironment.getBlazeModuleEnvironment
+    pub fn get_blaze_module_environment(&self) -> &BlazeModuleEnvironment {
+        &self.blaze_module_environment
     }
 
-    /// `BlazeModuleEnvironment.exit`: the first exception wins.
+    /// `getBlazeModuleEnvironment().exit(exception)`.
     // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:207 BlazeModuleEnvironment.exit
-    pub fn exit(&mut self, exception: AbruptExitException) {
-        if self.pending_exception.is_none() {
-            self.pending_exception = Some(exception);
+    pub fn exit(&self, exception: AbruptExitException) {
+        self.blaze_module_environment.exit(exception);
+    }
+
+    /// Returns additional listeners to the console output stream: those the modules return
+    /// from `getOutputListener`, in module order.
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:652 CommandEnvironment.getOutputListeners
+    pub(crate) fn get_output_listeners(&self) -> Vec<OutErr> {
+        let mut result = Vec::new();
+        for module in self.runtime.get_blaze_modules() {
+            if let Some(listener) = module.get_output_listener(self) {
+                result.push(listener);
+            }
         }
+        result
+    }
+
+    /// Prevents any further interruption of this command by modules, and returns the final
+    /// exit code from modules, or `None` if no modules requested an abrupt exit.
+    ///
+    /// Always returns the same value on subsequent calls.
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:781 CommandEnvironment.finalizeDetailedExitCode
+    fn finalize_detailed_exit_code(&self) -> Option<DetailedExitCode> {
+        {
+            // Set the pending exception so that further calls to exit(AbruptExitException) don't
+            // lead to unwanted thread interrupts.
+            let mut pending = self.blaze_module_environment.pending_exception.lock();
+            if pending.is_none() {
+                *pending = Some(None);
+                return None;
+            }
+        }
+        if blaze_shell::thread_interrupt::ThreadInterrupt::current()
+            .same_thread(&self.blaze_module_environment.command_thread)
+        {
+            // We may have interrupted the thread in the process, so clear the interrupted bit.
+            // Whether the command was interrupted or not, it's about to be over, so don't
+            // interrupt later things happening on this thread.
+            blaze_shell::thread_interrupt::interrupted();
+        }
+        // Extract the exit code (it can be null if someone has already called
+        // finalizeExitCode()).
+        self.get_pending_detailed_exit_code()
+    }
+
+    /// Hook method called by the BlazeCommandDispatcher right before the dispatch of each
+    /// command ends (while its outcome can still be modified).
+    ///
+    /// PORT: the deprecated `CommandPrecompleteEvent(ExitCode)` posted here has no subscriber
+    /// in Blaze; the metrics collector's `CommandPrecompleteEvent` is posted by `afterCommand`
+    /// (see `BlazeCommandDispatcher::after_command`).
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:802 CommandEnvironment.precompleteCommand
+    pub(crate) fn precomplete_command(
+        &self,
+        _original_exit: &DetailedExitCode,
+    ) -> Option<DetailedExitCode> {
+        self.finalize_detailed_exit_code()
+    }
+
+    /// Returns the current exit code requested by modules, or `None` if no exit has been
+    /// requested.
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:810 CommandEnvironment.getPendingDetailedExitCode
+    fn get_pending_detailed_exit_code(&self) -> Option<DetailedExitCode> {
+        self.get_pending_exception()
+            .map(|e| e.get_detailed_exit_code().clone())
+    }
+
+    /// Retrieves the exception currently queued by a Blaze module.
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:823 CommandEnvironment.getPendingException
+    pub fn get_pending_exception(&self) -> Option<AbruptExitException> {
+        self.blaze_module_environment
+            .pending_exception
+            .lock()
+            .clone()
+            .flatten()
+    }
+
+    /// Throws the exception currently queued by a Blaze module.
+    ///
+    /// This should be called as often as is practical so that errors are reported as soon as
+    /// possible. Ideally, we'd not need this, but the event bus swallows exceptions so we raise
+    /// the exception this way.
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:835 CommandEnvironment.throwPendingException
+    pub fn throw_pending_exception(&self) -> Result<(), AbruptExitException> {
+        if let Some(exception) = self.get_pending_exception() {
+            if blaze_shell::thread_interrupt::ThreadInterrupt::current()
+                .same_thread(&self.blaze_module_environment.command_thread)
+            {
+                // Throwing this exception counts as the requested interruption. Clear the
+                // interrupted bit.
+                blaze_shell::thread_interrupt::interrupted();
+            }
+            return Err(exception);
+        }
+        Ok(())
     }
 
     /// `shutdownReasonConsumer.accept(reason)`.

@@ -7,8 +7,11 @@
 //!
 //! PORT: keep-alive. Provider values are returned with `OwnedFrozenValue::unchecked_frozen_value`:
 //! `StarlarkValue::at`/`get_attr` have no frozen heap to register the providers' heaps with.
-//! Every configured target (and so every provider heap) is held by Skyframe for the life of the
-//! process (single build per process), which keeps them valid.
+//! Every configured target (and so every provider heap) is held by the graph of the evaluator
+//! the rule evaluation runs in, which keeps them valid: the evaluation ends before the graph is
+//! dropped, and a frozen value that comes to point at a provider this way is itself a value of
+//! that graph (a provider of the dependent target) or held by a memo of the build arena
+//! (`blaze_util::build_arena`), which is released only after every graph is gone.
 
 use std::fmt;
 use std::hash::Hash;

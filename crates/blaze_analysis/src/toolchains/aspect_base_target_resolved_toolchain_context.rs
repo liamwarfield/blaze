@@ -264,7 +264,8 @@ impl ToolchainAspectsProviders {
     }
 
     /// PORT: keep-alive, as `configuredtargets::target_value`: the providers' frozen heaps are
-    /// held by the configured targets Skyframe keeps for the life of the process.
+    /// held by the configured targets of the graph the evaluation runs in, which outlives the
+    /// evaluation and every value made from the result.
     fn owned_to_value<'v>(v: &OwnedFrozenValue) -> Value<'v> {
         // SAFETY: see the comment above.
         unsafe { v.unchecked_frozen_value() }.to_value()

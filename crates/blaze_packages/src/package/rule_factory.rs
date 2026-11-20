@@ -208,16 +208,29 @@ fn get_generator_name<'v>(
     }
 }
 
-/// Frozen heaps holding `generator_name` strings; kept for the life of the process.
+/// Frozen heaps holding `generator_name` strings; kept for the life of the build arena
+/// (`blaze_util::build_arena`, decision D7).
 // PORT: keep-alive. Java puts a java.lang.String into the attribute map; a Starlark value needs a
 // heap, and the caller's heap is not reachable here.
-static GENERATOR_NAME_HEAPS: Mutex<Vec<FrozenHeapRef>> = Mutex::new(Vec::new());
+#[derive(Default)]
+struct GeneratorNameHeaps(Mutex<Vec<FrozenHeapRef>>);
 
-/// A Starlark string value for `generator_name`, valid for any heap lifetime.
+impl blaze_util::build_arena::ArenaSlot for GeneratorNameHeaps {
+    const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
+        blaze_util::build_arena::ReleaseOrder::Heaps;
+}
+
+/// A Starlark string value for `generator_name`, valid for any heap lifetime while the build
+/// arena lives: the value ends up in a rule's attributes, held by a package of an evaluator's
+/// graph (or by the evaluation running now), and the arena is released only once no evaluator
+/// is left.
 fn alloc_generator_name<'v>(generator_name: &str) -> Value<'v> {
     let heap = FrozenHeap::new();
     let value = heap.alloc_str(generator_name).to_frozen_value();
-    GENERATOR_NAME_HEAPS.lock().push(heap.into_ref());
+    blaze_util::build_arena::slot::<GeneratorNameHeaps>()
+        .0
+        .lock()
+        .push(heap.into_ref());
     value.to_value()
 }
 

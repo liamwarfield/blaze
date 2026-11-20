@@ -248,7 +248,9 @@ impl KeyInputMetadataProvider for KeyMetadataAdapter<'_> {
 // `NestedSetNode` hashes and compares by node identity (Java `Node.equals`), not by the
 // artifacts' interior state.
 ///
-/// The conversion is memoized for the process: every spawn that holds a node of one
+/// The conversion is memoized for the life of the build arena (`blaze_util::build_arena`,
+/// decision D7: released by the server after each command; elsewhere it lives for the process,
+/// as Blaze ran one command per process): every spawn that holds a node of one
 /// `NestedSet<Artifact>` (for example the depset of headers shared by many compile actions) gets
 /// the same converted node, as every Java spawn holds the same object, so that
 /// `CompactSpawnLogContext` logs a shared set once and refers to it by its entry ID. The memo is
@@ -263,11 +265,16 @@ pub fn to_action_input_set(set: &NestedSet<BlazeArtifact>) -> NestedSet<ActionIn
 /// The key of a converted set: Java's `NestedSet` object is its node and its order.
 type ConvertedSetKey = (NestedSetNode<BlazeArtifact>, Order);
 
-/// The converted set of each `NestedSet<Artifact>` (see [`to_action_input_set`]).
+/// The converted set of each `NestedSet<Artifact>` (see [`to_action_input_set`]), in the build
+/// arena. Its keys hold their sets strongly, so no address is reused while it lives.
 #[allow(clippy::mutable_key_type)]
-static ACTION_INPUT_SETS: std::sync::LazyLock<
-    parking_lot::Mutex<HashMap<ConvertedSetKey, NestedSet<ActionInputRef>>>,
-> = std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
+#[derive(Default)]
+struct ActionInputSets(parking_lot::Mutex<HashMap<ConvertedSetKey, NestedSet<ActionInputRef>>>);
+
+impl blaze_util::build_arena::ArenaSlot for ActionInputSets {
+    const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
+        blaze_util::build_arena::ReleaseOrder::State;
+}
 
 /// Converts `set`, its sub-sets first. The memo's lock is held only to look up and to publish a
 /// converted set, not across a conversion, so conversions of different actions run in parallel.
@@ -277,7 +284,8 @@ static ACTION_INPUT_SETS: std::sync::LazyLock<
 fn convert_set(set: &NestedSet<BlazeArtifact>) -> NestedSet<ActionInputRef> {
     let order = set.get_order();
     let key: ConvertedSetKey = (set.to_node(), order);
-    if let Some(s) = ACTION_INPUT_SETS.lock().get(&key) {
+    let action_input_sets = blaze_util::build_arena::slot::<ActionInputSets>();
+    if let Some(s) = action_input_sets.0.lock().get(&key) {
         return s.clone();
     }
     let converted = if set.is_empty() {
@@ -298,7 +306,8 @@ fn convert_set(set: &NestedSet<BlazeArtifact>) -> NestedSet<ActionInputRef> {
         }
         b.build()
     };
-    ACTION_INPUT_SETS
+    action_input_sets
+        .0
         .lock()
         .entry(key)
         .or_insert(converted)

@@ -63,6 +63,11 @@ fn server_args(argv: &[String]) -> Option<Vec<String>> {
         return None;
     }
     // `-jar` is followed by the jar's path; the JVM's `main` gets what comes after it.
+    // PORT: the JVM flags before `-jar` (`--host_jvm_args`, `-Xverify:none`, `-D...`, ...) are
+    // skipped: the Blaze server is not a JVM. A flag the JVM rejects (`--host_jvm_args=-Xbogus`:
+    // "Unrecognized option", the JVM exits 1 and the client prints "Server crashed during
+    // startup" and exits 37) starts a Blaze server normally (recorded deviation; the
+    // `startup-crash` case of scripts/server/interop-client reports it by name).
     if jar + 1 >= argv.len() {
         return None;
     }

@@ -10,7 +10,7 @@
 //! (stored events, transitive state) are shared by the steps exactly as in Java.
 
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use blaze_analysis::analysis_services::AnalysisServices;
 use blaze_analysis::aspect_key_creator::LoadAspectsKey;
@@ -666,7 +666,9 @@ pub fn get_dependency_context(
 ///
 /// PORT: a file in `@_builtins` is evaluated by the bundled loader of `blaze_build_config`
 /// (Java: BZL_LOAD with `keyForBuiltins`), whose result is memoized here per
-/// `--experimental_exec_config` value; another file is requested through BZL_LOAD
+/// `--experimental_exec_config` value, for the life of the build arena
+/// (`blaze_util::build_arena`, decision D7; the server releases it after every command, as Java's
+/// graph reset drops the BZL_LOAD node); another file is requested through BZL_LOAD
 /// (`keyForBuild`), as in Java.
 // Java: com/google/devtools/build/lib/analysis/config/StarlarkExecTransitionLoader.java:78 StarlarkExecTransitionLoader.loadStarlarkExecTransition
 pub fn load_starlark_exec_transition_provider(
@@ -677,9 +679,15 @@ pub fn load_starlark_exec_transition_provider(
     Option<Option<Arc<StarlarkAttributeTransitionProvider>>>,
     StarlarkExecTransitionLoadingException,
 > {
-    static LOADED: LazyLock<
-        Mutex<HashMap<String, Option<Arc<StarlarkAttributeTransitionProvider>>>>,
-    > = LazyLock::new(|| Mutex::new(HashMap::new()));
+    #[derive(Default)]
+    struct Loaded(Mutex<HashMap<String, Option<Arc<StarlarkAttributeTransitionProvider>>>>);
+    impl blaze_util::build_arena::ArenaSlot for Loaded {
+        // The providers own their modules' heaps (`StarlarkDefinedConfigTransition::from_frozen`
+        // of an `OwnedFrozenValue`).
+        const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
+            blaze_util::build_arena::ReleaseOrder::State;
+    }
+    let loaded = blaze_util::build_arena::slot::<Loaded>();
     let Some(options) = options else {
         return Ok(Some(None));
     };
@@ -691,7 +699,7 @@ pub fn load_starlark_exec_transition_provider(
         .expect("CoreOptions")
         .starlark_exec_config
         .clone();
-    if let Some(p) = LOADED.lock().get(&user_ref) {
+    if let Some(p) = loaded.0.lock().get(&user_ref) {
         return Ok(Some(p.clone()));
     }
     let loader = EnvironmentBzlFileLoader {
@@ -712,7 +720,7 @@ pub fn load_starlark_exec_transition_provider(
         return Ok(Some(provider));
     }
     Ok(Some(
-        LOADED.lock().entry(user_ref).or_insert(provider).clone(),
+        loaded.0.lock().entry(user_ref).or_insert(provider).clone(),
     ))
 }
 
@@ -733,7 +741,7 @@ impl blaze_build_config::starlark_transition::BzlFileLoader
     ) -> Option<Arc<blaze_build_config::starlark_transition::StarlarkDefinedConfigTransition>> {
         let frozen = value.value().unpack_frozen()?;
         blaze_config::transitions::StarlarkDefinedConfigTransition::from_value(frozen.to_value())?;
-        // The module's heap stays alive with the BZL_LOAD value (PORT: keep-alive), as
+        // The module's heap stays alive in the build arena (BZL_LOAD's keep-alive), as
         // StarlarkCallable requires.
         Some(
             blaze_analysis::config::transitions::starlark_defined_config_transition_of(

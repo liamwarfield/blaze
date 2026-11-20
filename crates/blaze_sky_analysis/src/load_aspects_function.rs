@@ -125,9 +125,10 @@ fn get_top_level_aspects(
                 else {
                     return Ok(None);
                 };
-                // PORT: keep-alive (the .bzl module's heap lives for the process).
-                // SAFETY: BZL_LOAD keeps the module's frozen heap alive for the life of the
-                // process (see `StarlarkCallable`).
+                // PORT: keep-alive (the .bzl module's heap lives in the build arena).
+                // SAFETY: BZL_LOAD keeps the module's frozen heap in the build arena, which
+                // outlives this evaluator and its graph, the holders of the callable (see
+                // `StarlarkCallable`).
                 let callable =
                     StarlarkCallable::new(unsafe { starlark_aspect.unchecked_frozen_value() });
                 if let Err(e) = builder.add_starlark_aspect(callable) {

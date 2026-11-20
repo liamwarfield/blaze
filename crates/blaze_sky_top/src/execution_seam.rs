@@ -852,7 +852,9 @@ pub fn build_driver_keys(
 /// the analysis result in two calls ([`build_driver_keys`], [`build_driver_aspect_keys`]); a
 /// command that analyzed top-level aspects for a build and then starts the execution phase
 /// without the second call would build no aspect and still report success. That fails loudly
-/// here (one command per process, like the other process-wide receivers).
+/// here. The state is per command: it lives in the build arena (`blaze_util::build_arena`, which
+/// the server releases after every command).
+#[derive(Default)]
 struct TopLevelAspectDrivers {
     /// The number of `TopLevelAspectsKey`s `BuildView.update` analyzed with the execution phase.
     analyzed: std::sync::atomic::AtomicUsize,
@@ -860,18 +862,22 @@ struct TopLevelAspectDrivers {
     created: std::sync::atomic::AtomicBool,
 }
 
-static TOP_LEVEL_ASPECT_DRIVERS: TopLevelAspectDrivers = TopLevelAspectDrivers {
-    analyzed: std::sync::atomic::AtomicUsize::new(0),
-    created: std::sync::atomic::AtomicBool::new(false),
-};
+impl blaze_util::build_arena::ArenaSlot for TopLevelAspectDrivers {
+    const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
+        blaze_util::build_arena::ReleaseOrder::State;
+}
+
+fn top_level_aspect_drivers() -> std::sync::Arc<TopLevelAspectDrivers> {
+    blaze_util::build_arena::slot::<TopLevelAspectDrivers>()
+}
 
 /// `BuildView.update` analyzed `count` `TopLevelAspectsKey`s for a build with an execution
 /// phase.
 pub(crate) fn note_top_level_aspects_analyzed_for_execution(count: usize) {
-    TOP_LEVEL_ASPECT_DRIVERS
+    top_level_aspect_drivers()
         .analyzed
         .store(count, Ordering::SeqCst);
-    TOP_LEVEL_ASPECT_DRIVERS
+    top_level_aspect_drivers()
         .created
         .store(false, Ordering::SeqCst);
 }
@@ -879,8 +885,8 @@ pub(crate) fn note_top_level_aspects_analyzed_for_execution(count: usize) {
 /// Called when the execution phase first asks for a top-level configured target.
 // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:680 SkyframeBuildView.analyzeAndExecuteTargets
 fn check_top_level_aspect_drivers_created() {
-    let analyzed = TOP_LEVEL_ASPECT_DRIVERS.analyzed.load(Ordering::SeqCst);
-    if analyzed > 0 && !TOP_LEVEL_ASPECT_DRIVERS.created.load(Ordering::SeqCst) {
+    let analyzed = top_level_aspect_drivers().analyzed.load(Ordering::SeqCst);
+    if analyzed > 0 && !top_level_aspect_drivers().created.load(Ordering::SeqCst) {
         unported!(
             "SkyframeBuildView.analyzeAndExecuteTargets",
             "the build command did not create the BuildDriverKey.ofTopLevelAspect keys \
@@ -906,7 +912,7 @@ pub fn build_driver_aspect_keys(
     skip_incompatible_explicit_targets: bool,
     extra_action_top_level_only: bool,
 ) -> Vec<BuildDriverKey> {
-    TOP_LEVEL_ASPECT_DRIVERS
+    top_level_aspect_drivers()
         .created
         .store(true, Ordering::SeqCst);
     let mut build_driver_aspect_keys: IndexSet<BuildDriverKey> = IndexSet::new();

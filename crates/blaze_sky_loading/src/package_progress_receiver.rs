@@ -2,10 +2,14 @@
 //! for the UI's `(N packages loaded, ...)`.
 //!
 //! PORT: Java's receiver is a field of the server's `SkyframeExecutor`, handed to
-//! `PackageFunction` and the UI. Blaze runs one command per process, so the receiver is a
-//! process-wide value ([`PACKAGE_PROGRESS`]); its initial state stands for Java's reset in
+//! `PackageFunction` and the UI. Blaze's executor lives for one command, so the receiver is a
+//! process-wide value ([`PACKAGE_PROGRESS`]). Java resets it in
 //! `SkyframeExecutor.preparePackageLoading`, which runs once per command, before
 //! `BlazeOptionHandler.parseStarlarkOptions` (`BlazeCommandDispatcher.java:651` and `:768`).
+//! Here the reset happens at the first use in a new generation of the build arena
+//! (`blaze_util::build_arena::generation`): the server releases the arena after every command,
+//! so the first use in a command finds a new generation; a process that runs one command never
+//! releases it, and the initial state stands for the reset.
 //!
 //! PORT: Java loads every package of a command once, in the server's single graph, so its count
 //! of completed loads is a count of distinct packages. Blaze loads the build settings of the
@@ -31,6 +35,8 @@ struct State {
     pending_set: Option<IndexSet<PackageIdentifier>>,
     /// The packages counted in `packages_completed` (see the module comment).
     completed_set: Option<HashSet<PackageIdentifier>>,
+    /// The build arena generation this state belongs to (see the module comment).
+    arena_generation: u64,
 }
 
 /// The process's receiver.
@@ -43,15 +49,29 @@ impl PackageProgressReceiver {
                 packages_completed: 0,
                 pending_set: None,
                 completed_set: None,
+                arena_generation: 0,
             }),
         }
+    }
+
+    /// The state, reset first when the build arena was released since its last use (Java's
+    /// reset in `preparePackageLoading`, see the module comment).
+    fn lock_state(&self) -> parking_lot::MutexGuard<'_, State> {
+        let generation = blaze_util::build_arena::generation();
+        let mut state = self.state.lock();
+        if state.arena_generation != generation {
+            state.packages_completed = 0;
+            state.pending_set = None;
+            state.completed_set = None;
+            state.arena_generation = generation;
+        }
+        state
     }
 
     /// Register that loading a package has started.
     // Java: com/google/devtools/build/lib/skyframe/PackageProgressReceiver.java:30 PackageProgressReceiver.startReadPackage
     pub fn start_read_package(&self, package_id: &PackageIdentifier) {
-        self.state
-            .lock()
+        self.lock_state()
             .pending_set
             .get_or_insert_with(IndexSet::new)
             .insert(package_id.clone());
@@ -60,7 +80,7 @@ impl PackageProgressReceiver {
     /// Register that loading a package has completed.
     // Java: com/google/devtools/build/lib/skyframe/PackageProgressReceiver.java:35 PackageProgressReceiver.doneReadPackage
     pub fn done_read_package(&self, package_id: &PackageIdentifier) {
-        let mut state = self.state.lock();
+        let mut state = self.lock_state();
         if let Some(pending_set) = state.pending_set.as_mut() {
             pending_set.shift_remove(package_id);
         }
@@ -80,7 +100,7 @@ impl PackageProgressReceiver {
     /// constructed object.
     // Java: com/google/devtools/build/lib/skyframe/PackageProgressReceiver.java:46 PackageProgressReceiver.reset
     pub fn reset(&self) {
-        let mut state = self.state.lock();
+        let mut state = self.lock_state();
         state.packages_completed = 0;
         state.pending_set = None;
         state.completed_set = None;
@@ -92,7 +112,7 @@ impl PackageProgressReceiver {
     /// loading package not finished loading.
     // Java: com/google/devtools/build/lib/skyframe/PackageProgressReceiver.java:55 PackageProgressReceiver.progressState
     pub fn progress_state(&self) -> (String, String) {
-        let state = self.state.lock();
+        let state = self.lock_state();
         let progress = format!("{} packages loaded", state.packages_completed);
         let mut activity = String::new();
         if let Some(pending_set) = state.pending_set.as_ref()

@@ -215,8 +215,8 @@ impl CleanCommand {
 
         if expunge && !r#async {
             // PORT: logger.atInfo ("Expunging...") is not written.
-            // PORT: `runtime.prepareForAbruptShutdown()` runs the gRPC server's abrupt-shutdown
-            // handler; Blaze has no gRPC server, so there is none (as in Java batch mode).
+            // Java: com/google/devtools/build/lib/runtime/commands/CleanCommand.java:236 CleanCommand.actuallyClean
+            env.get_runtime().prepare_for_abrupt_shutdown();
             // Close java.log.
             crate::server_log::close();
             // PORT: Java closes the server JVM's own stdout/stderr (FileDescriptor.out/err, which
@@ -239,8 +239,9 @@ impl CleanCommand {
                 )));
             }
         } else if expunge {
-            // PORT: logger.atInfo ("Expunging asynchronously...") is not written;
-            // prepareForAbruptShutdown: see above.
+            // PORT: logger.atInfo ("Expunging asynchronously...") is not written.
+            // Java: com/google/devtools/build/lib/runtime/commands/CleanCommand.java:266 CleanCommand.actuallyClean
+            env.get_runtime().prepare_for_abrupt_shutdown();
             match Self::async_clean(env, output_base, "Output base") {
                 Ok(()) => {}
                 Err(AsyncCleanError::Io(e)) => {

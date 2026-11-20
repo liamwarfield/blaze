@@ -781,10 +781,9 @@ impl blaze_starlark::thread::StarlarkEvents for ResourceSetCallbackEvents {
 /// internal string leaves as its bytes.
 // TODO(byte-strings lead): move to blaze_util
 fn system_err_println(s: &str) {
-    use std::io::Write;
     let mut bytes = blaze_util::string_encoding::latin1_encode_lossy(s).into_owned();
     bytes.push(b'\n');
-    let _ = std::io::stderr().lock().write_all(&bytes);
+    let _ = blaze_events::io::system_err().write(&bytes);
 }
 
 /// The `resource_set` callback of `ctx.actions.run` / `run_shell`: called at execution with the

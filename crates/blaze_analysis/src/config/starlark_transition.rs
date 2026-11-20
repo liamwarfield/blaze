@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use blaze_build_config::build_options::{BuildOptions, JavaCollectionClass, StarlarkOptionValue};
 use blaze_build_config::core_option_converters::BuildSettingConverter;
@@ -597,8 +597,11 @@ fn unalias(options: BuildOptions, alias_to_actual: &IndexMap<Label, Label>) -> B
 /// Caches the results of Starlark transition application (Java `StarlarkTransitionCache`,
 /// owned by `SkyframeBuildView`).
 ///
-/// PORT: one process-wide instance ([`StarlarkTransitionCache::get`]); Java's soft-valued
-/// Caffeine caches become plain maps (single build per process).
+/// PORT: one instance per build arena ([`StarlarkTransitionCache::get`]; `blaze_util::build_arena`,
+/// decision D7): Java's instance belongs to the `SkyframeBuildView` and is cleared at every
+/// `clearLegacyData` (each command that resets the evaluator, as the first Blaze server does),
+/// at `clearAnalysisCache` and at `clearInvalidatedActionLookupKeys`; the server releases the
+/// arena after every command. Java's soft-valued Caffeine caches become plain maps.
 // Java: com/google/devtools/build/lib/analysis/config/StarlarkTransitionCache.java:43 StarlarkTransitionCache
 #[derive(Default)]
 pub struct StarlarkTransitionCache {
@@ -621,13 +624,17 @@ struct CacheValue {
     non_error_events: Option<Vec<Event>>,
 }
 
-static INSTANCE: LazyLock<StarlarkTransitionCache> =
-    LazyLock::new(StarlarkTransitionCache::default);
+impl blaze_util::build_arena::ArenaSlot for StarlarkTransitionCache {
+    // Its keys name transition definitions by the address of an `Arc` the arena's
+    // `ConvertedTransitions` memo keeps.
+    const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
+        blaze_util::build_arena::ReleaseOrder::State;
+}
 
 impl StarlarkTransitionCache {
-    /// The process-wide cache (Java `SkyframeBuildView.getStarlarkTransitionCache()`).
-    pub fn get() -> &'static StarlarkTransitionCache {
-        &INSTANCE
+    /// The build arena's cache (Java `SkyframeBuildView.getStarlarkTransitionCache()`).
+    pub fn get() -> Arc<StarlarkTransitionCache> {
+        blaze_util::build_arena::slot::<StarlarkTransitionCache>()
     }
 
     /// Given a transition, decompose (if possible) and find all referenced Starlark build

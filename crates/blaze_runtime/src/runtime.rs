@@ -178,15 +178,18 @@ impl BlazeRuntime {
         });
     }
 
-    /// `afterCommand`'s `notifyCommandComplete(finalCommandResult.getDetailedExitCode())`:
-    /// declares `exit_code` as the command's; returns the exit code to use instead if another
-    /// thread declared one first (a crash).
+    /// Posts the `CommandCompleteEvent`, so that listeners can tidy up. Called by
+    /// `afterCommand`.
     ///
-    /// PORT: the `CommandCompleteEvent` is not posted here: no ported subscriber reads it on a
-    /// normal command end (the crash path posts it, see `clean_up_for_crash`).
+    /// Returns `None` if `exit_code` was registered as the exit code, and the exit code to use
+    /// if another thread already registered an exit code.
+    ///
+    /// PORT: Java posts on the workspace's Skyframe executor's event bus, which
+    /// `CommandEnvironment` set to the command's; Blaze posts on the command's event bus.
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:728 BlazeRuntime.notifyCommandComplete
     pub(crate) fn notify_command_complete(
         &self,
+        env: &crate::command_environment::CommandEnvironment,
         exit_code: &crate::exit_code::DetailedExitCode,
     ) -> Option<crate::exit_code::DetailedExitCode> {
         if !self.declare_exit_code(exit_code) {
@@ -196,6 +199,11 @@ impl BlazeRuntime {
             // incorrectly logged as a success.
             return self.stored_exit_code.lock().clone();
         }
+        use blaze_events::EventBus;
+        env.get_event_bus()
+            .post(Arc::new(crate::bugreport::CommandCompleteEvent::new(
+                exit_code.clone(),
+            )));
         None
     }
 
@@ -1027,6 +1035,15 @@ impl BlazeRuntime {
         );
 
         // Java: BlazeRuntime.Builder.build
+        // UUID instanceId = UUID.randomUUID()
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1685 BlazeRuntime.Builder.build
+        let instance_id = uuid::Uuid::new_v4().to_string();
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1700 BlazeRuntime.Builder.build
+        for module in &blaze_modules {
+            module
+                .blaze_startup(&options, &instance_id, &fs, &server_directories)
+                .map_err(NewRuntimeError::Abrupt)?;
+        }
         let mut server_builder = ServerBuilder::new();
         for module in &blaze_modules {
             module
@@ -1084,8 +1101,11 @@ impl BlazeRuntime {
 
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:271 BlazeRuntime.initWorkspace
     fn init_workspace(&mut self, directories: BlazeDirectories) {
-        // PORT: module.workspaceInit and the WorkspaceBuilder (Skyframe executor) are not
-        // ported.
+        // PORT: the WorkspaceBuilder (the server's Skyframe executor) is not ported: each
+        // command creates its own executor (see BlazeModule::workspace_init).
+        for module in &self.blaze_modules {
+            module.workspace_init(&directories);
+        }
         let workspace = Arc::new(BlazeWorkspace::new(directories));
         if self.workspace.set(workspace).is_err() {
             panic!("IllegalStateException");
@@ -1288,7 +1308,10 @@ fn run_exec_request_in_batch_mode(request: &ExecRequest) -> i32 {
                 e.raw_os_error().unwrap_or(0),
                 strerror(e.raw_os_error().unwrap_or(0))
             );
-            eprintln!("Cannot execute process for 'run' command: {message}");
+            // System.err.println(...)
+            blaze_events::io::system_err_println(&format!(
+                "Cannot execute process for 'run' command: {message}"
+            ));
             ExitCode::LOCAL_ENVIRONMENTAL_ERROR.get_numeric_exit_code()
         }
     }

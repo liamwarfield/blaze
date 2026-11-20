@@ -11,7 +11,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use allocative::Allocative;
-use blaze_events::OutErr;
 use blaze_shell::ByteArrayOutputStream;
 use blaze_shell::Command;
 use blaze_shell::CommandException;
@@ -148,17 +147,16 @@ impl Write for DelegatingStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.recorder.lock().extend_from_slice(buf);
         if self.to_system_err {
-            // PORT: Java writes to System.err, which BlazeCommandDispatcher patches to the
-            // command's reporter output for the duration of the command; Blaze writes to the
-            // process-wide error stream.
-            OutErr::system_out_err().get_error_stream().write(buf)?;
+            // System.err, which BlazeCommandDispatcher patches to the command's reporter output
+            // for the duration of the command (OutErr.SystemPatcher).
+            blaze_events::io::system_err().write(buf)?;
         }
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
         if self.to_system_err {
-            OutErr::system_out_err().get_error_stream().flush()?;
+            blaze_events::io::system_err().flush()?;
         }
         Ok(())
     }

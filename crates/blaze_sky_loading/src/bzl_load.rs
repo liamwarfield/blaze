@@ -727,9 +727,17 @@ pub fn check_load_visibilities(
 // ---------------------------------------------------------------------------------------------
 // Execution
 
-/// Keeps every frozen .bzl heap alive for the life of the process: rule classes and other
-/// values hold `FrozenValue` handles into them (DESIGN.md). PORT: keep-alive.
-static KEEP_ALIVE: Mutex<Vec<FrozenModule>> = Mutex::new(Vec::new());
+/// Keeps every frozen .bzl heap alive as long as the build arena: rule classes and other values
+/// hold `FrozenValue` handles into them (DESIGN.md). PORT: keep-alive, in the build arena
+/// (`blaze_util::build_arena`, decision D7): released only by the server, after a command has
+/// ended and no evaluator is left; elsewhere it lives for the process.
+#[derive(Default)]
+struct KeepAlive(Mutex<Vec<FrozenModule>>);
+
+impl blaze_util::build_arena::ArenaSlot for KeepAlive {
+    const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
+        blaze_util::build_arena::ReleaseOrder::Heaps;
+}
 
 /// `blaze_starlark::eval::exec_module`, plus the module's extra value (its
 /// `BazelModuleContext`), which must be set before freezing.
@@ -773,6 +781,9 @@ pub struct BzlLoadFunction {
     config: Arc<BzlLoadConfig>,
     /// Java `InliningAndCachingGetter.bzlCompileCache`.
     bzl_compile_cache: Mutex<HashMap<BzlCompileKey, BzlCompileValue>>,
+    /// PORT: Blaze-only. The evaluator that owns this function holds .bzl values whose heaps the
+    /// build arena keeps; the arena is not released while the evaluator exists.
+    _arena_lease: blaze_util::build_arena::Lease,
 }
 
 /// Bazel's builtins package path in its source tree (Java
@@ -786,6 +797,7 @@ impl BzlLoadFunction {
         BzlLoadFunction {
             config,
             bzl_compile_cache: Mutex::new(HashMap::new()),
+            _arena_lease: blaze_util::build_arena::lease(),
         }
     }
 
@@ -1550,7 +1562,10 @@ impl BzlLoadFunction {
             return Err(execution_failed(label));
         }
         let module = module.expect("no error");
-        KEEP_ALIVE.lock().push(module.clone());
+        blaze_util::build_arena::slot::<KeepAlive>()
+            .0
+            .lock()
+            .push(module.clone());
         let context = thread_context
             .take_payload::<BzlInitThreadContext>()
             .expect("the .bzl thread context");

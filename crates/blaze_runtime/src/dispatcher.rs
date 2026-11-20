@@ -106,6 +106,10 @@ impl BlazeCommandDispatcher {
             locking_mode,
             ui_verbosity,
             client_description,
+            {
+                use blaze_events::Clock;
+                blaze_events::JavaClock.current_time_millis()
+            },
             startup_options_tagged_with_bazel_rc,
             &|| Some(Vec::new()),
         )
@@ -118,8 +122,7 @@ impl BlazeCommandDispatcher {
     /// the `CommandEnvironment` (`getIdleTaskResultsFromPreviousIdlePeriod`), which nothing
     /// ported reads. Command extensions and their reporter belong to the gRPC request; no ported
     /// command reads or reports any. The terminal size monitor only serves the cursor-control
-    /// UI. `firstContactTimeMillis` is the time the environment is created (see
-    /// `CommandEnvironment::get_command_start_time`).
+    /// UI.
     // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:192 BlazeCommandDispatcher.exec
     fn exec_internal(
         &self,
@@ -129,6 +132,7 @@ impl BlazeCommandDispatcher {
         locking_mode: LockingMode,
         ui_verbosity: UiVerbosity,
         client_description: &str,
+        first_contact_time: i64,
         startup_options_tagged_with_bazel_rc: Option<Vec<(String, String)>>,
         idle_task_results_supplier: &(dyn Fn() -> Option<Vec<blaze_server::IdleTaskResult>> + Sync),
     ) -> Result<BlazeCommandResult, InterruptedException> {
@@ -263,6 +267,7 @@ impl BlazeCommandDispatcher {
                         &command_name,
                         command.clone(),
                         wait_time_in_ms,
+                        first_contact_time,
                         startup_options_tagged_with_bazel_rc.clone(),
                         attempt_number,
                         attempted_commands,
@@ -331,9 +336,8 @@ impl BlazeCommandDispatcher {
         quiet: bool,
         _command_name: &str,
         command: Arc<dyn BlazeCommand>,
-        // PORT: Java also adds it to `--wait_time` in `CommandEnvironment.waitTime`, which
-        // nothing reads at the pin (`getWaitTime` has no caller); initProfiler reads it.
         wait_time_in_ms: i64,
+        first_contact_time: i64,
         startup_options_tagged_with_bazel_rc: Option<Vec<(String, String)>>,
         attempt_number: i32,
         attempted_commands: i32,
@@ -396,6 +400,8 @@ impl BlazeCommandDispatcher {
             options.clone(),
             invocation_policy.clone(),
             &mut command_env_warnings,
+            wait_time_in_ms,
+            first_contact_time,
         );
         env.set_client_command_line(args.to_vec(), startup_options_tagged_with_bazel_rc.clone());
         env.set_config_flag_definitions(config_flag_definitions);
@@ -431,6 +437,12 @@ impl BlazeCommandDispatcher {
         // started.
 
         let reporter = env.get_reporter().clone();
+        // OutErr.SystemPatcher systemOutErrPatcher = reporter.getOutErr().getSystemPatcher();
+        // closed by execExclusively's finally (here: when the guard is dropped, after
+        // afterCommand and the flush of the command's streams, also when a panic unwinds).
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:485 BlazeCommandDispatcher.execExclusively
+        let system_out_err_patcher =
+            SystemPatcherClose(reporter.get_out_err().get_system_patcher());
         // Both the call to env.decideKeepIncrementalState() and module.beforeCommand() may emit
         // events, but the reporter isn't setup yet. Use a stored event handler to catch those
         // events.
@@ -438,11 +450,8 @@ impl BlazeCommandDispatcher {
         reporter.add_handler(module_events.clone());
         // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:490 BlazeCommandDispatcher.execExclusively
         env.decide_keep_incremental_state();
-        if let Some(e) = env.take_pending_exception() {
-            // BlazeModuleEnvironment.exit before beforeCommand: Java reports it from
-            // CommandEnvironment.beforeCommand (throwPendingException).
-            env.exit(e);
-        }
+        // A BlazeModuleEnvironment.exit before beforeCommand stays pending: Java reports it from
+        // CommandEnvironment.beforeCommand (throwPendingException).
         for module in self.runtime.get_blaze_modules().to_vec() {
             // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:492 BlazeCommandDispatcher.execExclusively
             let _closeable = blaze_util::profiler::Profiler::instance()
@@ -462,36 +471,9 @@ impl BlazeCommandDispatcher {
         let module_events_handler: Arc<dyn EventHandler> = module_events.clone();
         reporter.remove_handler(&module_events_handler);
 
-        // Setup stdout / stderr: outErr = tee(outErr, env.getOutputListeners()).
-        // PORT: the only output listener of Bazel's modules that is ported here is
-        // CommandLogModule's, and of it the part that runs with the default options: unlinking
-        // the command log of a previous build. Writing the log (--write_command_log) fails
-        // loudly in crate::unported_options; BuildEventServiceModule's listener (stdout/stderr
-        // in the BEP's progress events) is teed in below.
-        // Java: com/google/devtools/build/lib/runtime/CommandLogModule.java:52 CommandLogModule.getOutputListener
-        if !common_options.redirect_local_instrumentation_output_writes {
-            // When instrumentation output are locally written, we need to unlink old local
-            // command log from previous build, if present.
-            let command_log = env.get_output_base().get_relative_str("command.log");
-            if let Err(io_exception) = command_log.delete() {
-                env.get_reporter().handle(&Event::warn(format!(
-                    "Unable to delete command log: {}",
-                    io_exception
-                )));
-            }
-        }
-
-        // The BES module's output listener (the BEP's progress events).
-        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:979 BlazeCommandDispatcher.tee
-        let out_err = match env.get_bep() {
-            Some(bep) => {
-                let result = blaze_events::io::DelegatingOutErr::new();
-                result.add_sink(&out_err);
-                result.add_sink(bep.get_output_listener());
-                result.as_out_err()
-            }
-            None => out_err,
-        };
+        // Setup stdout / stderr.
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:510 BlazeCommandDispatcher.execExclusively
+        let out_err = tee(out_err, env.get_output_listeners());
 
         let early_exit_code = early_exit_code.unwrap();
         // Early exit. We need to guarantee that the ErrOut and Reporter setup below never error
@@ -522,7 +504,13 @@ impl BlazeCommandDispatcher {
                 out_err = blaze_events::ui::ansi_strip_err(&out_err);
             }
         }
-        // PORT: bufferOut/bufferErr (BufferedOutputStream) only change write granularity.
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:540 BlazeCommandDispatcher.execExclusively
+        if !command_annotation.binary_std_out {
+            out_err = buffer_out(&out_err);
+        }
+        if !command_annotation.binary_std_err {
+            out_err = buffer_err(&out_err);
+        }
         // PORT: DebugLoggerConfigurator.setupLogging(verbosity) sets the level of the server's
         // java.util.logging loggers; this crate writes no such log lines.
         let handler = Arc::new(UiEventHandler::new(
@@ -563,9 +551,11 @@ impl BlazeCommandDispatcher {
         let ui_filter = Arc::new(ReportedOnceFilter::new(handler.clone()));
         reporter.add_handler(ui_filter.clone());
         env.set_ui_event_handler(handler.clone(), ui_subscriber);
-        // PORT: the ANSI-allowing handler for --color=no (registerAnsiAllowingHandler) is only
-        // switched to by the `run` command (Reporter.switchToAnsiAllowingHandler), whose `exec`
-        // is not ported and fails loudly.
+        // PORT: the ANSI-allowing handler for --color=no (registerAnsiAllowingHandler, and its
+        // PassiveExperimentalEventHandler on the event bus) is not registered, so
+        // Reporter.switchToAnsiAllowingHandler (info, run) keeps the UI handler. Java's
+        // ANSI-allowing handler is a second UiEventHandler over `colorfulOutErr`, which is
+        // ANSI-stripped exactly like `outErr` (only not buffered).
 
         drop(setup_event_handler);
 
@@ -627,6 +617,11 @@ impl BlazeCommandDispatcher {
         }
 
         drop(announce_rc_options);
+
+        // While a Blaze command is active, direct all errors to the client's event handler (and
+        // out/err streams).
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:630 BlazeCommandDispatcher.execExclusively
+        system_out_err_patcher.0.start();
 
         // Notify the BlazeRuntime, so it can do some initial setup.
         // Java: CommandEnvironment.beforeCommand
@@ -841,7 +836,16 @@ impl BlazeCommandDispatcher {
         crate::unported_options::check_unported_options(command_annotation, &options);
 
         // Run the command.
-        let result = command.exec(&mut env, &options);
+        let mut result = command.exec(&mut env, &options);
+
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:828 BlazeCommandDispatcher.execExclusively
+        let module_exit_code = env.precomplete_command(result.get_detailed_exit_code());
+        // If Blaze did not suffer an infrastructure failure, check for errors in modules.
+        if !result.get_exit_code().is_infrastructure_failure()
+            && let Some(module_exit_code) = module_exit_code
+        {
+            result = BlazeCommandResult::detailed_exit_code(module_exit_code);
+        }
         // The CommandPrecompleteEvent is posted at the start of after_command (BlazeRuntime
         // .afterCommand); the commands that build post it earlier, before their remote module's
         // afterCommand (crate::commands::build::run_build).
@@ -874,9 +878,8 @@ impl BlazeCommandDispatcher {
         if let Some(bep) = env.get_bep() {
             bep.post_before_command_events(env);
         }
-        if let Some(e) = env.take_pending_exception() {
-            return Err(e);
-        }
+        // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:924 CommandEnvironment.beforeCommand
+        env.throw_pending_exception()?;
         // CommandEnvironment's shutdownReasonConsumer (this::setShutdownReason) and command
         // thread, for notifyOnCrash.
         let shutdown_reason = self.shutdown_reason.clone();
@@ -951,7 +954,7 @@ impl BlazeCommandDispatcher {
         // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:809 BlazeRuntime.afterCommand
         if let Some(other_thread_won_exit_code) = self
             .runtime
-            .notify_command_complete(final_command_result.get_detailed_exit_code())
+            .notify_command_complete(env, final_command_result.get_detailed_exit_code())
         {
             final_command_result =
                 BlazeCommandResult::detailed_exit_code(other_thread_won_exit_code);
@@ -960,6 +963,17 @@ impl BlazeCommandDispatcher {
             // UiEventHandler is subscribed to AfterCommandEvent / BuildComplete; it flushes its
             // buffers there.
             handler.after_command();
+        }
+        // Some module's commandComplete() relies on the stoppage of profiler (stopped above). And
+        // it is impossible the profiler is needed after all `BlazeModule.afterCommand`s are
+        // executed.
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:821 BlazeRuntime.afterCommand
+        for module in self.runtime.get_blaze_modules() {
+            let _closeable = blaze_util::profiler::Profiler::instance()
+                .profile_with(blaze_util::profiler::ProfilerTask::INFO, || {
+                    format!("{}.commandComplete", module.name())
+                });
+            module.command_complete();
         }
         if let Some(reason) = env.take_shutdown_reason() {
             self.set_shutdown_reason(reason);
@@ -1086,6 +1100,46 @@ fn set_shutdown_reason(reason: &Mutex<Option<String>>, shutdown_reason: String) 
     }
 }
 
+/// The `systemOutErrPatcher.close()` of execExclusively's `finally`: run when the command's
+/// `exec_exclusively` returns (after `afterCommand` and the flush of its streams) or unwinds.
+struct SystemPatcherClose(blaze_events::io::SystemPatcher);
+
+impl Drop for SystemPatcherClose {
+    // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:897 BlazeCommandDispatcher.execExclusively
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+
+// Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:959 BlazeCommandDispatcher.bufferOut
+fn buffer_out(out_err: &OutErr) -> OutErr {
+    let wrapped_out: Arc<dyn blaze_events::OutputStream> = Arc::new(
+        blaze_events::io::BufferedOutputStream::new(out_err.get_output_stream().clone()),
+    );
+    OutErr::create(wrapped_out, out_err.get_error_stream().clone())
+}
+
+// Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:964 BlazeCommandDispatcher.bufferErr
+fn buffer_err(out_err: &OutErr) -> OutErr {
+    let wrapped_err: Arc<dyn blaze_events::OutputStream> = Arc::new(
+        blaze_events::io::BufferedOutputStream::new(out_err.get_error_stream().clone()),
+    );
+    OutErr::create(out_err.get_output_stream().clone(), wrapped_err)
+}
+
+// Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:979 BlazeCommandDispatcher.tee
+fn tee(out_err: OutErr, additional_out_errs: Vec<OutErr>) -> OutErr {
+    if additional_out_errs.is_empty() {
+        return out_err;
+    }
+    let result = blaze_events::io::DelegatingOutErr::new();
+    result.add_sink(&out_err);
+    for additional_out_err in &additional_out_errs {
+        result.add_sink(additional_out_err);
+    }
+    result.as_out_err()
+}
+
 /// The `finally` of `exec`: releases the command lock and wakes a waiting command.
 struct CommandLockRelease<'a>(&'a Monitor<Option<String>>);
 
@@ -1109,7 +1163,7 @@ impl CommandDispatcher for BlazeCommandDispatcher {
         locking_mode: LockingMode,
         ui_verbosity: UiVerbosity,
         client_description: String,
-        _first_contact_time_millis: i64,
+        first_contact_time_millis: i64,
         startup_options_tagged_with_bazel_rc: Option<Vec<(String, String)>>,
         idle_task_results_supplier: IdleTaskResultsSupplier,
         _command_extensions: Vec<Any>,
@@ -1122,6 +1176,7 @@ impl CommandDispatcher for BlazeCommandDispatcher {
             locking_mode,
             ui_verbosity,
             &client_description,
+            first_contact_time_millis,
             startup_options_tagged_with_bazel_rc,
             &*idle_task_results_supplier,
         )

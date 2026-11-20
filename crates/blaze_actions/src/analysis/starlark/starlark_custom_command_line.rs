@@ -36,7 +36,7 @@ use std::cell::Cell;
 use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use allocative::Allocative;
 use blaze_cmdline::{Label, RepositoryMapping};
@@ -1767,7 +1767,8 @@ impl Drop for ProviderScope {
 // PORT: Java creates one adaptor per fingerprint computation; the fingerprint cache keys its
 // memo tables by adaptor equality (same callable instance, same `hasInputMetadataProvider`, same
 // output paths mode). The Rust cache needs `&'static` map fns, so equal adaptors are interned
-// (and leaked, with the callable's frozen heap) in a process-wide table; the first adaptor's
+// (with the callable's frozen heap) in a table of the build arena (`blaze_util::build_arena`,
+// decision D7), which owns them until it is released; the first adaptor's
 // location is used for error messages, as Java's cache would also reuse the first entry. The
 // input metadata provider is passed through a thread-local scoped to the computation.
 struct CommandLineItemMapEachAdaptor {
@@ -1781,8 +1782,32 @@ struct CommandLineItemMapEachAdaptor {
     output_paths_mode: OutputPathsMode,
 }
 
-static MAP_EACH_ADAPTORS: LazyLock<Mutex<Vec<&'static CommandLineItemMapEachAdaptor>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+/// The interned adaptors, in the build arena. Boxed: the `&'static` references handed out stay
+/// valid while the table grows.
+#[derive(Default)]
+struct MapEachAdaptors(Mutex<Vec<Box<CommandLineItemMapEachAdaptor>>>);
+
+impl blaze_util::build_arena::ArenaSlot for MapEachAdaptors {
+    const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
+        blaze_util::build_arena::ReleaseOrder::Memo;
+}
+
+/// `adaptor` as the `&'static` map fn the fingerprint cache takes.
+///
+/// # Safety
+///
+/// `adaptor` must be an entry of the [`MapEachAdaptors`] table of the current build arena.
+unsafe fn interned_adaptor(
+    adaptor: &CommandLineItemMapEachAdaptor,
+) -> &'static CommandLineItemMapEachAdaptor {
+    // SAFETY: the box is owned by the arena's table and never removed from it, so it lives as
+    // long as the build arena. The arena outlives every holder of the reference: the nested set
+    // fingerprint caches of the `ActionKeyContext`s of one command (the analysis services of an
+    // executor, which holds a lease; the execution tool's action executor) and the fingerprint
+    // computations that call it, which run inside that command's evaluators. The arena is
+    // released only by the server, once the command has ended and no lease is held.
+    unsafe { &*(adaptor as *const CommandLineItemMapEachAdaptor) }
+}
 
 impl CommandLineItemMapEachAdaptor {
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkCustomCommandLine.java:1207 CommandLineItemMapEachAdaptor.<init>
@@ -1793,30 +1818,31 @@ impl CommandLineItemMapEachAdaptor {
         has_input_metadata_provider: bool,
         output_paths_mode: OutputPathsMode,
     ) -> &'static CommandLineItemMapEachAdaptor {
-        let mut table = MAP_EACH_ADAPTORS.lock();
+        let adaptors = blaze_util::build_arena::slot::<MapEachAdaptors>();
+        let mut table = adaptors.0.lock();
         let mut identity: Option<i32> = None;
         for a in table.iter() {
             if a.map_fn.value().ptr_eq(map_fn.value()) {
                 if a.has_input_metadata_provider == has_input_metadata_provider
                     && a.output_paths_mode == output_paths_mode
                 {
-                    return a;
+                    // SAFETY: an entry of the current arena's table.
+                    return unsafe { interned_adaptor(a) };
                 }
                 identity = Some(a.identity);
             }
         }
         let identity = identity.unwrap_or(table.len() as i32);
-        let adaptor: &'static CommandLineItemMapEachAdaptor =
-            Box::leak(Box::new(CommandLineItemMapEachAdaptor {
-                map_fn: map_fn.clone(),
-                identity,
-                location: location.clone(),
-                starlark_semantics: starlark_semantics.clone(),
-                has_input_metadata_provider,
-                output_paths_mode,
-            }));
-        table.push(adaptor);
-        adaptor
+        table.push(Box::new(CommandLineItemMapEachAdaptor {
+            map_fn: map_fn.clone(),
+            identity,
+            location: location.clone(),
+            starlark_semantics: starlark_semantics.clone(),
+            has_input_metadata_provider,
+            output_paths_mode,
+        }));
+        // SAFETY: the entry just added to the current arena's table.
+        unsafe { interned_adaptor(table.last().expect("just pushed")) }
     }
 
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkCustomCommandLine.java:1235 CommandLineItemMapEachAdaptor.maybeExpandDirectory

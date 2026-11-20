@@ -320,7 +320,9 @@ impl StarlarkTransition {
     }
 
     /// Identity for caching: the definition (a Starlark transition keeps the same instance for
-    /// the life of the process) and the attribute values it sees.
+    /// the life of the build arena, see [`starlark_defined_config_transition_of`]; the
+    /// `StarlarkTransitionCache` that uses the key lives in the same arena) and the attribute
+    /// values it sees.
     fn cache_key(&self) -> String {
         format!(
             "{:p}/{:?}/{:?}",
@@ -945,9 +947,15 @@ impl StarlarkRuleTransitionProvider {
 
 /// The analysis form of each loading-phase `transition()` object, memoized by the frozen
 /// value's identity so the same `transition()` keeps one `StarlarkDefinedConfigTransition` (Java
-/// keeps one instance per object).
-static CONVERTED: LazyLock<Mutex<Vec<(String, Arc<StarlarkDefinedConfigTransition>)>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+/// keeps one instance per object). In the build arena (`blaze_util::build_arena`, decision D7),
+/// released before the .bzl heaps the identities are addresses in.
+#[derive(Default)]
+struct ConvertedTransitions(Mutex<Vec<(String, Arc<StarlarkDefinedConfigTransition>)>>);
+
+impl blaze_util::build_arena::ArenaSlot for ConvertedTransitions {
+    const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
+        blaze_util::build_arena::ReleaseOrder::Memo;
+}
 
 /// The `StarlarkDefinedConfigTransition` of a loading-phase transition object held in a
 /// `TransitionFactory::Starlark` (W3's `blaze_config::transitions` value), converted with
@@ -957,7 +965,13 @@ pub fn starlark_defined_config_transition_of(
 ) -> Arc<StarlarkDefinedConfigTransition> {
     let frozen = transition.value();
     let identity = format!("{:?}", frozen.to_value().identity());
-    if let Some((_, t)) = CONVERTED.lock().iter().find(|(id, _)| *id == identity) {
+    let converted_transitions = blaze_util::build_arena::slot::<ConvertedTransitions>();
+    if let Some((_, t)) = converted_transitions
+        .0
+        .lock()
+        .iter()
+        .find(|(id, _)| *id == identity)
+    {
         return t.clone();
     }
     let value = frozen.to_value();
@@ -982,8 +996,10 @@ pub fn starlark_defined_config_transition_of(
             .and_then(|v| v.unpack_frozen())
             .expect("a regular transition has a frozen implementation"),
     };
-    // SAFETY: both values live on frozen .bzl heaps that BZL_LOAD keeps alive for the life of
-    // the process (PORT: keep-alive), as `StarlarkCallable::to_owned_frozen_value` relies on.
+    // SAFETY: both values live on frozen .bzl heaps that BZL_LOAD keeps in the build arena
+    // (PORT: keep-alive), as `StarlarkCallable::to_owned_frozen_value` relies on. The
+    // transition is held by this memo (same arena, released before the heaps) and by values of
+    // the command's evaluators; the arena is released only once no evaluator is left.
     let implementation = unsafe { OwnedFrozenValue::new(FrozenHeapRef::default(), implementation) };
     // AnalysisTestTransition.changedSettings: the dict values are Starlark objects.
     let changed_settings: Vec<(String, blaze_build_config::starlark_transition::JavaObject)> =
@@ -1026,7 +1042,7 @@ pub fn starlark_defined_config_transition_of(
             changed_settings,
         },
     ));
-    let mut converted_list = CONVERTED.lock();
+    let mut converted_list = converted_transitions.0.lock();
     if let Some((_, t)) = converted_list.iter().find(|(id, _)| *id == identity) {
         return t.clone();
     }

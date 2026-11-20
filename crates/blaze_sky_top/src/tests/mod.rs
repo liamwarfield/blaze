@@ -36,6 +36,7 @@ mod starlark_aspects_toolchain_propagation_test;
 mod starlark_defined_aspects_test_1;
 mod starlark_defined_aspects_test_2;
 mod starlark_defined_aspects_test_3;
+mod starlark_rule_class_functions_analysis_test;
 mod starlark_subrule_test;
 mod template_variable_info_test;
 mod test_target_utils_test;

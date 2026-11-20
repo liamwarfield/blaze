@@ -327,7 +327,6 @@ fn loading_phase_empty_header_info(
     loading: &Arc<blaze_packages::builtins::cc_internal::HeaderInfoData>,
 ) -> Arc<HeaderInfoData> {
     use std::collections::HashMap;
-    use std::sync::LazyLock;
     type Memo = HashMap<
         usize,
         (
@@ -335,10 +334,17 @@ fn loading_phase_empty_header_info(
             Arc<HeaderInfoData>,
         ),
     >;
-    static MEMO: LazyLock<parking_lot::Mutex<Memo>> =
-        LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
+    /// The memo, in the build arena (`blaze_util::build_arena`, decision D7).
+    #[derive(Default)]
+    struct LoadingPhaseHeaderInfos(parking_lot::Mutex<Memo>);
+    impl blaze_util::build_arena::ArenaSlot for LoadingPhaseHeaderInfos {
+        const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
+            blaze_util::build_arena::ReleaseOrder::State;
+    }
     let key = Arc::as_ptr(loading) as usize;
-    MEMO.lock()
+    blaze_util::build_arena::slot::<LoadingPhaseHeaderInfos>()
+        .0
+        .lock()
         .entry(key)
         .or_insert_with(|| (loading.clone(), HeaderInfoData::empty()))
         .1

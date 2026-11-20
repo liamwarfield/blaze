@@ -790,7 +790,11 @@ mod tests {
         //! Port of `src/test/java/com/google/devtools/build/lib/util/io/OutErrTest.java`.
         use super::*;
 
-        fn set_up() -> (Arc<ByteArrayOutputStream>, Arc<ByteArrayOutputStream>, OutErr) {
+        fn set_up() -> (
+            Arc<ByteArrayOutputStream>,
+            Arc<ByteArrayOutputStream>,
+            OutErr,
+        ) {
             let out = Arc::new(ByteArrayOutputStream::new());
             let err = Arc::new(ByteArrayOutputStream::new());
             let out_err = OutErr::create(out.clone(), err.clone());

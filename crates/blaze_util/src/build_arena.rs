@@ -1,0 +1,327 @@
+//! The build arena: the owner of state that used to live "for the process" because Blaze ran
+//! one command per process (frozen Starlark heaps that other values point into without owning
+//! them, memo tables keyed by the address of a frozen value, per-command counters).
+//!
+//! PORT: Blaze-only (decision D7, docs/research/08-server-and-incrementality.md 3.3 option a).
+//! Java has no counterpart: the JVM's collector frees a heap once nothing references it. In
+//! Blaze a frozen value is often held without its heap (`unchecked_frozen_value`, an
+//! `OwnedFrozenValue` with an empty owner); such a value is valid as long as some other holder
+//! keeps the heap, and that holder is a slot of this arena.
+//!
+//! The arena is free of Starlark types. Each user crate keeps its own typed state in a slot
+//! ([`ArenaSlot`], one slot per Rust type) through [`slot`], which replaces the former static.
+//!
+//! Lifetime. There is one current arena per process. Whoever owns an evaluator whose values hold
+//! frozen Starlark values holds a [`Lease`] for as long as the evaluator and its graph exist (the
+//! per-command `SkyframeExecutor`, and every `BzlLoadFunction`, which every evaluator that loads
+//! a `.bzl` file owns). The contents are released only
+//!
+//! 1. when no lease is held, and
+//! 2. on an explicit [`release_if_unused`], which only the server makes, once a command has
+//!    completely ended (after `afterCommand`, the graph dropped, the command's threads joined).
+//!
+//! Batch mode, the in-process mode and test binaries never call [`release_if_unused`]: there
+//! everything still lives until the process ends, as before. Concurrent executors in one process
+//! (cargo tests) are safe by rule 1.
+//!
+//! Release order: the graph is gone first (rule 1 and 2); then the slots in the order of
+//! [`ReleaseOrder`]: per-command state, then memo tables, then the heaps.
+//!
+//! [`slot`] hands out an `Arc` of the slot: a caller that still holds it across a release keeps
+//! that slot's contents alive (never a dangling one), so callers take the slot for the duration
+//! of one operation only and never store it.
+
+use std::any::{Any, TypeId};
+use std::sync::{Arc, LazyLock};
+
+use parking_lot::{Mutex, RwLock};
+
+/// When a slot's contents are dropped at a release, relative to the other slots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ReleaseOrder {
+    /// Per-command state (counters, caches whose values own what they point to): first.
+    State,
+    /// Memo tables keyed by the address of a frozen value: after the state.
+    Memo,
+    /// The pinned frozen heaps every address and unchecked value of the other slots points into:
+    /// last.
+    Heaps,
+}
+
+/// A type kept in a slot of the arena: its initial value is `Default::default()`.
+pub trait ArenaSlot: Default + Send + Sync + 'static {
+    /// When the slot is dropped at a release.
+    const RELEASE_ORDER: ReleaseOrder;
+}
+
+struct Slot {
+    type_id: TypeId,
+    order: ReleaseOrder,
+    value: Arc<dyn Any + Send + Sync>,
+}
+
+/// The slots of one arena.
+#[derive(Default)]
+pub struct BuildArena {
+    slots: RwLock<Vec<Slot>>,
+}
+
+impl BuildArena {
+    pub fn new() -> BuildArena {
+        BuildArena::default()
+    }
+
+    /// The slot of type `T`, created empty on first use.
+    pub fn slot<T: ArenaSlot>(&self) -> Arc<T> {
+        let type_id = TypeId::of::<T>();
+        if let Some(s) = self.slots.read().iter().find(|s| s.type_id == type_id) {
+            return downcast(&s.value);
+        }
+        let mut slots = self.slots.write();
+        if let Some(s) = slots.iter().find(|s| s.type_id == type_id) {
+            return downcast(&s.value);
+        }
+        let value: Arc<T> = Arc::new(T::default());
+        slots.push(Slot {
+            type_id,
+            order: T::RELEASE_ORDER,
+            value: value.clone(),
+        });
+        value
+    }
+}
+
+fn downcast<T: ArenaSlot>(value: &Arc<dyn Any + Send + Sync>) -> Arc<T> {
+    value
+        .clone()
+        .downcast::<T>()
+        .unwrap_or_else(|_| panic!("build arena slot keyed by its type"))
+}
+
+impl Drop for BuildArena {
+    fn drop(&mut self) {
+        let mut slots = std::mem::take(&mut *self.slots.write());
+        // A stable sort keeps the creation order within one release order.
+        slots.sort_by_key(|s| s.order);
+        for slot in slots {
+            drop(slot);
+        }
+    }
+}
+
+struct Current {
+    arena: Arc<BuildArena>,
+    leases: usize,
+    /// Number of releases so far.
+    generation: u64,
+}
+
+static CURRENT: LazyLock<Mutex<Current>> = LazyLock::new(|| {
+    Mutex::new(Current {
+        arena: Arc::new(BuildArena::new()),
+        leases: 0,
+        generation: 0,
+    })
+});
+
+/// The slot of type `T` of the current arena.
+pub fn slot<T: ArenaSlot>() -> Arc<T> {
+    let arena = CURRENT.lock().arena.clone();
+    arena.slot::<T>()
+}
+
+/// A claim on the current arena: while any lease is held, [`release_if_unused`] releases
+/// nothing. Dropping it ends the claim.
+#[must_use = "the arena may be released once the lease is dropped"]
+pub struct Lease {
+    _private: (),
+}
+
+/// Takes a lease on the current arena (see the module comment for who holds one).
+pub fn lease() -> Lease {
+    CURRENT.lock().leases += 1;
+    Lease { _private: () }
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let mut current = CURRENT.lock();
+        current.leases = current
+            .leases
+            .checked_sub(1)
+            .expect("build arena lease count underflow");
+    }
+}
+
+impl std::fmt::Debug for Lease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("build_arena::Lease")
+    }
+}
+
+/// The number of leases held now.
+pub fn active_leases() -> usize {
+    CURRENT.lock().leases
+}
+
+/// The number of releases made so far in this process.
+pub fn generation() -> u64 {
+    CURRENT.lock().generation
+}
+
+/// Releases the current arena's contents (in [`ReleaseOrder`]) and starts an empty one, if no
+/// lease is held; returns whether it did.
+///
+/// Only the server calls this, once a command has completely ended (see the module comment);
+/// nothing else may, because outside a server values that point into the arena's heaps are held
+/// without a lease (a test's loaded modules, the single command of a batch process).
+pub fn release_if_unused() -> bool {
+    let old = {
+        let mut current = CURRENT.lock();
+        if current.leases != 0 {
+            return false;
+        }
+        current.generation += 1;
+        std::mem::replace(&mut current.arena, Arc::new(BuildArena::new()))
+    };
+    // Dropped outside the lock: a slot's drop may take a slot of the new arena.
+    drop(old);
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // The tests share the process's current arena; they run one at a time.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    /// Records the order in which slots were dropped.
+    static DROPS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+    #[derive(Default)]
+    struct Heaps(AtomicUsize);
+    impl ArenaSlot for Heaps {
+        const RELEASE_ORDER: ReleaseOrder = ReleaseOrder::Heaps;
+    }
+    impl Drop for Heaps {
+        fn drop(&mut self) {
+            DROPS.lock().push("heaps");
+        }
+    }
+
+    #[derive(Default)]
+    struct Memo(AtomicUsize);
+    impl ArenaSlot for Memo {
+        const RELEASE_ORDER: ReleaseOrder = ReleaseOrder::Memo;
+    }
+    impl Drop for Memo {
+        fn drop(&mut self) {
+            DROPS.lock().push("memo");
+        }
+    }
+
+    #[derive(Default)]
+    struct State(AtomicUsize);
+    impl ArenaSlot for State {
+        const RELEASE_ORDER: ReleaseOrder = ReleaseOrder::State;
+    }
+    impl Drop for State {
+        fn drop(&mut self) {
+            DROPS.lock().push("state");
+        }
+    }
+
+    fn reset() {
+        assert_eq!(active_leases(), 0);
+        assert!(release_if_unused());
+        DROPS.lock().clear();
+    }
+
+    #[test]
+    fn slot_is_shared_until_release() {
+        let _serial = SERIAL.lock();
+        reset();
+        slot::<State>().0.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(slot::<State>().0.load(Ordering::SeqCst), 1);
+        let before = generation();
+        assert!(release_if_unused());
+        assert_eq!(generation(), before + 1);
+        assert_eq!(slot::<State>().0.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn release_only_at_zero_leases() {
+        let _serial = SERIAL.lock();
+        reset();
+        slot::<Memo>().0.store(7, Ordering::SeqCst);
+        let a = lease();
+        let b = lease();
+        assert_eq!(active_leases(), 2);
+        assert!(!release_if_unused());
+        drop(a);
+        assert!(!release_if_unused());
+        assert_eq!(slot::<Memo>().0.load(Ordering::SeqCst), 7);
+        drop(b);
+        assert_eq!(active_leases(), 0);
+        assert!(release_if_unused());
+        assert_eq!(slot::<Memo>().0.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn drop_order_state_memo_heaps() {
+        let _serial = SERIAL.lock();
+        reset();
+        // Created in the reverse of the release order.
+        slot::<Heaps>();
+        slot::<Memo>();
+        slot::<State>();
+        assert!(release_if_unused());
+        assert_eq!(*DROPS.lock(), vec!["state", "memo", "heaps"]);
+    }
+
+    #[test]
+    fn held_slot_outlives_release() {
+        let _serial = SERIAL.lock();
+        reset();
+        let held = slot::<Heaps>();
+        held.0.store(3, Ordering::SeqCst);
+        assert!(release_if_unused());
+        // The holder keeps the old slot; the new arena has a fresh one.
+        assert!(DROPS.lock().is_empty());
+        assert_eq!(held.0.load(Ordering::SeqCst), 3);
+        assert_eq!(slot::<Heaps>().0.load(Ordering::SeqCst), 0);
+        drop(held);
+        assert_eq!(*DROPS.lock(), vec!["heaps"]);
+    }
+
+    #[test]
+    fn concurrent_leases() {
+        let _serial = SERIAL.lock();
+        reset();
+        let barrier = std::sync::Barrier::new(9);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    let lease = lease();
+                    for _ in 0..1000 {
+                        slot::<Memo>().0.fetch_add(1, Ordering::SeqCst);
+                    }
+                    barrier.wait();
+                    // Every thread holds its lease here: nothing is released.
+                    barrier.wait();
+                    drop(lease);
+                });
+            }
+            barrier.wait();
+            assert_eq!(active_leases(), 8);
+            assert!(!release_if_unused());
+            assert_eq!(slot::<Memo>().0.load(Ordering::SeqCst), 8000);
+            barrier.wait();
+        });
+        assert_eq!(active_leases(), 0);
+        assert!(release_if_unused());
+        assert_eq!(slot::<Memo>().0.load(Ordering::SeqCst), 0);
+    }
+}

@@ -43,9 +43,12 @@ impl AbruptExitException {
 /// A module Blaze can load at the beginning of its execution. Modules supply startup and command
 /// options, commands, info items and hooks around commands.
 ///
-/// PORT: only the hooks used by the W1 commands are present; the others (file systems, rule
-/// classes, executor and strategy registration, package settings, ...) are added as the waves
-/// that need them land.
+/// PORT: the hooks a server runs around commands are present (`globalInit`, `blazeStartup`,
+/// `serverInit`, `workspaceInit`, `beforeCommand`, `getOutputListener`, `afterCommand`,
+/// `commandComplete`, `blazeShutdown`, `blazeShutdownOnCrash`). The others (file systems, rule
+/// classes, `executorInit`, action context and strategy registration, package settings, ...) run
+/// where the command that needs them builds its executor (see `crate::bazel_modules`); they are
+/// added here as callers outside the command appear.
 // Java: com/google/devtools/build/lib/runtime/BlazeModule.java:69 BlazeModule
 pub trait BlazeModule: Send + Sync {
     /// The Java class name (used in `toString()` and logs).
@@ -74,6 +77,24 @@ pub trait BlazeModule: Send + Sync {
         Ok(())
     }
 
+    /// Called when Bazel starts up after `get_startup_options`, `global_init`, and
+    /// `getFileSystem`.
+    ///
+    /// PORT: Java also passes `BlazeVersionInfo.instance()` (here
+    /// `crate::version_info::BlazeVersionInfo::instance()`), the server's random instance id
+    /// (`instance_id`) and the runtime's clock (always `BlazeClock`, here
+    /// `blaze_events::JavaClock`).
+    // Java: com/google/devtools/build/lib/runtime/BlazeModule.java:165 BlazeModule.blazeStartup
+    fn blaze_startup(
+        &self,
+        _startup_options: &OptionsParsingResult,
+        _instance_id: &str,
+        _file_system: &blaze_vfs::FileSystemRef,
+        _directories: &crate::directories::ServerDirectories,
+    ) -> Result<(), AbruptExitException> {
+        Ok(())
+    }
+
     // Java: com/google/devtools/build/lib/runtime/BlazeModule.java:183 BlazeModule.serverInit
     fn server_init(
         &self,
@@ -83,15 +104,43 @@ pub trait BlazeModule: Send + Sync {
         Ok(())
     }
 
+    /// Called when Bazel initializes a new workspace; this is only called after `server_init`,
+    /// and only if the server initialization was successful.
+    ///
+    /// PORT: Java also passes the runtime and the `WorkspaceBuilder` (the server's Skyframe
+    /// executor and its parts); Blaze's executor is created per command, and no ported module
+    /// adds to the builder (the modules whose `workspaceInit` adds to it say so in
+    /// `crate::bazel_modules`).
+    // Java: com/google/devtools/build/lib/runtime/BlazeModule.java:207 BlazeModule.workspaceInit
+    fn workspace_init(&self, _directories: &crate::directories::BlazeDirectories) {}
+
     // Java: com/google/devtools/build/lib/runtime/BlazeModule.java:218 BlazeModule.beforeCommand
     fn before_command(&self, _env: &mut CommandEnvironment) -> Result<(), AbruptExitException> {
         Ok(())
+    }
+
+    /// Returns additional listeners to the console output stream. Called at the beginning of
+    /// each command (after `before_command`).
+    ///
+    /// PORT: Java's modules keep the `CommandEnvironment` of `beforeCommand` in a field; the
+    /// Rust hooks take `&self`, so the environment is passed.
+    // Java: com/google/devtools/build/lib/runtime/BlazeModule.java:225 BlazeModule.getOutputListener
+    fn get_output_listener(&self, _env: &CommandEnvironment) -> Option<blaze_events::OutErr> {
+        None
     }
 
     // Java: com/google/devtools/build/lib/runtime/BlazeModule.java:338 BlazeModule.afterCommand
     fn after_command(&self) -> Result<(), AbruptExitException> {
         Ok(())
     }
+
+    /// Called after `after_command`. This method can be used to close and cleanup resources
+    /// specific to the command.
+    ///
+    /// This method must not throw any exceptions, report any errors or generate any
+    /// stdout/stderr.
+    // Java: com/google/devtools/build/lib/runtime/BlazeModule.java:348 BlazeModule.commandComplete
+    fn command_complete(&self) {}
 
     // Java: com/google/devtools/build/lib/runtime/BlazeModule.java:360 BlazeModule.blazeShutdown
     fn blaze_shutdown(&self) {}

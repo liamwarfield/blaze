@@ -8,8 +8,8 @@
 //! - Rust -> Starlark ([`nested_set_to_depset`]): each NestedSet node becomes one frozen depset
 //!   node whose children array has the same entries in the same order (leaves converted with the
 //!   element converter, sub-arrays converted recursively). Nodes are memoized by node identity
-//!   for the life of the process, so converting a set twice yields the same depset value (Java:
-//!   the same Depset over the same NestedSet), and shared sub-DAGs stay shared.
+//!   for the life of the build arena, so converting a set twice yields the same depset value
+//!   (Java: the same Depset over the same NestedSet), and shared sub-DAGs stay shared.
 //! - Starlark -> Rust ([`depset_to_nested_set_shared`]): `DepsetGen::to_nested_set` (same
 //!   structure), memoized by the identity of the depset value, because Java's `Depset.getSet`
 //!   returns the one wrapped `NestedSet` object every time and that identity reaches output
@@ -17,8 +17,9 @@
 //!   [`nested_set_to_depset`] converts back to the very set it was made from.
 //!
 //! PORT: memo scope. Frozen depsets (providers of other targets, .bzl globals, converted native
-//! sets) are memoized for the life of the process; their heaps live as long (single build per
-//! process). Depsets of the rule implementation being evaluated are not frozen yet and their
+//! sets) are memoized for the life of the build arena (`blaze_util::build_arena`, decision D7:
+//! released by the server once a command has ended and no evaluator is left; elsewhere it lives
+//! for the process); their heaps live as long ([`KeptHeaps`]). Depsets of the rule implementation being evaluated are not frozen yet and their
 //! addresses die with the module's heap, so they are memoized inside a
 //! [`DepsetConversionScope`] (one per rule evaluation).
 //!
@@ -35,7 +36,7 @@ use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use blaze_actions::Artifact;
 use blaze_actions::analysis::starlark::starlark_file::{StarlarkFile, artifact_from_value};
@@ -66,13 +67,24 @@ where
         .clone()
 }
 
-/// Memo of converted nodes, keyed by (element type, node identity).
-static MEMO: LazyLock<Mutex<HashMap<(TypeId, usize), MemoEntry>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+/// The memos of this module, in the build arena (PORT: memo scope, see the module comment).
+/// Released before [`KeptHeaps`], whose heaps the addresses of `frozen_to_set` point into.
+#[derive(Default)]
+struct DepsetMemos {
+    /// Memo of converted nodes, keyed by (element type, node identity).
+    memo: Mutex<HashMap<(TypeId, usize), MemoEntry>>,
+    /// Frozen depset identity -> the `NestedSet<E>` it stands for.
+    frozen_to_set: Mutex<HashMap<(TypeId, usize), AnySet>>,
+}
 
-/// Frozen depset identity -> the `NestedSet<E>` it stands for.
-static FROZEN_TO_SET: LazyLock<Mutex<HashMap<(TypeId, usize), AnySet>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+impl blaze_util::build_arena::ArenaSlot for DepsetMemos {
+    const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
+        blaze_util::build_arena::ReleaseOrder::Memo;
+}
+
+fn depset_memos() -> Arc<DepsetMemos> {
+    blaze_util::build_arena::slot::<DepsetMemos>()
+}
 
 /// One node visited by the conversion of an unfrozen depset, in the order of the memo lookups
 /// of `DepsetGen::to_nested_set_with_memo`.
@@ -118,13 +130,23 @@ thread_local! {
     static SCOPES: RefCell<Vec<ScopeState>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Frozen heaps whose depset addresses may be keys of [`FROZEN_TO_SET`].
-static KEPT_HEAPS: LazyLock<Mutex<Vec<starlark::values::FrozenHeapRef>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+/// Frozen heaps whose depset addresses may be keys of [`DepsetMemos::frozen_to_set`], in the
+/// build arena (released after the memos).
+#[derive(Default)]
+struct KeptHeaps(Mutex<Vec<starlark::values::FrozenHeapRef>>);
 
-/// Keeps `heap` for the life of the process, so the addresses of its depsets stay unique.
+impl blaze_util::build_arena::ArenaSlot for KeptHeaps {
+    const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
+        blaze_util::build_arena::ReleaseOrder::Heaps;
+}
+
+/// Keeps `heap` for the life of the build arena, so the addresses of its depsets stay unique
+/// while they are keys of the memo.
 pub fn keep_frozen_heap_alive(heap: starlark::values::FrozenHeapRef) {
-    KEPT_HEAPS.lock().push(heap);
+    blaze_util::build_arena::slot::<KeptHeaps>()
+        .0
+        .lock()
+        .push(heap);
 }
 
 /// The lifetime of one Starlark module's unfrozen depsets (one rule implementation evaluation):
@@ -205,7 +227,8 @@ impl DepsetConversionScope {
             }
             adopted
         });
-        let mut memo = FROZEN_TO_SET.lock();
+        let memos = depset_memos();
+        let mut memo = memos.frozen_to_set.lock();
         for (key, set) in adopted {
             memo.entry(key).or_insert(set);
         }
@@ -296,7 +319,11 @@ where
     fn get(&mut self, node: usize, frozen: bool) -> Option<NestedSet<E>> {
         let key = (TypeId::of::<E>(), node);
         if frozen {
-            let found = FROZEN_TO_SET.lock().get(&key).map(downcast_set::<E>);
+            let found = depset_memos()
+                .frozen_to_set
+                .lock()
+                .get(&key)
+                .map(downcast_set::<E>);
             let hit = found.is_some();
             with_recording(|recording| {
                 if recording.frozen_depth == 0 {
@@ -329,7 +356,8 @@ where
             // A concurrent conversion of the same depset may have won: keep the first, as there
             // is one set per depset.
             let kept = {
-                let mut memo = FROZEN_TO_SET.lock();
+                let memos = depset_memos();
+                let mut memo = memos.frozen_to_set.lock();
                 let entry = memo.entry(key).or_insert_with(|| Arc::new(set) as AnySet);
                 downcast_set::<E>(entry)
             };
@@ -414,7 +442,8 @@ pub fn nested_set_to_depset<E>(
 where
     E: Clone + Eq + Hash + Send + Sync + 'static,
 {
-    let mut memo = MEMO.lock();
+    let memos = depset_memos();
+    let mut memo = memos.memo.lock();
     convert_node(set, elem_type, convert, &mut memo)
 }
 
@@ -462,7 +491,7 @@ where
     let owned = unsafe { OwnedFrozenValue::new(heap_ref, value) };
     // Java: this depset wraps `set`; `getSet` gives `set` back.
     if let Some(frozen_depset) = Depset::from_value(value.to_value()) {
-        FROZEN_TO_SET.lock().insert(
+        depset_memos().frozen_to_set.lock().insert(
             (TypeId::of::<E>(), frozen_depset as *const Depset as usize),
             Arc::new(set.clone()) as AnySet,
         );
@@ -496,7 +525,11 @@ pub fn strings_to_depset(set: &NestedSet<String>) -> OwnedFrozenValue {
 ///
 /// PORT: keep-alive (see the module comment): the memo keeps the depset's heap alive.
 pub fn depset_value<'v>(depset: &OwnedFrozenValue) -> Value<'v> {
-    // SAFETY: the memo keeps the frozen heap alive for the life of the process.
+    // SAFETY: the depset comes from the memo ([`nested_set_to_depset`]), whose entry keeps its
+    // heap for the life of the build arena. The value (and every frozen value that comes to
+    // point at it) is held by an evaluator: a running evaluation or a graph value. The arena
+    // outlives them: it is released only when no evaluator holds a lease, i.e. after every
+    // evaluation ended and every graph was dropped.
     unsafe { depset.unchecked_frozen_value() }.to_value()
 }
 

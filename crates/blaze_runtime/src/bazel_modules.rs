@@ -68,7 +68,7 @@ pub fn bazel_modules() -> Vec<Arc<dyn BlazeModule>> {
         Arc::new(NoSpawnCacheModule),
         // This module needs to be registered before any module that uses the credential cache.
         Arc::new(CredentialModule),
-        Arc::new(CommandLogModule),
+        Arc::new(CommandLogModule::default()),
         Arc::new(MemoryPressureModule),
         Arc::new(ThreadDumpModule),
         Arc::new(SleepPreventionModule),
@@ -179,12 +179,16 @@ impl BlazeModule for CredentialModule {
     }
 }
 
-/// This module logs complete stdout / stderr output of Blaze to a file.
-/// PORT: getOutputListener is in the dispatcher (`BlazeCommandDispatcher::exec_exclusively`):
-/// the command log of a previous command is unlinked; writing one (`--write_command_log`,
-/// commandComplete) is not ported and fails loudly (`crate::unported_options`).
+/// This module logs complete stdout / stderr output of Bazel to a local file.
 // Java: com/google/devtools/build/lib/runtime/CommandLogModule.java:34 CommandLogModule
-pub struct CommandLogModule;
+#[derive(Default)]
+pub struct CommandLogModule {
+    /// `env`: what `commandComplete` reports to (its reporter), between `beforeCommand` and
+    /// `commandComplete`.
+    env: parking_lot::Mutex<Option<Arc<blaze_events::Reporter>>>,
+    /// `logOutputStream`: the open `command.log` of the running command, if it writes one.
+    log_output_stream: parking_lot::Mutex<Option<Arc<dyn blaze_events::OutputStream>>>,
+}
 
 impl BlazeModule for CommandLogModule {
     fn name(&self) -> &'static str {
@@ -202,6 +206,112 @@ impl BlazeModule for CommandLogModule {
         builder.add_info_items([item]);
         Ok(())
     }
+
+    // Java: com/google/devtools/build/lib/runtime/CommandLogModule.java:46 CommandLogModule.beforeCommand
+    fn before_command(&self, env: &mut CommandEnvironment) -> Result<(), AbruptExitException> {
+        *self.env.lock() = Some(env.get_reporter().clone());
+        Ok(())
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/CommandLogModule.java:51 CommandLogModule.getOutputListener
+    fn get_output_listener(&self, env: &CommandEnvironment) -> Option<blaze_events::OutErr> {
+        use blaze_events::EventHandler as _;
+        let common_options = env
+            .get_options()
+            .get_options::<blaze_optdefs::command::common_command_options::CommonCommandOptions>()
+            .expect("CommonCommandOptions");
+        if !common_options.redirect_local_instrumentation_output_writes {
+            // When instrumentation output are locally written, we need to unlink old local
+            // command log from previous build, if present.
+            let command_log = get_command_log_path(env.get_output_base());
+            if let Err(io_exception) = command_log.delete() {
+                env.get_reporter()
+                    .handle(&blaze_events::Event::warn(format!(
+                        "Unable to delete command log: {}",
+                        java_io_message(&io_exception)
+                    )));
+            }
+        }
+
+        if common_options.write_command_log && env.get_command_name() != "clean" {
+            // env.getRuntime().getInstrumentationOutputFactory().createInstrumentationOutput(
+            //     "command_log", PathFragment.create("command.log"), OUTPUT_BASE, env,
+            //     env.getReporter(), /* append= */ false, /* internal= */ true)
+            // Java: com/google/devtools/build/lib/runtime/InstrumentationOutputFactory.java:126 InstrumentationOutputFactory.createInstrumentationOutput
+            if common_options.redirect_local_instrumentation_output_writes {
+                // Bazel has no redirecting InstrumentationOutputBuilder.
+                env.get_reporter().handle(&blaze_events::Event::warn(
+                    "Redirecting to write Instrumentation Output on a different machine is not \
+                     supported. Defaulting to writing output locally.",
+                ));
+            }
+            let command_log_output = crate::profiler_init::LocalInstrumentationOutput::new(
+                "command_log",
+                env.get_output_base().get_relative_str("command.log"),
+                None,
+                Some(false),
+                Some(true),
+                false,
+            );
+            match command_log_output.create_output_stream() {
+                Ok(stream) => {
+                    let log_output_stream: Arc<dyn blaze_events::OutputStream> =
+                        Arc::new(blaze_events::io::WriteOutputStream::new(stream));
+                    *self.log_output_stream.lock() = Some(log_output_stream.clone());
+                    return Some(blaze_events::OutErr::create(
+                        log_output_stream.clone(),
+                        log_output_stream,
+                    ));
+                }
+                Err(io_exception) => {
+                    env.get_reporter()
+                        .handle(&blaze_events::Event::warn(format!(
+                            "Unable to open command log: {}",
+                            java_io_message(&io_exception)
+                        )));
+                }
+            }
+        }
+        None
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/CommandLogModule.java:62 CommandLogModule.commandComplete
+    fn command_complete(&self) {
+        let local_env = self.env.lock().take();
+        if let Some(log_output_stream) = self.log_output_stream.lock().take() {
+            let closed = log_output_stream
+                .flush()
+                .and_then(|()| log_output_stream.close());
+            if let Err(e) = closed {
+                // PORT: the logger.atWarning line is not written (no server logger).
+                let msg = format!("I/O exception closing log: {}", java_io_message(&e));
+                match local_env {
+                    Some(reporter) => {
+                        use blaze_events::EventHandler as _;
+                        reporter.handle(&blaze_events::Event::error(msg));
+                    }
+                    None => blaze_events::io::system_err_println(&msg),
+                }
+            }
+            // finally { logOutputStream = null; }: taken above.
+        }
+    }
+}
+
+/// `IOException.getMessage()`: Blaze's file system errors already carry Java's message; plain OS
+/// errors lose Rust's " (os error N)" suffix.
+fn java_io_message(e: &std::io::Error) -> String {
+    let text = e.to_string();
+    match text.rfind(" (os error ") {
+        Some(i) if e.raw_os_error().is_some() => text[..i].to_string(),
+        _ => text,
+    }
+}
+
+/// For a given output_base directory, returns the command log file path.
+// Java: com/google/devtools/build/lib/runtime/CommandLogModule.java:58 CommandLogModule.getCommandLogPath
+fn get_command_log_path(output_base: &blaze_vfs::Path) -> blaze_vfs::Path {
+    output_base.get_relative_str("command.log")
 }
 
 /// Module that tracks memory pressure.
@@ -866,9 +976,8 @@ impl BlazeModule for BlockWaitingModule {
 /// (`crate::commands::bep::BepCommandSupport`). PORT: the upload to a Build Event Service
 /// (`--bes_backend`: workspaceInit, getBesKeywords, getBesClient, clearBesClient,
 /// getInvocationIdPrefix, getBuildRequestIdPrefix) fails loudly (`crate::unported_options`).
-/// getOutputListener (the command's stdout and stderr in the BEP's progress events) is not
-/// ported: progress events carry no output. blazeShutdown, blazeShutdownOnCrash close a streamer
-/// the server left open.
+/// getOutputListener returns the command's BEP output listener (stdout and stderr in the BEP's
+/// progress events). blazeShutdown, blazeShutdownOnCrash close a streamer the server left open.
 // Java: com/google/devtools/build/lib/buildeventservice/BazelBuildEventServiceModule.java:52 BazelBuildEventServiceModule
 #[derive(Default)]
 pub struct BazelBuildEventServiceModule {
@@ -899,6 +1008,13 @@ impl BlazeModule for BazelBuildEventServiceModule {
         *self.current.lock() = bep.clone();
         env.set_bep(bep);
         Ok(())
+    }
+
+    /// `outErr`: the stream pair the command's streamer turns into the BEP's progress events
+    /// (null when the command streams no build events).
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:471 BuildEventServiceModule.getOutputListener
+    fn get_output_listener(&self, env: &CommandEnvironment) -> Option<blaze_events::OutErr> {
+        env.get_bep().map(|bep| bep.get_output_listener().clone())
     }
 
     // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:662 BuildEventServiceModule.afterCommand

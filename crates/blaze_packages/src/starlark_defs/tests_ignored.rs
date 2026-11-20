@@ -149,10 +149,7 @@ fn test_attr_cfg_target_object() {}
 #[ignore = "inspects the built Attribute (buildAttribute); portable with the .bzl harness of starlark_defs/tests.rs (build_attribute), not ported yet"]
 fn test_attr_cfg_none() {}
 
-// Java: StarlarkRuleClassFunctionsTest.testRuleCfg_starlark
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
-fn test_rule_cfg_starlark() {}
+// Moved: test_rule_cfg_starlark is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
 // Java: StarlarkRuleClassFunctionsTest.testAttrDoc
 #[test]
@@ -379,35 +376,23 @@ fn rule_definition_environment_digest_accounts_for_attrs_when_creating_rule_with
 #[ignore = "needs analysis (createRuleContext: the StarlarkRuleContext of a configured target)"]
 fn test_attr_with_aspect_requiring_aspects_required_native_aspect_gets_params_from_base_rules() {}
 
-// Java: StarlarkRuleClassFunctionsTest.initializer_basic
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
-fn initializer_basic() {}
+// Moved: initializer_basic is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.initializer_stringListDict
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
-fn initializer_string_list_dict() {}
+// Moved: initializer_string_list_dict is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
 // Java: StarlarkRuleClassFunctionsTest.stringKeyedLabelDictWithSplitConfiguration
 #[test]
 #[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
 fn string_keyed_label_dict_with_split_configuration() {}
 
-// Java: StarlarkRuleClassFunctionsTest.stringKeyedLabelDict
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
-fn string_keyed_label_dict() {}
+// Moved: string_keyed_label_dict is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
 // Java: StarlarkRuleClassFunctionsTest.initializer_labelKeyedStringDict
 #[test]
 #[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
 fn initializer_label_keyed_string_dict() {}
 
-// Java: StarlarkRuleClassFunctionsTest.labelListDict
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
-fn label_list_dict() {}
+// Moved: label_list_dict is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
 // Java: StarlarkRuleClassFunctionsTest.labelListDictWithSplitConfiguration
 #[test]
@@ -419,85 +404,46 @@ fn label_list_dict_with_split_configuration() {}
 #[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
 fn initializer_label_list_dict() {}
 
-// Java: StarlarkRuleClassFunctionsTest.initializer_legacyAnyType
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
-fn initializer_legacy_any_type() {}
+// Moved: initializer_legacy_any_type is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.initializer_withSelect
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
-fn initializer_with_select() {}
+// Moved: initializer_with_select is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.initializer_overridesAttributeDefault
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
-fn initializer_overrides_attribute_default() {}
+// Moved: initializer_overrides_attribute_default is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.initializer_returningNoneSetsDefault
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
-fn initializer_returning_none_sets_default() {}
+// Moved: initializer_returning_none_sets_default is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
 // Java: StarlarkRuleClassFunctionsTest.extendRule_allowlist
 #[test]
 #[ignore = "loading-time rule(parent = ...) error asserted through getConfiguredTarget; needs the scratchParentRule fixture, not ported yet"]
 fn extend_rule_allowlist() {}
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_ccBinary
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
-fn extend_rule_cc_binary() {}
+// Moved: extend_rule_cc_binary is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_basicUse
-#[test]
-#[ignore = "needs analysis (createRuleContext: the StarlarkRuleContext of a configured target)"]
-fn extend_rule_basic_use() {}
+// Moved: extend_rule_basic_use is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
 // Java: StarlarkRuleClassFunctionsTest.extendRule_withInitializers
 #[test]
 #[ignore = "needs analysis (createRuleContext: the StarlarkRuleContext of a configured target)"]
 fn extend_rule_with_initializers() {}
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_superNotCalled
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget); the asserted error is reported by analysis or was not established to be a loading error"]
-fn extend_rule_super_not_called() {}
+// Moved: extend_rule_super_not_called is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_superCalledTwice
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget); the asserted error is reported by analysis or was not established to be a loading error"]
-fn extend_rule_super_called_twice() {}
+// Moved: extend_rule_super_called_twice is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_noParent_superCalled
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget); the asserted error is reported by analysis or was not established to be a loading error"]
-fn extend_rule_no_parent_super_called() {}
+// Moved: extend_rule_no_parent_super_called is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_extendRuleTwice
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
-fn extend_rule_extend_rule_twice() {}
+// Moved: extend_rule_extend_rule_twice is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_extendRuleTwice_superNotCalled
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget); the asserted error is reported by analysis or was not established to be a loading error"]
-fn extend_rule_extend_rule_twice_super_not_called() {}
+// Moved: extend_rule_extend_rule_twice_super_not_called is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.ctxSuper_calledFromAspect
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget); the asserted error is reported by analysis or was not established to be a loading error"]
-fn ctx_super_called_from_aspect() {}
+// Moved: ctx_super_called_from_aspect is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
 // Java: StarlarkRuleClassFunctionsTest.extendRule_attributeAdditionalAspects
 #[test]
 #[ignore = "needs analysis (createRuleContext: the StarlarkRuleContext of a configured target)"]
 fn extend_rule_attribute_additional_aspects() {}
 
-// Java: StarlarkRuleClassFunctionsTest.testAspectWithInvalidToolchainsAspects_fails
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget); the asserted error is reported by analysis or was not established to be a loading error"]
-fn test_aspect_with_invalid_toolchains_aspects_fails() {}
+// Moved: test_aspect_with_invalid_toolchains_aspects_fails is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
 // Java: StarlarkRuleClassFunctionsTest.testAspectWithValidToolchainsAspects_parsesCorrectly
 #[test]
@@ -514,70 +460,40 @@ fn test_aspect_with_wildcard_toolchains_aspects_parses_correctly() {}
 #[ignore = "inspects the StarlarkDefinedAspect or the attribute aspects behind ev.lookup; portable with the .bzl harness of starlark_defs/tests.rs, not ported yet"]
 fn toolchains_aspects_default_empty_list() {}
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_overridePrivateAttribute_fails
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget); the asserted error is reported by analysis or was not established to be a loading error"]
-fn extend_rule_override_private_attribute_fails() {}
+// Moved: extend_rule_override_private_attribute_fails is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_parentPrivateAttrDefault_visibilityCheckedAgainstParent
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
-fn extend_rule_parent_private_attr_default_visibility_checked_against_parent() {}
+// Moved: extend_rule_parent_private_attr_default_visibility_checked_against_parent is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_attributeOverrideDefault
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
-fn extend_rule_attribute_override_default() {}
+// Moved: extend_rule_attribute_override_default is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
 // Java: StarlarkRuleClassFunctionsTest.extendRule_attributeCollision
 #[test]
 #[ignore = "loading-time rule(parent = ...) error asserted through getConfiguredTarget; needs the scratchParentRule fixture, not ported yet"]
 fn extend_rule_attribute_collision() {}
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_executableMatches
-#[test]
-#[ignore = "needs analysis (createRuleContext: the StarlarkRuleContext of a configured target)"]
-fn extend_rule_executable_matches() {}
+// Moved: extend_rule_executable_matches is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_testMatches
-#[test]
-#[ignore = "needs analysis (createRuleContext: the StarlarkRuleContext of a configured target)"]
-fn extend_rule_test_matches() {}
+// Moved: extend_rule_test_matches is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
 // Java: StarlarkRuleClassFunctionsTest.extendRule_controlledParameters_fail
 #[test]
 #[ignore = "needs analysis (BuildViewTestCase.update with a Java-registered implementation)"]
 fn extend_rule_controlled_parameters_fail() {}
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_fragments_merged
-#[test]
-#[ignore = "needs analysis (createRuleContext: the StarlarkRuleContext of a configured target)"]
-fn extend_rule_fragments_merged() {}
+// Moved: extend_rule_fragments_merged is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
 // Java: StarlarkRuleClassFunctionsTest.extendRule_notExtendable
 #[test]
 #[ignore = "needs analysis (BuildViewTestCase.update with a Java-registered implementation)"]
 fn extend_rule_not_extendable() {}
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_extendableAllowed
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
-fn extend_rule_extendable_allowed() {}
+// Moved: extend_rule_extendable_allowed is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_extendableAllowlisted
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
-fn extend_rule_extendable_allowlisted() {}
+// Moved: extend_rule_extendable_allowlisted is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_extendableAllowlistDenied
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget); the asserted error is reported by analysis or was not established to be a loading error"]
-fn extend_rule_extendable_allowlist_denied() {}
+// Moved: extend_rule_extendable_allowlist_denied is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_extendableDefault
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget); the asserted error is reported by analysis or was not established to be a loading error"]
-fn extend_rule_extendable_default() {}
+// Moved: extend_rule_extendable_default is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
 // Java: StarlarkRuleClassFunctionsTest.extendRule_toolchains_merged
 #[test]
@@ -594,80 +510,44 @@ fn extend_rule_advertised_providers_merged() {}
 #[ignore = "needs analysis (createRuleContext: the StarlarkRuleContext of a configured target)"]
 fn extend_rule_exec_compatible_with_merged() {}
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_execGroups_merged
-#[test]
-#[ignore = "needs analysis (createRuleContext: the StarlarkRuleContext of a configured target)"]
-fn extend_rule_exec_groups_merged() {}
+// Moved: extend_rule_exec_groups_merged is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
 // Java: StarlarkRuleClassFunctionsTest.extendRule_execGroups_overwritten
 #[test]
 #[ignore = "inspects the RuleClass behind ev.lookup (getRuleClass); portable with the .bzl harness of starlark_defs/tests.rs (get_rule_class), not ported yet"]
 fn extend_rule_exec_groups_overwritten() {}
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_cfg_fromParent
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
-fn extend_rule_cfg_from_parent() {}
+// Moved: extend_rule_cfg_from_parent is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_cfg_onChild
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
-fn extend_rule_cfg_on_child() {}
+// Moved: extend_rule_cfg_on_child is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.extendRule_cfg_onChildAndFromParent
-#[test]
-#[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
-fn extend_rule_cfg_on_child_and_from_parent() {}
+// Moved: extend_rule_cfg_on_child_and_from_parent is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.testAnalysisTest
-#[test]
-#[ignore = "needs an analysis test harness (Java getConfiguredTarget / createRuleContext on a BuildViewTestCase); the macro involved is a legacy macro"]
-fn test_analysis_test() {}
+// Moved: test_analysis_test is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.testAnalysisTestAttrs
-#[test]
-#[ignore = "needs an analysis test harness (Java getConfiguredTarget / createRuleContext on a BuildViewTestCase); the macro involved is a legacy macro"]
-fn test_analysis_test_attrs() {}
+// Moved: test_analysis_test_attrs is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.testAnalysisTestDuplicateName_samePackage
-#[test]
-#[ignore = "testing.analysis_test rule creation is not exercised by the loading harness; not ported yet"]
-fn test_analysis_test_duplicate_name_same_package() {}
+// Moved: test_analysis_test_duplicate_name_same_package is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
 // Java: StarlarkRuleClassFunctionsTest.testAnalysisTestDuplicateName_differentAttrs_differentPackage
 #[test]
 #[ignore = "needs analysis (getConfiguredTarget and the providers or actions of the configured target)"]
 fn test_analysis_test_duplicate_name_different_attrs_different_package() {}
 
-// Java: StarlarkRuleClassFunctionsTest.testAnalysisTestBadName
-#[test]
-#[ignore = "needs an analysis test harness (Java getConfiguredTarget / createRuleContext on a BuildViewTestCase); the macro involved is a legacy macro"]
-fn test_analysis_test_bad_name() {}
+// Moved: test_analysis_test_bad_name is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.testAnalysisTestBadArgs
-#[test]
-#[ignore = "needs an analysis test harness (Java getConfiguredTarget / createRuleContext on a BuildViewTestCase); the macro involved is a legacy macro"]
-fn test_analysis_test_bad_args() {}
+// Moved: test_analysis_test_bad_args is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.testAnalysisTestErrorOnExport
-#[test]
-#[ignore = "needs an analysis test harness (Java getConfiguredTarget / createRuleContext on a BuildViewTestCase); the macro involved is a legacy macro"]
-fn test_analysis_test_error_on_export() {}
+// Moved: test_analysis_test_error_on_export is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
-// Java: StarlarkRuleClassFunctionsTest.testAnalysisTestErrorOverridingName
-#[test]
-#[ignore = "needs an analysis test harness (Java getConfiguredTarget / createRuleContext on a BuildViewTestCase); the macro involved is a legacy macro"]
-fn test_analysis_test_error_overriding_name() {}
+// Moved: test_analysis_test_error_overriding_name is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
 // Java: StarlarkRuleClassFunctionsTest.testLabelWithStrictVisibility
 #[test]
 #[ignore = "needs a .bzl module with a hand-made BazelModuleContext and RepositoryMapping (Module.withPredeclaredAndData)"]
 fn test_label_with_strict_visibility() {}
 
-// Java: StarlarkRuleClassFunctionsTest.testPackageMetadataAttrOnAllRules
-#[test]
-#[ignore = "needs analysis (the assertion is on what the rule implementation prints from ctx.attr.package_metadata)"]
-fn test_package_metadata_attr_on_all_rules() {}
+// Moved: test_package_metadata_attr_on_all_rules is in crates/blaze_sky_top/src/tests/starlark_rule_class_functions_analysis_test.rs
 
 // Java: StarlarkRuleClassFunctionsTest.starlarkRuleFunctionCodec
 #[test]

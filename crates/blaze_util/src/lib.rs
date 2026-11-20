@@ -1,5 +1,6 @@
 //! Shared utilities for Blaze: porting macros and small ports of `lib/util`.
 
+pub mod build_arena;
 pub mod exit_code;
 pub mod fingerprint;
 pub mod graph;

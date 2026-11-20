@@ -75,8 +75,12 @@ All evidence is against Bazel 9.3.2 (the oracle) and Bazel's own remote worker
 Tools: `scripts/remote/{oracle-run,worker,replay,compare-grpc-log,matrix,second-build,ws-run,
 probe-trees,probe-trees2,probe-inprocess,shard-probe,attempts-probe,evict-probe,caps-matrix,
 tls-probe,platform-probe,pathcheck-probe,recreate-probe,outpath-symlink-probe,bep-uris,
-bep-interrupt-probe,stale-probe,symlink-probe,srcdir-probe,cplookup-probe}` (each prints `help`;
+bep-interrupt-probe,stale-probe,symlink-probe,srcdir-probe,cplookup-probe,sigpipe-probe,
+reset-peer,regex-probe,discovery-probe}` (each prints `help`;
 each takes `oracle` or a Blaze binary, so a result can be reproduced with another binary).
+Every wrapper records the command's exit status inside its systemd unit
+(`scripts/remote/unit-supervisor`): a death by signal is recorded as 128+N with the signal's
+name, never as 0.
 The table is the state after review round 1 (working tree on top of c74f487, binary recorded as
 `blaze-c74f4870286a-dirty-6cb9e325`); what round 2 added, and the binary it was measured with,
 is in docs/reviews/2026-11-19-remote-response.md, "Round 2 response".
@@ -163,10 +167,18 @@ where Bazel would enter it; none is silently ignored.
 |---|---|---|---|
 | Disk cache action-result integrity check | skipped under the default `--rewind_lost_inputs` (`RemoteModule.java:700-706`) | always on | Ruling 2026-11-19: rewinding is not ported, so a disk-cache action result whose blobs are not in the disk CAS must be a miss, not a crash. Visible where a disk cache was filled under build without the bytes together with a remote cache: Bazel `disk cache hit`, Blaze re-executes. A disk-cache-only setup is unchanged (brotli, re2). Restore Java's expression when rewinding is ported. |
 | X.509 v1 certificates | accepted | rejected | Ruling 2026-11-19, see "Security posture". |
-| Transport error causes | Netty/JDK texts (`finishConnect(..) failed: Connection refused: localhost/127.0.0.1:9499`; `General OpenSslEngine problem`) | the status line is Bazel's (`UNAVAILABLE: io exception`, `INTERNAL: http2 exception`, `UNAVAILABLE: ssl exception`, `Unable to resolve host <host>`, ported from grpc-netty `Utils.statusFromThrowable`); the connect cause is rebuilt in Netty's form, but Netty's choice between `127.0.0.1` and `[0:0:0:0:0:0:0:1]` for `localhost` varies between runs of Bazel itself, a certificate rejected locally prints rustls' text, and a server alert that arrives after the TLS 1.3 handshake (a required client certificate that was not sent) prints `received fatal alert: CertificateRequired` where Bazel prints `UNAVAILABLE: ssl exception` (the mapping covers an alert during the connect only) | exit codes are equal; not reproducible, except the last, which is open |
+| Transport error causes | Netty/JDK texts (`finishConnect(..) failed: Connection refused: localhost/127.0.0.1:9499`; `General OpenSslEngine problem`) | the status line is Bazel's (`UNAVAILABLE: io exception`, `INTERNAL: http2 exception`, `UNAVAILABLE: ssl exception`, `Unable to resolve host <host>`, ported from grpc-netty `Utils.statusFromThrowable`); the connect cause is rebuilt in Netty's form, but Netty's choice between `127.0.0.1` and `[0:0:0:0:0:0:0:1]` for `localhost` varies between runs of Bazel itself, a certificate rejected locally prints rustls' text. A call whose connection failed gets the connection's first failure as its status, as grpc-netty's shutdown status (`mtls-noclient`: `UNAVAILABLE: ssl exception` on both) | exit codes are equal; not reproducible |
 | Lost top-level outputs (`RemoteImportantOutputHandler`, "Lost outputs no longer available remotely") | reported when a target becomes top-level after its action ran in an earlier command of the same server | not reached: Blaze has no server, top-level outputs are downloaded when their action is finalized or its cached result is checked | PORT: skipped, incremental |
 | Connection pool | one connection per 100 concurrent calls (`DynamicConnectionPool`) | one HTTP/2 connection per endpoint | performance only with default flags; non-default values are loud |
 | `-1` ("unknown") permissions of a remote file's stat | `RemoteFileStatus.getPermissions() == -1` | the bits this file system's `isReadable/isWritable/isExecutable` answer | `blaze_vfs::FileStatus` has no unknown value |
+
+Java patterns (`--remote_download_regex`, the scrubber, every regex-valued option) are compiled
+through `blaze_util::java_regex`, a port of JDK 25 `Pattern`'s parser: docs/java-regex.md lists
+what is translated, what is loud and what is checked per input.
+
+SIGPIPE: the process ignores it (its sockets must not kill it, as Bazel's server ignores it);
+a broken pipe on Blaze's own stdout or stderr is recorded and ends the process by SIGPIPE at
+exit, as Bazel's client does (`blaze_client` `signal_handler.rs`, `blaze_events` `io.rs`).
 
 ## Bazel's own remote tests
 

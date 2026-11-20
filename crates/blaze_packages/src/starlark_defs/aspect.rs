@@ -771,8 +771,10 @@ impl<'v, V: ValueLike<'v>> StarlarkDefinedAspectGen<V> {
 /// `AspectFunction.loadAspectFromBzl`: look the exported name up in the frozen .bzl module and
 /// pass the value here (`None` is Java's "is not an aspect" case).
 ///
-/// The reference is `'static` because .bzl heaps are kept alive for the process
-/// (PORT: keep-alive).
+/// The reference is `'static` because .bzl heaps are kept in the build arena
+/// (`blaze_util::build_arena`), which outlives every evaluator and so every caller (see
+/// `StarlarkCallable`; PORT: keep-alive). The reference must not be kept past the evaluation
+/// or graph value that holds it.
 pub fn as_frozen_aspect(v: FrozenValue) -> Option<&'static FrozenStarlarkDefinedAspect> {
     StarlarkCallable::new(v)
         .value()

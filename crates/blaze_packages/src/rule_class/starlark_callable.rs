@@ -17,9 +17,13 @@ use crate::starlark_defs::value_cell::StarlarkValueCell;
 /// [`crate::attribute::Attribute`] or macro class. Java stores the `StarlarkCallable` /
 /// `StarlarkFunction` object itself.
 ///
-/// Values are only ever handed out from frozen .bzl modules, whose heaps BZL_LOAD keeps alive
-/// for the life of the process (single build per process), so the bare [`FrozenValue`] stays
-/// valid. // PORT: keep-alive
+/// Values are only ever handed out from frozen .bzl modules, whose heaps BZL_LOAD keeps in
+/// the build arena (`blaze_util::build_arena`, decision D7), so the bare [`FrozenValue`] stays
+/// valid while the arena lives. The arena outlives every handle: handles are held by rule
+/// classes, attributes, aspects and transitions, which are values of an evaluator's graph or of
+/// the evaluation running now, and the arena is released only when no evaluator exists (every
+/// `SkyframeExecutor` and every `BzlLoadFunction` holds a lease) and only by the server, after a
+/// command has ended. // PORT: keep-alive
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct StarlarkCallable(FrozenValue);
 
@@ -48,8 +52,9 @@ impl StarlarkCallable {
 
     /// The value as an [`OwnedFrozenValue`] for `blaze_starlark::eval::call_frozen`.
     pub fn to_owned_frozen_value(&self) -> OwnedFrozenValue {
-        // SAFETY: the value lives on a frozen heap that BZL_LOAD keeps alive for the life of the
-        // process (PORT: keep-alive), so an empty owner reference is sufficient.
+        // SAFETY: the value lives on a frozen heap that BZL_LOAD keeps in the build arena, which
+        // outlives every holder of the result (see the type docs; PORT: keep-alive), so an empty
+        // owner reference is sufficient.
         unsafe { OwnedFrozenValue::new(FrozenHeapRef::default(), self.value()) }
     }
 

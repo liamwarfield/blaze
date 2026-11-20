@@ -166,6 +166,11 @@ pub struct SkyframeExecutor {
     /// `topLevelArtifactContextForConflictPruning` of the request being analyzed: the requested
     /// output groups (see `skyframe_build_view::configure_targets`).
     top_level_artifact_context_for_conflict_pruning: parking_lot::Mutex<Option<Vec<String>>>,
+    /// PORT: Blaze-only (decision D7). The evaluator's values and the services above hold frozen
+    /// Starlark values whose heaps the build arena (`blaze_util::build_arena`) keeps: the arena
+    /// is not released while this executor exists. Declared last, so it is dropped after the
+    /// evaluator and everything else of the executor.
+    _arena_lease: blaze_util::build_arena::Lease,
 }
 
 /// A `Path` as the platform path an API that takes `std::path` wants: the bytes of the internal
@@ -233,6 +238,8 @@ impl SkyframeExecutor {
         builtin_modules: Option<IndexMap<String, blaze_bzlmod_model::module::NonRegistryOverride>>,
         extra_sky_functions: Option<&dyn Fn(EvaluatorBuilder) -> EvaluatorBuilder>,
     ) -> Result<SkyframeExecutor, SkyframeExecutorCreationError> {
+        // Taken before anything that can load Starlark (see the field).
+        let arena_lease = blaze_util::build_arena::lease();
         let options = &inputs.options;
         // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1722 SkyframeExecutor.sync
         // getEffectiveStarlarkSemantics(buildLanguageOptions): the full
@@ -573,6 +580,7 @@ impl SkyframeExecutor {
             output_base: output_base_std,
             lockfile_mode,
             execution,
+            _arena_lease: arena_lease,
         })
     }
 

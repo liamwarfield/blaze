@@ -526,10 +526,52 @@ mod blaze_command_dispatcher_test {
         crash_thread.join().unwrap();
     }
 
+    /// `CommandCompleteRecordingCommand`'s `@Subscribe onCommandComplete`.
+    struct CommandCompleteRecorder(Mutex<Option<mpsc::Sender<DetailedExitCode>>>);
+
+    impl blaze_events::EventBus for CommandCompleteRecorder {
+        fn post(&self, event: Arc<dyn blaze_events::Postable>) {
+            let event: Arc<dyn std::any::Any + Send + Sync> = event;
+            if let Ok(command_complete) = event.downcast::<crate::bugreport::CommandCompleteEvent>()
+                && let Some(tx) = self.0.lock().take()
+            {
+                let _ = tx.send(command_complete.get_exit_code().clone());
+            }
+        }
+    }
+
+    // Java: src/test/java/com/google/devtools/build/lib/runtime/BlazeCommandDispatcherTest.java:367 BlazeCommandDispatcherTest.testExecReportsStatus
     #[test]
-    #[ignore = "needs the CommandCompleteEvent of a normal command end (BlazeRuntime.notifyCommandComplete \
-                posts it; Blaze declares the exit code without posting, see notify_command_complete)"]
-    fn test_exec_reports_status() {}
+    fn test_exec_reports_status() {
+        let failure_detail = spawn_non_zero_exit();
+        let (tx, rx) = mpsc::channel();
+        let recorder = Arc::new(CommandCompleteRecorder(Mutex::new(Some(tx))));
+        let crash_command = {
+            let failure_detail = failure_detail.clone();
+            command(
+                annotation("testcommand", no_options, &[]),
+                move |env, _options| {
+                    env.get_event_bus().register(recorder.clone());
+                    BlazeCommandResult::failure_detail(failure_detail.clone())
+                },
+            )
+        };
+        let fixture = initialize_runtime(vec![commands(vec![crash_command])]);
+        let dispatch = dispatcher(&fixture, BlazeCommandDispatcher::UNKNOWN_SERVER_PID);
+
+        let direct_result = exec(
+            &dispatch,
+            &["testcommand"],
+            "clientdesc",
+            &RecordingOutErr::new(),
+        );
+
+        let command_complete_event = rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("CommandCompleteEvent");
+        assert_eq!(command_complete_event, DetailedExitCode::of(failure_detail));
+        assert!(!direct_result.shutdown());
+    }
 
     fn client_env_recorder() -> (
         Arc<dyn BlazeModule>,
@@ -977,15 +1019,104 @@ mod blaze_command_dispatcher_test {
         );
     }
 
-    #[test]
-    #[ignore = "needs Reporter.switchToAnsiAllowingHandler (the ANSI-allowing handler of --color=no \
-                is not ported, see BlazeCommandDispatcher.execExclusively)"]
-    fn test_binary_command_output() {}
+    // Java: src/test/java/com/google/devtools/build/lib/runtime/BlazeCommandDispatcherTest.java:209 AnsiTestingCommand.ANSI_CODE
+    const ANSI_CODE: &str = "\u{1b}[34mFoo";
 
+    /// `AnsiTestingCommand` with the given annotation: switches the reporter to its ANSI-allowing
+    /// handler and reports a STDOUT event with an ANSI code.
+    ///
+    /// PORT: the dispatcher does not register an ANSI-allowing handler (see the PORT note in
+    /// `BlazeCommandDispatcher::exec_exclusively`), so the switch keeps the UI handler; Java's
+    /// ANSI-allowing handler writes to `colorfulOutErr`, which is stripped exactly like the UI
+    /// handler's streams, so what these tests assert is the same.
+    // Java: src/test/java/com/google/devtools/build/lib/runtime/BlazeCommandDispatcherTest.java:208 BlazeCommandDispatcherTest.AnsiTestingCommand
+    fn ansi_testing_command(annotation: &'static CommandAnnotation) -> Arc<dyn BlazeCommand> {
+        command(annotation, |env, _options| {
+            use blaze_events::EventHandler as _;
+            let out_err = env.get_reporter().get_out_err().clone();
+            env.get_reporter().switch_to_ansi_allowing_handler();
+            env.get_reporter().handle(&blaze_events::Event::of_bytes(
+                blaze_events::EventKind::Stdout,
+                ANSI_CODE.as_bytes(),
+            ));
+            if out_err.get_output_stream().flush().is_err()
+                || out_err.get_error_stream().flush().is_err()
+            {
+                return BlazeCommandResult::failure_detail(FailureDetail {
+                    message: String::new(),
+                    category: Some(Category::Crash(failure_details::Crash::default())),
+                });
+            }
+            BlazeCommandResult::success()
+        })
+    }
+
+    /// `@Command(name = "binary", binaryStdOut = true, shortDescription = "", help = "")`.
+    // Java: src/test/java/com/google/devtools/build/lib/runtime/BlazeCommandDispatcherTest.java:230 BlazeCommandDispatcherTest.BinaryCommand
+    fn binary_annotation() -> &'static CommandAnnotation {
+        Box::leak(Box::new(CommandAnnotation {
+            rc: RcCommand {
+                name: "binary",
+                inherits_options_from: &[],
+            },
+            options: no_options,
+            inherits_options_from: &[],
+            short_description: "",
+            uses_configuration_options: false,
+            build_phase: BuildPhase::NONE,
+            hidden: false,
+            allow_residue: false,
+            has_sensitive_residue: false,
+            binary_std_out: true,
+            binary_std_err: false,
+            write_command_log: true,
+            help: "",
+            must_run_in_workspace: true,
+            completion: "",
+        }))
+    }
+
+    // Java: src/test/java/com/google/devtools/build/lib/runtime/BlazeCommandDispatcherTest.java:618 BlazeCommandDispatcherTest.testBinaryCommandOutput
     #[test]
-    #[ignore = "needs Reporter.switchToAnsiAllowingHandler (the ANSI-allowing handler of --color=no \
-                is not ported, see BlazeCommandDispatcher.execExclusively)"]
-    fn test_ascii_command_output() {}
+    fn test_binary_command_output() {
+        let binary_command = ansi_testing_command(binary_annotation());
+        let fixture = initialize_runtime(vec![commands(vec![binary_command])]);
+        let dispatch = dispatcher(&fixture, BlazeCommandDispatcher::UNKNOWN_SERVER_PID);
+        let out_err = RecordingOutErr::new();
+
+        // Binary commands do not remove ANSI control codes.
+        let result = exec(&dispatch, &["binary", "--color=no"], "test", &out_err);
+        let out = out_err.out_as_latin1();
+        let err = out_err.err_as_latin1();
+
+        assert_eq!(
+            result.get_exit_code().get_numeric_exit_code(),
+            ExitCode::SUCCESS.get_numeric_exit_code(),
+            "{out}{err}"
+        );
+        assert!(out.contains(ANSI_CODE), "{out:?}");
+    }
+
+    // Java: src/test/java/com/google/devtools/build/lib/runtime/BlazeCommandDispatcherTest.java:636 BlazeCommandDispatcherTest.testAsciiCommandOutput
+    #[test]
+    fn test_ascii_command_output() {
+        let ascii_command = ansi_testing_command(annotation("ascii", no_options, &[]));
+        let fixture = initialize_runtime(vec![commands(vec![ascii_command])]);
+        let dispatch = dispatcher(&fixture, BlazeCommandDispatcher::UNKNOWN_SERVER_PID);
+        let out_err = RecordingOutErr::new();
+
+        // ASCII commands remove ANSI control codes.
+        let result = exec(&dispatch, &["ascii", "--color=no"], "test", &out_err);
+        let out = out_err.out_as_latin1();
+        let err = out_err.err_as_latin1();
+
+        assert_eq!(
+            result.get_exit_code().get_numeric_exit_code(),
+            ExitCode::SUCCESS.get_numeric_exit_code(),
+            "{out}{err}"
+        );
+        assert!(!out.contains(ANSI_CODE), "{out:?}");
+    }
 
     // Java: src/test/java/com/google/devtools/build/lib/runtime/BlazeCommandDispatcherTest.java:654 BlazeCommandDispatcherTest.testWaitingForTimestampGranularityMonitor
     #[test]
@@ -1004,10 +1135,61 @@ mod blaze_command_dispatcher_test {
         // granularity issues", which the empty prefix of every line does.
     }
 
+    /// Regression test for b/136003907.
+    ///
+    /// Tests that even if `System.out` or `System.err` are read and retained during the lifetime
+    /// of a command (which we cannot prevent, since they are public), there is no memory leak of
+    /// `CommandEnvironment.getReporter`.
+    ///
+    /// PORT: `GcFinalization.awaitClear(weakReference)` is `Weak::upgrade` returning `None` once
+    /// the command is over (reference counting frees at once).
+    // Java: src/test/java/com/google/devtools/build/lib/runtime/BlazeCommandDispatcherTest.java:679 BlazeCommandDispatcherTest.noMemoryLeakOfReporterThroughSystemOutErr
     #[test]
-    #[ignore = "needs OutErr.SystemPatcher (System.out/err patched to the command's reporter during \
-                execExclusively), which is not ported"]
-    fn no_memory_leak_of_reporter_through_system_out_err() {}
+    fn no_memory_leak_of_reporter_through_system_out_err() {
+        type Retained = (
+            Arc<dyn blaze_events::OutputStream>,
+            Arc<dyn blaze_events::OutputStream>,
+            std::sync::Weak<blaze_events::Reporter>,
+        );
+        let retained: Arc<Mutex<Option<Retained>>> = Arc::new(Mutex::new(None));
+        let default_stdout = blaze_events::io::system_out();
+        let default_stderr = blaze_events::io::system_err();
+        let cmd = {
+            let retained = retained.clone();
+            command(
+                annotation("retain_out_err", no_options, &[]),
+                move |env, _options| {
+                    let overridden_stdout = blaze_events::io::system_out();
+                    assert!(!Arc::ptr_eq(&overridden_stdout, &default_stdout));
+                    let overridden_stderr = blaze_events::io::system_err();
+                    assert!(!Arc::ptr_eq(&overridden_stderr, &default_stderr));
+                    let reporter = env.get_reporter();
+                    *retained.lock() = Some((
+                        overridden_stdout,
+                        overridden_stderr,
+                        Arc::downgrade(reporter),
+                    ));
+                    BlazeCommandResult::success()
+                },
+            )
+        };
+        let fixture = initialize_runtime(vec![commands(vec![cmd])]);
+        let dispatcher = dispatcher(&fixture, BlazeCommandDispatcher::UNKNOWN_SERVER_PID);
+
+        exec(
+            &dispatcher,
+            &["retain_out_err"],
+            "test",
+            &RecordingOutErr::new(),
+        );
+
+        // The command's System.out and System.err are still held here.
+        let (_out, _err, reporter_ref) = retained.lock().take().expect("the command ran");
+        assert!(
+            reporter_ref.upgrade().is_none(),
+            "the reporter is kept alive through the retained System.out/err"
+        );
+    }
 
     fn failing_before_command(code: DetailedExitCode) -> Arc<dyn BlazeModule> {
         Arc::new(TestModule {
@@ -1123,13 +1305,25 @@ mod command_interruption_test {
     /// (`CommandState`).
     struct CommandState {
         thread: ThreadInterrupt,
+        /// `commandEnvironment.getBlazeModuleEnvironment()`.
+        module_environment: crate::command_environment::BlazeModuleEnvironment,
         detailed_code_queue: Arc<Monitor<VecDeque<DetailedExitCode>>>,
         barrier: Arc<Barrier>,
-        result: Mutex<mpsc::Receiver<DetailedExitCode>>,
+        /// The dispatcher's result (`RunCommandThroughDispatcher`), set by `run_in`.
+        result: Mutex<Option<mpsc::Receiver<DetailedExitCode>>>,
         finished: Arc<AtomicBool>,
     }
 
     impl CommandState {
+        /// Gets the ModuleEnvironment modules will see when executing this command.
+        fn get_module_environment(&self) -> &crate::command_environment::BlazeModuleEnvironment {
+            &self.module_environment
+        }
+
+        fn assert_on_same_thread_as(&self, other: &CommandState) {
+            assert!(self.thread.same_thread(&other.thread));
+        }
+
         /// Sends an exit code to the command, which will then return with it if it is still
         /// running.
         fn request_exit_with(&self, detailed_exit_code: DetailedExitCode) {
@@ -1153,6 +1347,8 @@ mod command_interruption_test {
             let result = self
                 .result
                 .lock()
+                .as_ref()
+                .expect("run_in sets the result")
                 .recv_timeout(Duration::from_secs(60))
                 .expect("the command finished");
             assert_eq!(result, detailed_exit_code);
@@ -1165,20 +1361,20 @@ mod command_interruption_test {
     fn snooze(handoff: Arc<Mutex<Option<mpsc::Sender<CommandState>>>>) -> Arc<dyn BlazeCommand> {
         command(
             annotation("snooze", wait_options, &[]),
-            move |_env, options| {
+            move |env, options| {
                 let mut expect_interruption = options
                     .get_options::<WaitOptions>()
                     .expect("WaitOptions")
                     .expect_interruption;
                 let queue = Arc::new(Monitor::new(VecDeque::new()));
                 let barrier = Arc::new(Barrier::new(2));
-                let (result_tx, result_rx) = mpsc::channel();
                 let finished = Arc::new(AtomicBool::new(false));
                 let state = CommandState {
                     thread: ThreadInterrupt::current(),
+                    module_environment: env.get_blaze_module_environment().clone(),
                     detailed_code_queue: queue.clone(),
                     barrier: barrier.clone(),
-                    result: Mutex::new(result_rx),
+                    result: Mutex::new(None),
                     finished: finished.clone(),
                 };
                 handoff
@@ -1220,7 +1416,6 @@ mod command_interruption_test {
                     }
                 };
                 finished.store(true, Ordering::SeqCst);
-                result_tx.send(code.clone()).unwrap();
                 BlazeCommandResult::detailed_exit_code(code)
             },
         )
@@ -1242,13 +1437,46 @@ mod command_interruption_test {
         }
     }
 
+    /// A single-threaded executor (Java: `Executors.newSingleThreadExecutor()`): every command
+    /// submitted runs on the same thread, one after the other.
+    struct Executor(Mutex<Option<mpsc::Sender<Box<dyn FnOnce() + Send>>>>);
+
+    impl Executor {
+        fn new() -> Self {
+            let (tx, rx) = mpsc::channel::<Box<dyn FnOnce() + Send>>();
+            std::thread::spawn(move || {
+                for task in rx {
+                    task();
+                }
+            });
+            Executor(Mutex::new(Some(tx)))
+        }
+
+        fn submit(&self, task: Box<dyn FnOnce() + Send>) {
+            self.0.lock().as_ref().unwrap().send(task).unwrap();
+        }
+    }
+
     /// Runs the snooze command on its own thread, waits for it to start and returns its state.
     fn run_in(setup: &Setup, expect_interruption: bool) -> CommandState {
+        run_on(None, setup, expect_interruption)
+    }
+
+    /// Runs an instance of the snooze command on the given executor (a new thread without one),
+    /// waits for it to start and returns a CommandState which can be used to control and assert
+    /// on the status of that command (`WaitForCompletionCommand.runIn`). The state's result is
+    /// the dispatcher's (`RunCommandThroughDispatcher`).
+    fn run_on(
+        executor: Option<&Executor>,
+        setup: &Setup,
+        expect_interruption: bool,
+    ) -> CommandState {
         let (tx, rx) = mpsc::channel();
         *setup.handoff.lock() = Some(tx);
         let dispatcher = setup.dispatcher.clone();
-        std::thread::spawn(move || {
-            exec(
+        let (result_tx, result_rx) = mpsc::channel();
+        let task: Box<dyn FnOnce() + Send> = Box::new(move || {
+            let result = exec(
                 &dispatcher,
                 &[
                     "snooze",
@@ -1260,9 +1488,49 @@ mod command_interruption_test {
                 ],
                 "CommandInterruptionTest",
                 &RecordingOutErr::new(),
-            )
+            );
+            let _ = result_tx.send(result.get_detailed_exit_code().clone());
         });
-        rx.recv_timeout(Duration::from_secs(60)).unwrap()
+        match executor {
+            Some(executor) => executor.submit(task),
+            None => {
+                std::thread::spawn(task);
+            }
+        }
+        let state: CommandState = rx.recv_timeout(Duration::from_secs(60)).unwrap();
+        *state.result.lock() = Some(result_rx);
+        state
+    }
+
+    // Java: src/test/java/com/google/devtools/build/lib/runtime/CommandInterruptionTest.java:67 CommandInterruptionTest.NO_TEST_TARGETS_CODE
+    fn no_test_targets_code() -> DetailedExitCode {
+        DetailedExitCode::of(FailureDetail {
+            message: String::new(),
+            category: Some(Category::TestCommand(failure_details::TestCommand {
+                code: failure_details::test_command::Code::NoTestTargets as i32,
+            })),
+        })
+    }
+
+    // Java: src/test/java/com/google/devtools/build/lib/runtime/CommandInterruptionTest.java:79 CommandInterruptionTest.CRASH
+    fn crash() -> DetailedExitCode {
+        DetailedExitCode::of(FailureDetail {
+            message: "crash".to_string(),
+            category: Some(Category::Crash(failure_details::Crash {
+                code: failure_details::crash::Code::CrashUnknown as i32,
+                ..Default::default()
+            })),
+        })
+    }
+
+    // Java: src/test/java/com/google/devtools/build/lib/runtime/CommandInterruptionTest.java:84 CommandInterruptionTest.OPTIONS_FAILURE
+    fn options_failure() -> DetailedExitCode {
+        DetailedExitCode::of(FailureDetail {
+            message: String::new(),
+            category: Some(Category::Command(failure_details::Command {
+                code: failure_details::command::Code::OptionsParseFailure as i32,
+            })),
+        })
     }
 
     // Java: src/test/java/com/google/devtools/build/lib/runtime/CommandInterruptionTest.java:428 CommandInterruptionTest.sendingExitCodeToTestCommandResultsInExitWithThatStatus
@@ -1310,25 +1578,64 @@ mod command_interruption_test {
                 by value)"]
     fn exit_forbids_null_exception() {}
 
+    // Java: src/test/java/com/google/devtools/build/lib/runtime/CommandInterruptionTest.java:474 CommandInterruptionTest.callingExitOnceInterruptsAndOverridesExitCode
     #[test]
-    #[ignore = "needs BlazeModuleEnvironment.exit from another thread interrupting the command \
-                thread (CommandEnvironment::exit takes &mut self and does not interrupt)"]
-    fn calling_exit_once_interrupts_and_overrides_exit_code() {}
+    fn calling_exit_once_interrupts_and_overrides_exit_code() {
+        let setup = set_up();
+        let command = run_in(&setup, false);
+        command
+            .get_module_environment()
+            .exit(AbruptExitException::new(no_test_targets_code()));
+        command.assert_finished_with(no_test_targets_code());
+    }
 
+    // Java: src/test/java/com/google/devtools/build/lib/runtime/CommandInterruptionTest.java:481 CommandInterruptionTest.callingExitSecondTimeNeitherInterruptsNorReOverridesExitCode
     #[test]
-    #[ignore = "needs BlazeModuleEnvironment.exit from another thread interrupting the command \
-                thread (CommandEnvironment::exit takes &mut self and does not interrupt)"]
-    fn calling_exit_second_time_neither_interrupts_nor_re_overrides_exit_code() {}
+    fn calling_exit_second_time_neither_interrupts_nor_re_overrides_exit_code() {
+        let setup = set_up();
+        let command = run_in(&setup, true);
+        command
+            .get_module_environment()
+            .exit(AbruptExitException::new(no_test_targets_code()));
+        command.assert_not_finished_yet();
+        command
+            .get_module_environment()
+            .exit(AbruptExitException::new(options_failure()));
+        command.assert_not_finished_yet();
+        command.request_exit_with(DetailedExitCode::success());
+        command.assert_finished_with(no_test_targets_code());
+    }
 
+    // Java: src/test/java/com/google/devtools/build/lib/runtime/CommandInterruptionTest.java:492 CommandInterruptionTest.abruptExitCodesDontOverrideInfrastructureFailures
     #[test]
-    #[ignore = "needs BlazeModuleEnvironment.exit from another thread interrupting the command \
-                thread (CommandEnvironment::exit takes &mut self and does not interrupt)"]
-    fn abrupt_exit_codes_dont_override_infrastructure_failures() {}
+    fn abrupt_exit_codes_dont_override_infrastructure_failures() {
+        let setup = set_up();
+        let command = run_in(&setup, true);
+        command
+            .get_module_environment()
+            .exit(AbruptExitException::new(no_test_targets_code()));
+        command.assert_not_finished_yet();
+        command.request_exit_with(crash());
+        command.assert_finished_with(crash());
+    }
 
+    // Java: src/test/java/com/google/devtools/build/lib/runtime/CommandInterruptionTest.java:501 CommandInterruptionTest.callingExitAfterCommandCompletesDoesNothing
     #[test]
-    #[ignore = "needs BlazeModuleEnvironment.exit from another thread, and a command executor that \
-                reuses threads (each server command runs on a fresh thread)"]
-    fn calling_exit_after_command_completes_does_nothing() {}
+    fn calling_exit_after_command_completes_does_nothing() {
+        let setup = set_up();
+        let executor = Executor::new();
+        let first_command = run_on(Some(&executor), &setup, false);
+        first_command.request_exit_with(DetailedExitCode::success());
+        first_command.assert_finished_with(DetailedExitCode::success());
+        let new_command_on_same_thread = run_on(Some(&executor), &setup, false);
+        first_command.assert_on_same_thread_as(&new_command_on_same_thread);
+        first_command
+            .get_module_environment()
+            .exit(AbruptExitException::new(options_failure()));
+        new_command_on_same_thread.assert_not_finished_yet();
+        new_command_on_same_thread.request_exit_with(DetailedExitCode::success());
+        new_command_on_same_thread.assert_finished_with(DetailedExitCode::success());
+    }
 }
 
 /// Several commands of the real Bazel modules through one runtime and one dispatcher, as a

@@ -4,7 +4,7 @@
 # Usage:
 #   scripts/server/soak help
 #   scripts/server/soak run --name NAME --binary PATH --project brotli|re2 [--count N]
-#                           [--oracle] [--fresh] -- <command> [args...]
+#                           [--oracle] [--fresh] [--malloc-stats] -- <command> [args...]
 #
 # Copies the corpus checkout (~/.cache/blaze/corpus/<project>, read-only) with
 # `rsync -a --exclude=/bazel-* --exclude=/.git` to ROOT/NAME/ws, and runs <command> N times
@@ -19,7 +19,9 @@
 # it records the command's exit status (as seen inside the unit), the server's VmRSS, RssAnon
 # and VmHWM (/proc/<pid>/status, pid from <output_base>/server/server.pid.txt), and the
 # summary lines of stderr (INFO: Analyzed / Found / N processes / Build completed, ERROR,
-# FATAL). Results: ROOT/NAME/report.tsv (one row per command), ROOT/NAME/logs/<i>.{out,err}.
+# FATAL). --malloc-stats: also glibc's in-use heap bytes after each command (gdb attaches and
+# calls malloc_stats(); the numbers are read back from <output_base>/server/jvm.out), which tells
+# a leak from fragmentation. Results: ROOT/NAME/report.tsv (one row per command), ROOT/NAME/logs/<i>.{out,err}.
 # At the end (also on error or signal) the server is shut down with `shutdown`, and killed
 # through its pid file when it is still alive after that.
 #
@@ -60,7 +62,7 @@ mem_of() {
 
 inner() {
   # Globals on purpose: the EXIT trap runs after this function has returned.
-  dir="$1" binary="$2" oracle="$3" count="$4"; shift 4
+  dir="$1" binary="$2" oracle="$3" count="$4" mstats="$5"; shift 5
   ws="$dir/ws" ur="$dir/ur" logs="$dir/logs" report="$dir/report.tsv"
   env=(env -i HOME="$HOME" PATH=/usr/bin:/bin BLAZE_SERVER_MODE=daemon)
   startup=("$binary" "--output_user_root=$ur" --nohome_rc --nosystem_rc)
@@ -86,7 +88,7 @@ inner() {
   }
   trap cleanup EXIT
   trap 'exit 130' INT TERM HUP
-  printf 'i\tstatus\tpid\tVmRSS_kB\tRssAnon_kB\tVmHWM_kB\twall_s\tsummary\n' >"$report"
+  printf 'i\tstatus\tpid\tVmRSS_kB\tRssAnon_kB\tVmHWM_kB\twall_s\tinuse_kB\tsummary\n' >"$report"
   echo "argv: ${startup[*]} ${cmd[*]}" >>"$dir/run.log"
   local i st pid pf t0 t1 summary
   for ((i = 1; i <= count; i++)); do
@@ -102,14 +104,21 @@ inner() {
     summary="$(grep -E '^(INFO: (Analyzed|Found|[0-9]+ process|Build completed|Elapsed)|ERROR|FATAL|Loading: )' "$logs/$i.err" \
       | sed -E 's/[0-9]+\.[0-9]+s/<DUR>/g' | tr '\n' '|' || true)"
     summary="$summary stdout_lines=$(wc -l <"$logs/$i.out")"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$i" "exit $st" "${pid:--}" "$(mem_of "$pid")" \
-      "$(echo "$t1 - $t0" | bc)" "$summary" >>"$report"
+    local inuse="-" mem
+    mem="$(mem_of "$pid")"
+    if [[ "$mstats" == 1 && -n "$pid" && -d /proc/$pid && -n "$pf" ]]; then
+      gdb -p "$pid" -batch -ex 'call (void)malloc_stats()' >/dev/null 2>&1 || true
+      inuse="$(awk '/^Total \(incl. mmap\):/{t=1} t && /in use bytes/{v=$NF; t=0} END{if (v != "") printf "%d", v/1024; else printf "-"}' \
+        "$(dirname "$pf")/jvm.out" 2>/dev/null || echo -)"
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$i" "exit $st" "${pid:--}" "$mem" \
+      "$(echo "$t1 - $t0" | bc)" "$inuse" "$summary" >>"$report"
     tail -1 "$report"
   done
 }
 
 cmd_run() {
-  local name="" binary="" project="" count=12 oracle=0 fresh=0
+  local name="" binary="" project="" count=12 oracle=0 fresh=0 mstats=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --name) name="$2"; shift 2 ;;
@@ -118,6 +127,7 @@ cmd_run() {
       --count) count="$2"; shift 2 ;;
       --oracle) oracle=1; shift ;;
       --fresh) fresh=1; shift ;;
+      --malloc-stats) mstats=1; shift ;;
       --) shift; break ;;
       *) die "unknown argument $1 (see: soak help)" ;;
     esac
@@ -142,7 +152,7 @@ cmd_run() {
   } >"$dir/run.log"
   set +e
   systemd-run --user --collect --wait --pipe --quiet -p MemoryMax=12G -p MemorySwapMax=0 \
-    bash "$SELF" __inner "$dir" "$binary" "$oracle" "$count" "$@"
+    bash "$SELF" __inner "$dir" "$binary" "$oracle" "$count" "$mstats" "$@"
   local st=$?
   set -e
   echo "unit exit $st" >>"$dir/run.log"

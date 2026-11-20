@@ -12,7 +12,7 @@
 //! .bzl file executed for several BZL_LOAD keys (BUILD-loaded, bzlmod bootstrap) gives several
 //! modules, each with its own context.
 //!
-//! The process-wide table keyed by compiled file name ([`BazelModuleContext::register`],
+//! The table keyed by compiled file name (one per build arena) ([`BazelModuleContext::register`],
 //! [`BazelModuleContext::of_filename`], [`BazelModuleContext::all_package_contexts`]) cannot
 //! tell those modules apart (last writer wins). Nothing in this crate reads it any more; it
 //! stays for callers in other crates until they move to the functions above.
@@ -33,7 +33,6 @@ use blaze_cmdline::RepositoryName;
 use blaze_starlark::ThreadContext;
 use blaze_starlark::defining_module;
 use blaze_starlark::defining_module::ModulePackageContext;
-use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use starlark::any::ProvidesStaticType;
 use starlark::eval::Evaluator;
@@ -62,8 +61,19 @@ pub struct BazelModuleContext {
     pub bzl_transitive_digest: Vec<u8>,
 }
 
-static BY_FILENAME: Lazy<RwLock<HashMap<String, Arc<BazelModuleContext>>>> =
-    Lazy::new(|| RwLock::new(HashMap::new()));
+/// The registered contexts by compiled file name, in the build arena (`blaze_util::build_arena`,
+/// decision D7): every command loads its .bzl files again and registers them anew.
+#[derive(Default)]
+struct ByFilename(RwLock<HashMap<String, Arc<BazelModuleContext>>>);
+
+impl blaze_util::build_arena::ArenaSlot for ByFilename {
+    const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
+        blaze_util::build_arena::ReleaseOrder::State;
+}
+
+fn by_filename() -> Arc<ByFilename> {
+    blaze_util::build_arena::slot::<ByFilename>()
+}
 
 /// The `BazelModuleContext` as a Starlark value: the extra value of every .bzl module (Java
 /// `Module.setClientData(BazelModuleContext)`), set before the module executes and frozen with
@@ -106,14 +116,15 @@ impl BazelModuleContext {
     /// Registers `ctx` in the table keyed by compiled file name (see the module comment: the
     /// table is ambiguous; lookups in this crate do not use it).
     pub fn register(ctx: Arc<BazelModuleContext>) {
-        BY_FILENAME.write().insert(ctx.filename.clone(), ctx);
+        by_filename().0.write().insert(ctx.filename.clone(), ctx);
     }
 
     /// The package context of every registered .bzl file, by compiled file name. Ambiguous for
     /// a file executed under several BZL_LOAD keys (see the module comment); `Label()` no longer
     /// needs it, since it reads the calling function's own module.
     pub fn all_package_contexts() -> Vec<(String, LabelPackageContext)> {
-        BY_FILENAME
+        by_filename()
+            .0
             .read()
             .iter()
             .map(|(f, c)| (f.clone(), c.package_context()))
@@ -124,7 +135,7 @@ impl BazelModuleContext {
     /// under several BZL_LOAD keys; use [`BazelModuleContext::of_function`] or
     /// [`BazelModuleContext::of_innermost_enclosing_starlark_function`].
     pub fn of_filename(filename: &str) -> Option<Arc<BazelModuleContext>> {
-        BY_FILENAME.read().get(filename).cloned()
+        by_filename().0.read().get(filename).cloned()
     }
 
     /// Java `BazelModuleContext.of(module)` for a module's extra value (client data): `None`
