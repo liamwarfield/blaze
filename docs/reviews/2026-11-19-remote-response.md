@@ -1120,3 +1120,345 @@ converted by this round's workers (site list: docs/research/07-byte-strings-exec
   `commands/mod_command.rs` (another implementer's file in progress). `rustfmt --edition 2024
   --check` clean on the remote files.
 
+# Round 3 response
+
+- Reviewer's verdict: STOP at `e370bf9` (docs/reviews/2026-11-19-remote.md, "# Round 3"), one
+  blocking finding (P1).
+- Workers of this round (Opus): R1 (P4, P1, P5), R2 (P2, P7), R3 (P6, S4), R4 (P8). Same method
+  as round 2. P3 is fixed by another implementer in `blaze_protos` (not in this response).
+- Tree, binary and numbers: "Numbers" at the end.
+
+| Finding | State |
+|---|---|
+| P1 SIGPIPE from Blaze's own sockets (S1) | observed, then fixed |
+| P2 input discovery without the action file system | fixed; evidence is unit tests (the oracle cannot build the reviewer's scenario on this machine) |
+| P3 TextFormat `from_utf8_lossy` | not mine (another implementer, `blaze_protos`) |
+| P4 wrappers record `systemd-run --wait`'s status | fixed: status recorded inside the unit |
+| P5 post-handshake TLS alert | fixed, and the race behind it (grpc-netty's shutdown status ported) |
+| P6 regex dialect | fixed for every caller that compiles a user's Java pattern: one port of `java.util.regex.Pattern`'s parser |
+| P7 lost-input residuals | fixed (both) |
+| P8 tests | fixed: all 30 `ActionOutputMetadataStoreTest` methods have a Rust test (26 pass, 4 ignored for named missing ports); both helper tests un-ignored |
+| S4 (8) | 7 fixed, 1 comment left for the file's owner; one new deviation found (completion path resolver) |
+
+## P1 (S1). SIGPIPE: OBSERVED, FIXED
+
+- Observed first, with the binary before the fix (`r1-blaze-0`) and the status recorded inside
+  the unit (P4; `strace` is not installed on this machine):
+
+| scenario (`scripts/remote/sigpipe-probe`) | result before the fix |
+|---|---|
+| `mtls-noclient` (TLS 1.3 server requiring a client certificate) | run 1: exit 34; run 2: `141 (killed by SIGPIPE)`, stderr identical to run 1 |
+| `http-cache` (`grpc://` to an HTTP/1 server) | runs 1 and 2: exit 34; run 3: killed by SIGPIPE |
+| `reset-peer` (new `scripts/remote/reset-peer`: a proxy in front of Bazel's worker that sends FIN then RST while the client writes; cache-only build) | 14 runs exit 0; run 15: "Build completed successfully" and killed by SIGPIPE |
+
+  The reviewer's reading is confirmed, including why 0 had been recorded: `systemd-run --wait`
+  returned 0 for the SIGPIPE death.
+- Both sides read. C++ client (`src/main/cpp/blaze_util_posix.cc:141-229`, `blaze.cc:2082-2205`):
+  the handler records SIGPIPE; when writing the server's output fails with EPIPE the client
+  cancels and `PropagateSignalOrExit` raises the signal. Java server: the JVM ignores SIGPIPE;
+  a reset remote socket is an `IOException`. Together: `bazel … | head -1` dies by SIGPIPE; a
+  remote endpoint that resets does not touch the exit status.
+- Fix. `blaze_client/src/signal_handler.rs`: SIGPIPE is ignored (`SIG_IGN`) instead of handled;
+  new `note_broken_pipe()` sets the recorded signal (only when the handler is installed, as in
+  Bazel, where batch mode has no handler); `propagate_signal_or_exit` is unchanged.
+  `blaze_events/src/io.rs`: `set_broken_pipe_listener` and a wrapper around the process's
+  stdout and stderr in `OutErr::system_out_err` that calls it when a write or flush fails with
+  `BrokenPipe` (the writes that correspond to the C++ client's `fwrite` to fd 1 and 2).
+  `crates/blaze/src/main.rs` wires the two. PORT notes at each site.
+- Tests (`blaze_client/tests/signal_handler_test.rs`, each in a child process):
+  `writev_to_a_reset_peer_does_not_kill_the_process`,
+  `epipe_on_stdout_ends_the_process_with_sigpipe`, `broken_pipe_before_install_is_not_recorded`;
+  `blaze_events` `std_out_err_writer_reports_broken_pipe`.
+- Shown after the fix (in-unit status): `mtls-noclient` 30 of 30 exit 34 (and 50 of 50 with the
+  final transport code, P5); `http-cache` 30 of 30 (50 of 50) exit 34; `reset-peer` 30 of 30
+  exit 0 with one RST each (oracle: 10 of 10 each). Pipe closes, `${PIPESTATUS[0]}` inside the
+  unit: `build 2>&1 | head -1` 141 on both; `build | head -1` 0 on both; `query //... | head -1`
+  (5000 targets) 141 on both.
+- Left for other owners: `blaze_client/src/util/file.rs` `write_to_std_out_err` (the separate
+  client of the daemon mode) must call `note_broken_pipe()` in its EPIPE branch, and the PORT
+  note at `blaze.rs:~610` is stale (both files were mid-edit by the client-daemon work; passed
+  to root). Not remote: `info | head -1` is 37 on Blaze (full `info` crashes on
+  `CommittedHeapSizeInfoItem.get`), and `query 2>&1 >/dev/null | head -1` is 0 (Blaze prints no
+  progress lines to stderr).
+
+## P4. Wrappers: FIXED
+
+New `scripts/remote/unit-supervisor` runs as the unit's main process, forwards SIGINT, SIGTERM,
+SIGHUP and SIGQUIT to the command, and writes `exit N` or `signal N NAME` to a status file;
+`scripts/remote/unitstatus.py` is the shared reader. `ws-run`, `oracle-run`, `symlink-probe`,
+`platform-probe`, `nonascii-probe`, `cplookup-probe`, `strings-probe` and `srcdir-probe` use it:
+the `exit` file holds the plain code (128+N after a signal) and a `signal` file names the
+signal; the printed line is `exit code: 141 (killed by SIGPIPE)`. No wrapper under
+`scripts/remote` records `systemd-run --wait`'s own status any more (`worker` and `evict-probe`
+start services without `--wait` and record none; `matrix` goes through `oracle-run` and
+`ws-run`). Checked through each wrapper: exit 3, `kill -PIPE $$` (141), `kill -TERM $$` (143),
+an oracle build that fails (1) and one that passes (0), and `--sigint-after` /
+`--sigint-on-glob` (8).
+
+## P5. Post-handshake alert: FIXED, with the race behind it
+
+- The classification: `is_tls_alert` is used in all three arms of `classify_transport_error`.
+  With that alone the oracle's line appeared in 26 of 30 runs; in 4 the alert was lost inside
+  hyper and the waiting call failed as `CANCELLED: operation was canceled`.
+- The race: grpc-netty gives every stream of a connection that failed the connection's shutdown
+  status, and the first status wins (`ClientTransportLifecycleManager.notifyShutdown`,
+  `NettyClientHandler.onConnectionError` / `channelInactive` / `createStream`, grpc-java 1.71.0);
+  Netty also flushes preface, SETTINGS and the first request before the peer can have answered,
+  so its first failure is what it reads. Ported in `grpc/channel.rs`: `ConnectionLifecycle`
+  (first cause wins; `on_bytes` is `Http2ConnectionHandler.PrefaceDecoder.verifyFirstFrameIsSettings`
+  with its text), `RecordingReads` and `DroppingRefusedWrites` around the connection's I/O, and
+  `transport_status` gives a call that failed only because its connection went away the
+  connection's status. A call cancelled by Blaze itself (deadline, interrupt), a connect or
+  handshake failure and a status sent by the server are untouched. PORT: tonic applies its TLS
+  out of reach of a wrapping layer, so `new_channel` validates the settings through tonic as
+  before and then connects with the crate's own connector (the same rustls configuration, ALPN
+  h2 required). Not ported: a clean EOF with no other failure records nothing (Netty: "Network
+  closed for unknown reason"), which keeps the `closed-cache` row equal to the oracle.
+- Tests (`channel.rs`): `tls_alert_after_the_handshake_is_unavailable_ssl_exception` (no relay),
+  `http1_server_is_internal_http2_exception`, `plain_peer_reset_is_unavailable_io_exception`:
+  200 sequential and 200 eight-way parallel runs each, 0 failures (the HTTP/1 test failed 3 of 15
+  before); `only_a_call_cancelled_by_its_connection_gets_the_shutdown_status`,
+  `call_cancelled_by_its_deadline_keeps_its_status`, `is_tls_alert_matches_rustls_alert_text_only`.
+- Oracle: `mtls-noclient` 50 of 50 runs print `Failed to query remote execution capabilities:
+  UNAVAILABLE: ssl exception` (oracle 10 of 10); `http-cache` 50 of 50 `… INTERNAL: http2
+  exception`; `tls-probe` and `caps-matrix` otherwise unchanged (20 of 20 exit codes equal;
+  texts differ only in the listed rustls/OpenSSL and address-choice rows).
+
+## P2. Input discovery on the action file system: FIXED
+
+- `skyframe_action_executor.rs` `discover_inputs` is `SkyframeActionExecutor.java:922-1004`: the
+  discovery context is built on the action file system (exec root, input paths, out/err),
+  `updateActionFileSystemContext`, the lost-input check after a successful discovery (:967) and
+  after a failure (:976; a lost input wins over the discovery error), handled as in execution.
+  `action_execution_function.rs` passes the file system of the output metadata store, the same
+  instance execution uses in that call (PORT: no `SkyKeyComputeState`; a restart creates it
+  again). `setFromInputDiscovery` only selects dependencies for the rewind plan (PORT comment).
+  `CppCompileAction`'s modmap read already went through the context's input path.
+- Evidence, stated plainly: the oracle cannot build C++20 modules on this machine (no clang; with
+  gcc 16.2 `aggregate-ddi` fails with "Invalid JSON string" because the `.ddi` is not P1689
+  JSON; `scripts/remote/discovery-probe oracle` shows it), and no other in-process discovery
+  reader exists, so there is no oracle comparison. The evidence is two unit tests that fail when
+  discovery is given no file system:
+  `input_discovery_reads_a_remote_only_input_through_the_action_file_system` and
+  `input_lost_during_discovery_fails_as_without_rewinding`, plus unchanged results of
+  `probe-inprocess`, `probe-trees2`, `shard-probe` and `evict-probe … inprocess`.
+- The false row in docs/remote.md "Known deviations" is removed.
+
+## P7. Lost-input residuals: FIXED
+
+- (a) `remote_action_file_system.rs` `download_if_remote`: the helper thread adopts the caller's
+  interrupt status; `get_input_stream` restores the flag and reports "Received interrupt while
+  fetching file '…'" (`RemoteActionFileSystem.java:381-385`). Test
+  `get_input_stream_interrupted_while_download_in_flight` (fails without the adoption).
+- (b) The purge before the rewinding `unported!` now works on the executor's own action cache
+  (`ActionCacheChecker::get_action_cache`), under a lock that `update_action_cache` holds while
+  it writes, and sets a flag after which nothing is put (PORT: Java has no such path); the
+  second on-disk handle is gone. Test
+  `lost_inputs_with_rewinding_purge_the_action_cache_before_failing_loudly`: an action that
+  finishes after the purge does not bring an entry back, in the live cache or on disk.
+  `evict-probe` sticky sequence, also with `--jobs=8` and five more cached actions in flight:
+  the loud failure, then `8 processes: 3 remote cache hit, 3 internal, 2 linux-sandbox`, exit 0.
+
+## P6. Regex dialect: FIXED (one translation for the whole tree)
+
+- New `blaze_util::java_regex` (`crates/blaze_util/src/java_regex.rs`, with a case table generated
+  from JDK 25): a port of JDK 25 `Pattern`'s parser with Java's cursor (`RemoveQEQuoting`, `expr`,
+  `sequence`, `atom`, `escape`, `clazz`, `range`, `family`, `group0`, `addFlag`/`subFlag`,
+  `closure`, …) that writes `regex`-crate syntax. Because the cursor is Java's, a syntax error
+  carries Java's `PatternSyntaxException.getMessage()`.
+- Translated exactly: ASCII `\w \d \s \b \B`; `\h \v \R`; Java's `.` line terminators;
+  `(?i)` with ASCII folding, `(?iu)` and `(?U)` by Java's rules; `\Q..\E`; octal, `\x`, `\u`,
+  `\c`, `\e`, `\a`; an escaped non-alphanumeric character is that literal (`\<` is `<`); class
+  union, intersection and negation; POSIX, general-category and binary properties; flag scoping;
+  `LITERAL`, `MULTILINE`, `DOTALL`.
+- Loud (`unported!` naming the construct): backreferences, lookaround, `\G`, `\X`, `\b{g}`,
+  `\N{..}`, Unicode blocks and scripts, `java*` properties, lone surrogates, the flags `(?d)`,
+  `(?x)`, `(?c)`. Possessive quantifiers and atomic groups are translated only where nothing can
+  follow them and the pattern is used with `find()` (the shape `RegexFilter.takeUnionOfRegexes`
+  builds, `(?:(?>a)|(?>b))`, used by the default `--instrumentation_filter`); anywhere else they
+  are loud. The old rewrite of `(?>` to `(?:` in `JavaPattern` was wrong (`(?>a*)a` never
+  matches in Java) and is gone. Checked per input by `Pattern` (loud only when the input could
+  make Java differ): `$` and `\Z` before a final line terminator, `(?m)` anchors around `\r`,
+  U+0085, U+2028, U+2029, `\b` next to a non-spacing mark. Remaining deviation: a pattern the
+  crate rejects after translation (a repetition count over its limit) gets the crate's text.
+- Callers now on it: `blaze_options` `RegexPatternOption` (`Pattern.compile(internalToUnicode(input),
+  DOTALL)` and `RegexUtil.asOptimizedMatchingPredicate`, with Java's conversions and literal
+  optimisation), `blaze_optdefs` `JavaPattern` (`RegexFilter`), `blaze_query_engine`
+  `compile_java_pattern` (also used by `aquery`), `blaze_cquery` `AqueryActionFilter`,
+  `blaze_events` `OutputFilter`, `blaze_rules` and `blaze_packages` (`String.matches`,
+  `PyBuiltins.regexMatch`), `blaze_cc_features` `CoptsFilter`, and `scrubber.rs` (its own
+  translator is removed). Not routed: `blaze_repo_fetch` `UrlRewriterConfig` (needs the
+  exception's description and index, and captures: two more functions in `blaze_util`, left for
+  one later change), `UnixGlob` (Bazel builds that regex itself) and constant patterns written
+  in crate syntax.
+- This went beyond what the review asked (root accepted it, with conditions): eight caller
+  crates changed, not the option converter alone, and constructs that the old untranslated or
+  subset compilation accepted are now loud. `docs/java-regex.md` lists every construct with its
+  state, every match-time condition with an example, the callers and the sites not routed.
+- Conditions checked: a static scan of what Blaze really evaluates (Bazel's builtins and tools,
+  the corpus checkouts, the 1,160 external repositories recorded for brotli, re2 and workerd, and
+  the option defaults; `regex_match`, `nocopts`, query filters and every regex-valued option): 126
+  uses, 49 distinct patterns, none with a syntax error, none containing a construct with a
+  match-time condition, and one that is now loud: workerd's `.bazelrc:702`
+  (`common:bazelflare-generated --remote_download_regex=bazel-out/(?![^/]*-exec)…`, negative
+  lookahead; only with that `--config`; before, the crate rejected it as "Not a valid regular
+  expression", so it never worked; Bazel accepts it): open item 3. workerd guards with the new
+  code: `scripts/workerd/cquery-compare` 38,892 of 38,892 (order equal) and
+  `scripts/w3/query-compare --project workerd` 46,371 of 46,371, both unchanged.
+- Tests: `blaze_util/tests/java_regex_test.rs`: 381 rows generated by
+  `tests/data/JavaRegexRows.java` on JDK 25 (about 296 match rows with span and `matches`, 50
+  exact error messages, 35 that must be loud), with ASCII, Latin-1 and non-Latin-1 inputs.
+  `RegexPatternConverterTest.unicodeClass` is un-ignored and passes.
+- Oracle (`scripts/remote/regex-probe`: one action with outputs `out_a.txt`, `out_A.txt`,
+  `out_ê.txt`, `out_<b>.txt`, `out_é.txt`; oracle-seeded disk cache;
+  `--remote_download_outputs=minimal --remote_download_regex=P` for 8 patterns): the same files
+  are materialised by the oracle and Blaze for all 8. The round-2 binary differs on 3 of them
+  (`.*out_\w+\.txt` also fetched the é and ê outputs; `(?i).*OUT_Ê\.TXT` fetched `out_ê`;
+  `.*_\<b\>\.txt` fetched nothing), so the probe detects the finding.
+
+## P8. Tests: FIXED
+
+- `ActionOutputMetadataStoreTest`: 30 Java methods, 30 Rust tests of the same names: 26 pass (7
+  existing, 19 new in `blaze_sky_exec/src/action_output_metadata_store_tests.rs`, among them
+  `inject_remote_artifact_metadata` and `inject_remote_tree_artifact_metadata`), 4 ignored, each
+  with the Java body ported up to the missing call: `get_metadata_from_fileset_mapping`
+  (`ActionInputMap.putFileset`, `ActionInputMap.java:388`), the two
+  `file_artifact_value_from_artifact_compatible_with_get_metadata_*`
+  (`FileArtifactValue.couldBeModifiedSince`, `FileArtifactValue.java:235`),
+  `file_artifact_value_for_symlink_read_from_cache` (the `DigestUtils` digest cache). Java's
+  `chmodCalls` is a recording file system, so those assertions are exact. No store deviation was
+  found by the new tests; a table is at the top of the file.
+- An existing port was flaky (36 failures in 200 runs): it built its expected value before the
+  store's chmod changed the child's ctime; Java evaluates the store first. Reordered as Java;
+  0 failures in 300 runs.
+- `action_output_directory_helper_test.rs`: both ignored tests run now with a port of Java's
+  exception-injecting `DelegateFileSystem` (8 passed, 0 ignored).
+- Seen while porting and fixed (no Java test exercises them): `get_all_tree_artifact_data`
+  returns the whole map including the missing-tree marker (`ActionOutputMetadataStore.java:144`;
+  `MISSING_TREE_ARTIFACT` is a shared value recognised by identity, as `TreeArtifactValue.java:428`),
+  and `ActionExecutionValue::create` has Java's checks in Java's order (`ActionExecutionValue.java:69-93`:
+  "… should only be stored in a TreeArtifactValue", "Missing digest for …", the marker's
+  `UnsupportedOperationException`, "Missing digest for file … in tree artifact …"); six tests.
+  `ActionExecutionValueTest`'s two methods (`equality`, `serialization`) are ported and ignored
+  (`equals` of the subclasses and the codecs are not ported).
+- `PathCanonicalizerTest`: all 28 methods ported
+  (`blaze_exec/src/exec/path_canonicalizer_tests.rs`): 26 pass, 2 ignored (Windows only: Java's
+  `assumeTrue(OS.getCurrent() == OS.WINDOWS)`); the canonicalizer needed no change.
+- Audit of the other `lib/remote` test classes (script: `@Test` method names against `fn
+  <snake_name>` in the Rust files naming the class): 39 classes complete (among them
+  `RemoteExecutionServiceTest` 70, `RemoteSpawnRunnerTest` 42, `GrpcCacheClientTest` 37,
+  `RemoteActionFileSystemTest` 52 + 72, `DiskCacheClientTest` 28). Classes with no Rust tests
+  are those of features that are not ported (chunking, HTTP cache, downloader, connection pool,
+  output service, rewinding synchronizer, `RxFutures`, `ReaderPreferringReadWriteLock`), the
+  integration test classes (`BuildWithoutTheBytesIntegrationTest`, `DiskCacheIntegrationTest`,
+  `RemoteModuleIntegrationTest`: they need Bazel's Java integration harness, which has no
+  counterpart; the probes under `scripts/remote/` stand in for them).
+
+## S4: 7 FIXED, 1 LEFT
+
+- `platform_utils.rs`: the properties keep the iteration order of the Java map each branch uses
+  (a `JavaHashMap` port for the merge branch: `String.hashCode`, JDK resize and pre-sizing; a
+  treeified bin is loud); 6 tests with names that collapse to U+FFFD, orders generated with the
+  JDK (`tests/data/PlatformPropertyOrder.java`). The private copy of this code in `blaze_exec`
+  `spawn_log_context.rs` still has the old order (not touched).
+- `disk_cache_client.rs` `to_path_from_hash` takes the prefix by chars;
+  `bulk_transfer_exception.rs` sorts by UTF-16 unit; `inline_output_files` is an `IndexSet`;
+  `create_hard_link` is Java's call as written (the arguments end up swapped, so it fails with
+  "File … does not exist" unless the link path exists); `stat_from_metadata` gives -1 for
+  constant metadata.
+- `blaze_bep` `completion_context.rs`: the comment was stale and the deviation behind it is
+  real: Java resolves completion paths through a `RemoteActionFileSystem` over the important
+  inputs when the remote output service is active (`SkyframeExecutor.java:659`,
+  `RemoteOutputService.java:220`); Blaze uses the identity resolver. Now stated as not ported
+  in the comment; open item 1 below.
+- Left: the stale comment in `blaze_runtime` `bep.rs` `after_command` (the file is being edited
+  by the build-event implementer; the wording is with root).
+
+## Open after this round
+
+1. `CompletionContext` uses the identity path resolver where Java resolves through a
+   `RemoteActionFileSystem` over the important inputs when the remote output service is active
+   (`SkyframeExecutor.java:659`, `RemoteOutputService.java:220`): a remote-only output is not
+   found by the completion path (BEP file URIs under build without the bytes). Found by a worker
+   this round, not in the review; not fixed (planned with the build-event owner).
+2. P2 has no oracle comparison (see P2).
+3. Negative lookahead is loud in `java_regex`; workerd's opt-in `--config=bazelflare-generated`
+   uses it in `--remote_download_regex` (it did not work before either).
+4. For the client-daemon owner: `blaze_client/src/util/file.rs` `write_to_std_out_err` must call
+   `signal_handler::note_broken_pipe()` in its EPIPE branch; the PORT note at `blaze.rs:~610` is
+   stale.
+5. A special-file output (`createFromInjectedDigest(value, null)`,
+   `skyframe_action_executor.rs:~2566`) would now trip "Missing digest for …" in
+   `ActionExecutionValue::create`, exactly as Java's check would; not exercised by any test.
+6. The private copy of the platform-property code in `blaze_exec` `spawn_log_context.rs` keeps
+   a `HashMap`'s order for names that collapse to U+FFFD (the `blaze_remote` copy is fixed).
+7. Unchanged from round 2: action rewinding, `RemoteLeaseExtension`,
+   `RemoteImportantOutputHandler`, `DynamicConnectionPool`, and the loud features listed in
+   docs/remote.md; a clean EOF from a peer with no other failure records no shutdown status.
+8. The work was paused by root before the final evidence run was complete: see "Numbers" for
+   exactly what was and was not run on the final binary.
+
+## Numbers
+
+State when the work was paused (2026-11-19, about 17:15), said exactly:
+
+- Final binary: `~/.cache/blaze/work/remote/tl-blaze-2`, sha256 `018fa76d28cf3640…`, built from
+  the working tree at `de5a476` with every round-3 change in it (all of them are committed in
+  root's checkpoints since; HEAD at the pause: `c55ec7c`, `check --workspace --all-targets`
+  passes).
+- RUN on the final binary:
+  - default path: recording `blaze-remote-2` (brotli, re2); `scripts/gate/compare-scores
+    corpus/scores/blaze-ef66f55e904e.referee2.json ~/.cache/blaze/work/remote/tl-score-2.json`:
+    `rows 39  gained 2  regressed 0`, `result: PASS (no surface lost ground)` (matching 13852 of
+    158988; the 2 gained items come from other agents' work);
+  - `scripts/remote/matrix brotli`: `verdict: PASS` (D1 to D4, C1 to C5, E1, E2; C3 51 of 51, C4
+    295 of 295, E2 1274 of 1274 MATCH);
+  - `scripts/remote/matrix re2`: INCOMPLETE: D1 to D4 and C1 to C3 as before (`550 disk cache
+    hit`, `550 remote cache hit`, C3 600 of 600 MATCH); stopped during C4; C5, E1, E2 and the
+    verdict were not produced.
+- NOT RUN on the final binary: Bazel's own remote tests (label `blaze-remote-2` does not exist;
+  the last full run is `blaze-remote-1`, 115 of 253, round 2); `scripts/gate/run-tests` for the
+  whole workspace.
+- Probes on the final binary (worker P3, stopped at the pause): steps 1 to 4 and the remote half of step 5 were run; equal to the oracle: `sigpipe-probe`
+  (`mtls-noclient` 30 of 30 exit 34 with the oracle's exact line; `http-cache` 30 of 30;
+  `reset-peer` 30 of 30 exit 0; `build 2>&1 | head -1` 141 and `build | head -1` 0, as the
+  oracle), `tls-probe` mtls-ok / mtls-noclient / untrusted-mtls-fb, `caps-matrix` 17 of 20
+  rows, `probe-trees`, `probe-trees2`, `probe-inprocess`, `shard-probe`, `attempts-probe`,
+  `symlink-probe` (7 steps), `second-build` (6 steps), `pathcheck-probe`, `recreate-probe` (8
+  steps), `outpath-symlink-probe` (3), `evict-probe` (4 sources × `--norewind_lost_inputs` and ×
+  retries=0; `exit39`: 39 on both; `disk --norewind_lost_inputs`), `platform-probe` 28 of 30.
+  Different, all known: the ruled rows (default-flags lost inputs: the loud failure, now exit 37
+  through the crash handler with "FATAL: bazel crashed due to an internal error" before the
+  `not ported yet` line; `disk` default flags: Blaze rebuilds; `os-windows`: loud, exit 37);
+  texts with equal exit codes (`untrusted-*`, `tls-http-cache`, and the two `unreach` rows,
+  where the oracle itself named the IPv6 address in 10 of 18 runs and the IPv4 one in 8); not
+  remote (`info | head -1`: Blaze exits 37 in 2 of 3 runs because full `info` crashes on
+  `CommittedHeapSizeInfoItem.get`; `query //... | head -1`: 141 on both, but Blaze does not
+  print "Cannot write to standard output; exiting..."; `platform-probe escapes`: only the
+  oracle's trailing progress text ` | [2 / 2] no actions running`). One row to note: the sticky
+  sequence's third step is exit 0 on both, but prints `3 processes: 1 internal, 2 linux-sandbox`
+  on Blaze against `2 processes: 1 action cache hit, 1 internal, 1 linux-sandbox` on the oracle
+  (Blaze purged its action cache in step 2, where the oracle rewound). NOT run on the final
+  binary: `platform-probe --execlog`, `regex-probe`, `nonascii-probe`, `strings-probe`,
+  `stale-probe`, `bep-interrupt-probe`, `discovery-probe`.
+- Per-finding evidence with the workers' own binaries (built from the tree at the time of each
+  fix; all listed in the sections above): P1 `r1-blaze-0` (before) and `r1-blaze-1`/`r1-blaze-2`
+  (after); P5 `r1-blaze-2`; P2/P7 `r2-blaze-1`; P6 `r3-blaze-1`, workerd guards `r3-blaze-2`
+  (tree `f58ddb4`). `tl-blaze-2` is later than all of them.
+- Rust tests, whole crates, working tree at `de5a476` (passed / failed / ignored): blaze_remote
+  641 / 0 / 62 (three consecutive runs earlier: no flake), blaze_exec 673 / 0 / 157,
+  blaze_sky_exec 112 / 0 / 27, blaze_client 161 / 0 / 9, blaze_events 83 / 0 / 1, blaze_util
+  55 / 0 / 0, blaze_options 536 / 0 / 32, blaze_optdefs 424 / 0 / 25.
+- clippy `-D warnings`: clean for blaze_remote, blaze_sky_exec, blaze_client, blaze_events,
+  blaze_util (workers' runs); blaze_exec fails only on other agents' `worker/*` files.
+- Disk: this round's run directories under `~/.cache/blaze/work/remote` cost about 6 GB (binary
+  copies `r1-blaze-0/1/2`, `r2-blaze-1`, `r3-blaze-1/2`, `r3-query-dev-2`, `tl-blaze-2` at about
+  0.36 GB each, the rest small); output user roots of R1's runs (about 12 GB) and of the
+  matrix and probe runs remain under `~/.cache/blaze/oracle-out/ur-remote`. One worker (R2)
+  deleted three output user roots that were not its own (`rx-r2-blaze`, `rx-r2-blaze2`,
+  `rx-r2-oracle`; recorded results untouched); reported to root at the time.
+- To finish the evidence when work resumes: rerun `scripts/remote/matrix re2
+  ~/.cache/blaze/work/remote/tl-blaze-2 <new tag> 9730`; run Bazel's remote tests with the
+  command in docs/remote.md as label `blaze-remote-2`; run the probes P3 did not reach; then
+  `scripts/gate/run-tests`.
+
