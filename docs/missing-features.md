@@ -33,13 +33,13 @@ Partly ported:
 
 | Command | Missing |
 | --- | --- |
-| `mod` | `dump_repo_mapping`, `show_repo` and `tidy` ported after v0.1.0 (exit code and stdout equal to Bazel's in 133 of 133 cases, 44 of them equal failures; stderr differs in 96; upstream tests not run yet); missing: `show_repo` proto output for three attribute types |
+| `mod` | `dump_repo_mapping`, `show_repo` and `tidy` ported after v0.1.0 (133 cases: equal in 89 after the tool's exclusion rules, 40 fail the same way on both sides, 4 differ; upstream tests not run yet); missing: `show_repo` proto output for three attribute types |
 | `help`, `fetch`, `canonicalize-flags`, `license` | ported after v0.1.0 (137 invocations, equal after normalisation: 120 identical, 13 of them by declared exit code, 16 fail identically on both sides, 1 different; binary sha256 `315c2147…`; upstream test counts to be re-measured); missing: `fetch --force` with target patterns |
 | `info` | 15 of 57 compared cases: `info` with no key, JVM-only keys (heap sizes, `java-home`), `build-language`, `peak-heap-size`, `starlark-semantics` |
 | `query` | ported after v0.1.0: `Digraph`, the `graph`, `minrank`, `maxrank` and `xml` outputs, `--order_output`, `--graph:*`, `--query_file`, definition and instantiation stacks, the synthetic attribute hash, `loadfiles()`; missing: `--proto:rule_classes`, SkyQuery (`--universe_scope`), native aspects. Comparison by an unaudited tool, upstream tests not run |
 | `cquery` | `build`, `graph`, `files` outputs ported after v0.1.0; missing: `--output=starlark`, `--output=transitions`, `--show_config_fragments` (stops in analysis) |
 | `aquery` | `--output=proto`, `streamed_proto`, `textproto` ported after v0.1.0; missing: `--skyframe_state`, the dump after a build (`--experimental_aquery_dump_after_build_format`) |
-| `run` | ported after v0.1.0 (exit code and program output equal to Bazel's in 20 of 20 cases; a filtered set of summary lines equal in 15, 7 of them declared failures; other stderr is not compared and differs; upstream test counts to be re-measured); missing: remote flags with `run` |
+| `run` | ported after v0.1.0 (20 cases: 2 identical, 12 differ only in lines that depend on Bazel's warm server, 6 differ; upstream test counts to be re-measured); missing: remote flags with `run` |
 | `shutdown` | there is no server to stop |
 
 ## Server and client
@@ -57,8 +57,8 @@ Partly ported:
 ## Loading and Starlark
 
 - Symbolic macros, lazy macro expansion, subrule errors, and the loading side of materializer
-  rules and dormant dependencies: ported after v0.1.0 (45 of 52 comparison cases match by the
-  tool before hardening: 22 where Bazel succeeds, 23 equal failures; brotli and re2 score unchanged; workerd
+  rules and dormant dependencies: ported after v0.1.0 (52 comparison cases: equal in 19, 23 fail
+  the same way on both sides, 10 differ; brotli and re2 score unchanged; workerd
   cquery 38,892 of 38,892). Open: sibling macros evaluate in order where Bazel evaluates them
   in parallel (the order of `print()` lines differs under lazy expansion); the analysis side of
   materializers (`MaterializingDefault.resolve`).
