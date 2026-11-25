@@ -66,6 +66,10 @@ by adding.
 | 0053 | applied | lexer texts and positions (invalid character, indentation error, forbidden keywords, malformed number literals) |
 | 0054 | applied | parser texts: "syntax error at 'TOKEN': expected KIND" and Java's context messages (list/dict/comprehension, call arguments, load, conditional, generator, implicit concatenation) |
 | 0055 | applied | static-check texts as Java's Resolver/Parser (call argument order, parameter order, top-level `for`/`if`, `break`/`continue`/`return`, `load` placement, `...`, type annotations, assignment targets, trailing comma) |
+| 0057 | applied | `load()` of a symbol the file does not bind globally: Java's "file 'M' does not contain symbol 'S'" with SpellChecker's suggestion over the file's globals, at the original name; `FrozenModule::java_globals` (Java `Module.getGlobals`) |
+| 0058 | applied | the "want" part of builtin parameter type errors from Bazel's `@Param` annotations (`values/java_param_types.tsv`, generated from the oracle's server jar), by receiver, method and parameter |
+| 0059 | applied | a builtin function has no `[]` (`list[int]` is Java's "type 'builtin_function_or_method' has no operator [](...)") |
+| 0060 | applied | the nesting guard of comparisons is 20000 levels in debug and release builds (Java has none) |
 
 Conformance (Bazel ScriptTest, `starlark_conformance run`; strict = Java ScriptTest semantics,
 resilient = aborted chunks re-run statement by statement):
@@ -994,3 +998,59 @@ and users read them).
   err_call_sorted_key_noncallable, err_call_dict_dup_*, range_slice_overflow,
   sorted_large_stable (recorded on Bazel). The unit test `java_timsort::tests::sorts_stably`
   does not run in the workspace (vendored crate).
+
+## 0057 — `load()` of a missing symbol
+
+- Gap: `load(":a.bzl", "fooo")` failed with "Module has no symbol `fooo`, did you mean `foo`?",
+  and loading a name the loaded file only binds by its own `load` with "Module symbol `foo` is
+  not exported" (review 2026-11-25-loading-2 F1).
+- Fix: `environment/modules.rs` `load_symbol` (Java Eval.java:261 execLoad): the loaded file's
+  global (any visibility, not a `load` binding, Java `Module.getGlobal`), else
+  `file 'M' does not contain symbol 'S'` + `SpellChecker.didYouMean` over the file's globals in
+  binding order (`FrozenModule::java_globals`, Java `Module.getGlobals().keySet()`; `M` as
+  written in the load statement). The names a module binds by `load` are recorded
+  (`Module::add_load_bound_name`, `FrozenModuleData::load_bound`): Bazel's load bindings are
+  file-local (Resolver.java:1170; only the BUILD prelude binds them globally, and no `load`
+  reads the prelude's key). `eval/compiler/module.rs` locates the error one char after the start
+  of the original name's string literal (Parser.java:1442/1460). `CannotImportPrivateSymbol`
+  carries Java's text (Resolver.java:610; Java's resolver reports it first).
+- Test: `patch_0057_load_missing_symbol`; oracle probes in the loading-fix-1 report.
+
+## 0058 — parameter type errors: Java's allowed types
+
+- Gap: the "want '...'" part of "in call to F(), parameter 'P' got value of type 'T', want '...'"
+  was derived from starlark-rust's parameter type (0052), which does not keep Java's
+  `@Param(allowedTypes)` order or names (`sequence` for a `list | tuple` parameter, Bazel's class
+  names) (review 2026-11-25-loading-2 F6).
+- Fix: `values/java_param_types.tsv` lists `ParamDescriptor.getTypeErrorMessage` for every
+  `@StarlarkMethod` parameter of Bazel 9.3.2 (receiver `@StarlarkBuiltin` name, method,
+  parameter, text; `-` for an `Object` parameter), computed by Bazel's own classes from the
+  oracle's `A-server.jar` (`scripts/java-param-types/run`). `values/unpack.rs`
+  `java_param_type_error_message` takes the receiver's entry (methods: `NativeMeth::invoke`
+  passes the receiver's `type()`), else the text all of Bazel's methods of that name agree on,
+  else 0052's derivation (a builtin Bazel does not have, or an `Object` parameter).
+- Limitation: Java checks named arguments in the order of the call (BuiltinFunction.java:376
+  addNamedArg); the derived unpacking checks them in the order of declaration, so a call with
+  two ill-typed arguments can name the other one.
+- Test: oracle probes in the loading-fix-1 report.
+
+## 0059 — no `[]` on builtin functions
+
+- Gap: `list[int]` and `set[int]` evaluated to starlark-rust type values; Bazel 9.3.2 fails with
+  "type 'builtin_function_or_method' has no operator [](builtin_function_or_method)" (oracle
+  probe q89 of the loading-fix-1 report). Bazel does not evaluate type expressions (patch 0020).
+- Fix: `values/types/function.rs` `NativeFunction::at` is Java's unsupported-index error for
+  every builtin (EvalUtils.index); `TypeCompiled::type_list_of`/`type_set_of` kept, unused.
+- Test: `patch_0059_builtin_has_no_index`.
+
+## 0060 — comparison nesting guard
+
+- Gap: comparing nested values deeper than 200 levels (debug builds) or 3000 (release) failed
+  with "Too many recursion levels"; Java has no limit (Bazel 9.3.2 compares two 5000-deep lists
+  with `==`, oracle probe q87; at 5000 `<` overflows the JVM stack and crashes Bazel, q88).
+- Fix: `values/stack_guard.rs` `MAX_RECURSION = 20000` in every build: deep enough for what Bazel
+  accepts, still a clean error instead of a native stack overflow on Blaze's 256 MiB evaluation
+  stack (`blaze_starlark::eval::EVAL_STACK_SIZE`). PORT: the depth where Java gives up depends on
+  the JVM's stack; Blaze answers some comparisons Bazel crashes on.
+- Test: `patch_0060_deep_comparison` (15000 levels, `==` and `<`, on a 256 MiB stack).
+
