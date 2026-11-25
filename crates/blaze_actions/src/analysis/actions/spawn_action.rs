@@ -30,7 +30,7 @@ use crate::actions::command_line::{self, CommandLine, CommandLineRef};
 use crate::actions::command_lines::{CommandLineAndParamFileInfo, CommandLines};
 use crate::actions::execution_requirements;
 use crate::actions::param_file_info::ParamFileInfo;
-use crate::actions::path_mapper::{NOOP, OutputPathsMode, PathMapper};
+use crate::actions::path_mapper::{OutputPathsMode, PathMapper};
 use crate::analysis::actions::custom_command_line::CustomCommandLine;
 use crate::analysis::actions::path_mappers;
 

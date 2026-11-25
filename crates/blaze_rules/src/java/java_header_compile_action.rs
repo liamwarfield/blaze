@@ -262,14 +262,27 @@ impl Action for JavaHeaderCompileAction {
         self.spawn.get_starlark_args()
     }
 
+    // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:229 SpawnAction.getStarlarkArgv
     fn get_starlark_argv(&self) -> Result<Option<Vec<String>>, ActionApiError> {
-        self.spawn.get_starlark_argv()
+        // Java: a CommandLineExpansionException becomes `new EvalException(ex)`.
+        Ok(Some(self.get_arguments()?))
     }
 }
 
 impl CommandAction for JavaHeaderCompileAction {
+    /// The inherited `SpawnAction.getArguments`: `PathMappers.create(this, ...)` reads this
+    /// class's `getExecutionInfo` and `getAdditionalArtifactsForPathMapping`.
+    // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:207 SpawnAction.getArguments
     fn get_arguments(&self) -> Result<Vec<String>, CommandLineError> {
-        self.spawn.get_arguments()
+        let path_mapper = path_mappers::create(
+            self,
+            self.spawn.get_output_paths_mode(),
+            /* is_starlark_action= */ false,
+            /* input_metadata_provider= */ None,
+        );
+        self.spawn
+            .get_command_lines()
+            .all_arguments_with(path_mapper.as_ref())
     }
 }
 
@@ -305,7 +318,7 @@ impl JavaHeaderCompileAction {
         ctx: &dyn ActionExecutionContext,
     ) -> Result<SimpleSpawn, ActionExecutionException> {
         let path_mapper =
-            path_mappers::create(self, self.spawn.get_output_paths_mode(), false, None);
+            path_mappers::create_for_execution(self, self.spawn.get_output_paths_mode(), false, None);
         let limits = CommandLineLimits::new(
             self.get_owner()
                 .get_build_configuration_info()

@@ -1730,7 +1730,7 @@ impl CppCompileAction {
         };
         // PORT: the blaze_actions PathMappers.create ignores the input metadata provider (it is
         // only read for STRIP, which is unported there).
-        let path_mapper = path_mappers::create(self, self.output_paths_mode, false, None);
+        let path_mapper = path_mappers::create_for_execution(self, self.output_paths_mode, false, None);
         // All module files referenced in the modmap input file are expected to be known modules.
         // We delegate error reporting to the compiler by silently skipping over unknown files.
         let module_files = self
@@ -2059,7 +2059,7 @@ impl ExecutableAction for CppCompileAction {
     ) -> Result<ActionResult, ActionExecutionException> {
         // PORT: the blaze_actions PathMappers.create ignores the input metadata provider (it is
         // only read for STRIP, which is unported there).
-        let path_mapper_ref = path_mappers::create(self, self.output_paths_mode, false, None);
+        let path_mapper_ref = path_mappers::create_for_execution(self, self.output_paths_mode, false, None);
         let path_mapper = CcPathMapper(&*path_mapper_ref);
 
         if self

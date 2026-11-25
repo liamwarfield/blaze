@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use blaze_collect::NestedSet;
-use blaze_util::{Fingerprint, unported};
+use blaze_util::Fingerprint;
 use indexmap::IndexMap;
 
 use crate::actions::action::{Action, ComputeKeyError, InputMetadataProvider};
@@ -110,6 +110,31 @@ pub fn create(
         Some(mapper) => Arc::new(mapper),
         None => Arc::new(NoopPathMapper),
     }
+}
+
+/// `PathMappers.create` for an action that is about to run: the same mapper, but a stripping
+/// mapper stops with `unported!`.
+///
+/// PORT: running a path-mapped spawn needs `Spawn.getPathMapper()` (the executor's staging of
+/// the mapped inputs and outputs, the `.jdeps` rewriting of `JavaCompileAction`), which is not
+/// ported: the spawns are created with `SpawnPathMapper::NOOP`. Argument display (`aquery`,
+/// `getArguments`) uses [`create`].
+// Java: com/google/devtools/build/lib/analysis/actions/PathMappers.java:124 PathMappers.create
+pub fn create_for_execution(
+    action: &dyn Action,
+    output_paths_mode: OutputPathsMode,
+    is_starlark_action: bool,
+    input_metadata_provider: Option<&dyn InputMetadataProvider>,
+) -> Arc<dyn PathMapper> {
+    let mapper = create(action, output_paths_mode, is_starlark_action, input_metadata_provider);
+    if !mapper.is_noop() {
+        blaze_util::unported!(
+            "Spawn.getPathMapper",
+            "executing a path-mapped spawn (--experimental_output_paths=strip, {})",
+            action.get_mnemonic()
+        );
+    }
+    mapper
 }
 
 // PORT: `getOutputPathsMode(BuildConfigurationValue)` reads `CoreOptions.outputPathsMode` from a

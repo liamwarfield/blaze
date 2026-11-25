@@ -431,7 +431,7 @@ impl FileArtifactValue {
                 mtime: path.get_last_modified_time()?,
             });
         }
-        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:376 FileArtifactValue.create
+        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:364 FileArtifactValue.create
         let digest =
             crate::actions::cache::digest_utils::DigestUtils::get_digest_with_manual_fallback(
                 path,

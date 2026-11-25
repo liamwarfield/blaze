@@ -490,7 +490,7 @@ impl JavaCompileAction {
         Arc<dyn blaze_actions::actions::path_mapper::PathMapper>,
         SpawnPathMapper,
     ) {
-        let mapper = path_mappers::create(
+        let mapper = path_mappers::create_for_execution(
             self,
             get_output_paths_mode(&self.configuration),
             false,

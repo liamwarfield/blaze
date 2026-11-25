@@ -88,7 +88,7 @@ pub fn get_spawn_with_env(
     report_outputs: bool,
 ) -> Result<SimpleSpawn, GetSpawnError> {
     let metadata = KeyMetadataAdapter(action_execution_context.get_input_metadata_provider());
-    let path_mapper = path_mappers::create(
+    let path_mapper = path_mappers::create_for_execution(
         action,
         action.get_output_paths_mode(),
         action.is_starlark_action(),
