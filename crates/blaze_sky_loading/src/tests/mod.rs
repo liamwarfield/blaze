@@ -31,6 +31,7 @@ mod select_test;
 mod starlark_defined_aspects_loading_test;
 mod starlark_rule_class_functions_test;
 mod target_pattern_function_test;
+mod values_equal_test;
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};

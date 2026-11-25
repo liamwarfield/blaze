@@ -8,7 +8,7 @@ use std::fmt;
 
 use blaze_cmdline::RepositoryName;
 use blaze_cmdline::repository_name::MAIN;
-use blaze_skyframe::{ComputeError, Environment, Key, SkyFunctionName};
+use blaze_skyframe::{ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionName};
 use blaze_vfs::{PathFragment, RootedPath};
 
 use crate::sky_functions;
@@ -107,6 +107,26 @@ impl fmt::Debug for LocalRepositoryLookupKey {
 impl Key for LocalRepositoryLookupKey {
     type Value = LocalRepositoryLookupValue;
     const FUNCTION: SkyFunctionName = sky_functions::LOCAL_REPOSITORY_LOOKUP;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:138 SkyFunctions.LOCAL_REPOSITORY_LOOKUP (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: every main-repository value and every not-found value is equal; a successful lookup
+    /// compares the repository name only, not the path.
+    // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:174 LocalRepositoryLookupValue.SuccessfulLocalRepositoryLookupValue.equals
+    fn values_equal(old: &LocalRepositoryLookupValue, new: &LocalRepositoryLookupValue) -> bool {
+        match (old, new) {
+            (
+                LocalRepositoryLookupValue::Successful {
+                    repository_name: old,
+                    ..
+                },
+                LocalRepositoryLookupValue::Successful {
+                    repository_name: new,
+                    ..
+                },
+            ) => old == new,
+            _ => old == new,
+        }
+    }
 }
 
 pub use crate::exceptions::ErrorDeterminingRepositoryException;

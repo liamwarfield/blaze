@@ -16,12 +16,12 @@ use std::fmt;
 use std::sync::Arc;
 
 use blaze_bzlmod::skyframe::precomputed::EnvironmentVariableValue;
-use blaze_skyframe::ComputeError;
 use blaze_skyframe::Environment;
 use blaze_skyframe::Interrupted;
 use blaze_skyframe::Key;
 use blaze_skyframe::SkyFunctionName;
 use blaze_skyframe::SkyKey;
+use blaze_skyframe::{ComputeError, FunctionHermeticity};
 use indexmap::IndexMap;
 use indexmap::IndexSet;
 
@@ -56,6 +56,13 @@ impl fmt::Debug for RepoEnvironmentKey {
 impl Key for RepoEnvironmentKey {
     type Value = EnvironmentVariableValue;
     const FUNCTION: SkyFunctionName = REPOSITORY_ENVIRONMENT_VARIABLE;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:31 SkyFunctions.REPOSITORY_ENVIRONMENT_VARIABLE (createNonHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
+    /// Java: `RepoEnvironmentFunction` returns an `EnvironmentVariableValue`, a record of one nullable string.
+    // Java: com/google/devtools/build/lib/skyframe/EnvironmentVariableValue.java:28 EnvironmentVariableValue
+    fn values_equal(old: &EnvironmentVariableValue, new: &EnvironmentVariableValue) -> bool {
+        old == new
+    }
 }
 
 // Java: com/google/devtools/build/lib/skyframe/RepoEnvironmentFunction.java:55 RepoEnvironmentFunction.compute

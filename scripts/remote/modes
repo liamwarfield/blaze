@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Remote modes, cold and warm, on one corpus project with one output user root per side.
+#
+# usage: scripts/remote/modes <oracle|BINARY> <run-name> <project> <port> [scenario...]
+#        scripts/remote/modes help
+#
+# Runs, for each scenario (default: rc min all dcrc rexec), against a fresh Bazel remote worker
+# (scripts/remote/worker, name <run-name>-w, on localhost:<port>, restarted empty per scenario):
+#   cold   scripts/remote/oracle-run <run-name> <project> --expunge (output base emptied, worker
+#          empty, disk cache new)
+#   warm   the same command again after --expunge (worker and disk cache as the cold step left
+#          them)
+# Every step runs the project's command (corpus/projects.json; re2: `test //:all //python:all`)
+# with --jobs=4 --remote_grpc_log={step}/grpc.log and:
+#   rc     --remote_cache=grpc://localhost:<port>            (download mode: Bazel's default,
+#                                                              toplevel)
+#   min    rc and --remote_download_outputs=minimal
+#   all    rc and --remote_download_outputs=all
+#   dcrc   rc and --disk_cache=<the cold step's directory>/dc  (disk cache plus remote cache)
+#   rexec  --remote_executor=grpc://localhost:<port>, the command with `build` in place of
+#          `test` (Bazel's worker drops long-running test operations, see scripts/remote/matrix)
+# All runs share one output user root (<UR>/<run-name>) and one workspace copy
+# (<W>/<run-name>/ws); W and UR are $BLAZE_REMOTE_WORK and $BLAZE_REMOTE_UR (defaults
+# ~/.cache/blaze/work/remote, ~/.cache/blaze/oracle-out/ur-remote). After each step it writes
+# <step>/bazel-bin.sha256 (scripts/remote/second-build rehash) and appends to
+# <W>/<run-name>/modes.txt one line: `<scenario> <cold|warm> <step> exit <code>: <processes line>`.
+# It compares nothing: compare two sides with scripts/remote/compare-grpc-log on the steps'
+# grpc.log and with diff on their bazel-bin.sha256. The worker is stopped at the end.
+set -euo pipefail
+if [[ "${1:-help}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,28p' "$0"; exit 0; fi
+bin="$1"; run="$2"; project="$3"; port="$4"; shift 4
+scenarios=("$@"); [[ ${#scenarios[@]} -gt 0 ]] || scenarios=(rc min all dcrc rexec)
+here="$(cd "$(dirname "$0")" && pwd)"
+W="${BLAZE_REMOTE_WORK:-$HOME/.cache/blaze/work/remote}"
+binopt=(); [[ "$bin" == oracle ]] || binopt=(--binary "$bin")
+cmd=$(python3 -I - "$here/../../corpus/projects.json" "$project" <<'EOF'
+import json, sys
+print(" ".join(json.load(open(sys.argv[1]))["projects"][sys.argv[2]]["commands"][0]))
+EOF
+)
+build_cmd="build ${cmd#* }"
+worker="$run-w"
+trap '"$here/worker" stop "$worker" >/dev/null 2>&1 || true' EXIT
+out="$W/$run/modes.txt"; mkdir -p "$W/$run"
+
+one() {  # scenario temperature command flags...
+  local sc="$1" temp="$2" c="$3"; shift 3
+  local line step code procs
+  line=$("$here/oracle-run" "$run" "$project" --expunge "${binopt[@]}" --command "$c" -- \
+    --jobs=4 "--remote_grpc_log={step}/grpc.log" "$@" | tr '\n' ' ') || true
+  step=$(sed -n 's/.*step: \([^ ]*\) .*/\1/p' <<<"$line")
+  code=$(cat "$step/exit")
+  procs=$(grep -E '^INFO: [0-9]+ process' "$step/stderr" | tail -1 || true)
+  "$here/second-build" rehash "$run" "$(basename "$step")" >/dev/null
+  echo "$sc $temp $(basename "$step") exit $code: ${procs:-(no processes line)}" | tee -a "$out" >&2
+  echo "$step"
+}
+
+for sc in "${scenarios[@]}"; do
+  "$here/worker" start "$worker" "$port" >/dev/null
+  rc="--remote_cache=grpc://localhost:$port"
+  case "$sc" in
+    rc) one rc cold "$cmd" "$rc" >/dev/null; one rc warm "$cmd" "$rc" >/dev/null ;;
+    min) one min cold "$cmd" "$rc" --remote_download_outputs=minimal >/dev/null
+         one min warm "$cmd" "$rc" --remote_download_outputs=minimal >/dev/null ;;
+    all) one all cold "$cmd" "$rc" --remote_download_outputs=all >/dev/null
+         one all warm "$cmd" "$rc" --remote_download_outputs=all >/dev/null ;;
+    dcrc)
+      cold=$(one dcrc cold "$cmd" "$rc" "--disk_cache={step}/dc" | tail -1)
+      one dcrc warm "$cmd" "$rc" "--disk_cache=$cold/dc" >/dev/null ;;
+    rexec)
+      ex="--remote_executor=grpc://localhost:$port"
+      one rexec cold "$build_cmd" "$ex" >/dev/null; one rexec warm "$build_cmd" "$ex" >/dev/null ;;
+    *) echo "unknown scenario: $sc" >&2; exit 2 ;;
+  esac
+  "$here/worker" stop "$worker" >/dev/null
+done

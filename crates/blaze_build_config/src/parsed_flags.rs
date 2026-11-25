@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use blaze_cmdline::{Label, LabelPackageContext, RepositoryMapping};
 use blaze_options::{OptionsParser, OptionsParsingException, Value};
-use blaze_skyframe::{Key, SkyFunctionName};
+use blaze_skyframe::{FunctionHermeticity, Key, SkyFunctionName};
 
 use crate::build_configuration_key::BuildConfigurationKey;
 use crate::build_options::{BuildOptions, BuildOptionsBuilder, StarlarkOptionValue};
@@ -95,6 +95,13 @@ impl fmt::Debug for ParsedFlagsKey {
 impl Key for ParsedFlagsKey {
     type Value = ParsedFlagsValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("PARSED_FLAGS");
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:114 SkyFunctions.PARSED_FLAGS (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: the flags only (`NativeAndStarlarkFlags`, an AutoValue), not the parsing result. PORT: the options classes are compared in order (Java: a set); they come from the server's fragment registry, so only a reordering differs, and then Rust does not prune.
+    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:226 ParsedFlagsValue.equals
+    fn values_equal(old: &ParsedFlagsValue, new: &ParsedFlagsValue) -> bool {
+        old == new
+    }
 }
 
 // Java: com/google/devtools/build/lib/skyframe/config/NativeAndStarlarkFlags.java:35 NativeAndStarlarkFlags

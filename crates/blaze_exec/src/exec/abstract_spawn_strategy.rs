@@ -392,7 +392,7 @@ impl SpawnExecutionContext for SpawnExecutionContextImpl<'_> {
         &self,
         exit_code: i32,
         error_message: &str,
-        out_err: &FileOutErr,
+        out_err: Option<&FileOutErr>,
     ) -> Result<(), ExecException> {
         if let Some(stop) = self.stop_concurrent_spawns {
             stop.stop(exit_code, error_message, out_err)?;

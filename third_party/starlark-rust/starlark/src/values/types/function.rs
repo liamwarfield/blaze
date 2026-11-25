@@ -207,18 +207,11 @@ impl<'v> StarlarkValue<'v> for NativeFunction {
         Some(self.ty.dupe())
     }
 
-    fn at(&self, index: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
-        match &self.special_builtin_function {
-            Some(SpecialBuiltinFunction::List) => {
-                let index = TypeCompiled::new(index, heap)?;
-                Ok(TypeCompiled::type_list_of(index, heap).to_inner())
-            }
-            Some(SpecialBuiltinFunction::Set) => {
-                let index = TypeCompiled::new(index, heap)?;
-                Ok(TypeCompiled::type_set_of(index, heap).to_inner())
-            }
-            _ => ValueError::unsupported(self, "[]"),
-        }
+    // BLAZE PATCH 0059: Bazel's builtins have no `[]` (`list[int]` is not a value in Bazel;
+    // type expressions are not evaluated, patch 0020): Java's "type
+    // 'builtin_function_or_method' has no operator [](T)" (EvalUtils.index).
+    fn at(&self, index: Value<'v>, _heap: Heap<'v>) -> crate::Result<Value<'v>> { // BLAZE PATCH 0059
+        ValueError::unsupported_with(self, "[]", index) // BLAZE PATCH 0059
     }
 
     fn at2(
@@ -279,13 +272,18 @@ impl NativeMeth {
         this: Value<'v>,
         args: &Arguments<'v, '_>,
     ) -> crate::Result<Value<'v>> {
-        (self.0)(eval, this, &self.1, args).map_err(|e| self.java_error(e)) // BLAZE PATCH 0052
+        (self.0)(eval, this, &self.1, args).map_err(|e| self.java_error(e, this)) // BLAZE PATCH 0052
     }
 
-    /// BLAZE PATCH 0052: names the builtin in Java's parameter type errors.
+    /// BLAZE PATCH 0052: names the builtin in Java's parameter type errors (0058: and the
+    /// receiver's type).
     #[cold]
-    fn java_error(&self, e: crate::Error) -> crate::Error {
-        crate::values::unpack::BazelParamTypeError::with_function(e, self.1.function_name())
+    fn java_error<'v>(&self, e: crate::Error, this: Value<'v>) -> crate::Error {
+        crate::values::unpack::BazelParamTypeError::with_function_receiver(
+            e,
+            self.1.function_name(),
+            Some(this.get_type()),
+        )
     }
 }
 

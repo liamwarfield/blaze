@@ -24,6 +24,9 @@ pub enum WorkerError {
     UserExec(UserExecException),
 }
 
+/// An `io::Error` made by `sandbox_helpers::interrupted_error` is Java's `InterruptedException`
+/// (Blaze's interrupt checks); every other one, `InterruptedIOException` included, is an
+/// `IOException` (review exec-2, E2-7).
 impl From<io::Error> for WorkerError {
     fn from(e: io::Error) -> Self {
         if crate::sandbox::sandbox_helpers::is_interrupted_error(&e) {

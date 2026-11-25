@@ -8,7 +8,7 @@ use blaze_actions::ActionLookupKey;
 use blaze_build_config::build_configuration_key::BuildConfigurationKey;
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_cmdline::Label;
-use blaze_skyframe::{Key, SkyFunctionName};
+use blaze_skyframe::{FunctionHermeticity, Key, SkyFunctionName};
 
 use crate::configured_target_value::ConfiguredTargetValue;
 
@@ -199,6 +199,11 @@ impl fmt::Display for ConfiguredTargetKey {
 impl Key for ConfiguredTargetKey {
     type Value = ConfiguredTargetValue;
     const FUNCTION: SkyFunctionName = CONFIGURED_TARGET;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:96 SkyFunctions.CONFIGURED_TARGET (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal): Java's configured target values are
+    // `ConfiguredObjectValue`s, `NotComparableSkyValue`s.
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredObjectValue.java:24 ConfiguredObjectValue
 }
 
 impl ActionLookupKey for ConfiguredTargetKey {

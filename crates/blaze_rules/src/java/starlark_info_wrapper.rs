@@ -15,7 +15,7 @@ use starlark::values::{Heap, Value};
 use crate::cpp::util::{errorf, sequence_elements};
 
 /// Java `StructImpl.getValue(key)`: the field's value, `None` if the struct has no such field.
-// Java: com/google/devtools/build/lib/packages/StructImpl.java:40 StructImpl.getValue
+// Java: com/google/devtools/build/lib/packages/StarlarkInfo.java:57 StarlarkInfo.getValue
 pub fn struct_get_value<'v>(underlying: Value<'v>, key: &str, heap: Heap<'v>) -> Option<Value<'v>> {
     if let Some(info) = StarlarkInfo::from_value(underlying) {
         return info.get_field(key);
@@ -36,7 +36,7 @@ fn class_type(want: &str) -> &str {
 }
 
 /// Base class for sharing utility code between wrapped Starlark provider instances.
-// Java: com/google/devtools/build/lib/rules/java/StarlarkInfoWrapper.java:29 StarlarkInfoWrapper
+// Java: com/google/devtools/build/lib/rules/java/StarlarkInfoWrapper.java:26 StarlarkInfoWrapper
 #[derive(Clone, Copy)]
 pub struct StarlarkInfoWrapper<'v> {
     pub underlying: Value<'v>,
@@ -44,13 +44,13 @@ pub struct StarlarkInfoWrapper<'v> {
 }
 
 impl<'v> StarlarkInfoWrapper<'v> {
-    // Java: com/google/devtools/build/lib/rules/java/StarlarkInfoWrapper.java:33 StarlarkInfoWrapper.<init>
+    // Java: com/google/devtools/build/lib/rules/java/StarlarkInfoWrapper.java:30 StarlarkInfoWrapper.<init>
     pub fn new(underlying: Value<'v>, heap: Heap<'v>) -> StarlarkInfoWrapper<'v> {
         StarlarkInfoWrapper { underlying, heap }
     }
 
     /// `getUnderlyingValue(key, type)` without the cast: `None` for a missing field or `None`.
-    // Java: com/google/devtools/build/lib/rules/java/StarlarkInfoWrapper.java:37 StarlarkInfoWrapper.getUnderlyingValue
+    // Java: com/google/devtools/build/lib/rules/java/StarlarkInfoWrapper.java:34 StarlarkInfoWrapper.getUnderlyingValue
     pub fn get_underlying_value(&self, key: &str) -> Option<Value<'v>> {
         let v = struct_get_value(self.underlying, key, self.heap)?;
         if v.is_none() { None } else { Some(v) }
@@ -102,7 +102,7 @@ impl<'v> StarlarkInfoWrapper<'v> {
     }
 
     /// `getUnderlyingNestedSet(key, Artifact.class)`: `Depset.noneableCast(noneIfNull(value))`.
-    // Java: com/google/devtools/build/lib/rules/java/StarlarkInfoWrapper.java:50 StarlarkInfoWrapper.getUnderlyingNestedSet
+    // Java: com/google/devtools/build/lib/rules/java/StarlarkInfoWrapper.java:46 StarlarkInfoWrapper.getUnderlyingNestedSet
     pub fn get_underlying_nested_set_artifacts(
         &self,
         key: &str,
@@ -115,7 +115,7 @@ impl<'v> StarlarkInfoWrapper<'v> {
     }
 
     /// `getUnderlyingNestedSet(key, String.class)`.
-    // Java: com/google/devtools/build/lib/rules/java/StarlarkInfoWrapper.java:50 StarlarkInfoWrapper.getUnderlyingNestedSet
+    // Java: com/google/devtools/build/lib/rules/java/StarlarkInfoWrapper.java:46 StarlarkInfoWrapper.getUnderlyingNestedSet
     pub fn get_underlying_nested_set_strings(
         &self,
         key: &str,
@@ -129,7 +129,7 @@ impl<'v> StarlarkInfoWrapper<'v> {
 
     /// `getUnderlyingSequence(key, type)`: `Sequence.noneableCast(noneIfNull(value))` as the
     /// element values (the caller casts them).
-    // Java: com/google/devtools/build/lib/rules/java/StarlarkInfoWrapper.java:59 StarlarkInfoWrapper.getUnderlyingSequence
+    // Java: com/google/devtools/build/lib/rules/java/StarlarkInfoWrapper.java:55 StarlarkInfoWrapper.getUnderlyingSequence
     pub fn get_underlying_sequence(&self, key: &str) -> starlark::Result<Vec<Value<'v>>> {
         match struct_get_value(self.underlying, key, self.heap) {
             None => Ok(Vec::new()),

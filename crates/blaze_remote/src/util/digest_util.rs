@@ -80,7 +80,9 @@ impl DigestUtil {
     pub fn compute_path_with_status(&self, path: &Path, status: &FileStatus) -> io::Result<Digest> {
         // Java: DigestUtils.getDigestWithManualFallback(path, xattrProvider, status)
         Ok(DigestUtil::build_digest_from_bytes(
-            &path.get_digest()?,
+            &blaze_exec::actions::cache::digest_utils::DigestUtils::get_digest_with_manual_fallback(
+                path,
+            )?,
             status.get_size(),
         ))
     }

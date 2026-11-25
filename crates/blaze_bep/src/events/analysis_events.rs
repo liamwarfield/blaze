@@ -1,5 +1,6 @@
 //! Ports of build events from `lib/analysis`: `TargetConfiguredEvent`, `BuildInfoEvent`,
-//! `NoBuildEvent`; and `TestAttempt` (ported in `blaze_exec`) as a build event.
+//! `NoBuildEvent`, `AnalysisRootCauseEvent`, `RepositoryFailedEvent` (lib/repository); and
+//! `TestAttempt` (ported in `blaze_exec`) as a build event.
 
 use std::sync::Arc;
 
@@ -387,3 +388,151 @@ impl BuildEvent for AnalysisFailureBuildEvent {
 }
 
 impl blaze_events::Postable for AnalysisFailureBuildEvent {}
+
+/// Error message of an analysis root cause. This is separate from `AnalysisFailureEvent` to
+/// avoid duplicating error messages in the stream if multiple targets fail due to the same root
+/// cause. It also allows UIs to collate errors by root cause.
+///
+/// PORT: the event posted by the analysis (`blaze_analysis::rule::rule_error_consumer`) carries
+/// the configuration's checksum; the caller passes the configuration's build event (the
+/// tri-state `configuration` field: `None` is the unavailable configuration, `Some(None)` the
+/// null configuration).
+// Java: com/google/devtools/build/lib/analysis/AnalysisRootCauseEvent.java:40 AnalysisRootCauseEvent
+#[derive(Clone, Debug)]
+pub struct AnalysisRootCauseBuildEvent {
+    configuration: Option<Option<Arc<dyn BuildEvent>>>,
+    configuration_id: bes::build_event_id::ConfigurationId,
+    label: Label,
+    error_message: String,
+}
+
+impl AnalysisRootCauseBuildEvent {
+    // Java: com/google/devtools/build/lib/analysis/AnalysisRootCauseEvent.java:60 AnalysisRootCauseEvent.withConfigurationValue
+    pub fn with_configuration_value(
+        configuration_checksum: Option<&str>,
+        configuration_event: Option<Arc<dyn BuildEvent>>,
+        label: Label,
+        error_message: String,
+    ) -> Self {
+        AnalysisRootCauseBuildEvent {
+            configuration: Some(configuration_event),
+            // BuildConfigurationValue.configurationIdMessage(configuration)
+            configuration_id: build_event_id_util::configuration_id_message_for_key(
+                configuration_checksum,
+            ),
+            label,
+            error_message,
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/AnalysisRootCauseEvent.java:69 AnalysisRootCauseEvent.withUnavailableConfiguration
+    pub fn with_unavailable_configuration(
+        configuration_id: bes::build_event_id::ConfigurationId,
+        label: Label,
+        error_message: String,
+    ) -> Self {
+        AnalysisRootCauseBuildEvent {
+            configuration: None,
+            configuration_id,
+            label,
+            error_message,
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/AnalysisRootCauseEvent.java:84 AnalysisRootCauseEvent.getLabel
+    pub fn get_label(&self) -> &Label {
+        &self.label
+    }
+}
+
+impl BuildEvent for AnalysisRootCauseBuildEvent {
+    // Java: com/google/devtools/build/lib/analysis/AnalysisRootCauseEvent.java:89 AnalysisRootCauseEvent.getEventId
+    fn get_event_id(&self) -> BuildEventId {
+        // This needs to match AnalysisFailedCause.getIdProto.
+        build_event_id_util::configured_label_id(&self.label, self.configuration_id.clone())
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/AnalysisRootCauseEvent.java:95 AnalysisRootCauseEvent.getChildrenEvents
+    fn get_children_events(&self) -> Vec<BuildEventId> {
+        Vec::new()
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/AnalysisRootCauseEvent.java:100 AnalysisRootCauseEvent.asStreamProto
+    fn as_stream_proto(&self, _: &dyn BuildEventContext) -> Result<bes::BuildEvent, Interrupted> {
+        Ok(proto_chaining_with(
+            self,
+            Payload::Aborted(bes::Aborted {
+                reason: bes::aborted::AbortReason::AnalysisFailure as i32,
+                description: self.error_message.clone(),
+            }),
+        ))
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/AnalysisRootCauseEvent.java:111 AnalysisRootCauseEvent.getConfigurations
+    fn get_configurations(&self) -> Option<Vec<Arc<dyn BuildEvent>>> {
+        match &self.configuration {
+            None => Some(Vec::new()),
+            Some(configuration) => Some(vec![
+                configuration
+                    .clone()
+                    .unwrap_or_else(NullConfiguration::instance),
+            ]),
+        }
+    }
+}
+
+impl blaze_events::Postable for AnalysisRootCauseBuildEvent {}
+
+/// Event indicating that a failure is related to a given external repository; this is in
+/// particular the case, if fetching that repository failed.
+///
+/// PORT: `repo_name` is `repo.getName()` (the event posted by `blaze_repo_rules` carries the
+/// `RepositoryName`).
+// Java: com/google/devtools/build/lib/repository/RepositoryFailedEvent.java:33 RepositoryFailedEvent
+#[derive(Clone, Debug)]
+pub struct RepositoryFailedBuildEvent {
+    repo_name: String,
+    message: String,
+}
+
+impl RepositoryFailedBuildEvent {
+    // Java: com/google/devtools/build/lib/repository/RepositoryFailedEvent.java:37 RepositoryFailedEvent.<init>
+    pub fn new(repo_name: String, message: String) -> Self {
+        RepositoryFailedBuildEvent { repo_name, message }
+    }
+}
+
+impl BuildEvent for RepositoryFailedBuildEvent {
+    // Java: com/google/devtools/build/lib/repository/RepositoryFailedEvent.java:47 RepositoryFailedEvent.getEventId
+    fn get_event_id(&self) -> BuildEventId {
+        let stripped_repo_name = &self.repo_name;
+        // Label.create(EXTERNAL_PACKAGE_IDENTIFIER, strippedRepoName)
+        let external = &*blaze_cmdline::label_constants::EXTERNAL_PACKAGE_IDENTIFIER;
+        match Label::create_in_package(external, stripped_repo_name) {
+            Ok(label) => build_event_id_util::unconfigured_label_id(&label),
+            // As the repository name was accepted earlier, the label construction really
+            // shouldn't fail. In any case, return something still referring to the repository.
+            Err(_) => build_event_id_util::unknown_build_event_id(&format!(
+                "{external}:{stripped_repo_name}"
+            )),
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/repository/RepositoryFailedEvent.java:61 RepositoryFailedEvent.getChildrenEvents
+    fn get_children_events(&self) -> Vec<BuildEventId> {
+        Vec::new()
+    }
+
+    // Java: com/google/devtools/build/lib/repository/RepositoryFailedEvent.java:66 RepositoryFailedEvent.asStreamProto
+    fn as_stream_proto(&self, _: &dyn BuildEventContext) -> Result<bes::BuildEvent, Interrupted> {
+        Ok(proto_chaining_with(
+            self,
+            Payload::Aborted(bes::Aborted {
+                reason: bes::aborted::AbortReason::LoadingFailure as i32,
+                description: self.message.clone(),
+            }),
+        ))
+    }
+}
+
+impl blaze_events::Postable for RepositoryFailedBuildEvent {}

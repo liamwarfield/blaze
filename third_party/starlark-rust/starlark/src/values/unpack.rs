@@ -230,6 +230,7 @@ pub trait UnpackValue<'v>: Sized + StarlarkTypeRepr {
             // function name is filled in by the native function's call (`NativeFunc::invoke`).
             crate::Error::new_value(BazelParamTypeError {
                 function: None,
+                receiver: None, // BLAZE PATCH 0058
                 param: param_name.to_owned(),
                 actual: value.get_type().to_owned(),
                 ty: ty(),
@@ -290,6 +291,9 @@ impl<'v, TLeft: UnpackValue<'v>, TRight: UnpackValue<'v>> UnpackValue<'v>
 pub(crate) struct BazelParamTypeError {
     /// The builtin's name; set by the call (`NativeFunc::invoke`, `NativeMeth::invoke`).
     pub(crate) function: Option<String>,
+    /// BLAZE PATCH 0058: `type()` of the method's receiver (`NativeMeth::invoke`); `None` for a
+    /// function.
+    pub(crate) receiver: Option<String>,
     pub(crate) param: String,
     /// `type(value)`.
     pub(crate) actual: String,
@@ -307,7 +311,12 @@ impl std::fmt::Display for BazelParamTypeError {
             "in call to {function}(), parameter '{}' got value of type '{}', want '{}'",
             self.param,
             self.actual,
-            java_allowed_types(function, &self.param, &self.ty)
+            java_param_type_error_message(
+                function,
+                self.receiver.as_deref(),
+                &self.param,
+                &self.ty
+            )
         )
     }
 }
@@ -315,11 +324,21 @@ impl std::fmt::Display for BazelParamTypeError {
 impl BazelParamTypeError {
     /// `e` with the builtin's name set, if `e` is a parameter type error without one.
     pub(crate) fn with_function(e: crate::Error, function: &str) -> crate::Error {
+        Self::with_function_receiver(e, function, None)
+    }
+
+    /// BLAZE PATCH 0058: [`Self::with_function`] for a method, with its receiver's `type()`.
+    pub(crate) fn with_function_receiver(
+        e: crate::Error,
+        function: &str,
+        receiver: Option<&str>,
+    ) -> crate::Error {
         if let crate::ErrorKind::Value(a) = e.kind() {
             if let Some(p) = a.downcast_ref::<BazelParamTypeError>() {
                 if p.function.is_none() {
                     let mut p = p.clone();
                     p.function = Some(function.to_owned());
+                    p.receiver = receiver.map(str::to_owned); // BLAZE PATCH 0058
                     return crate::Error::new_value(p);
                 }
             }
@@ -340,6 +359,51 @@ impl BazelParamTypeError {
         }
         e
     }
+}
+
+/// BLAZE PATCH 0058: Java's `ParamDescriptor.getTypeErrorMessage` of every `@StarlarkMethod`
+/// parameter of Bazel 9.3.2 (`receiver`, `method`, `param`, `want`; receiver is the declaring
+/// class's `@StarlarkBuiltin` name or empty; want `-` for a parameter that accepts `Object`),
+/// computed from the oracle's server jar by Bazel's own classes
+/// (`scripts/java-param-types/run`).
+static JAVA_PARAM_TYPES: std::sync::LazyLock<
+    std::collections::HashMap<(&'static str, &'static str), Vec<(&'static str, &'static str)>>,
+> = std::sync::LazyLock::new(|| {
+    let mut m: std::collections::HashMap<_, Vec<_>> = std::collections::HashMap::new();
+    for line in include_str!("java_param_types.tsv").lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        if let [receiver, method, param, want] = cols[..] {
+            m.entry((method, param)).or_default().push((receiver, want));
+        }
+    }
+    m
+});
+
+/// BLAZE PATCH 0058: the "want" part of Java's parameter type error for a builtin named
+/// `function` (a method of a value of type `receiver`), from Bazel's annotations when they
+/// decide it: the receiver's entry, else the one text all of Bazel's methods of that name give
+/// for that parameter. Otherwise (a builtin Bazel does not have, or a parameter Bazel declares
+/// `Object`) [`java_allowed_types`]' derivation.
+// Java: net/starlark/java/eval/ParamDescriptor.java:123 ParamDescriptor.getTypeErrorMessage
+pub(crate) fn java_param_type_error_message(
+    function: &str,
+    receiver: Option<&str>,
+    param: &str,
+    ty: &Ty,
+) -> String {
+    if let Some(entries) = JAVA_PARAM_TYPES.get(&(function, param)) {
+        let chosen = match receiver.and_then(|r| entries.iter().find(|(rc, _)| *rc == r)) {
+            Some((_, want)) => Some(*want),
+            None if entries.iter().all(|(_, w)| *w == entries[0].1) => Some(entries[0].1),
+            None => None,
+        };
+        if let Some(want) = chosen {
+            if want != "-" {
+                return want.to_owned();
+            }
+        }
+    }
+    java_allowed_types(function, param, ty)
 }
 
 /// BLAZE PATCH 0052: Java `ParamDescriptor.getTypeErrorMessage` for a parameter of a builtin:

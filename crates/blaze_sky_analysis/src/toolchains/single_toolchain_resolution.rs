@@ -16,7 +16,8 @@ use blaze_build_config::build_configuration_key::BuildConfigurationKey;
 use blaze_build_config::fragments::platform_configuration::PlatformConfiguration;
 use blaze_cmdline::Label;
 use blaze_skyframe::{
-    ComputeError, Environment, Key, SkyFunctionException, SkyFunctionName, Transience,
+    ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionException, SkyFunctionName,
+    Transience,
 };
 use indexmap::IndexMap;
 
@@ -136,6 +137,16 @@ impl fmt::Debug for SingleToolchainResolutionKey {
 impl Key for SingleToolchainResolutionKey {
     type Value = SingleToolchainResolutionValue;
     const FUNCTION: SkyFunctionName = SINGLE_TOOLCHAIN_RESOLUTION;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:144 SkyFunctions.SINGLE_TOOLCHAIN_RESOLUTION (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: a record of the `ToolchainTypeInfo` and the map from execution platform to toolchain label.
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionValue.java:46 SingleToolchainResolutionValue
+    fn values_equal(
+        old: &SingleToolchainResolutionValue,
+        new: &SingleToolchainResolutionValue,
+    ) -> bool {
+        old == new
+    }
 }
 
 /// SkyFunction which performs toolchain resolution for a single toolchain type.

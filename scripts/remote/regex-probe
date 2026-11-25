@@ -71,9 +71,9 @@ PATTERNS = [
     r".*\.txt",
 ]
 
-WORK = os.path.join(CACHE, "work", "remote", "r3-regex")
+WORK = os.path.join(os.environ.get("BLAZE_REMOTE_WORK") or os.path.join(CACHE, "work", "remote"), "r3-regex")
 TEMPLATE = os.path.join(WORK, "src")
-OUT_ROOT = os.path.join(CACHE, "oracle-out", "ur-remote", "r3-regex")
+OUT_ROOT = os.path.join(os.environ.get("BLAZE_REMOTE_UR") or os.path.join(CACHE, "oracle-out", "ur-remote"), "r3-regex")
 
 OUTPUTS = ["out_a.txt", "out_A.txt", "out_ê.txt", "out_<b>.txt", "out_é.txt"]
 

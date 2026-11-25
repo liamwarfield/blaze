@@ -88,9 +88,9 @@ impl BlazeCommand for LicenseCommand {
         env: &mut CommandEnvironment,
         _options: &OptionsParsingResult,
     ) -> BlazeCommandResult {
-        // PORT: `env.getEventBus().post(new NoBuildEvent())` only reaches the Build Event
-        // Protocol, which is ported for build and test; a BEP file requested for this command
-        // fails loudly before it runs (crate::unported_options).
+        // `env.getEventBus().post(new NoBuildEvent())` only reaches the Build Event Protocol;
+        // BazelBuildEventServiceModule creates no stream for this command (it is not in
+        // ALLOWED_COMMANDS, crate::commands::bep), so nothing subscribes to the event.
         let out_err = env.get_reporter().get_out_err().clone();
 
         out_err.print_out_ln("Licenses of all components included in this binary:\n");

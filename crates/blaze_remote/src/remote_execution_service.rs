@@ -268,7 +268,9 @@ impl BackgroundTaskExecutor {
                 // The task's `Thread`, for `shutdownNow`.
                 let _ =
                     interrupt_tx.send(blaze_shell::thread_interrupt::ThreadInterrupt::current());
-                task.run()
+                // `execute`: an exception of the task reaches the thread's default uncaught
+                // exception handler.
+                blaze_util::uncaught_exception::run_catching(|| task.run());
             })
             // Java: an `OutOfMemoryError` ("unable to create native thread").
             .unwrap_or_else(|e| panic!("OutOfMemoryError: unable to create native thread: {e}"));

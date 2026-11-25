@@ -22,7 +22,7 @@ use super::java_semantics::JavaSemantics;
 /// multiple NestedSets, we store them in reverse order, and reverse again after flattening. This
 /// preserves the right-most occurrence in its correct position, thus achieving the correct
 /// semantics.
-// Java: com/google/devtools/build/lib/rules/java/JavaHelper.java:47 JavaHelper.tokenizeJavaOptions
+// Java: com/google/devtools/build/lib/rules/java/JavaHelper.java:48 JavaHelper.tokenizeJavaOptions
 pub fn tokenize_java_options_nested_set(in_opts: &NestedSet<String>) -> Vec<String> {
     let mut list: Vec<String> = in_opts.to_list().to_vec();
     list.reverse();
@@ -31,7 +31,7 @@ pub fn tokenize_java_options_nested_set(in_opts: &NestedSet<String>) -> Vec<Stri
 
 /// Javac options require special processing - People use them and expect the options to be
 /// tokenized.
-// Java: com/google/devtools/build/lib/rules/java/JavaHelper.java:55 JavaHelper.tokenizeJavaOptions
+// Java: com/google/devtools/build/lib/rules/java/JavaHelper.java:56 JavaHelper.tokenizeJavaOptions
 pub fn tokenize_java_options<S: AsRef<str>>(in_opts: &[S]) -> Vec<String> {
     // Ideally, this would be in the options parser. Unfortunately,
     // the options parser can't handle a converter that expands

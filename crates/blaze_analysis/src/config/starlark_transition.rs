@@ -14,7 +14,7 @@ use blaze_cmdline::label_constants::COMMAND_LINE_OPTION_PACKAGE_IDENTIFIER;
 use blaze_events::{Event, EventHandler, ExtendedEventHandler, StoredEventHandler};
 use blaze_optdefs::fragment::core_options::CoreOptions;
 use blaze_packages::types::{AttrValue, Type};
-use blaze_skyframe::{Key, SkyFunctionName};
+use blaze_skyframe::{FunctionHermeticity, Key, SkyFunctionName};
 use blaze_starlark::StarlarkSemantics;
 use indexmap::{IndexMap, IndexSet};
 use parking_lot::Mutex;
@@ -101,6 +101,16 @@ impl fmt::Debug for StarlarkBuildSettingsDetailsKey {
 impl Key for StarlarkBuildSettingsDetailsKey {
     type Value = StarlarkBuildSettingsDetailsValue;
     const FUNCTION: SkyFunctionName = STARLARK_BUILD_SETTINGS_DETAILS;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:118 SkyFunctions.STARLARK_BUILD_SETTINGS_DETAILS (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: a record of four maps and sets (order-insensitive, as `IndexMap`/`IndexSet` here). PORT: defaults compare with `StarlarkOptionValue`'s `==`, stricter than Java's `equals` across collection classes: Rust prunes less, never more.
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkBuildSettingsDetailsValue.java:55 StarlarkBuildSettingsDetailsValue
+    fn values_equal(
+        old: &StarlarkBuildSettingsDetailsValue,
+        new: &StarlarkBuildSettingsDetailsValue,
+    ) -> bool {
+        old == new
+    }
 }
 
 /// The `BuildOptions` form (Java object) of a build setting's attribute value.

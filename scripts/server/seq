@@ -19,6 +19,7 @@ sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import common as C  # noqa: E402
+cc = C.cc
 
 TOOL = "seq"
 WORK = os.path.join(C.TOOLS_WORK, "seq")
@@ -78,6 +79,7 @@ usage: scripts/server/seq help
                               [--steps a,b,...] [--fresh-reference] [--keep-raw]
        scripts/server/seq recompare --a DIR --b DIR
        scripts/server/seq clean
+       scripts/server/seq selftest
 
 Runs one sequence of commands (below) on a corpus project (corpus/projects.json; brotli and
 re2 only), on ONE server per side, and compares the two sides step by step.
@@ -115,16 +117,17 @@ same project. Startup options:
 ~/.cache/blaze/repo-cache --color=no --curses=no (as record). Environment exactly HOME, PATH=
 /usr/bin:/bin and BLAZE_SERVER_MODE=daemon, on both sides (the oracle ignores the variable;
 equal --client_env). Output user roots and workspace copies are deleted when the run ends;
-reports and extracted items are kept in runs/<timestamp>-<project>-<mode>/.
+reports and extracted items are kept in runs/<timestamp>-<project>-<mode>-<reference>-<pid>/.
 
 Compared per step (each a field; any difference makes the step DIFFERENT):
-  status    `exit N` / `signal N NAME` / timed out.
-  stderr    scripts/oracle/normalise.py stderr_summary (imported: INFO/WARNING/ERROR lines and
-            the test summary, as a multiset; path placeholders, <DUR>, <PID>; "INFO: N
-            processes: ..." and "INFO: Analyzed ... (P packages loaded, T targets configured)"
-            are kept verbatim), plus the client's own lines that summary drops (`Starting local
-            Bazel server`, `Extracting Bazel installation`, `Server ...`, `Another command ...`,
-            `Waiting for ...`), normalised the same way.
+  status    the termination: `exit N` / `signal NAME` / timeout / `oom-kill` when the side's
+            unit (OOMPolicy=continue) counted an OOM kill during the step (a server's included).
+  stderr    the whole stderr, every line in order (audit 4r2, SV-1), after the record's path
+            placeholders (scripts/oracle/normalise.py Context), common.Norm's pid, duration,
+            UUID, sandbox and log-time rules, and the named exclusion rules of SEQ_RULES
+            (compare_common's VOLATILE_RULES: timer-driven progress lines, blank lines, times,
+            ...; and the client's "... still trying to connect" line), each listed in the report
+            with the lines it changed or removed on each side.
   stdout    query, cquery, aquery and info: the normalised text (record's path placeholders;
             `server_pid` -> <PID>).
   spawns    build/test: the multiset of spawns in the execution log: mnemonic, target label,
@@ -142,19 +145,25 @@ Compared per step (each a field; any difference makes the step DIFFERENT):
             path and type only.
   server    the server relation of the step: before/after as S1, S2, ... (distinct server pids
             of the side in order of appearance) or `none`.
-Step classes: IDENTICAL; SAME-FAILURE (equal, but a side failed: the compile-error step is
-expected to be one; never counted as a match); DIFFERENT; NOT-RUN (a side's runner died before
-the step). Totals with the denominator (steps selected, run, per class) are printed, with the
-oracle's sha256, the Blaze binary's sha256, the checkout's commit and dirty state.
-Exit status: 0 when no step is DIFFERENT or NOT-RUN and both units recorded a clean end;
-1 otherwise; 2 for usage errors, an empty selection or a refused binary.
+Step classes (scripts/lib/compare_common.py): IDENTICAL (every field and the termination equal;
+side A exited 0, or the step declares its failure: DECLARED, `compile-error` exit 1, and in the
+cold reference `cquery` and `aquery` exit 2); BOTH-FAILED (an undeclared equal failure: never a
+match); DIFFERENT; ORACLE-UNEXPECTED (side A did not end as declared); SKIPPED (a side's runner
+died before the step). compare_common's footer gives every class with its count, the exclusion
+table, the oracle's sha256, the Blaze binary's sha256, the checkout's commit and dirty state.
+Exit status: 0 only when every step is IDENTICAL, both units recorded a clean end and no server
+was left; 1 otherwise; 2 for usage errors, an empty selection, the wrong oracle, or the oracle
+given as $BLAZE without --control. `recompare` never exits 0 (a re-classification).
 
 Side A is cached: under refcache/<key>/, where <key> is the sha256 of the oracle sha256, the
 project (commit, command), a digest of the prepared workspace, the resolved sequence (step
 names, file actions, command lines), the reference mode and the sha256 of the code that records and extracts it
 (scripts/server/seq and common.py, the imported scripts/oracle files oracle_common.py,
-normalise.py, surfaces.py and record, scripts/remote/unit-supervisor). A cached side is used
-only when it is complete; --fresh-reference re-runs it. --control never uses the cache for B.
+normalise.py, surfaces.py and record, scripts/remote/unit-supervisor). The completeness marker
+complete.json is a compare_common key written after side A finished cleanly, with the sha256
+of every file of the cached side; a cached side whose key differs or whose files changed is
+not used (side A runs again, the report says why). --fresh-reference re-runs it. --control
+never uses the cache for B. `selftest` drives `run` with fake binaries (project re2).
 
 Options:
   --project P          brotli or re2 (required)
@@ -249,6 +258,8 @@ def side_main(spec_path):
     ws, ur, out = spec["ws"], spec["ur"], spec["out"]
     binary = spec["binary"]
     env = dict(spec["env"])
+    if spec.get("tripwire") and os.environ.get(C.UNIT_ENV) == "1":
+        env["COMPARE_COMMON_TRIPWIRE"] = spec["tripwire"]
     startup = [binary, "--output_user_root=" + ur, "--nohome_rc", "--nosystem_rc"]
     output_base = os.path.join(ur, hashlib.md5(os.path.realpath(ws).encode()).hexdigest())
     paths = {"execroot": os.path.join(output_base, "execroot", "_main"),
@@ -403,7 +414,8 @@ def run_side(side, binary, ws, ur, out, steps, reference, keep_raw):
     os.makedirs(out, exist_ok=True)
     spec = {"side": side, "binary": binary, "ws": ws, "ur": ur, "out": out, "steps": steps,
             "reference": reference, "keep_raw": keep_raw,
-            "env": {"HOME": C.HOME, "PATH": "/usr/bin:/bin", "BLAZE_SERVER_MODE": "daemon"}}
+            "env": {"HOME": C.HOME, "PATH": "/usr/bin:/bin", "BLAZE_SERVER_MODE": "daemon"},
+            "tripwire": C.tripwire_env_token()}
     spec_path = os.path.join(out, "spec.json")
     with open(spec_path, "w") as f:
         json.dump(spec, f, indent=1)
@@ -411,9 +423,10 @@ def run_side(side, binary, ws, ur, out, steps, reference, keep_raw):
     if os.path.lexists(status):
         os.remove(status)
     cmd = ["systemd-run", "--user", "--collect", "--wait", "--pipe", "--quiet", "--same-dir",
-           "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0",
+           "-p", "MemoryMax=" + C.selftest_memory("12G"), "-p", "MemorySwapMax=0",
+           "-p", "OOMPolicy=continue",
            "/usr/bin/python3", "-I", C.SUPERVISOR, status,
-           "env", "-i", "HOME=" + C.HOME, "PATH=/usr/bin:/bin",
+           "env", "-i", "HOME=" + C.HOME, "PATH=/usr/bin:/bin", C.UNIT_ENV + "=1",
            "/usr/bin/python3", "-I", os.path.abspath(__file__), "_side", spec_path]
     print("%s: side %s: %s in a unit (12G), output %s" % (TOOL, side, binary, out), flush=True)
     rc = subprocess.call(cmd, stdin=subprocess.DEVNULL, cwd=ws)
@@ -454,22 +467,45 @@ def load_side(out):
     return steps, ctx
 
 
-EXTRA_STDERR = ("Starting local ", "Extracting Bazel installation", "Server ", "Another command ",
-                "Waiting for ", "Killed non-responsive")
+# The whole stderr is compared, every line in order (audit 4r2, SV-1), after the record's path
+# placeholders (scripts/oracle/normalise.py Context), the interop tools' pid, duration, UUID,
+# sandbox and log-time rules (common.Norm) and these named exclusion rules, each counted per
+# side in the report.
+SEQ_RULES = cc.VOLATILE_RULES + [
+    cc.Rule("connect_retry", r"^\.\.\. still trying to connect to local ",
+            "printed by the client while it waits for a server under load (differs between two "
+            "oracle runs: interop-client --control)"),
+]
+NORM = cc.Normaliser(SEQ_RULES, path_reason="each side's workspace copy, output base, execroot, "
+                     "output user root, install base (scripts/oracle/normalise.py Context), "
+                     "then process ids, durations, UUIDs, sandbox numbers (common.Norm)")
+# (reference, step) -> the oracle side's designed termination: equal on both sides is IDENTICAL,
+# the oracle ending otherwise ORACLE-UNEXPECTED (audit 4r2, SV-2). Every other equal failure is
+# BOTH-FAILED (never a match).
+DECLARED = {
+    ("cold", "compile-error"): "exit 1",
+    ("default", "compile-error"): "exit 1",
+    # PostAnalysisQueryProcessor.java:93-101: "Queries based on analysis results are not
+    # allowed if incrementality state is not being kept", exit 2.
+    ("cold", "cquery"): "exit 2",
+    ("cold", "aquery"): "exit 2",
+}
 
 
-def views(rec, out, ctx):
-    """The compared fields of one step (see help)."""
-    v = {"status": rec["status"]}
+def step_termination(rec):
+    """The compare_common Termination of a recorded step; an OOM kill in the side's unit during
+    the step makes it `oom-kill` (audit 4r2, SV-3)."""
+    before, after = rec.get("oom_kill_before"), rec.get("oom_kill_after")
+    oom = (after - before) if (before is not None and after is not None) else 0
+    return C.termination(C.Status(rec["returncode"], rec["timed_out"]), max(0, oom))
+
+
+def views(rec, out, ctx, side):
+    """The compared fields of one step (see help); the termination is judged on its own."""
+    v = {}
     err = open(os.path.join(out, rec["name"] + ".stderr"), "rb").read().decode("utf-8", "replace")
-    summary = C.onorm.stderr_summary(ctx, err)
-    for raw in err.splitlines():
-        line = raw.split("\r")[-1].rstrip()
-        if line.startswith(EXTRA_STDERR):
-            line = C.Norm("\0no-root\0").text(ctx.text(line)).rstrip("\n")
-            summary[line] = summary.get(line, 0) + 1
-    v["stderr"] = "".join("%s%s\n" % (k, "" if n == 1 else "  [x%d]" % n)
-                          for k, n in sorted(summary.items()))
+    lines = "\n".join(raw.split("\r")[-1].rstrip() for raw in err.split("\n"))
+    v["stderr"] = NORM.apply(C.Norm("\0no-root\0").text(ctx.text(lines)), side, "stderr").text
     verb = rec["argv"][rec["argv"].index("--nosystem_rc") + 1]
     if verb in ("query", "cquery", "aquery", "info"):
         text = open(os.path.join(out, rec["name"] + ".stdout"), "rb").read().decode("utf-8", "replace")
@@ -488,47 +524,45 @@ def views(rec, out, ctx):
     return v
 
 
-def compare(steps, a_out, b_out, report):
+def compare(steps, a_out, b_out, report, rep, reference):
+    """One row per step in `rep` (a compare_common.Report); prints the diffs."""
     a_steps, a_ctx = load_side(a_out)
     b_steps, b_ctx = load_side(b_out)
-    counts = {C.IDENTICAL: 0, C.SAME_FAILURE: 0, C.DIFFERENT: 0, C.NOT_RUN: 0}
-    rows = []
+    rep.add_normaliser(NORM)
     for step in steps:
         name = step["name"]
         a, b = a_steps.get(name), b_steps.get(name)
         if a is None or b is None:
-            counts[C.NOT_RUN] += 1
-            rows.append((name, C.NOT_RUN, "side %s has no record" % ("A" if a is None else "B"), []))
+            rep.add(name, cc.SKIPPED, "side %s has no record (its runner died before the step)"
+                    % ("A" if a is None else "B"))
+            report("  %-17s %-19s side %s has no record" % (cc.SKIPPED, name,
+                                                             "A" if a is None else "B"))
             continue
-        va, vb = views(a, a_out, a_ctx), views(b, b_out, b_ctx)
+        va, vb = views(a, a_out, a_ctx, "oracle"), views(b, b_out, b_ctx, "blaze")
         diffs = []
         for field in va:
             if va[field] != vb.get(field):
                 d = list(difflib.unified_diff(va[field].splitlines(), vb.get(field, "").splitlines(),
                                               "A " + field, "B " + field, lineterm="", n=1))
                 diffs.append((field, d))
-        failed_a = a["returncode"] != 0 or a["timed_out"]
-        failed_b = b["returncode"] != 0 or b["timed_out"]
-        if diffs:
-            cls = C.DIFFERENT
+        ta, tb = step_termination(a), step_termination(b)
+        decl = DECLARED.get((reference, name))
+        differing = [f for f, _ in diffs]
+        if decl is not None and C.term_text(ta) != decl:
+            cls, detail = cc.ORACLE_UNEXPECTED, "declared %s, oracle %s" % (decl, ta)
         else:
-            cls = C.SAME_FAILURE if (failed_a or failed_b) else C.IDENTICAL
-        counts[cls] += 1
-        note = "A %s %.0fs, B %s %.0fs; server %s" % (a["status"], a["duration_s"], b["status"],
-                                                      b["duration_s"], va["server"].strip())
-        if a.get("oom_kill_after") != a.get("oom_kill_before") or \
-                b.get("oom_kill_after") != b.get("oom_kill_before"):
-            note += "; OOM KILL in the unit"
-        rows.append((name, cls, note, diffs))
-    for name, cls, note, diffs in rows:
-        report("  %-13s %-19s %s" % (cls, name, note))
+            cls, detail = cc.judge(ta, tb, differing, declared_exit=(
+                ta.code if decl is not None and ta.kind == "exit" else None))
+        note = "A %s %.0fs, B %s %.0fs; server %s" % (ta, a["duration_s"], tb, b["duration_s"],
+                                                      va["server"].strip())
+        rep.add(name, cls, "%s%s%s" % (detail, "; " if detail else "", note))
+        report("  %-17s %-19s %s%s" % (cls, name, note, (" (%s)" % detail) if detail else ""))
         for field, d in diffs:
             report("      field %s differs (%d diff lines)" % (field, len(d)))
             for l in d[:60]:
                 report("        " + l)
             if len(d) > 60:
                 report("        [... %d more diff lines in the transcripts]" % (len(d) - 60))
-    return counts
 
 
 def side_ok(out, status_line):
@@ -596,7 +630,8 @@ def cmd_run(args):
     os.makedirs(pdir, exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
     mode = "control" if control else "daemon"
-    run_dir = os.path.join(WORK, "runs", "%s-%s-%s-%s" % (stamp, project, mode, reference))
+    run_dir = os.path.join(WORK, "runs", "%s-%s-%s-%s-%d" % (stamp, project, mode, reference,
+                                                           os.getpid()))
     os.makedirs(run_dir)
     report_lines = []
 
@@ -611,12 +646,21 @@ def cmd_run(args):
     else:
         if not os.path.exists(blaze_src):
             die("no Blaze binary at %s (set BLAZE)" % blaze_src)
+        C.refuse_oracle_as_blaze(TOOL, blaze_src)
         staged, b_sha = C.stage_binary(TOOL, blaze_src)
         b_binary, b_role = staged, "B (blaze %s, run from a private copy)" % blaze_src
-    for l in C.header(TOOL, [("A (oracle, pinned)", oracle, C.ORACLE_SHA256),
+    for l in C.header(TOOL, [("A (oracle, pinned)", oracle, C.oracle_sha256()),
                              (b_role, blaze_src if not control else oracle, b_sha)],
                       blaze=None if control else blaze_src):
         report(l)
+    rep = cc.Report(TOOL, blaze={"path": blaze_src if not control else oracle, "sha256": b_sha},
+                    oracle={"path": oracle, "sha256": C.oracle_sha256()},
+                    selection="%s %s, steps %s" % (project, reference, ",".join(selected)),
+                    tool_files=[os.path.abspath(__file__), os.path.join(HERE, "common.py")],
+                    compared="per step: termination (an OOM kill in the side's unit during the "
+                             "step included), the whole stderr in order after the exclusion "
+                             "rules listed at the end, query/info stdout, spawns, metrics, "
+                             "outputs, the server relation")
     report("%s: project %s (commit %s, command %s); reference %s (side A%s); side B %s" % (
         TOOL, project, spec.get("commit"), " ".join(spec["commands"][0]), reference,
         " with " + " ".join(REF_FLAGS) if reference == "cold" else " without extra flags",
@@ -644,7 +688,7 @@ def cmd_run(args):
     try:
         fixed = fresh_side()
         ws_digest = workspace_digest(ws)
-        key_obj = {"oracle_sha256": C.ORACLE_SHA256, "project": project,
+        key_obj = {"oracle_sha256": C.oracle_sha256(), "project": project,
                    "commit": spec.get("commit"), "command": spec["commands"][0],
                    "workspace": os.path.realpath(ws), "workspace_digest": ws_digest,
                    "workspace_fixups": fixed, "steps": steps, "reference": reference,
@@ -654,9 +698,18 @@ def cmd_run(args):
         ref_dir = os.path.join(WORK, "refcache", key)
         report("%s: reference key %s (workspace digest %s)" % (TOOL, key, ws_digest))
         a_out = ref_dir
-        cached = (not fresh_ref and os.path.exists(os.path.join(ref_dir, "complete.json")))
+        complete = os.path.join(ref_dir, "complete.json")
+        cached = False
+        if not fresh_ref and os.path.exists(complete):
+            # The completeness marker is a compare_common key: it holds the digest of every
+            # file of the cached side, so a changed or missing file is seen (audit 4r2, SV-4).
+            why = cc.check_key(complete, key_obj)
+            if why is None:
+                cached = True
+            else:
+                report("%s: cached side A not used: %s; side A runs again" % (TOOL, why))
         if cached:
-            meta = json.load(open(os.path.join(ref_dir, "complete.json")))
+            meta = json.load(open(os.path.join(ref_dir, "meta.json")))
             report("%s: side A from the cache %s (recorded %s, status %s)" % (
                 TOOL, ref_dir, meta.get("recorded"), meta.get("unit_status")))
             status["A"] = meta.get("unit_status")
@@ -669,8 +722,11 @@ def cmd_run(args):
             status["A"] = run_side("A", oracle, os.path.realpath(ws), ur, ref_dir, steps,
                                    reference, keep_raw)
             if not side_ok(ref_dir, status["A"]) and len(load_side(ref_dir)[0]) == len(steps):
-                with open(os.path.join(ref_dir, "complete.json"), "w") as f:
+                with open(os.path.join(ref_dir, "meta.json"), "w") as f:
                     json.dump({"recorded": stamp, "unit_status": status["A"]}, f)
+                files = [os.path.join(dp, n) for dp, _, fs in os.walk(ref_dir) for n in fs
+                         if n != "complete.json"]
+                cc.write_key(complete, key_obj, files)
             fresh_side()
         b_out = os.path.join(run_dir, "B")
         status["B"] = run_side("B", b_binary, os.path.realpath(ws), ur, b_out, steps,
@@ -680,17 +736,19 @@ def cmd_run(args):
         problems += ["B: " + p for p in side_ok(b_out, status["B"])]
         for p in problems:
             report("%s: PROBLEM %s" % (TOOL, p))
+            rep.problem(p)
         report("%s: per step (A = %s, B = %s):" % (TOOL, a_out, b_out))
-        counts = compare(steps, a_out, b_out, report)
-        report("%s: denominator: %d steps selected (%d in the sequence); %d identical, "
-               "%d same-failure (equal, a side failed; not matches), %d different, %d not run"
-               % (TOOL, len(steps), len(SEQUENCE), counts[C.IDENTICAL], counts[C.SAME_FAILURE],
-                  counts[C.DIFFERENT], counts[C.NOT_RUN]))
-        rc = 0 if not problems and counts[C.DIFFERENT] == 0 and counts[C.NOT_RUN] == 0 else 1
+        compare(steps, a_out, b_out, report, rep, reference)
+        rep.note("%d steps selected of %d in the sequence" % (len(steps), len(SEQUENCE)))
     finally:
         left = C.kill_root_servers(ur)
         if left:
             report("%s: PROBLEM servers %s of %s still alive" % (TOOL, left, ur))
+            rep.problem("servers %s of %s still alive" % (left, ur))
+        for line in rep.footer_lines():
+            report(line)
+        rep.print_footer(file=open(os.devnull, "w"))
+        rc = rep.exit_code()
         for d in (ws, ur):
             if os.path.lexists(d):
                 C.safe_rmtree(d, C.TOOLS_WORK)
@@ -728,15 +786,15 @@ def cmd_recompare(args):
             if os.path.exists(os.path.join(a_out if role == "A" else b_out, "unit-status"))
             else "?"))
     report("%s: tool sha256 %s" % (TOOL, C.tools_sha256(["seq", "common.py"])))
-    counts = compare(sa["steps"], a_out, b_out, report)
-    report("%s: denominator: %d steps; %d identical, %d same-failure (equal, a side failed; not "
-           "matches), %d different, %d not run" % (TOOL, len(sa["steps"]), counts[C.IDENTICAL],
-                                                   counts[C.SAME_FAILURE], counts[C.DIFFERENT],
-                                                   counts[C.NOT_RUN]))
-    # Equal failures are listed, never a pass (audit round 4, rule (d)): exit 0 only when every
-    # step is IDENTICAL.
-    return 0 if counts[C.DIFFERENT] == 0 and counts[C.NOT_RUN] == 0 and \
-        counts[C.SAME_FAILURE] == 0 and counts[C.IDENTICAL] > 0 else 1
+    rep = cc.Report(TOOL, blaze={"path": sb["binary"]}, oracle={"path": sa["binary"]},
+                    selection="recompare %s %s" % (a_out, b_out),
+                    tool_files=[os.path.abspath(__file__), os.path.join(HERE, "common.py")],
+                    compared="as `run`, from the recorded sides")
+    # A re-classification of stored outputs never passes (compare_common rule).
+    rep.reclassify_only = True
+    compare(sa["steps"], a_out, b_out, report, rep, sa["reference"])
+    rep.print_footer()
+    return rep.exit_code()
 
 
 def cmd_clean(args):
@@ -762,7 +820,112 @@ def cmd_clean(args):
     return 0
 
 
+def selftest():
+    """`run --project re2` against fake binaries (fake HOME); the fakes trip when started
+    outside the side runner's unit."""
+    st = cc.Selftest(TOOL)
+    fh = cc.FakeHome("server-seq")
+    me = os.path.abspath(__file__)
+    n = [0]
+
+    def fakes(ospec, bspec):
+        n[0] += 1
+        C.fake(fh.oracle, fh, "oracle", **ospec)
+        return C.fake(os.path.join(fh.home, "bin", "blaze-%d" % n[0]), fh, "blaze-%d" % n[0],
+                      **bspec)
+
+    def run(b, steps="cold,query", extra=(), memory=None, pin=None):
+        old = os.environ.get("BLAZE"), os.environ.get("COMPARE_COMMON_SELFTEST_MEMORY")
+        os.environ["BLAZE"] = b
+        if memory:
+            os.environ["COMPARE_COMMON_SELFTEST_MEMORY"] = memory
+        try:
+            return fh.run_tool(me, ["run", "--project", "re2", "--steps", steps] + list(extra),
+                               pin=pin)
+        finally:
+            for k, v in zip(("BLAZE", "COMPARE_COMMON_SELFTEST_MEMORY"), old):
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def classes(rep):
+        return [r["class"] for r in (rep or {}).get("cases", [])]
+
+    def show(rc, rep):
+        return "exit %s, %s" % (rc, classes(rep))
+    try:
+        b = fakes(dict(out=b"x"), dict(out=b"x"))
+        subprocess.run([b, "build"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        st.check("tripwire trips on a direct launch", fh.tripped())
+        if fh.tripped():
+            os.remove(fh.tripfile)
+        same = dict(out=b"//:a\n", err=b"INFO: Analyzed 1 target.\nINFO: Elapsed time: 1.5s\n")
+        b = fakes(same, same)
+        rc, rep, log = run(b)
+        st.check("equal: exit 0, every step IDENTICAL", rc == 0 and classes(rep) ==
+                 [cc.IDENTICAL, cc.IDENTICAL], show(rc, rep))
+        rc, rep, log = run(b)
+        notes = open(log).read()
+        st.check("side A reused from the anchored cache", rc == 0 and "from the cache" in notes,
+                 show(rc, rep))
+        cache = os.path.join(fh.cache, "work", "server", "tools", "seq", "refcache")
+        target = next(os.path.join(dp, f) for dp, _, fs in os.walk(cache) for f in fs
+                      if f.endswith(".stderr"))
+        with open(target, "ab") as f:
+            f.write(b"tampered\n")
+        rc, rep, log = run(b)
+        text = open(log).read()
+        st.check("a changed cached file is seen: side A runs again",
+                 rc == 0 and "cached side A not used" in text, show(rc, rep))
+        b = fakes(same, dict(same, err=b"INFO: Analyzed 1 target.\nINFO: Elapsed time: 1.5s\n"
+                             b"WARNING: one more line\n"))
+        rc, rep, log = run(b)
+        st.check("an extra stderr line of any kind: DIFFERENT", rc == 1 and cc.DIFFERENT in
+                 classes(rep), show(rc, rep))
+        b = fakes(dict(same, err=b"INFO: a\nINFO: b\n"), dict(same, err=b"INFO: b\nINFO: a\n"))
+        rc, rep, log = run(b)
+        st.check("stderr lines in another order: DIFFERENT (no multiset)",
+                 rc == 1 and cc.DIFFERENT in classes(rep), show(rc, rep))
+        b = fakes(dict(same, code=1), dict(same, code=1))
+        rc, rep, log = run(b)
+        st.check("equal undeclared failures: BOTH-FAILED, exit 1",
+                 rc == 1 and set(classes(rep)) == {cc.BOTH_FAILED}, show(rc, rep))
+        b = fakes(dict(same, when=[("cquery", 2)]), dict(same, when=[("cquery", 2)]))
+        rc, rep, log = run(b, steps="cquery")
+        st.check("the declared cold-reference cquery failure: IDENTICAL",
+                 rc == 0 and classes(rep) == [cc.IDENTICAL], show(rc, rep))
+        b = fakes(same, dict(same, sig="PIPE"))
+        rc, rep, log = run(b)
+        st.check("Blaze killed by SIGPIPE: DIFFERENT", rc == 1 and cc.DIFFERENT in classes(rep),
+                 show(rc, rep))
+        b = fakes(same, dict(same, alloc_mb=700))
+        rc, rep, log = run(b, memory="400M", extra=["--fresh-reference"])
+        oom = [r for r in (rep or {}).get("cases", []) if "oom-kill" in r["detail"]]
+        st.check("an OOM kill in the side's unit: never IDENTICAL",
+                 rc == 1 and oom and all(r["class"] == cc.DIFFERENT for r in oom),
+                 "%s; %d rows name oom-kill" % (show(rc, rep), len(oom)))
+        rc, rep, log = run(fh.oracle)
+        st.check("the oracle as the binary under test refused (exit 2)", rc == 2, "exit %s" % rc)
+        rc, rep, log = run(b, pin="0" * 64)
+        st.check("wrong oracle hash refused (exit 2)", rc == 2, "exit %s" % rc)
+        st.check("no process started outside the side runners' units", not fh.tripped(),
+                 open(fh.tripfile).read()[:200] if fh.tripped() else "")
+    except Exception as e:  # noqa: BLE001 - a crash of the selftest is a failure
+        import traceback
+        traceback.print_exc()
+        st.check("selftest ran to the end", False, "%s: %s" % (type(e).__name__, e))
+    finally:
+        if st.failures:
+            print("  (fake HOME kept for inspection: %s)" % fh.root)
+        else:
+            fh.remove()
+    return st.finish()
+
+
 def main(argv):
+    if len(argv) >= 2 and argv[1] == "selftest":
+        return selftest()
     if len(argv) < 2 or argv[1] in ("help", "--help", "-h"):
         sys.stdout.write(USAGE)
         for name, actions, cmd in SEQUENCE:

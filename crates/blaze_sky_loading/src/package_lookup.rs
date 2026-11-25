@@ -10,7 +10,8 @@ use blaze_cmdline::label_constants::EXTERNAL_PACKAGE_IDENTIFIER;
 use blaze_cmdline::label_validator;
 use blaze_cmdline::{Label, PackageIdentifier, RepositoryName};
 use blaze_skyframe::{
-    ComputeError, Environment, Interrupted, Key, SkyFunctionException, SkyFunctionName, Transience,
+    ComputeError, Environment, FunctionHermeticity, Interrupted, Key, SkyFunctionException,
+    SkyFunctionName, Transience,
 };
 use blaze_vfs::{PathFragment, Root, RootedPath};
 use parking_lot::RwLock;
@@ -303,6 +304,17 @@ impl fmt::Debug for PackageLookupKey {
 impl Key for PackageLookupKey {
     type Value = PackageLookupValue;
     const FUNCTION: SkyFunctionName = sky_functions::PACKAGE_LOOKUP;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:41 SkyFunctions.PACKAGE_LOOKUP (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: `SuccessfulPackageLookupValue` (root, build file name), `InvalidName` (message) and
+    /// `IncorrectRepositoryReference` (both ids) compare by value; `NO_BUILD_FILE_VALUE` and
+    /// `DELETED_PACKAGE_VALUE` are singletons; `NoRepositoryPackageLookupValue` has no `equals`
+    /// and is made anew by each computation, so it is never equal to the last build's.
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:207 PackageLookupValue.SuccessfulPackageLookupValue.equals
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:371 PackageLookupValue.NoRepositoryPackageLookupValue
+    fn values_equal(old: &PackageLookupValue, new: &PackageLookupValue) -> bool {
+        !matches!(old, PackageLookupValue::NoRepository { .. }) && old == new
+    }
 }
 
 /// Lists possible ways to handle a package label which crosses into a new repository.

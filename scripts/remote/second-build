@@ -9,7 +9,8 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-WORK = os.path.expanduser("~/.cache/blaze/work/remote")
+WORK = os.environ.get("BLAZE_REMOTE_WORK") or os.path.expanduser("~/.cache/blaze/work/remote")
+OUT_ROOT = os.environ.get("BLAZE_REMOTE_UR") or os.path.expanduser("~/.cache/blaze/oracle-out/ur-remote")
 
 USAGE = """\
 usage: scripts/remote/second-build seed <tag> <project>
@@ -37,7 +38,9 @@ bazel-bin trees of two runs (`diff`); the run's workspace and output base are wr
 <ob> in symlink targets and in runfiles manifests. `rehash <run-name> <step>` rewrites that file
 for an existing step.
 
-WORK is ~/.cache/blaze/work/remote. Do not use the run names of other jobs.
+WORK is ~/.cache/blaze/work/remote (or $BLAZE_REMOTE_WORK; the output user roots of
+scripts/remote/oracle-run are under $BLAZE_REMOTE_UR when set). Do not use the run names of other
+jobs.
 """
 
 SOURCES = {"brotli": "c/common/constants.c", "re2": "re2/re2.cc"}
@@ -57,8 +60,8 @@ def normaliser(name):
     # The run's workspace and output base differ between two runs; replace both (and the output
     # base's md5 directory) by <ws> / <ob> in symlink targets and file contents.
     pat = re.compile(
-        r"(/home/[^\s]*?/oracle-out/ur-remote/%s/[0-9a-f]{32})|(/home/[^\s]*?/work/remote/%s/ws)"
-        % (re.escape(name), re.escape(name)))
+        r"(%s/[0-9a-f]{32})|(%s/ws)"
+        % (re.escape(os.path.join(OUT_ROOT, name)), re.escape(os.path.join(WORK, name))))
 
     def norm(text):
         return pat.sub(lambda m: "<ob>" if m.group(1) else "<ws>", text)

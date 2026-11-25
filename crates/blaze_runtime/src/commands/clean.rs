@@ -220,9 +220,12 @@ impl CleanCommand {
             // Close java.log.
             crate::server_log::close();
             // PORT: Java closes the server JVM's own stdout/stderr (FileDescriptor.out/err, which
-            // the client redirected to <output_base>/server/jvm.out) and System.out/err. Blaze
-            // runs in the client's process, where these are the user's terminal, so they are
-            // left open.
+            // the client redirected to <output_base>/server/jvm.out) and System.out/err. They are
+            // left open: in batch mode and in the in-process server they are the user's
+            // terminal; in the persistent server (BLAZE_SERVER_MODE=daemon) they are jvm.out,
+            // which Linux deletes below while it is open, and closing fd 1 or 2 would let the
+            // next file opened take that number and receive whatever the process prints to it.
+            // The server shuts down after this command (shutdownOnSuccess below), as Java's does.
 
             // Delete the big subdirectories with the important content first--this
             // will take the most time. Then quickly delete the little locks, logs

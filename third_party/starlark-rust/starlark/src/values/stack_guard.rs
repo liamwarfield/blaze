@@ -24,11 +24,11 @@ use crate::values::error::ControlError;
 
 // Maximum recursion level for comparison
 // TODO(dmarting): those are rather short, maybe make it configurable?
-#[cfg(debug_assertions)]
-const MAX_RECURSION: u32 = 200;
-
-#[cfg(not(debug_assertions))]
-const MAX_RECURSION: u32 = 3000;
+// BLAZE PATCH 0060: Java compares nested values without a depth limit (a JVM stack overflow is
+// a Bazel crash; Bazel 9.3.2 compares two 5000-deep lists with `==`). Blaze evaluates on
+// threads with a 256 MiB stack (blaze_starlark eval::EVAL_STACK_SIZE); this guard only keeps a
+// native stack overflow from aborting the process, in debug and release builds alike.
+const MAX_RECURSION: u32 = 20000; // BLAZE PATCH 0060
 
 // A thread-local counter is used to detect too deep recursion.
 //

@@ -50,9 +50,9 @@ New, all additive:
 - `Key::values_equal(old, new) -> bool`, default `false` (D10: Java identity equality or
   `NotComparableSkyValue`). Used only by `DirtyBuildingState.unchangedFromLastBuild` and
   `pruneInjectedValues`. Reached through `DynKey` so that it is found from a `SkyKey`.
-- `Key::HERMETICITY: Option<FunctionHermeticity>`, default `None` ("not declared yet").
-  `DirtyingNodeVisitor`'s check "Nodes with hermetic functions cannot be marked 'changed'"
-  applies only to keys that declare `Some(Hermetic)`. I2 declares every key; see section 9.
+- `Key::HERMETICITY: FunctionHermeticity`, required (I2, 2026-11-25: every key declares it, so
+  the default `None` of I1 is gone). `DirtyingNodeVisitor`'s check "Nodes with hermetic
+  functions cannot be marked 'changed'" applies to every key, as in Java.
 - `EvaluatorBuilder::keep_edges(bool)` (default `true`: what Blaze stored before and what Bazel
   does by default), `event_filter(...)` (default `EventFilter::NO_STORAGE`: events are reported
   when the node commits and not stored, which is what the crate did before I1 and what Bazel
@@ -458,7 +458,8 @@ The engine relies on these exactly as Java does; a kept graph is wrong when one 
 9. **Deps are requested before work that must not be repeated** (error bubbling re-runs the
    function); unchanged from before I1.
 10. **Hermeticity is declared truthfully** (`Key::HERMETICITY`): a key that declares
-    `Some(Hermetic)` can never be injected or invalidated (panic with Java's text).
+    `Hermetic` can never be injected over an existing node or invalidated (panic with Java's
+    text). Keys sharing a function name declare the same hermeticity.
 
 The I2 work list (six groups by crate, per key the Java value class and its `equals`, the
 captured inputs, the file-system reads that bypass `FILE_STATE`, cross-group items X1 to X10) is
@@ -466,9 +467,8 @@ captured inputs, the file-system reads that bypass `FILE_STATE`, cross-group ite
 
 ## 9. Decisions for root
 
-1. **`Key::HERMETICITY` is `Option`, default `None`** (not declared; the "hermetic functions
-   cannot be marked changed" check is skipped). A default of `Hermetic` would make every existing
-   `inject` over an existing node panic. I2 declares all 84 keys; then the default can go.
+1. **`Key::HERMETICITY` was `Option`, default `None`** in I1. Done in I2 (2026-11-25): every
+   key declares it and the item is required.
 2. **Default event filter is `NO_STORAGE`** (what the crate did before, Bazel's choice without
    incremental state). The kept graph needs `DEFAULT_EVENT_FILTER_WITH_ACTIONS`
    (`J:../lib/skyframe/SkyframeExecutor.java:1150-1165`) set by `blaze_sky_top` in I3; with it
@@ -487,10 +487,11 @@ captured inputs, the file-system reads that bypass `FILE_STATE`, cross-group ite
    (probe `engine_test::thrower_after_first_error_leaves_no_reverse_dep_after_in_flight_deletion`).
 7. **`PORTING.md` "Skyframe"** (protected) still lists `EvaluationProgressReceiver` and
    `EventFilter` as absent and says "single-build-per-process"; root to update.
-8. **One `Precomputed<T: PartialEq>` in `blaze_skyframe`** is the I2 survey's recommendation
-   (X1): two precomputed key types exist today and neither value has equality, so every
-   per-command injection would dirty all readers. It lands in this crate, so it is an I1-side
-   decision; I recommend yes, as the first I2 item.
+8. **One `Precomputed<T: PartialEq>` in `blaze_skyframe`** (X1): done in I2
+   (`src/precomputed.rs`). `blaze_sky_loading::precomputed` and
+   `blaze_bzlmod::skyframe::precomputed` re-export its types and keep their variables; one node
+   per variable name, and a value carries its type's `PartialEq` (Java's
+   `PrecomputedValue.equals`).
 9. **`scripts/cargo-capped` drops the environment**, so the model's long mode runs the test
    binary directly under `systemd-run --setenv`; root may want the two `BLAZE_SKYFRAME_MODEL_*`
    variables passed through.

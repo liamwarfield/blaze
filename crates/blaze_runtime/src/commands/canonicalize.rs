@@ -109,6 +109,8 @@ impl BlazeCommand for CanonicalizeCommand {
         // PORT: env.syncPackageLoading(options) is the creation of the command's Skyframe
         // executor (crate::commands::query::create_skyframe_executor), which reports its own
         // errors.
+        // Java: com/google/devtools/build/lib/runtime/commands/CanonicalizeCommand.java:173 CanonicalizeCommand.exec
+        crate::commands::query::prepare_package_loading();
         let skyframe_executor = match create_skyframe_executor(env, None) {
             Ok(e) => e,
             Err(result) => return result,

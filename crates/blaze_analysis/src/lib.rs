@@ -28,6 +28,7 @@ pub mod configured_target;
 pub mod configured_target_and_data;
 pub mod configured_target_key;
 pub mod configured_target_value;
+pub mod coverage_report_value;
 pub mod dependency_kind;
 pub mod info;
 pub mod provider_map;
@@ -46,6 +47,7 @@ pub mod inconsistent_aspect_order_exception;
 pub mod aspect_context;
 
 // Agent-owned areas (DESIGN.md "Ownership").
+pub mod bazel;
 pub mod config;
 pub mod configuredtargets;
 pub mod constraints;

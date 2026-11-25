@@ -85,12 +85,23 @@ impl From<UserExecException> for RunnerError {
     }
 }
 
+/// An `io::Error` made by `sandbox_helpers::interrupted_error` is Java's `InterruptedException`
+/// (Blaze's interrupt checks); every other one, `InterruptedIOException` included, is an
+/// `IOException` (review exec-2, E2-7).
 impl From<io::Error> for RunnerError {
     fn from(e: io::Error) -> Self {
         if sandbox_helpers::is_interrupted_error(&e) {
             return RunnerError::Exec(ExecException::Interrupted);
         }
         RunnerError::Io(e)
+    }
+}
+
+/// An `InterruptedIOException` stays an I/O failure; the thread's interrupt flag is set again.
+// Java: com/google/devtools/build/lib/worker/WorkerSpawnRunner.java:695 WorkerSpawnRunner.restoreInterrupt
+fn restore_interrupt(e: &io::Error) {
+    if JavaException::is_interrupted_io_exception(e) {
+        blaze_shell::thread_interrupt::interrupt_current();
     }
 }
 
@@ -396,12 +407,10 @@ impl WorkerSpawnRunner {
                 Some(worker) => {
                     let process_outputs_stopwatch = Instant::now();
                     // Java's lockOutputFiles throws only InterruptedException; Blaze's
-                    // ExecException (the dynamic strategy's) leaves as it is.
-                    context.lock_output_files(
-                        response.exit_code,
-                        &response.output,
-                        context.get_file_out_err(),
-                    )?;
+                    // ExecException (the dynamic strategy's) leaves as it is. Java passes a null
+                    // FileOutErr here (review exec-2, E2-6).
+                    // Java: com/google/devtools/build/lib/worker/WorkerSpawnRunner.java:443 WorkerSpawnRunner.execInWorker
+                    context.lock_output_files(response.exit_code, &response.output, None)?;
                     has_output_file_lock = true;
                     (|| {
                         worker.finish_execution(&self.exec_root, outputs)?;
@@ -421,6 +430,7 @@ impl WorkerSpawnRunner {
             match finish {
                 Ok(()) => {}
                 Err(WorkerError::Io(e)) => {
+                    restore_interrupt(&e);
                     let message = ErrorMessage::builder()
                         .message("IOException while finishing worker execution:")
                         .log_file(worker.get_log_file())
@@ -442,6 +452,7 @@ impl WorkerSpawnRunner {
         let result = match result {
             Ok(r) => Ok(r),
             Err(RunnerError::Io(e)) => {
+                restore_interrupt(&e);
                 let message = "IOException during worker execution:";
                 Err(RunnerError::Exec(
                     create_user_exec_exception_with_io(&e, message, WorkerCode::BorrowFailure)
@@ -450,6 +461,7 @@ impl WorkerSpawnRunner {
             }
             Err(RunnerError::Exec(e @ (ExecException::User(_) | ExecException::Interrupted))) => {
                 let worker = worker_owner.clone();
+                let mut lock_error = None;
                 if let (Some(h), Some(worker)) = (handle.take(), worker) {
                     let is_interrupted = matches!(e, ExecException::Interrupted);
                     let r = if is_interrupted && context.speculating() {
@@ -478,17 +490,19 @@ impl WorkerSpawnRunner {
                         // If the worker has died, we take the lock to a) fail earlier and b) have
                         // a chance to let the other dynamic execution branch take over if the
                         // error can be ignored.
-                        let _ = context.lock_output_files(
-                            exit_value,
-                            &e.get_message(),
-                            context.get_file_out_err(),
-                        );
+                        // Java: com/google/devtools/build/lib/worker/WorkerSpawnRunner.java:485 WorkerSpawnRunner.execInWorker
+                        // An InterruptedException of lockOutputFiles leaves the catch block in
+                        // place of the original exception.
+                        lock_error = context
+                            .lock_output_files(exit_value, &e.get_message(), None)
+                            .err();
                     }
                     // The original exception is more important / helpful, so we ignore errors of
-                    // releasing the worker.
-                    worker_owner = None;
+                    // releasing the worker. `finally { workerOwner.setWorker(null) }`: the handle is
+                    // already taken, so the outer finally does not close it again.
+                    worker_owner.take();
                 }
-                Err(RunnerError::Exec(e))
+                Err(RunnerError::Exec(lock_error.unwrap_or(e)))
             }
             Err(other) => Err(other),
         };
@@ -498,7 +512,6 @@ impl WorkerSpawnRunner {
         if let Some(h) = handle.take() {
             // PORT: Java's close() can throw IOException ("IOException while returning a worker
             // from the pool:", BORROW_FAILURE); Blaze's returns ExecException, propagated as is.
-            let _ = &worker_owner;
             h.close()?;
         }
         result
@@ -540,6 +553,7 @@ impl WorkerSpawnRunner {
             ) {
                 Ok(()) => {}
                 Err(WorkerError::Io(e)) => {
+                    restore_interrupt(&e);
                     let message = ErrorMessage::builder()
                         .message(
                             "IOException while preparing the execution environment of a worker:",
@@ -564,9 +578,7 @@ impl WorkerSpawnRunner {
         let execution_stopwatch = Instant::now();
         // PORT: skipped, profiling (WORKER_SETUP "sending request").
         if let Err(e) = worker.put_request(request) {
-            if sandbox_helpers::is_interrupted_error(&e) {
-                blaze_shell::thread_interrupt::interrupt_current();
-            }
+            restore_interrupt(&e);
             let message = ErrorMessage::builder()
                 .message(
                     "Worker process quit or closed its stdin stream when we tried to send a WorkRequest:",
@@ -598,6 +610,7 @@ impl WorkerSpawnRunner {
                 return Err(RunnerError::Exec(ExecException::Interrupted));
             }
             Err(WorkerError::Io(e)) => {
+                restore_interrupt(&e);
                 // If protobuf or json reader couldn't parse the response, try to print whatever
                 // the failing worker wrote to stdout - it's probably a stack trace or some kind of
                 // error message that will help the user figure out why the compiler is failing.
@@ -650,43 +663,46 @@ impl WorkerSpawnRunner {
         let resource_manager = self.resource_manager.clone();
         let name = format!("AsyncFinish-Worker-{}", worker.get_worker_id());
         let _ = std::thread::Builder::new().name(name).spawn(move || {
-            resource_manager.acquire_resource_ownership();
-            let mut w = Some(worker);
-            let result: Result<(), InvalidateCause> = (|| {
-                let worker = w.as_ref().unwrap();
-                if can_cancel {
-                    let cancel_request = WorkRequest {
-                        request_id: request.request_id,
-                        cancel: true,
-                        ..Default::default()
-                    };
-                    worker
-                        .put_request(&cancel_request)
-                        .map_err(|_| InvalidateCause::Io)?;
+            // A plain Java thread: an exception reaches the default uncaught exception handler.
+            blaze_util::uncaught_exception::run_catching(move || {
+                resource_manager.acquire_resource_ownership();
+                let mut w = Some(worker);
+                let result: Result<(), InvalidateCause> = (|| {
+                    let worker = w.as_ref().unwrap();
+                    if can_cancel {
+                        let cancel_request = WorkRequest {
+                            request_id: request.request_id,
+                            cancel: true,
+                            ..Default::default()
+                        };
+                        worker
+                            .put_request(&cancel_request)
+                            .map_err(|_| InvalidateCause::Io)?;
+                    }
+                    match worker.get_response(request.request_id) {
+                        Ok(_) => Ok(()),
+                        Err(WorkerError::Interrupted) => Err(InvalidateCause::Interrupted),
+                        Err(_) => Err(InvalidateCause::Io),
+                    }
+                })();
+                match result {
+                    Ok(()) => {
+                        // Error while returning worker to the pool. Could not do anything.
+                        let _ = resource_handle.close();
+                    }
+                    Err(cause) => {
+                        // If this happens, we either can't trust the output of the worker, or we got
+                        // interrupted while handling being interrupted. In the latter case, let's stop
+                        // trying and just destroy the worker. If it's a singleplex worker, there will
+                        // be a dangling response that we don't want to keep trying to read, so we
+                        // destroy the worker.
+                        // The reaper thread can't do anything useful about errors here.
+                        let _ = resource_handle.invalidate_and_close(Some(cause));
+                        w = None;
+                    }
                 }
-                match worker.get_response(request.request_id) {
-                    Ok(_) => Ok(()),
-                    Err(WorkerError::Interrupted) => Err(InvalidateCause::Interrupted),
-                    Err(_) => Err(InvalidateCause::Io),
-                }
-            })();
-            match result {
-                Ok(()) => {
-                    // Error while returning worker to the pool. Could not do anything.
-                    let _ = resource_handle.close();
-                }
-                Err(cause) => {
-                    // If this happens, we either can't trust the output of the worker, or we got
-                    // interrupted while handling being interrupted. In the latter case, let's stop
-                    // trying and just destroy the worker. If it's a singleplex worker, there will
-                    // be a dangling response that we don't want to keep trying to read, so we
-                    // destroy the worker.
-                    // The reaper thread can't do anything useful about errors here.
-                    let _ = resource_handle.invalidate_and_close(Some(cause));
-                    w = None;
-                }
-            }
-            let _ = w;
+                let _ = w;
+            });
         });
     }
 }

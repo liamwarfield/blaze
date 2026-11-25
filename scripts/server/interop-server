@@ -4,6 +4,7 @@
 Usage:
   scripts/server/interop-server help
   scripts/server/interop-server list
+  scripts/server/interop-server selftest
   scripts/server/interop-server run [CASE...] [--probe PATH] [--bazel PATH] [--scratch DIR]
   scripts/server/interop-server run --server-binary PATH [--control] [--bazel PATH]
   scripts/server/interop-server clean [--scratch DIR]
@@ -43,12 +44,19 @@ server afterwards). Environment exactly HOME and PATH=/usr/bin:/bin; build, quer
 --repository_cache=~/.cache/blaze/repo-cache --color=no --curses=no. Each step records the
 client's true termination (`exit N` / `signal N NAME`, a timeout separately).
 Normalisation: as interop-client (scripts/server/common.py Norm.RULES; the server_javabase
-directory -> <SERVER_JAVABASE>). Per step: IDENTICAL, SAME-FAILURE (equal, but non-zero: never
-a match), DIFFERENT (unified diff), NOT-RUN; the report starts with the client's and the
-server binary's sha256, the checkout's commit and dirty state, and ends with the denominator.
-The mode runs itself in a `systemd-run --user --collect --wait --pipe -p MemoryMax=12G
--p MemorySwapMax=0` unit under scripts/remote/unit-supervisor (status recorded inside).
-Exit 0 only when no step is DIFFERENT or NOT-RUN, nothing timed out and no side failed.
+directory -> <SERVER_JAVABASE>). Per step (scripts/lib/compare_common.py classes through
+common.judge_step): IDENTICAL (termination and transcript equal; the oracle side exited 0 or
+the step declares its failure: REAL_DECLARED, `build //:fail` exit 1 and the cancelled build
+exit 8), BOTH-FAILED (an undeclared equal failure: never a match), DIFFERENT (unified diff),
+ORACLE-UNEXPECTED, SKIPPED (a step one side did not reach). An OOM kill in the unit during a
+step (the unit has OOMPolicy=continue; its oom_kill counter is read around every step) makes
+the step's termination `oom-kill`. The report starts with the client's and the server binary's
+sha256, the checkout's commit and dirty state, and ends with compare_common's footer. The mode
+runs itself in a `systemd-run --user --collect --wait --pipe -p MemoryMax=12G -p
+MemorySwapMax=0 -p OOMPolicy=continue` unit under scripts/remote/unit-supervisor (status
+recorded inside). Exit 0 only when every step is IDENTICAL, nothing timed out and no side
+failed; 2 when the server binary is the oracle (outside --control) or --bazel is not the pin.
+`selftest` drives this mode's command line with fake binaries.
 
 Both modes always shut down, and failing that kill (SIGKILL), every server they started (pid
 from <root>/*/server/server.pid.txt, only when alive and its command line names that root),
@@ -68,10 +76,12 @@ import time
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common as C  # noqa: E402
+cc = C.cc
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_PROBE = os.path.join(REPO, "target/debug/command_server_probe")
-DEFAULT_BAZEL = os.path.expanduser("~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64")
+DEFAULT_BAZEL = cc.PINNED_ORACLE
 DEFAULT_SCRATCH = os.path.expanduser("~/.cache/blaze/work/server/s3/interop")
 ORACLE_ROOT = os.path.realpath(os.path.expanduser("~/.cache/blaze/oracle-out/ur"))
 STARTING = b"Starting local Bazel server"
@@ -448,6 +458,13 @@ def cleanup(env):
 # client and its real server.
 
 REAL_WORK = os.path.join(C.SERVER_WORK, "s3", "real")
+REAL_OOM = None  # C.OomWatch, made inside the unit
+# Step title -> the oracle side's designed termination (audit 4r2, SV-2): equal on both sides is
+# IDENTICAL, the oracle ending otherwise ORACLE-UNEXPECTED; any other equal failure BOTH-FAILED.
+REAL_DECLARED = {
+    "build //:fail": "exit 1",
+    "build //:sleep, SIGINT to the client after 10s": "exit 8",
+}
 
 
 class RealSide:
@@ -461,9 +478,10 @@ class RealSide:
         self.ur = os.path.join(REAL_WORK, "ur-" + name)
         self.ws = os.path.join(REAL_WORK, "ws")
         self.env = {"HOME": C.HOME, "PATH": "/usr/bin:/bin"}
+        self.env.update(C.tripwire_env())
         paths = [(javabase, "<SERVER_JAVABASE>")] if javabase else []
         self.norm = C.Norm(self.ur, paths)
-        self.steps = []  # (title, text, failed)
+        self.steps = []  # (title, text, failed, compare_common Termination or None for a fact)
         self.timed_out = False
 
     def startup(self, extra=()):
@@ -493,15 +511,18 @@ class RealSide:
             timed_out = True
         status = C.Status(p.returncode, timed_out)
         self.timed_out |= timed_out
+        oom = REAL_OOM.delta() if REAL_OOM else 0
+        term = C.termination(status, oom)
         self.steps.append((title, "%s\n--- stdout\n%s--- stderr\n%s" % (
-            status, self.norm.text(out or b""), self.norm.stderr(err or b"")), not status.ok))
+            C.status_line(status, oom), self.norm.text(out or b""), self.norm.stderr(err or b"")),
+            not term.ok, term))
         return out or b""
 
     def run(self, title, command, args=(), startup=(), timeout=600):
         return self.finish(title, self.spawn(command, args, startup), timeout)
 
     def fact(self, title, value):
-        self.steps.append((title, "%s\n" % value, False))
+        self.steps.append((title, "%s\n" % value, False, None))
 
     def pid(self):
         return C.server_pid(self.ur)
@@ -562,12 +583,16 @@ def real_main(opts, args):
     server = os.path.abspath(opts["server_binary"])
     if not control and not os.access(server, os.X_OK):
         sys.exit("not an executable: %s" % server)
+    if not control:
+        C.refuse_oracle_as_blaze(tool, server)
     if not no_unit:
         rc = C.in_unit(tool, [os.path.abspath(__file__), "run", "--server-binary", server,
                               "--bazel", oracle] + args + ["--no-unit"],
                        os.path.join(REAL_WORK, "unit"))
         if rc is not None:
             return rc
+    global REAL_OOM
+    REAL_OOM = C.OomWatch()
     os.makedirs(REAL_WORK, exist_ok=True)
     staged = None
     javabase = os.path.join(REAL_WORK, "javabase")
@@ -615,7 +640,7 @@ def real_main(opts, args):
                 if os.path.lexists(sides[n].ur):
                     C.safe_rmtree(sides[n].ur, REAL_WORK)
             with open(os.path.join(tdir, "%s.txt" % n), "w", encoding="latin-1") as fh:
-                for title, text, _ in sides[n].steps:
+                for title, text, _, _ in sides[n].steps:
                     fh.write("=== %s\n%s" % (title, text))
             if errors:
                 break
@@ -630,33 +655,39 @@ def real_main(opts, args):
                 C.safe_rmtree(d, REAL_WORK)
         if staged:
             C.unstage_binary(staged)
-    counts = {C.IDENTICAL: 0, C.SAME_FAILURE: 0, C.DIFFERENT: 0, C.NOT_RUN: 0}
+    report = cc.Report(tool, blaze={"path": oracle if control else server,
+                                    "sha256": C.sha256_file(oracle if control else server),
+                                    "role": "server B"},
+                       oracle={"path": oracle, "sha256": C.sha256_file(oracle)},
+                       selection="--server-binary sequence%s" % (" (--control)" if control
+                                                                  else ""),
+                       tool_files=[os.path.abspath(__file__), os.path.join(HERE, "common.py")],
+                       compared="per step: the client's termination (an OOM kill in the unit "
+                                "during the step included) and the normalised transcript "
+                                "(stdout, every stderr line in order after Norm.RULES)")
     a, b = sides["A"].steps, sides["B"].steps
     for k in range(max(len(a), len(b))):
         ta = a[k] if k < len(a) else None
         tb = b[k] if k < len(b) else None
         title = (ta or tb)[0]
         if ta and tb and ta[0] != tb[0]:
-            cls = C.DIFFERENT
+            cls, detail = cc.DIFFERENT, "different steps (%r, %r)" % (ta[0], tb[0])
         else:
-            cls = C.classify(ta and ta[1], tb and tb[1], ta and ta[2], tb and tb[2])
-        counts[cls] += 1
-        print("  %-12s %s" % (cls, title))
-        if cls == C.DIFFERENT:
+            cls, detail = C.judge_step(ta, tb, REAL_DECLARED.get(title))
+        report.add(title, cls, detail)
+        print("  %-17s %s%s" % (cls, title, " (%s)" % detail if detail else ""))
+        if cls != cc.IDENTICAL and ta and tb:
             sys.stdout.writelines("    " + l + "\n" for l in difflib.unified_diff(
                 ta[1].splitlines(), tb[1].splitlines(), "A (real server)", "B (server binary)",
                 lineterm=""))
     for e in errors:
-        print("%s: ERROR %s" % (tool, e))
+        report.problem("ERROR %s" % e)
     timed = [n for n in sides if sides[n].timed_out]
     if timed:
-        print("%s: a step timed out on side %s" % (tool, ",".join(timed)))
-    print("%s: denominator: %d steps (A %d, B %d); %d identical, %d same-failure (equal "
-          "non-zero exits; not matches), %d different, %d not run; transcripts in %s" % (
-              tool, max(len(a), len(b)), len(a), len(b), counts[C.IDENTICAL],
-              counts[C.SAME_FAILURE], counts[C.DIFFERENT], counts[C.NOT_RUN], tdir))
-    ok = not errors and not timed and counts[C.DIFFERENT] == 0 and counts[C.NOT_RUN] == 0
-    return 0 if ok else 1
+        report.problem("a step timed out on side %s" % ",".join(timed))
+    report.note("steps: A %d, B %d; transcripts in %s" % (len(a), len(b), tdir))
+    report.print_footer()
+    return report.exit_code()
 
 
 def parse(argv):
@@ -679,10 +710,97 @@ def parse(argv):
     return opts, rest
 
 
+def selftest():
+    """--server-binary mode's real command line against fake binaries: the fake client switches
+    on --server_javabase, so side B's behaviour is the fake server's."""
+    st = cc.Selftest("interop-server")
+    fh = cc.FakeHome("server-interop-server")
+    me = os.path.abspath(__file__)
+    n = [0]
+
+    def fakes(a, b):
+        """The fake client: behaviour `a` without --server_javabase, `b` with it."""
+        n[0] += 1
+        ca = cc.fake_script(token=fh.token, tripfile=fh.tripfile, role="client A", **a)
+        cb = cc.fake_script(token=fh.token, tripfile=fh.tripfile, role="client B", **b)
+        body_a = "\n".join(l for l in ca.split("\n")[2:] if not l.startswith('case "$cmd" in info)'))
+        body_b = "\n".join(l for l in cb.split("\n")[2:] if not l.startswith('case "$cmd" in info)'))
+        with open(fh.oracle, "w") as f:
+            f.write("#!/bin/bash\ncase \" $* \" in *--server_javabase=*)\n%s\n;;\nesac\n%s\n"
+                    % (body_b, body_a))
+        os.chmod(fh.oracle, 0o755)
+        server = os.path.join(fh.home, "bin", "server-%d" % n[0])
+        with open(server, "w") as f:
+            f.write("#!/bin/bash\nexit 0\n# %d\n" % n[0])
+        os.chmod(server, 0o755)
+        return server
+
+    def run(server, extra=(), pin=None):
+        return fh.run_tool(me, ["run", "--server-binary", server] + list(extra), pin=pin)
+
+    def classes(rep):
+        return [r["class"] for r in (rep or {}).get("cases", [])]
+
+    def show(rc, rep):
+        return "exit %s, %s" % (rc, sorted(set(classes(rep))))
+    fail = [("//:fail", 1), ("//:sleep", 8)]
+    try:
+        srv = fakes(dict(out=b"x"), dict(out=b"x"))
+        subprocess.run([fh.oracle, "build"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        st.check("tripwire trips on a direct launch", fh.tripped())
+        if fh.tripped():
+            os.remove(fh.tripfile)
+        same = dict(out=b"x\n", err=b"INFO: x\n", when=fail)
+        srv = fakes(same, same)
+        rc, rep, log = run(srv)
+        st.check("equal, declared failures: exit 0", rc == 0 and set(classes(rep)) ==
+                 {cc.IDENTICAL}, show(rc, rep))
+        srv = fakes(same, dict(same, err=b"INFO: x\nINFO: extra\n"))
+        rc, rep, log = run(srv)
+        st.check("an extra stderr line: DIFFERENT", rc == 1 and cc.DIFFERENT in classes(rep),
+                 show(rc, rep))
+        srv = fakes(dict(out=b"x\n", code=1), dict(out=b"x\n", code=1))
+        rc, rep, log = run(srv)
+        st.check("equal undeclared failures: BOTH-FAILED, exit 1",
+                 rc == 1 and cc.BOTH_FAILED in classes(rep), show(rc, rep))
+        old = os.environ.get("COMPARE_COMMON_SELFTEST_MEMORY")
+        os.environ["COMPARE_COMMON_SELFTEST_MEMORY"] = "400M"
+        try:
+            srv = fakes(same, dict(same, alloc_mb=700))
+            rc, rep, log = run(srv)
+        finally:
+            if old is None:
+                os.environ.pop("COMPARE_COMMON_SELFTEST_MEMORY", None)
+            else:
+                os.environ["COMPARE_COMMON_SELFTEST_MEMORY"] = old
+        oom = [r for r in (rep or {}).get("cases", []) if "oom-kill" in r["detail"]]
+        st.check("an OOM kill during a step: never IDENTICAL",
+                 rc == 1 and oom and all(r["class"] == cc.DIFFERENT for r in oom),
+                 "%s; %d rows name oom-kill" % (show(rc, rep), len(oom)))
+        rc, rep, log = run(fh.oracle)
+        st.check("the oracle as the server under test refused (exit 2)", rc == 2, "exit %s" % rc)
+        rc, rep, log = run(srv, pin="0" * 64)
+        st.check("wrong oracle hash refused (exit 2)", rc == 2, "exit %s" % rc)
+        st.check("no process started outside the tool's unit", not fh.tripped(),
+                 open(fh.tripfile).read()[:200] if fh.tripped() else "")
+    except Exception as e:  # noqa: BLE001 - a crash of the selftest is a failure
+        import traceback
+        traceback.print_exc()
+        st.check("selftest ran to the end", False, "%s: %s" % (type(e).__name__, e))
+    finally:
+        if st.failures:
+            print("  (fake HOME kept for inspection: %s)" % fh.root)
+        else:
+            fh.remove()
+    return st.finish()
+
+
 def main(argv):
     if not argv or argv[0] in ("help", "--help", "-h"):
         print(__doc__)
         return 0
+    if argv[0] == "selftest":
+        return selftest()
     action, args = argv[0], argv[1:]
     opts, names = parse(args)
     if action == "list":

@@ -667,8 +667,10 @@ pub fn get_dependency_context(
 /// PORT: a file in `@_builtins` is evaluated by the bundled loader of `blaze_build_config`
 /// (Java: BZL_LOAD with `keyForBuiltins`), whose result is memoized here per
 /// `--experimental_exec_config` value, for the life of the build arena
-/// (`blaze_util::build_arena`, decision D7; the server releases it after every command, as Java's
-/// graph reset drops the BZL_LOAD node); another file is requested through BZL_LOAD
+/// (`blaze_util::build_arena`, decision D7): one command in batch mode and in the in-process
+/// server, and also one command in the persistent server, which releases the arena after every
+/// command (its graph is discarded after every command, decision D2, so Java's BZL_LOAD node
+/// would be gone too); another file is requested through BZL_LOAD
 /// (`keyForBuild`), as in Java.
 // Java: com/google/devtools/build/lib/analysis/config/StarlarkExecTransitionLoader.java:78 StarlarkExecTransitionLoader.loadStarlarkExecTransition
 pub fn load_starlark_exec_transition_provider(

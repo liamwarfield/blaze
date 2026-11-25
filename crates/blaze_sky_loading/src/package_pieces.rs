@@ -31,7 +31,6 @@ use blaze_packages::package::TargetDefinitionContext;
 use blaze_packages::package::TargetRecorder;
 use blaze_packages::target::Rule;
 use blaze_packages::target::Target;
-use blaze_skyframe::ComputeError;
 use blaze_skyframe::Environment;
 use blaze_skyframe::Interrupted;
 use blaze_skyframe::Key;
@@ -40,6 +39,7 @@ use blaze_skyframe::SkyFunctionException;
 use blaze_skyframe::SkyFunctionName;
 use blaze_skyframe::SkyKey;
 use blaze_skyframe::Transience;
+use blaze_skyframe::{ComputeError, FunctionHermeticity};
 use blaze_starlark::EvalError;
 use blaze_starlark::StarlarkSemantics;
 use blaze_starlark::error::EvalErrorKind;
@@ -67,6 +67,12 @@ impl Key for PackagePieceForBuildFileKey {
     type Value = PackagePieceValueForBuildFile;
     // Java: com/google/devtools/build/lib/packages/PackagePieceIdentifier.java:65 PackagePieceIdentifier.ForBuildFile.functionName
     const FUNCTION: SkyFunctionName = sky_functions::PACKAGE;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:56 SkyFunctions.PACKAGE (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal): `PackagePieceValue.ForBuildFile` is a
+    // `PackageoidValue`, a `NotComparableSkyValue`. Same function name as `PackageKey`, same
+    // hermeticity (Java interns one `SkyFunctionName` per name).
+    // Java: com/google/devtools/build/lib/skyframe/PackagePieceValue.java:57 PackagePieceValue.ForBuildFile
 }
 
 /// The EVAL_MACRO key (Java uses `PackagePieceIdentifier.ForMacro` itself as the key).
@@ -83,6 +89,11 @@ impl Key for EvalMacroKey {
     type Value = PackagePieceValueForMacro;
     // Java: com/google/devtools/build/lib/packages/PackagePieceIdentifier.java:131 PackagePieceIdentifier.ForMacro.functionName
     const FUNCTION: SkyFunctionName = sky_functions::EVAL_MACRO;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:62 SkyFunctions.EVAL_MACRO (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal): `PackagePieceValue.ForMacro` is a `PackageoidValue`,
+    // a `NotComparableSkyValue`.
+    // Java: com/google/devtools/build/lib/skyframe/PackagePieceValue.java:83 PackagePieceValue.ForMacro
 }
 
 /// The key of a package piece, whichever function computes it.
@@ -156,6 +167,19 @@ impl fmt::Debug for PackageDeclarationsKey {
 impl Key for PackageDeclarationsKey {
     type Value = PackageDeclarationsValue;
     const FUNCTION: SkyFunctionName = sky_functions::PACKAGE_DECLARATIONS;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:58 SkyFunctions.PACKAGE_DECLARATIONS (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: a record of the metadata (a record), the declarations (`Declarations.equals`: package
+    /// args, make env, transitive loads), the semantics and the main repository mapping. Its
+    /// purpose is to change-prune between a macro's piece and the BUILD file piece.
+    // Java: com/google/devtools/build/lib/skyframe/PackageDeclarationsValue.java:39 PackageDeclarationsValue
+    fn values_equal(old: &PackageDeclarationsValue, new: &PackageDeclarationsValue) -> bool {
+        *old.metadata == *new.metadata
+            && (Arc::ptr_eq(&old.declarations, &new.declarations)
+                || *old.declarations == *new.declarations)
+            && *old.starlark_semantics == *new.starlark_semantics
+            && old.main_repository_mapping == new.main_repository_mapping
+    }
 }
 
 /// Java `PackageDeclarationsValue`: what the pieces of a package share, from its BUILD file
@@ -190,6 +214,14 @@ impl fmt::Debug for MacroInstanceKey {
 impl Key for MacroInstanceKey {
     type Value = MacroInstanceValue;
     const FUNCTION: SkyFunctionName = sky_functions::MACRO_INSTANCE;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:64 SkyFunctions.MACRO_INSTANCE (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal). PORT: Java's record compares the `MacroInstance`
+    // (`MacroInstance.equals`: attribute values, metadata, declarations, parent, call stack, macro
+    // class by identity, ...); `MacroInstance` has no `PartialEq` yet (its attribute values hold
+    // Starlark values compared with Java's `equals`). Never equal prunes less than Java, never
+    // more.
+    // Java: com/google/devtools/build/lib/skyframe/MacroInstanceValue.java:37 MacroInstanceValue
 }
 
 /// Java `MacroInstanceValue`.
@@ -215,6 +247,13 @@ impl fmt::Debug for NonFinalizerPackagePiecesKey {
 impl Key for NonFinalizerPackagePiecesKey {
     type Value = NonFinalizerPackagePiecesValue;
     const FUNCTION: SkyFunctionName = sky_functions::NON_FINALIZER_PACKAGE_PIECES;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:66 SkyFunctions.NON_FINALIZER_PACKAGE_PIECES (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal). PORT: Java's record compares its components; the
+    // pieces, targets and exception by identity (equal only when every piece node stayed the same),
+    // the macro instances by `MacroInstance.equals` (not ported, see `MacroInstanceKey`). Never
+    // equal prunes less than Java, never more.
+    // Java: com/google/devtools/build/lib/skyframe/NonFinalizerPackagePiecesValue.java:45 NonFinalizerPackagePiecesValue
 }
 
 /// Java `NonFinalizerPackagePiecesValue`: the BUILD file piece and the pieces of all

@@ -19,7 +19,7 @@ use blaze_build_config::build_configuration_key::BuildConfigurationKey;
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_cmdline::Label;
 use blaze_packages::aspect::{Aspect, AspectClass, AspectDescriptor, AspectParameters};
-use blaze_skyframe::{Key, SkyFunctionName};
+use blaze_skyframe::{FunctionHermeticity, Key, SkyFunctionName};
 use blaze_util::check_argument;
 use indexmap::IndexMap;
 
@@ -371,6 +371,11 @@ impl fmt::Display for AspectKey {
 impl Key for AspectKey {
     type Value = AspectValue;
     const FUNCTION: SkyFunctionName = ASPECT;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:101 SkyFunctions.ASPECT (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal): Java's `AspectValue` is a `RuleConfiguredObjectValue`,
+    // a `NotComparableSkyValue`.
+    // Java: com/google/devtools/build/lib/analysis/AspectValue.java:34 AspectValue
 }
 
 impl AspectBaseKey for AspectKey {
@@ -524,6 +529,10 @@ impl fmt::Display for TopLevelAspectsKey {
 impl Key for TopLevelAspectsKey {
     type Value = TopLevelAspectsValue;
     const FUNCTION: SkyFunctionName = TOP_LEVEL_ASPECTS;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:103 SkyFunctions.TOP_LEVEL_ASPECTS (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal): Java's `TopLevelAspectsValue` has no `equals`.
+    // Java: com/google/devtools/build/lib/skyframe/TopLevelAspectsValue.java:30 TopLevelAspectsValue
 }
 
 impl AspectBaseKey for TopLevelAspectsKey {
@@ -670,6 +679,10 @@ impl fmt::Display for LoadAspectsKey {
 impl Key for LoadAspectsKey {
     type Value = LoadAspectsValue;
     const FUNCTION: SkyFunctionName = LOAD_ASPECTS;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:104 SkyFunctions.LOAD_ASPECTS (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal): Java's `LoadAspectsValue` has no `equals`.
+    // Java: com/google/devtools/build/lib/skyframe/LoadAspectsValue.java:25 LoadAspectsValue
 }
 
 /// SkyValue for `LoadAspectsKey`: the `Aspect`s of the top level aspects.

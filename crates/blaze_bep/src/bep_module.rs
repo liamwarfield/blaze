@@ -203,12 +203,11 @@ impl BuildEvent for BuildEventPost {
 }
 
 /// Where the BEP files go and what the command environment contributes.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct BepCommandContext {
     /// `DestinationRelativeTo.WORKSPACE_OR_HOME`: relative `--build_event_*_file` paths are
-    /// resolved against the workspace (or the home directory outside a workspace). A platform
-    /// path: the bytes of the internal path string (`internal_to_platform`).
-    pub workspace_or_home: std::path::PathBuf,
+    /// resolved against the workspace (`env.getWorkspace()`).
+    pub workspace_or_home: blaze_vfs::Path,
     /// `CommonCommandOptions.oomMessage`.
     pub oom_message: String,
 }
@@ -229,7 +228,7 @@ impl BuildEventStreamerBuilder {
         bep_options: &BuildEventProtocolOptions,
         bes_stream_options: &BuildEventStreamOptions,
         ctx: &BepCommandContext,
-    ) -> (Option<BepStreamer>, Vec<String>) {
+    ) -> (Option<BepStreamer>, Vec<BepTransportError>) {
         Self::from_options_with_uploader_factory(
             bep_options,
             bes_stream_options,
@@ -251,7 +250,7 @@ impl BuildEventStreamerBuilder {
         bes_stream_options: &BuildEventStreamOptions,
         ctx: &BepCommandContext,
         uploader_factory: Arc<dyn BuildEventArtifactUploaderFactory>,
-    ) -> (Option<BepStreamer>, Vec<String>) {
+    ) -> (Option<BepStreamer>, Vec<BepTransportError>) {
         let uploader_supplier = ThrowingBuildEventArtifactUploaderSupplier::new(uploader_factory);
         let bep_options = Arc::new(bep_options.clone());
         let artifact_group_namer = Arc::new(CountingArtifactGroupNamer::new());
@@ -271,10 +270,13 @@ impl BuildEventStreamerBuilder {
                     artifact_group_namer.clone(),
                     bes_stream_options.build_event_text_file_upload_mode,
                 ))),
-                Err(_) => errors.push(format!(
-                    "Unable to write to '{}'. Omitting --build_event_text_file.",
-                    bes_stream_options.build_event_text_file
-                )),
+                Err(exception) => errors.push(BepTransportError {
+                    message: format!(
+                        "Unable to write to '{}'. Omitting --build_event_text_file.",
+                        bes_stream_options.build_event_text_file
+                    ),
+                    exception,
+                }),
             }
         }
         if !bes_stream_options.build_event_binary_file.is_empty() {
@@ -290,10 +292,13 @@ impl BuildEventStreamerBuilder {
                     artifact_group_namer.clone(),
                     bes_stream_options.build_event_binary_file_upload_mode,
                 ))),
-                Err(_) => errors.push(format!(
-                    "Unable to write to '{}'. Omitting --build_event_binary_file.",
-                    bes_stream_options.build_event_binary_file
-                )),
+                Err(exception) => errors.push(BepTransportError {
+                    message: format!(
+                        "Unable to write to '{}'. Omitting --build_event_binary_file.",
+                        bes_stream_options.build_event_binary_file
+                    ),
+                    exception,
+                }),
             }
         }
         if !bes_stream_options.build_event_json_file.is_empty() {
@@ -310,10 +315,13 @@ impl BuildEventStreamerBuilder {
                     JsonFormatFileTransport::bep_type_registry(),
                     bes_stream_options.build_event_json_file_upload_mode,
                 ))),
-                Err(_) => errors.push(format!(
-                    "Unable to write to '{}'. Omitting --build_event_json_file.",
-                    bes_stream_options.build_event_json_file
-                )),
+                Err(exception) => errors.push(BepTransportError {
+                    message: format!(
+                        "Unable to write to '{}'. Omitting --build_event_json_file.",
+                        bes_stream_options.build_event_json_file
+                    ),
+                    exception,
+                }),
             }
         }
         if transports.is_empty() {
@@ -381,14 +389,29 @@ impl ThrowingBuildEventArtifactUploaderSupplier {
 }
 
 // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:1029 BuildEventOutputStreamFactoryImpl.create
-fn open_output(base: &std::path::Path, file_path: &str) -> std::io::Result<Box<dyn Write + Send>> {
-    // The option value is an internal string; `base` is a platform path.
-    let path = base.join(blaze_util::string_encoding::internal_to_platform(file_path));
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:1029 BuildEventServiceModule.BuildEventOutputStreamFactoryImpl.create
+// Java: com/google/devtools/build/lib/runtime/LocalInstrumentationOutput.java:64 LocalInstrumentationOutput.createOutputStream
+fn open_output(base: &blaze_vfs::Path, file_path: &str) -> std::io::Result<Box<dyn Write + Send>> {
+    // createInstrumentationOutput(..., DestinationRelativeTo.WORKSPACE_OR_HOME, ...,
+    // createParent=true): env.getWorkspace().getRelative(destination).
+    let path = base.get_relative(&blaze_vfs::PathFragment::create(file_path));
+    // if (createParent) path.getParentDirectory().createDirectoryAndParents();
+    if let Some(parent) = path.get_parent_directory() {
+        parent.create_directory_and_parents()?;
     }
-    let f = std::fs::File::create(&path)?;
+    // new BufferedOutputStream(path.getOutputStream())
+    let f = path.get_output_stream()?;
     Ok(Box::new(std::io::BufWriter::new(f)))
+}
+
+/// A transport that could not be created: `reportError(reporter, moduleEnvironment, message,
+/// exception, BES_LOCAL_WRITE_ERROR)` in `createBepTransports`.
+#[derive(Debug)]
+pub struct BepTransportError {
+    /// The `msg` ("Unable to write to '<file>'. Omitting --build_event_<kind>_file.").
+    pub message: String,
+    /// The `IOException` (its message is reported as an error).
+    pub exception: std::io::Error,
 }
 
 /// The streamer as an event-bus subscriber.

@@ -128,6 +128,11 @@ impl WorkerParser {
         )?;
 
         let worker_files_combined_hash = WorkerFilesHash::get_combined_hash(&worker_files);
+        // Every digest is present here: getCombinedHash fails on a null one.
+        let worker_files = worker_files
+            .into_iter()
+            .map(|(path, digest)| (path, digest.expect("checked by getCombinedHash")))
+            .collect();
 
         let protocol_format = spawns::get_worker_protocol_format(spawn)
             .map_err(|m| super::error_message::JavaException::io(m).into_io_error())?;

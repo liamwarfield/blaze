@@ -25,7 +25,8 @@ use blaze_sky_loading::io::IOException;
 use blaze_sky_loading::package_lookup::PackageLookupKey;
 use blaze_sky_loading::precomputed::STARLARK_SEMANTICS;
 use blaze_skyframe::{
-    ComputeError, Environment, Key, SkyFunctionException, SkyFunctionName, SkyKey,
+    ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionException, SkyFunctionName,
+    SkyKey,
 };
 use blaze_util::fingerprint::Fingerprint;
 use blaze_vfs::{DirentType, Path, PathFragment, Root, RootedPath};
@@ -250,6 +251,18 @@ impl fmt::Debug for DirectoryArtifactTraversalRequest {
 impl Key for DirectoryArtifactTraversalRequest {
     type Value = RecursiveFilesystemTraversalValue;
     const FUNCTION: SkyFunctionName = RECURSIVE_FILESYSTEM_TRAVERSAL;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:125 SkyFunctions.RECURSIVE_FILESYSTEM_TRAVERSAL (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: the resolved root and the resolved paths; the paths are a `NestedSet`, which has no
+    /// `equals` (identity), as `NestedSet`'s `==` here. PORT: Java's `EMPTY` singleton equals
+    /// itself; an empty value here is a new nested set each time and is not equal (less pruning).
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:621 RecursiveFilesystemTraversalValue.equals
+    fn values_equal(
+        old: &RecursiveFilesystemTraversalValue,
+        new: &RecursiveFilesystemTraversalValue,
+    ) -> bool {
+        old == new
+    }
 }
 
 /// A value that has a digest (`HasDigest`): a `FileArtifactValue` or a `ByteStringDigest`.

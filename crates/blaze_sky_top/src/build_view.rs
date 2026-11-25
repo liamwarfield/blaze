@@ -1116,3 +1116,57 @@ impl TargetLookup for SkyframeTargetLookup<'_> {
         Ok(Some((target, groups)))
     }
 }
+
+/// `BuildView.constructCoverageArtifacts`: the coverage report actions of the build (the
+/// command's `CoverageReportActionFactory`, `BlazeRuntime.getCoverageReportActionFactory`),
+/// injected into Skyframe (`SkyframeExecutor.injectCoverageReportData`), and their outputs. The
+/// wrapper is returned too: the caller registers what Java's factory registers on the event bus
+/// (the `CoverageReportCollector`).
+///
+/// PORT: Java memoizes the result in the `BuildView` (`memoizedGetCoverageArtifactsHelper`);
+/// the caller calls this once per build.
+// Java: com/google/devtools/build/lib/analysis/BuildView.java:954 BuildView.constructCoverageArtifacts
+pub fn construct_coverage_artifacts(
+    skyframe_executor: &SkyframeExecutor,
+    coverage_report_action_factory: Option<
+        &dyn blaze_analysis::test::coverage_report_action_factory::CoverageReportActionFactory,
+    >,
+    configured_targets: &[ConfiguredTarget],
+    all_targets_to_test: &[ConfiguredTarget],
+    event_handler: &dyn blaze_events::EventHandler,
+) -> (
+    Vec<blaze_actions::Artifact>,
+    Option<blaze_analysis::test::coverage_report_action_factory::CoverageReportActionsWrapper>,
+) {
+    let Some(coverage_report_action_factory) = coverage_report_action_factory else {
+        return (Vec::new(), None);
+    };
+    let services = skyframe_executor
+        .get_analysis_services()
+        .expect("IllegalStateException: the executor has no analysis services");
+    let actions_wrapper = coverage_report_action_factory.create_coverage_report_actions_wrapper(
+        event_handler,
+        &services.directories,
+        configured_targets,
+        all_targets_to_test,
+        &services.artifact_factory,
+        &services.action_key_context,
+        &blaze_analysis::coverage_report_value::CoverageReportKey::action_lookup_key(),
+        // ruleClassProvider.getRunfilesPrefix()
+        &services.directories.workspace_name,
+    );
+    let Some(actions_wrapper) = actions_wrapper else {
+        return (Vec::new(), None);
+    };
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1513 SkyframeExecutor.injectCoverageReportData
+    blaze_analysis::coverage_report_value::COVERAGE_REPORT_ACTIONS.set_on(
+        skyframe_executor.get_evaluator(),
+        blaze_analysis::coverage_report_value::CoverageReportActions(
+            actions_wrapper.get_actions().to_vec(),
+        ),
+    );
+    // ImmutableSet.copyOf(actionsWrapper.getCoverageOutputs())
+    let mut outputs: IndexSet<blaze_actions::Artifact> = IndexSet::new();
+    outputs.extend(actions_wrapper.get_coverage_outputs());
+    (outputs.into_iter().collect(), Some(actions_wrapper))
+}

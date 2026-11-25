@@ -13,18 +13,18 @@ use super::boot_class_path_info::BootClassPathInfo;
 use super::java_plugin_info::{self, JavaPluginInfo};
 
 /// `JavaSemantics.JAR.matches(filename)`.
-// Java: com/google/devtools/build/lib/rules/java/JavaSemantics.java:34 JavaSemantics.JAR
+// Java: com/google/devtools/build/lib/rules/java/JavaSemantics.java:35 JavaSemantics.JAR
 fn is_jar(filename: &str) -> bool {
     filename.ends_with(".jar")
 }
 
 /// `JavaSemantics.JAVA_SOURCE.matches(filename)`.
-// Java: com/google/devtools/build/lib/rules/java/JavaSemantics.java:33 JavaSemantics.JAVA_SOURCE
+// Java: com/google/devtools/build/lib/rules/java/JavaSemantics.java:34 JavaSemantics.JAVA_SOURCE
 fn is_java_source(filename: &str) -> bool {
     filename.ends_with(".java")
 }
 
-// Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:52 JavaTargetAttributes.checkJar
+// Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:41 JavaTargetAttributes.checkJar
 fn check_jar(class_path_entry: &Artifact) {
     if !is_jar(class_path_entry.get_filename()) {
         panic!(
@@ -35,7 +35,7 @@ fn check_jar(class_path_entry: &Artifact) {
 }
 
 /// A builder class for JavaTargetAttributes.
-// Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:59 JavaTargetAttributes.Builder
+// Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:48 JavaTargetAttributes.Builder
 pub struct JavaTargetAttributesBuilder<'v> {
     // The order of source files is important, and there must not be duplicates.
     source_files: Vec<Artifact>,
@@ -171,7 +171,7 @@ impl<'v> JavaTargetAttributesBuilder<'v> {
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:168 JavaTargetAttributes.Builder.setBootClassPath
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:174 JavaTargetAttributes.Builder.setBootClassPath
     pub fn set_boot_class_path(
         &mut self,
         boot_class_path: BootClassPathInfo<'v>,
@@ -183,7 +183,7 @@ impl<'v> JavaTargetAttributesBuilder<'v> {
         Ok(self)
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:177 JavaTargetAttributes.Builder.setSourcePath
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:184 JavaTargetAttributes.Builder.setSourcePath
     pub fn set_source_path(&mut self, artifacts: Vec<Artifact>) -> &mut Self {
         check_argument!(!self.built);
         check_argument!(self.source_path.is_empty());
@@ -191,14 +191,14 @@ impl<'v> JavaTargetAttributesBuilder<'v> {
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:185 JavaTargetAttributes.Builder.setStrictJavaDeps
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:200 JavaTargetAttributes.Builder.setStrictJavaDeps
     pub fn set_strict_java_deps(&mut self, strict_deps: StrictDepsMode) -> &mut Self {
         check_argument!(!self.built);
         self.strict_java_deps = strict_deps;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:192 JavaTargetAttributes.Builder.addDirectJars
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:216 JavaTargetAttributes.Builder.addDirectJars
     pub fn add_direct_jars(&mut self, direct_jars: &NestedSet<Artifact>) -> &mut Self {
         check_argument!(!self.built);
         check_argument!(self.prepend_direct_jars);
@@ -206,7 +206,7 @@ impl<'v> JavaTargetAttributesBuilder<'v> {
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:200 JavaTargetAttributes.Builder.addHeaderCompilationDirectJars
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:224 JavaTargetAttributes.Builder.addHeaderCompilationDirectJars
     pub fn add_header_compilation_direct_jars(
         &mut self,
         header_compilation_direct_jars: &NestedSet<Artifact>,
@@ -217,7 +217,7 @@ impl<'v> JavaTargetAttributesBuilder<'v> {
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:207 JavaTargetAttributes.Builder.addCompileTimeDependencyArtifacts
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:231 JavaTargetAttributes.Builder.addCompileTimeDependencyArtifacts
     pub fn add_compile_time_dependency_artifacts(
         &mut self,
         dependency_artifacts: &NestedSet<Artifact>,
@@ -228,35 +228,35 @@ impl<'v> JavaTargetAttributesBuilder<'v> {
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:214 JavaTargetAttributes.Builder.addMessages
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:238 JavaTargetAttributes.Builder.addMessages
     pub fn add_messages(&mut self, messages: &[Artifact]) -> &mut Self {
         check_argument!(!self.built);
         self.messages.extend(messages.iter().cloned());
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:221 JavaTargetAttributes.Builder.addResource
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:245 JavaTargetAttributes.Builder.addResource
     pub fn add_resource(&mut self, exec_path: PathFragment, resource: Artifact) -> &mut Self {
         check_argument!(!self.built);
         self.resources.insert(exec_path, resource);
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:228 JavaTargetAttributes.Builder.addResourceJars
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:252 JavaTargetAttributes.Builder.addResourceJars
     pub fn add_resource_jars(&mut self, resource_jars: &NestedSet<Artifact>) -> &mut Self {
         check_argument!(!self.built);
         self.resource_jars.add_transitive(resource_jars);
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:235 JavaTargetAttributes.Builder.addPlugin
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:259 JavaTargetAttributes.Builder.addPlugin
     pub fn add_plugin(&mut self, plugins: &JavaPluginInfo) -> &mut Self {
         check_argument!(!self.built);
         self.plugins = JavaPluginInfo::merge_without_java_outputs_pair(&self.plugins, plugins);
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:242 JavaTargetAttributes.Builder.addClassPathResources
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:266 JavaTargetAttributes.Builder.addClassPathResources
     pub fn add_class_path_resources(&mut self, class_path_resources: &[Artifact]) -> &mut Self {
         check_argument!(!self.built);
         self.class_path_resources
@@ -264,7 +264,7 @@ impl<'v> JavaTargetAttributesBuilder<'v> {
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:249 JavaTargetAttributes.Builder.addAdditionalOutputs
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:274 JavaTargetAttributes.Builder.addAdditionalOutputs
     pub fn add_additional_outputs<'a>(
         &mut self,
         outputs: impl IntoIterator<Item = &'a Artifact>,
@@ -274,7 +274,7 @@ impl<'v> JavaTargetAttributesBuilder<'v> {
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:255 JavaTargetAttributes.Builder.build
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:280 JavaTargetAttributes.Builder.build
     pub fn build(&mut self) -> JavaTargetAttributes<'v> {
         self.built = true;
         let direct_jars = self.direct_jars_builder.build();
@@ -311,7 +311,7 @@ impl<'v> JavaTargetAttributesBuilder<'v> {
         }
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:288 JavaTargetAttributes.Builder.hasSourceFiles
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:319 JavaTargetAttributes.Builder.hasSourceFiles
     pub fn has_source_files(&self) -> bool {
         !self.source_files.is_empty()
     }
@@ -319,7 +319,7 @@ impl<'v> JavaTargetAttributesBuilder<'v> {
 
 /// An object that captures the temporary state we need to pass around while the initialization
 /// hook for a java rule is running.
-// Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:47 JavaTargetAttributes
+// Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:39 JavaTargetAttributes
 #[derive(Clone)]
 pub struct JavaTargetAttributes<'v> {
     source_files: IndexSet<Artifact>,
@@ -345,7 +345,7 @@ pub struct JavaTargetAttributes<'v> {
 }
 
 impl<'v> JavaTargetAttributes<'v> {
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:383 JavaTargetAttributes.appendAdditionalTransitiveClassPathEntries
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:402 JavaTargetAttributes.appendAdditionalTransitiveClassPathEntries
     pub fn append_additional_transitive_class_path_entries(
         &self,
         additional_class_path_entries: &NestedSet<Artifact>,
@@ -357,77 +357,77 @@ impl<'v> JavaTargetAttributes<'v> {
         result
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:409 JavaTargetAttributes.getDirectJars
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:431 JavaTargetAttributes.getDirectJars
     pub fn get_direct_jars(&self) -> &NestedSet<Artifact> {
         &self.direct_jars
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:413 JavaTargetAttributes.getHeaderCompilationDirectJars
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:435 JavaTargetAttributes.getHeaderCompilationDirectJars
     pub fn get_header_compilation_direct_jars(&self) -> &NestedSet<Artifact> {
         &self.header_compilation_direct_jars
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:417 JavaTargetAttributes.getCompileTimeDependencyArtifacts
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:439 JavaTargetAttributes.getCompileTimeDependencyArtifacts
     pub fn get_compile_time_dependency_artifacts(&self) -> &NestedSet<Artifact> {
         &self.compile_time_dependency_artifacts
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:421 JavaTargetAttributes.getSourceJars
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:443 JavaTargetAttributes.getSourceJars
     pub fn get_source_jars(&self) -> &[Artifact] {
         &self.source_jars
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:425 JavaTargetAttributes.getResources
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:447 JavaTargetAttributes.getResources
     pub fn get_resources(&self) -> &IndexMap<PathFragment, Artifact> {
         &self.resources
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:429 JavaTargetAttributes.getResourceJars
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:451 JavaTargetAttributes.getResourceJars
     pub fn get_resource_jars(&self) -> &NestedSet<Artifact> {
         &self.resource_jars
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:433 JavaTargetAttributes.getMessages
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:455 JavaTargetAttributes.getMessages
     pub fn get_messages(&self) -> &[Artifact] {
         &self.messages
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:437 JavaTargetAttributes.getClassPathResources
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:459 JavaTargetAttributes.getClassPathResources
     pub fn get_class_path_resources(&self) -> &[Artifact] {
         &self.class_path_resources
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:441 JavaTargetAttributes.getAdditionalOutputs
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:463 JavaTargetAttributes.getAdditionalOutputs
     pub fn get_additional_outputs(&self) -> &IndexSet<Artifact> {
         &self.additional_outputs
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:445 JavaTargetAttributes.getCompileTimeClassPath
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:467 JavaTargetAttributes.getCompileTimeClassPath
     pub fn get_compile_time_class_path(&self) -> &NestedSet<Artifact> {
         &self.compile_time_class_path
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:449 JavaTargetAttributes.getBootClassPath
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:471 JavaTargetAttributes.getBootClassPath
     pub fn get_boot_class_path(&self) -> BootClassPathInfo<'v> {
         self.boot_class_path
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:453 JavaTargetAttributes.getSourcePath
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:475 JavaTargetAttributes.getSourcePath
     pub fn get_source_path(&self) -> &[Artifact] {
         &self.source_path
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:457 JavaTargetAttributes.plugins
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:479 JavaTargetAttributes.plugins
     pub fn plugins(&self) -> &JavaPluginInfo {
         &self.plugins
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:461 JavaTargetAttributes.getSourceFiles
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:483 JavaTargetAttributes.getSourceFiles
     pub fn get_source_files(&self) -> &IndexSet<Artifact> {
         &self.source_files
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:465 JavaTargetAttributes.hasResources
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:487 JavaTargetAttributes.hasResources
     pub fn has_resources(&self) -> bool {
         !self.resources.is_empty()
             || !self.messages.is_empty()
@@ -435,17 +435,17 @@ impl<'v> JavaTargetAttributes<'v> {
             || !self.resource_jars.is_empty()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:472 JavaTargetAttributes.getTargetLabel
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:494 JavaTargetAttributes.getTargetLabel
     pub fn get_target_label(&self) -> Option<&Label> {
         self.target_label.as_ref()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:477 JavaTargetAttributes.getInjectingRuleKind
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:499 JavaTargetAttributes.getInjectingRuleKind
     pub fn get_injecting_rule_kind(&self) -> Option<&str> {
         self.injecting_rule_kind.as_deref()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:481 JavaTargetAttributes.getStrictJavaDeps
+    // Java: com/google/devtools/build/lib/rules/java/JavaTargetAttributes.java:503 JavaTargetAttributes.getStrictJavaDeps
     pub fn get_strict_java_deps(&self) -> StrictDepsMode {
         self.strict_java_deps
     }

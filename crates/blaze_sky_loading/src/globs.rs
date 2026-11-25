@@ -17,7 +17,9 @@ use std::fmt;
 use blaze_cmdline::PackageIdentifier;
 use blaze_packages::build::unix_glob;
 use blaze_packages::package::GlobberOperation;
-use blaze_skyframe::{ComputeError, Environment, Key, SkyFunctionException, SkyFunctionName};
+use blaze_skyframe::{
+    ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionException, SkyFunctionName,
+};
 use blaze_vfs::{DirentType, PathFragment, Root, RootedPath};
 
 use crate::directory_listing::DirectoryListingKey;
@@ -188,6 +190,13 @@ impl fmt::Debug for GlobsKey {
 impl Key for GlobsKey {
     type Value = GlobsValue;
     const FUNCTION: SkyFunctionName = sky_functions::GLOBS;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:55 SkyFunctions.GLOBS (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: the set of matches.
+    // Java: com/google/devtools/build/lib/skyframe/GlobsValue.java:48 GlobsValue.equals
+    fn values_equal(old: &GlobsValue, new: &GlobsValue) -> bool {
+        old == new
+    }
 }
 
 /// Tagged union of possible errors that can be accepted while globbing (Java `GlobError`). Both

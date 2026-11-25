@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use blaze_actions::analysis::actions::lazy_write_nested_set_of_tuple_action::LazyWriteNestedSetOfTupleAction;
 use blaze_actions::analysis::runfiles_support::RunfilesSupport;
 use blaze_actions::{ActionOwner, Artifact};
 use blaze_build_config::fragments::test_configuration::TestConfiguration;
@@ -20,7 +21,7 @@ use starlark::values::OwnedFrozenValue;
 
 use crate::info::downcast_info;
 use crate::platform::platform_info::PlatformInfo;
-use crate::providers::file_provider::FilesToRunProvider;
+use crate::providers::file_provider::{FilesToRunProvider, RunfilesProvider};
 use crate::providers::package_specification_provider::PackageSpecificationProvider;
 use crate::rule::config_util;
 use crate::rule::prerequisite_artifacts::PrerequisiteArtifacts;
@@ -28,6 +29,7 @@ use crate::rule::rule_configured_target_builder::allowlist;
 use crate::rule::rule_context::{DEFAULT_TEST_RUNNER_EXEC_GROUP_NAME, RuleContext};
 use crate::rule::rule_error_consumer::RuleErrorConsumer;
 use crate::test::execution_info::ExecutionInfo;
+use crate::test::instrumented_file_manifest_action::InstrumentedFileManifestAction;
 use crate::test::instrumented_files_info::InstrumentedFilesInfo;
 use crate::test::test_provider::{CoverageParams, TestOutput, TestParams};
 use crate::test::test_runner_action::{TestRunnerAction, TestRunnerActionArgs};
@@ -40,25 +42,15 @@ use crate::toolchains::toolchain_context::ToolchainContext;
 const TEST_XML_IS_ACTION_OUTPUT: bool = true;
 
 // Java: com/google/devtools/build/lib/analysis/test/TestActionBuilder.java:67 TestActionBuilder.CC_CODE_COVERAGE_SCRIPT
-// PORT: used by the coverage branch of createTestAction (not ported yet).
-#[allow(dead_code)]
 const CC_CODE_COVERAGE_SCRIPT: &str = "CC_CODE_COVERAGE_SCRIPT";
 // Java: com/google/devtools/build/lib/analysis/test/TestActionBuilder.java:68 TestActionBuilder.LCOV_MERGER
-// PORT: used by the coverage branch of createTestAction (not ported yet).
-#[allow(dead_code)]
 const LCOV_MERGER: &str = "LCOV_MERGER";
 // The coverage tool Bazel uses to generate a code coverage report for C++.
 // Java: com/google/devtools/build/lib/analysis/test/TestActionBuilder.java:70 TestActionBuilder.BAZEL_CC_COVERAGE_TOOL
-// PORT: used by the coverage branch of createTestAction (not ported yet).
-#[allow(dead_code)]
 const BAZEL_CC_COVERAGE_TOOL: &str = "BAZEL_CC_COVERAGE_TOOL";
 // Java: com/google/devtools/build/lib/analysis/test/TestActionBuilder.java:71 TestActionBuilder.GCOV_TOOL
-// PORT: used by the coverage branch of createTestAction (not ported yet).
-#[allow(dead_code)]
 const GCOV_TOOL: &str = "GCOV";
 // Java: com/google/devtools/build/lib/analysis/test/TestActionBuilder.java:75 TestActionBuilder.COVERAGE_REPORTED_TO_ACTUAL_SOURCES_FILE
-// PORT: used by the coverage branch of createTestAction (not ported yet).
-#[allow(dead_code)]
 const COVERAGE_REPORTED_TO_ACTUAL_SOURCES_FILE: &str = "COVERAGE_REPORTED_TO_ACTUAL_SOURCES_FILE";
 
 /// Helper class to create test actions.
@@ -334,23 +326,136 @@ impl<'a> TestActionBuilder<'a> {
         inputs_builder.add(test_xml_generator_executable.clone());
 
         let mut collect_coverage_script: Option<Arc<FilesToRunProvider>> = None;
-        let coverage_test_env: BTreeMap<String, String> = BTreeMap::new();
+        let mut coverage_test_env: BTreeMap<String, String> = BTreeMap::new();
 
         let runs_per_test = Self::get_runs_per_test(rule_context);
         let shard_count = Self::get_shard_count(rule_context);
 
-        let lcov_merger_files_to_run: NestedSet<Artifact> =
+        let mut lcov_merger_files_to_run: NestedSet<Artifact> =
             NestedSetBuilder::empty_set(Order::STABLE_ORDER);
 
         let execution_settings = if collect_code_coverage {
-            let _ = (
-                &mut collect_coverage_script,
-                &coverage_test_env,
-                self.instrumented_files_info(),
+            let instrumented_files = self
+                .instrumented_files_info()
+                .expect("collectCodeCoverage implies instrumentedFiles != null");
+            let script = rule_context
+                .get_prerequisite("$collect_coverage_script")
+                .and_then(|t| crate::configuredtargets::get_files_to_run_provider(&t))
+                .expect("NullPointerException: $collect_coverage_script FilesToRunProvider");
+            inputs_builder.add_transitive(script.get_files_to_run());
+            collect_coverage_script = Some(script);
+            inputs_builder.add_transitive(instrumented_files.get_coverage_support_files());
+            // Add instrumented file manifest artifact to the list of inputs. This file will
+            // contain exec paths of all source files that should be included into the code
+            // coverage output.
+            let metadata_files = instrumented_files.get_instrumentation_metadata_files();
+            inputs_builder.add_transitive(metadata_files);
+            inputs_builder.add_transitive(&PrerequisiteArtifacts::nested_set(
+                rule_context.get_rule_prerequisites_collection(),
+                ":coverage_support",
+            ));
+            inputs_builder.add_transitive(
+                &rule_context
+                    .get_prerequisite_provider::<RunfilesProvider>(":coverage_support")
+                    .expect("NullPointerException: :coverage_support RunfilesProvider")
+                    .get_data_runfiles()
+                    .get_all_artifacts(),
             );
-            // PORT: coverage collection (collect_coverage.sh, lcov merger,
-            // InstrumentedFileManifestAction, LazyWriteNestedSetOfTupleAction) is not ported.
-            blaze_util::unported!("TestActionBuilder.createTestAction (--collect_code_coverage)");
+
+            if rule_context.is_attr_defined("$collect_cc_coverage", Type::Label) {
+                let collect_cc_coverage = rule_context
+                    .get_prerequisite_artifact("$collect_cc_coverage")
+                    .expect("NullPointerException: $collect_cc_coverage");
+                coverage_test_env.insert(
+                    CC_CODE_COVERAGE_SCRIPT.to_owned(),
+                    collect_cc_coverage.get_exec_path_string().to_owned(),
+                );
+                inputs_builder.add(collect_cc_coverage);
+            }
+
+            if !instrumented_files
+                .get_reported_to_actual_sources()
+                .is_empty()
+            {
+                let reported_to_actual_sources_artifact = rule_context
+                    .get_unique_directory_artifact(
+                        "_coverage_helpers",
+                        "reported_to_actual_sources.txt",
+                    );
+                rule_context.register_action(Arc::new(LazyWriteNestedSetOfTupleAction::new(
+                    rule_context.get_action_owner(),
+                    reported_to_actual_sources_artifact.clone(),
+                    instrumented_files.get_reported_to_actual_sources().clone(),
+                    ":",
+                )));
+                coverage_test_env.insert(
+                    COVERAGE_REPORTED_TO_ACTUAL_SOURCES_FILE.to_owned(),
+                    reported_to_actual_sources_artifact
+                        .get_exec_path_string()
+                        .to_owned(),
+                );
+                inputs_builder.add(reported_to_actual_sources_artifact);
+            }
+
+            // lcov is the default CC coverage tool unless otherwise specified on the command
+            // line.
+            coverage_test_env.insert(BAZEL_CC_COVERAGE_TOOL.to_owned(), GCOV_TOOL.to_owned());
+
+            // We don't add this attribute to non-supported test target
+            let lcov_merger_attr = if rule_context.is_attr_defined(":lcov_merger", Type::Label) {
+                Some(":lcov_merger")
+            } else if rule_context.is_attr_defined("$lcov_merger", Type::Label) {
+                Some("$lcov_merger")
+            } else {
+                None
+            };
+            if let Some(lcov_merger_attr) = lcov_merger_attr {
+                let lcov_merger = rule_context
+                    .get_prerequisite(lcov_merger_attr)
+                    .expect("NullPointerException: the LCOV merger");
+                let lcov_files_to_run =
+                    crate::configuredtargets::get_files_to_run_provider(&lcov_merger);
+                // Both executable targets and single artifacts have a FilesToRunProvider.
+                let Some(lcov_files_to_run) = lcov_files_to_run else {
+                    rule_context.attribute_error(
+                        lcov_merger_attr,
+                        "the LCOV merger should be either an executable or a single artifact",
+                    );
+                    panic!("NullPointerException: lcovFilesToRun");
+                };
+                coverage_test_env.insert(
+                    LCOV_MERGER.to_owned(),
+                    lcov_files_to_run
+                        .get_executable()
+                        .expect("NullPointerException: lcovFilesToRun.getExecutable()")
+                        .get_exec_path_string()
+                        .to_owned(),
+                );
+                inputs_builder.add_transitive(lcov_files_to_run.get_files_to_run());
+                lcov_merger_files_to_run = lcov_files_to_run.get_files_to_run().clone();
+            }
+
+            let instrumented_file_manifest =
+                InstrumentedFileManifestAction::get_instrumented_file_manifest(
+                    rule_context,
+                    instrumented_files.get_instrumented_files(),
+                    metadata_files,
+                );
+            let execution_settings = TestTargetExecutionSettings::new(
+                rule_context,
+                runfiles_support,
+                executable.clone(),
+                Some(instrumented_file_manifest.clone()),
+                shard_count,
+                runs_per_test,
+                execution_platform.as_deref(),
+            );
+            inputs_builder.add(instrumented_file_manifest);
+            // TODO(ulfjack): Is this even ever set? If yes, does this cost us a lot of memory?
+            for (k, v) in instrumented_files.get_coverage_environment() {
+                coverage_test_env.insert(k.clone(), v.clone());
+            }
+            execution_settings
         } else {
             TestTargetExecutionSettings::new(
                 rule_context,
@@ -375,7 +480,7 @@ impl<'a> TestActionBuilder<'a> {
         let shard_runs = if shard_count > 0 { shard_count } else { 1 };
         let mut results: Vec<Artifact> =
             Vec::with_capacity((runs_per_test * shard_runs).max(0) as usize);
-        let coverage_artifacts: Vec<Artifact> = Vec::new();
+        let mut coverage_artifacts: Vec<Artifact> = Vec::new();
         let mut test_outputs: Vec<TestOutput> = Vec::new();
 
         // Use 1-based indices for user friendliness.
@@ -414,9 +519,22 @@ impl<'a> TestActionBuilder<'a> {
                     &root,
                 );
 
-                let coverage_artifact: Option<Artifact> = None;
-                let coverage_directory: Option<Artifact> = None;
-                // (collect_code_coverage is false here; see above.)
+                let mut coverage_artifact: Option<Artifact> = None;
+                let mut coverage_directory: Option<Artifact> = None;
+                if collect_code_coverage {
+                    let artifact = rule_context.get_package_relative_artifact(
+                        &dir.get_relative(&PathFragment::create("coverage.dat")),
+                        &root,
+                    );
+                    coverage_artifacts.push(artifact.clone());
+                    coverage_artifact = Some(artifact);
+                    if test_configuration.fetch_all_coverage_outputs() {
+                        coverage_directory = Some(rule_context.get_package_relative_tree_artifact(
+                            &dir.get_relative(&PathFragment::create("_coverage")),
+                            &root,
+                        ));
+                    }
+                }
 
                 let undeclared_outputs_dir = rule_context.get_package_relative_tree_artifact(
                     &dir.get_relative(&PathFragment::create("test.outputs")),

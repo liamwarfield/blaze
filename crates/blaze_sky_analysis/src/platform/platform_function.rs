@@ -144,7 +144,7 @@ fn platform_value_of(
         constraints,
         has_parsed_flags: parsed_flags.is_some(),
         parsed_flags,
-        platform_info: Some(blaze_build_config::platform::OpaquePlatformInfo(
+        platform_info: Some(blaze_build_config::platform::OpaquePlatformInfo::new(
             platform_info.clone(),
         )),
     }

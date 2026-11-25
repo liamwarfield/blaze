@@ -4,9 +4,11 @@
 //! PORT: Bazel installs `BugReport`'s handler (`BlazeRuntime.setupUncaughtHandlerAtStartup`,
 //! then `newRuntime`), whose `handleCrash` logs, notifies the modules (`blazeShutdownOnCrash`),
 //! writes the exit code for the client and halts the JVM. `blaze_runtime` installs that handler
-//! with [`set_uncaught_exception_handler`]; until it does (and in this crate's own tests and
-//! probe), the default handler prints the panic to stderr (the server's `jvm.out`) and halts
-//! with `BLAZE_INTERNAL_ERROR` (37), never leaving a server whose command died behind.
+//! with [`set_uncaught_exception_handler`], which is the process's default handler
+//! (`blaze_util::uncaught_exception`, also used by the threads of the crates below this one);
+//! until it does (and in this crate's own tests and probe), a panic that escapes a server
+//! thread is printed to stderr (the server's `jvm.out`) and halts with `BLAZE_INTERNAL_ERROR`
+//! (37), never leaving a server whose command died behind.
 //!
 //! A Rust thread has no uncaught-exception handler: the threads of this crate whose Java
 //! counterparts are plain threads or a `ThreadPoolExecutor` (whose `execute`d tasks' exceptions
@@ -16,32 +18,20 @@
 //! their future instead, so they are not wrapped.
 
 use std::any::Any;
-use std::sync::{Arc, LazyLock};
 
 use blaze_util::exit_code::ExitCode;
-use parking_lot::RwLock;
+use blaze_util::uncaught_exception::CrashContextKind;
 
-/// A handler for a panic that escaped a server thread. It must not return normally if the
-/// process cannot continue.
-pub type UncaughtExceptionHandler = Arc<dyn Fn(&str) + Send + Sync>;
-
-static HANDLER: LazyLock<RwLock<Option<UncaughtExceptionHandler>>> =
-    LazyLock::new(|| RwLock::new(None));
-
-/// `Thread.setDefaultUncaughtExceptionHandler` for the threads this crate starts.
-pub fn set_uncaught_exception_handler(handler: UncaughtExceptionHandler) {
-    *HANDLER.write() = Some(handler);
-}
+/// A handler for a panic that escaped a thread (see `blaze_util::uncaught_exception`).
+pub use blaze_util::uncaught_exception::UncaughtExceptionHandler;
 
 /// The panic message of `payload`.
-pub fn panic_message(payload: &(dyn Any + Send)) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        s.to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "<non-string panic payload>".to_string()
-    }
+pub use blaze_util::uncaught_exception::panic_message;
+
+/// `Thread.setDefaultUncaughtExceptionHandler`: for the threads this crate starts and for every
+/// other thread body run through `blaze_util::uncaught_exception::run_catching`.
+pub fn set_uncaught_exception_handler(handler: UncaughtExceptionHandler) {
+    blaze_util::uncaught_exception::set_default_uncaught_exception_handler(handler);
 }
 
 /// Runs `body`, the whole body of a thread; a panic that escapes it is an uncaught exception
@@ -55,9 +45,8 @@ pub fn run_catching(body: impl FnOnce()) {
 /// Handles a panic that escaped a server thread.
 pub fn handle_uncaught_exception(payload: &(dyn Any + Send)) {
     let message = panic_message(payload);
-    let handler = HANDLER.read().clone();
-    match handler {
-        Some(handler) => handler(&message),
+    match blaze_util::uncaught_exception::get_default_uncaught_exception_handler() {
+        Some(handler) => handler(&message, CrashContextKind::Halt),
         None => {
             let thread = std::thread::current();
             eprintln!(

@@ -40,10 +40,13 @@ fn errorf(msg: String) -> starlark::Error {
     starlark::Error::new_other(anyhow::anyhow!("{msg}"))
 }
 
-/// An element of `reported_to_actual_sources` (Java: a Starlark `Tuple` of two strings).
+/// An element of `reported_to_actual_sources` (Java: a Starlark `Tuple`).
 ///
-/// PORT: Java keeps the Starlark tuples; their elements are strings, kept here as Rust data.
-pub type ReportedToActualSource = (String, String);
+/// PORT: Java keeps the Starlark tuples; the only reader is `LazyWriteNestedSetOfTupleAction`
+/// (`TestActionBuilder`), whose `Tuple` keeps what it reads of each (`String.valueOf` of the
+/// elements and the repr).
+pub type ReportedToActualSource =
+    blaze_actions::analysis::actions::lazy_write_nested_set_of_tuple_action::Tuple;
 
 /// An implementation class for the InstrumentedFilesProvider interface.
 // Java: com/google/devtools/build/lib/analysis/test/InstrumentedFilesInfo.java:31 InstrumentedFilesInfo
@@ -258,6 +261,11 @@ struct InstrumentedFilesInfoBuilder<'a> {
     reported_to_actual_sources: NestedSet<ReportedToActualSource>,
     local_sources: Option<NestedSet<Artifact>>,
     local_baseline_coverage_artifacts: Option<Vec<Artifact>>,
+    /// `ruleContext.registerAction`. PORT: inside a Starlark rule implementation
+    /// (`coverage_common.instrumented_files_info`) the action joins the thread's ordered action
+    /// list (`thread_payload::register_action`), so it keeps its place among the actions the
+    /// implementation registered before and after it.
+    registrar: Option<&'a dyn Fn(blaze_actions::ActionRef)>,
 }
 
 impl<'a> InstrumentedFilesInfoBuilder<'a> {
@@ -279,6 +287,7 @@ impl<'a> InstrumentedFilesInfoBuilder<'a> {
             reported_to_actual_sources,
             local_sources: None,
             local_baseline_coverage_artifacts: None,
+            registrar: None,
         }
     }
 
@@ -333,9 +342,20 @@ impl<'a> InstrumentedFilesInfoBuilder<'a> {
                         self.baseline_coverage_artifacts_builder.add_all(files);
                     }
                     None => {
-                        let _ = self.rule_context;
-                        // PORT: BaselineCoverageAction is not ported.
-                        blaze_util::unported!("BaselineCoverageAction.create");
+                        let baseline_coverage_action =
+                            crate::test::baseline_coverage_action::BaselineCoverageAction::create(
+                                self.rule_context,
+                                local_sources.clone(),
+                            );
+                        let primary_output =
+                            blaze_actions::Action::get_primary_output(&baseline_coverage_action);
+                        let action: blaze_actions::ActionRef =
+                            std::sync::Arc::new(baseline_coverage_action);
+                        match self.registrar {
+                            Some(register) => register(action),
+                            None => self.rule_context.register_action(action),
+                        }
+                        self.baseline_coverage_artifacts_builder.add(primary_output);
                     }
                 }
             }
@@ -417,6 +437,32 @@ impl InstrumentedFilesCollector {
         additional_metadata: Option<Vec<Artifact>>,
         baseline_coverage_files: Option<Vec<Artifact>>,
     ) -> OwnedFrozenValue {
+        Self::collect_full_with_registrar(
+            rule_context,
+            spec,
+            coverage_support_files,
+            coverage_environment,
+            reported_to_actual_sources,
+            additional_metadata,
+            baseline_coverage_files,
+            None,
+        )
+    }
+
+    /// [`Self::collect_full`] with the `registerAction` of a Starlark rule implementation (see
+    /// `InstrumentedFilesInfoBuilder::registrar`).
+    // Java: com/google/devtools/build/lib/analysis/test/InstrumentedFilesCollector.java:108 InstrumentedFilesCollector.collect
+    #[allow(clippy::too_many_arguments)]
+    pub fn collect_full_with_registrar(
+        rule_context: &RuleContext,
+        spec: &InstrumentationSpec,
+        coverage_support_files: &NestedSet<Artifact>,
+        coverage_environment: &IndexMap<String, String>,
+        reported_to_actual_sources: NestedSet<ReportedToActualSource>,
+        additional_metadata: Option<Vec<Artifact>>,
+        baseline_coverage_files: Option<Vec<Artifact>>,
+        registrar: Option<&dyn Fn(blaze_actions::ActionRef)>,
+    ) -> OwnedFrozenValue {
         let configuration = rule_context.get_configuration();
         if !config_util::is_code_coverage_enabled(configuration) {
             return empty_instrumented_files_info();
@@ -427,6 +473,7 @@ impl InstrumentedFilesCollector {
             coverage_support_files,
             reported_to_actual_sources,
         );
+        builder.registrar = registrar;
 
         for dep in Self::get_prerequisites_for_attributes(rule_context, &spec.dependency_attributes)
         {
@@ -579,17 +626,11 @@ fn reported_to_actual_sources_of(v: Value) -> starlark::Result<NestedSet<Reporte
                 x.get_type()
             ))
         })?;
-        let items = t.content();
-        match (
-            items.first().and_then(|v| v.unpack_str()),
-            items.get(1).and_then(|v| v.unpack_str()),
-        ) {
-            (Some(a), Some(b)) if items.len() == 2 => Ok((a.to_owned(), b.to_owned())),
-            _ => blaze_util::unported!(
-                "CoverageCommon.instrumentedFilesInfo",
-                "reported_to_actual_sources elements other than (string, string)"
-            ),
-        }
+        // String.valueOf(element) of each element (Starlark `str`), and Starlark.repr(tuple).
+        Ok(ReportedToActualSource::new(
+            t.content().iter().map(|v| v.to_str()).collect(),
+            x.to_repr(),
+        ))
     })
 }
 
@@ -685,6 +726,7 @@ fn coverage_common_methods(builder: &mut MethodsBuilder) {
                 })?;
         let handle = starlark_rule_context.get_rule_context();
         let rule_context = handle.borrow();
+        let eval_ref: &Evaluator = eval;
         let info = create_instrumented_files_info(
             &rule_context,
             &source_attributes,
@@ -695,6 +737,12 @@ fn coverage_common_methods(builder: &mut MethodsBuilder) {
             Some(metadata),
             reported,
             baseline_coverage_files_list,
+            &|action| {
+                // ruleContext.registerAction from inside the rule implementation.
+                if let Err(e) = crate::starlark::thread_payload::register_action(eval_ref, action) {
+                    panic!("IllegalStateException: {e}");
+                }
+            },
         );
         Ok(eval.heap().access_owned_frozen_value(&info))
     }
@@ -754,6 +802,7 @@ fn create_instrumented_files_info(
     metadata_files: Option<Vec<Artifact>>,
     reported_to_actual_sources: NestedSet<ReportedToActualSource>,
     baseline_coverage_files: Option<Vec<Artifact>>,
+    registrar: &dyn Fn(blaze_actions::ActionRef),
 ) -> OwnedFrozenValue {
     let mut file_type_set = FileTypeSet::AnyFile;
     if let Some(extensions) = extensions {
@@ -770,7 +819,7 @@ fn create_instrumented_files_info(
     let instrumentation_spec = InstrumentationSpec::new(file_type_set)
         .with_source_attributes(source_attributes)
         .with_dependency_attributes(dependency_attributes);
-    InstrumentedFilesCollector::collect_full(
+    InstrumentedFilesCollector::collect_full_with_registrar(
         rule_context,
         &instrumentation_spec,
         /* coverage_support_files= */ &support_files,
@@ -778,6 +827,7 @@ fn create_instrumented_files_info(
         /* reported_to_actual_sources= */ reported_to_actual_sources,
         /* additional_metadata= */ metadata_files,
         /* baseline_coverage_files= */ baseline_coverage_files,
+        Some(registrar),
     )
 }
 

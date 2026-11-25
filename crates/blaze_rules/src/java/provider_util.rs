@@ -13,7 +13,7 @@ use super::java_semantics::RULES_JAVA_PROVIDER_LABELS_PREFIX;
 
 /// Java `StarlarkProviderWrapper.getKey()` of a wrapper constructed with
 /// `keyForBuild(Label.parseCanonicalUnchecked(bzl))` and the provider `name`.
-// Java: com/google/devtools/build/lib/packages/StarlarkProviderWrapper.java:47 StarlarkProviderWrapper.<init>
+// Java: com/google/devtools/build/lib/packages/StarlarkProviderWrapper.java:39 StarlarkProviderWrapper.<init>
 pub fn starlark_provider_key(bzl: &str, name: &str) -> ProviderKey {
     ProviderKey::Starlark {
         extension_label: Label::parse_canonical_unchecked(bzl),

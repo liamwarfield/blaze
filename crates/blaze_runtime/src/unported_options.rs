@@ -49,13 +49,14 @@ pub(crate) fn check_unported_options(command: &CommandAnnotation, options: &Opti
 
     // RemoteModule.beforeCommand: the remote cache, remote execution, the disk cache and the
     // remote output service act on the actions a command executes; the remote downloader on the
-    // repositories a command fetches. `build` and `test` run the remote module
+    // repositories a command fetches. `build`, `test` and `coverage` run the remote module
     // (crate::commands::build); the other commands that execute actions do not yet.
     // Java: com/google/devtools/build/lib/remote/RemoteModule.java:403 RemoteModule.beforeCommand
     if let Some(remote_options) = options.get_options::<RemoteOptions>() {
         // Strings.isNullOrEmpty
         let set = |value: &Option<String>| value.as_ref().is_some_and(|v| !v.is_empty());
-        let runs_remote_module = command_name == "build" || command_name == "test";
+        let runs_remote_module =
+            command_name == "build" || command_name == "test" || command_name == "coverage";
         if command.build_phase.executes() && !runs_remote_module {
             if set(&remote_options.remote_cache) {
                 blaze_util::unported!("RemoteModule.beforeCommand", "--remote_cache");
@@ -101,7 +102,7 @@ pub(crate) fn check_unported_options(command: &CommandAnnotation, options: &Opti
     // The Build Event Protocol of the commands whose build events are not posted yet (the
     // module streams them: crate::bazel_modules::BazelBuildEventServiceModule).
     // Java: com/google/devtools/build/lib/buildeventservice/BazelBuildEventServiceModule.java:189 BazelBuildEventServiceModule.ALLOWED_COMMANDS
-    if matches!(command_name, "coverage" | "mobile-install")
+    if matches!(command_name, "mobile-install")
         && let Some(o) = options.get_options::<BuildEventStreamOptions>()
         && (!o.build_event_text_file.is_empty()
             || !o.build_event_binary_file.is_empty()

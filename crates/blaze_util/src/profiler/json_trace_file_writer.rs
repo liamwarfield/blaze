@@ -22,13 +22,14 @@ pub enum ProfileOutputStream {
 }
 
 impl ProfileOutputStream {
-    /// `new GZIPOutputStream(stream)`: the header Java writes (no name, mtime 0, OS byte 0) and
+    /// `new GZIPOutputStream(stream)`: the header Java writes (no name, mtime 0, OS byte 255,
+    /// "unknown": `java.util.zip.GZIPOutputStream.writeHeader`, `OS_UNKNOWN`) and
     /// `Deflater.DEFAULT_COMPRESSION` (zlib level 6).
     pub fn gzip(stream: Box<dyn Write + Send>) -> Self {
         ProfileOutputStream::Gzip(
             flate2::GzBuilder::new()
                 .mtime(0)
-                .operating_system(0)
+                .operating_system(255)
                 .write(stream, flate2::Compression::default()),
         )
     }

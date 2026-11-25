@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use blaze_cmdline::RepositoryName;
 use blaze_cmdline::label_constants::EXTERNAL_REPOSITORY_LOCATION;
-use blaze_skyframe::{ComputeError, Environment, Key, SkyFunctionException, SkyFunctionName};
+use blaze_skyframe::{
+    ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionException, SkyFunctionName,
+};
 use blaze_vfs::{Path, RootedPath};
 use parking_lot::RwLock;
 
@@ -46,6 +48,13 @@ impl fmt::Debug for FileStateKey {
 impl Key for FileStateKey {
     type Value = FileStateValue;
     const FUNCTION: SkyFunctionName = sky_functions::FILE_STATE;
+    // Java: com/google/devtools/build/lib/vfs/FileStateKey.java:26 FileStateKey.FILE_STATE (createNonHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
+    /// Java: each `FileStateValue` subclass's `equals` (digest and size, proxy and size, proxy, any directory, link target, any nonexistent); one enum variant per subclass.
+    // Java: com/google/devtools/build/lib/actions/FileStateValue.java:335 FileStateValue.RegularFileStateValueWithDigest.equals
+    fn values_equal(old: &FileStateValue, new: &FileStateValue) -> bool {
+        old == new
+    }
 }
 
 /// The action to take when an external path is encountered. See [`FileType`] for the definition

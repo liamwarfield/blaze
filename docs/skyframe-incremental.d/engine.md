@@ -42,37 +42,39 @@ versions, the non-incremental entry, deletion without traversal, `graph.remove` 
 | Where | Java | Deviation and why |
 | --- | --- | --- |
 | `in_memory_graph.rs:43` `DoneEntry` | `NodeEntry.getValueMaybeWithMetadata` | A done node's value is kept as an immutable snapshot (`Arc<DoneEntry>`, refreshed at `setValue`, `markClean`, `markDirty`): a request clones one `Arc` under the node lock, nothing per dep list. |
-| `in_memory_graph.rs:150-162` `owner`, `outcome`, `cycle_rdeps` | — | Blocking engine: the owning thread (wait-for graph), how the node ended in this evaluation (what waiters wait for; set after the parents were signalled), requesters that closed a cycle through it. A node that ends "undone" keeps its entry evaluating (in flight) as in Java. |
-| `in_memory_graph.rs:242`, `:317`, `:359` | `InMemoryGraphImpl` | Sharded map; `getAllNodeEntries` is a copy; `parallelForEach` sequential; no interning. |
+| `in_memory_graph.rs:150-163` `owner`, `outcome`, `cycle_rdeps` | — | Blocking engine: the owning thread (wait-for graph), how the node ended in this evaluation (what waiters wait for; set after the parents were signalled), requesters that closed a cycle through it. A node that ends "undone" keeps its entry evaluating (in flight) as in Java. |
+| `in_memory_graph.rs:242`, `:330`, `:372` | `InMemoryGraphImpl` | Sharded map; `getAllNodeEntries` is a copy; `parallelForEach` sequential; no interning. |
 | `differencer.rs:68` | `Differencer.getDiff(fromGraph, ...)` | The graph and versions are not passed (the one implementation ignores them). |
 | `differencer.rs:142` | `SequencedRecordingDifferencer.valuesToInject` | java-hash-order: insertion order; only progress receivers see the injection order. |
-| `invalidation.rs:4`, `:156`, `:176`, `:428` | `InvalidatingNodeVisitor` | Sequential work-list traversal on the calling thread instead of a fork-join pool; not interruptible (the evaluator checks its interrupt after invalidation). Effects, checks and the pending set are Java's; the pending set is always empty after a run. |
-| `invalidation.rs:375` | `InvalidatingNodeVisitor.java:462-470` | Hermeticity check only for keys that declare `Some(Hermetic)`; `None` (not declared yet) is not checked (design doc section 3). |
-| `evaluator.rs:322`, `:390` | `Injectable.inject` | Values given to `EvaluatorBuilder::inject` are injected by `build()` at the first evaluation's version, not at the first `evaluate`. |
-| `evaluator.rs:362` | `InMemoryMemoizingEvaluator.ProgressReceiver` | Statistics (`postLoggingStats`) not ported. |
-| `evaluator.rs:507`, `:566`, `:1074`, `:2360` | various | Skyfocus, max transitive source versions, `SkyKeyComputeState`, reset deps not ported (null / empty, Java's values without those features). |
-| `evaluator.rs:571` | `AbstractInMemoryMemoizingEvaluator.java:441` | `newValue.equals(prev)` is `Key::values_equal` (D10). |
-| `evaluator.rs:1050` | `ParallelEvaluator.java:668` | Cached error keys in root order (Java: `HashSet`). Kept from before. |
-| `evaluator.rs:1510` | `Evaluate.run:408-413` | `isReadyToEvaluate` check dropped (partial reevaluation only). |
-| `evaluator.rs:1577` `maybe_handle_dirty_node` | `AbstractParallelEvaluator.java:233-380` | A dep group is evaluated with the request code path (`eval_keys`, registering with `checkIfDoneForDirtyReverseDep`); a dep that does not finish ends the node "undone" with the dep's kind (still dirty, in flight). |
-| `evaluator.rs:1698` | `analyzeDepsDoneness` | `NO_INFORMATION` (in-memory graph): no minimal-version signals. |
-| `evaluator.rs:1802` `entry_seen_in_normal_evaluation` | — | Kept from the reviewed engine (masking after abort); also applies to dirty checks. |
-| `evaluator.rs:1830` `register_pending_deps`, `environment.rs:48` `EnvState::pending` | `addTemporaryDirectDepsTo` + `enqueueChild`; `maybeHandleRegisteringNewlyDiscoveredDepsForDoneEntry` | A done dep read by a function is registered (temporary direct deps, reverse dep, `signalDep`) when the function returns, as in Java; when a request finds a dep not done, the deps requested so far and the request's group are registered first (what Java does when the function returns null there), then the dep is evaluated. Rdep order on a dep is Java's for single-threaded runs. |
-| `evaluator.rs:2425` signalling | `signalParentsAndEnqueueIfReady` | The committer signals the reverse deps `setValue` returns before it publishes the node's outcome; a requester that registers on a done node signals itself (`enqueueChild` `DONE`). "Enqueue" is the waiting thread waking up. |
-| `evaluator.rs:1904` `remove_undone_newly_requested_deps` | `SkyFunctionEnvironment.java:853` | The deps a function saw not done were registered by its requests; the registration is taken back (temporary deps and reverse dep; for an old dep `commitAndGetParents` removes the reverse dep, as in Java). A dep done by now (it signalled the node) stays. |
-| `evaluator.rs:1950` | `AbstractParallelEvaluator.java:973` | The `removeUndoneNewlyRequestedDeps` step is done by the caller first. |
-| `evaluator.rs:2020` | `AbstractParallelEvaluator.java:494-520` | A thrower that is not the first error keeps the registrations of deps it saw not done (state 3(b) of the 2026-11-18 review: Java's function would have thrown before evaluating them); its done deps are registered as in Java. |
-| `evaluator.rs:2090` | `rdepsToBubbleUpTo` | Without requesters that closed a cycle through the node (kept from the reviewed engine). |
-| `evaluator.rs:2232` | `Evaluate.run:640-656` | All requested deps done and the function returned null: Java restarts it (no new deps) and commits the child errors; the blocking engine commits without a second run. |
-| `evaluator.rs:2415` | `commitAndGetParents` `evaluated(..., temporaryDirectDeps)` | The direct deps are copied only when the caller gave a progress receiver. |
-| `evaluator.rs:2779-2860` bubbling | `ParallelEvaluator.bubbleErrorUp` | Kept from the reviewed engine (`never_evaluated`, `awaits_deps`); now on entries; the `isInflight` check and the dirty-parent signalling (`:395-403`) are ported. |
+| `invalidation.rs:4`, `:156`, `:176`, `:425` | `InvalidatingNodeVisitor` | Sequential work-list traversal on the calling thread instead of a fork-join pool; not interruptible (the evaluator checks its interrupt after invalidation). Effects, checks and the pending set are Java's; the pending set is always empty after a run. |
+| (removed in I2) `invalidation.rs` | `InvalidatingNodeVisitor.java:462-470` | The hermeticity check ran only for keys that declared `Some(Hermetic)`. Since I2 every key declares `Key::HERMETICITY` (required) and the check runs for all, as in Java. |
+| `evaluator.rs:323`, `:391` | `Injectable.inject` | Values given to `EvaluatorBuilder::inject` are injected by `build()` at the first evaluation's version, not at the first `evaluate`. |
+| `evaluator.rs:546` (I2, review S2-2) | `AbstractInMemoryMemoizingEvaluator.java:481` `performInvalidation` | Java's invalidators throw `InterruptedException` for a pending interrupt and `injectValues` is skipped; here invalidation runs to completion, then the pending interrupt returns `Interrupted` before the injection. With nothing to invalidate there is no check, and `ParallelEvaluator.eval` returns cached roots (`ParallelEvaluator.java:641`). |
+| `evaluator.rs` `eval_dep`, `environment.rs` `lookup` (I2, review S2-1) | `AbstractParallelEvaluator.java:394`, `:1022` | A dirty node's old dep missing from the graph fails with Java's texts ("Dirty parent had missing child", "Missing already declared dep"); the second fails at the request, before the missing dep is computed, where Java fails when it commits the node. |
+| `evaluator.rs:363` | `InMemoryMemoizingEvaluator.ProgressReceiver` | Statistics (`postLoggingStats`) not ported. |
+| `evaluator.rs:508`, `:578`, `:1127`, `:2658` | various | Skyfocus, max transitive source versions, `SkyKeyComputeState`, reset deps not ported (null / empty, Java's values without those features). |
+| `evaluator.rs:583` | `AbstractInMemoryMemoizingEvaluator.java:441` | `newValue.equals(prev)` is `Key::values_equal` (D10). |
+| `evaluator.rs:1103` | `ParallelEvaluator.java:668` | Cached error keys in root order (Java: `HashSet`). Kept from before. |
+| `evaluator.rs:1643` | `Evaluate.run:408-413` | `isReadyToEvaluate` check dropped (partial reevaluation only). |
+| `evaluator.rs:1737` `maybe_handle_dirty_node` | `AbstractParallelEvaluator.java:233-380` | A dep group is evaluated with the request code path (`eval_keys`, registering with `checkIfDoneForDirtyReverseDep`); a dep that does not finish ends the node "undone" with the dep's kind (still dirty, in flight). |
+| `evaluator.rs:1895` | `analyzeDepsDoneness` | `NO_INFORMATION` (in-memory graph): no minimal-version signals. |
+| `evaluator.rs:2017` `entry_seen_in_normal_evaluation` | — | Kept from the reviewed engine (masking after abort); also applies to dirty checks. |
+| `evaluator.rs:2035` `register_pending_deps`, `environment.rs:48` `EnvState::pending` | `addTemporaryDirectDepsTo` + `enqueueChild`; `maybeHandleRegisteringNewlyDiscoveredDepsForDoneEntry` | A done dep read by a function is registered (temporary direct deps, reverse dep, `signalDep`) when the function returns, as in Java; when a request finds a dep not done, the deps requested so far and the request's group are registered first (what Java does when the function returns null there), then the dep is evaluated. Rdep order on a dep is Java's for single-threaded runs. |
+| `evaluator.rs:2753` signalling | `signalParentsAndEnqueueIfReady` | The committer signals the reverse deps `setValue` returns before it publishes the node's outcome; a requester that registers on a done node signals itself (`enqueueChild` `DONE`). "Enqueue" is the waiting thread waking up. |
+| `evaluator.rs:2155` `remove_undone_newly_requested_deps` | `SkyFunctionEnvironment.java:853` | The deps a function saw not done were registered by its requests; the registration is taken back (temporary deps and reverse dep; for an old dep `commitAndGetParents` removes the reverse dep, as in Java). A dep done by now (it signalled the node) stays. |
+| `evaluator.rs:2193` | `AbstractParallelEvaluator.java:973` | The `removeUndoneNewlyRequestedDeps` step is done by the caller first. |
+| `evaluator.rs:2263` | `AbstractParallelEvaluator.java:494-520` | A thrower that is not the first error keeps the registrations of deps it saw not done (state 3(b) of the 2026-11-18 review: Java's function would have thrown before evaluating them); its done deps are registered as in Java. |
+| `evaluator.rs:2333` | `rdepsToBubbleUpTo` | Without requesters that closed a cycle through the node (kept from the reviewed engine). |
+| `evaluator.rs:2495` | `Evaluate.run:640-656` | All requested deps done and the function returned null: Java restarts it (no new deps) and commits the child errors; the blocking engine commits without a second run. |
+| `evaluator.rs:2743` | `commitAndGetParents` `evaluated(..., temporaryDirectDeps)` | The direct deps are copied only when the caller gave a progress receiver. |
+| `evaluator.rs:3145-3369` bubbling | `ParallelEvaluator.bubbleErrorUp` | Kept from the reviewed engine (`never_evaluated`, `awaits_deps`); now on entries; the `isInflight` check and the dirty-parent signalling (`:395-403`) are ported. |
 | `environment.rs:177` `batch_prefetch` | `SkyFunctionEnvironment.java:234-290` | `UndonePreviouslyRequestedDeps` cannot happen (no rewinding, nothing dirties a node during an evaluation); an undone dep panics with the `THROWING` inconsistency text. |
 | `environment.rs:285` | `getTemporaryDirectDeps` | In normal evaluation: previously requested deps followed by this run's requests. |
-| `environment.rs:967` | `addTransitiveEventsFromDepValuesForDoneNode` | `MANUALLY_REGISTERED_MARKER` cannot occur (`registerDependencies` not ported). |
-| `simple_cycle_detector.rs:225`, `:430` | `SimpleCycleDetector.java:204-215, 341-352` | `BugReport.sendBugReport` (non-crashing) not ported. |
+| `environment.rs:978` | `addTransitiveEventsFromDepValuesForDoneNode` | `MANUALLY_REGISTERED_MARKER` cannot occur (`registerDependencies` not ported). |
+| `simple_cycle_detector.rs:225`, `:432` | `SimpleCycleDetector.java:204-215, 341-352` | `BugReport.sendBugReport` (non-crashing) not ported. |
 | `walkable_graph.rs:107` | `DelegatingWalkableGraph.getReverseDeps` | Reverse deps are the entry's (see (d)). |
-| `progress.rs:348` | `Sets.newConcurrentHashSet` | Sharded set. |
-| `grouped_deps.rs:16-20` | `GroupedDeps.numElements` | Cached count (Java: array size); `Debug` output unchanged. |
+| `progress.rs:349` | `Sets.newConcurrentHashSet` | Sharded set. |
+| `grouped_deps.rs:12-20` | `GroupedDeps.numElements` | Cached count (Java: array size); `Debug` output unchanged. |
 | `value_with_metadata.rs:71` | `ValueWithMetadata.NO_EVENTS` | One shared empty set (phase 1 allocated one per call). |
 | `tests/*`: `NotComparableKey` (`tests.rs`), `failBuildAndRemoveValue`, `deletingDirtyNodes`, `changePruningWithEvent`, `runPartialResultOnInterruption`, `fullEventStorage_*`, `deepGraph`, `GraphTest` batch sampling | test harness | Java's `NotComparableStringValue` is a key type here (D10); restart counts are one run; a new `EmittedEventState` per Java evaluator is a `clear()`; the deep chain is built bottom-up in 16-level steps (1024 nested threads otherwise); a fixed sample instead of a seeded `Random`. |
 
@@ -103,8 +105,8 @@ written yet).
   the next `evaluate` (`J:AbstractInMemoryMemoizingEvaluator.java:134-152`); before, `inject`
   changed the graph at once. `get_existing_value` right after `inject` returns the old value until
   the next `evaluate`. Audit: no caller outside the crate reads back after `inject`
-  (`blaze_sky_loading/src/precomputed.rs:112` and `blaze_bzlmod/src/skyframe/precomputed.rs:132`
-  `set_on` have no callers). `inject` no longer panics during an evaluation (Java records it).
+  (`Precomputed::set_on`, now `blaze_skyframe/src/precomputed.rs:159`, has no caller outside
+  tests). `inject` no longer panics during an evaluation (Java records it).
 * Injecting over a node changes nothing when `Key::values_equal` says the value is equal; otherwise
   its reverse transitive closure is dirtied (not deleted) and re-checked when requested. With no
   key opting into `values_equal`, the same functions run as when the closure was deleted.
@@ -206,7 +208,7 @@ Met while porting; the engine relies on them as Java does.
    state changes. A node marked clean is never re-run.
 3. A function that returns null with all its deps done must request nothing new on a re-run:
    Java restarts it and commits its child errors; Blaze commits without the re-run
-   (`evaluator.rs:2232`).
+   (`evaluator.rs:2495`).
 4. Values of keys that opt into `values_equal` must be equal exactly when a re-run may be skipped
    for every dependent (an equal value keeps the node's version).
 5. A function that throws although a dep is missing should throw the same exception when the dep

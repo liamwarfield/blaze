@@ -4,7 +4,10 @@
 //! `AnalysisTestResultInfo`.
 
 pub mod analysis_test_action_builder;
+pub mod baseline_coverage_action;
+pub mod coverage_report_action_factory;
 pub mod execution_info;
+pub mod instrumented_file_manifest_action;
 pub mod instrumented_files_collector;
 pub mod instrumented_files_info;
 pub mod starlark_testing_module;

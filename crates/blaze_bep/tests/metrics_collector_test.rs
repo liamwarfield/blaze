@@ -101,6 +101,7 @@ fn finish_inputs<'a>(
 ) -> BuildMetricsFinishInputs<'a> {
     BuildMetricsFinishInputs {
         worker_process_metrics: Vec::new(),
+        worker_metrics: Vec::new(),
         has_pending_exception: false,
         skyframe_stats,
         remote_analysis_caching: Default::default(),

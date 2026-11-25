@@ -372,9 +372,6 @@ impl<'a> DirtyingNodeVisitor<'a> {
     /// entry dirty/changed, or that it is already marked dirty/changed, we do not continue this
     /// task.
     ///
-    /// PORT: the "hermetic functions cannot be marked 'changed'" check applies only to keys that
-    /// declare their hermeticity (`Key::HERMETICITY`); an undeclared one is not checked
-    /// (docs/skyframe-incremental.md section 3).
     // Java: com/google/devtools/build/skyframe/InvalidatingNodeVisitor.java:456 DirtyingNodeVisitor.visit
     fn visit(&mut self, task: VisitTask, work: &mut Vec<VisitTask>) {
         let VisitTask {
@@ -391,7 +388,7 @@ impl<'a> DirtyingNodeVisitor<'a> {
                 &mut self.dirtied
             };
             if set_to_check.insert(key.clone()) {
-                if is_changed && key.hermeticity() == Some(FunctionHermeticity::Hermetic) {
+                if is_changed && key.hermeticity() == FunctionHermeticity::Hermetic {
                     panic!(
                         "IllegalStateException: Nodes with hermetic functions cannot be marked \
                          'changed': {:?} function:{} hermeticity:{}",
@@ -527,12 +524,11 @@ impl<'a> DirtyingNodeVisitor<'a> {
 }
 
 /// Java's `FunctionHermeticity.toString()` (the enum constant's name).
-fn hermeticity_name(h: Option<FunctionHermeticity>) -> &'static str {
+fn hermeticity_name(h: FunctionHermeticity) -> &'static str {
     match h {
-        Some(FunctionHermeticity::Hermetic) => "HERMETIC",
-        Some(FunctionHermeticity::SemiHermetic) => "SEMI_HERMETIC",
-        Some(FunctionHermeticity::Nonhermetic) => "NONHERMETIC",
-        None => "null",
+        FunctionHermeticity::Hermetic => "HERMETIC",
+        FunctionHermeticity::SemiHermetic => "SEMI_HERMETIC",
+        FunctionHermeticity::Nonhermetic => "NONHERMETIC",
     }
 }
 

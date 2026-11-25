@@ -79,7 +79,7 @@ impl Dependencies {
 }
 
 /// Context for compiling Java files.
-// Java: com/google/devtools/build/lib/rules/java/JavaCompileActionContext.java:28 JavaCompileActionContext
+// Java: com/google/devtools/build/lib/rules/java/JavaCompileActionContext.java:26 JavaCompileActionContext
 #[derive(Default)]
 pub struct JavaCompileActionContext {
     cache: Mutex<std::collections::HashMap<Artifact, Arc<Dependencies>>>,
@@ -90,7 +90,7 @@ impl JavaCompileActionContext {
         JavaCompileActionContext::default()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionContext.java:31 JavaCompileActionContext.getDependencies
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionContext.java:29 JavaCompileActionContext.getDependencies
     pub fn get_dependencies(
         &self,
         jdeps_file: &Artifact,
@@ -116,7 +116,7 @@ impl JavaCompileActionContext {
         Ok(deps)
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionContext.java:46 JavaCompileActionContext.insertDependencies
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionContext.java:47 JavaCompileActionContext.insertDependencies
     pub fn insert_dependencies(&self, jdeps_file: &Artifact, dependencies: Arc<Dependencies>) {
         self.cache.lock().insert(jdeps_file.clone(), dependencies);
     }
@@ -124,7 +124,7 @@ impl JavaCompileActionContext {
 
 /// `registryBuilder.register(JavaCompileActionContext.class, new JavaCompileActionContext())`,
 /// keyed as `blaze_exec::exec::action_execution_context::get_context` finds it.
-// Java: com/google/devtools/build/lib/bazel/rules/BazelRulesModule.java:979 BazelRulesModule.BazelRulesModule.registerActionContexts
+// Java: com/google/devtools/build/lib/bazel/rules/BazelRulesModule.java:975 BazelRulesModule.BazelRulesModule.registerActionContexts
 pub fn java_action_context() -> (TypeId, ActionContextRef) {
     (
         TypeId::of::<JavaCompileActionContext>(),

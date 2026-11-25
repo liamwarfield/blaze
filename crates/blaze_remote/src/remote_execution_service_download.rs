@@ -1473,7 +1473,7 @@ impl RemoteExecutionService {
         action.get_spawn_execution_context().lock_output_files(
             result.get_exit_code(),
             result.get_message(),
-            &tmp_out_err,
+            Some(&tmp_out_err),
         )?;
         // Will these be properly garbage-collected if the above throws an exception?
         tmp_out_err.clear_out()?;
@@ -1762,7 +1762,7 @@ impl RemoteExecutionService {
         action.get_spawn_execution_context().lock_output_files(
             previous_spawn_result.exit_code(),
             previous_spawn_result.get_failure_message(),
-            action.get_spawn_execution_context().get_file_out_err(),
+            Some(action.get_spawn_execution_context().get_file_out_err()),
         )?;
         // All outputs are created locally.
         self.move_outputs_to_final_location(real_to_tmp_path.keys(), real_to_tmp_path)?;

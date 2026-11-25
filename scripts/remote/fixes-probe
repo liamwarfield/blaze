@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# The remote defects found by Bazel's own tests in the suite run blaze-e8b79c0, oracle vs Blaze.
+#
+# usage: scripts/remote/fixes-probe <oracle|BLAZE-BINARY> <label> <port> [case...]
+#        scripts/remote/fixes-probe help
+#
+# Workspace <W>/fixes-probe/src (written when missing), as the upstream tests write theirs:
+#   a/BUILD, a/tree.bzl  build_without_the_bytes_test.sh setup_cc_tree (a cc_library over a
+#                        declare_directory of sources) and setup_genrule_with_dep (//a:foo,
+#                        //a:foobar)
+#   x/BUILD, x/file1, x/file2  remote_execution_with_xattr_test.sh (genrule //x:nothing)
+# Each case runs through scripts/remote/ws-run with run name fp-<label>-<case> in a fresh output
+# base, against Bazel's worker (scripts/remote/worker fp-<label>, on <port>, fresh per case),
+# and prints the exit code and the lines the upstream test checks:
+#   cc-tree-cache  build //a:tree_cc --remote_cache --remote_download_minimal
+#                  (test_cc_tree_remote_cache_download_minimal)
+#   cc-tree-exec   build //a:tree_cc --remote_executor --remote_download_all
+#                  (test_cc_tree_remote_executor_download_all)
+#   start-lines    build //a:foobar --experimental_ui_debug_all_events --remote_executor
+#                  --remote_download_minimal: the START/FINISH lines
+#                  (test_downloads_minimal_hit_action_cache)
+#   tls-v1         worker with Bazel's test certificates (src/test/testdata/test_tls_certificate:
+#                  server.crt is X.509 v1), build //a:foo --remote_cache=grpcs://localhost:<port>
+#                  --tls_certificate=ca.crt (remote_execution_tls_test test_remote_grpcs_cache)
+#   xattr          user.checksum.sha256 on x/file1, startup --unix_digest_hash_attribute_name
+#                  (workspace <W>/fixes-probe/src-xattr, the option in its .bazelrc),
+#                  build //x:nothing --remote_cache --profile --record_full_profiler_data: the
+#                  "VFS md5" and "VFS xattr" profile entries of file1 and file2
+#                  (remote_execution_with_xattr_test)
+#   exec-log       build //a:foo --remote_executor --remote_build_event_upload=minimal
+#                  --experimental_execution_log_compact_file=myexeclog --build_event_json_file:
+#                  the buildToolLogs entries (test_upload_minimal_upload_compact_exec_log)
+# W is $BLAZE_REMOTE_WORK (default ~/.cache/blaze/work/remote). Results: <W>/fp-<label>-<case>/.
+set -euo pipefail
+if [[ "${1:-help}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,32p' "$0"; exit 0; fi
+bin="$1"; label="$2"; port="$3"; shift 3
+cases=("$@"); [[ ${#cases[@]} -gt 0 ]] || cases=(cc-tree-cache cc-tree-exec start-lines tls-v1 xattr exec-log)
+here="$(cd "$(dirname "$0")" && pwd)"
+W="${BLAZE_REMOTE_WORK:-$HOME/.cache/blaze/work/remote}"
+certs="$HOME/.cache/blaze/src/bazel-9.3.2/src/test/testdata/test_tls_certificate"
+src="$W/fixes-probe/src"
+worker="fp-$label"
+trap '"$here/worker" stop "$worker" >/dev/null 2>&1 || true' EXIT
+
+if [[ ! -d "$src" ]]; then
+  mkdir -p "$src/a" "$src/x"
+  cat > "$src/MODULE.bazel" <<'EOF'
+bazel_dep(name = "rules_cc", version = "0.2.14")
+EOF
+  cat > "$src/a/BUILD" <<'EOF'
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load(":tree.bzl", "mytree")
+mytree(name = "tree")
+cc_library(name = "tree_cc", srcs = [":tree"])
+genrule(
+  name = "foo",
+  srcs = [],
+  outs = ["foo.txt"],
+  cmd = "echo \"foo\" > \"$@\"",
+)
+genrule(
+  name = "foobar",
+  srcs = [":foo"],
+  outs = ["foobar.txt"],
+  cmd = "cat $(location :foo) > \"$@\" && echo \"bar\" >> \"$@\"",
+)
+EOF
+  cat > "$src/a/tree.bzl" <<'EOF'
+def _tree_impl(ctx):
+    tree = ctx.actions.declare_directory("file.cc")
+    ctx.actions.run_shell(outputs = [tree],
+                          command = "mkdir -p %s && touch %s/one.cc" % (tree.path, tree.path))
+    return [DefaultInfo(files = depset([tree]))]
+
+mytree = rule(implementation = _tree_impl)
+EOF
+  echo hello > "$src/x/file1"
+  echo world > "$src/x/file2"
+  cat > "$src/x/BUILD" <<'EOF'
+genrule(
+  name = "nothing",
+  srcs = ["file1", "file2"],
+  outs = ["nothing.txt"],
+  cmd = "echo foo > $@",
+)
+EOF
+fi
+if [[ ! -d "$src-xattr" ]]; then
+  cp -a "$src" "$src-xattr"
+  echo 'startup --unix_digest_hash_attribute_name=user.checksum.sha256' > "$src-xattr/.bazelrc"
+  python3 -I - "$src-xattr/x/file1" <<'EOF'
+import hashlib, os, sys
+p = sys.argv[1]
+os.setxattr(p, "user.checksum.sha256", hashlib.sha256(open(p, "rb").read()).digest())
+EOF
+fi
+
+run() {  # case startup-options... -- command...
+  local c="$1"; shift
+  local run_name="fp-$label-$c" ws="$src"
+  [[ "$c" == xattr ]] && ws="$src-xattr"
+  "$here/ws-run" "$run_name" "$ws" "$bin" --fresh "$@" | grep -E '^exit code' || true
+  echo "$W/$run_name/run1"
+}
+
+for c in "${cases[@]}"; do
+  echo "== $c"
+  extra=()
+  [[ "$c" == tls-v1 ]] && extra=(--tls_certificate="$certs/server.crt" --tls_private_key="$certs/server.pem")
+  "$here/worker" start "$worker" "$port" "${extra[@]}" >/dev/null
+  grpc="grpc://localhost:$port"
+  case "$c" in
+    cc-tree-cache)
+      step=$(run "$c" -- build --remote_cache="$grpc" --remote_download_minimal //a:tree_cc | tee /dev/stderr | tail -1)
+      grep -E 'processes:|ERROR|FATAL|NullPointer' "$step/stderr" | head -5 || true ;;
+    cc-tree-exec)
+      step=$(run "$c" -- build --remote_executor="$grpc" --remote_download_all //a:tree_cc | tee /dev/stderr | tail -1)
+      grep -E 'processes:|ERROR|FATAL|NullPointer' "$step/stderr" | head -5 || true ;;
+    start-lines)
+      step=$(run "$c" -- build --experimental_ui_debug_all_events --remote_executor="$grpc" --remote_download_minimal //a:foobar | tee /dev/stderr | tail -1)
+      cat "$step/stdout" "$step/stderr" | grep -E '^(START|FINISH)' || true ;;
+    tls-v1)
+      step=$(run "$c" -- build --remote_cache="grpcs://localhost:$port" --tls_certificate="$certs/ca.crt" //a:foo | tee /dev/stderr | tail -1)
+      grep -E 'processes:|ERROR' "$step/stderr" | head -5 || true ;;
+    xattr)
+      # The startup option comes from the workspace's .bazelrc; the attribute is on
+      # src-xattr/x/file1 and is copied with the workspace (shutil.copy2 copies xattrs).
+      step=$(run "$c" -- build --remote_cache="$grpc" "--profile={step}/profile_log" \
+        --record_full_profiler_data //x:nothing | tee /dev/stderr | tail -1)
+      python3 -I - "$step/profile_log" <<'EOF2'
+import gzip, re, sys
+data = open(sys.argv[1], "rb").read()
+if data[:2] == b"\x1f\x8b":
+    data = gzip.decompress(data)
+text = data.decode("utf-8", "replace")
+for kind in ("VFS md5", "VFS xattr"):
+    for f in ("x/file1", "x/file2", "x/BUILD"):
+        n = len(re.findall(re.escape(kind) + r'[^}]{0,300}?' + re.escape(f), text))
+        print("%s %s: %d" % (kind, f, n))
+EOF2
+      ;;
+    exec-log)
+      step=$(run "$c" -- build --remote_executor="$grpc" --remote_build_event_upload=minimal \
+        --experimental_execution_log_compact_file=myexeclog "--build_event_json_file={step}/bep.json" //a:foo | tee /dev/stderr | tail -1)
+      python3 -I - "$step/bep.json" <<'EOF'
+import json, re, sys
+for line in open(sys.argv[1]):
+    e = json.loads(line)
+    if "buildToolLogs" in e and "log" in e["buildToolLogs"]:
+        for f in e["buildToolLogs"]["log"]:
+            uri = f.get("uri")
+            print(f["name"], re.sub(r"localhost:\d+/blobs/[0-9a-f]+/\d+", "localhost:<port>/blobs/<digest>", uri) if uri else "(contents)")
+EOF
+      ;;
+    *) echo "unknown case: $c" >&2; exit 2 ;;
+  esac
+  "$here/worker" stop "$worker" >/dev/null
+done

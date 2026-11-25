@@ -15,8 +15,9 @@ use blaze_optdefs::fragment::platform_mapping_key::PlatformMappingKey;
 use blaze_optdefs::fragment::platform_options::PlatformOptions;
 use blaze_options::{Foreign, OptionsParsingException};
 use blaze_skyframe::{
-    ComputeError, ComputeResult, Environment, EvaluationContext, EvaluatorBuilder, Key, SkyError,
-    SkyFunctionException, SkyFunctionName, SkyKey, SkyValue, Transience,
+    ComputeError, ComputeResult, Environment, EvaluationContext, EvaluatorBuilder,
+    FunctionHermeticity, Key, SkyError, SkyFunctionException, SkyFunctionName, SkyKey, SkyValue,
+    Transience,
 };
 use blaze_starlark::StarlarkSemantics;
 use blaze_vfs::Path;
@@ -34,12 +35,26 @@ use crate::platform::{PlatformValueKey, SharedPlatformValueProvider};
 impl Key for BuildConfigurationKey {
     type Value = BuildConfigurationValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("BUILD_CONFIGURATION");
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:111 SkyFunctions.BUILD_CONFIGURATION (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: the build options, workspace name, sibling repository layout and mnemonic.
+    // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:341 BuildConfigurationValue.equals
+    fn values_equal(old: &BuildConfigurationValue, new: &BuildConfigurationValue) -> bool {
+        old == new
+    }
 }
 
 impl Key for BuildConfigurationKeyValueKey {
     /// `BuildConfigurationKeyValue.buildConfigurationKey()`.
     type Value = BuildConfigurationKey;
     const FUNCTION: SkyFunctionName = SkyFunctionName("BUILD_CONFIGURATION_KEY");
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:113 SkyFunctions.BUILD_CONFIGURATION_KEY (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: the `BuildConfigurationKey`, which compares its options.
+    // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyValue.java:105 BuildConfigurationKeyValue.equals
+    fn values_equal(old: &BuildConfigurationKey, new: &BuildConfigurationKey) -> bool {
+        old == new
+    }
 }
 
 // Java: com/google/devtools/build/lib/analysis/config/transitions/BaselineOptionsValue.java:68 BaselineOptionsValue.Key
@@ -66,6 +81,13 @@ impl Key for BaselineOptionsKey {
     /// `BaselineOptionsValue.toOptions()`.
     type Value = Arc<BuildOptions>;
     const FUNCTION: SkyFunctionName = SkyFunctionName("BASELINE_OPTIONS");
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:116 SkyFunctions.BASELINE_OPTIONS (createNonHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
+    /// Java: a record of the `BuildOptions` (`BuildOptions.equals`, by checksum).
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/BaselineOptionsValue.java:50 BaselineOptionsValue
+    fn values_equal(old: &Arc<BuildOptions>, new: &Arc<BuildOptions>) -> bool {
+        old == new
+    }
 }
 
 /// The SkyKey of `PlatformMappingValue` (Java: `PlatformMappingKey` is itself the key).
@@ -85,6 +107,13 @@ impl fmt::Debug for PlatformMappingSkyKey {
 impl Key for PlatformMappingSkyKey {
     type Value = PlatformMappingValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("PLATFORM_MAPPING");
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:131 SkyFunctions.PLATFORM_MAPPING (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: both mappings as maps, and the options classes (a server constant, not kept here). PORT: `flags_to_platforms` is compared in order; a reordered mappings file is unequal here, so Rust prunes less, never more.
+    // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingValue.java:162 PlatformMappingValue.equals
+    fn values_equal(old: &PlatformMappingValue, new: &PlatformMappingValue) -> bool {
+        old == new
+    }
 }
 
 // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingValue.java:50 PlatformMappingValue

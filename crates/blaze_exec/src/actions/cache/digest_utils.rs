@@ -1,6 +1,6 @@
 //! The parts of `lib/vfs/DigestUtils.java` the action cache uses.
 //!
-//! PORT: `DigestUtils` belongs to `lib/vfs`; these two members live here until `blaze_vfs` ports
+//! PORT: `DigestUtils` belongs to `lib/vfs`; these members live here until `blaze_vfs` ports
 //! them.
 
 /// Port of `DigestUtils` (the action-cache subset).
@@ -11,6 +11,22 @@ impl DigestUtils {
     /// Estimated digest size: a SHA-256 digest is 32 bytes.
     // Java: com/google/devtools/build/lib/vfs/DigestUtils.java:34 DigestUtils.ESTIMATED_SIZE
     pub const ESTIMATED_SIZE: i32 = 32;
+
+    /// Gets the digest of `path`, using a constant-time xattr call if the filesystem supports it
+    /// (`path.getFastDigest()`, the `XattrProvider` of the path's file system), and calculating
+    /// the digest manually otherwise.
+    ///
+    /// PORT: the digest cache of `manuallyComputeDigest` (`DigestUtils.configureCache`) is not
+    /// ported; the manual digest is `path.getDigest()`, and `status` (the recently obtained
+    /// `FileStatus` that only serves as that cache's key) is not taken.
+    // Java: com/google/devtools/build/lib/vfs/DigestUtils.java:139 DigestUtils.getDigestWithManualFallback
+    pub fn get_digest_with_manual_fallback(path: &blaze_vfs::Path) -> std::io::Result<Vec<u8>> {
+        match path.get_fast_digest()? {
+            Some(digest) => Ok(digest),
+            // Java: com/google/devtools/build/lib/vfs/DigestUtils.java:164 DigestUtils.manuallyComputeDigest
+            None => path.get_digest(),
+        }
+    }
 
     /// Computes a digest corresponding to the unordered combination of two digests. The result
     /// has the length of the longer input; `lhs` is modified in place when it is at least as long

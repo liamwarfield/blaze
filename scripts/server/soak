@@ -28,13 +28,26 @@
 # ROOT is ~/.cache/blaze/work/server/soak. The tool deletes nothing outside ROOT: --fresh
 # removes ROOT/NAME (only that directory, after checking it lies inside ROOT) before the run;
 # without --fresh an existing ROOT/NAME is refused.
+#
+# A measurement, not a comparison: soak judges no output. --oracle accepts only the pinned
+# oracle (sha256 in UPSTREAM.json); without it the binary is refused when it is the oracle
+# (scripts/lib/compare_common.py check-oracle / check-blaze; exit 2). Each row records how the
+# command ended (`exit N`, `signal N` for 128+N) and the unit's oom_kill counter after it. Exit
+# status: 0 only when every command ended with an exit code (any code), no OOM kill was counted
+# and the unit ended normally; 1 otherwise (the report names the command); 2 for a refusal.
 set -euo pipefail
 
 ROOT="$HOME/.cache/blaze/work/server/soak"
 REPO_CACHE="$HOME/.cache/blaze/repo-cache"
 SELF="$(readlink -f -- "${BASH_SOURCE[0]}")"
 
-usage() { sed -n '2,29p' "$SELF" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,37p' "$SELF" | sed 's/^# \{0,1\}//'; }
+LIB="$(dirname -- "$(dirname -- "$(dirname -- "$SELF")")")/scripts/lib/compare_common.py"
+oom_count() {
+  local cg
+  cg="$(sed -n 's/^0:://p' /proc/self/cgroup)"
+  awk '$1 == "oom_kill" {print $2}' "/sys/fs/cgroup$cg/memory.events" 2>/dev/null || echo -
+}
 die() { echo "soak: $*" >&2; exit 2; }
 
 # Deletes $1 only when it lies strictly inside ROOT.
@@ -88,7 +101,9 @@ inner() {
   }
   trap cleanup EXIT
   trap 'exit 130' INT TERM HUP
-  printf 'i\tstatus\tpid\tVmRSS_kB\tRssAnon_kB\tVmHWM_kB\twall_s\tinuse_kB\tsummary\n' >"$report"
+  printf 'i\tstatus\tpid\tVmRSS_kB\tRssAnon_kB\tVmHWM_kB\twall_s\tinuse_kB\toom_kill\tsummary\n' >"$report"
+  local abnormal=0 oom0 oom1
+  oom0="$(oom_count)"
   echo "argv: ${startup[*]} ${cmd[*]}" >>"$dir/run.log"
   local i st pid pf t0 t1 summary
   for ((i = 1; i <= count; i++)); do
@@ -111,10 +126,16 @@ inner() {
       inuse="$(awk '/^Total \(incl. mmap\):/{t=1} t && /in use bytes/{v=$NF; t=0} END{if (v != "") printf "%d", v/1024; else printf "-"}' \
         "$(dirname "$pf")/jvm.out" 2>/dev/null || echo -)"
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$i" "exit $st" "${pid:--}" "$mem" \
-      "$(echo "$t1 - $t0" | bc)" "$inuse" "$summary" >>"$report"
+    local status="exit $st"
+    if ((st > 128)); then status="signal $((st - 128))"; abnormal=$((abnormal + 1)); fi
+    oom1="$(oom_count)"
+    if [[ "$oom1" != "$oom0" ]]; then abnormal=$((abnormal + 1)); status="$status, oom-kill"; fi
+    oom0="$oom1"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$i" "$status" "${pid:--}" "$mem" \
+      "$(echo "$t1 - $t0" | bc)" "$inuse" "$oom1" "$summary" >>"$report"
     tail -1 "$report"
   done
+  echo "$abnormal" >"$dir/abnormal"
 }
 
 cmd_run() {
@@ -138,6 +159,11 @@ cmd_run() {
   [[ "$count" =~ ^[0-9]+$ ]] || die "bad --count"
   binary="$(readlink -f -- "$binary")"
   [[ -x "$binary" ]] || die "not executable: $binary"
+  if [[ "$oracle" == 1 ]]; then
+    /usr/bin/python3 -I "$LIB" check-oracle "$binary" >/dev/null || die "refused: --oracle needs the pinned oracle"
+  else
+    /usr/bin/python3 -I "$LIB" check-blaze "$binary" >/dev/null || die "refused: $binary is the oracle (use --oracle)"
+  fi
   local dir="$ROOT/$name"
   if [[ -e "$dir" ]]; then
     [[ "$fresh" == 1 ]] || die "$dir exists (use --fresh to replace it)"
@@ -151,13 +177,18 @@ cmd_run() {
     echo "started: $(date -Is)"
   } >"$dir/run.log"
   set +e
+  rm -f -- "$dir/abnormal"
   systemd-run --user --collect --wait --pipe --quiet -p MemoryMax=12G -p MemorySwapMax=0 \
-    bash "$SELF" __inner "$dir" "$binary" "$oracle" "$count" "$mstats" "$@"
+    -p OOMPolicy=continue bash "$SELF" __inner "$dir" "$binary" "$oracle" "$count" "$mstats" "$@"
   local st=$?
   set -e
   echo "unit exit $st" >>"$dir/run.log"
   echo "report: $dir/report.tsv"
-  return $st
+  local abnormal
+  abnormal="$(cat "$dir/abnormal" 2>/dev/null || echo missing)"
+  echo "commands that died by a signal or an OOM kill: $abnormal" | tee -a "$dir/run.log"
+  if [[ "$st" != 0 || "$abnormal" != 0 ]]; then return 1; fi
+  return 0
 }
 
 case "${1:-help}" in

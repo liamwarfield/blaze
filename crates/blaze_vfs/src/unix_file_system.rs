@@ -7,7 +7,8 @@
 //! `StringEncoding.internalToPlatform`), and names that come back are decoded one char per byte
 //! ([`from_os`], `StringEncoding.platformToInternal`). A file name that is not UTF-8 is therefore
 //! an ordinary name, as in Bazel.
-//! Not ported: xattr-based fast digests (`hashAttributeName`), the Profiler, `Blocker`.
+//! Not ported: the Profiler (except the `VFS_MD5` and `VFS_XATTR` tasks of `getDigest` and
+//! `getxattr`), `Blocker`.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -75,18 +76,101 @@ pub(crate) fn posix_error(message: &str, e: io::Error) -> io::Error {
     io::Error::new(e.kind(), format!("{} ({})", message, strerror))
 }
 
+/// `NativePosixFiles.getxattr` / `lgetxattr` (`getxattr_common` with a 4096-byte buffer):
+/// `Ok(None)` when the attribute does not exist (ENODATA); the raw OS error otherwise.
+// Java: (native) src/main/native/unix_jni.cc getxattr_common
+fn native_getxattr(path: &str, name: &str, follow_symlinks: bool) -> io::Result<Option<Vec<u8>>> {
+    let invalid = || io::Error::from_raw_os_error(libc::EINVAL);
+    let c_path = std::ffi::CString::new(os(path).as_bytes()).map_err(|_| invalid())?;
+    let c_name = std::ffi::CString::new(os(name).as_bytes()).map_err(|_| invalid())?;
+    let mut value = [0u8; 4096];
+    loop {
+        // SAFETY: both strings are NUL-terminated and `value` is a writable buffer of the given
+        // length.
+        let size = unsafe {
+            if follow_symlinks {
+                libc::getxattr(
+                    c_path.as_ptr(),
+                    c_name.as_ptr(),
+                    value.as_mut_ptr().cast(),
+                    value.len(),
+                )
+            } else {
+                libc::lgetxattr(
+                    c_path.as_ptr(),
+                    c_name.as_ptr(),
+                    value.as_mut_ptr().cast(),
+                    value.len(),
+                )
+            }
+        };
+        if size >= 0 {
+            return Ok(Some(value[..size as usize].to_vec()));
+        }
+        let e = io::Error::last_os_error();
+        match e.raw_os_error() {
+            // RESTARTABLE
+            Some(libc::EINTR) => continue,
+            // portable_getxattr: attr_not_found = (errno == ENODATA)
+            Some(libc::ENODATA) => return Ok(None),
+            _ => return Err(e),
+        }
+    }
+}
+
 /// The real Unix file system (Java `UnixFileSystem`).
 // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:43 UnixFileSystem
 #[derive(Debug)]
 pub struct UnixFileSystem {
     digest_function: DigestHashFunction,
+    /// `hashAttributeName` (`--unix_digest_hash_attribute_name`; empty: none).
+    hash_attribute_name: String,
 }
 
 impl UnixFileSystem {
     /// Creates a Unix file system with the given digest function (no hash xattr).
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:48 UnixFileSystem.<init>
     pub fn new(digest_function: DigestHashFunction) -> UnixFileSystem {
-        UnixFileSystem { digest_function }
+        UnixFileSystem::with_hash_attribute_name(digest_function, String::new())
+    }
+
+    /// `new UnixFileSystem(hashFunction, hashAttributeName)`: the digest of a file may come from
+    /// its extended attribute `hash_attribute_name` (see [`FileSystem::get_fast_digest`]).
+    // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:48 UnixFileSystem.<init>
+    pub fn with_hash_attribute_name(
+        digest_function: DigestHashFunction,
+        hash_attribute_name: String,
+    ) -> UnixFileSystem {
+        UnixFileSystem {
+            digest_function,
+            hash_attribute_name,
+        }
+    }
+
+    /// The value of the extended attribute `name` of `path`, `None` when it has none or the file
+    /// system does not support extended attributes.
+    // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:372 UnixFileSystem.getxattr
+    pub fn getxattr(
+        &self,
+        path: &PathFragment,
+        name: &str,
+        follow_symlinks: bool,
+    ) -> io::Result<Option<Vec<u8>>> {
+        let path_name = path.get_path_string();
+        let start_time = blaze_util::profiler::profiler::Profiler::nano_time_maybe();
+        let result = native_getxattr(path_name, name, follow_symlinks);
+        blaze_util::profiler::profiler::Profiler::instance().log_simple_task(
+            start_time,
+            blaze_util::profiler::profiler_task::ProfilerTask::VFS_XATTR,
+            path_name,
+        );
+        match result {
+            // getxattr() syscall is not supported by the underlying filesystem (it returned
+            // ENOTSUP). Per method contract, treat this as ENODATA.
+            Err(e) if e.raw_os_error() == Some(libc::ENOTSUP) => Ok(None),
+            Err(e) => Err(posix_error(path_name, e)),
+            Ok(value) => Ok(value),
+        }
     }
 
     /// Creates a new instance behind a shared [`FileSystemRef`]. Each call yields a distinct file
@@ -116,6 +200,34 @@ impl FileSystem for UnixFileSystem {
     // Java: com/google/devtools/build/lib/vfs/FileSystem.java:71 FileSystem.getDigestFunction
     fn get_digest_function(&self) -> DigestHashFunction {
         self.digest_function
+    }
+
+    // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:393 UnixFileSystem.getFastDigest
+    fn get_fast_digest(&self, path: &PathFragment) -> io::Result<Option<Vec<u8>>> {
+        // Attempt to obtain the digest from an extended attribute attached to the file. This is
+        // much faster than reading and digesting the file's contents on the fly, especially for
+        // large files.
+        if self.hash_attribute_name.is_empty() {
+            return Ok(None);
+        }
+        self.getxattr(path, &self.hash_attribute_name, true)
+    }
+
+    // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:400 UnixFileSystem.getDigest
+    fn get_digest(&self, path: &PathFragment) -> io::Result<Vec<u8>> {
+        let name = path.get_path_string();
+        let start_time = blaze_util::profiler::profiler::Profiler::nano_time_maybe();
+        // super.getDigest(path)
+        // Java: com/google/devtools/build/lib/vfs/FileSystem.java:367 FileSystem.getDigest
+        let result = self
+            .get_input_stream(path)
+            .and_then(|mut input| self.get_digest_function().hash_reader(&mut input));
+        blaze_util::profiler::profiler::Profiler::instance().log_simple_task(
+            start_time,
+            blaze_util::profiler::profiler_task::ProfilerTask::VFS_MD5,
+            name,
+        );
+        result
     }
 
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:238 UnixFileSystem.supportsModifications

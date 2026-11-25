@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Prints Java's "want '...'" text of every parameter of every @StarlarkMethod in the oracle's
+# server jar (ParamDescriptor.getTypeErrorMessage over Starlark.classType, run by Bazel's own
+# classes with the system JDK). Output: receiver<TAB>method<TAB>param<TAB>want, sorted.
+# Usage: scripts/java-param-types/run [JAR]   (default: the oracle install base's A-server.jar)
+#        scripts/java-param-types/run help
+# Regenerate the table Blaze reads with
+#   scripts/java-param-types/run > third_party/starlark-rust/starlark/src/values/java_param_types.tsv
+set -euo pipefail
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,8p' "$0"; exit 0; fi
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+jar="${1:-$HOME/.cache/blaze/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9/A-server.jar}"
+java -Xmx2g -cp "$jar" "$here/ParamTypes.java" "$jar"

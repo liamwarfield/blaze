@@ -97,6 +97,171 @@ use crate::testing::fake_registry::FakeRegistry;
 use crate::testing::mock_tools_config::MockToolsConfig;
 use crate::testing::scratch::{Scratch, TestDirectory};
 
+/// What `AnalysisTestCase.update` throws: the exceptions of `BuildView.update`
+/// (`ViewCreationFailedException`, `InvalidConfigurationException`, `InterruptedException`) and
+/// the loading phase's `TargetParsingException`, which is not a `ViewCreationFailedException`.
+// Java: com/google/devtools/build/lib/analysis/util/AnalysisTestCase.java:364 AnalysisTestCase.update
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum UpdateError {
+    /// `ViewCreationFailedException`.
+    #[error("{message}")]
+    ViewCreationFailed {
+        message: String,
+        failure_detail: blaze_protos::failure_details::FailureDetail,
+    },
+    /// `InvalidConfigurationException`.
+    #[error("{}", .0.get_message())]
+    InvalidConfiguration(blaze_build_config::fragment::InvalidConfigurationException),
+    /// `InterruptedException`.
+    #[error("interrupted")]
+    Interrupted,
+    /// `TargetParsingException` from `SkyframeExecutor.loadTargetPatternsWithFilters`.
+    #[error("{}", .0.get_message())]
+    TargetParsing(blaze_cmdline::TargetParsingException),
+}
+
+impl From<BuildViewError> for UpdateError {
+    fn from(e: BuildViewError) -> Self {
+        match e {
+            BuildViewError::ViewCreationFailed {
+                message,
+                failure_detail,
+            } => UpdateError::ViewCreationFailed {
+                message,
+                failure_detail,
+            },
+            BuildViewError::InvalidConfiguration(e) => UpdateError::InvalidConfiguration(e),
+            BuildViewError::Interrupted => UpdateError::Interrupted,
+        }
+    }
+}
+
+/// `AnalysisTestUtil.artifactsToStrings(targetConfiguration, artifacts)`: `"src <exec path>"`
+/// for a source artifact, `"<root name> <root-relative path>"` for a derived one, where the bin
+/// and genfiles roots of the main repository are named `bin` and any other root `/`.
+// Java: com/google/devtools/build/lib/analysis/util/AnalysisTestUtil.java:358 AnalysisTestUtil.artifactsToStrings
+pub fn artifacts_to_strings<'a>(
+    target_configuration: &blaze_build_config::build_configuration_value::BuildConfigurationValue,
+    artifacts: impl IntoIterator<Item = &'a Artifact>,
+) -> IndexSet<String> {
+    use blaze_cmdline::repository_name::MAIN;
+    let mut root_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for root in [
+        target_configuration.get_bin_directory(&MAIN),
+        // In preparation for merging genfiles/ and bin/, we don't differentiate them in tests
+        // anymore
+        target_configuration.get_genfiles_directory(&MAIN),
+    ] {
+        // `artifactRoot.getRoot().toString()`: the root's path.
+        compute_root_paths(&root.get_root_path().to_string(), |path| {
+            root_map.insert(path.to_string(), "bin".to_string())
+        });
+    }
+    let mut files = IndexSet::new();
+    for artifact in artifacts {
+        let root = artifact.get_root();
+        if root.is_source_root() {
+            files.insert(format!("src {}", artifact.get_exec_path()));
+        } else {
+            // Find the most specific mapping.
+            let name = compute_root_paths(&root.get_root().to_string(), |path| {
+                root_map
+                    .get(path)
+                    .cloned()
+                    .unwrap_or_else(|| "/".to_string())
+            });
+            files.insert(format!("{} {}", name, artifact.get_root_relative_path()));
+        }
+    }
+    files
+}
+
+/// `AnalysisTestUtil.computeRootPaths(artifactRoot, function)`: applies `function` to the root
+/// path and to its forms without the C++ and Android output-directory prefixes; returns the last
+/// result.
+// Java: com/google/devtools/build/lib/analysis/util/AnalysisTestUtil.java:333 AnalysisTestUtil.computeRootPaths
+fn compute_root_paths<U>(root_path: &str, mut function: impl FnMut(&str) -> U) -> U {
+    // OUTPUT_PATH_CPP_PREFIX_PATTERN: (?<=bazel-out/)gcc[^/]*-grte-\w+-
+    // OUTPUT_PATH_ANDROID_PREFIX_PATTERN: (?<=bazel-out/)android-
+    let mut result = function(root_path);
+    let cpp_replaced = replace_first_after_out(root_path, |rest| {
+        // `gcc[^/]*-grte-\w+-`: the greedy `[^/]*` backtracks from the end of the path segment,
+        // so the last `-grte-` that is followed by word characters and a `-` wins; `\w+` cannot
+        // give back characters to find a `-` (word characters are not `-`).
+        if !rest.starts_with("gcc") {
+            return None;
+        }
+        let seg = &rest[..rest.find('/').unwrap_or(rest.len())];
+        let bytes = seg.as_bytes();
+        let mut p = seg.len();
+        while let Some(pos) = seg[3..p].rfind("-grte-") {
+            let start = 3 + pos;
+            let w_start = start + "-grte-".len();
+            let mut j = w_start;
+            while j < seg.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                j += 1;
+            }
+            if j > w_start && j < seg.len() && bytes[j] == b'-' {
+                return Some(j + 1);
+            }
+            // Try the next `-grte-` to the left (it may overlap this one).
+            p = start + "-grte-".len() - 1;
+        }
+        None
+    });
+    if cpp_replaced != root_path {
+        result = function(&cpp_replaced);
+    }
+    let android_replaced = replace_first_after_out(root_path, |rest| {
+        rest.starts_with("android-").then_some("android-".len())
+    });
+    if android_replaced != root_path {
+        result = function(&android_replaced);
+    }
+    result
+}
+
+/// `Pattern.compile("(?<=bazel-out/)" + p).matcher(s).replaceFirst("")`, where `match_len` gives
+/// the length of `p`'s match at the start of the text after a `bazel-out/`.
+fn replace_first_after_out(s: &str, match_len: impl Fn(&str) -> Option<usize>) -> String {
+    const PREFIX: &str = "bazel-out/";
+    let mut from = 0;
+    while let Some(pos) = s[from..].find(PREFIX) {
+        let rest_start = from + pos + PREFIX.len();
+        if let Some(len) = match_len(&s[rest_start..]) {
+            return format!("{}{}", &s[..rest_start], &s[rest_start + len..]);
+        }
+        from = from + pos + 1;
+    }
+    s.to_string()
+}
+
+/// `BuildViewTestCase.findArtifactNamed(name, artifacts, context)`.
+// Java: com/google/devtools/build/lib/analysis/util/BuildViewTestCase.java:1027 BuildViewTestCase.findArtifactNamed
+fn find_artifact_named(
+    name: &str,
+    artifacts: &blaze_collect::NestedSet<Artifact>,
+    context: &str,
+) -> Artifact {
+    artifacts
+        .to_list()
+        .iter()
+        .find(|a| artifact_named(name, a))
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!(
+                "NoSuchElementException: Artifact named '{}' not found in {} ({})",
+                name, context, artifacts
+            )
+        })
+}
+
+/// `BuildViewTestCase.artifactNamed(name)`: `name.equals(artifact.prettyPrint())`.
+// Java: com/google/devtools/build/lib/analysis/util/BuildViewTestCase.java:2013 BuildViewTestCase.artifactNamed
+fn artifact_named(name: &str, artifact: &Artifact) -> bool {
+    name == artifact.pretty_print()
+}
+
 /// `BuildViewTestCase.LOADING_PHASE_THREADS`.
 pub const LOADING_PHASE_THREADS: usize = 20;
 
@@ -1485,22 +1650,105 @@ impl BuildViewTestCase {
             .cloned()
     }
 
-    /// `getGeneratingAction(target, outputName)`.
+    /// `getGeneratingActionForLabel(label)`: the action generating the single file of `label`.
+    // Java: com/google/devtools/build/lib/analysis/util/BuildViewTestCase.java:1704 BuildViewTestCase.getGeneratingActionForLabel
+    pub fn get_generating_action_for_label(
+        &mut self,
+        label: &str,
+    ) -> Option<blaze_actions::ActionRef> {
+        let artifact = self.get_artifact(label);
+        self.get_generating_action(&artifact)
+    }
+
+    /// `getBinArtifact(packageRelativePath, owner)`: the derived artifact
+    /// `<bin>/<owner's package>/<packageRelativePath>` owned by `owner`.
+    // Java: com/google/devtools/build/lib/analysis/util/BuildViewTestCase.java:1540 BuildViewTestCase.getBinArtifact
+    pub fn get_bin_artifact(
+        &mut self,
+        package_relative_path: &str,
+        owner: &ConfiguredTarget,
+    ) -> Artifact {
+        let root = self.get_rule_context(owner).get_bin_directory();
+        // getPackageRelativeDerivedArtifact
+        let root_relative_path = owner
+            .get_label()
+            .get_package_fragment()
+            .get_relative(&PathFragment::create(package_relative_path));
+        self.get_derived_artifact(&root_relative_path, &root, owner)
+    }
+
+    /// `getDerivedArtifact(rootRelativePath, root, owner)` for a configured target's key: the
+    /// output of one of the owner's actions with that path and root.
+    // Java: com/google/devtools/build/lib/analysis/util/BuildViewTestCase.java:1455 BuildViewTestCase.getDerivedArtifact
+    fn get_derived_artifact(
+        &mut self,
+        root_relative_path: &PathFragment,
+        root: &blaze_actions::actions::artifact_root::ArtifactRoot,
+        owner: &ConfiguredTarget,
+    ) -> Artifact {
+        let key = SkyKey::new(
+            owner
+                .unwrap_if_merged()
+                .get_lookup_key()
+                .0
+                .as_any()
+                .downcast_ref::<ConfiguredTargetKey>()
+                .unwrap_or_else(|| unported_owner(owner.get_lookup_key()))
+                .clone(),
+        );
+        let graph = self.state().executor.get_walkable_graph();
+        if let Some(value) = graph.get_value(&key)
+            && let Ok(value) = value.downcast::<ConfiguredTargetValue>()
+        {
+            for action in value.get_actions().iter() {
+                for output in action.get_outputs().iter() {
+                    if output.get_root_relative_path() == *root_relative_path
+                        && output.get_root() == root
+                    {
+                        return output.clone();
+                    }
+                }
+            }
+        }
+        // Fall back: some tests don't actually need an artifact with an owner.
+        // TODO(janakr): the tests that are passing in nonsense here should be changed.
+        // Java: view.getArtifactFactory().getDerivedArtifact(rootRelativePath, root, owner)
+        let services = self
+            .state()
+            .executor
+            .get_analysis_services()
+            .expect("BuildView.getArtifactFactory");
+        services.artifact_factory.get_derived_artifact(
+            root_relative_path,
+            root,
+            blaze_actions::actions::action_lookup::ArtifactOwner::ActionLookupKey(
+                owner.unwrap_if_merged().get_lookup_key().clone(),
+            ),
+        )
+    }
+
+    /// `artifactsToStrings(artifacts)`: `AnalysisTestUtil.artifactsToStrings(targetConfig,
+    /// artifacts)`.
+    // Java: com/google/devtools/build/lib/analysis/util/BuildViewTestCase.java:1424 BuildViewTestCase.artifactsToStrings
+    pub fn artifacts_to_strings<'a>(
+        &mut self,
+        artifacts: impl IntoIterator<Item = &'a Artifact>,
+    ) -> IndexSet<String> {
+        let target_config = self.get_target_configuration();
+        artifacts_to_strings(&target_config, artifacts)
+    }
+
+    /// `getGeneratingAction(target, outputName)`: the artifact of `filesToBuild` whose
+    /// `prettyPrint()` equals `outputName` (a missing one throws `NoSuchElementException`), then
+    /// its generating action (`null` when there is none).
     // Java: com/google/devtools/build/lib/analysis/util/BuildViewTestCase.java:991 BuildViewTestCase.getGeneratingAction
     pub fn get_generating_action_for_output(
         &mut self,
         target: &ConfiguredTarget,
         output_name: &str,
     ) -> Option<blaze_actions::ActionRef> {
-        let artifact = get_files_to_build(target)
-            .to_list()
-            .iter()
-            .find(|a| {
-                a.get_root_relative_path()
-                    .get_path_string()
-                    .ends_with(output_name)
-            })
-            .cloned()?;
+        let files_to_build = get_files_to_build(target);
+        let artifact = find_artifact_named(output_name, &files_to_build, "filesToBuild");
         self.get_generating_action(&artifact)
     }
 
@@ -1509,7 +1757,7 @@ impl BuildViewTestCase {
 
     /// `AnalysisTestCase.update(labels...)` with `defaultFlags()`.
     // Java: com/google/devtools/build/lib/analysis/util/AnalysisTestCase.java:470 AnalysisTestCase.update
-    pub fn update(&mut self, labels: &[&str]) -> Result<&AnalysisResult, BuildViewError> {
+    pub fn update(&mut self, labels: &[&str]) -> Result<&AnalysisResult, UpdateError> {
         let flags = self.default_flags();
         self.update_with(&flags, &[], labels)
     }
@@ -1523,7 +1771,7 @@ impl BuildViewTestCase {
         &mut self,
         aspects: &[&str],
         labels: &[&str],
-    ) -> Result<&AnalysisResult, BuildViewError> {
+    ) -> Result<&AnalysisResult, UpdateError> {
         let flags = self.default_flags();
         self.update_with(&flags, aspects, labels)
     }
@@ -1535,7 +1783,7 @@ impl BuildViewTestCase {
         aspects: &[&str],
         aspects_parameters: &[(&str, &str)],
         labels: &[&str],
-    ) -> Result<&AnalysisResult, BuildViewError> {
+    ) -> Result<&AnalysisResult, UpdateError> {
         let flags = self.default_flags();
         let aspects_parameters: IndexMap<String, String> = aspects_parameters
             .iter()
@@ -1554,7 +1802,7 @@ impl BuildViewTestCase {
         config: &FlagBuilder,
         aspects: &[&str],
         labels: &[&str],
-    ) -> Result<&AnalysisResult, BuildViewError> {
+    ) -> Result<&AnalysisResult, UpdateError> {
         self.update_with_parameters(config, &[], aspects, &IndexMap::new(), labels)
     }
 
@@ -1568,7 +1816,7 @@ impl BuildViewTestCase {
         aspects: &[&str],
         aspects_parameters: &[(&str, &str)],
         labels: &[&str],
-    ) -> Result<&AnalysisResult, BuildViewError> {
+    ) -> Result<&AnalysisResult, UpdateError> {
         let aspects_parameters: IndexMap<String, String> = aspects_parameters
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -1590,7 +1838,7 @@ impl BuildViewTestCase {
         aspects: &[&str],
         aspects_parameters: &IndexMap<String, String>,
         labels: &[&str],
-    ) -> Result<&AnalysisResult, BuildViewError> {
+    ) -> Result<&AnalysisResult, UpdateError> {
         let keep_going = config.contains(Flag::KeepGoing);
         // Java: update(String...) posts to a new EventBus.
         self.event_bus.clear();
@@ -1620,7 +1868,7 @@ impl BuildViewTestCase {
         aspects: &[&str],
         keep_going: bool,
         loading_phase_threads: usize,
-    ) -> Result<&AnalysisResult, BuildViewError> {
+    ) -> Result<&AnalysisResult, UpdateError> {
         let result = self.update_internal(
             &targets.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
             &[],
@@ -1643,7 +1891,7 @@ impl BuildViewTestCase {
         aspects_parameters: &IndexMap<String, String>,
         keep_going: bool,
         loading_phase_threads: usize,
-    ) -> Result<AnalysisResult, BuildViewError> {
+    ) -> Result<AnalysisResult, UpdateError> {
         let loading_options: LoadingOptions = if self.loading_options.is_empty() {
             Options::<LoadingOptions>::get_defaults()
         } else {
@@ -1673,13 +1921,10 @@ impl BuildViewTestCase {
         ) {
             Ok(v) => v,
             Err(crate::skyframe_executor::TargetPatternPhaseError::TargetParsing(e)) => {
-                return Err(BuildViewError::ViewCreationFailed {
-                    message: e.get_message().to_string(),
-                    failure_detail: Default::default(),
-                });
+                return Err(UpdateError::TargetParsing(e));
             }
             Err(crate::skyframe_executor::TargetPatternPhaseError::Interrupted) => {
-                return Err(BuildViewError::Interrupted);
+                return Err(UpdateError::Interrupted);
             }
         };
         let options = BuildViewUpdateOptions {
@@ -1712,6 +1957,7 @@ impl BuildViewTestCase {
             aspects_parameters,
             handler,
         )
+        .map_err(UpdateError::from)
     }
 
     /// `AnalysisTestCase.getAnalysisResult()`.

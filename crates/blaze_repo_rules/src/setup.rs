@@ -132,7 +132,8 @@ pub fn create_evaluator_with(
         &setup,
         inputs,
         UnixFileSystem::create(DigestHashFunction::Sha256),
-    )?;
+    )
+    .map_err(|e| e.message)?;
     let lockfile_mode = bzlmod_config.lockfile_mode;
     let rule_class_provider =
         Arc::new(blaze_packages::native_rules::RuleClassProvider::create_bazel());
@@ -187,7 +188,31 @@ pub fn prepare_repository_functions_in(
     setup: &FetchSetup<'_>,
     fs: FileSystemRef,
 ) -> Result<RepositoryFunctions, String> {
-    prepare_repository_functions_with(setup, &CommandInputs::default(), fs)
+    prepare_repository_functions_with(setup, &CommandInputs::default(), fs).map_err(|e| e.message)
+}
+
+/// The `AbruptExitException` of `BazelRepositoryModule.beforeCommand`: its message and the
+/// `FailureDetails.ExternalRepository.Code` name of its detailed exit code (`None` for the
+/// Blaze-only setup error that has no Java counterpart).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositorySetupError {
+    pub message: String,
+    pub code: Option<&'static str>,
+}
+
+impl RepositorySetupError {
+    fn new(message: impl Into<String>, code: &'static str) -> Self {
+        RepositorySetupError {
+            message: message.into(),
+            code: Some(code),
+        }
+    }
+}
+
+impl std::fmt::Display for RepositorySetupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
 }
 
 /// `BazelRepositoryModule.DEFAULT_CACHE_LOCATION`.
@@ -252,7 +277,7 @@ fn output_user_root_of_default_output_base(
 fn http_downloader_from_options(
     command_options: &CommonCommandOptions,
     reporter: &Arc<dyn ExtendedEventHandler>,
-) -> Result<HttpDownloader, String> {
+) -> Result<HttpDownloader, RepositorySetupError> {
     let mut http_timeout_scaling = command_options.http_timeout_scaling as f32;
     if command_options.http_timeout_scaling <= 0.0 {
         reporter.handle(&Event::warn(
@@ -262,9 +287,10 @@ fn http_downloader_from_options(
     }
     if command_options.http_max_parallel_downloads <= 0 {
         // Java: blazeModuleEnvironment.exit(new AbruptExitException(... BAD_DOWNLOADER_CONFIG)).
-        return Err(
-            "The maximum number of parallel downloads needs to be a positive number".to_string(),
-        );
+        return Err(RepositorySetupError::new(
+            "The maximum number of parallel downloads needs to be a positive number",
+            "BAD_DOWNLOADER_CONFIG",
+        ));
     }
     Ok(HttpDownloader::new(
         command_options.http_connector_attempts,
@@ -281,7 +307,7 @@ pub fn prepare_repository_functions_with(
     setup: &FetchSetup<'_>,
     inputs: &CommandInputs<'_>,
     fs: FileSystemRef,
-) -> Result<RepositoryFunctions, String> {
+) -> Result<RepositoryFunctions, RepositorySetupError> {
     let repo_options = setup.repo_options;
     let reporter = &setup.reporter;
     let workspace = to_path(&fs, setup.workspace);
@@ -333,15 +359,16 @@ pub fn prepare_repository_functions_with(
             let output_user_root = match inputs.output_user_root {
                 Some(root) => root.to_path_buf(),
                 None => output_user_root_of_default_output_base(setup.workspace, setup.output_base)
-                    .ok_or_else(|| {
-                        format!(
+                    .ok_or_else(|| RepositorySetupError {
+                        code: None,
+                        message: format!(
                             "blaze: the default repository cache is \
                          <output_user_root>/{DEFAULT_CACHE_LOCATION}, but this command was set \
                          up without an output user root and its output base [{}] is not the \
                          default one. Pass --repository_cache=<path> (or --repository_cache= to \
                          disable the cache).",
                             platform_to_internal(setup.output_base.as_os_str())
-                        )
+                        ),
                     })?,
             };
             repository_cache.set_path(Some(
@@ -377,7 +404,10 @@ pub fn prepare_repository_functions_with(
             // Will be created later.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => output_base.clone(),
             Err(e) => {
-                return Err(format!("could not resolve output base: {}", io_message(e)));
+                return Err(RepositorySetupError::new(
+                    format!("could not resolve output base: {}", io_message(e)),
+                    "BAD_REPO_CONTENTS_CACHE",
+                ));
             }
         };
         let resolved_repo_contents_cache = match repo_contents_cache_path.resolve_symbolic_links() {
@@ -385,21 +415,27 @@ pub fn prepare_repository_functions_with(
             // Will be created later.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => repo_contents_cache_path.clone(),
             Err(e) => {
-                return Err(format!(
-                    "could not resolve repo contents cache path: {}",
-                    io_message(e)
+                return Err(RepositorySetupError::new(
+                    format!(
+                        "could not resolve repo contents cache path: {}",
+                        io_message(e)
+                    ),
+                    "BAD_REPO_CONTENTS_CACHE",
                 ));
             }
         };
         if resolved_output_base.starts_with(&resolved_repo_contents_cache) {
             // This is dangerous as the repo contents cache GC may delete files in the output base.
-            return Err(format!(
-                "The output base [{}] is inside the repo contents cache [{}]. This can cause \
+            return Err(RepositorySetupError::new(
+                format!(
+                    "The output base [{}] is inside the repo contents cache [{}]. This can cause \
                  spurious failures. Disable the repo contents cache with \
                  `--repo_contents_cache=`, or specify `--repo_contents_cache=<path that doesn't \
                  contain the output base>`.\n",
-                resolved_output_base.get_path_string(),
-                resolved_repo_contents_cache.get_path_string()
+                    resolved_output_base.get_path_string(),
+                    resolved_repo_contents_cache.get_path_string()
+                ),
+                "BAD_REPO_CONTENTS_CACHE",
             ));
         }
         if repo_contents_cache_path.starts_with(&workspace) {
@@ -407,13 +443,16 @@ pub fn prepare_repository_functions_with(
             // lifetime of a Bazel invocation, we treat files inside the main repo as immutable.
             // This can cause mysterious failures if we write files inside the main repo during
             // the invocation, as is often the case with the repo contents cache.
-            return Err(format!(
-                "The repo contents cache [{}] is inside the main repo [{}]. This can cause \
+            return Err(RepositorySetupError::new(
+                format!(
+                    "The repo contents cache [{}] is inside the main repo [{}]. This can cause \
                  spurious failures. Disable the repo contents cache with \
                  `--repo_contents_cache=`, or specify `--repo_contents_cache=<path outside the \
                  main repo>`.\n",
-                repo_contents_cache_path.get_path_string(),
-                workspace.get_path_string()
+                    repo_contents_cache_path.get_path_string(),
+                    workspace.get_path_string()
+                ),
+                "BAD_REPO_CONTENTS_CACHE",
             ));
         }
     }
@@ -426,9 +465,12 @@ pub fn prepare_repository_functions_with(
         // command's executors at the end of the command, so a server holds it only while a
         // command runs, as Java's does (checked in /proc/locks between commands of a Blaze
         // server). The GC idle task (env.addIdleTask) is not ported (package S4).
-        repo_contents_cache
-            .acquire_shared_lock()
-            .map_err(|_| "could not acquire lock on repo contents cache".to_string())?;
+        repo_contents_cache.acquire_shared_lock().map_err(|_| {
+            RepositorySetupError::new(
+                "could not acquire lock on repo contents cache",
+                "BAD_REPO_CONTENTS_CACHE",
+            )
+        })?;
     }
 
     let mut download_manager = DownloadManager::new(
@@ -466,13 +508,16 @@ pub fn prepare_repository_functions_with(
         Err(e) => {
             // It's important that the build stops ASAP, because this config file may be required
             // for security purposes, and the build must not proceed ignoring it.
-            return Err(format!(
-                "Failed to parse downloader config{}: {}",
-                match &e.location {
-                    Some(location) => format!(" at {location}"),
-                    None => String::new(),
-                },
-                e.message
+            return Err(RepositorySetupError::new(
+                format!(
+                    "Failed to parse downloader config{}: {}",
+                    match &e.location {
+                        Some(location) => format!(" at {location}"),
+                        None => String::new(),
+                    },
+                    e.message
+                ),
+                "BAD_DOWNLOADER_CONFIG",
             ));
         }
     }
@@ -552,7 +597,7 @@ pub fn prepare_repository_functions_with(
         setup.nonstrict_repo_env.clone(),
         fetcher,
     )
-    .map_err(|e| e.message.clone())?;
+    .map_err(|e| RepositorySetupError::new(e.message.clone(), e.code))?;
     let mut bzlmod_config = bzlmod_config;
     bzlmod_config.repository_directory_lookup = Arc::new(RepositoryDirectoryFunctionLookup);
     bzlmod_config.package_lookup = Arc::new(PackageLookupFunctionLookup);

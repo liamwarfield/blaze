@@ -858,6 +858,33 @@ pub fn evaluate_build_driver_keys(
     })
 }
 
+/// `skyframeExecutor.evaluateSkyKeys(eventHandler, Artifact.keys(artifacts), keepGoing)`: the
+/// coverage report artifacts, evaluated after the tests
+/// (`SkyframeBuildView.analyzeAndExecuteTargets`).
+///
+/// `parallelism` is Java's `DEFAULT_THREAD_COUNT`. PORT: Java evaluates uninterruptibly
+/// (`callUninterruptibly`, which re-asserts the interrupt afterwards); an interrupt of this
+/// evaluation is returned to the caller instead.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2260 SkyframeExecutor.evaluateSkyKeys
+pub fn evaluate_artifacts(
+    evaluator: &Evaluator,
+    artifacts: &[Artifact],
+    config: &ExecutionToolConfig,
+    parallelism: usize,
+    reporter: Arc<dyn ExtendedEventHandler>,
+) -> Result<EvaluationResult, Interrupted> {
+    let roots: Vec<SkyKey> = artifacts.iter().map(artifact_key).collect();
+    let ctx = EvaluationContext {
+        keep_going: config.keep_going,
+        parallelism,
+        event_handler: reporter,
+        // As in evaluate_build_driver_keys.
+        thread_stack_size: 16 << 20,
+        ..EvaluationContext::default()
+    };
+    evaluator.evaluate(&roots, &ctx)
+}
+
 /// Asks the Skyframe evaluator to run a single exclusive test (the `TestCompletionKey` of one
 /// exclusive test, `exclusiveTesting = true`).
 ///

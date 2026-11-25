@@ -395,6 +395,15 @@ pub trait ExecutableAction: Action {
     fn prepare(&self, exec_root: &blaze_vfs::Path) -> std::io::Result<()> {
         delete_outputs(self, exec_root)
     }
+
+    /// `NotifyOnActionCacheHit.actionCacheHit(context)` for the actions that implement it (the
+    /// `ActionCachedContext` is its event handler): `Some(recorded)` where Java's action is a
+    /// `NotifyOnActionCacheHit`, `None` (the default) otherwise. `TestRunnerAction` is handled
+    /// by the executor itself.
+    // Java: com/google/devtools/build/lib/actions/NotifyOnActionCacheHit.java:53 NotifyOnActionCacheHit.actionCacheHit
+    fn action_cache_hit(&self, _event_handler: &dyn blaze_events::EventHandler) -> Option<bool> {
+        None
+    }
 }
 
 /// `AbstractAction.deleteOutputs` without a bulk deleter or archived tree artifacts.

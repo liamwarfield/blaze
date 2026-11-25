@@ -1191,6 +1191,98 @@ mod blaze_command_dispatcher_test {
         );
     }
 
+    /// A subscriber that holds the command's event bus, as `ExecutionProgressReceiverSetup`
+    /// does: after the command, neither the bus nor the subscriber is alive.
+    ///
+    /// PORT: Blaze only (review 2026-11-25-server F2). Java's collector frees the cycle; here
+    /// `afterCommand` drops the bus's subscribers (`BlazeWorkspace.clearEventBus`,
+    /// `Reporter.clearEventBus`).
+    #[test]
+    fn no_memory_leak_of_event_bus_through_its_subscribers() {
+        struct HoldsBus {
+            _bus: Arc<dyn blaze_events::EventBus>,
+        }
+        impl blaze_events::EventBus for HoldsBus {
+            fn post(&self, _event: Arc<dyn blaze_events::Postable>) {}
+        }
+        type Retained = (
+            std::sync::Weak<crate::command_environment::CommandEventBus>,
+            std::sync::Weak<HoldsBus>,
+        );
+        let retained: Arc<Mutex<Option<Retained>>> = Arc::new(Mutex::new(None));
+        let cmd = {
+            let retained = retained.clone();
+            command(
+                annotation("register_subscriber", no_options, &[]),
+                move |env, _options| {
+                    let bus = env.get_event_bus().clone();
+                    let subscriber = Arc::new(HoldsBus { _bus: bus.clone() });
+                    bus.register(subscriber.clone());
+                    *retained.lock() = Some((Arc::downgrade(&bus), Arc::downgrade(&subscriber)));
+                    BlazeCommandResult::success()
+                },
+            )
+        };
+        let fixture = initialize_runtime(vec![commands(vec![cmd])]);
+        let dispatcher = dispatcher(&fixture, BlazeCommandDispatcher::UNKNOWN_SERVER_PID);
+
+        let result = exec(
+            &dispatcher,
+            &["register_subscriber"],
+            "test",
+            &RecordingOutErr::new(),
+        );
+        assert!(result.is_success());
+
+        let (bus, subscriber) = retained.lock().take().expect("the command ran");
+        assert!(
+            subscriber.upgrade().is_none(),
+            "the subscriber is kept alive by the command's event bus"
+        );
+        assert!(
+            bus.upgrade().is_none(),
+            "the command's event bus is kept alive by its subscriber"
+        );
+    }
+
+    /// An early exit returns the early result; `afterCommand` still runs and its result is
+    /// dropped (`BlazeCommandDispatcher.execExclusively`'s `finally`, which only logs it).
+    #[test]
+    fn early_exit_keeps_its_result_over_after_command() {
+        let before = command_failure(
+            "beforeCommandError",
+            failure_details::command::Code::InvocationPolicyInvalid,
+        );
+        let after = DetailedExitCode::of(FailureDetail {
+            message: "afterCommandError".to_string(),
+            category: Some(Category::BuildProgress(failure_details::BuildProgress {
+                code: failure_details::build_progress::Code::BesUploadLocalFileError as i32,
+            })),
+        });
+        let after_called = Arc::new(AtomicBool::new(false));
+        let fixture = initialize_runtime(vec![Arc::new(TestModule {
+            commands: vec![foo()],
+            before_command: Some({
+                let before = before.clone();
+                Box::new(move |_| Err(AbruptExitException::new(before.clone())))
+            }),
+            after_command: Some({
+                let after = after.clone();
+                let after_called = after_called.clone();
+                Box::new(move || {
+                    after_called.store(true, Ordering::SeqCst);
+                    Err(AbruptExitException::new(after.clone()))
+                })
+            }),
+            ..TestModule::default()
+        })]);
+        let dispatch = dispatcher(&fixture, BlazeCommandDispatcher::UNKNOWN_SERVER_PID);
+        let out_err = RecordingOutErr::new();
+        let result = exec(&dispatch, &["foo"], "test", &out_err);
+        assert!(after_called.load(Ordering::SeqCst));
+        assert_eq!(result.get_detailed_exit_code(), &before);
+    }
+
     fn failing_before_command(code: DetailedExitCode) -> Arc<dyn BlazeModule> {
         Arc::new(TestModule {
             before_command: Some(Box::new(move |_| {

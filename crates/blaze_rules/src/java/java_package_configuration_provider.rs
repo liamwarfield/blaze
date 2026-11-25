@@ -24,7 +24,7 @@ pub fn provider_key() -> ProviderKey {
 }
 
 /// A provider for Java per-package configuration.
-// Java: com/google/devtools/build/lib/rules/java/JavaPackageConfigurationProvider.java:38 JavaPackageConfigurationProvider
+// Java: com/google/devtools/build/lib/rules/java/JavaPackageConfigurationProvider.java:41 JavaPackageConfigurationProvider
 #[derive(Clone, Copy)]
 pub struct JavaPackageConfigurationProvider<'v> {
     underlying: StarlarkInfoWrapper<'v>,
@@ -46,7 +46,7 @@ impl<'v> JavaPackageConfigurationProvider<'v> {
     }
 
     /// `PROVIDER.wrap(value)`.
-    // Java: com/google/devtools/build/lib/rules/java/JavaPackageConfigurationProvider.java:124 JavaPackageConfigurationProvider.Provider.wrap
+    // Java: com/google/devtools/build/lib/rules/java/JavaPackageConfigurationProvider.java:120 JavaPackageConfigurationProvider.Provider.wrap
     pub fn wrap(value: Value<'v>, heap: Heap<'v>) -> starlark::Result<Self> {
         if is_struct_impl(value) {
             return Ok(JavaPackageConfigurationProvider {
@@ -70,7 +70,7 @@ impl<'v> JavaPackageConfigurationProvider<'v> {
     }
 
     /// Package specifications for which the configuration should be applied.
-    // Java: com/google/devtools/build/lib/rules/java/JavaPackageConfigurationProvider.java:54 JavaPackageConfigurationProvider.packageSpecifications
+    // Java: com/google/devtools/build/lib/rules/java/JavaPackageConfigurationProvider.java:59 JavaPackageConfigurationProvider.packageSpecifications
     fn package_specifications(&self) -> starlark::Result<Vec<&'v PackageSpecificationProvider>> {
         let elems = self.underlying.get_underlying_sequence("package_specs")?;
         let mut out = Vec::with_capacity(elems.len());
@@ -88,7 +88,7 @@ impl<'v> JavaPackageConfigurationProvider<'v> {
         Ok(out)
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaPackageConfigurationProvider.java:67 JavaPackageConfigurationProvider.javacoptsAsList
+    // Java: com/google/devtools/build/lib/rules/java/JavaPackageConfigurationProvider.java:72 JavaPackageConfigurationProvider.javacoptsAsList
     pub fn javacopts_as_list(&self) -> starlark::Result<Vec<String>> {
         Ok(tokenize_java_options_nested_set(
             &self
@@ -97,14 +97,14 @@ impl<'v> JavaPackageConfigurationProvider<'v> {
         ))
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaPackageConfigurationProvider.java:76 JavaPackageConfigurationProvider.data
+    // Java: com/google/devtools/build/lib/rules/java/JavaPackageConfigurationProvider.java:81 JavaPackageConfigurationProvider.data
     pub fn data(&self) -> starlark::Result<NestedSet<Artifact>> {
         self.underlying.get_underlying_nested_set_artifacts("data")
     }
 
     /// Returns true if this configuration matches the current label: that is, if the label's
     /// package is contained by any of the package specifications.
-    // Java: com/google/devtools/build/lib/rules/java/JavaPackageConfigurationProvider.java:88 JavaPackageConfigurationProvider.matches
+    // Java: com/google/devtools/build/lib/rules/java/JavaPackageConfigurationProvider.java:93 JavaPackageConfigurationProvider.matches
     pub fn matches(&self, label: &Label) -> starlark::Result<bool> {
         // Do not use streams here as they create excessive garbage.
         for provider in self.package_specifications()? {

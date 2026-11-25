@@ -1,15 +1,13 @@
 //! The precomputed values and client environment variables the bzlmod SkyFunctions read.
 //!
-//! PORT: move to blaze_sky_loading. `PrecomputedValue` and `ClientEnvironmentFunction` live in
-//! `lib/skyframe`; `blaze_sky_loading` has a `PrecomputedKey` of its own, but this crate cannot
-//! depend on it (it would pull in the package loading crates). These local copies keep the same
-//! function names (`PRECOMPUTED`, `CLIENT_ENVIRONMENT_VARIABLE`) and key formats. Both kinds of
-//! `PrecomputedKey` can live in one evaluator: they are different Rust key types, so the graph
-//! keeps them apart.
+//! The precomputed key and value types are `blaze_skyframe::precomputed`'s, shared with
+//! `blaze_sky_loading` (one graph node per variable name, as Java's interned keys).
+//!
+//! PORT: move `ClientEnvironmentFunction` to blaze_sky_loading (`lib/skyframe`); this crate
+//! cannot depend on it (it would pull in the package loading crates). The local copy keeps the
+//! function name `CLIENT_ENVIRONMENT_VARIABLE` and the key format.
 
-use std::any::Any;
 use std::fmt;
-use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -17,129 +15,16 @@ use std::time::SystemTime;
 use blaze_bzlmod_model::{
     BazelCompatibilityMode, CheckDirectDepsMode, LockfileMode, ModuleOverride,
 };
-use blaze_skyframe::{
-    ComputeError, Environment, EvaluatorBuilder, Interrupted, Key, SkyFunctionName,
-};
+use blaze_skyframe::{EvaluatorBuilder, FunctionHermeticity, Key, SkyFunctionName};
 use blaze_starlark::StarlarkSemantics;
 use blaze_vfs::PathFragment;
 use indexmap::{IndexMap, IndexSet};
 
-// Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:22 SkyFunctions.PRECOMPUTED
-pub const PRECOMPUTED: SkyFunctionName = SkyFunctionName("PRECOMPUTED");
+pub use blaze_skyframe::precomputed::{PRECOMPUTED, Precomputed, PrecomputedKey, PrecomputedValue};
+
 // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:24 SkyFunctions.CLIENT_ENVIRONMENT_VARIABLE
 pub const CLIENT_ENVIRONMENT_VARIABLE: SkyFunctionName =
     SkyFunctionName("CLIENT_ENVIRONMENT_VARIABLE");
-
-/// A value computed outside of Skyframe and injected into the graph. Port of `PrecomputedValue`.
-// Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:45 PrecomputedValue
-#[derive(Clone)]
-pub struct PrecomputedValue(pub Arc<dyn Any + Send + Sync>);
-
-impl PrecomputedValue {
-    // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:113 PrecomputedValue.<init>
-    pub fn new<T: Send + Sync + 'static>(value: T) -> PrecomputedValue {
-        PrecomputedValue(Arc::new(value))
-    }
-
-    /// Returns the value of the variable.
-    // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:118 PrecomputedValue.get
-    pub fn get(&self) -> &Arc<dyn Any + Send + Sync> {
-        &self.0
-    }
-}
-
-impl fmt::Debug for PrecomputedValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // PORT: Java prints "<BuildVariable " + value + ">"; the value is type-erased here.
-        f.write_str("<BuildVariable>")
-    }
-}
-
-/// `SkyKey` of a [`PrecomputedValue`]: the variable name. `Debug` is `PRECOMPUTED:<name>`
-/// (Java `AbstractSkyKey.toString`).
-// Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:191 PrecomputedValue.Key
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PrecomputedKey(pub &'static str);
-
-impl fmt::Debug for PrecomputedKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", PRECOMPUTED, self.0)
-    }
-}
-
-impl Key for PrecomputedKey {
-    type Value = PrecomputedValue;
-    const FUNCTION: SkyFunctionName = PRECOMPUTED;
-}
-
-/// A typed helper for one precomputed variable. Port of `PrecomputedValue.Precomputed`.
-// Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:145 PrecomputedValue.Precomputed
-pub struct Precomputed<T> {
-    key: PrecomputedKey,
-    _value: PhantomData<fn() -> T>,
-}
-
-impl<T: Send + Sync + 'static> Precomputed<T> {
-    // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:148 Precomputed.<init>
-    pub const fn new(key: &'static str) -> Precomputed<T> {
-        Precomputed {
-            key: PrecomputedKey(key),
-            _value: PhantomData,
-        }
-    }
-
-    // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:156 Precomputed.getKey
-    pub fn get_key(&self) -> PrecomputedKey {
-        self.key
-    }
-
-    /// Retrieves the value of this variable from Skyframe (`None`: unavailable).
-    // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:167 Precomputed.get
-    pub fn get(&self, env: &mut Environment<'_>) -> Result<Option<Arc<T>>, Interrupted> {
-        let Some(value) = env.get_value(self.key)? else {
-            return Ok(None);
-        };
-        Ok(Some(self.downcast(&value)))
-    }
-
-    /// `Objects.requireNonNull(P.get(env))`, and Java's unboxing of a `Precomputed<Boolean>`:
-    /// the variable must be injected.
-    pub fn get_required(&self, env: &mut Environment<'_>) -> Result<Arc<T>, ComputeError> {
-        match self.get(env)? {
-            Some(v) => Ok(v),
-            None => panic!("NullPointerException: precomputed value {:?}", self.key),
-        }
-    }
-
-    fn downcast(&self, value: &PrecomputedValue) -> Arc<T> {
-        value.0.clone().downcast::<T>().unwrap_or_else(|_| {
-            panic!(
-                "ClassCastException: precomputed value {:?} is not a {}",
-                self.key,
-                std::any::type_name::<T>()
-            )
-        })
-    }
-
-    /// Injects a value into an evaluator being built.
-    // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:176 Precomputed.set
-    pub fn set(&self, builder: EvaluatorBuilder, value: T) -> EvaluatorBuilder {
-        builder.inject(self.key, PrecomputedValue::new(value))
-    }
-
-    /// Injects a value between evaluations.
-    // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:176 Precomputed.set
-    pub fn set_on(&self, evaluator: &blaze_skyframe::Evaluator, value: T) {
-        evaluator.inject(self.key, PrecomputedValue::new(value));
-    }
-}
-
-impl<T> fmt::Debug for Precomputed<T> {
-    // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:181 Precomputed.toString
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Precomputed{{key={:?}, shareable=true}}", self.key)
-    }
-}
 
 // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:85 PrecomputedValue.STARLARK_SEMANTICS
 pub static STARLARK_SEMANTICS: Precomputed<StarlarkSemantics> =
@@ -213,6 +98,13 @@ impl fmt::Debug for ClientEnvironmentKey {
 impl Key for ClientEnvironmentKey {
     type Value = EnvironmentVariableValue;
     const FUNCTION: SkyFunctionName = CLIENT_ENVIRONMENT_VARIABLE;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:24 SkyFunctions.CLIENT_ENVIRONMENT_VARIABLE (createNonHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
+    /// Java: `EnvironmentVariableValue` is a record of one nullable string.
+    // Java: com/google/devtools/build/lib/skyframe/EnvironmentVariableValue.java:28 EnvironmentVariableValue
+    fn values_equal(old: &EnvironmentVariableValue, new: &EnvironmentVariableValue) -> bool {
+        old == new
+    }
 }
 
 /// The value of a client environment variable (`None`: unset). Port of

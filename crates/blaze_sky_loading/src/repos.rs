@@ -16,7 +16,9 @@ use std::sync::Arc;
 
 use blaze_cmdline::repository_name::{BUILTINS, MAIN};
 use blaze_cmdline::{PackageIdentifier, RepositoryMapping, RepositoryName};
-use blaze_skyframe::{ComputeError, Environment, Key, SkyFunctionException, SkyFunctionName};
+use blaze_skyframe::{
+    ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionException, SkyFunctionName,
+};
 use blaze_vfs::{FileSystemRef, Path, PathFragment, Root, RootedPath, Symlinks};
 
 use crate::directories::LoadingDirectories;
@@ -176,6 +178,13 @@ impl fmt::Debug for RepositoryMappingKey {
 impl Key for RepositoryMappingKey {
     type Value = RepositoryMappingValue;
     const FUNCTION: SkyFunctionName = sky_functions::REPOSITORY_MAPPING;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:148 SkyFunctions.REPOSITORY_MAPPING (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: a record (mapping, module name, module version); `RepositoryMapping.equals` compares the entries and the context repository.
+    // Java: com/google/devtools/build/lib/skyframe/RepositoryMappingValue.java:47 RepositoryMappingValue
+    fn values_equal(old: &RepositoryMappingValue, new: &RepositoryMappingValue) -> bool {
+        old == new
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -221,6 +230,11 @@ impl fmt::Debug for RepositoryDirectoryKey {
 impl Key for RepositoryDirectoryKey {
     type Value = RepositoryDirectoryValue;
     const FUNCTION: SkyFunctionName = sky_functions::REPOSITORY_DIRECTORY;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:134 SkyFunctions.REPOSITORY_DIRECTORY (createNonHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
+    // Default `values_equal` (never equal): Java's `RepositoryDirectoryValue` is a
+    // `NotComparableSkyValue`, so that dependents are dirtied whenever a repo is re-fetched.
+    // Java: com/google/devtools/build/lib/rules/repository/RepositoryDirectoryValue.java:40 RepositoryDirectoryValue
 }
 
 // ---------------------------------------------------------------------------------------------

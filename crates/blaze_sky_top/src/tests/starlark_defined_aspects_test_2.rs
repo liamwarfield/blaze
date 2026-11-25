@@ -342,8 +342,8 @@ fn assert_contains_exactly_in_order<T: PartialEq + Debug>(actual: &[T], expected
 /// `try { update(...); assertThat(keepGoing()).isTrue(); assertThat(hasError).isTrue(); }
 /// catch (<exception> e) {}`.
 ///
-/// PORT: the harness reports Java's `TargetParsingException` and `ViewCreationFailedException`
-/// alike as an `Err` of `update`.
+/// The `Err` variant of `update` names the Java exception class
+/// (`UpdateError::TargetParsing` is `TargetParsingException`).
 fn update_expecting_failure(
     t: &mut AnalysisTestCase,
     aspects: &[&str],
@@ -355,9 +355,19 @@ fn update_expecting_failure(
         let result = result.unwrap_or_else(|e| panic!("update failed with keep_going: {e:?}"));
         assert!(has_error(result), "expected an analysis error");
     } else {
-        assert!(
-            result.is_err(),
-            "expected {java_exception} from update({aspects:?}, {labels:?})"
+        let e = match result {
+            Ok(_) => panic!("expected {java_exception} from update({aspects:?}, {labels:?})"),
+            Err(e) => e,
+        };
+        let thrown = match e {
+            crate::testing::UpdateError::ViewCreationFailed { .. } => "ViewCreationFailedException",
+            crate::testing::UpdateError::InvalidConfiguration(_) => "InvalidConfigurationException",
+            crate::testing::UpdateError::Interrupted => "InterruptedException",
+            crate::testing::UpdateError::TargetParsing(_) => "TargetParsingException",
+        };
+        assert_eq!(
+            thrown, java_exception,
+            "update({aspects:?}, {labels:?}) threw {thrown}: {e}"
         );
     }
 }

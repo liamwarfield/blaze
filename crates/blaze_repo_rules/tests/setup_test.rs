@@ -116,6 +116,7 @@ impl<'a> Command<'a> {
             },
             fs(),
         )
+        .map_err(|e| e.message)
     }
 
     fn fetch_setup<'b>(&'b self, parsed: &'b Parsed) -> FetchSetup<'b> {
@@ -325,6 +326,31 @@ fn repo_contents_cache_inside_the_main_repo_is_refused() {
             ws = s.workspace.display()
         )
     );
+}
+
+/// The `AbruptExitException`'s detailed exit code is `ExternalRepository.BAD_REPO_CONTENTS_CACHE`
+/// (exit 2 on the oracle; commands review follow-up, exit-code family of the e8b79c0 suite).
+// Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:392 BazelRepositoryModule.beforeCommand
+#[test]
+fn repo_contents_cache_inside_the_main_repo_has_its_code() {
+    let s = Scratch::new();
+    let command = Command::new(&s);
+    let parsed = parse(&["--repository_cache=", "--repo_contents_cache=cc"]);
+    let setup = command.fetch_setup(&parsed);
+    let e = match prepare_repository_functions_with(
+        &setup,
+        &CommandInputs {
+            output_user_root: command.output_user_root,
+            common_command_options: Some(&parsed.common),
+            auth_and_tls_options: Some(&parsed.auth),
+            local_execution_options: None,
+        },
+        fs(),
+    ) {
+        Ok(_) => panic!("expected the setup to fail"),
+        Err(e) => e,
+    };
+    assert_eq!(e.code, Some("BAD_REPO_CONTENTS_CACHE"));
 }
 
 // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:366 BazelRepositoryModule.beforeCommand

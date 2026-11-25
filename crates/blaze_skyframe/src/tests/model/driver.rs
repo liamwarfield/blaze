@@ -63,7 +63,7 @@ impl Key for ModelKey {
     const FUNCTION: SkyFunctionName = SkyFunctionName("MODEL");
     // Java: GraphTester.NonHermeticKey (CHANGE-invalidating a hermetic key throws,
     // InvalidatingNodeVisitor.java:467).
-    const HERMETICITY: Option<FunctionHermeticity> = Some(FunctionHermeticity::Nonhermetic);
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
     fn values_equal(old: &i64, new: &i64) -> bool {
         old == new
     }
@@ -82,7 +82,7 @@ impl fmt::Debug for OpaqueModelKey {
 impl Key for OpaqueModelKey {
     type Value = i64;
     const FUNCTION: SkyFunctionName = SkyFunctionName("MODEL_OPAQUE");
-    const HERMETICITY: Option<FunctionHermeticity> = Some(FunctionHermeticity::Nonhermetic);
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
 }
 
 fn node_of(key: &SkyKey) -> Option<NodeId> {

@@ -745,6 +745,17 @@ def selftest():
         rc2, rep2, log2 = run(argv(b, "selftest-no-run") + ["--no-run"])
         st.check("--no-run with the binary that made the outputs never exits 0",
                  rc == 0 and rc2 == 1, "fresh run exit %s, --no-run exit %s" % (rc, rc2))
+        # M7: the workerd branch through the launcher (empty work copies made here, so nothing
+        # is copied from the corpus; the fakes ignore the workspace).
+        for d in ("workerd", "workerd-blaze"):
+            os.makedirs(os.path.join(fh.cache, "work", d), exist_ok=True)
+        wcell = cell_id("workerd", cells_for("workerd", ["query"])[0])
+        rc3, rep3, log3 = run(["--binary", b, "--label", "selftest-workerd", "--project",
+                               "workerd", "--command", "query", "--cells",
+                               "^" + re.escape(wcell) + "$"])
+        cl = [r["class"] for r in (rep3 or {}).get("cases", [])]
+        st.check("M7: a workerd cell runs through the launcher", rc3 == 0
+                 and cl == [cc.IDENTICAL], "exit %s, %s" % (rc3, cl))
 
     return cc.selftest_tool(
         "query/compare", os.path.abspath(__file__), argv,

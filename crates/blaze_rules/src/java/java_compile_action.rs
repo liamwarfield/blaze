@@ -47,12 +47,12 @@ use super::java_compile_action_context::{Dependencies, JavaCompileActionContext}
 use super::java_plugin_info::JavaPluginData;
 
 /// `UUID.fromString("e423747c-2827-49e6-b961-f6c08c10bb51")`: (least, most) significant bits.
-// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:96 JavaCompileAction.GUID
+// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:99 JavaCompileAction.GUID
 const GUID_LEAST: u64 = 0xb961_f6c0_8c10_bb51;
 const GUID_MOST: u64 = 0xe423_747c_2827_49e6;
 
 /// `ParamFileInfo.builder(UNQUOTED).setUseAlways(true).build()`.
-// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:98 JavaCompileAction.PARAM_FILE_INFO
+// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:101 JavaCompileAction.PARAM_FILE_INFO
 fn param_file_info() -> ParamFileInfo {
     ParamFileInfo::builder(ParameterFileType::UNQUOTED)
         .set_use_always(true)
@@ -60,7 +60,7 @@ fn param_file_info() -> ParamFileInfo {
 }
 
 /// `ResourceSet.createWithRamCpu(750, 1)`.
-// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:94 JavaCompileAction.LOCAL_RESOURCES
+// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:97 JavaCompileAction.LOCAL_RESOURCES
 fn local_resources() -> ResourceSet {
     ResourceSet::create_with_ram_cpu(/* memory_mb= */ 750.0, /* cpu= */ 1.0)
 }
@@ -73,7 +73,7 @@ fn classpath_mode_ordinal(mode: JavaClasspathMode) -> i32 {
         .expect("enum constant") as i32
 }
 
-// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:101 JavaCompileAction.CompilationType
+// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:104 JavaCompileAction.CompilationType
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompilationType {
     JAVAC,
@@ -84,7 +84,7 @@ pub enum CompilationType {
 }
 
 impl CompilationType {
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:109 JavaCompileAction.CompilationType.mnemonic
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:111 JavaCompileAction.CompilationType.mnemonic
     pub fn mnemonic(self) -> &'static str {
         match self {
             CompilationType::JAVAC => "Javac",
@@ -95,7 +95,7 @@ impl CompilationType {
 
 /// `JavaCompileAction.ReducedClasspath`: the reduced jars and the lengths of the reduced and
 /// full classpaths.
-// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:207 JavaCompileAction.ReducedClasspath
+// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:294 JavaCompileAction.ReducedClasspath
 #[allow(dead_code)]
 pub struct ReducedClasspath {
     pub reduced_jars: NestedSet<Artifact>,
@@ -104,7 +104,7 @@ pub struct ReducedClasspath {
 }
 
 impl ReducedClasspath {
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:212 JavaCompileAction.ReducedClasspath.<init>
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:299 JavaCompileAction.ReducedClasspath.<init>
     pub fn new(reduced_jars: Vec<Artifact>, full_length: usize) -> ReducedClasspath {
         let reduced_length = reduced_jars.len();
         ReducedClasspath {
@@ -117,7 +117,7 @@ impl ReducedClasspath {
 
 /// The progress message of a Java compilation (`JavaCompileAction.ProgressMessage` with the
 /// prefix of its subclass).
-// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:431 JavaCompileAction.ProgressMessage
+// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:518 JavaCompileAction.ProgressMessage
 #[derive(Clone, Debug)]
 pub struct ProgressMessage {
     prefix: &'static str,
@@ -128,12 +128,12 @@ pub struct ProgressMessage {
 }
 
 impl ProgressMessage {
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:449 JavaCompileAction.ProgressMessage.prefix
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:536 JavaCompileAction.ProgressMessage.prefix
     pub fn prefix(&self) -> &'static str {
         self.prefix
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:438 JavaCompileAction.ProgressMessage.<init>
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:525 JavaCompileAction.ProgressMessage.<init>
     pub fn new(
         prefix: &'static str,
         output: &Artifact,
@@ -150,7 +150,7 @@ impl ProgressMessage {
         }
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:452 JavaCompileAction.ProgressMessage.toString
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:539 JavaCompileAction.ProgressMessage.toString
     pub fn to_string_java(&self) -> String {
         let mut sb = String::from(self.prefix);
         sb.push(' ');
@@ -164,7 +164,7 @@ impl ProgressMessage {
         sb
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:465 JavaCompileAction.ProgressMessage.appendProcessorNames
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:548 JavaCompileAction.ProgressMessage.appendProcessorNames
     fn append_processor_names(sb: &mut String, processor_classes: &NestedSet<String>) {
         if processor_classes.is_empty() {
             return;
@@ -186,7 +186,7 @@ impl ProgressMessage {
 
     /// Append an input count to the progress message, e.g. "2 source jars". If an input count
     /// has already been appended, prefix with ", ".
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:486 JavaCompileAction.ProgressMessage.appendCount
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:545 JavaCompileAction.ProgressMessage.appendCount
     fn append_count(sb: &mut String, mut first: bool, count: usize, name: &str) -> bool {
         if count > 0 {
             if !first {
@@ -206,7 +206,7 @@ impl ProgressMessage {
 }
 
 /// Action that represents a Java compilation.
-// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:92 JavaCompileAction
+// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:96 JavaCompileAction
 pub struct JavaCompileAction {
     base: AbstractAction,
     tools: NestedSet<Artifact>,
@@ -287,20 +287,20 @@ pub(crate) fn merge_maps(
 }
 
 impl JavaCompileAction {
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:628 JavaCompileAction.getIncompleteEnvironmentForTesting
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:715 JavaCompileAction.getIncompleteEnvironmentForTesting
     pub fn get_incomplete_environment_for_testing(&self) -> IndexMap<String, String> {
         self.get_environment().get_fixed_env()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:634 JavaCompileAction.getPossibleInputsForTesting
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:721 JavaCompileAction.getPossibleInputsForTesting
     pub fn get_possible_inputs_for_testing(&self) -> Option<NestedSet<Artifact>> {
         None
     }
 
     /// `getExtraActionInfo(actionKeyContext)`: the `ExtraActionInfo` of extra actions, extended
     /// with the `JavaCompileInfo` of the action's `ExtraActionInfoSupplier`.
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:503 JavaCompileAction.getExtraActionInfo
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:204 JavaCompileAction.ExtraActionInfoSupplier.extend
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:590 JavaCompileAction.getExtraActionInfo
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:291 JavaCompileAction.ExtraActionInfoSupplier.extend
     pub fn get_extra_action_info(&self) -> ! {
         // PORT: extra actions (`extra_action`, `action_listener`, the `ExtraActionInfo` /
         // `JavaCompileInfo` protos of extra_actions_base.proto) are not ported; the supplier's
@@ -311,7 +311,7 @@ impl JavaCompileAction {
         )
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:132 JavaCompileAction.<init>
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:138 JavaCompileAction.<init>
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         compilation_type: CompilationType,
@@ -384,7 +384,7 @@ impl JavaCompileAction {
     }
 
     /// Computes all of a JavaCompileAction's inputs.
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:107 JavaCompileAction.allInputs
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:157 JavaCompileAction.allInputs
     pub fn all_inputs(
         mandatory_inputs: &NestedSet<Artifact>,
         transitive_inputs: &NestedSet<Artifact>,
@@ -409,7 +409,7 @@ impl JavaCompileAction {
         self.output_deps_proto.as_ref()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:561 JavaCompileAction.getCommandLines
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:648 JavaCompileAction.getCommandLines
     pub fn get_command_lines(&self) -> CommandLines {
         let mut builder = CommandLines::builder();
         builder
@@ -428,7 +428,7 @@ impl JavaCompileAction {
         builder.build()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:573 JavaCompileAction.getFullClasspathLine
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:660 JavaCompileAction.getFullClasspathLine
     fn get_full_classpath_line(&self) -> CommandLineRef {
         let mut classpath_line = CustomCommandLine::builder();
         classpath_line
@@ -455,7 +455,7 @@ impl JavaCompileAction {
     /// dependencies and the jars needed to build those (read from the produced .jdeps file).
     /// This duplicates the logic from
     /// `com.google.devtools.build.buildjar.javac.plugins.dependency.DependencyModule#computeStrictClasspath`.
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:176 JavaCompileAction.getReducedClasspath
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:263 JavaCompileAction.getReducedClasspath
     pub fn get_reduced_classpath(
         &self,
         action_execution_context: &dyn ActionExecutionContext,
@@ -506,10 +506,10 @@ impl JavaCompileAction {
     /// PORT: `JavaSpawn` is a `SimpleSpawn` whose fields hold what Java's overrides return:
     /// `getInputFiles` (inputs plus the param files), `isMandatoryOutput` (the mandatory output
     /// set: only `onlyMandatoryOutput` when it is set) and `getPathMapper`.
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:523 JavaCompileAction.JavaSpawn.<init>
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:545 JavaCompileAction.JavaSpawn.getInputFiles
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:550 JavaCompileAction.JavaSpawn.isMandatoryOutput
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:555 JavaCompileAction.JavaSpawn.getPathMapper
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:610 JavaCompileAction.JavaSpawn.<init>
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:632 JavaCompileAction.JavaSpawn.getInputFiles
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:637 JavaCompileAction.JavaSpawn.isMandatoryOutput
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:642 JavaCompileAction.JavaSpawn.getPathMapper
     fn java_spawn(
         &self,
         command_lines: &CommandLines,
@@ -568,7 +568,7 @@ impl JavaCompileAction {
         ))
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:219 JavaCompileAction.getReducedSpawn
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:306 JavaCompileAction.getReducedSpawn
     fn get_reduced_spawn(
         &self,
         action_execution_context: &dyn ActionExecutionContext,
@@ -636,7 +636,7 @@ impl JavaCompileAction {
         )
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:277 JavaCompileAction.getFullSpawn
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:364 JavaCompileAction.getFullSpawn
     fn get_full_spawn(
         &self,
         action_execution_context: &dyn ActionExecutionContext,
@@ -662,7 +662,7 @@ impl JavaCompileAction {
         )
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:313 JavaCompileAction.wrapIOException
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:400 JavaCompileAction.wrapIOException
     fn wrap_io_exception(&self, e: &std::io::Error, message: &str) -> ActionExecutionException {
         ActionExecutionException::from_exec_exception(
             &ExecException::Environmental(EnvironmentalExecException::with_cause(
@@ -678,7 +678,7 @@ impl JavaCompileAction {
     }
 
     /// Reads the full `.jdeps` output from the given spawn results.
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:783 JavaCompileAction.readFullOutputDeps
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:870 JavaCompileAction.readFullOutputDeps
     fn read_full_output_deps(
         &self,
         results: &[SpawnResult],
@@ -718,7 +718,7 @@ impl JavaCompileAction {
         })
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:805 JavaCompileAction.createActionExecutionException
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:892 JavaCompileAction.createActionExecutionException
     fn create_action_execution_exception(
         &self,
         message: &str,
@@ -745,8 +745,8 @@ impl JavaCompileAction {
 
 /// `ActionExecutionMetadata` of a Java compile spawn: the action's metadata, with
 /// `mayModifySpawnOutputsAfterExecution()` true.
-// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:639 JavaCompileAction.mayModifySpawnOutputsAfterExecution
-// Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:139 JavaHeaderCompileAction.mayModifySpawnOutputsAfterExecution
+// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:726 JavaCompileAction.mayModifySpawnOutputsAfterExecution
+// Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:161 JavaHeaderCompileAction.mayModifySpawnOutputsAfterExecution
 #[derive(Debug)]
 pub(crate) struct JavaActionMetadata(pub Arc<ActionMetadataSnapshot>);
 
@@ -780,7 +780,7 @@ impl ActionExecutionMetadata for JavaActionMetadata {
     }
 }
 
-// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:811 JavaCompileAction.createFailureDetail
+// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:887 JavaCompileAction.createFailureDetail
 pub(crate) fn create_failure_detail(
     message: &str,
     detailed_code: failure_details::java_compile::Code,
@@ -801,7 +801,7 @@ pub(crate) fn create_failure_detail(
 /// If the executor doesn't strip config prefixes (i.e. config stripping isn't turned on as a
 /// feature), this is a trivial copy. Returns the full deps proto (also written to disk to
 /// satisfy the action's declared output).
-// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:681 JavaCompileAction.createFullOutputDeps
+// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:768 JavaCompileAction.createFullOutputDeps
 pub(crate) fn create_full_output_deps(
     spawn_result: &SpawnResult,
     output_deps_proto: &Artifact,
@@ -830,7 +830,7 @@ pub(crate) fn create_full_output_deps(
     )
 }
 
-// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:768 JavaCompileAction.readExecutorJdeps
+// Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:778 JavaCompileAction.readExecutorJdeps
 fn read_executor_jdeps(
     spawn_result: &SpawnResult,
     output_deps_proto: &Artifact,
@@ -857,12 +857,12 @@ impl Action for JavaCompileAction {
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:129 JavaCompileAction.getMnemonic
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:216 JavaCompileAction.getMnemonic
     fn get_mnemonic(&self) -> String {
         self.compilation_type.mnemonic().to_owned()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:134 JavaCompileAction.computeKey
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:221 JavaCompileAction.computeKey
     fn compute_key(
         &self,
         action_key_context: &ActionKeyContext,
@@ -922,23 +922,23 @@ impl Action for JavaCompileAction {
         Ok(())
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:119 JavaCompileAction.getTools
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:206 JavaCompileAction.getTools
     fn get_tools(&self) -> NestedSet<Artifact> {
         self.tools.clone()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:124 JavaCompileAction.getEnvironment
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:211 JavaCompileAction.getEnvironment
     fn get_environment(&self) -> Arc<ActionEnvironment> {
         self.env.clone()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:427 JavaCompileAction.getRawProgressMessage
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:514 JavaCompileAction.getRawProgressMessage
     fn get_raw_progress_message(&self) -> Option<String> {
         Some(self.progress_message.to_string_java())
     }
 
     /// Returns the out-of-band execution data for this action.
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:596 JavaCompileAction.getExecutionInfo
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:683 JavaCompileAction.getExecutionInfo
     fn get_execution_info(&self) -> IndexMap<String, String> {
         let result = merge_maps(self.get_exec_properties(), self.execution_info.clone());
         if self.output_deps_proto.is_none() || !inmemory_jdeps_files(&self.configuration) {
@@ -960,7 +960,7 @@ impl Action for JavaCompileAction {
         Some(self)
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:616 JavaCompileAction.getStarlarkArgs
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:703 JavaCompileAction.getStarlarkArgs
     fn get_starlark_args(
         &self,
     ) -> Option<Vec<blaze_actions::analysis::starlark::args::RegisteredArgs>> {
@@ -984,7 +984,7 @@ impl Action for JavaCompileAction {
         Some(result)
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:586 JavaCompileAction.getStarlarkArgv
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:673 JavaCompileAction.getStarlarkArgv
     fn get_starlark_argv(&self) -> Result<Option<Vec<String>>, ActionApiError> {
         // Java: a CommandLineExpansionException becomes `new EvalException(ex)`.
         Ok(Some(self.get_arguments()?))
@@ -992,14 +992,14 @@ impl Action for JavaCompileAction {
 }
 
 impl CommandAction for JavaCompileAction {
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:610 JavaCompileAction.getArguments
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:697 JavaCompileAction.getArguments
     fn get_arguments(&self) -> Result<Vec<String>, CommandLineError> {
         self.get_command_lines().all_arguments()
     }
 }
 
 impl ExecutableAction for JavaCompileAction {
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:321 JavaCompileAction.execute
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:408 JavaCompileAction.execute
     fn execute(
         &self,
         action_execution_context: &dyn ActionExecutionContext,

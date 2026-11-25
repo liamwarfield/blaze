@@ -356,6 +356,8 @@ struct KeyPoolState {
 /// of a single worker key.
 // Java: com/google/devtools/build/lib/worker/WorkerPoolImpl.java:209 WorkerPoolImpl.WorkerKeyPool
 struct WorkerKeyPool {
+    /// Read only by Java's logging, which is skipped.
+    #[allow(dead_code)]
     key: Arc<WorkerKey>,
     max: i32,
     factory: Arc<dyn WorkerFactoryApi>,
@@ -579,8 +581,7 @@ impl WorkerKeyPool {
     // Java: com/google/devtools/build/lib/worker/WorkerPoolImpl.java:402 WorkerPoolImpl.WorkerKeyPool.reset
     fn reset(&self) {
         self.state.lock().shrunk = 0;
-        // clearing shrunk values for %s (key hash %d) worker pool (logged)
-        let _ = &self.key;
+        // PORT: skipped, logging ("clearing shrunk values for %s (key hash %d) worker pool").
     }
 
     /// Destroys all workers created in this pool.

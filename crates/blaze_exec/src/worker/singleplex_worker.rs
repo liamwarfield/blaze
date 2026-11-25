@@ -214,9 +214,18 @@ impl SingleplexWorker {
     // Java: com/google/devtools/build/lib/worker/SingleplexWorker.java:163 SingleplexWorker.addShutdownHook
     fn add_shutdown_hook(&self, state: &mut SingleplexState) {
         let shared = Arc::downgrade(&self.shared);
+        let status = self.base.status.clone();
+        // `this.destroy()` is virtual: a SandboxedWorker's also deletes its workDir.
+        let sandboxed_work_dir = self.sandboxed.as_ref().map(|_| self.work_dir.clone());
         state.shutdown_hook = Some(shutdown_hooks::add_shutdown_hook(Arc::new(move || {
             if let Some(shared) = shared.upgrade() {
                 shared.destroy_from_shutdown_hook();
+                status.set_killed();
+                if let Some(work_dir) = &sandboxed_work_dir {
+                    // Java: com/google/devtools/build/lib/worker/SandboxedWorker.java:225 SandboxedWorker.destroy
+                    // Caught IOException while deleting workdir (logged).
+                    let _ = work_dir.delete_tree();
+                }
             }
         })));
     }

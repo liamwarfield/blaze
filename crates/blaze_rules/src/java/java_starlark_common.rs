@@ -68,7 +68,7 @@ impl fmt::Display for JavaStarlarkCommon {
 /// `_builtins.internal.java_common_internal_do_not_use`
 /// (`new JavaStarlarkCommon(BazelJavaSemantics.INSTANCE)`), frozen, for the analysis-capable
 /// builtins environment.
-// Java: com/google/devtools/build/lib/bazel/rules/JavaRules.java:64 JavaRules.init
+// Java: com/google/devtools/build/lib/bazel/rules/JavaRules.java:38 JavaRules.init
 pub fn java_common_internal_value() -> OwnedFrozenValue {
     blaze_packages::builtins::env::freeze_value(|m| m.heap().alloc(JavaStarlarkCommon))
 }
@@ -80,7 +80,7 @@ impl<'v> StarlarkValue<'v> for JavaStarlarkCommon {
         Some(RES.methods())
     }
 
-    // Java: com/google/devtools/build/lib/starlarkbuildapi/java/JavaCommonApi.java:602 JavaCommonApi.getJavaToolchainProvider
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/java/JavaCommonApi.java:603 JavaCommonApi.getJavaToolchainProvider
     // Java: com/google/devtools/build/lib/starlarkbuildapi/java/JavaCommonApi.java:614 JavaCommonApi.getJavaRuntimeProvider
     // Java: com/google/devtools/build/lib/starlarkbuildapi/java/JavaCommonApi.java:623 JavaCommonApi.getBootClassPathInfo
     fn get_attr(&self, attribute: &str, _heap: Heap<'v>) -> Option<Value<'v>> {
@@ -247,7 +247,7 @@ fn is_versioned_shared_library(path: &str) -> bool {
     PATTERN.is_match(path)
 }
 
-// Java: com/google/devtools/build/lib/rules/java/JavaStarlarkCommon.java:372 JavaStarlarkCommon.printableType
+// Java: com/google/devtools/build/lib/rules/java/JavaStarlarkCommon.java:373 JavaStarlarkCommon.printableType
 fn printable_type(elem: Value) -> String {
     if let Some(info) = StarlarkInfo::from_value(elem) {
         if super::provider_util::is_starlark_info_with_schema(elem)
@@ -286,7 +286,7 @@ fn is_instance_of_provider(
     }
 }
 
-// Java: com/google/devtools/build/lib/rules/java/JavaStarlarkCommon.java:116 JavaStarlarkCommon.createHeaderCompilationAction
+// Java: com/google/devtools/build/lib/rules/java/JavaStarlarkCommon.java:117 JavaStarlarkCommon.createHeaderCompilationAction
 #[allow(clippy::too_many_arguments)]
 fn create_header_compilation_action<'v>(
     eval: &mut Evaluator<'v, '_, '_>,
@@ -376,7 +376,7 @@ fn create_header_compilation_action<'v>(
     )
 }
 
-// Java: com/google/devtools/build/lib/rules/java/JavaStarlarkCommon.java:177 JavaStarlarkCommon.createCompilationAction
+// Java: com/google/devtools/build/lib/rules/java/JavaStarlarkCommon.java:178 JavaStarlarkCommon.createCompilationAction
 #[allow(clippy::too_many_arguments)]
 fn create_compilation_action<'v>(
     eval: &mut Evaluator<'v, '_, '_>,
@@ -579,7 +579,7 @@ fn java_common_methods(builder: &mut MethodsBuilder) {
         panic!("UnsupportedOperationException: java_common.compile")
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaStarlarkCommon.java:116 JavaStarlarkCommon.createHeaderCompilationAction
+    // Java: com/google/devtools/build/lib/rules/java/JavaStarlarkCommon.java:117 JavaStarlarkCommon.createHeaderCompilationAction
     fn create_header_compilation_action<'v>(
         this: Value<'v>,
         #[starlark(require = pos)] ctx: Value<'v>,
@@ -629,7 +629,7 @@ fn java_common_methods(builder: &mut MethodsBuilder) {
         Ok(NoneType)
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaStarlarkCommon.java:177 JavaStarlarkCommon.createCompilationAction
+    // Java: com/google/devtools/build/lib/rules/java/JavaStarlarkCommon.java:178 JavaStarlarkCommon.createCompilationAction
     fn create_compilation_action<'v>(
         this: Value<'v>,
         #[starlark(require = pos)] ctx: Value<'v>,
@@ -862,7 +862,7 @@ fn java_common_methods(builder: &mut MethodsBuilder) {
             .experimental_google_legacy_api)
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaStarlarkCommon.java:104 JavaStarlarkCommon.checkJavaToolchainIsDeclaredOnRuleForStarlark
+    // Java: com/google/devtools/build/lib/rules/java/JavaStarlarkCommon.java:105 JavaStarlarkCommon.checkJavaToolchainIsDeclaredOnRuleForStarlark
     fn _check_java_toolchain_is_declared_on_rule<'v>(
         this: Value<'v>,
         #[starlark(require = pos)] actions: Value<'v>,

@@ -479,10 +479,15 @@ pub fn register_macro(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] implementation: Value<'v>,
         #[starlark(require = named)] attrs: Option<Value<'v>>,
         #[starlark(require = named)] inherit_attrs: Option<Value<'v>>,
-        #[starlark(require = named, default = false)] finalizer: bool,
+        #[starlark(require = named)] finalizer: Option<Value<'v>>,
         #[starlark(require = named)] doc: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<MacroFunction<'v>> {
+        // Java's BuiltinFunction checks the parameters' types (ParamDescriptor allowedTypes,
+        // StarlarkRuleFunctionsApi.java:202) before the method body runs, parameter by parameter.
+        // PORT: Java checks named arguments in the order of the call (BuiltinFunction.java:376
+        // addNamedArg); starlark-rust gives the function no call order, so they are checked in
+        // the order of declaration, which differs only for a call with two ill-typed arguments.
         if !is_starlark_function(implementation) {
             return Err(param_type_error(
                 "macro",
@@ -491,7 +496,33 @@ pub fn register_macro(builder: &mut GlobalsBuilder) {
                 "function",
             ));
         }
+        if let Some(a) = attrs {
+            if dict_entries(a).is_none() {
+                return Err(param_type_error("macro", "attrs", a, "dict"));
+            }
+        }
         let inherit_attrs = inherit_attrs.unwrap_or_else(Value::new_none);
+        // Java: @ParamType RuleFunctionApi, MacroFunctionApi, String, NoneType.
+        if !(inherit_attrs.is_none()
+            || inherit_attrs.unpack_str().is_some()
+            || rule_function_state(inherit_attrs).is_some()
+            || super::native_rule_class_of(inherit_attrs).is_some()
+            || macro_function_state(inherit_attrs).is_some())
+        {
+            return Err(param_type_error(
+                "macro",
+                "inherit_attrs",
+                inherit_attrs,
+                "rule, macro, string, or NoneType",
+            ));
+        }
+        let finalizer = match finalizer {
+            None => false,
+            Some(f) => match f.unpack_bool() {
+                Some(b) => b,
+                None => return Err(param_type_error("macro", "finalizer", f, "bool")),
+            },
+        };
         let doc = match doc {
             Some(d) if !d.is_none() => match d.unpack_str() {
                 Some(s) => Some(s),
@@ -518,28 +549,27 @@ pub fn register_macro(builder: &mut GlobalsBuilder) {
         let mut builder = MacroClassBuilder::new(implementation_pending.handle);
         let attr_entries = match attrs {
             None => Vec::new(),
-            Some(a) => match dict_entries(a) {
-                Some(e) => e,
-                None => {
-                    return Err(param_type_error("macro", "attrs", a, "dict"));
-                }
-            },
+            // Checked above.
+            Some(a) => dict_entries(a).expect("attrs is a dict"),
         };
         let mut attr_names: Vec<String> = Vec::new();
         for (key, value) in &attr_entries {
             // Dict.cast() does not support none-able values - so we type-check manually, and
             // translate Starlark None to Java null.
-            let descriptor = if value.is_none() {
-                None
-            } else {
-                as_descriptor(*value)
-            };
+            // Java: the key's cast, checkAttributeName, then the value's cast, all inside the
+            // try whose ClassCastException becomes the dict<K, V> error.
             let Some(attr_name) = key.unpack_str() else {
                 return Err(errorf(format!(
                     "got dict<{}, {}> for 'attrs', want dict<string, Attribute|None>",
                     starlark_type(*key),
                     starlark_type(*value)
                 )));
+            };
+            check_attribute_name(attr_name)?;
+            let descriptor = if value.is_none() {
+                None
+            } else {
+                as_descriptor(*value)
             };
             if !value.is_none() && descriptor.is_none() {
                 return Err(errorf(format!(
@@ -548,7 +578,6 @@ pub fn register_macro(builder: &mut GlobalsBuilder) {
                     starlark_type(*value)
                 )));
             }
-            check_attribute_name(attr_name)?;
             attr_names.push(attr_name.to_owned());
 
             // "name" and "visibility" attributes are added automatically by the builder.

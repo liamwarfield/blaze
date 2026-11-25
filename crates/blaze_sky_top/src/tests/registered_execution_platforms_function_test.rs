@@ -15,7 +15,7 @@ use blaze_sky_analysis::toolchains::{
 };
 use blaze_skyframe::EvaluationResult;
 
-use crate::build_view::BuildViewError;
+use crate::testing::UpdateError;
 use crate::tests::toolchain_test_case::{
     ToolchainTestCase, assert_contains_at_least, assert_contains_at_least_in_order,
     assert_error_is_toolchain_exception, assert_has_error, assert_has_error_entry,
@@ -432,7 +432,7 @@ fn test_invalid_execution_platform_label_doesnt_crash() {
         /* loading_phase_threads= */ 1,
     );
     assert!(
-        matches!(result, Err(BuildViewError::ViewCreationFailed { .. })),
+        matches!(result, Err(UpdateError::ViewCreationFailed { .. })),
         "invalid registered execution platform '//test:bad_exec_platform_label': \
          no such target '//test:bad_exec_platform_label'"
     );

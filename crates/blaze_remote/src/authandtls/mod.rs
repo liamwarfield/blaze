@@ -9,6 +9,7 @@
 pub mod call_credentials_provider;
 pub mod google_auth_utils;
 pub mod headers;
+pub mod jdk_server_cert_verifier;
 
 use std::io;
 

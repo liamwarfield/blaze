@@ -34,6 +34,8 @@ impl fmt::Debug for TestKey {
 impl Key for TestKey {
     type Value = IntegerValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("FOR_TESTING");
+    // Java: SkyFunctionName.FOR_TESTING (createHermetic), src/main/java com/google/devtools/build/skyframe/SkyFunctionName.java:32
+    const HERMETICITY: crate::FunctionHermeticity = crate::FunctionHermeticity::Hermetic;
     fn values_equal(old: &IntegerValue, new: &IntegerValue) -> bool {
         old == new
     }

@@ -12,7 +12,9 @@ use blaze_bzlmod::skyframe::BazelDepGraphKey;
 use blaze_bzlmod::skyframe::keys::SingleExtensionValue;
 use blaze_cmdline::RepositoryName;
 use blaze_sky_loading::repos::{RepositoryDirectoryKey, RepositoryDirectoryValue};
-use blaze_skyframe::{ComputeError, Environment, Key, SkyFunctionName, SkyKey};
+use blaze_skyframe::{
+    ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionName, SkyKey,
+};
 
 use crate::repository::repo_definition::{RepoDefinitionKey, RepoDefinitionValue};
 
@@ -55,6 +57,13 @@ impl fmt::Debug for BazelFetchAllKey {
 impl Key for BazelFetchAllKey {
     type Value = BazelFetchAllValue;
     const FUNCTION: SkyFunctionName = BAZEL_FETCH_ALL;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:174 SkyFunctions.BAZEL_FETCH_ALL (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: a record of the list of repositories.
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelFetchAllValue.java:34 BazelFetchAllValue
+    fn values_equal(old: &BazelFetchAllValue, new: &BazelFetchAllValue) -> bool {
+        old == new
+    }
 }
 
 /// Gather and fetch all the repositories from MODULE.bazel resolution and extensions evaluation.

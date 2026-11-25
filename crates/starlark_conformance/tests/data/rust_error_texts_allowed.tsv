@@ -34,56 +34,55 @@ starlark/src/assert/assert.rs	assertion failed	internal: starlark::assert test h
 starlark/src/debug/adapter/implementation.rs	Expression evaluation is only supported in the top-level frame	internal: starlark-rust debugger, not in Bazel
 starlark/src/debug/adapter/implementation.rs	Starlark debug session ended before responding (eval loop dropped without invoking command)	internal: starlark-rust debugger, not in Bazel
 starlark/src/debug/adapter/implementation.rs	Starlark debug session is no longer active (eval loop ended)	internal: starlark-rust debugger, not in Bazel
-starlark/src/environment.rs	Cannot import private symbol `{0}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/environment.rs	Module has no symbol `{0}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/environment.rs	Module has no symbol `{0}`, did you mean `{1}`?	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/environment.rs	Module symbol `{0}` is not exported	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/environment/modules.rs	Extra value already set to a value of type `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/environment/modules.rs	Retained memory profiling is not enabled	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/compiler/def.rs	Function has no type, while function was compiled with return type (internal error)	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/compiler/expr.rs	{message}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/compiler/module.rs	No imports are available, you tried `{0}` (no call to `Evaluator.set_loader`)	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/compiler/module.rs	Top level stmt count mismatch (internal error)	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/compiler/module.rs	Unexpected statement (internal error)	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/compiler/scope.rs	Identifiers in type expressions can only refer globals or builtins: `{0}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/compiler/scope.rs	Variable `{0}` not found	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/compiler/scope.rs	Variable `{0}` not found, did you mean `{1}`?	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/compiler/stmt.rs	Unpacked {1} values but expected {0}	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/environment.rs	Module has no symbol `{0}`	internal: host API, not reached by Starlark code (FrozenModule::get/get_any_visibility; Blaze callers map a miss to their own Java text); load() reports Java's text (patch 0057)
+starlark/src/environment.rs	Module has no symbol `{0}`, did you mean `{1}`?	internal: host API, not reached by Starlark code (FrozenModule::get_any_visibility; load() reports Java's text, patch 0057)
+starlark/src/environment.rs	Module symbol `{0}` is not exported	internal: host API, not reached by Starlark code (FrozenModule::get/get_option of a private name; load() reports Java's text, patch 0057)
+starlark/src/environment/modules.rs	Extra value already set to a value of type `{}`	internal: host API, not reached by Starlark code (Module::set_extra_value_no_overwrite)
+starlark/src/environment/modules.rs	Retained memory profiling is not enabled	internal: heap profiling, Blaze does not enable it
+starlark/src/eval/compiler/def.rs	Function has no type, while function was compiled with return type (internal error)	internal error (typechecked defs; Blaze compiles without type checking)
+starlark/src/eval/compiler/expr.rs	{message}	wrapper: passes on a message built at its call site (patch 0013 attribute error texts)
+starlark/src/eval/compiler/module.rs	No imports are available, you tried `{0}` (no call to `Evaluator.set_loader`)	internal: Blaze always sets a loader (eval::with_evaluator, LoadMap)
+starlark/src/eval/compiler/module.rs	Top level stmt count mismatch (internal error)	internal error
+starlark/src/eval/compiler/module.rs	Unexpected statement (internal error)	internal error
+starlark/src/eval/compiler/scope.rs	Identifiers in type expressions can only refer globals or builtins: `{0}`	unreachable: type expressions are not resolved (DialectTypes::ParseOnly, patch 0020; Bazel has no type checking by default)
+starlark/src/eval/compiler/scope.rs	Variable `{0}` not found	unreachable: dead variant, no constructor left after patches 0050-0052 (patch 0050 uses NameNotDefined)
+starlark/src/eval/compiler/scope.rs	Variable `{0}` not found, did you mean `{1}`?	unreachable: dead variant, no constructor left after patches 0050-0052 (patch 0050 uses NameNotDefined)
+starlark/src/eval/compiler/stmt.rs	Unpacked {1} values but expected {0}	unreachable: dead variant, no constructor left after patches 0050-0052 (patch 0051: instr_impl.rs gives Java's "too few/many values to unpack")
 starlark/src/eval/compiler/types.rs	Identifier is not resolved (internal error)	type checker: starlark-rust static typing, not run by Blaze
 starlark/src/eval/compiler/types.rs	Identifier is resolve as local variable (internal error)	type checker: starlark-rust static typing, not run by Blaze
 starlark/src/eval/compiler/types.rs	Module variable is not set: `{0}`	type checker: starlark-rust static typing, not run by Blaze
 starlark/src/eval/compiler/types.rs	Type payload not set (internal error)	type checker: starlark-rust static typing, not run by Blaze
 starlark/src/eval/compiler/types.rs	[,] can only be applied to dict or tuple functions in type expression	type checker: starlark-rust static typing, not run by Blaze
-starlark/src/eval/runtime/arguments.rs	Argument `{name}` occurs more than once	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/arguments.rs	Argument `{}` occurs more than once	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/arguments.rs	Found `{}` extra named parameter(s) for call to {function}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/arguments.rs	Found {count} extra positional argument(s) for call to {function}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/arguments.rs	The argument provided for **kwargs is not a dictionary	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/arguments.rs	The argument provided for *args is not an identifier	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/arguments.rs	The argument provided for *args is not iterable	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/arguments.rs	Wrong number of positional arguments, expected {}, got {got}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/arguments.rs	{0}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/cheap_call_stack.rs	Requested {0}-th top frame, but stack size is {1} (internal error)	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/cheap_call_stack.rs	Starlark call stack is already allocated	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/cheap_call_stack.rs	Starlark call stack overflow	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/evaluator.rs	Coverage not enabled	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/evaluator.rs	Evaluation cancelled	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/evaluator.rs	Execution duration limit of {0} ticks has been exceeded	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/evaluator.rs	Heap memory limit of {0} bytes exceeded.\nThis error is usually emitted some time after the limit is actually exceeded, so the span may not be informative.	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/evaluator.rs	Local variable `{0}` referenced before assignment	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/evaluator.rs	Max callstack size cannot be zero	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/evaluator.rs	Max callstack size is already set	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/evaluator.rs	Max heap size cannot be zero	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/evaluator.rs	Max heap size is already set	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/evaluator.rs	Max tick count cannot be zero	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/evaluator.rs	Max tick count is already set	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/evaluator.rs	Profile data already collected	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/evaluator.rs	Profile or instrumentation already enabled	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/evaluator.rs	Profiling was not enabled	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/evaluator.rs	Retained memory profiling can be only obtained from `FrozenModule`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/evaluator.rs	Top frame is not def (internal error)	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/file_loader.rs	ReturnFileLoader does not know the module `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/eval/runtime/file_loader.rs	ReturnOwnedFileLoader does not know the module `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/eval/runtime/arguments.rs	Argument `{name}` occurs more than once	replaced: every failure of ParametersSpec::collect becomes Java's text (spec.rs java_argument_error, patch 0052); oracle probes q91-q97 of loading-fix-1 equal
+starlark/src/eval/runtime/arguments.rs	Argument `{}` occurs more than once	replaced: every failure of ParametersSpec::collect becomes Java's text (spec.rs java_argument_error, patch 0052); oracle probes q91-q97 of loading-fix-1 equal
+starlark/src/eval/runtime/arguments.rs	Found `{}` extra named parameter(s) for call to {function}	replaced: every failure of ParametersSpec::collect becomes Java's text (spec.rs java_argument_error, patch 0052); oracle probes q91-q97 of loading-fix-1 equal; reachable only through host code that binds arguments itself (Arguments::no_named_args/positional/optional, e.g. blaze_analysis CtxSuper for ctx.super(x=1)); open: Java's text there is the builtin's argument error
+starlark/src/eval/runtime/arguments.rs	Found {count} extra positional argument(s) for call to {function}	replaced: every failure of ParametersSpec::collect becomes Java's text (spec.rs java_argument_error, patch 0052); oracle probes q91-q97 of loading-fix-1 equal
+starlark/src/eval/runtime/arguments.rs	The argument provided for **kwargs is not a dictionary	replaced: every failure of ParametersSpec::collect becomes Java's text (spec.rs java_argument_error, patch 0052); oracle probes q91-q97 of loading-fix-1 equal
+starlark/src/eval/runtime/arguments.rs	The argument provided for *args is not an identifier	replaced: every failure of ParametersSpec::collect becomes Java's text (spec.rs java_argument_error, patch 0052); oracle probes q91-q97 of loading-fix-1 equal
+starlark/src/eval/runtime/arguments.rs	The argument provided for *args is not iterable	replaced: every failure of ParametersSpec::collect becomes Java's text (spec.rs java_argument_error, patch 0052); oracle probes q91-q97 of loading-fix-1 equal
+starlark/src/eval/runtime/arguments.rs	Wrong number of positional arguments, expected {}, got {got}	reachable only through host code that binds arguments itself (Arguments::no_named_args/positional/optional, e.g. blaze_analysis CtxSuper for ctx.super(x=1)); open: Java's text there is the builtin's argument error
+starlark/src/eval/runtime/arguments.rs	{0}	wrapper: passes on a message built at its call site (FunctionError::Bazel, Java texts of patch 0052)
+starlark/src/eval/runtime/cheap_call_stack.rs	Requested {0}-th top frame, but stack size is {1} (internal error)	internal error
+starlark/src/eval/runtime/cheap_call_stack.rs	Starlark call stack is already allocated	internal error
+starlark/src/eval/runtime/cheap_call_stack.rs	Starlark call stack overflow	reachable only with a call chain deeper than blaze_starlark DEFAULT_MAX_CALLSTACK (1000 frames) while recursion is forbidden, i.e. 1000 distinct nested functions; Java has no limit (a JVM overflow crashes Bazel)
+starlark/src/eval/runtime/evaluator.rs	Coverage not enabled	internal: coverage API, Blaze does not use it
+starlark/src/eval/runtime/evaluator.rs	Evaluation cancelled	internal: cancellation (interrupt); blaze_starlark reports Interrupted
+starlark/src/eval/runtime/evaluator.rs	Execution duration limit of {0} ticks has been exceeded	unreachable: tick limit, not set by Blaze
+starlark/src/eval/runtime/evaluator.rs	Heap memory limit of {0} bytes exceeded.\nThis error is usually emitted some time after the limit is actually exceeded, so the span may not be informative.	unreachable: heap limit, not set by Blaze
+starlark/src/eval/runtime/evaluator.rs	Local variable `{0}` referenced before assignment	unreachable: dead variant, no constructor left after patches 0050-0052 (patch 0050 gives Java's "local variable 'x' is referenced before assignment.")
+starlark/src/eval/runtime/evaluator.rs	Max callstack size cannot be zero	internal: host API, not reached by Starlark code (Evaluator::set_max_callstack_size)
+starlark/src/eval/runtime/evaluator.rs	Max callstack size is already set	internal: host API, not reached by Starlark code (Evaluator::set_max_callstack_size)
+starlark/src/eval/runtime/evaluator.rs	Max heap size cannot be zero	internal: host API, not reached by Starlark code (heap limit, not set by Blaze)
+starlark/src/eval/runtime/evaluator.rs	Max heap size is already set	internal: host API, not reached by Starlark code (heap limit, not set by Blaze)
+starlark/src/eval/runtime/evaluator.rs	Max tick count cannot be zero	internal: host API, not reached by Starlark code (tick limit, not set by Blaze)
+starlark/src/eval/runtime/evaluator.rs	Max tick count is already set	internal: host API, not reached by Starlark code (tick limit, not set by Blaze)
+starlark/src/eval/runtime/evaluator.rs	Profile data already collected	internal: profiling API, Blaze does not use it
+starlark/src/eval/runtime/evaluator.rs	Profile or instrumentation already enabled	internal: profiling API, Blaze does not use it
+starlark/src/eval/runtime/evaluator.rs	Profiling was not enabled	internal: profiling API, Blaze does not use it
+starlark/src/eval/runtime/evaluator.rs	Retained memory profiling can be only obtained from `FrozenModule`	internal: profiling API, Blaze does not use it
+starlark/src/eval/runtime/evaluator.rs	Top frame is not def (internal error)	internal error
+starlark/src/eval/runtime/file_loader.rs	ReturnFileLoader does not know the module `{}`	internal: test loader, Blaze uses blaze_starlark::loader::LoadMap
+starlark/src/eval/runtime/file_loader.rs	ReturnOwnedFileLoader does not know the module `{}`	internal: test loader, Blaze uses blaze_starlark::loader::LoadMap
 starlark/src/eval/runtime/profile/bc.rs	Can't call `write_bc_profile` unless you first call `enable_bc_profile`.	internal: starlark-rust profiler
 starlark/src/eval/runtime/profile/data.rs	Different profile modes in profile	internal: starlark-rust profiler
 starlark/src/eval/runtime/profile/data.rs	Empty profile list cannot be merged	internal: starlark-rust profiler
@@ -105,11 +104,11 @@ starlark/src/pagable/starlark_pagable_impls.rs	expected non-zero i32, got 0	inte
 starlark/src/pagable/starlark_pagable_impls.rs	invalid Either tag: {}	internal: starlark-rust serialization
 starlark/src/pagable/vtable_registry.rs	Type `{}` was not registered for serialization	internal: starlark-rust serialization
 starlark/src/pagable/vtable_registry.rs	Type index `{index}` is out of range ({} types registered for deserialization)	internal: starlark-rust serialization
-starlark/src/read_line.rs	Rustyline is not supported on wasm32	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/read_line.rs	Rustyline is not supported on wasm32	internal: REPL, wasm only
 starlark/src/stdlib/breakpoint.rs	Breakpoint handler is not enabled for current Evaluator	internal: starlark-rust debugger, not in Bazel
 starlark/src/stdlib/breakpoint.rs	Selected :fail at breakpoint()	internal: starlark-rust debugger, not in Bazel
-starlark/src/stdlib/funcs/other.rs	{message}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/stdlib/partial.rs	partial() got multiple values for argument `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/stdlib/funcs/other.rs	{message}	wrapper: passes on a message built at its call site (patch 0013 attribute error texts)
+starlark/src/stdlib/partial.rs	partial() got multiple values for argument `{}`	unreachable: partial() is not in Bazel's universe (starlark_conformance dialect BAZEL_UNIVERSE)
 starlark/src/typing/oracle/ctx.rs	Binary operator `{bin_op}` is not available on the types `{left}` and `{right}`	type checker: starlark-rust static typing, not run by Blaze
 starlark/src/typing/oracle/ctx.rs	Call arguments incompatible, fn type is `{fun}`	type checker: starlark-rust static typing, not run by Blaze
 starlark/src/typing/oracle/ctx.rs	Call to a non-callable type `{ty}`	type checker: starlark-rust static typing, not run by Blaze
@@ -126,75 +125,75 @@ starlark/src/typing/starlark_value.rs	Type `{0}` is not callable	type checker: s
 starlark/src/typing/user.rs	Type `{0}` specifies custom callable, but underlying `StarlarkValue` is not callable	type checker: starlark-rust static typing, not run by Blaze
 starlark/src/typing/user.rs	Type `{0}` specifies custom indexable, but underlying `StarlarkValue` is not indexable	type checker: starlark-rust static typing, not run by Blaze
 starlark/src/typing/user.rs	Type `{0}` specifies custom iterable, but underlying `StarlarkValue` is not iterable	type checker: starlark-rust static typing, not run by Blaze
-starlark/src/values/error.rs	Cannot divide by zero	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/error.rs	Immutable	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/error.rs	Index `{0}` is out of bound	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/error.rs	Integer overflow	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/error.rs	Key `{0}` was not found	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/error.rs	Missing required parameter `{0}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/error.rs	Missing this parameter	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/error.rs	Negative shift count	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/error.rs	Object of type `{0}` has no attribute `{1}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/error.rs	Object of type `{0}` has no attribute `{1}`, did you mean `{2}`?	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/error.rs	Operation `{op}` not supported for types `{left}` and `{right}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/error.rs	Operation `{op}` not supported on type `{typ}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/error.rs	This operation mutates an iterable for an iterator while iterating.	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/error.rs	Too many recursion levels	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/error.rs	Type of parameter `{0}` doesn't match	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/error.rs	Type of parameters mismatch	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/error.rs	{0}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/layout/avalue.rs	Type `{}` does not support starlark deserialization	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/layout/avalue.rs	Type `{}` does not support starlark serialization	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/layout/avalues/complex.rs	Value of type `{0}` cannot be frozen	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/layout/complex.rs	Expected value of type `{}`, got: `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/layout/heap/arena.rs	Invalid BumpKind tag: {}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/layout/typed.rs	Expected frozen value of type `{expected}`, got unfrozen: `{value}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/layout/value.rs	Cycle detected when serializing value of type `{0}` to JSON	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/layout/value.rs	Expected value of type `{0}` but got `{1}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/layout/value.rs	Integer value is too big to fit in {integer_type}: {value}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/layout/value.rs	Value `{}` is not compatible with the signature `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/layout/value.rs	Value is not callable: {}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/layout/value.rs	{message}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/owned.rs	Expected value of type `{0}` but got `{1}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/owned.rs	OwnedFrozenValueTyped deserialization: expected type `{}`, got `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/error.rs	Cannot divide by zero	unreachable: dead variant (division texts are patch 0008's NumError/StarlarkIntError)
+starlark/src/values/error.rs	Immutable	unreachable: dead variant, no constructor left after patches 0050-0052
+starlark/src/values/error.rs	Index `{0}` is out of bound	unreachable: only in starlark-rust's replaced str.format (dot_format.rs format_upstream, dead since patch 0051) and f-strings (disabled); oracle probes q60-q68 equal
+starlark/src/values/error.rs	Integer overflow	unreachable: dead variant, no constructor left after patches 0050-0052
+starlark/src/values/error.rs	Key `{0}` was not found	unreachable: only in starlark-rust's replaced str.format (dot_format.rs format_upstream, dead since patch 0051) and f-strings (disabled); oracle probes q60-q68 equal
+starlark/src/values/error.rs	Missing required parameter `{0}`	unreachable: check_required runs after parse_positional_spec, which reports a missing argument with Java's text (patch 0052; probe q97 equal)
+starlark/src/values/error.rs	Missing this parameter	unreachable: dead variant, no constructor left after patches 0050-0052
+starlark/src/values/error.rs	Negative shift count	unreachable: dead variant, no constructor left after patches 0050-0052
+starlark/src/values/error.rs	Object of type `{0}` has no attribute `{1}`	unreachable: dead variant, no constructor left after patches 0050-0052 (patches 0013/0051 give Java's attribute texts)
+starlark/src/values/error.rs	Object of type `{0}` has no attribute `{1}`, did you mean `{2}`?	unreachable: dead variant, no constructor left after patches 0050-0052 (patches 0013/0051)
+starlark/src/values/error.rs	Operation `{op}` not supported for types `{left}` and `{right}`	fallback for an operator not in patch 0051's table of Java texts (bazel_unsupported_message); every Starlark operator is in it
+starlark/src/values/error.rs	Operation `{op}` not supported on type `{typ}`	fallback for an operator not in patch 0051's table of Java texts (bazel_unsupported_message); every Starlark operator is in it
+starlark/src/values/error.rs	This operation mutates an iterable for an iterator while iterating.	unreachable: dead variant, no constructor left after patches 0050-0052 (patch 0051 gives Java's text)
+starlark/src/values/error.rs	Too many recursion levels	reachable only for values nested deeper than 20000 levels (patch 0060); Java has no limit and crashes on a JVM stack overflow (oracle probe q88 crashes Bazel at 5000 for <)
+starlark/src/values/error.rs	Type of parameter `{0}` doesn't match	unreachable: dead variant, no constructor left after patches 0050-0052
+starlark/src/values/error.rs	Type of parameters mismatch	unreachable: dead variant, no constructor left after patches 0050-0052
+starlark/src/values/error.rs	{0}	wrapper: passes on a message built at its call site (ValueError::Bazel, Java texts of patches 0051/0052)
+starlark/src/values/layout/avalue.rs	Type `{}` does not support starlark deserialization	internal: pagable serialization, Blaze does not page values
+starlark/src/values/layout/avalue.rs	Type `{}` does not support starlark serialization	internal: pagable serialization, Blaze does not page values
+starlark/src/values/layout/avalues/complex.rs	Value of type `{0}` cannot be frozen	internal: a Blaze value type without freeze support (a Blaze bug, not user input)
+starlark/src/values/layout/complex.rs	Expected value of type `{}`, got: `{}`	internal: host API, not reached by Starlark code (typed downcast)
+starlark/src/values/layout/heap/arena.rs	Invalid BumpKind tag: {}	internal error
+starlark/src/values/layout/typed.rs	Expected frozen value of type `{expected}`, got unfrozen: `{value}`	internal: host API, not reached by Starlark code (typed downcast)
+starlark/src/values/layout/value.rs	Cycle detected when serializing value of type `{0}` to JSON	internal: serde to_json; Blaze's json module is blaze_starlark::json (Json.java port)
+starlark/src/values/layout/value.rs	Expected value of type `{0}` but got `{1}`	internal: host API, not reached by Starlark code (Value::downcast_ref_err)
+starlark/src/values/layout/value.rs	Integer value is too big to fit in {integer_type}: {value}	internal: host unpack of i32 (i32.rs); Bazel builtins report Java's "got N for P, want value in signed 32-bit range" (patch 0052; probes q79-q82 equal)
+starlark/src/values/layout/value.rs	Value `{}` is not compatible with the signature `{}`	unreachable: typed callable check, Blaze compiles without type checking
+starlark/src/values/layout/value.rs	Value is not callable: {}	unreachable: typed callable check (check_callable), Blaze compiles without type checking
+starlark/src/values/layout/value.rs	{message}	wrapper: passes on a message built at its call site (patch 0013 attribute error texts)
+starlark/src/values/owned.rs	Expected value of type `{0}` but got `{1}`	internal: host API, not reached by Starlark code (OwnedFrozenValue::downcast)
+starlark/src/values/owned.rs	OwnedFrozenValueTyped deserialization: expected type `{}`, got `{}`	internal: pagable serialization, Blaze does not page values
 starlark/src/values/types/bytes/globals.rs	bytes() argument must be bytes, str, or iterable of int, not '{}'	unreachable: bytes type, not in Bazel universe
 starlark/src/values/types/bytes/globals.rs	bytes() integer {} is out of range 0..=255	unreachable: bytes type, not in Bazel universe
 starlark/src/values/types/bytes/globals.rs	bytes() iterable must contain integers, not '{}'	unreachable: bytes type, not in Bazel universe
 starlark/src/values/types/bytes/value.rs	argument to 'in bytes' must be an int or bytes, not '{}'	unreachable: bytes type, not in Bazel universe
 starlark/src/values/types/bytes/value.rs	byte value must be in range 0..=255, got {}	unreachable: bytes type, not in Bazel universe
-starlark/src/values/types/dict/globals.rs	Found a non-pair element in the positional argument of dict(): {}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/dict/refs.rs	Value is not dict, value type: `{0}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/dict/value.rs	trying to mutate a frozen dict value	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/dict/globals.rs	Found a non-pair element in the positional argument of dict(): {}	unreachable: dict() uses java_update_pairs (patch 0051); probes q74, q75 equal
+starlark/src/values/types/dict/refs.rs	Value is not dict, value type: `{0}`	internal: host API, not reached by Starlark code (DictRef::from_value_err)
+starlark/src/values/types/dict/value.rs	trying to mutate a frozen dict value	Java's text with the type filled in (Starlark.java:264 checkMutable)
 starlark/src/values/types/enumeration/enum_type.rs	Unknown enum element `{0}`, given to `{1}`	unreachable: enum/record types, not in Bazel
 starlark/src/values/types/enumeration/enum_type.rs	enum values must all be distinct, but repeated `{0}`	unreachable: enum/record types, not in Bazel
-starlark/src/values/types/function.rs	`tuple[]` is implemented only for `tuple[T, ...]`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/int/int_or_big.rs	Integer overflow computing left shift	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/int/int_or_big.rs	Negative left shift	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/int/int_or_big.rs	Negative right shift	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/int/int_or_big.rs	got {0} for shift count, want value in signed 32-bit range	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/int/int_or_big.rs	{}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/list/value.rs	Value is not list, value type: `{0}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/list/value.rs	trying to mutate a frozen list value	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/function.rs	`tuple[]` is implemented only for `tuple[T, ...]`	unreachable: type expressions are not evaluated (DialectTypes::ParseOnly, patch 0020)
+starlark/src/values/types/int/int_or_big.rs	Integer overflow computing left shift	unreachable: the shift count is checked to fit 32 bits first (patch 0051), so it is never Big
+starlark/src/values/types/int/int_or_big.rs	Negative left shift	unreachable: patch 0051 reports Java's "negative shift count" first; probe q76 equal
+starlark/src/values/types/int/int_or_big.rs	Negative right shift	unreachable: patch 0051 reports Java's "negative shift count" first; probe q77 equal
+starlark/src/values/types/int/int_or_big.rs	got {0} for shift count, want value in signed 32-bit range	Java's text with the operand name filled in (StarlarkInt.java:339 toInt, called by shift with "shift count")
+starlark/src/values/types/int/int_or_big.rs	{}	wrapper: passes on a message built at its call site (patch 0028)
+starlark/src/values/types/list/value.rs	Value is not list, value type: `{0}`	internal: host API, not reached by Starlark code (ListRef::from_value_err)
+starlark/src/values/types/list/value.rs	trying to mutate a frozen list value	Java's text with the type filled in (Starlark.java:264 checkMutable)
 starlark/src/values/types/record/record_type.rs	Record instance cannot be created if record type is not assigned to a global variable	unreachable: enum/record types, not in Bazel
-starlark/src/values/types/set/refs.rs	Value is not set, value type: `{0}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/set/value.rs	trying to mutate a frozen set value	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/starlark_value_as_type.rs	Type `{}` does not support type parameters	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/string/dot_format.rs	Cannot mix manual and automatic numbering of positional fields	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/string/dot_format.rs	Cannot mix manual field specification and automatic field numbering in format string	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/string/dot_format.rs	Not enough parameters in format string	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/string/globals.rs	chr() parameter value is 0x{:x} which is not a valid UTF-8 codepoint	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/string/globals.rs	chr() parameter value negative integer {i}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/string/globals.rs	ord(): bytes argument must have length 1, not {}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/string/globals.rs	ord(): expected string or bytes, got '{}'	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/string/globals.rs	ord(): {} is not a single character string	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/string/interpolation.rs	Expecting format character (internal error)	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/string/interpolation.rs	Incomplete format	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/string/interpolation.rs	Not enough arguments for format string	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/string/interpolation.rs	Too many arguments for format string	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/string/interpolation.rs	Unsupported format character: {0:?}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/string/interpolation.rs	{m}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/string/methods.rs	at index {i} of sub, got element of type {}, want string	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/types/string/methods.rs	in call to {function}(), parameter 'sub' got value of type '{}', want 'string or tuple'	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/types/set/refs.rs	Value is not set, value type: `{0}`	internal: host API, not reached by Starlark code (SetRef::from_value_err)
+starlark/src/values/types/set/value.rs	trying to mutate a frozen set value	Java's text with the type filled in (Starlark.java:264 checkMutable)
+starlark/src/values/types/starlark_value_as_type.rs	Type `{}` does not support type parameters	unreachable: type expressions are not evaluated (patch 0020); a runtime `list[int]` indexes a builtin function, whose error is Java's (patch 0051)
+starlark/src/values/types/string/dot_format.rs	Cannot mix manual and automatic numbering of positional fields	Java's text (FormatParser.java:242 MixedTypeException)
+starlark/src/values/types/string/dot_format.rs	Cannot mix manual field specification and automatic field numbering in format string	unreachable: only in starlark-rust's replaced str.format (dot_format.rs format_upstream, dead since patch 0051) and f-strings (disabled); oracle probes q60-q68 equal
+starlark/src/values/types/string/dot_format.rs	Not enough parameters in format string	unreachable: only in starlark-rust's replaced str.format (dot_format.rs format_upstream, dead since patch 0051) and f-strings (disabled); oracle probes q60-q68 equal
+starlark/src/values/types/string/globals.rs	chr() parameter value is 0x{:x} which is not a valid UTF-8 codepoint	unreachable: chr() is not in Bazel's universe (blaze_starlark env.rs drops chr and ord)
+starlark/src/values/types/string/globals.rs	chr() parameter value negative integer {i}	unreachable: chr() is not in Bazel's universe (blaze_starlark env.rs drops chr and ord)
+starlark/src/values/types/string/globals.rs	ord(): bytes argument must have length 1, not {}	unreachable: ord() is not in Bazel's universe (blaze_starlark env.rs drops chr and ord)
+starlark/src/values/types/string/globals.rs	ord(): expected string or bytes, got '{}'	unreachable: ord() is not in Bazel's universe (blaze_starlark env.rs drops chr and ord)
+starlark/src/values/types/string/globals.rs	ord(): {} is not a single character string	unreachable: ord() is not in Bazel's universe (blaze_starlark env.rs drops chr and ord)
+starlark/src/values/types/string/interpolation.rs	Expecting format character (internal error)	internal error
+starlark/src/values/types/string/interpolation.rs	Incomplete format	unreachable: only in starlark-rust's replaced % (interpolation.rs percent_upstream, dead since patch 0051); oracle probes q69-q73 equal
+starlark/src/values/types/string/interpolation.rs	Not enough arguments for format string	unreachable: only in starlark-rust's replaced % (interpolation.rs percent_upstream, dead since patch 0051); oracle probes q69-q73 equal
+starlark/src/values/types/string/interpolation.rs	Too many arguments for format string	unreachable: only in starlark-rust's replaced % (interpolation.rs percent_upstream, dead since patch 0051); oracle probes q69-q73 equal
+starlark/src/values/types/string/interpolation.rs	Unsupported format character: {0:?}	unreachable: only in starlark-rust's replaced % (interpolation.rs percent_upstream, dead since patch 0051); oracle probes q69-q73 equal
+starlark/src/values/types/string/interpolation.rs	{m}	wrapper: passes on a message built at its call site (Java texts of patch 0051 for %)
+starlark/src/values/types/string/methods.rs	at index {i} of sub, got element of type {}, want string	Java's text with the operand filled in (Sequence.java:142 cast, "sub" and "string")
+starlark/src/values/types/string/methods.rs	in call to {function}(), parameter 'sub' got value of type '{}', want 'string or tuple'	Java's text (BuiltinFunction.java:404 checkParamValue) for startswith/endswith's sub
 starlark/src/values/typing/macro_refs.rs	LHS is not a type: `{0}`	type checker: starlark-rust static typing, not run by Blaze
 starlark/src/values/typing/type_compiled/compiled.rs	Found `{0}` instead of a valid type annotation. Perhaps you meant `"{1}"`?	type checker: starlark-rust static typing, not run by Blaze
 starlark/src/values/typing/type_compiled/compiled.rs	Not TypeCompiledImpl (internal error)	type checker: starlark-rust static typing, not run by Blaze
@@ -204,31 +203,31 @@ starlark/src/values/typing/type_compiled/compiled.rs	Value `{0}` of type `{1}` d
 starlark/src/values/typing/type_compiled/compiled.rs	Value of type `{1}` does not match type `{2}`: {0}	type checker: starlark-rust static typing, not run by Blaze
 starlark/src/values/typing/type_compiled/compiled.rs	`[X]` cannot be used as type, perhaps you meant `list[X]`	type checker: starlark-rust static typing, not run by Blaze
 starlark/src/values/typing/type_compiled/compiled.rs	`{{A: B}}` cannot be used as type, perhaps you meant `dict[A, B]`	type checker: starlark-rust static typing, not run by Blaze
-starlark/src/values/unpack.rs	Expected `{0}`, but got `{1}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/unpack.rs	Type of parameters mismatch, expected `{0}`, actual `{1}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/unpack.rs	in call to {function}(), parameter '{param}' got value of type '{}', want 'callable or NoneType'	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark/src/values/unpack.rs	in call to {function}(), parameter '{param}' got value of type '{}', want 'iterable'	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/dot_format_parser.rs	Invalid conversion in format string `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/dot_format_parser.rs	Missing conversion character in format string `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/dot_format_parser.rs	Standalone '}}' in format string `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/dot_format_parser.rs	Unmatched '{{' in format string `{}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/error.rs	{}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/eval_exception.rs	{error}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/lexer.rs	Cannot parse `{0}` as an integer in base {1}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/lexer.rs	Comment span is computed incorrectly (internal error)	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/lexer.rs	Parse error: f-string expression is missing closing `}}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/lexer.rs	Parse error: failed to parse integer: `{0}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/lexer.rs	Parse error: integer cannot have leading 0, got `{0}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/lexer.rs	Parse error: invalid string escape sequence `{0}`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/lexer.rs	Parse error: missing string escape sequence, only saw `\\`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/lexer.rs	{0}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/lexer.rs	{}	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/syntax/grammar_util.rs	`load` statement requires at least two arguments	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/syntax/grammar_util.rs	left-hand-side of assignment must take the form `a`, `a.b` or `a[b]`	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/syntax/grammar_util.rs	syntax error at '{tok}': type annotations are disallowed	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/syntax/grammar_util.rs	type annotations are not allowed in this dialect	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/syntax/grammar_util.rs	type annotations not allowed on augmented assignments	REVIEW: not yet classified (may be reachable from Bazel files)
-starlark_syntax/src/syntax/grammar_util.rs	type annotations not allowed on multiple assignments	REVIEW: not yet classified (may be reachable from Bazel files)
+starlark/src/values/unpack.rs	Expected `{0}`, but got `{1}`	internal: host API UnpackValue::unpack_value_err
+starlark/src/values/unpack.rs	Type of parameters mismatch, expected `{0}`, actual `{1}`	unreachable: the derived parameter unpacking uses unpack_named_param (Java's text, patch 0052); probes p20-p50 equal
+starlark/src/values/unpack.rs	in call to {function}(), parameter '{param}' got value of type '{}', want 'callable or NoneType'	Java's text (BuiltinFunction.java:404 checkParamValue) with the allowed types of sorted/min/max key
+starlark/src/values/unpack.rs	in call to {function}(), parameter '{param}' got value of type '{}', want 'iterable'	Java's text (BuiltinFunction.java:404 checkParamValue) with the allowed type of a StarlarkIterable parameter
+starlark_syntax/src/dot_format_parser.rs	Invalid conversion in format string `{}`	unreachable: f-strings are disabled; str.format uses Java's FormatParser port (patch 0045)
+starlark_syntax/src/dot_format_parser.rs	Missing conversion character in format string `{}`	unreachable: f-strings are disabled; str.format uses Java's FormatParser port (patch 0045)
+starlark_syntax/src/dot_format_parser.rs	Standalone '}}' in format string `{}`	unreachable: f-strings are disabled; str.format uses Java's FormatParser port (patch 0045)
+starlark_syntax/src/dot_format_parser.rs	Unmatched '{{' in format string `{}`	unreachable: f-strings are disabled; str.format uses Java's FormatParser port (patch 0045)
+starlark_syntax/src/error.rs	{}	wrapper: passes on a message built at its call site (internal_error!/other_error! macros)
+starlark_syntax/src/eval_exception.rs	{error}	wrapper: passes on a message built at its call site
+starlark_syntax/src/lexer.rs	Cannot parse `{0}` as an integer in base {1}	unreachable: syntax of a file the Java front end (blaze_starlark syntax::java) rejects first; starlark-rust parses only files Java accepts (eval.rs compile_starlark_rust; tests/front_end_agreement.rs)
+starlark_syntax/src/lexer.rs	Comment span is computed incorrectly (internal error)	internal error
+starlark_syntax/src/lexer.rs	Parse error: f-string expression is missing closing `}}`	unreachable: f-strings are disabled (Dialect enable_f_strings false); unreachable: syntax of a file the Java front end (blaze_starlark syntax::java) rejects first; starlark-rust parses only files Java accepts (eval.rs compile_starlark_rust; tests/front_end_agreement.rs)
+starlark_syntax/src/lexer.rs	Parse error: failed to parse integer: `{0}`	unreachable: syntax of a file the Java front end (blaze_starlark syntax::java) rejects first; starlark-rust parses only files Java accepts (eval.rs compile_starlark_rust; tests/front_end_agreement.rs)
+starlark_syntax/src/lexer.rs	Parse error: integer cannot have leading 0, got `{0}`	unreachable: dead variant, no constructor left after patches 0050-0052 (patch 0038)
+starlark_syntax/src/lexer.rs	Parse error: invalid string escape sequence `{0}`	unreachable: syntax of a file the Java front end (blaze_starlark syntax::java) rejects first; starlark-rust parses only files Java accepts (eval.rs compile_starlark_rust; tests/front_end_agreement.rs)
+starlark_syntax/src/lexer.rs	Parse error: missing string escape sequence, only saw `\\`	unreachable: syntax of a file the Java front end (blaze_starlark syntax::java) rejects first; starlark-rust parses only files Java accepts (eval.rs compile_starlark_rust; tests/front_end_agreement.rs)
+starlark_syntax/src/lexer.rs	{0}	wrapper: passes on a message built at its call site (patch 0053 Java number texts)
+starlark_syntax/src/lexer.rs	{}	wrapper: passes on a message built at its call site (patch 0053 forbidden keyword texts)
+starlark_syntax/src/syntax/grammar_util.rs	`load` statement requires at least two arguments	unreachable: syntax of a file the Java front end (blaze_starlark syntax::java) rejects first; starlark-rust parses only files Java accepts (eval.rs compile_starlark_rust; tests/front_end_agreement.rs)
+starlark_syntax/src/syntax/grammar_util.rs	left-hand-side of assignment must take the form `a`, `a.b` or `a[b]`	unreachable: syntax of a file the Java front end (blaze_starlark syntax::java) rejects first; starlark-rust parses only files Java accepts (eval.rs compile_starlark_rust; tests/front_end_agreement.rs)
+starlark_syntax/src/syntax/grammar_util.rs	syntax error at '{tok}': type annotations are disallowed	Java's text with the token filled in (Parser.java syntaxError for a type annotation without type syntax); unreachable: syntax of a file the Java front end (blaze_starlark syntax::java) rejects first; starlark-rust parses only files Java accepts (eval.rs compile_starlark_rust; tests/front_end_agreement.rs)
+starlark_syntax/src/syntax/grammar_util.rs	type annotations are not allowed in this dialect	unreachable: syntax of a file the Java front end (blaze_starlark syntax::java) rejects first; starlark-rust parses only files Java accepts (eval.rs compile_starlark_rust; tests/front_end_agreement.rs)
+starlark_syntax/src/syntax/grammar_util.rs	type annotations not allowed on augmented assignments	unreachable: syntax of a file the Java front end (blaze_starlark syntax::java) rejects first; starlark-rust parses only files Java accepts (eval.rs compile_starlark_rust; tests/front_end_agreement.rs)
+starlark_syntax/src/syntax/grammar_util.rs	type annotations not allowed on multiple assignments	unreachable: syntax of a file the Java front end (blaze_starlark syntax::java) rejects first; starlark-rust parses only files Java accepts (eval.rs compile_starlark_rust; tests/front_end_agreement.rs)
 starlark_syntax/src/syntax/type_expr.rs	Empty list is not allowed in type expression	type checker: starlark-rust static typing, not run by Blaze
 starlark_syntax/src/syntax/type_expr.rs	Expecting path like `a.b.c`	type checker: starlark-rust static typing, not run by Blaze
 starlark_syntax/src/syntax/type_expr.rs	Only dot expression of form `ident.ident` is allowed in type expression	type checker: starlark-rust static typing, not run by Blaze

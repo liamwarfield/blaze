@@ -20,7 +20,7 @@ use blaze_packages::rule_class::ProviderKey;
 use blaze_packages::starlark_defs::builtin_providers::INSTRUMENTED_FILES_INFO;
 use blaze_starlark::structs::StarlarkInfo;
 
-use crate::build_view::BuildViewError;
+use crate::testing::UpdateError;
 use crate::testing::build_view_test_case::parse_label;
 use crate::testing::{AnalysisTestCase, BuildViewTestCase, base_artifact_names};
 
@@ -330,7 +330,7 @@ fn aspect_in_error() {
     // SkyframeBuildView#configureTargets
     assert!(matches!(
         t.update(&["//a:a"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     t.assert_contains_event("Aspect error");
 }
@@ -359,7 +359,7 @@ fn transitive_aspect_in_error() {
     // SkyframeBuildView#configureTargets
     assert!(matches!(
         t.update(&["//a:a"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     t.assert_contains_event("Aspect error");
 }
@@ -1338,7 +1338,7 @@ fn top_level_conflict_detected() {
         &["//foo:aspect.bzl%aspect1", "//foo:aspect.bzl%aspect2"],
         &["//foo:foo"],
     ) {
-        Err(e @ BuildViewError::ViewCreationFailed { .. }) => e,
+        Err(e @ UpdateError::ViewCreationFailed { .. }) => e,
         Err(e) => panic!("expected ViewCreationFailedException, got {e:?}"),
         Ok(_) => panic!("expected ViewCreationFailedException"),
     };
@@ -1378,7 +1378,7 @@ fn top_level_conflict_detected() {
             &["//foo:aspect.bzl%aspect1", "//foo:aspect.bzl%aspect2"],
             &["//foo:foo"],
         ),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     assert_contains_event_pattern(
         &t,
@@ -1437,7 +1437,7 @@ filegroup(
     // Expect errors.
     t.remove_fail_fast_handler();
     let exception = match t.update(&["//foo:foo"]) {
-        Err(e @ BuildViewError::ViewCreationFailed { .. }) => e,
+        Err(e @ UpdateError::ViewCreationFailed { .. }) => e,
         Err(e) => panic!("expected ViewCreationFailedException, got {e:?}"),
         Ok(_) => panic!("expected ViewCreationFailedException"),
     };
@@ -1795,7 +1795,7 @@ simple_rule = rule(
 
     assert!(matches!(
         t.update_with_aspects(&["ExtraAttributeAspect_//tool:tool_false"], &["//pkg:x"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     t.assert_contains_event(
         "ExtraAttributeAspect_//tool:tool_false aspect on simple_rule rule //pkg:x: \

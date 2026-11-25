@@ -21,17 +21,17 @@ use super::java_compilation_helper::register_action;
 use super::java_semantics::JavaSemantics;
 use super::java_toolchain_provider::JavaToolchainProvider;
 
-// Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:39 ResourceJarActionBuilder.MNEMONIC
+// Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:40 ResourceJarActionBuilder.MNEMONIC
 pub const MNEMONIC: &str = "JavaResourceJar";
 
 /// `ParamFileInfo.builder(SHELL_QUOTED).build()`.
-// Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:40 ResourceJarActionBuilder.PARAM_FILE_INFO
+// Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:42 ResourceJarActionBuilder.PARAM_FILE_INFO
 fn param_file_info() -> ParamFileInfo {
     ParamFileInfo::builder(ParameterFileType::SHELL_QUOTED).build()
 }
 
 /// `ImmutableMap.of(ExecutionRequirements.SUPPORTS_PATH_MAPPING, "1")`.
-// Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:42 ResourceJarActionBuilder.EXECUTION_INFO
+// Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:44 ResourceJarActionBuilder.EXECUTION_INFO
 fn execution_info() -> IndexMap<String, String> {
     let mut m = IndexMap::new();
     m.insert("supports-path-mapping".to_owned(), "1".to_owned());
@@ -39,7 +39,7 @@ fn execution_info() -> IndexMap<String, String> {
 }
 
 /// Builds the action to package the resources for a Java rule into a jar.
-// Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:38 ResourceJarActionBuilder
+// Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:39 ResourceJarActionBuilder
 pub struct ResourceJarActionBuilder<'v> {
     output_jar: Option<Artifact>,
     resources: IndexMap<PathFragment, Artifact>,
@@ -63,49 +63,49 @@ impl<'v> ResourceJarActionBuilder<'v> {
         }
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:53 ResourceJarActionBuilder.setOutputJar
+    // Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:56 ResourceJarActionBuilder.setOutputJar
     pub fn set_output_jar(&mut self, output_jar: Artifact) -> &mut Self {
         self.output_jar = Some(output_jar);
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:59 ResourceJarActionBuilder.setAdditionalInputs
+    // Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:62 ResourceJarActionBuilder.setAdditionalInputs
     pub fn set_additional_inputs(&mut self, additional_inputs: NestedSet<Artifact>) -> &mut Self {
         self.additional_inputs = additional_inputs;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:65 ResourceJarActionBuilder.setClasspathResources
+    // Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:68 ResourceJarActionBuilder.setClasspathResources
     pub fn set_classpath_resources(&mut self, classpath_resources: Vec<Artifact>) -> &mut Self {
         self.classpath_resources = classpath_resources;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:72 ResourceJarActionBuilder.setResources
+    // Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:75 ResourceJarActionBuilder.setResources
     pub fn set_resources(&mut self, resources: IndexMap<PathFragment, Artifact>) -> &mut Self {
         self.resources = resources;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:78 ResourceJarActionBuilder.setResourceJars
+    // Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:81 ResourceJarActionBuilder.setResourceJars
     pub fn set_resource_jars(&mut self, resource_jars: NestedSet<Artifact>) -> &mut Self {
         self.resource_jars = resource_jars;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:84 ResourceJarActionBuilder.setTranslations
+    // Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:87 ResourceJarActionBuilder.setTranslations
     pub fn set_translations(&mut self, translations: Vec<Artifact>) -> &mut Self {
         self.messages = translations;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:90 ResourceJarActionBuilder.setJavaToolchain
+    // Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:93 ResourceJarActionBuilder.setJavaToolchain
     pub fn set_java_toolchain(&mut self, java_toolchain: JavaToolchainProvider<'v>) -> &mut Self {
         self.java_toolchain = Some(java_toolchain);
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:95 ResourceJarActionBuilder.build
+    // Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:98 ResourceJarActionBuilder.build
     pub fn build(
         &self,
         eval: &starlark::eval::Evaluator,
@@ -183,7 +183,7 @@ impl<'v> ResourceJarActionBuilder<'v> {
         register_action(eval, Arc::new(action))
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:146 ResourceJarActionBuilder.addResources
+    // Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:148 ResourceJarActionBuilder.addResources
     fn add_resources(&self, command: &mut CustomCommandLineBuilder, semantics: &dyn JavaSemantics) {
         if self.resources.is_empty() && self.messages.is_empty() {
             return;
@@ -220,12 +220,12 @@ impl<'v> ResourceJarActionBuilder<'v> {
     }
 }
 
-// Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:177 ResourceJarActionBuilder.defaultResourcePath
+// Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:182 ResourceJarActionBuilder.defaultResourcePath
 fn default_resource_path(artifact: &Artifact, semantics: &dyn JavaSemantics) -> PathFragment {
     semantics.get_default_java_resource_path(&artifact.get_root_relative_path())
 }
 
-// Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:181 ResourceJarActionBuilder.resourcePrefixedExecPath
+// Java: com/google/devtools/build/lib/rules/java/ResourceJarActionBuilder.java:178 ResourceJarActionBuilder.resourcePrefixedExecPath
 fn resource_prefixed_exec_path(resource_path: &PathFragment, artifact: &Artifact) -> String {
     let exec_path = artifact.get_exec_path();
     if exec_path == resource_path {

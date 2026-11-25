@@ -64,6 +64,9 @@ impl fmt::Debug for GetToolchainTypeInfoKey {
 impl Key for GetToolchainTypeInfoKey {
     type Value = GetToolchainTypeInfoValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("GET_TOOLCHAIN_TYPE_INFO_FUNCTION");
+    // Java: ToolchainTypeLookupUtilTest GET_TOOLCHAIN_TYPE_INFO_FUNCTION (createHermetic)
+    const HERMETICITY: blaze_skyframe::FunctionHermeticity =
+        blaze_skyframe::FunctionHermeticity::Hermetic;
 }
 
 /// Java `GetToolchainTypeInfoValue`.

@@ -66,8 +66,7 @@ impl Key for ErrorTransienceKey {
     // Java: com/google/devtools/build/skyframe/ErrorTransienceValue.java:24 FUNCTION_NAME
     const FUNCTION: SkyFunctionName = SkyFunctionName("ERROR_TRANSIENCE");
     // Java: com/google/devtools/build/skyframe/ErrorTransienceValue.java:25 SkyFunctionName.createNonHermetic("ERROR_TRANSIENCE")
-    const HERMETICITY: Option<crate::FunctionHermeticity> =
-        Some(crate::FunctionHermeticity::Nonhermetic);
+    const HERMETICITY: crate::FunctionHermeticity = crate::FunctionHermeticity::Nonhermetic;
 }
 
 /// A value that represents "error transience", i.e. anything which may have caused an unexpected
@@ -541,12 +540,23 @@ impl Evaluator {
                 inc.values_to_dirty.extend(inject_keys);
 
                 self.perform_invalidation(inc);
+                // Java's invalidators wait for their visitor (`awaitQuiescence`), which throws
+                // `InterruptedException` for a pending interrupt; `injectValues` is then not
+                // reached and the values to inject are kept for the next evaluation.
+                // PORT: invalidation here is sequential and runs to completion first (decision
+                // 9.5); the interrupt is seen when it returns.
+                // Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:481 AbstractInMemoryMemoizingEvaluator.performInvalidation
+                if self.interrupted.load(Ordering::SeqCst) {
+                    return Err(Interrupted);
+                }
                 self.inject_values(inc, graph_version);
             }
         }
-        if self.interrupted.load(Ordering::SeqCst) {
-            return Err(Interrupted);
-        }
+        // Java has no interrupt check between here and `ParallelEvaluator.eval`: when every root
+        // is done (or a cached error stops a no-keep-going evaluation) the result is returned
+        // even with an interrupt pending; otherwise the evaluation sees the interrupt
+        // (`wait_for_completion_and_construct_result`).
+        // Java: com/google/devtools/build/skyframe/ParallelEvaluator.java:641 ParallelEvaluator.eval
         let run = Run::new(self, ctx, graph_version);
         run.eval(roots)
     }
@@ -1366,7 +1376,24 @@ impl<'e> Run<'e> {
     /// `DONE`).
     // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:171 Evaluate.enqueueChild
     pub(crate) fn eval_dep(&self, key: &SkyKey, requester: Option<&Requester<'_>>) -> Requested {
-        let node = self.ev.graph.create_if_absent(key);
+        let node = match requester {
+            // A dep of the requester's last build must be in the graph (deletion takes the
+            // reverse transitive closure). Reached from the dirty check (Java's
+            // `handleKnownChildrenForDirtyNode`); an old dep re-requested by the function was
+            // already looked up in `Environment::lookup`, which fails with Java's commit-time
+            // text.
+            // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:394 Evaluate.handleKnownChildrenForDirtyNode
+            Some(r) if r.old_deps.contains(key) => {
+                check_not_null!(
+                    self.ev.graph.get_if_present(key),
+                    "Dirty parent had missing child (child={:?}, parent={:?} {:?})",
+                    key,
+                    r.key,
+                    r.node.lock().entry
+                )
+            }
+            _ => self.ev.graph.create_if_absent(key),
+        };
         // Test hook: the event of the call below (Java's NotifyingNodeEntry).
         #[cfg(test)]
         let (listened_call, listened_context) = match requester {

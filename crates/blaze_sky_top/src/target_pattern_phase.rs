@@ -35,8 +35,8 @@ use blaze_sky_loading::recursive_pkg::PackageErrorKey;
 use blaze_sky_loading::repos::RepositoryMappingKey;
 use blaze_sky_loading::target_pattern_function::{FilteringPolicy, TargetPatternKey};
 use blaze_skyframe::{
-    ComputeError, Environment, EvaluatorBuilder, Key, SkyFunctionException, SkyFunctionName,
-    SkyKey, Transience,
+    ComputeError, Environment, EvaluatorBuilder, FunctionHermeticity, Key, SkyFunctionException,
+    SkyFunctionName, SkyKey, Transience,
 };
 use blaze_vfs::PathFragment;
 use indexmap::{IndexMap, IndexSet};
@@ -279,6 +279,10 @@ pub struct TargetPatternErrorValue;
 impl Key for TargetPatternErrorKey {
     type Value = TargetPatternErrorValue;
     const FUNCTION: SkyFunctionName = TARGET_PATTERN_ERROR;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:71 SkyFunctions.TARGET_PATTERN_ERROR (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal`: Java's function always throws; there is no value.
+    // Java: com/google/devtools/build/lib/skyframe/TargetPatternErrorFunction.java:91 TargetPatternErrorFunction.compute
 }
 
 // Java: com/google/devtools/build/lib/skyframe/TargetPatternErrorFunction.java:91 TargetPatternErrorFunction.compute
@@ -333,6 +337,10 @@ impl TestExpansionValue {
 impl Key for TestExpansionKey {
     type Value = TestExpansionValue;
     const FUNCTION: SkyFunctionName = TESTS_IN_SUITE;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:88 SkyFunctions.TESTS_IN_SUITE (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal): Java's `TestExpansionValue` has no `equals`.
+    // Java: com/google/devtools/build/lib/skyframe/TestExpansionValue.java:34 TestExpansionValue
 }
 
 // Java: com/google/devtools/build/lib/skyframe/TestExpansionFunction.java:52 TestExpansionFunction.compute
@@ -565,6 +573,10 @@ impl TestsForTargetPatternValue {
 impl Key for TestsForTargetPatternKey {
     type Value = TestsForTargetPatternValue;
     const FUNCTION: SkyFunctionName = TEST_SUITE_EXPANSION;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:87 SkyFunctions.TEST_SUITE_EXPANSION (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal): Java's `TestsForTargetPatternValue` has no `equals`.
+    // Java: com/google/devtools/build/lib/skyframe/TestsForTargetPatternValue.java:36 TestsForTargetPatternValue
 }
 
 // Java: com/google/devtools/build/lib/skyframe/TestsForTargetPatternFunction.java:45 TestsForTargetPatternFunction.compute
@@ -841,6 +853,23 @@ impl TargetPatternPhaseValue {
         get_targets_from_labels(&self.target_labels, event_handler, package_manager)
     }
 
+    /// The targets of [`Self::get_tests_to_run_labels`], from the (already loaded) packages.
+    /// `Err(Interrupted)` where Java throws `InterruptedException`.
+    // Java: com/google/devtools/build/lib/skyframe/TargetPatternPhaseValue.java:94 TargetPatternPhaseValue.getTestsToRun
+    pub fn get_tests_to_run(
+        &self,
+        event_handler: Arc<dyn blaze_events::ExtendedEventHandler>,
+        package_manager: &blaze_sky_loading::package_manager::SkyframePackageManager,
+    ) -> Result<Vec<Target>, blaze_skyframe::Interrupted> {
+        get_targets_from_labels(
+            self.tests_to_run_labels
+                .as_ref()
+                .expect("NullPointerException: testsToRunLabels"),
+            event_handler,
+            package_manager,
+        )
+    }
+
     // Java: com/google/devtools/build/lib/skyframe/TargetPatternPhaseValue.java:119 TargetPatternPhaseValue.hasError
     pub fn has_error(&self) -> bool {
         self.has_error
@@ -855,6 +884,17 @@ impl TargetPatternPhaseValue {
 impl Key for TargetPatternPhaseKey {
     type Value = TargetPatternPhaseValue;
     const FUNCTION: SkyFunctionName = TARGET_PATTERN_PHASE;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:91 SkyFunctions.TARGET_PATTERN_PHASE (createNonHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
+    /// Java: the target labels, the test labels, and both error flags; not the non-expanded
+    /// labels.
+    // Java: com/google/devtools/build/lib/skyframe/TargetPatternPhaseValue.java:118 TargetPatternPhaseValue.equals
+    fn values_equal(old: &TargetPatternPhaseValue, new: &TargetPatternPhaseValue) -> bool {
+        old.target_labels == new.target_labels
+            && old.tests_to_run_labels == new.tests_to_run_labels
+            && old.has_error == new.has_error
+            && old.has_post_expansion_error == new.has_post_expansion_error
+    }
 }
 
 /// Represents the expansion of a single target pattern.
@@ -1408,5 +1448,53 @@ mod tests {
             format!("{:?}", key),
             "[//:all, //python:all] OFFSET=foo BUILD_TESTS_ONLY DETERMINE_TESTS EXPAND_TEST_SUITES"
         );
+    }
+}
+
+/// Package I2: change pruning of TARGET_PATTERN_PHASE.
+#[cfg(test)]
+mod values_equal_tests {
+    use super::*;
+    use blaze_skyframe::testing::parent_rebuilt;
+
+    fn value(non_expanded: &[&str]) -> TargetPatternPhaseValue {
+        TargetPatternPhaseValue {
+            target_labels: [Label::parse_canonical_unchecked("//a:a")]
+                .into_iter()
+                .collect(),
+            tests_to_run_labels: None,
+            non_expanded_labels: non_expanded
+                .iter()
+                .map(|l| Label::parse_canonical_unchecked(l))
+                .collect(),
+            has_error: false,
+            has_post_expansion_error: false,
+        }
+    }
+
+    /// Java's `equals` compares the target labels, the test labels and both error flags, not
+    /// the non-expanded labels: a recomputed value that differs only there prunes.
+    // Java: com/google/devtools/build/lib/skyframe/TargetPatternPhaseValue.java:118 TargetPatternPhaseValue.equals
+    #[test]
+    fn recomputed_value_differing_in_non_expanded_labels_prunes_parent() {
+        let key = TargetPatternPhaseKey::key(
+            vec!["//...".to_owned()],
+            PathFragment::empty_fragment(),
+            false,
+            false,
+            false,
+            Vec::new(),
+            true,
+            false,
+            None,
+        );
+        assert!(!parent_rebuilt(
+            key.clone(),
+            value(&["//a:a"]),
+            value(&["//b:b"])
+        ));
+        let mut errored = value(&["//a:a"]);
+        errored.has_error = true;
+        assert!(parent_rebuilt(key, value(&["//a:a"]), errored));
     }
 }

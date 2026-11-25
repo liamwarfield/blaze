@@ -27,8 +27,9 @@ use indexmap::{IndexMap, IndexSet};
 use starlark::values::dict::DictRef;
 use starlark::values::{Heap, OwnedFrozenValue};
 
-use crate::build_view::{self, AnalysisResult, BuildViewError, BuildViewUpdateOptions};
+use crate::build_view::{self, AnalysisResult, BuildViewUpdateOptions};
 use crate::skyframe_executor::TargetPatternPhaseError;
+use crate::testing::UpdateError;
 use crate::testing::build_view_test_case::{LOADING_PHASE_THREADS, parse_label};
 use crate::testing::{AnalysisTestCase, BuildViewTestCase, assert_contains_exactly};
 
@@ -262,7 +263,7 @@ fn update_with_aspects_parameters(
     aspects: &[&str],
     aspects_parameters: &[(&str, &str)],
     labels: &[&str],
-) -> Result<AnalysisResult, BuildViewError> {
+) -> Result<AnalysisResult, UpdateError> {
     let keep_going = t.default_flags().contains(crate::testing::Flag::KeepGoing);
     t.event_bus.clear();
     // Java: invalidateFilesUnderPathForTesting(EVERYTHING_MODIFIED).
@@ -284,12 +285,9 @@ fn update_with_aspects_parameters(
     ) {
         Ok(v) => v,
         Err(TargetPatternPhaseError::TargetParsing(e)) => {
-            return Err(BuildViewError::ViewCreationFailed {
-                message: e.get_message().to_string(),
-                failure_detail: Default::default(),
-            });
+            return Err(UpdateError::TargetParsing(e));
         }
-        Err(TargetPatternPhaseError::Interrupted) => return Err(BuildViewError::Interrupted),
+        Err(TargetPatternPhaseError::Interrupted) => return Err(UpdateError::Interrupted),
     };
     let options = BuildViewUpdateOptions {
         keep_going,
@@ -320,7 +318,7 @@ fn update_with_aspects_parameters(
     {
         panic!("{error}");
     }
-    result
+    result.map_err(UpdateError::from)
 }
 
 /// `skyframeExecutor.getEvaluator()`.
@@ -1803,7 +1801,7 @@ r1(name = 't1')
     t.remove_fail_fast_handler();
     let result = t.update_with_aspects(&["//test:defs.bzl%non_toolchain_aspect"], &["//test:t1"]);
     assert!(
-        matches!(result, Err(BuildViewError::ViewCreationFailed { .. })),
+        matches!(result, Err(UpdateError::ViewCreationFailed { .. })),
         "expected ViewCreationFailedException"
     );
     t.assert_contains_event(
@@ -1858,7 +1856,7 @@ r1(name = 't1')
     t.remove_fail_fast_handler();
     let result = t.update_with_aspects(&["//test:defs.bzl%non_toolchain_aspect"], &["//test:t1"]);
     assert!(
-        matches!(result, Err(BuildViewError::ViewCreationFailed { .. })),
+        matches!(result, Err(UpdateError::ViewCreationFailed { .. })),
         "expected ViewCreationFailedException"
     );
     t.assert_contains_event(
@@ -3135,7 +3133,7 @@ r1(name = 't1')
     t.remove_fail_fast_handler();
     let result = t.update_with_aspects(&["//test:defs.bzl%toolchain_aspect"], &["//test:t1"]);
     assert!(
-        matches!(result, Err(BuildViewError::ViewCreationFailed { .. })),
+        matches!(result, Err(UpdateError::ViewCreationFailed { .. })),
         "expected ViewCreationFailedException"
     );
     t.assert_contains_event("invalid label in Label(): invalid repository name ':'");
@@ -3190,7 +3188,7 @@ r1(name = 't1')
     t.remove_fail_fast_handler();
     let result = t.update_with_aspects(&["//test:defs.bzl%toolchain_aspect"], &["//test:t1"]);
     assert!(
-        matches!(result, Err(BuildViewError::ViewCreationFailed { .. })),
+        matches!(result, Err(UpdateError::ViewCreationFailed { .. })),
         "expected ViewCreationFailedException"
     );
     t.assert_contains_event(

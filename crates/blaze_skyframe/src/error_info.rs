@@ -227,6 +227,8 @@ mod tests {
     impl Key for K {
         type Value = ();
         const FUNCTION: SkyFunctionName = SkyFunctionName("K");
+        // Java: SkyFunctionName.FOR_TESTING (createHermetic)
+        const HERMETICITY: crate::FunctionHermeticity = crate::FunctionHermeticity::Hermetic;
     }
 
     #[derive(Debug)]

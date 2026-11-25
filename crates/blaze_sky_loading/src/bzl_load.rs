@@ -24,7 +24,8 @@ use blaze_events::{Event, ExtendedEventHandler};
 use blaze_packages::builtins::BazelStarlarkEnvironment;
 use blaze_packages::bzl_context::{BazelModuleContext, BzlInitThreadContext, BzlVisibility};
 use blaze_skyframe::{
-    ComputeError, Environment, Key, SkyFunctionException, SkyFunctionName, SkyKey, Transience,
+    ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionException, SkyFunctionName,
+    SkyKey, Transience,
 };
 use blaze_starlark::error::EvalErrorKind;
 use blaze_starlark::eval::{CompiledFile, EvalOptions};
@@ -228,6 +229,10 @@ impl fmt::Debug for BzlLoadKey {
 impl Key for BzlLoadKey {
     type Value = BzlLoadValue;
     const FUNCTION: SkyFunctionName = sky_functions::BZL_LOAD;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:50 SkyFunctions.BZL_LOAD (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal): Java's `BzlLoadValue` has no `equals`.
+    // Java: com/google/devtools/build/lib/skyframe/BzlLoadValue.java:57 BzlLoadValue
 }
 
 /// A value that represents the .bzl (or .scl) module loaded by a Starlark `load()` statement.
@@ -1087,7 +1092,10 @@ impl BzlLoadFunction {
                     builtins,
                     &mut Fingerprint::new(),
                 );
-                let compile_env = self.compile_environment(key);
+                let Some(autoload_symbols) = AUTOLOAD_SYMBOLS.get(env)? else {
+                    return Ok(Ok(None));
+                };
+                let compile_env = self.compile_environment(key, &autoload_symbols);
                 let semantics = &builtins.starlark_semantics;
                 let label = key.get_label();
                 let names = globals.names().map(|n| n.as_str().to_owned()).collect();
@@ -1136,7 +1144,10 @@ impl BzlLoadFunction {
         {
             let globals =
                 self.get_and_digest_predeclared_environment(key, builtins, &mut Fingerprint::new());
-            let compile_env = self.compile_environment(key);
+            let Some(autoload_symbols) = AUTOLOAD_SYMBOLS.get(env)? else {
+                return Ok(Ok(None));
+            };
+            let compile_env = self.compile_environment(key, &autoload_symbols);
             let errors = starlark_util::resolve_errors(prog, &globals, |name| {
                 blaze_packages::builtins::env::guarded_symbol_error(
                     compile_env,
@@ -1478,14 +1489,22 @@ impl BzlLoadFunction {
     /// PORT: Java takes the last one from `AutoloadSymbols.getUninjectedBuildBzlEnv(repo)`; like
     /// `get_and_digest_predeclared_environment` this uses the BazelStarlarkEnvironment's.
     // Java: com/google/devtools/build/lib/skyframe/BzlCompileFunction.java:150 BzlCompileFunction.computeInline
-    fn compile_environment(&self, key: &BzlLoadKey) -> &blaze_packages::builtins::env::StarlarkEnv {
+    // Java: com/google/devtools/build/lib/skyframe/BzlCompileFunction.java:151 (the predeclared
+    // environment of BzlCompileFunction.computeInline: scl toplevels, the builtins env, or
+    // `autoloadSymbols.getUninjectedBuildBzlEnv(repository)`, which takes
+    // --incompatible_autoload_externally's added and removed symbols into account)
+    fn compile_environment<'a>(
+        &'a self,
+        key: &BzlLoadKey,
+        autoload_symbols: &'a blaze_packages::builtins::AutoloadSymbols,
+    ) -> &'a blaze_packages::builtins::env::StarlarkEnv {
         let starlark_env = &self.config.bazel_starlark_environment;
         if key.is_scl_dialect() {
             starlark_env.get_scl_toplevels()
         } else if key.is_builtins() {
             starlark_env.get_builtins_bzl_env()
         } else {
-            starlark_env.get_uninjected_build_bzl_env()
+            autoload_symbols.get_uninjected_build_bzl_env(Some(key.get_label().get_repository()))
         }
     }
 

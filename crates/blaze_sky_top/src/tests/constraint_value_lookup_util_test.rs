@@ -50,6 +50,9 @@ impl fmt::Debug for GetConstraintValueInfoKey {
 impl Key for GetConstraintValueInfoKey {
     type Value = GetConstraintValueInfoValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("GET_CONSTRAINT_VALUE_INFO_FUNCTION");
+    // Java: ConstraintValueLookupUtilTest GET_CONSTRAINT_VALUE_INFO_FUNCTION (createHermetic)
+    const HERMETICITY: blaze_skyframe::FunctionHermeticity =
+        blaze_skyframe::FunctionHermeticity::Hermetic;
 }
 
 /// Java `GetConstraintValueInfoValue`.

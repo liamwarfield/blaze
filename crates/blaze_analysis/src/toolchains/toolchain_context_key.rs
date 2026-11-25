@@ -5,7 +5,7 @@ use std::fmt;
 use blaze_build_config::build_configuration_key::BuildConfigurationKey;
 use blaze_cmdline::Label;
 use blaze_packages::rule_class::ToolchainTypeRequirement;
-use blaze_skyframe::{Key, SkyFunctionName};
+use blaze_skyframe::{FunctionHermeticity, Key, SkyFunctionName};
 
 use crate::toolchains::unloaded_toolchain_context::UnloadedToolchainContextImpl;
 
@@ -103,6 +103,16 @@ impl fmt::Debug for ToolchainContextKey {
 impl Key for ToolchainContextKey {
     type Value = UnloadedToolchainContextImpl;
     const FUNCTION: SkyFunctionName = TOOLCHAIN_RESOLUTION;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:146 SkyFunctions.TOOLCHAIN_RESOLUTION (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: an AutoValue (key, both platforms by `PlatformInfo.equals`, toolchain types, resolved toolchains, requested labels, error data). PORT: the toolchain types and resolved toolchains are compared in order (Java: a set and a set multimap): Rust prunes less, never more.
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/UnloadedToolchainContextImpl.java:32 UnloadedToolchainContextImpl
+    fn values_equal(
+        old: &UnloadedToolchainContextImpl,
+        new: &UnloadedToolchainContextImpl,
+    ) -> bool {
+        old == new
+    }
 }
 
 /// Builder for [`ToolchainContextKey`].

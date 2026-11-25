@@ -44,6 +44,9 @@ struct Parsed(Result<Mappings, String>);
 impl Key for ParseKey {
     type Value = Parsed;
     const FUNCTION: SkyFunctionName = SkyFunctionName("PLATFORM_MAPPING_PARSE_TEST");
+    // Java: PlatformMappingFunctionParserTest PARSE_MAPPINGS (createHermetic)
+    const HERMETICITY: blaze_skyframe::FunctionHermeticity =
+        blaze_skyframe::FunctionHermeticity::Hermetic;
 }
 
 fn options_classes() -> Vec<FragmentOptionsClass> {

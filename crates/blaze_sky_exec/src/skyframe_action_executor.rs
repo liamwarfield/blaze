@@ -364,6 +364,30 @@ pub struct SkyframeActionExecutor {
     had_execution_error: AtomicBool,
     /// Java: `ActionLogBufferPathGenerator.actionUniquifier`.
     action_uniquifier: AtomicU64,
+    /// Java: `progressSupplier` and `completionReceiver`, set by
+    /// [`SkyframeActionExecutor::set_action_execution_progress_reporting_objects`].
+    progress_reporting: RwLock<ProgressReportingObjects>,
+}
+
+/// `progressSupplier` and `completionReceiver` (both `@Nullable`).
+#[derive(Default)]
+struct ProgressReportingObjects {
+    progress_supplier: Option<Arc<dyn ProgressSupplier>>,
+    completion_receiver: Option<Arc<dyn ActionCompletedReceiver>>,
+}
+
+/// An object supplying data for action execution progress reporting.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1988 SkyframeActionExecutor.ProgressSupplier
+pub trait ProgressSupplier: Send + Sync {
+    /// Returns the progress string to prefix action execution messages with.
+    fn get_progress_string(&self) -> String;
+}
+
+/// An object that can be notified about action completion.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1994 SkyframeActionExecutor.ActionCompletedReceiver
+pub trait ActionCompletedReceiver: Send + Sync {
+    /// Receives a completed action.
+    fn action_completed(&self, action_lookup_data: &ActionLookupData);
 }
 
 impl SkyframeActionExecutor {
@@ -397,6 +421,30 @@ impl SkyframeActionExecutor {
             build_action_map: Mutex::new(HashMap::new()),
             had_execution_error: AtomicBool::new(false),
             action_uniquifier: AtomicU64::new(0),
+            progress_reporting: RwLock::new(ProgressReportingObjects::default()),
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1999 SkyframeActionExecutor.setActionExecutionProgressReportingObjects
+    pub fn set_action_execution_progress_reporting_objects(
+        &self,
+        progress_supplier: Option<Arc<dyn ProgressSupplier>>,
+        completion_receiver: Option<Arc<dyn ActionCompletedReceiver>>,
+    ) {
+        *self.progress_reporting.write() = ProgressReportingObjects {
+            progress_supplier,
+            completion_receiver,
+        };
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1488 SkyframeActionExecutor.prependExecPhaseStats
+    fn prepend_exec_phase_stats(&self, message: &str) -> String {
+        let progress_supplier = self.progress_reporting.read().progress_supplier.clone();
+        match progress_supplier {
+            None => String::new(),
+            Some(progress_supplier) => {
+                format!("{} {}", progress_supplier.get_progress_string(), message)
+            }
         }
     }
 
@@ -962,7 +1010,16 @@ impl SkyframeActionExecutor {
             rich_artifact_data: Mutex::new(None),
             clock: JavaClock,
         };
-        // PORT: reporter.startTask/finishTask (progress UI) are not ported.
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1111 ActionRunner.run
+        if let Some(message) = action.get_progress_message(None) {
+            // reporter.startTask(null, prependExecPhaseStats(message))
+            // Java: com/google/devtools/build/lib/events/Reporter.java:159 Reporter.startTask
+            self.reporter.handle(&Event::of_at(
+                EventKind::Start,
+                None,
+                self.prepend_exec_phase_stats(&message),
+            ));
+        }
         env.listener().post(Arc::new(ActionStartedEvent {
             action: action.clone(),
             nano_time_start: action_start_time,
@@ -1021,6 +1078,20 @@ impl SkyframeActionExecutor {
             action: action.clone(),
             action_lookup_data: action_lookup_data.clone(),
         }));
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1211 ActionRunner.notifyActionCompletion
+        if let Some(message) = action.get_progress_message(None) {
+            let completion_receiver = self.progress_reporting.read().completion_receiver.clone();
+            if let Some(completion_receiver) = completion_receiver {
+                completion_receiver.action_completed(action_lookup_data);
+            }
+            // reporter.finishTask(null, prependExecPhaseStats(message))
+            // Java: com/google/devtools/build/lib/events/Reporter.java:170 Reporter.finishTask
+            self.reporter.handle(&Event::of_at(
+                EventKind::Finish,
+                None,
+                self.prepend_exec_phase_stats(&message),
+            ));
+        }
         let value = result?;
 
         // A closure to post-process the executed action, doing work like updating cached state
@@ -1587,14 +1658,20 @@ impl SkyframeActionExecutor {
     /// `action instanceof NotifyOnActionCacheHit notify` → `notify.actionCacheHit(context)`:
     /// `None` if the action does not implement `NotifyOnActionCacheHit`.
     ///
-    /// PORT: among ported actions only `TestRunnerAction` implements `NotifyOnActionCacheHit`
-    /// (`CoverageReportAction` is not ported); the `ActionCachedContext` is its arguments (event
-    /// handler, exec root, `getContext(TestActionContext.class)`).
+    /// PORT: `TestRunnerAction`'s `ActionCachedContext` is its arguments (event handler, exec
+    /// root, `getContext(TestActionContext.class)`); the other implementations
+    /// (`CoverageReportAction`) answer through `ExecutableAction::action_cache_hit`.
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:801 SkyframeActionExecutor.checkActionCache
     fn notify_on_action_cache_hit(&self, action: &ActionRef) -> Option<bool> {
         // Java's `instanceof`: the analysis-side TestRunnerAction is viewed as the execution one.
-        let test_action: Arc<TestRunnerAction> =
-            blaze_exec::analysis::test::as_test_runner_action(action.as_ref())?;
+        let Some(test_action): Option<Arc<TestRunnerAction>> =
+            blaze_exec::analysis::test::as_test_runner_action(action.as_ref())
+        else {
+            // The other NotifyOnActionCacheHit actions (CoverageReportAction).
+            return blaze_exec::actions::action_execution::as_executable(action.as_ref()).and_then(
+                |executable| executable.action_cache_hit(&*self.reporter as &dyn EventHandler),
+            );
+        };
         let test_action_context = self
             .contexts
             .get_any(TypeId::of::<Arc<dyn TestActionContext>>())
@@ -3357,10 +3434,9 @@ impl ActionInputMetadata {
         }
 
         let artifact = input.as_artifact();
-        if let Some(tree_file_artifact) = artifact.filter(|a| a.is_child_of_declared_directory()) {
-            let parent = tree_file_artifact.get_parent().unwrap_or_else(|| {
-                panic!("NullPointerException: parent of tree file artifact {input}")
-            });
+        // `input instanceof TreeFileArtifact`: every tree file artifact (`getParent()` is set),
+        // also one owned by an action template expansion, not only `isChildOfDeclaredDirectory()`.
+        if let Some(parent) = artifact.and_then(|a| a.get_parent()) {
             if let Some((_, value)) = self.map.read().get(parent.get_exec_path()) {
                 let ActionInputMapValue::Tree(tree) = value else {
                     panic!(
@@ -5078,6 +5154,31 @@ mod action_input_map_tests {
         // (getInputMetadata), which finds it by its own exec path because its parent is not in
         // the map.
         assert_contains_file(&map, &artifact_input(&tree_file), 1);
+    }
+
+    /// Not a Java test method: `getInputMetadataChecked` finds a child of a tree artifact that an
+    /// action template expansion produced (`TreeFileArtifact.createTemplateExpansionOutput`, the
+    /// C++ objects of a tree of sources) through its parent's `TreeArtifactValue`, as for a child
+    /// of a declared directory (`input instanceof TreeFileArtifact`,
+    /// `ActionInputMap.java:218`). Upstream `build_without_the_bytes_test`
+    /// `test_cc_tree_*` crashed in the Merkle tree on this lookup.
+    #[test]
+    fn get_input_metadata_template_expansion_output_from_parent_tree() {
+        use crate::action_template_expansion_value::ActionTemplateExpansionKey;
+        let map = new_map();
+        let tree = tree_artifact("tree");
+        let child = Artifact::create_template_expansion_output(
+            &tree,
+            PathFragment::create("child.o"),
+            blaze_actions::ActionLookupKeyRef::new(ActionTemplateExpansionKey::of(
+                tree.get_action_lookup_key().clone(),
+                0,
+            )),
+        );
+        assert!(!child.is_child_of_declared_directory());
+        map.put_tree_artifact(&tree, tree_value(&[(&child, test_metadata(1))]));
+
+        assert_contains_file(&map, &artifact_input(&child), 1);
     }
 
     #[test]

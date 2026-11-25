@@ -9,7 +9,7 @@ use blaze_bzlmod_model::{
     NonRootModuleFileValue, Registry, RepoSpec, RootModuleFileValue, YankedVersionsValue,
 };
 use blaze_cmdline::RepositoryName;
-use blaze_skyframe::{Key, SkyFunctionName};
+use blaze_skyframe::{FunctionHermeticity, Key, SkyFunctionName};
 use indexmap::IndexMap;
 
 use crate::inspector::BazelModuleInspectorValue;
@@ -69,9 +69,31 @@ impl fmt::Debug for ModuleFileKey {
     }
 }
 
+/// Java's identity comparison of `InterimModule.getRegistry()` (a `NotComparableSkyValue`):
+/// both absent or the same object.
+// Java: com/google/devtools/build/lib/bazel/bzlmod/InterimModule.java:109 InterimModule.getRegistry
+fn same_registry(old: &InterimModule, new: &InterimModule) -> bool {
+    match (&old.registry, &new.registry) {
+        (None, None) => true,
+        (Some(old), Some(new)) => Arc::ptr_eq(old, new),
+        _ => false,
+    }
+}
+
 impl Key for ModuleFileKey {
     type Value = ModuleFileValue;
     const FUNCTION: SkyFunctionName = MODULE_FILE;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:150 SkyFunctions.MODULE_FILE (createNonHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
+    /// Java: both `ModuleFileValue`s are records; `InterimModule` is an AutoValue whose
+    /// `getRegistry()` is a `Registry`, a `NotComparableSkyValue` without `equals` (identity).
+    /// `InterimModule::eq` compares registries by URL, so the registry is compared here by
+    /// identity as well: a re-computed REGISTRY makes the module file value unequal, as in Java.
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleFileValue.java:50 ModuleFileValue.NonRootModuleFileValue
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/InterimModule.java:109 InterimModule.getRegistry
+    fn values_equal(old: &ModuleFileValue, new: &ModuleFileValue) -> bool {
+        old == new && same_registry(old.module(), new.module())
+    }
 }
 
 /// The result of `ModuleFileFunction`: the root module's value for
@@ -132,6 +154,20 @@ impl fmt::Debug for BazelModuleResolutionKey {
 impl Key for BazelModuleResolutionKey {
     type Value = BazelModuleResolutionValue;
     const FUNCTION: SkyFunctionName = BAZEL_MODULE_RESOLUTION;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:160 SkyFunctions.BAZEL_MODULE_RESOLUTION (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: an AutoValue (resolved and unpruned dep graphs, registry file hashes, selected yanked
+    /// versions); the unpruned graph's `InterimModule`s compare their registries by identity (see
+    /// `ModuleFileKey`).
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelModuleResolutionValue.java:32 BazelModuleResolutionValue
+    fn values_equal(old: &BazelModuleResolutionValue, new: &BazelModuleResolutionValue) -> bool {
+        old == new
+            && old.unpruned_dep_graph.iter().all(|(key, module)| {
+                new.unpruned_dep_graph
+                    .get(key)
+                    .is_some_and(|other| same_registry(module, other))
+            })
+    }
 }
 
 /// `BazelDepGraphValue.KEY`. PORT: `Debug` prints the function name (Java: a lambda).
@@ -148,6 +184,13 @@ impl fmt::Debug for BazelDepGraphKey {
 impl Key for BazelDepGraphKey {
     type Value = BazelDepGraphValue;
     const FUNCTION: SkyFunctionName = BAZEL_DEP_GRAPH;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:170 SkyFunctions.BAZEL_DEP_GRAPH (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: an AutoValue of the dep graph, the canonical repo name lookup, the abridged modules, the extension usages table, the extension unique names and the root module name.
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelDepGraphValue.java:36 BazelDepGraphValue
+    fn values_equal(old: &BazelDepGraphValue, new: &BazelDepGraphValue) -> bool {
+        old == new
+    }
 }
 
 /// `BazelModuleInspectorValue.KEY`. PORT: `Debug` prints the function name (Java: a lambda).
@@ -164,6 +207,19 @@ impl fmt::Debug for BazelModuleInspectorKey {
 impl Key for BazelModuleInspectorKey {
     type Value = BazelModuleInspectorValue;
     const FUNCTION: SkyFunctionName = BAZEL_MODULE_INSPECTION;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:162 SkyFunctions.BAZEL_MODULE_INSPECTION (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: a record; its `errors` are `ExternalDepsException`s, which have no `equals`
+    /// (identity), so two values are equal only when neither has errors.
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelModuleInspectorValue.java:53 BazelModuleInspectorValue
+    fn values_equal(old: &BazelModuleInspectorValue, new: &BazelModuleInspectorValue) -> bool {
+        old.errors.is_empty()
+            && new.errors.is_empty()
+            && old.dep_graph == new.dep_graph
+            && old.modules_index == new.modules_index
+            && old.extension_to_repo_internal_names == new.extension_to_repo_internal_names
+            && old.module_key_to_canonical_names == new.module_key_to_canonical_names
+    }
 }
 
 /// The two lockfile keys: `BazelLockFileValue.KEY` (the workspace `MODULE.bazel.lock`) and
@@ -200,6 +256,13 @@ impl fmt::Debug for BazelLockFileKey {
 impl Key for BazelLockFileKey {
     type Value = BazelLockFileValue;
     const FUNCTION: SkyFunctionName = BAZEL_LOCK_FILE;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:172 SkyFunctions.BAZEL_LOCK_FILE (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: an AutoValue of the version, registry file hashes, selected yanked versions, module extensions and facts. PORT: facts are compared in order (Java's `Dict` is a map); both sides sort them, so only a float NaN can differ, and then Rust is the side that does not prune.
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelLockFileValue.java:44 BazelLockFileValue
+    fn values_equal(old: &BazelLockFileValue, new: &BazelLockFileValue) -> bool {
+        old == new
+    }
 }
 
 /// The key for `RegistryFunction`; the value is the registry.
@@ -229,6 +292,10 @@ impl fmt::Debug for RegistryKey {
 impl Key for RegistryKey {
     type Value = Arc<dyn Registry>;
     const FUNCTION: SkyFunctionName = REGISTRY;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:175 SkyFunctions.REGISTRY (createNonHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
+    // Default `values_equal` (never equal): Java's `Registry` is a `NotComparableSkyValue`.
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/Registry.java:27 Registry
 }
 
 /// The key for `RepoSpecFunction`.
@@ -271,6 +338,13 @@ impl fmt::Debug for RepoSpecKey {
 impl Key for RepoSpecKey {
     type Value = RepoSpecValue;
     const FUNCTION: SkyFunctionName = REPO_SPEC;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:176 SkyFunctions.REPO_SPEC (createNonHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
+    /// Java: a record of the `RepoSpec` record and the registry file hashes.
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/RepoSpecValue.java:28 RepoSpecValue
+    fn values_equal(old: &RepoSpecValue, new: &RepoSpecValue) -> bool {
+        old == new
+    }
 }
 
 /// The value for `RepoSpecFunction`.
@@ -325,6 +399,13 @@ impl fmt::Debug for YankedVersionsKey {
 impl Key for YankedVersionsKey {
     type Value = YankedVersionsValue;
     const FUNCTION: SkyFunctionName = YANKED_VERSIONS;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:178 SkyFunctions.YANKED_VERSIONS (createNonHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
+    /// Java: a record of the optional map from version to yank reason.
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/YankedVersionsValue.java:29 YankedVersionsValue
+    fn values_equal(old: &YankedVersionsValue, new: &YankedVersionsValue) -> bool {
+        old == new
+    }
 }
 
 /// Generated when incorrect use_repo calls are detected in the root module file and its
@@ -417,6 +498,13 @@ impl fmt::Debug for SingleExtensionKey {
 impl Key for SingleExtensionKey {
     type Value = SingleExtensionValue;
     const FUNCTION: SkyFunctionName = SINGLE_EXTENSION;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:166 SkyFunctions.SINGLE_EXTENSION (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: a record (generated repo specs, canonical names, lockfile info, fixup, facts, facts version).
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/SingleExtensionValue.java:48 SingleExtensionValue
+    fn values_equal(old: &SingleExtensionValue, new: &SingleExtensionValue) -> bool {
+        old == new
+    }
 }
 
 /// The `SkyKey` of a [`SingleExtensionValue`] with the <b>unvalidated</b> result of extension
@@ -440,6 +528,13 @@ impl fmt::Debug for SingleExtensionEvalKey {
 impl Key for SingleExtensionEvalKey {
     type Value = SingleExtensionValue;
     const FUNCTION: SkyFunctionName = SINGLE_EXTENSION_EVAL;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:168 SkyFunctions.SINGLE_EXTENSION_EVAL (createNonHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
+    /// Java: the same record as SINGLE_EXTENSION's.
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/SingleExtensionValue.java:48 SingleExtensionValue
+    fn values_equal(old: &SingleExtensionValue, new: &SingleExtensionValue) -> bool {
+        old == new
+    }
 }
 
 /// All Skyframe information required for the `bazel mod tidy` command.
@@ -490,4 +585,16 @@ impl fmt::Debug for BazelModTidyKey {
 impl Key for BazelModTidyKey {
     type Value = BazelModTidyValue;
     const FUNCTION: SkyFunctionName = BAZEL_MOD_TIDY;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:158 SkyFunctions.BAZEL_MOD_TIDY (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: a record; its `errors` are `ExternalDepsException`s (identity), so two values are
+    /// equal only when neither has errors.
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelModTidyValue.java:38 BazelModTidyValue
+    fn values_equal(old: &BazelModTidyValue, new: &BazelModTidyValue) -> bool {
+        old.errors.is_empty()
+            && new.errors.is_empty()
+            && old.fixups == new.fixups
+            && old.buildozer == new.buildozer
+            && old.module_file_paths == new.module_file_paths
+    }
 }

@@ -39,6 +39,13 @@ use crate::test::test_runner_action::TestRunnerAction;
 /// `(TestRunnerAction) action` view `TestCompletionFunction` uses. Idempotent.
 pub fn register_executable_actions() {
     register_executable_action::<TestRunnerAction>();
+    register_executable_action::<
+        crate::test::instrumented_file_manifest_action::InstrumentedFileManifestAction,
+    >();
+    register_executable_action::<crate::test::baseline_coverage_action::BaselineCoverageAction>();
+    register_executable_action::<
+        crate::bazel::coverage::coverage_report_action_builder::CoverageReportAction,
+    >();
     blaze_exec::analysis::test::register();
     blaze_exec::analysis::test::register_test_runner_action_view::<TestRunnerAction>(|a| {
         execution_action(a).clone()
@@ -179,6 +186,55 @@ impl ExecutableAction for TestRunnerAction {
     ) -> Result<ActionResult, ActionExecutionException> {
         ExecutableAction::execute(&**execution_action(self), action_execution_context)
     }
+}
+
+// Java: com/google/devtools/build/lib/analysis/test/InstrumentedFileManifestAction.java:55 InstrumentedFileManifestAction.newDeterministicWriter
+impl ExecutableAction
+    for crate::test::instrumented_file_manifest_action::InstrumentedFileManifestAction
+{
+    // Java: com/google/devtools/build/lib/analysis/actions/AbstractFileWriteAction.java:60 AbstractFileWriteAction.execute
+    fn execute(
+        &self,
+        ctx: &dyn ActionExecutionContext,
+    ) -> Result<ActionResult, ActionExecutionException> {
+        blaze_exec::analysis::actions::abstract_file_write_action::execute_file_write(
+            self,
+            ctx,
+            || file_write_writer(self),
+        )
+    }
+}
+
+// Java: com/google/devtools/build/lib/analysis/test/BaselineCoverageAction.java:69 BaselineCoverageAction.newDeterministicWriter
+impl ExecutableAction for crate::test::baseline_coverage_action::BaselineCoverageAction {
+    // Java: com/google/devtools/build/lib/analysis/actions/AbstractFileWriteAction.java:60 AbstractFileWriteAction.execute
+    fn execute(
+        &self,
+        ctx: &dyn ActionExecutionContext,
+    ) -> Result<ActionResult, ActionExecutionException> {
+        blaze_exec::analysis::actions::abstract_file_write_action::execute_file_write(
+            self,
+            ctx,
+            || file_write_writer(self),
+        )
+    }
+}
+
+/// `newDeterministicWriter(ctx)` of the coverage file writes (their writers do not read the
+/// context and throw nothing).
+fn file_write_writer<
+    A: blaze_actions::analysis::actions::abstract_file_write_action::AbstractFileWriteAction,
+>(
+    action: &A,
+) -> Result<
+    Box<dyn blaze_actions::analysis::actions::abstract_file_write_action::DeterministicWriter + '_>,
+    blaze_exec::actions::ExecException,
+> {
+    use blaze_actions::analysis::actions::abstract_file_write_action::NewDeterministicWriterError;
+    action.new_deterministic_writer().map_err(|e| match e {
+        NewDeterministicWriterError::Interrupted => blaze_exec::actions::ExecException::Interrupted,
+        NewDeterministicWriterError::Exec(m) => panic!("unexpected ExecException: {m}"),
+    })
 }
 
 #[cfg(test)]

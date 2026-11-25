@@ -13,7 +13,7 @@ use super::starlark_info_wrapper::{StarlarkInfoWrapper, struct_get_value};
 use crate::cpp::util::{errorf, sequence_cast_artifacts};
 
 /// The outputs of a `JavaCompileAction`.
-// Java: com/google/devtools/build/lib/rules/java/JavaCompileOutputs.java:22 JavaCompileOutputs
+// Java: com/google/devtools/build/lib/rules/java/JavaCompileOutputs.java:23 JavaCompileOutputs
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct JavaCompileOutputs {
     /// The class jar Artifact to create with the Action.
@@ -46,27 +46,27 @@ impl JavaCompileOutputs {
         self.deps_proto.as_ref()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileOutputs.java:37 JavaCompileOutputs.genClass
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileOutputs.java:36 JavaCompileOutputs.genClass
     pub fn gen_class(&self) -> Option<&Artifact> {
         self.gen_class.as_ref()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileOutputs.java:44 JavaCompileOutputs.genSource
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileOutputs.java:43 JavaCompileOutputs.genSource
     pub fn gen_source(&self) -> Option<&Artifact> {
         self.gen_source.as_ref()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileOutputs.java:48 JavaCompileOutputs.nativeHeader
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileOutputs.java:47 JavaCompileOutputs.nativeHeader
     pub fn native_header(&self) -> Option<&Artifact> {
         self.native_header.as_ref()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileOutputs.java:50 JavaCompileOutputs.builder
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileOutputs.java:49 JavaCompileOutputs.builder
     pub fn builder() -> JavaCompileOutputsBuilder {
         JavaCompileOutputsBuilder::default()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileOutputs.java:54 JavaCompileOutputs.toBuilder
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileOutputs.java:53 JavaCompileOutputs.toBuilder
     pub fn to_builder(&self) -> JavaCompileOutputsBuilder {
         JavaCompileOutputsBuilder {
             output: Some(self.output.clone()),
@@ -78,7 +78,7 @@ impl JavaCompileOutputs {
         }
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileOutputs.java:56 JavaCompileOutputs.withOutput
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileOutputs.java:55 JavaCompileOutputs.withOutput
     pub fn with_output(&self, output: Artifact) -> JavaCompileOutputs {
         let mut b = self.to_builder();
         b.output(output);
@@ -156,7 +156,7 @@ impl JavaCompileOutputsBuilder {
 }
 
 /// A collection of artifacts associated with a jar output.
-// Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:44 JavaOutput
+// Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:47 JavaOutput
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JavaOutput {
     class_jar: Artifact,
@@ -173,47 +173,47 @@ pub struct JavaOutput {
 }
 
 impl JavaOutput {
-    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:62 JavaOutput.getClassJar
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:65 JavaOutput.getClassJar
     pub fn get_class_jar(&self) -> &Artifact {
         &self.class_jar
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:68 JavaOutput.getCompileJar
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:71 JavaOutput.getCompileJar
     pub fn get_compile_jar(&self) -> Option<&Artifact> {
         self.compile_jar.as_ref()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:74 JavaOutput.getHeaderCompilationJar
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:77 JavaOutput.getHeaderCompilationJar
     pub fn get_header_compilation_jar(&self) -> Option<&Artifact> {
         self.header_compilation_jar.as_ref()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:80 JavaOutput.getCompileJdeps
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:83 JavaOutput.getCompileJdeps
     pub fn get_compile_jdeps(&self) -> Option<&Artifact> {
         self.compile_jdeps.as_ref()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:86 JavaOutput.getGeneratedClassJar
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:89 JavaOutput.getGeneratedClassJar
     pub fn get_generated_class_jar(&self) -> Option<&Artifact> {
         self.generated_class_jar.as_ref()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:92 JavaOutput.getGeneratedSourceJar
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:95 JavaOutput.getGeneratedSourceJar
     pub fn get_generated_source_jar(&self) -> Option<&Artifact> {
         self.generated_source_jar.as_ref()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:98 JavaOutput.getNativeHeadersJar
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:101 JavaOutput.getNativeHeadersJar
     pub fn get_native_headers_jar(&self) -> Option<&Artifact> {
         self.native_headers_jar.as_ref()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:104 JavaOutput.getManifestProto
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:107 JavaOutput.getManifestProto
     pub fn get_manifest_proto(&self) -> Option<&Artifact> {
         self.manifest_proto.as_ref()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:110 JavaOutput.getJdeps
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:113 JavaOutput.getJdeps
     pub fn get_jdeps(&self) -> Option<&Artifact> {
         self.jdeps.as_ref()
     }
@@ -327,7 +327,7 @@ impl JavaOutput {
         }
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:265 JavaOutput.builder
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:266 JavaOutput.builder
     pub fn builder() -> JavaOutputBuilder {
         JavaOutputBuilder::default()
     }
@@ -455,7 +455,7 @@ impl JavaOutputBuilder {
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:259 JavaOutput.Builder.build
+    // Java: com/google/devtools/build/lib/rules/java/JavaOutput.java:260 JavaOutput.Builder.build
     pub fn build(&mut self) -> JavaOutput {
         let source_jars = self.source_jars_builder().build();
         // Java: JavaOutput's compact constructor: requireNonNull(classJar, "classJar").

@@ -69,6 +69,9 @@ impl Key for ComputeUnloadedToolchainContextsKey {
     type Value = ComputeUnloadedToolchainContextsValue;
     const FUNCTION: SkyFunctionName =
         SkyFunctionName("CONFIGURED_TARGET_FUNCTION_COMPUTE_UNLOADED_TOOLCHAIN_CONTEXTS");
+    // test key; hermetic like Java's SkyFunctionName.FOR_TESTING
+    const HERMETICITY: blaze_skyframe::FunctionHermeticity =
+        blaze_skyframe::FunctionHermeticity::Hermetic;
 }
 
 /// Java `ToolchainsForTargetsTest.Value`.

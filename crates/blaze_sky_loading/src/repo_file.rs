@@ -15,7 +15,8 @@ use blaze_packages::package::PackageArgs;
 use blaze_packages::repo_file::RepoThreadContext;
 use blaze_packages::types::label_converter::LabelConverter;
 use blaze_skyframe::{
-    ComputeError, Environment, Key, SkyFunctionException, SkyFunctionName, Transience,
+    ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionException, SkyFunctionName,
+    Transience,
 };
 use blaze_starlark::env::NativeRegistry;
 use blaze_starlark::error::EvalErrorKind;
@@ -95,6 +96,13 @@ impl fmt::Debug for RepoFileKey {
 impl Key for RepoFileKey {
     type Value = RepoFileValue;
     const FUNCTION: SkyFunctionName = sky_functions::REPO_FILE;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:153 SkyFunctions.REPO_FILE (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal). PORT: Java's record compares the `repo()` keyword
+    // arguments (`ImmutableMap.equals` over Starlark values' `equals`) and the ignored directories;
+    // the map is a frozen Starlark dict here, and Java's `equals` on Starlark values is not ported
+    // as one function. REPO_PACKAGE_ARGS above it compares by value, so its readers still prune.
+    // Java: com/google/devtools/build/lib/skyframe/RepoFileValue.java:29 RepoFileValue
 }
 
 /// Thrown when something is wrong with the contents of the REPO.bazel file of a certain repo.
@@ -377,6 +385,13 @@ impl fmt::Debug for RepoPackageArgsKey {
 impl Key for RepoPackageArgsKey {
     type Value = RepoPackageArgsValue;
     const FUNCTION: SkyFunctionName = sky_functions::REPO_PACKAGE_ARGS;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:152 SkyFunctions.REPO_PACKAGE_ARGS (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: `RepoPackageArgsValue.equals`, the `PackageArgs` (AutoValue).
+    // Java: com/google/devtools/build/lib/skyframe/RepoPackageArgsFunction.java:57 RepoPackageArgsFunction.RepoPackageArgsValue.equals
+    fn values_equal(old: &RepoPackageArgsValue, new: &RepoPackageArgsValue) -> bool {
+        old.package_args == new.package_args
+    }
 }
 
 /// A SkyFunction that returns the package args for a given repository.

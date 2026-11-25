@@ -51,6 +51,19 @@ pub(crate) fn reporter(env: &CommandEnvironment) -> Arc<dyn ExtendedEventHandler
     env.get_reporter().clone()
 }
 
+/// The per-command resets of `SkyframeExecutor.preparePackageLoading` (which
+/// `CommandEnvironment.syncPackageLoading` runs once per command) whose state is process-wide in
+/// Blaze: the package progress receiver (`packageProgress.reset()`).
+///
+/// PORT: the other resets of `preparePackageLoading` (`numPackagesSuccessfullyLoaded`,
+/// `emittedEventState`, `bzlCompileCache`, the cycles reporter) are fields of Blaze's executor,
+/// which is created per command. Call it where the command syncs package loading, before it
+/// creates its executor.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1742 SkyframeExecutor.preparePackageLoading
+pub(crate) fn prepare_package_loading() {
+    blaze_sky_loading::package_progress_receiver::PACKAGE_PROGRESS.reset();
+}
+
 /// Creates the command's `SkyframeExecutor` (Java: `env.getSkyframeExecutor()` after
 /// `syncPackageLoading`; for commands that analyze, with the request's build options as the
 /// baseline configuration).
@@ -113,6 +126,25 @@ pub(crate) fn create_skyframe_executor_reporting_to(
         execution,
         event_handler,
         Default::default(),
+    )
+}
+
+/// [`create_skyframe_executor_with_execution`] with the repository precomputed values a command
+/// injects before its build (`fetch --force` with target patterns).
+pub(crate) fn create_skyframe_executor_with_execution_and_repo_precomputed(
+    env: &CommandEnvironment,
+    options: Arc<OptionsParsingResult>,
+    top_level_build_options: Option<BuildOptions>,
+    execution: Option<blaze_sky_top::execution_phase::ExecutionSetup>,
+    repo_precomputed: blaze_repo_rules::registration::RepoPrecomputedValues,
+) -> Result<SkyframeExecutor, BlazeCommandResult> {
+    create_skyframe_executor_internal(
+        env,
+        options,
+        top_level_build_options,
+        execution,
+        reporter(env),
+        repo_precomputed,
     )
 }
 
@@ -290,6 +322,9 @@ impl QueryCommand {
         env: &mut CommandEnvironment,
         options: &OptionsParsingResult,
     ) -> BlazeCommandResult {
+        // env.syncPackageLoading(options)
+        // Java: com/google/devtools/build/lib/runtime/commands/QueryEnvironmentBasedCommand.java:111 QueryEnvironmentBasedCommand.execInternal
+        prepare_package_loading();
         let skyframe_executor = match create_skyframe_executor(env, None) {
             Ok(e) => e,
             Err(result) => return result,

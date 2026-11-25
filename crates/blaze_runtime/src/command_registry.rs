@@ -793,27 +793,12 @@ macro_rules! unported_command {
 pub use crate::commands::build::BuildCommand;
 // cmds implementer: implemented in crate::commands::canonicalize.
 pub use crate::commands::canonicalize::CanonicalizeCommand;
-unported_command!(
-    /// Handles the 'coverage' command on the Bazel command line.
-    // Java: com/google/devtools/build/lib/runtime/commands/CoverageCommand.java:113 CoverageCommand
-    CoverageCommand,
-    COVERAGE_COMMAND,
-    "CoverageCommand.exec"
-);
-unported_command!(
-    /// Implementation of the dump command.
-    // Java: com/google/devtools/build/lib/runtime/commands/DumpCommand.java:99 DumpCommand
-    DumpCommand,
-    DUMP_COMMAND,
-    "DumpCommand.exec"
-);
-unported_command!(
-    /// Implements 'blaze print_action' by finding the Configured target[s] for the file[s] listed.
-    // Java: com/google/devtools/build/lib/runtime/commands/PrintActionCommand.java:80 PrintActionCommand
-    PrintActionCommand,
-    PRINT_ACTION_COMMAND,
-    "PrintActionCommand.exec"
-);
+// Implemented in crate::commands::coverage.
+pub use crate::commands::coverage::CoverageCommand;
+// Implemented in crate::commands::dump.
+pub use crate::commands::dump::DumpCommand;
+// Implemented in crate::commands::print_action.
+pub use crate::commands::print_action::PrintActionCommand;
 // W4 analysis lead: implemented in crate::commands::query.
 pub use crate::commands::query::QueryCommand;
 // Implemented in crate::commands::run.
@@ -824,13 +809,8 @@ pub use crate::commands::build::TestCommand;
 pub use crate::commands::aquery::AqueryCommand;
 // W4 analysis lead: implemented in crate::commands::cquery.
 pub use crate::commands::cquery::CqueryCommand;
-unported_command!(
-    /// Handles the 'config' command on the Blaze command line.
-    // Java: com/google/devtools/build/lib/runtime/commands/ConfigCommand.java:84 ConfigCommand
-    ConfigCommand,
-    CONFIG_COMMAND,
-    "ConfigCommand.exec"
-);
+// Implemented in crate::commands::config.
+pub use crate::commands::config::ConfigCommand;
 // cmds implementer: implemented in crate::commands::license.
 pub use crate::commands::license::LicenseCommand;
 unported_command!(

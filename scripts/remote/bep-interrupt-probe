@@ -24,7 +24,7 @@
 set -euo pipefail
 if [[ $# -lt 3 || $1 == help ]]; then sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi
 here=$(cd "$(dirname "$0")" && pwd)
-W=~/.cache/blaze/work/remote
+W="${BLAZE_REMOTE_WORK:-$HOME/.cache/blaze/work/remote}"
 src=$W/bep-interrupt-probe/src
 dump=$W/tb-tools/blaze-remote-grpc-log
 bin=$1; label=$2; port=$3

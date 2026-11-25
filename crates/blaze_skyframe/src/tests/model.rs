@@ -28,7 +28,7 @@
 //! from the environment variables `BLAZE_SKYFRAME_MODEL_SEEDS` and `BLAZE_SKYFRAME_MODEL_SEED_START`):
 //!
 //! **Keys and functions.** Two key types, both `Debug` as `n{id}`, `Value = i64`,
-//! `HERMETICITY = Some(FunctionHermeticity::Nonhermetic)` (Java's `GraphTester.NonHermeticKey`;
+//! `HERMETICITY = FunctionHermeticity::Nonhermetic` (Java's `GraphTester.NonHermeticKey`;
 //! CHANGE-invalidating a hermetic key throws "Nodes with hermetic functions cannot be marked
 //! 'changed'", J:InvalidatingNodeVisitor.java:467): `ModelKey(NodeId)` with
 //! `values_equal(a, b) = a == b`, used for nodes whose `NodeSpec::comparable` is true, and

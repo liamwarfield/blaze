@@ -16,8 +16,8 @@ use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::configured_target_key::{CONFIGURED_TARGET, ConfiguredTargetKey};
 use blaze_collect::{NestedSet, NestedSetBuilder};
 use blaze_skyframe::{
-    ComputeError, Environment, EvaluatorBuilder, Key, SkyFunction, SkyFunctionException,
-    SkyFunctionName, SkyKey, SkyValue, Transience,
+    ComputeError, Environment, EvaluatorBuilder, FunctionHermeticity, Key, SkyFunction,
+    SkyFunctionException, SkyFunctionName, SkyKey, SkyValue, Transience,
 };
 use indexmap::{IndexMap, IndexSet};
 
@@ -84,6 +84,17 @@ impl fmt::Debug for ActionLookupConflictFindingKey {
 impl Key for ActionLookupConflictFindingKey {
     type Value = ActionLookupConflictFindingValue;
     const FUNCTION: SkyFunctionName = ACTION_LOOKUP_CONFLICT_FINDING;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:98 SkyFunctions.ACTION_LOOKUP_CONFLICT_FINDING (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: the function returns the singleton `ActionLookupConflictFindingValue.INSTANCE`,
+    /// equal to itself.
+    // Java: com/google/devtools/build/lib/skyframe/ActionLookupConflictFindingValue.java:34 ActionLookupConflictFindingValue.INSTANCE
+    fn values_equal(
+        _old: &ActionLookupConflictFindingValue,
+        _new: &ActionLookupConflictFindingValue,
+    ) -> bool {
+        true
+    }
 }
 
 /// `TopLevelActionLookupConflictFindingFunction.Key`: a top-level key and the output groups
@@ -123,6 +134,17 @@ impl fmt::Debug for TopLevelActionLookupConflictFindingKey {
 impl Key for TopLevelActionLookupConflictFindingKey {
     type Value = ActionLookupConflictFindingValue;
     const FUNCTION: SkyFunctionName = TOP_LEVEL_ACTION_LOOKUP_CONFLICT_FINDING;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:100 SkyFunctions.TOP_LEVEL_ACTION_LOOKUP_CONFLICT_FINDING (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: the function returns the singleton `ActionLookupConflictFindingValue.INSTANCE`,
+    /// equal to itself.
+    // Java: com/google/devtools/build/lib/skyframe/ActionLookupConflictFindingValue.java:34 ActionLookupConflictFindingValue.INSTANCE
+    fn values_equal(
+        _old: &ActionLookupConflictFindingValue,
+        _new: &ActionLookupConflictFindingValue,
+    ) -> bool {
+        true
+    }
 }
 
 /// `TopLevelActionLookupConflictFindingFunction.keys`.

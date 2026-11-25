@@ -22,8 +22,8 @@ use blaze_sky_loading::project_function::{
 };
 use blaze_sky_loading::repos::RepositoryMappingKey;
 use blaze_skyframe::{
-    ComputeError, Environment, EvaluatorBuilder, Key, SkyFunctionException, SkyFunctionName,
-    SkyKey, Transience,
+    ComputeError, Environment, EvaluatorBuilder, FunctionHermeticity, Key, SkyFunctionException,
+    SkyFunctionName, SkyKey, Transience,
 };
 use indexmap::{IndexMap, IndexSet};
 
@@ -303,6 +303,10 @@ impl fmt::Debug for FlagSetKey {
 impl Key for FlagSetKey {
     type Value = FlagSetValue;
     const FUNCTION: SkyFunctionName = FLAG_SET;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:184 SkyFunctions.FLAG_SET (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal): Java's `FlagSetValue` has no `equals`.
+    // Java: com/google/devtools/build/lib/skyframe/config/FlagSetValue.java:34 FlagSetValue
 }
 
 // Java: com/google/devtools/build/lib/skyframe/config/FlagSetValue.java:32 FlagSetValue

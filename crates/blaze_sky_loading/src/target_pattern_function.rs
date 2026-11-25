@@ -25,7 +25,8 @@ use blaze_packages::package::Package;
 use blaze_packages::target::target_utils;
 use blaze_packages::target::{OutputFile, Target};
 use blaze_skyframe::{
-    ComputeError, Environment, Key, SkyFunctionException, SkyFunctionName, SkyKey, Transience,
+    ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionException, SkyFunctionName,
+    SkyKey, Transience,
 };
 use blaze_vfs::{PathFragment, Root, RootedPath};
 
@@ -190,6 +191,11 @@ impl fmt::Debug for TargetPatternKey {
 impl Key for TargetPatternKey {
     type Value = TargetPatternValue;
     const FUNCTION: SkyFunctionName = sky_functions::TARGET_PATTERN;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:69 SkyFunctions.TARGET_PATTERN (createSemiHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::SemiHermetic;
+    // Default `values_equal` (never equal): Java's `TargetPatternValue` (and its
+    // `ResolvedTargets`) has no `equals`.
+    // Java: com/google/devtools/build/lib/skyframe/TargetPatternValue.java:48 TargetPatternValue
 }
 
 /// The labels a pattern resolves to, in resolution order (Java `TargetPatternValue` holding a

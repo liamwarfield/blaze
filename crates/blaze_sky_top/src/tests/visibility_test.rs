@@ -1,7 +1,7 @@
 //! Port of `src/test/java/com/google/devtools/build/lib/analysis/VisibilityTest.java` (an
 //! `AnalysisTestCase`).
 
-use crate::build_view::BuildViewError;
+use crate::testing::UpdateError;
 use crate::testing::{AnalysisTestCase, BuildViewTestCase};
 
 fn new_test() -> AnalysisTestCase {
@@ -440,7 +440,7 @@ my_rule(name = "foo")
     );
     assert!(matches!(
         t.update(&["//pkg:foo"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     t.assert_contains_event("* The dependency is an implicit dependency of the consuming target's rule, my_rule, which is defined in //rule:defs.bzl. Since that file's package, //rule, does not match");
 }
@@ -501,7 +501,7 @@ my_rule(
     );
     assert!(matches!(
         t.update(&["//pkg:foo"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     t.assert_contains_event("* The dependency is an implicit dependency of the consuming target's aspect, my_aspect, which is defined in //aspect:defs.bzl. Since that file's package, //aspect, does not");
 }
@@ -532,7 +532,7 @@ cc_library(
     );
     assert!(matches!(
         t.update(&["//pkg:foo"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     t.assert_contains_event(
         "* The location being checked is the package where the consuming target lives, //pkg.",
@@ -576,7 +576,7 @@ my_macro(name = "foo")
     );
     assert!(matches!(
         t.update(&["//pkg:foo_bar"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     t.assert_contains_event("* Because the consuming target was declared in the body of the symbolic macro my_macro defined in //macro:defs.bzl, the location being checked is this file's package, //macro.");
 }
@@ -653,13 +653,13 @@ my_macro(
     );
     assert!(matches!(
         t.update(&["//pkg:foo_bar"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     t.assert_contains_event("* Because the dependency was passed to the consuming target from an attribute of the symbolic macro //pkg:foo, the location being checked is the place where this macro is declared: package //pkg.");
     t.event_collector.clear();
     assert!(matches!(
         t.update(&["//pkg:foo2_bar_baz"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     // Should say "transitive", and should still identify outer macro (foo2), not inner macro
     // (foo2_bar).
@@ -750,13 +750,13 @@ my_macro(
     );
     assert!(matches!(
         t.update(&["//pkg:foo_bar_qux"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     t.assert_contains_event("* Because the dependency was passed to the consuming target from an attribute of the symbolic macro //pkg:foo_bar, the location being checked is the place where this macro is declared: the body of the calling macro my_macro, defined in //macro:defs.bzl of package //macro.");
     t.event_collector.clear();
     assert!(matches!(
         t.update(&["//pkg:foo2_bar_baz_qux"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     // Should say "transitive", and should still identify outer macro (foo2_bar), not inner macro
     // (foo2_bar_baz).
@@ -795,7 +795,7 @@ cc_library(
     );
     assert!(matches!(
         t.update(&["//pkg:foo"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     t.assert_contains_event("* The dependency is an alias target. Note that it is the visibility of the alias we care about, not the visibility of the underlying target it refers to.
 ");
@@ -827,7 +827,7 @@ cc_library(
     );
     assert!(matches!(
         t.update(&["//pkg:foo"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     t.assert_does_not_contain_event("The dependency is an alias");
 }
@@ -877,13 +877,13 @@ my_macro(
     );
     assert!(matches!(
         t.update(&["//pkg:foo"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     t.assert_contains_event("* Although both targets live in the same package, they cannot automatically see each other because they are declared by different symbolic macros.");
     t.event_collector.clear();
     assert!(matches!(
         t.update(&["//pkg2:foo"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     t.assert_does_not_contain_event("both targets live in the same package");
 }
@@ -927,7 +927,7 @@ my_macro(
     );
     assert!(matches!(
         t.update(&["//pkg:foo"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     t.assert_contains_event("* Although both targets live in the same package, they cannot automatically see each other because they are declared by different symbolic macros.");
 }
@@ -976,7 +976,7 @@ my_macro(name = "foo")
     );
     assert!(matches!(
         t.update(&["//pkg:foo"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     t.assert_does_not_contain_event("both targets live in the same package");
 }
@@ -1053,13 +1053,13 @@ my_macro(
     );
     assert!(matches!(
         t.update(&["//pkg:foo_bar_qux"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     t.assert_contains_event("* Although the dependency is not visible to the location being checked, it is visible to this location's caller, //pkg:foo, a my_macro macro defined in //macro. (Perhaps the caller needs to pass in the dependency as an argument?)");
     t.event_collector.clear();
     assert!(matches!(
         t.update(&["//pkg:foo2_bar_baz_qux"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     // Should say "transitive", and should still identify outer macro (foo2_bar), not inner macro
     // (foo2_bar_baz).
@@ -1132,13 +1132,13 @@ my_macro(
     );
     assert!(matches!(
         t.update(&["//pkg:foo_bar"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     t.assert_contains_event("* Although the dependency is not visible to the location being checked, it is visible to this location's caller, the BUILD file of package //pkg. (Perhaps the caller needs to pass in the dependency as an argument?)");
     t.event_collector.clear();
     assert!(matches!(
         t.update(&["//pkg:foo2_bar_baz"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     // Should say "transitive".
     t.assert_contains_event("* Although the dependency is not visible to the location being checked, it is visible to this location's transitive caller, the BUILD file of package //pkg. (Perhaps this caller, or an intermediate caller, needs to pass in the dependency as an argument?)");
@@ -1215,14 +1215,14 @@ my_macro(
     );
     assert!(matches!(
         t.update(&["//pkg:foo_bar_baz"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     // my_macro passed it to my_submacro, but BUILD didn't pass it to my_macro.
     t.assert_contains_event("* Although the dependency is not visible to the location being checked, it is visible to this location's caller, the BUILD file of package //pkg. (Perhaps the caller needs to pass in the dependency as an argument?)");
     t.event_collector.clear();
     assert!(matches!(
         t.update(&["//pkg:foo2_bar_baz"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     // BUILD passed it to my_macro, but my_macro didn't pass it to my_submacro.
     t.assert_contains_event("* Although the dependency is not visible to the location being checked, it is visible to this location's transitive caller, the BUILD file of package //pkg. (Perhaps this caller, or an intermediate caller, needs to pass in the dependency as an argument?)");
@@ -1254,7 +1254,7 @@ cc_library(
     );
     assert!(matches!(
         t.update(&["//pkg:foo"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     t.assert_contains_event("* If you think the dependency is legitimate, consider updating its visibility declaration.");
 }
@@ -1284,7 +1284,7 @@ cc_library(
     );
     assert!(matches!(
         t.update(&["//pkg:foo"]),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     t.assert_contains_event("* If you think the dependency on this source file is legitimate, consider updating its visibility declaration using exports_files().");
 }

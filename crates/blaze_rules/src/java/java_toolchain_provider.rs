@@ -38,24 +38,24 @@ pub fn provider_key() -> ProviderKey {
 }
 
 /// `JavaToolchainProvider.RULES_JAVA_PROVIDER.getKey()`.
-// Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:316 JavaToolchainProvider.RulesJavaProvider.<init>
+// Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:315 JavaToolchainProvider.RulesJavaProvider.<init>
 pub fn rules_java_provider_key_() -> ProviderKey {
     main_repo_provider_key(BZL, "JavaToolchainInfo")
 }
 
 /// Information about the JDK used by the `java_*` rules.
-// Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:52 JavaToolchainProvider
+// Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:51 JavaToolchainProvider
 #[derive(Clone, Copy)]
 pub struct JavaToolchainProvider<'v> {
     wrapper: StarlarkInfoWrapper<'v>,
 }
 
 impl<'v> JavaToolchainProvider<'v> {
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:63 JavaToolchainProvider.wrap
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:61 JavaToolchainProvider.wrap
     pub fn wrap(info: Value<'v>, heap: Heap<'v>) -> starlark::Result<JavaToolchainProvider<'v>> {
         let key = info_key(info);
         if key == Some(provider_key()) || key == Some(rules_java_provider_key_()) {
-            // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:332 JavaToolchainProvider.Provider.wrap
+            // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:334 JavaToolchainProvider.Provider.wrap
             if is_starlark_info_with_schema(info) {
                 return Ok(JavaToolchainProvider {
                     wrapper: StarlarkInfoWrapper::new(info, heap),
@@ -127,7 +127,7 @@ impl<'v> JavaToolchainProvider<'v> {
                 .unwrap_or(false)
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:110 JavaToolchainProvider.from
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:108 JavaToolchainProvider.from
     fn from(
         toolchain_info: Option<Value<'v>>,
         error_consumer: Option<&dyn RuleErrorConsumer>,
@@ -159,7 +159,7 @@ impl<'v> JavaToolchainProvider<'v> {
     }
 
     /// Returns the label for this `java_toolchain`.
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:134 JavaToolchainProvider.getToolchainLabel
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:131 JavaToolchainProvider.getToolchainLabel
     pub fn get_toolchain_label(&self) -> starlark::Result<Label> {
         match self.wrapper.get_underlying_value("label") {
             None => panic!("NullPointerException"),
@@ -171,7 +171,7 @@ impl<'v> JavaToolchainProvider<'v> {
     }
 
     /// Returns the target Java bootclasspath.
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:139 JavaToolchainProvider.getBootclasspath
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:136 JavaToolchainProvider.getBootclasspath
     pub fn get_bootclasspath(&self) -> starlark::Result<BootClassPathInfo<'v>> {
         match self.wrapper.get_underlying_value("_bootclasspath_info") {
             // Java: BootClassPathInfo.wrap((StructImpl) null) wraps null; reading it fails.
@@ -181,7 +181,7 @@ impl<'v> JavaToolchainProvider<'v> {
     }
 
     /// Returns the Artifacts of compilation tools.
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:144 JavaToolchainProvider.getTools
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:141 JavaToolchainProvider.getTools
     pub fn get_tools(&self) -> starlark::Result<NestedSet<Artifact>> {
         self.wrapper.get_underlying_nested_set_artifacts("tools")
     }
@@ -195,19 +195,19 @@ impl<'v> JavaToolchainProvider<'v> {
     }
 
     /// Returns the JavaToolchainTool for JavaBuilder.
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:149 JavaToolchainProvider.getJavaBuilder
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:146 JavaToolchainProvider.getJavaBuilder
     pub fn get_java_builder(&self) -> starlark::Result<Option<JavaToolchainTool>> {
         JavaToolchainTool::from_starlark(self.get_struct("_javabuilder")?, self.wrapper.heap)
     }
 
     /// Returns the JavaToolchainTool for the header compiler.
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:155 JavaToolchainProvider.getHeaderCompiler
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:152 JavaToolchainProvider.getHeaderCompiler
     pub fn get_header_compiler(&self) -> starlark::Result<Option<JavaToolchainTool>> {
         JavaToolchainTool::from_starlark(self.get_struct("_header_compiler")?, self.wrapper.heap)
     }
 
     /// Returns the header compiler for direct-classpath, non-annotation processing actions.
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:164 JavaToolchainProvider.getHeaderCompilerDirect
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:161 JavaToolchainProvider.getHeaderCompilerDirect
     pub fn get_header_compiler_direct(&self) -> starlark::Result<Option<JavaToolchainTool>> {
         JavaToolchainTool::from_starlark(
             self.get_struct("_header_compiler_direct")?,
@@ -215,12 +215,12 @@ impl<'v> JavaToolchainProvider<'v> {
         )
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:171 JavaToolchainProvider.getAndroidLint
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:168 JavaToolchainProvider.getAndroidLint
     pub fn get_android_lint(&self) -> starlark::Result<Option<Value<'v>>> {
         self.get_struct("_android_linter")
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:176 JavaToolchainProvider.jspecifyInfo
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:173 JavaToolchainProvider.jspecifyInfo
     pub fn jspecify_info(&self) -> starlark::Result<Option<JspecifyInfo>> {
         JspecifyInfo::from_starlark(
             self.wrapper.get_underlying_value("_jspecify_info"),
@@ -228,19 +228,19 @@ impl<'v> JavaToolchainProvider<'v> {
         )
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:181 JavaToolchainProvider.getBytecodeOptimizer
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:178 JavaToolchainProvider.getBytecodeOptimizer
     pub fn get_bytecode_optimizer(&self) -> starlark::Result<Option<JavaToolchainTool>> {
         JavaToolchainTool::from_starlark(self.get_struct("_bytecode_optimizer")?, self.wrapper.heap)
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:186 JavaToolchainProvider.getLocalJavaOptimizationConfiguration
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:183 JavaToolchainProvider.getLocalJavaOptimizationConfiguration
     pub fn get_local_java_optimization_configuration(&self) -> starlark::Result<Vec<Artifact>> {
         self.wrapper
             .get_underlying_sequence_artifacts("_local_java_optimization_config")
     }
 
     /// Returns class names of annotation processors that are built in to the header compiler.
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:192 JavaToolchainProvider.getHeaderCompilerBuiltinProcessors
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:189 JavaToolchainProvider.getHeaderCompilerBuiltinProcessors
     pub fn get_header_compiler_builtin_processors(&self) -> starlark::Result<IndexSet<String>> {
         Ok(self
             .wrapper
@@ -248,7 +248,7 @@ impl<'v> JavaToolchainProvider<'v> {
             .to_set())
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:196 JavaToolchainProvider.getReducedClasspathIncompatibleProcessors
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:193 JavaToolchainProvider.getReducedClasspathIncompatibleProcessors
     pub fn get_reduced_classpath_incompatible_processors(
         &self,
     ) -> starlark::Result<IndexSet<String>> {
@@ -273,33 +273,33 @@ impl<'v> JavaToolchainProvider<'v> {
     }
 
     /// Returns the FilesToRunProvider of the SingleJar tool.
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:203 JavaToolchainProvider.getSingleJar
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:200 JavaToolchainProvider.getSingleJar
     pub fn get_single_jar(&self) -> starlark::Result<Option<Arc<FilesToRunProvider>>> {
         self.get_files_to_run("single_jar")
     }
 
     /// Returns the Artifact of the GenClass deploy jar.
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:208 JavaToolchainProvider.getGenClass
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:205 JavaToolchainProvider.getGenClass
     pub fn get_gen_class(&self) -> starlark::Result<Option<Artifact>> {
         self.wrapper.get_underlying_artifact("_gen_class")
     }
 
     /// Returns the Artifact of the latest timezone data resource jar that can be loaded by
     /// Java 8 binaries.
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:218 JavaToolchainProvider.getTimezoneData
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:215 JavaToolchainProvider.getTimezoneData
     pub fn get_timezone_data(&self) -> starlark::Result<Option<Artifact>> {
         self.wrapper.get_underlying_artifact("_timezone_data")
     }
 
     /// Returns the ijar executable.
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:223 JavaToolchainProvider.getIjar
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:220 JavaToolchainProvider.getIjar
     pub fn get_ijar(&self) -> starlark::Result<Option<Arc<FilesToRunProvider>>> {
         self.get_files_to_run("ijar")
     }
 
     /// Returns the NestedSet of default options for the JVM running the java compiler and
     /// associated tools.
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:231 JavaToolchainProvider.getJvmOptions
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:228 JavaToolchainProvider.getJvmOptions
     pub fn get_jvm_options(&self) -> starlark::Result<NestedSet<String>> {
         self.wrapper.get_underlying_nested_set_strings("jvm_opt")
     }
@@ -313,32 +313,32 @@ impl<'v> JavaToolchainProvider<'v> {
     }
 
     /// Returns whether JavaBuilders supports running as a persistent worker or not.
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:236 JavaToolchainProvider.getJavacSupportsWorkers
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:233 JavaToolchainProvider.getJavacSupportsWorkers
     pub fn get_javac_supports_workers(&self) -> starlark::Result<bool> {
         self.get_bool("_javac_supports_workers")
     }
 
     /// Returns whether JavaBuilders supports running persistent workers in multiplex mode.
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:241 JavaToolchainProvider.getJavacSupportsMultiplexWorkers
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:238 JavaToolchainProvider.getJavacSupportsMultiplexWorkers
     pub fn get_javac_supports_multiplex_workers(&self) -> starlark::Result<bool> {
         self.get_bool("_javac_supports_multiplex_workers")
     }
 
     /// Returns whether JavaBuilders supports running persistent workers with cancellation.
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:246 JavaToolchainProvider.getJavacSupportsWorkerCancellation
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:243 JavaToolchainProvider.getJavacSupportsWorkerCancellation
     pub fn get_javac_supports_worker_cancellation(&self) -> starlark::Result<bool> {
         self.get_bool("_javac_supports_worker_cancellation")
     }
 
     /// Returns whether JavaBuilders supports running multiplex persistent workers in sandbox
     /// mode.
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:251 JavaToolchainProvider.getJavacSupportsWorkerMultiplexSandboxing
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:248 JavaToolchainProvider.getJavacSupportsWorkerMultiplexSandboxing
     pub fn get_javac_supports_worker_multiplex_sandboxing(&self) -> starlark::Result<bool> {
         self.get_bool("_javac_supports_worker_multiplex_sandboxing")
     }
 
     /// Returns the global `java_package_configuration` data.
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:256 JavaToolchainProvider.packageConfiguration
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:253 JavaToolchainProvider.packageConfiguration
     pub fn package_configuration(
         &self,
     ) -> starlark::Result<Vec<JavaPackageConfigurationProvider<'v>>> {
@@ -348,12 +348,12 @@ impl<'v> JavaToolchainProvider<'v> {
         JavaPackageConfigurationProvider::wrap_sequence(&seq, self.wrapper.heap)
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:262 JavaToolchainProvider.getJacocoRunner
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:259 JavaToolchainProvider.getJacocoRunner
     pub fn get_jacoco_runner(&self) -> starlark::Result<Option<Arc<FilesToRunProvider>>> {
         self.get_files_to_run("jacocorunner")
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:266 JavaToolchainProvider.getJavaRuntime
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:263 JavaToolchainProvider.getJavaRuntime
     pub fn get_java_runtime(&self) -> starlark::Result<JavaRuntimeInfo<'v>> {
         match self.wrapper.get_underlying_value("java_runtime") {
             None => panic!("NullPointerException: java_runtime"),
@@ -363,7 +363,7 @@ impl<'v> JavaToolchainProvider<'v> {
 }
 
 /// JSpecify configuration of the toolchain.
-// Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:270 JavaToolchainProvider.JspecifyInfo
+// Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:267 JavaToolchainProvider.JspecifyInfo
 #[derive(Clone)]
 pub struct JspecifyInfo {
     pub jspecify_processor: JavaPluginData,
@@ -373,7 +373,7 @@ pub struct JspecifyInfo {
 }
 
 impl JspecifyInfo {
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:283 JavaToolchainProvider.JspecifyInfo.matches
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:279 JavaToolchainProvider.JspecifyInfo.matches
     pub fn matches(&self, label: &Label) -> bool {
         for provider in &self.jspecify_packages {
             for specifications in provider.get_package_specifications().to_list().iter() {
@@ -388,7 +388,7 @@ impl JspecifyInfo {
         false
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:294 JavaToolchainProvider.JspecifyInfo.fromStarlark
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainProvider.java:291 JavaToolchainProvider.JspecifyInfo.fromStarlark
     fn from_starlark<'v>(
         value: Option<Value<'v>>,
         heap: Heap<'v>,

@@ -2,14 +2,13 @@
 //! for the UI's `(N packages loaded, ...)`.
 //!
 //! PORT: Java's receiver is a field of the server's `SkyframeExecutor`, handed to
-//! `PackageFunction` and the UI. Blaze's executor lives for one command, so the receiver is a
-//! process-wide value ([`PACKAGE_PROGRESS`]). Java resets it in
-//! `SkyframeExecutor.preparePackageLoading`, which runs once per command, before
-//! `BlazeOptionHandler.parseStarlarkOptions` (`BlazeCommandDispatcher.java:651` and `:768`).
-//! Here the reset happens at the first use in a new generation of the build arena
-//! (`blaze_util::build_arena::generation`): the server releases the arena after every command,
-//! so the first use in a command finds a new generation; a process that runs one command never
-//! releases it, and the initial state stands for the reset.
+//! `PackageFunction` and the UI. Blaze's executor lives for one command, and a command can
+//! create more than one, so the receiver is a process-wide value ([`PACKAGE_PROGRESS`]). Java
+//! resets it in `SkyframeExecutor.preparePackageLoading`, which `CommandEnvironment
+//! .syncPackageLoading` runs once per command, before `BlazeOptionHandler.parseStarlarkOptions`
+//! (`BlazeCommandDispatcher.java:651` and `:768`); Blaze's runtime calls [`PackageProgressReceiver::reset`]
+//! at the same point of every command that syncs package loading (blaze_runtime
+//! `commands::query::prepare_package_loading`).
 //!
 //! PORT: Java loads every package of a command once, in the server's single graph, so its count
 //! of completed loads is a count of distinct packages. Blaze loads the build settings of the
@@ -35,8 +34,6 @@ struct State {
     pending_set: Option<IndexSet<PackageIdentifier>>,
     /// The packages counted in `packages_completed` (see the module comment).
     completed_set: Option<HashSet<PackageIdentifier>>,
-    /// The build arena generation this state belongs to (see the module comment).
-    arena_generation: u64,
 }
 
 /// The process's receiver.
@@ -49,23 +46,12 @@ impl PackageProgressReceiver {
                 packages_completed: 0,
                 pending_set: None,
                 completed_set: None,
-                arena_generation: 0,
             }),
         }
     }
 
-    /// The state, reset first when the build arena was released since its last use (Java's
-    /// reset in `preparePackageLoading`, see the module comment).
     fn lock_state(&self) -> parking_lot::MutexGuard<'_, State> {
-        let generation = blaze_util::build_arena::generation();
-        let mut state = self.state.lock();
-        if state.arena_generation != generation {
-            state.packages_completed = 0;
-            state.pending_set = None;
-            state.completed_set = None;
-            state.arena_generation = generation;
-        }
-        state
+        self.state.lock()
     }
 
     /// Register that loading a package has started.

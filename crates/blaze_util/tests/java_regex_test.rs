@@ -523,3 +523,89 @@ fn syntax_error_message_has_javas_layout() {
         "capturing group name does not start with a Latin letter near index 3\n(?<1a>x)\n   ^"
     );
 }
+
+/// Review loading-2 F5: `find()` spans of repetitions whose body can match the empty string,
+/// against JDK 25 (`tests/data/JavaRegexNullableRows.java`). Every row either agrees with Java
+/// (find span, `find()` succeeding, `matches()`) or fails loudly; a silent difference fails the
+/// test. `is_match` and `matches` are exact on every row that compiles.
+#[test]
+fn nullable_repetitions_follow_java_or_are_loud() {
+    #[rustfmt::skip]
+    const NULLABLE_ROWS: &[(&str, &str, Option<(usize, usize)>, bool)] =
+        include!("data/java_regex_nullable_rows.rs");
+    let mut failures = Vec::new();
+    let (mut loud_compile, mut loud_find, mut loud_find_equal, mut exact) = (0, 0, 0, 0);
+    for &(pattern, input, find, matches) in NULLABLE_ROWS {
+        let compiled = match catch_unwind(|| Pattern::compile(pattern, 0)) {
+            Ok(Ok(c)) => c,
+            Ok(Err(e)) => {
+                failures.push(format!("{pattern:?}: compile error {e}"));
+                continue;
+            }
+            Err(e) => {
+                let text = panic_text(e);
+                if !text.contains("not ported yet") {
+                    failures.push(format!("{pattern:?}: panic {text}"));
+                }
+                loud_compile += 1;
+                continue;
+            }
+        };
+        let is_match = compiled.is_match(input);
+        if is_match != find.is_some() {
+            failures.push(format!(
+                "{pattern:?} on {input:?}: is_match {is_match}, Java {}",
+                find.is_some()
+            ));
+        }
+        match catch_unwind(AssertUnwindSafe(|| compiled.matches(input))) {
+            Ok(m) if m != matches => failures.push(format!(
+                "{pattern:?} on {input:?}: matches {m}, Java {matches}"
+            )),
+            Ok(_) => {}
+            Err(e) => {
+                let text = panic_text(e);
+                if !text.contains("not ported yet") {
+                    failures.push(format!("{pattern:?} on {input:?}: matches panic {text}"));
+                }
+            }
+        }
+        match catch_unwind(AssertUnwindSafe(|| compiled.find(input))) {
+            Ok(span) => {
+                let span = span.map(|(s, e)| (char_index(input, s), char_index(input, e)));
+                if span != find {
+                    failures.push(format!(
+                        "{pattern:?} on {input:?}: find {span:?}, Java {find:?} (silent)"
+                    ));
+                } else {
+                    exact += 1;
+                }
+            }
+            Err(e) => {
+                let text = panic_text(e);
+                if !text.contains("not ported yet") {
+                    failures.push(format!("{pattern:?} on {input:?}: find panic {text}"));
+                }
+                loud_find += 1;
+                let crate_span = compiled
+                    .regex()
+                    .find(input)
+                    .map(|m| (char_index(input, m.start()), char_index(input, m.end())));
+                if crate_span == find {
+                    loud_find_equal += 1;
+                }
+            }
+        }
+    }
+    eprintln!(
+        "{} rows: {exact} exact, {loud_find} loud find() ({loud_find_equal} of them would have \
+         agreed), {loud_compile} loud at compile",
+        NULLABLE_ROWS.len()
+    );
+    assert!(
+        failures.is_empty(),
+        "{} rows differ:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}

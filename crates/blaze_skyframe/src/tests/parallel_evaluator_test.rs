@@ -1138,6 +1138,8 @@ impl fmt::Debug for ChildKey {
 impl Key for ChildKey {
     type Value = String;
     const FUNCTION: SkyFunctionName = SkyFunctionName("child");
+    // Java: ParallelEvaluatorTest.CHILD_TYPE (createHermetic)
+    const HERMETICITY: crate::FunctionHermeticity = crate::FunctionHermeticity::Hermetic;
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -1150,6 +1152,8 @@ impl fmt::Debug for ParentKey {
 impl Key for ParentKey {
     type Value = String;
     const FUNCTION: SkyFunctionName = SkyFunctionName("parent");
+    // Java: ParallelEvaluatorTest.PARENT_TYPE (createHermetic)
+    const HERMETICITY: crate::FunctionHermeticity = crate::FunctionHermeticity::Hermetic;
 }
 
 // Java: ParallelEvaluatorTest.testFunctionCrashTrace

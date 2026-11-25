@@ -13,13 +13,13 @@ use blaze_sky_loading::actions::FileValue;
 use blaze_sky_loading::directory_listing::DirectoryListingKey;
 use blaze_sky_loading::file::FileKey;
 use blaze_sky_loading::io::IOException;
-use blaze_skyframe::ComputeError;
 use blaze_skyframe::Environment;
 use blaze_skyframe::Interrupted;
 use blaze_skyframe::Key;
 use blaze_skyframe::SkyFunctionException;
 use blaze_skyframe::SkyFunctionName;
 use blaze_skyframe::SkyKey;
+use blaze_skyframe::{ComputeError, FunctionHermeticity};
 use blaze_util::fingerprint::Fingerprint;
 use blaze_vfs::RootedPath;
 use indexmap::IndexSet;
@@ -80,6 +80,13 @@ impl fmt::Debug for DirectoryTreeDigestKey {
 impl Key for DirectoryTreeDigestKey {
     type Value = DirectoryTreeDigestValue;
     const FUNCTION: SkyFunctionName = DIRECTORY_TREE_DIGEST;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:37 SkyFunctions.DIRECTORY_TREE_DIGEST (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: a record of the hex digest.
+    // Java: com/google/devtools/build/lib/skyframe/DirectoryTreeDigestValue.java:28 DirectoryTreeDigestValue
+    fn values_equal(old: &DirectoryTreeDigestValue, new: &DirectoryTreeDigestValue) -> bool {
+        old == new
+    }
 }
 
 /// Java `FileStateType.ordinal()`.

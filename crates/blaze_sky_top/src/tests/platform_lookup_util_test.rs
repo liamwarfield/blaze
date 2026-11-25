@@ -50,6 +50,9 @@ impl fmt::Debug for GetPlatformInfoKey {
 impl Key for GetPlatformInfoKey {
     type Value = GetPlatformInfoValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("GET_PLATFORM_INFO_FUNCTION");
+    // Java: PlatformLookupUtilTest GET_PLATFORM_INFO_FUNCTION (createHermetic)
+    const HERMETICITY: blaze_skyframe::FunctionHermeticity =
+        blaze_skyframe::FunctionHermeticity::Hermetic;
 }
 
 /// Java `GetPlatformInfoValue`.

@@ -35,6 +35,21 @@ pub struct AnalysisDirectories {
     pub product_name: String,
 }
 
+impl AnalysisDirectories {
+    /// Returns the output directory where build data artifacts are kept (`bazel-out`).
+    ///
+    /// PORT: `exec_root` is the main repository's (`getExecRoot(workspaceName)` with the
+    /// workspace name the callers pass, `ruleClassProvider.getRunfilesPrefix()`).
+    // Java: com/google/devtools/build/lib/analysis/BlazeDirectories.java:230 BlazeDirectories.getBuildDataDirectory
+    pub fn get_build_data_directory(&self, _workspace_name: &str) -> ArtifactRoot {
+        ArtifactRoot::as_derived_root(
+            &self.exec_root,
+            RootType::OUTPUT,
+            &[&format!("{}-out", self.product_name)],
+        )
+    }
+}
+
 /// Services shared by every analysis SkyFunction of one command.
 pub struct AnalysisServices {
     pub rule_class_provider: Arc<ConfiguredRuleClassProvider>,
@@ -78,6 +93,12 @@ impl blaze_skyframe::Key for WorkspaceStatusKey {
     const FUNCTION: blaze_skyframe::SkyFunctionName = blaze_skyframe::SkyFunctionName(
         blaze_actions::analysis::workspace_status_action::BUILD_INFO_FUNCTION_NAME,
     );
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:128 SkyFunctions.BUILD_INFO (createHermetic)
+    const HERMETICITY: blaze_skyframe::FunctionHermeticity =
+        blaze_skyframe::FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal): Java's `WorkspaceStatusValue` (a
+    // `BasicActionLookupValue`) has no `equals`.
+    // Java: com/google/devtools/build/lib/skyframe/WorkspaceStatusValue.java:33 WorkspaceStatusValue
 }
 
 /// Value that stores the workspace status artifacts and their generating action. There should be

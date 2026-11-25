@@ -6,10 +6,8 @@ import json
 import os
 import re
 import shutil
-import signal
 import subprocess
 import sys
-import time
 
 USAGE = """\
 usage: scripts/tests/compare --binary <blaze> [--oracle <bazel>] [--case ID]... [--label NAME]
@@ -155,24 +153,10 @@ def make_writable_and_remove(path):
 
 
 def kill_servers(root):
-    if not os.path.isdir(root):
-        return
-    for name in os.listdir(root):
-        pidfile = os.path.join(root, name, "server", "server.pid.txt")
-        try:
-            pid = int(open(pidfile).read().strip())
-        except (OSError, ValueError):
-            continue
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            continue
-        for _ in range(100):
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                break
-            time.sleep(0.1)
+    """Ends the servers of output user root `root`: only a pid whose command line names the
+    root is signalled (compare_common.kill_root_servers; audit 4r2, T4)."""
+    for pid, what in cc.kill_root_servers(root):
+        print("[cleanup] server %d of %s: %s" % (pid, root, what), file=sys.stderr)
 
 
 def prepare_workspace(checkout, ws):

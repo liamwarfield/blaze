@@ -401,9 +401,10 @@ fn java_string_trim(s: &str) -> &str {
 /// entries, `treeifyBin`), insertion order within a bucket (kept by `resize`), `put` of a present
 /// key keeps its position. Removal does not shrink the table.
 ///
-/// PORT: java-hash-order. Treeified bins (9+ colliding entries in a table of 64+ buckets) keep
-/// insertion order here; Java's red-black bins iterate in their `next` order, which is the same
-/// unless a bin was split by a resize after treeification.
+/// PORT: java-hash-order. A bin that reaches nine entries in a table of 64 or more buckets
+/// becomes a red-black tree in Java (`treeifyBin`), whose `next` order is not the insertion
+/// order (`treeify` moves the root to the front, `putTreeVal` links a new node after its
+/// parent); that is not replayed, and such a bin fails loudly (review exec-2, E2-4).
 struct JavaStringHashMap<V> {
     table: Vec<Vec<(u32, String, V)>>,
     size: usize,
@@ -451,8 +452,18 @@ impl<V> JavaStringHashMap<V> {
             return;
         }
         self.table[idx].push((h, key, value));
-        if self.table[idx].len() > TREEIFY_THRESHOLD && self.table.len() < MIN_TREEIFY_CAPACITY {
-            self.resize();
+        // `binCount >= TREEIFY_THRESHOLD - 1` after appending to a list of eight: `treeifyBin`.
+        if self.table[idx].len() > TREEIFY_THRESHOLD {
+            if self.table.len() < MIN_TREEIFY_CAPACITY {
+                self.resize();
+            } else {
+                blaze_util::unported!(
+                    "HashMap.treeifyBin",
+                    "nine mapped input paths in one bin of a table of {} buckets: the iteration \
+                     order of a tree bin is not replayed",
+                    self.table.len()
+                );
+            }
         }
         self.size += 1;
         if self.size > self.table.len() * 3 / 4 {
@@ -582,4 +593,46 @@ pub fn to_action_execution_exception(
         e.catastrophe,
         Some(code),
     )
+}
+
+#[cfg(test)]
+mod java_string_hash_map_tests {
+    use super::JavaStringHashMap;
+
+    /// Sixteen strings with one `String.hashCode()` ("Aa" and "BB" collide).
+    fn colliding_keys() -> Vec<String> {
+        (0..16)
+            .map(|i: u32| {
+                (0..4)
+                    .map(|bit| if i & (1 << bit) != 0 { "BB" } else { "Aa" })
+                    .collect()
+            })
+            .collect()
+    }
+
+    // A bin of nine in a table below 64 buckets resizes the table (`treeifyBin`); a list bin
+    // keeps the insertion order.
+    #[test]
+    fn treeify_bin_resizes_a_small_table() {
+        let keys = colliding_keys();
+        let mut map = JavaStringHashMap::new();
+        for (i, key) in keys.iter().take(9).enumerate() {
+            map.put(key.clone(), i);
+        }
+        assert_eq!(map.table.len(), 32);
+        map.put(keys[9].clone(), 9);
+        assert_eq!(map.table.len(), 64);
+        assert_eq!(map.into_values(), (0..10).collect::<Vec<_>>());
+    }
+
+    // Review exec-2, E2-4: Java would make the bin a tree; the port fails loudly.
+    #[test]
+    #[should_panic(expected = "HashMap.treeifyBin")]
+    fn treeify_bin_of_a_large_table_fails_loudly() {
+        let keys = colliding_keys();
+        let mut map = JavaStringHashMap::new();
+        for (i, key) in keys.iter().take(11).enumerate() {
+            map.put(key.clone(), i);
+        }
+    }
 }

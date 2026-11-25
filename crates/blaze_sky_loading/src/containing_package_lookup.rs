@@ -6,7 +6,7 @@
 use std::fmt;
 
 use blaze_cmdline::{Label, PackageIdentifier};
-use blaze_skyframe::{ComputeError, Environment, Key, SkyFunctionName};
+use blaze_skyframe::{ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionName};
 use blaze_vfs::{PathFragment, Root};
 
 use crate::package_lookup::{ErrorReason, PackageLookupKey, PackageLookupValue};
@@ -167,6 +167,22 @@ impl fmt::Debug for ContainingPackageLookupKey {
 impl Key for ContainingPackageLookupKey {
     type Value = ContainingPackageLookupValue;
     const FUNCTION: SkyFunctionName = sky_functions::CONTAINING_PACKAGE_LOOKUP;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:43 SkyFunctions.CONTAINING_PACKAGE_LOOKUP (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: `ContainingPackage` compares the package and its root; `NoContainingPackage` has no
+    /// `equals`: the singleton `NONE` (`reason: None`) equals itself, a `noContainingPackage(reason)`
+    /// is made anew by each computation and is never equal to the last build's.
+    // Java: com/google/devtools/build/lib/skyframe/ContainingPackageLookupValue.java:211 ContainingPackageLookupValue.ContainingPackage.equals
+    // Java: com/google/devtools/build/lib/skyframe/ContainingPackageLookupValue.java:147 ContainingPackageLookupValue.NoContainingPackage
+    fn values_equal(
+        old: &ContainingPackageLookupValue,
+        new: &ContainingPackageLookupValue,
+    ) -> bool {
+        !matches!(
+            old,
+            ContainingPackageLookupValue::NoContainingPackage { reason: Some(_) }
+        ) && old == new
+    }
 }
 
 /// SkyFunction for [`ContainingPackageLookupValue`]s.

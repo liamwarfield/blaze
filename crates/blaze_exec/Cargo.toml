@@ -32,7 +32,6 @@ prost.workspace = true
 prost-types.workspace = true
 zstd.workspace = true
 # TestXmlOutputParser (Java uses the JDK's StAX XMLStreamReader).
-quick-xml = "0.38"
 
 [dev-dependencies]
 tempfile.workspace = true

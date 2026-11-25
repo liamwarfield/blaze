@@ -324,16 +324,19 @@ impl FileArtifactValue {
         FileArtifactValue::HashedDirectory { digest }
     }
 
-    /// `createForNormalFileUsingPath(path, size, xattrProvider)`: the digest is read from the
-    /// file (`DigestUtils.getDigestWithManualFallback`; Blaze's file systems have no fast
-    /// digests), with no contents proxy.
+    /// `createForNormalFileUsingPath(path, size, xattrProvider)`: the digest is the file's fast
+    /// digest or read from the file (`DigestUtils.getDigestWithManualFallback`), with no contents
+    /// proxy.
     // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:407 FileArtifactValue.createForNormalFileUsingPath
     // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:364 FileArtifactValue.create
     pub fn create_for_normal_file_using_path(
         path: &Path,
         size: i64,
     ) -> io::Result<FileArtifactValue> {
-        let digest = path.get_digest()?;
+        let digest =
+            crate::actions::cache::digest_utils::DigestUtils::get_digest_with_manual_fallback(
+                path,
+            )?;
         Ok(FileArtifactValue::create_for_normal_file(
             Some(digest),
             /* proxy= */ None,
@@ -419,7 +422,8 @@ impl FileArtifactValue {
         }
     }
 
-    /// `createFromStat(path, stat, xattrProvider)` (digest computed from the file: no xattrs).
+    /// `createFromStat(path, stat, xattrProvider)`: the digest is the file's fast digest or
+    /// read from the file (`DigestUtils.getDigestWithManualFallback`).
     // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:353 FileArtifactValue.createFromStat
     pub fn create_from_stat(path: &Path, stat: &FileStatus) -> io::Result<FileArtifactValue> {
         if !stat.is_file() {
@@ -427,7 +431,11 @@ impl FileArtifactValue {
                 mtime: path.get_last_modified_time()?,
             });
         }
-        let digest = path.get_digest()?;
+        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:376 FileArtifactValue.create
+        let digest =
+            crate::actions::cache::digest_utils::DigestUtils::get_digest_with_manual_fallback(
+                path,
+            )?;
         Ok(FileArtifactValue::create_for_normal_file(
             Some(digest),
             Some(FileContentsProxy::create(stat)),
@@ -513,7 +521,8 @@ impl FileArtifactValue {
                 // under the new stat.
                 //
                 // Java: DigestUtils.getDigestWithManualFallback(path, SyscallCache.NO_CACHE, stat)
-                let new_digest = path.get_digest()?;
+                let new_digest =
+                    crate::actions::cache::digest_utils::DigestUtils::get_digest_with_manual_fallback(path)?;
                 Ok(digest.as_deref() != Some(&new_digest[..]))
             }
             // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:513 DirectoryArtifactValue.wasModifiedSinceDigest

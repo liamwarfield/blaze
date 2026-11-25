@@ -13,8 +13,12 @@ use crate::actions::{FileStateType, InputMetadataProvider, Spawn, input_metadata
 pub struct WorkerFilesHash;
 
 impl WorkerFilesHash {
+    /// A `None` digest (Java's null) is a `NullPointerException` at `digest.length`, which
+    /// crashes Bazel (review exec-2, E2-8).
     // Java: com/google/devtools/build/lib/worker/WorkerFilesHash.java:42 WorkerFilesHash.getCombinedHash
-    pub fn get_combined_hash(worker_files_map: &BTreeMap<PathFragment, Vec<u8>>) -> Vec<u8> {
+    pub fn get_combined_hash(
+        worker_files_map: &BTreeMap<PathFragment, Option<Vec<u8>>>,
+    ) -> Vec<u8> {
         // Hashing.sha256().newHasher(); Guava's putInt writes little-endian.
         let mut hasher = Sha256::new();
         for (exec_path, digest) in worker_files_map {
@@ -24,6 +28,11 @@ impl WorkerFilesHash {
             hasher.update((exec_path_bytes.len() as i32).to_le_bytes());
             hasher.update(&exec_path_bytes);
 
+            let Some(digest) = digest else {
+                panic!(
+                    "java.lang.NullPointerException: Cannot read the array length because \"digest\" is null"
+                );
+            };
             hasher.update((digest.len() as i32).to_le_bytes());
             hasher.update(digest);
         }
@@ -40,8 +49,8 @@ impl WorkerFilesHash {
     pub fn get_worker_files_with_digests(
         spawn: &dyn Spawn,
         action_input_file_cache: &dyn InputMetadataProvider,
-    ) -> std::io::Result<BTreeMap<PathFragment, Vec<u8>>> {
-        let mut worker_files_map: BTreeMap<PathFragment, Vec<u8>> = BTreeMap::new();
+    ) -> std::io::Result<BTreeMap<PathFragment, Option<Vec<u8>>>> {
+        let mut worker_files_map: BTreeMap<PathFragment, Option<Vec<u8>>> = BTreeMap::new();
 
         let tools = input_metadata_provider::expand_artifacts(
             action_input_file_cache,
@@ -69,7 +78,7 @@ impl WorkerFilesHash {
                             Some(digest) => {
                                 worker_files_map.insert(
                                     spawn.get_path_mapper().map(&root.get_relative(&key)),
-                                    digest.to_vec(),
+                                    Some(digest.to_vec()),
                                 );
                             }
                             None => {
@@ -93,10 +102,7 @@ impl WorkerFilesHash {
             // Java puts `metadata.getDigest()` (possibly null) into the TreeMap.
             worker_files_map.insert(
                 spawn.get_path_mapper().map(tool.get_exec_path()),
-                metadata
-                    .get_digest()
-                    .map(<[u8]>::to_vec)
-                    .unwrap_or_default(),
+                metadata.get_digest().map(<[u8]>::to_vec),
             );
         }
 

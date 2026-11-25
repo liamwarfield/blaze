@@ -184,6 +184,11 @@ pub(crate) struct FrozenModuleData {
     /// page modules).
     #[starlark_pagable(skip)]
     pub(crate) extra_value: Option<FrozenValue>,
+    /// BLAZE PATCH 0057: the names bound by this module's `load` statements. Bazel's load
+    /// bindings are file-local (Java Resolver.java:1170, `loadBindsGlobally` false for every
+    /// file another file can load), so they are not among `Module.getGlobals()`.
+    #[starlark_pagable(skip)]
+    pub(crate) load_bound: Vec<String>,
 }
 
 /// A container for user values, used during execution.
@@ -213,6 +218,8 @@ pub struct Module<'v> {
     extra_value: Cell<Option<Value<'v>>>,
     /// When `Some`, heap profile is collected on freeze.
     heap_profile_on_freeze: Cell<Option<RetainedHeapProfileMode>>,
+    /// BLAZE PATCH 0057: names bound by `load` (see `FrozenModuleData::load_bound`).
+    load_bound: RefCell<Vec<String>>,
 }
 
 impl FrozenModule {
@@ -301,6 +308,36 @@ impl FrozenModule {
     /// `load()`) included. Bazel's `Module.getGlobals()`.
     pub fn names_any_visibility(&self) -> impl Iterator<Item = FrozenStringValue> + '_ {
         self.module.names.all_symbols().map(|x| x.0)
+    }
+
+    /// BLAZE PATCH 0057: Bazel's `Module.getGlobals().keySet()`: the names this module binds at
+    /// top level and assigned a value, in binding order, without the names bound by `load`.
+    ///
+    /// PORT: the order is starlark-rust's module slot order (first binding of each top-level
+    /// name, statement by statement, targets left to right), which is the order of Java's
+    /// `Resolver.createBindings` that fills `Module.globalIndex`.
+    // Java: net/starlark/java/eval/Module.java:216 Module.getGlobals
+    pub fn java_globals(&self) -> impl Iterator<Item = FrozenStringValue> + '_ {
+        let data = &self.module;
+        data.names.all_symbols().filter_map(move |(name, slot)| {
+            if data.slots.get_slot(slot).is_none()
+                || data.load_bound.iter().any(|l| l.as_str() == name.as_str())
+            {
+                None
+            } else {
+                Some(name)
+            }
+        })
+    }
+
+    /// BLAZE PATCH 0057: Java `Module.getGlobal(name)`: a top-level binding of this module that
+    /// is not a `load` binding, whatever its visibility.
+    // Java: net/starlark/java/eval/Module.java:280 Module.getGlobal
+    pub fn java_get_global(&self, name: &str) -> Option<OwnedFrozenValue> {
+        if self.module.load_bound.iter().any(|l| l == name) {
+            return None;
+        }
+        self.get_any_visibility_option(name).map(|(v, _)| v)
     }
 
     /// Obtain the [`FrozenHeapRef`] which owns the storage of all values defined in this module.
@@ -447,6 +484,7 @@ impl<'v> Module<'v> {
             eval_duration: Cell::new(Duration::ZERO),
             extra_value: Cell::new(None),
             heap_profile_on_freeze: Cell::new(None),
+            load_bound: RefCell::new(Vec::new()), // BLAZE PATCH 0057
         }
     }
 
@@ -542,6 +580,7 @@ impl<'v> Module<'v> {
             eval_duration,
             extra_value,
             heap_profile_on_freeze,
+            load_bound, // BLAZE PATCH 0057
         } = self;
         #[cfg(not(target_arch = "wasm32"))]
         let start = Instant::now();
@@ -572,7 +611,8 @@ impl<'v> Module<'v> {
             slots,
             docstring: docstring.into_inner(),
             heap_profile: stacks,
-            extra_value, // BLAZE PATCH 0022
+            extra_value,                         // BLAZE PATCH 0022
+            load_bound: load_bound.into_inner(), // BLAZE PATCH 0057
         };
         let frozen_module_ref = freezer.heap.alloc_any_value(rest);
         for frozen_def in freezer.frozen_defs.borrow().as_slice() {
@@ -629,9 +669,23 @@ impl<'v> Module<'v> {
         }
     }
 
+    /// BLAZE PATCH 0057: records a name bound by a `load` statement of this module.
+    pub(crate) fn add_load_bound_name(&self, name: &str) {
+        let mut l = self.load_bound.borrow_mut();
+        if !l.iter().any(|x| x == name) {
+            l.push(name.to_owned());
+        }
+    }
+
+    /// BLAZE PATCH 0057: one binding of `load(module_name, ..., symbol)`, as Java's `execLoad`:
+    /// the loaded module's global `symbol` (any visibility, not a `load` binding), else
+    /// `file 'M' does not contain symbol 'S'` with a suggestion over the module's globals.
+    /// (Java's Resolver rejects a private `symbol` before execution, Resolver.java:609.)
+    // Java: net/starlark/java/eval/Eval.java:261 Eval.execLoad
     pub(crate) fn load_symbol(
         &self,
         module: &FrozenModule,
+        module_name: &str,
         symbol: &str,
     ) -> crate::Result<Value<'v>> {
         if Self::default_visibility(symbol) != Visibility::Public {
@@ -639,11 +693,21 @@ impl<'v> Module<'v> {
                 EnvironmentError::CannotImportPrivateSymbol(symbol.to_owned()),
             ));
         }
-        match module.get_any_visibility(symbol)? {
-            (v, Visibility::Public) => Ok(self.heap().access_owned_frozen_value(&v)),
-            (_, Visibility::Private) => Err(crate::Error::new_other(
-                EnvironmentError::ModuleSymbolIsNotExported(symbol.to_owned()),
-            )),
+        match module.java_get_global(symbol) {
+            Some(v) => Ok(self.heap().access_owned_frozen_value(&v)),
+            None => {
+                let globals: Vec<FrozenStringValue> = module.java_globals().collect();
+                Err(crate::Error::new_other(
+                    EnvironmentError::FileDoesNotContainSymbol(
+                        module_name.to_owned(),
+                        symbol.to_owned(),
+                        crate::errors::spell_checker::did_you_mean(
+                            symbol,
+                            globals.iter().map(|g| g.as_str()),
+                        ),
+                    ),
+                ))
+            }
         }
     }
 

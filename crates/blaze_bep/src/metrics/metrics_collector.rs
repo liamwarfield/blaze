@@ -37,6 +37,9 @@ use blaze_events::Clock;
 use blaze_exec::actions::ActionResult;
 use blaze_exec::actions::cache::PostableActionCacheStats;
 use blaze_exec::runtime::spawn_stats::SpawnStats;
+use blaze_exec::worker::worker_process_metrics::{
+    MAX_PUBLISHED_WORKER_METRICS, WorkerProcessMetrics, WorkerProcessMetricsCollector,
+};
 use blaze_optdefs::misc::metrics_module::MetricsModuleOptions;
 use blaze_protos::build_event_stream::build_event::Payload;
 use blaze_protos::build_event_stream::build_metrics::action_summary::{ActionData, RunnerCount};
@@ -334,8 +337,11 @@ pub struct JvmMemoryFacts {
 /// The facts `createBuildMetrics` reads from singletons and the environment when the command
 /// precompletes.
 pub struct BuildMetricsFinishInputs<'a> {
-    /// `WorkerProcessMetricsCollector.instance().collectMetrics()`.
+    /// `WorkerProcessMetricsCollector.instance().collectMetrics()`, as `createWorkerPoolMetrics`
+    /// reads it.
     pub worker_process_metrics: Vec<WorkerProcessMetricsInfo>,
+    /// `WorkerProcessMetrics::toProto` of the same collected metrics, in the same order.
+    pub worker_metrics: Vec<WorkerMetrics>,
     /// `env.getPendingException() != null`.
     pub has_pending_exception: bool,
     /// `env.getSkyframeExecutor().getSkyframeStats(env.getReporter())`; called only when
@@ -351,6 +357,47 @@ pub struct BuildMetricsFinishInputs<'a> {
     pub server_process_cpu_time_ms: Option<i64>,
     /// `NetworkMetricsCollector.instance().collectMetrics()` (nullable).
     pub network_metrics: Option<NetworkMetrics>,
+}
+
+impl WorkerProcessMetricsInfo {
+    /// What `createWorkerPoolMetrics` reads of a collected `WorkerProcessMetrics`.
+    pub fn of(wpm: &WorkerProcessMetrics) -> WorkerProcessMetricsInfo {
+        use blaze_exec::worker::worker_process_status::Status;
+        WorkerProcessMetricsInfo {
+            worker_ids: wpm.get_worker_ids(),
+            worker_key_hash: wpm.get_worker_key_hash(),
+            mnemonic: wpm.get_mnemonic().to_string(),
+            newly_created: wpm.is_newly_created(),
+            status: match wpm.get_status().get() {
+                Status::NotStarted => WorkerProcessStatusKind::NotStarted,
+                Status::Alive => WorkerProcessStatusKind::Alive,
+                Status::PendingKillDueToUnknown => WorkerProcessStatusKind::PendingKillDueToUnknown,
+                Status::PendingKillDueToInterruptedException => {
+                    WorkerProcessStatusKind::PendingKillDueToInterruptedException
+                }
+                Status::PendingKillDueToUserExecException => {
+                    WorkerProcessStatusKind::PendingKillDueToUserExecException
+                }
+                Status::PendingKillDueToIoException => {
+                    WorkerProcessStatusKind::PendingKillDueToIoException
+                }
+                Status::PendingKillDueToMemoryPressure => {
+                    WorkerProcessStatusKind::PendingKillDueToMemoryPressure
+                }
+                Status::KilledUnknown => WorkerProcessStatusKind::KilledUnknown,
+                Status::KilledDueToInterruptedException => {
+                    WorkerProcessStatusKind::KilledDueToInterruptedException
+                }
+                Status::KilledDueToUserExecException => {
+                    WorkerProcessStatusKind::KilledDueToUserExecException
+                }
+                Status::KilledDueToIoException => WorkerProcessStatusKind::KilledDueToIoException,
+                Status::KilledDueToMemoryPressure => {
+                    WorkerProcessStatusKind::KilledDueToMemoryPressure
+                }
+            },
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -788,14 +835,11 @@ impl MetricsCollector {
         // Restrict the number of WorkerMetrics that we report based on a predefined prioritization
         // so that we don't spam the BEP in the event that something like a kill-create cycle
         // happens.
-        let worker_metrics: Vec<WorkerMetrics> = if worker_process_metrics.is_empty() {
-            Vec::new()
-        } else {
-            // PORT: WorkerProcessMetrics.toProto and
-            // WorkerProcessMetricsCollector.limitWorkerMetricsToPublish are not ported; Blaze
-            // has no persistent workers.
-            blaze_util::unported!("WorkerProcessMetricsCollector.limitWorkerMetricsToPublish")
-        };
+        let worker_metrics: Vec<WorkerMetrics> =
+            WorkerProcessMetricsCollector::limit_worker_metrics_to_publish(
+                inputs.worker_metrics,
+                MAX_PUBLISHED_WORKER_METRICS,
+            );
 
         let mut state = self.state.lock();
         self.add_skyframe_stats(

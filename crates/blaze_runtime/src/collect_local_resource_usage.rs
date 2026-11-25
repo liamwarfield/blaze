@@ -303,7 +303,10 @@ impl LocalResourceCollector for CollectLocalResourceUsage {
         // collector.setDaemon(true); collector.start().
         let handle = std::thread::Builder::new()
             .name("collect-local-resources".to_string())
-            .spawn(run)
+            // A plain Java thread: an exception reaches the default uncaught exception handler.
+            .spawn(move || {
+                blaze_util::uncaught_exception::run_catching(run);
+            })
             .expect("failed to start collect-local-resources");
         let mut st = self.state.lock();
         st.collector_started = true;

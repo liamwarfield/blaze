@@ -8,7 +8,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use blaze_cmdline::Label;
-use blaze_skyframe::{Key, SkyFunctionName};
+use blaze_skyframe::{FunctionHermeticity, Key, SkyFunctionName};
 use indexmap::IndexMap;
 
 use crate::build_options::{BuildOptions, Scope};
@@ -83,6 +83,10 @@ impl Key for BuildOptionsScopeKey {
     type Value = BuildOptionsScopeValue;
     // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:185 SkyFunctions.BUILD_OPTIONS_SCOPE
     const FUNCTION: SkyFunctionName = SkyFunctionName("BUILD_OPTIONS_SCOPE");
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:186 SkyFunctions.BUILD_OPTIONS_SCOPE (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal): Java's `BuildOptionsScopeValue` has no `equals`.
+    // Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:29 BuildOptionsScopeValue
 }
 
 // Java: com/google/devtools/build/lib/skyframe/BuildOptionsScopeValue.java:29 BuildOptionsScopeValue

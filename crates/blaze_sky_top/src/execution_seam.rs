@@ -102,6 +102,18 @@ impl ActionLookupValue for WorkspaceStatusActionLookupValue {
     }
 }
 
+/// The `ActionLookupValue` view of the coverage report node's value.
+// Java: com/google/devtools/build/lib/skyframe/CoverageReportValue.java:29 CoverageReportValue
+pub struct CoverageReportActionLookupValue(
+    pub Arc<blaze_analysis::coverage_report_value::CoverageReportValue>,
+);
+
+impl ActionLookupValue for CoverageReportActionLookupValue {
+    fn get_actions(&self) -> &[ActionRef] {
+        &self.0.actions
+    }
+}
+
 // -------------------------------------------------------------------------------------------
 // The seam
 
@@ -202,7 +214,16 @@ impl AnalysisSeam for SkyframeAnalysisSeam {
                 Ok(Some(value as Arc<dyn ActionLookupValue>))
             }
             // Java: CoverageReportValue.COVERAGE_REPORT_KEY.
-            "COVERAGE_REPORT" => unported!("CoverageReportValue.getActions"),
+            blaze_analysis::coverage_report_value::COVERAGE_REPORT_FUNCTION_NAME => {
+                let Some(value) =
+                    env.get_value(blaze_analysis::coverage_report_value::COVERAGE_REPORT_KEY)?
+                else {
+                    return Ok(None);
+                };
+                Ok(Some(
+                    Arc::new(CoverageReportActionLookupValue(value)) as Arc<dyn ActionLookupValue>
+                ))
+            }
             other => unported!("ArtifactFunction.getActionLookupValue", "{other} ({key})"),
         }
     }
@@ -852,8 +873,9 @@ pub fn build_driver_keys(
 /// the analysis result in two calls ([`build_driver_keys`], [`build_driver_aspect_keys`]); a
 /// command that analyzed top-level aspects for a build and then starts the execution phase
 /// without the second call would build no aspect and still report success. That fails loudly
-/// here. The state is per command: it lives in the build arena (`blaze_util::build_arena`, which
-/// the server releases after every command).
+/// here. The state is per build: [`note_top_level_aspects_analyzed_for_execution`] sets both
+/// fields when `BuildView.update` starts the build's execution phase. It lives in the build arena
+/// (`blaze_util::build_arena`), which the persistent server also releases after every command.
 #[derive(Default)]
 struct TopLevelAspectDrivers {
     /// The number of `TopLevelAspectsKey`s `BuildView.update` analyzed with the execution phase.

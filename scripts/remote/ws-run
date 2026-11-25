@@ -12,8 +12,8 @@ import unitstatus
 
 CACHE = os.path.expanduser("~/.cache/blaze")
 ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
-WORK = os.path.join(CACHE, "work", "remote")
-OUT_ROOT = os.path.join(CACHE, "oracle-out", "ur-remote")
+WORK = os.environ.get("BLAZE_REMOTE_WORK") or os.path.join(CACHE, "work", "remote")
+OUT_ROOT = os.environ.get("BLAZE_REMOTE_UR") or os.path.join(CACHE, "oracle-out", "ur-remote")
 REPO_CACHE = os.path.join(CACHE, "repo-cache")
 
 USAGE = """\
@@ -27,6 +27,8 @@ Runs one command of the oracle (Bazel 9.3.2) or of another Bazel-compatible bina
   workspace          ~/.cache/blaze/work/remote/<run-name>/ws  (copied from <workspace> when it
                      does not exist yet, so edits made there between calls are kept)
   output user root   ~/.cache/blaze/oracle-out/ur-remote/<run-name>
+  ($BLAZE_REMOTE_WORK and $BLAZE_REMOTE_UR, when set, replace ~/.cache/blaze/work/remote and
+  ~/.cache/blaze/oracle-out/ur-remote; scripts/remote/worker and the probes honour them too)
   results            ~/.cache/blaze/work/remote/<run-name>/<step>/{stdout,stderr,exit}, <step> is
                      run1, run2, ... (one per call)
 

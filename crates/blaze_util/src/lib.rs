@@ -7,6 +7,7 @@ pub mod graph;
 pub mod java_regex;
 pub mod profiler;
 pub mod string_encoding;
+pub mod uncaught_exception;
 
 pub use exit_code::DetailedExitCode;
 pub use exit_code::ExitCode;

@@ -884,6 +884,13 @@ impl fmt::Display for CtxSuper {
 
 #[starlark_value(type = "builtin_function_or_method")]
 impl<'v> StarlarkValue<'v> for CtxSuper {
+    /// Java: the frame of the builtin method `ctx.super` is named by its `@StarlarkMethod`
+    /// (`BuiltinFunction.getName`), so a traceback says `Error in super: ...`.
+    // Java: net/starlark/java/eval/BuiltinFunction.java BuiltinFunction.getName
+    fn name_for_call_stack(&self, _me: Value<'v>) -> String {
+        "super".to_owned()
+    }
+
     fn invoke(
         &self,
         _me: Value<'v>,

@@ -784,6 +784,13 @@ fn apply_transition(
                     "'None' value not allowed for List-type option '{}'. Please use '[]' instead if trying to set option to empty value.",
                     option_name
                 )));
+            } else if let JavaObject::Map(entries) = &option_value
+                && field.java_type_name == "java.util.Map"
+            {
+                // Java: `optionValue = ImmutableMap.copyOf(dict)`, then
+                // `def.getType().isInstance(optionValue)` holds for a Map-typed option and the
+                // map is stored as it is.
+                converted_value = Some(map_option_value(field, entries));
             } else if matches!(option_value, JavaObject::Null)
                 || is_instance(option_info, &option_value)
             {
@@ -809,7 +816,8 @@ fn apply_transition(
                     .get_dyn(option_info.get_option_class())
                     .unwrap(),
             );
-            if old_value != converted_value {
+            // Java: !Objects.equals(oldValue, convertedValue)
+            if !option_values_java_equal(old_value.as_ref(), converted_value.as_ref()) {
                 let to = to_options.get_or_insert_with(|| from_options.clone());
                 let target = to
                     .get_dyn_mut(option_info.get_option_class())
@@ -858,6 +866,62 @@ fn apply_transition(
         update_affected_by_starlark_transition(core_options, &converted_affected_options);
     }
     Ok(to_options)
+}
+
+/// `ImmutableMap.copyOf(dict)` stored in a field whose Java type is `Map`. Java stores the map
+/// whatever the classes of its keys and values (the generic type is erased); the Rust field has
+/// a concrete type, so only entries of the field's element classes are carried over.
+// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:156 FunctionTransitionUtil.applyTransition (the Map branch, lines 678-681 and 724-725)
+fn map_option_value(
+    field: &blaze_options::FieldInfo,
+    entries: &[(JavaObject, JavaObject)],
+) -> OptionValue {
+    use blaze_optdefs::common::test_timeout::TestTimeoutMap;
+    use blaze_optdefs::fragment::converters::LabelMap;
+    if field.rust_type_name == std::any::type_name::<LabelMap>() {
+        // `JavaOptions.bytecodeOptimizers`: `Map<String, Label>`.
+        let mut map: Vec<(String, Option<Label>)> = Vec::with_capacity(entries.len());
+        for (k, v) in entries {
+            match (k, v) {
+                (JavaObject::Str(k), JavaObject::Label(l)) => map.push((k.clone(), Some(l.clone()))),
+                _ => blaze_util::unported!(
+                    "FunctionTransitionUtil.applyTransition",
+                    "a dict entry that is not String=Label for a Map<String, Label> option \
+                     (Java stores it by heap pollution)"
+                ),
+            }
+        }
+        return OptionValue::new(LabelMap(map));
+    }
+    if field.rust_type_name == std::any::type_name::<TestTimeoutMap>() {
+        // `TestOptions.testTimeout`: `Map<TestTimeout, Duration>`. Starlark has no `TestTimeout`
+        // or `Duration` values, so only the empty dict has the field's element classes.
+        if entries.is_empty() {
+            return OptionValue::new(TestTimeoutMap::default());
+        }
+        blaze_util::unported!(
+            "FunctionTransitionUtil.applyTransition",
+            "a non-empty dict for a Map<TestTimeout, Duration> option (Java stores it by heap \
+             pollution)"
+        );
+    }
+    blaze_util::unported!(
+        "FunctionTransitionUtil.applyTransition",
+        "a dict for a Map-typed option of another field type"
+    )
+}
+
+/// `Objects.equals(oldValue, convertedValue)` for two option values. `Map.equals` ignores the
+/// iteration order; the Rust `LabelMap` (an ordered entry list) compares in order, so it is
+/// compared as a map here.
+fn option_values_java_equal(a: Option<&OptionValue>, b: Option<&OptionValue>) -> bool {
+    use blaze_optdefs::fragment::converters::LabelMap;
+    if let (Some(a), Some(b)) = (a, b)
+        && let (Some(a), Some(b)) = (a.downcast_ref::<LabelMap>(), b.downcast_ref::<LabelMap>())
+    {
+        return a.0.len() == b.0.len() && a.0.iter().all(|e| b.0.contains(e));
+    }
+    a == b
 }
 
 /// `def.getType().isInstance(optionValue)` (plus the `int`/`boolean` primitive cases).

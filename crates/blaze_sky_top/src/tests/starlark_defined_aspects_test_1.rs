@@ -24,7 +24,8 @@ use blaze_starlark::structs::StarlarkInfo;
 use starlark::values::list::ListRef;
 use starlark::values::{OwnedFrozenValue, Value, ValueLike};
 
-use crate::build_view::{AnalysisResult, BuildViewError};
+use crate::build_view::AnalysisResult;
+use crate::testing::UpdateError;
 use crate::testing::build_view_test_case::parse_label;
 use crate::testing::{
     AnalysisTestCase, BuildViewTestCase, assert_contains_exactly, base_artifact_names, has_error,
@@ -240,16 +241,31 @@ fn only_target_files_to_build_base_names(analysis_result: &AnalysisResult) -> Ve
 /// `try { result = update(...); assertThat(keepGoing()).isTrue(); assertThat(result.hasError()).isTrue(); }
 /// catch (ViewCreationFailedException e) { /* expect to fail */ }`.
 ///
-/// PORT: the harness reports Java's `TargetParsingException` as
-/// `BuildViewError::ViewCreationFailed` too (`BuildViewTestCase::update_internal`).
-fn expect_failure(result: Result<&AnalysisResult, BuildViewError>) {
+/// A `TargetParsingException` (`UpdateError::TargetParsing`) is not caught, as in Java.
+fn expect_failure(result: Result<&AnalysisResult, UpdateError>) {
     match result {
         Ok(result) => {
             assert!(keep_going(), "update() succeeded without --keep_going");
             assert!(has_error(result));
         }
-        Err(BuildViewError::ViewCreationFailed { .. }) => {
+        Err(UpdateError::ViewCreationFailed { .. }) => {
             // expect to fail.
+        }
+        Err(e) => panic!("unexpected exception: {e:?}"),
+    }
+}
+
+/// `try { result = update(...); assertThat(keepGoing()).isTrue(); assertThat(result.hasError()).isTrue(); }
+/// catch (ViewCreationFailedException | TargetParsingException e) { /* expected */ }`
+/// (`aspectsNonExported`, `providerNonExported`).
+fn expect_failure_or_target_parsing(result: Result<&AnalysisResult, UpdateError>) {
+    match result {
+        Ok(result) => {
+            assert!(keep_going(), "update() succeeded without --keep_going");
+            assert!(has_error(result));
+        }
+        Err(UpdateError::ViewCreationFailed { .. }) | Err(UpdateError::TargetParsing(_)) => {
+            // expected
         }
         Err(e) => panic!("unexpected exception: {e:?}"),
     }
@@ -983,7 +999,7 @@ my_rule(
     );
 
     t.remove_fail_fast_handler();
-    expect_failure(t.update(&["//test:xxx"]));
+    expect_failure_or_target_parsing(t.update(&["//test:xxx"]));
 
     // attr.label_list() fails, stack=[<toplevel>@rules.bzl:11:38, label_list:<builtin>]
     t.assert_contains_event(
@@ -1021,7 +1037,7 @@ r(name = 'test', a = [':j'])
     t.remove_fail_fast_handler();
     match t.update(&["//test"]) {
         Ok(_) => { /* reached if --keep_going=true */ }
-        Err(BuildViewError::ViewCreationFailed { .. }) => { /* reached if --keep_going=false */ }
+        Err(UpdateError::ViewCreationFailed { .. }) => { /* reached if --keep_going=false */ }
         Err(e) => panic!("unexpected exception: {e:?}"),
     }
     t.assert_contains_event(&t.ws("aspect function returned an instance of a provider \
@@ -1060,7 +1076,7 @@ my_rule(
     );
 
     t.remove_fail_fast_handler();
-    expect_failure(t.update(&["//test:xxx"]));
+    expect_failure_or_target_parsing(t.update(&["//test:xxx"]));
 
     // attr.label_list() fails, stack=[<toplevel>@rules.bzl:7:38, label_list:<builtin>]
     t.assert_contains_event(
@@ -1591,7 +1607,7 @@ filegroup(name='b', srcs=['sourcefile'])
 
     t.remove_fail_fast_handler();
     match t.update(&["//test:a"]) {
-        Ok(_) | Err(BuildViewError::ViewCreationFailed { .. }) => {
+        Ok(_) | Err(UpdateError::ViewCreationFailed { .. }) => {
             // expected.
         }
         Err(e) => panic!("unexpected exception: {e:?}"),
@@ -1624,7 +1640,7 @@ filegroup(name='b', srcs=['sourcefile'])
 
     t.remove_fail_fast_handler();
     match t.update(&["//test:a"]) {
-        Ok(_) | Err(BuildViewError::ViewCreationFailed { .. }) => {
+        Ok(_) | Err(UpdateError::ViewCreationFailed { .. }) => {
             // expected.
         }
         Err(e) => panic!("unexpected exception: {e:?}"),
@@ -2090,7 +2106,7 @@ foo_library(name = 'baz')
             assert!(keep_going());
             assert!(has_error(result));
         }
-        Err(BuildViewError::ViewCreationFailed { .. }) => {
+        Err(UpdateError::ViewCreationFailed { .. }) => {
             // expect to fail.
             assert!(!keep_going());
         }
@@ -2546,7 +2562,7 @@ fn aspect_fragment_access_error() {
             "'cpp'",
             "'cpp'",
         ),
-        Err(BuildViewError::ViewCreationFailed { .. })
+        Err(UpdateError::ViewCreationFailed { .. })
     ));
     t.assert_contains_event(
         "//test:aspect.bzl%MyAspect aspect on my_rule has to declare 'java' as a \
@@ -2561,7 +2577,7 @@ fn analyze_configured_target_for_aspect_fragment(
     full_field_name: &str,
     fragments: &str,
     rule_fragments: &str,
-) -> Result<(), BuildViewError> {
+) -> Result<(), UpdateError> {
     let result_line = format!("   return AspectInfo(result = str({full_field_name}))");
     let fragments_line = format!("   fragments=[{fragments}],");
     let rule_fragments_line = format!("   fragments=[{rule_fragments}],");
@@ -2608,7 +2624,7 @@ my_rule(
     if has_error(result) {
         assert!(keep_going());
         let error_message = "Analysis failed";
-        return Err(BuildViewError::ViewCreationFailed {
+        return Err(UpdateError::ViewCreationFailed {
             message: error_message.to_string(),
             failure_detail: Default::default(),
         });

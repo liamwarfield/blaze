@@ -644,21 +644,44 @@ fn base64_encode(bytes: &[u8]) -> String {
 /// A `java.util.HashMap<String, V>` filled with `computeIfAbsent`, iterated in Java's order.
 ///
 /// PORT: java-hash-order. The table is simulated as `HashMap` keeps it: hash `h ^ (h >>> 16)`
-/// of `String.hashCode`, capacity 16 doubled by `resize` (which keeps the relative order of a
-/// bucket's nodes) when `computeIfAbsent` starts with the size above 3/4 of the capacity, and a
-/// new node goes to the head of its bucket. Tree bins (a bucket reaching 8 nodes once the
-/// capacity is 64) are not modelled and fail loudly.
+/// of `String.hashCode`, capacity 16 doubled by `resize` when `computeIfAbsent` starts with the
+/// size above 3/4 of the capacity, a new node at the head of a list bucket, and the tree bins
+/// (`HashMap.TreeNode`) a bucket becomes once it holds 8 nodes in a table of 64 or more: their
+/// red-black tree decides where a new node goes in the bucket's node order (after its tree
+/// parent) and which node leads it (the root), and `resize` splits them, keeping, rebuilding or
+/// flattening the tree as Java does.
 struct JavaHashMap<V> {
     entries: IndexMap<String, V>,
-    /// The buckets, each a list of indices into `entries` in node order.
+    /// Per entry (index into `entries`): its spread hash and its tree links.
+    nodes: Vec<TreeLinks>,
+    /// The buckets, each a list of indices into `entries` in node (`next`) order.
     table: Vec<Vec<usize>>,
+    /// Whether each bucket is a tree bin (its first node is the tree's root).
+    tree_bins: Vec<bool>,
 }
+
+/// The fields of a `HashMap.TreeNode` besides the list links.
+#[derive(Clone, Copy, Default)]
+struct TreeLinks {
+    hash: i32,
+    parent: Option<usize>,
+    left: Option<usize>,
+    right: Option<usize>,
+    red: bool,
+}
+
+/// `HashMap.TREEIFY_THRESHOLD`, `UNTREEIFY_THRESHOLD`, `MIN_TREEIFY_CAPACITY`.
+const TREEIFY_THRESHOLD: usize = 8;
+const UNTREEIFY_THRESHOLD: usize = 6;
+const MIN_TREEIFY_CAPACITY: usize = 64;
 
 impl<V> JavaHashMap<V> {
     fn new() -> Self {
         JavaHashMap {
             entries: IndexMap::new(),
+            nodes: Vec::new(),
             table: Vec::new(),
+            tree_bins: Vec::new(),
         }
     }
 
@@ -672,26 +695,273 @@ impl<V> JavaHashMap<V> {
         h ^ (h >> 16)
     }
 
+    /// The tree order of two distinct keys (`treeify` / `putTreeVal`): the spread hashes as
+    /// signed ints, then `String.compareTo` (`comparableClassFor` is `String`; the keys are
+    /// distinct, so `tieBreakOrder` is never needed). Negative goes left.
+    fn dir(&self, x: usize, p: usize) -> i32 {
+        let (h, ph) = (self.nodes[x].hash, self.nodes[p].hash);
+        if ph > h {
+            -1
+        } else if ph < h {
+            1
+        } else {
+            let k = self.entries.get_index(x).unwrap().0;
+            let pk = self.entries.get_index(p).unwrap().0;
+            match k.encode_utf16().cmp(pk.encode_utf16()) {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Greater => 1,
+                std::cmp::Ordering::Equal => unreachable!("distinct keys"),
+            }
+        }
+    }
+
+    // Java: java/util/HashMap.java HashMap.TreeNode.rotateLeft
+    fn rotate_left(&mut self, mut root: usize, p: usize) -> usize {
+        if let Some(r) = self.nodes[p].right {
+            let rl = self.nodes[r].left;
+            self.nodes[p].right = rl;
+            if let Some(rl) = rl {
+                self.nodes[rl].parent = Some(p);
+            }
+            let pp = self.nodes[p].parent;
+            self.nodes[r].parent = pp;
+            match pp {
+                None => {
+                    root = r;
+                    self.nodes[r].red = false;
+                }
+                Some(pp) if self.nodes[pp].left == Some(p) => self.nodes[pp].left = Some(r),
+                Some(pp) => self.nodes[pp].right = Some(r),
+            }
+            self.nodes[r].left = Some(p);
+            self.nodes[p].parent = Some(r);
+        }
+        root
+    }
+
+    // Java: java/util/HashMap.java HashMap.TreeNode.rotateRight
+    fn rotate_right(&mut self, mut root: usize, p: usize) -> usize {
+        if let Some(l) = self.nodes[p].left {
+            let lr = self.nodes[l].right;
+            self.nodes[p].left = lr;
+            if let Some(lr) = lr {
+                self.nodes[lr].parent = Some(p);
+            }
+            let pp = self.nodes[p].parent;
+            self.nodes[l].parent = pp;
+            match pp {
+                None => {
+                    root = l;
+                    self.nodes[l].red = false;
+                }
+                Some(pp) if self.nodes[pp].right == Some(p) => self.nodes[pp].right = Some(l),
+                Some(pp) => self.nodes[pp].left = Some(l),
+            }
+            self.nodes[l].right = Some(p);
+            self.nodes[p].parent = Some(l);
+        }
+        root
+    }
+
+    // Java: java/util/HashMap.java HashMap.TreeNode.balanceInsertion
+    fn balance_insertion(&mut self, mut root: usize, mut x: usize) -> usize {
+        self.nodes[x].red = true;
+        loop {
+            let Some(mut xp) = self.nodes[x].parent else {
+                self.nodes[x].red = false;
+                return x;
+            };
+            let xpp = match self.nodes[xp].parent {
+                Some(xpp) if self.nodes[xp].red => xpp,
+                _ => return root,
+            };
+            let xppl = self.nodes[xpp].left;
+            if Some(xp) == xppl {
+                let xppr = self.nodes[xpp].right;
+                if let Some(xppr) = xppr
+                    && self.nodes[xppr].red
+                {
+                    self.nodes[xppr].red = false;
+                    self.nodes[xp].red = false;
+                    self.nodes[xpp].red = true;
+                    x = xpp;
+                } else {
+                    let mut xpp = Some(xpp);
+                    if Some(x) == self.nodes[xp].right {
+                        x = xp;
+                        root = self.rotate_left(root, x);
+                        xp = self.nodes[x].parent.expect("rotated under a parent");
+                        xpp = self.nodes[xp].parent;
+                    }
+                    self.nodes[xp].red = false;
+                    if let Some(xpp) = xpp {
+                        self.nodes[xpp].red = true;
+                        root = self.rotate_right(root, xpp);
+                    }
+                }
+            } else if let Some(xppl) = xppl
+                && self.nodes[xppl].red
+            {
+                self.nodes[xppl].red = false;
+                self.nodes[xp].red = false;
+                self.nodes[xpp].red = true;
+                x = xpp;
+            } else {
+                let mut xpp = Some(xpp);
+                if Some(x) == self.nodes[xp].left {
+                    x = xp;
+                    root = self.rotate_right(root, x);
+                    xp = self.nodes[x].parent.expect("rotated under a parent");
+                    xpp = self.nodes[xp].parent;
+                }
+                self.nodes[xp].red = false;
+                if let Some(xpp) = xpp {
+                    self.nodes[xpp].red = true;
+                    root = self.rotate_left(root, xpp);
+                }
+            }
+        }
+    }
+
+    /// `moveRootToFront`: the root becomes the bucket's first node; the others keep their
+    /// order.
+    // Java: java/util/HashMap.java HashMap.TreeNode.moveRootToFront
+    fn move_root_to_front(&mut self, bucket: usize, root: usize) {
+        let list = &mut self.table[bucket];
+        let pos = list
+            .iter()
+            .position(|&e| e == root)
+            .expect("root in its bucket");
+        if pos != 0 {
+            list.remove(pos);
+            list.insert(0, root);
+        }
+    }
+
+    /// `treeify` of the nodes of `bucket`, in their list order.
+    // Java: java/util/HashMap.java HashMap.TreeNode.treeify
+    fn treeify(&mut self, bucket: usize) {
+        let list = self.table[bucket].clone();
+        let mut root: Option<usize> = None;
+        for x in list {
+            self.nodes[x].left = None;
+            self.nodes[x].right = None;
+            match root {
+                None => {
+                    self.nodes[x].parent = None;
+                    self.nodes[x].red = false;
+                    root = Some(x);
+                }
+                Some(r) => {
+                    let mut p = r;
+                    loop {
+                        let dir = self.dir(x, p);
+                        let xp = p;
+                        let next = if dir <= 0 {
+                            self.nodes[p].left
+                        } else {
+                            self.nodes[p].right
+                        };
+                        match next {
+                            Some(n) => p = n,
+                            None => {
+                                self.nodes[x].parent = Some(xp);
+                                if dir <= 0 {
+                                    self.nodes[xp].left = Some(x);
+                                } else {
+                                    self.nodes[xp].right = Some(x);
+                                }
+                                root = Some(self.balance_insertion(r, x));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.tree_bins[bucket] = true;
+        if let Some(root) = root {
+            self.move_root_to_front(bucket, root);
+        }
+    }
+
+    /// `putTreeVal` of the new node `x` into the tree bin `bucket`: it becomes a child of the
+    /// node where the search ends and follows that node in the list.
+    // Java: java/util/HashMap.java HashMap.TreeNode.putTreeVal
+    fn put_tree_val(&mut self, bucket: usize, x: usize) {
+        let root = self.table[bucket][0];
+        let mut p = root;
+        loop {
+            let dir = self.dir(x, p);
+            let xp = p;
+            let next = if dir <= 0 {
+                self.nodes[p].left
+            } else {
+                self.nodes[p].right
+            };
+            match next {
+                Some(n) => p = n,
+                None => {
+                    if dir <= 0 {
+                        self.nodes[xp].left = Some(x);
+                    } else {
+                        self.nodes[xp].right = Some(x);
+                    }
+                    self.nodes[x].parent = Some(xp);
+                    let list = &mut self.table[bucket];
+                    let pos = list
+                        .iter()
+                        .position(|&e| e == xp)
+                        .expect("xp in its bucket");
+                    list.insert(pos + 1, x);
+                    let root = self.balance_insertion(root, x);
+                    self.move_root_to_front(bucket, root);
+                    return;
+                }
+            }
+        }
+    }
+
     /// `HashMap.resize`: the first table has 16 buckets, then the size doubles; each bucket
-    /// splits into the same index and index + old capacity, keeping the node order.
+    /// splits into the same index and index + old capacity, keeping the node order; a tree bin
+    /// (`TreeNode.split`) becomes a list at 6 nodes or fewer, keeps its tree when all of its
+    /// nodes stay together, and is treeified again otherwise.
     fn resize(&mut self) {
         let old_cap = self.table.len();
         if old_cap == 0 {
             self.table = vec![Vec::new(); 16];
+            self.tree_bins = vec![false; 16];
             return;
         }
-        let mut new_table = vec![Vec::new(); old_cap * 2];
-        for (j, bucket) in self.table.iter().enumerate() {
-            for &e in bucket {
-                let h = Self::hash(self.entries.get_index(e).unwrap().0) as usize;
-                if h & old_cap == 0 {
-                    new_table[j].push(e);
+        let old_table = std::mem::replace(&mut self.table, vec![Vec::new(); old_cap * 2]);
+        let old_trees = std::mem::replace(&mut self.tree_bins, vec![false; old_cap * 2]);
+        for (j, bucket) in old_table.into_iter().enumerate() {
+            let (lo, hi): (Vec<usize>, Vec<usize>) = bucket
+                .into_iter()
+                .partition(|&e| (self.nodes[e].hash as u32 as usize) & old_cap == 0);
+            let (lo_present, hi_present) = (!lo.is_empty(), !hi.is_empty());
+            let (lc, hc) = (lo.len(), hi.len());
+            self.table[j] = lo;
+            self.table[j + old_cap] = hi;
+            if !old_trees[j] {
+                continue;
+            }
+            // Java: java/util/HashMap.java HashMap.TreeNode.split
+            if lo_present && lc > UNTREEIFY_THRESHOLD {
+                if hi_present {
+                    self.treeify(j);
                 } else {
-                    new_table[j + old_cap].push(e);
+                    self.tree_bins[j] = true;
+                }
+            }
+            if hi_present && hc > UNTREEIFY_THRESHOLD {
+                if lo_present {
+                    self.treeify(j + old_cap);
+                } else {
+                    self.tree_bins[j + old_cap] = true;
                 }
             }
         }
-        self.table = new_table;
     }
 
     /// `computeIfAbsent(key, k -> f())`.
@@ -705,19 +975,26 @@ impl<V> JavaHashMap<V> {
             return &mut self.entries[i];
         }
         let n = self.table.len();
-        let bucket = (Self::hash(key) as usize) & (n - 1);
-        let bin_count = self.table[bucket].len();
+        let hash = Self::hash(key);
+        let bucket = (hash as usize) & (n - 1);
         let (index, _) = self.entries.insert_full(key.to_string(), f());
-        self.table[bucket].insert(0, index);
-        if bin_count >= 8 - 1 {
-            // treeifyBin: a small table is resized instead.
-            if self.table.len() < 64 {
-                self.resize();
-            } else {
-                blaze_util::unported!(
-                    "HashMap.treeifyBin",
-                    "8 or more keys in one bucket of the flags-as-proto map"
-                );
+        self.nodes.push(TreeLinks {
+            hash: hash as i32,
+            ..TreeLinks::default()
+        });
+        if self.tree_bins[bucket] {
+            self.put_tree_val(bucket, index);
+        } else {
+            let bin_count = self.table[bucket].len();
+            self.table[bucket].insert(0, index);
+            if bin_count >= TREEIFY_THRESHOLD - 1 {
+                // treeifyBin: a small table is resized instead.
+                // Java: java/util/HashMap.java HashMap.treeifyBin
+                if self.table.len() < MIN_TREEIFY_CAPACITY {
+                    self.resize();
+                } else {
+                    self.treeify(bucket);
+                }
             }
         }
         &mut self.entries[index]
@@ -745,9 +1022,9 @@ impl BlazeCommand for HelpCommand {
         env: &mut CommandEnvironment,
         options: &OptionsParsingResult,
     ) -> BlazeCommandResult {
-        // PORT: `env.getEventBus().post(new NoBuildEvent())` only reaches the Build Event
-        // Protocol, which is ported for build and test; a BEP file requested for this command
-        // fails loudly before it runs (crate::unported_options).
+        // `env.getEventBus().post(new NoBuildEvent())` only reaches the Build Event Protocol;
+        // BazelBuildEventServiceModule creates no stream for this command (it is not in
+        // ALLOWED_COMMANDS, crate::commands::bep), so nothing subscribes to the event.
         let runtime = env.get_runtime().clone();
         let out_err = env.get_reporter().get_out_err().clone();
         let help_options = options
@@ -937,5 +1214,80 @@ Getting more help:
         // "hello".hashCode() == 99162322 in Java; HashMap.hash spreads it.
         let h: u32 = 99162322;
         assert_eq!(JavaHashMap::<()>::hash("hello"), h ^ (h >> 16));
+    }
+
+    #[test]
+    fn java_hash_map_tree_bins_follow_java_order() {
+        // The keys and the expected order were recorded with java.util.HashMap (OpenJDK 25;
+        // HashMap's tree bins are unchanged since JDK 8) by
+        // ~/.cache/blaze/work/commands-fix-1/hashprobe/HashOrder.java: 64 keys of one
+        // String.hashCode (one tree bin at every size) and 40 keys equal modulo 64 (one tree bin
+        // at 64 buckets, split by each later resize), among 300 others. Each number is the
+        // insertion index of the key at that position of `values()`.
+        let mut colliding: Vec<String> = Vec::new();
+        for i in 0..64 {
+            let mut sb = String::new();
+            for b in 0..6 {
+                sb.push_str(if (i >> b) & 1 == 0 { "Aa" } else { "BB" });
+            }
+            colliding.push(sb);
+        }
+        let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        let mut low: Vec<String> = Vec::new();
+        for x in alphabet.chars() {
+            for y in alphabet.chars() {
+                let s = format!("{x}{y}");
+                let h = (x as i32).wrapping_mul(31).wrapping_add(y as i32);
+                if h & 63 == 5 && low.len() < 40 {
+                    low.push(s);
+                }
+            }
+        }
+        let mut keys: Vec<String> = Vec::new();
+        let (mut c, mut l) = (0, 0);
+        for i in 0..300 {
+            keys.push(format!("flag_{i}"));
+            if i % 4 == 0 && c < colliding.len() {
+                keys.push(colliding[c].clone());
+                c += 1;
+            }
+            if i >= 30 && i % 3 == 0 && l < low.len() {
+                keys.push(low[l].clone());
+                l += 1;
+            }
+        }
+        keys.extend(colliding[c..].iter().cloned());
+        keys.extend(low[l..].iter().cloned());
+        assert_eq!(keys.len(), 404);
+        let mut map = JavaHashMap::new();
+        for (i, key) in keys.iter().enumerate() {
+            map.compute_if_absent(key, || i);
+        }
+        let expected: Vec<usize> = vec![
+            163, 10, 9, 12, 5, 4, 8, 7, 0, 3, 2, 167, 172, 44, 39, 177, 182, 53, 49, 191, 186, 63,
+            58, 104, 107, 102, 103, 201, 196, 72, 68, 114, 116, 111, 113, 108, 109, 122, 123, 119,
+            121, 117, 132, 128, 130, 126, 127, 140, 141, 136, 138, 133, 220, 210, 205, 82, 135, 91,
+            77, 146, 147, 142, 145, 224, 215, 106, 96, 87, 51, 52, 47, 50, 45, 46, 41, 43, 38, 40,
+            54, 69, 65, 66, 62, 64, 59, 60, 56, 57, 70, 71, 120, 110, 101, 83, 84, 79, 81, 76, 78,
+            73, 75, 88, 89, 85, 100, 97, 98, 94, 95, 90, 92, 134, 125, 115, 148, 139, 129, 303,
+            304, 299, 300, 297, 298, 294, 23, 295, 24, 292, 20, 293, 22, 18, 19, 15, 17, 13, 14,
+            302, 290, 37, 34, 35, 32, 33, 29, 30, 27, 28, 25, 153, 144, 330, 166, 332, 168, 328,
+            329, 165, 327, 161, 164, 324, 159, 325, 160, 322, 155, 323, 157, 319, 152, 320, 154, 6,
+            26, 36, 236, 162, 336, 256, 86, 316, 188, 356, 276, 137, 31, 80, 181, 351, 271, 131,
+            311, 231, 55, 156, 331, 251, 105, 291, 207, 21, 219, 143, 321, 241, 67, 301, 169, 341,
+            261, 118, 16, 112, 296, 213, 74, 175, 346, 266, 124, 306, 226, 61, 11, 48, 150, 326,
+            246, 99, 286, 200, 1, 93, 281, 194, 42, 317, 149, 318, 151, 315, 313, 314, 310, 312,
+            308, 309, 305, 307, 158, 358, 202, 359, 203, 355, 198, 357, 199, 353, 354, 197, 352,
+            193, 195, 349, 190, 350, 192, 347, 187, 348, 189, 344, 184, 345, 185, 342, 180, 343,
+            183, 340, 179, 338, 176, 339, 178, 335, 173, 337, 174, 333, 170, 334, 171, 380, 234,
+            381, 235, 378, 232, 379, 233, 376, 229, 377, 230, 374, 375, 228, 373, 225, 227, 371,
+            222, 372, 223, 369, 218, 370, 221, 367, 216, 368, 217, 365, 212, 366, 214, 364, 211,
+            362, 208, 363, 209, 360, 204, 361, 206, 394, 395, 253, 402, 262, 403, 263, 400, 259,
+            401, 260, 398, 257, 399, 258, 396, 254, 397, 255, 393, 250, 252, 384, 391, 248, 392,
+            249, 389, 245, 390, 247, 387, 243, 388, 244, 385, 240, 386, 242, 239, 382, 237, 383,
+            238, 279, 280, 278, 289, 287, 288, 284, 285, 282, 283, 265, 267, 275, 277, 273, 274,
+            270, 272, 268, 269, 264,
+        ];
+        assert_eq!(map.into_values(), expected);
     }
 }

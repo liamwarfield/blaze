@@ -81,7 +81,8 @@ impl WorkerLifecycleManager {
             .name("worker-lifecycle-manager".to_string())
             .spawn(move || {
                 let _ = tx.send(blaze_shell::ThreadInterrupt::current());
-                this.run();
+                // A Java Thread: an exception reaches the default uncaught exception handler.
+                blaze_util::uncaught_exception::run_catching(|| this.run());
             });
         *self.thread.lock() = rx.recv().ok();
     }

@@ -1386,26 +1386,32 @@ impl UiEventHandler {
         let thread = std::thread::Builder::new()
             .name("cli-update-thread".into())
             .spawn(move || {
-                loop {
-                    std::thread::park_timeout(interval);
-                    let Some(handler) = weak.upgrade() else {
-                        return;
-                    };
-                    if handler.shutdown.load(Ordering::SeqCst) {
-                        return;
+                // catch (Throwable t) { BugReport.handleCrash(Crash.from(t),
+                // CrashContext.haltOrReturnIfCrashInProgress()); }: do not block if a crash is
+                // already in progress.
+                blaze_util::uncaught_exception::run_catching_or_return_if_crash_in_progress(|| {
+                    loop {
+                        std::thread::park_timeout(interval);
+                        let Some(handler) = weak.upgrade() else {
+                            return;
+                        };
+                        if handler.shutdown.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        let last_refresh_millis =
+                            handler.last_refresh_millis.load(Ordering::SeqCst);
+                        let must_refresh_after_millis =
+                            handler.must_refresh_after_millis.load(Ordering::SeqCst);
+                        if last_refresh_millis < must_refresh_after_millis
+                            && must_refresh_after_millis < handler.clock.current_time_millis()
+                        {
+                            handler
+                                .progress_bar_needs_refresh
+                                .store(true, Ordering::SeqCst);
+                        }
+                        handler.do_refresh(None, /* from_update_thread= */ true);
                     }
-                    let last_refresh_millis = handler.last_refresh_millis.load(Ordering::SeqCst);
-                    let must_refresh_after_millis =
-                        handler.must_refresh_after_millis.load(Ordering::SeqCst);
-                    if last_refresh_millis < must_refresh_after_millis
-                        && must_refresh_after_millis < handler.clock.current_time_millis()
-                    {
-                        handler
-                            .progress_bar_needs_refresh
-                            .store(true, Ordering::SeqCst);
-                    }
-                    handler.do_refresh(None, /* from_update_thread= */ true);
-                }
+                });
             })
             .expect("cli-update-thread");
         *update_thread = Some(thread);

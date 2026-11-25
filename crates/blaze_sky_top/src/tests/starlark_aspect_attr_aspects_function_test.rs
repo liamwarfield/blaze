@@ -9,7 +9,7 @@ use blaze_starlark::structs::StarlarkInfo;
 use indexmap::IndexMap;
 use starlark::values::list::ListRef;
 
-use crate::build_view::BuildViewError;
+use crate::testing::UpdateError;
 use crate::testing::build_view_test_case::parse_label;
 use crate::testing::{AnalysisTestCase, BuildViewTestCase, assert_contains_exactly};
 
@@ -286,7 +286,7 @@ fn wild_card_attr_returned_build_fails() {
     t.remove_fail_fast_handler();
     let result = t.update_with_aspects(&["//test:defs.bzl%cmdline_aspect"], &["//pkg1:t1"]);
     assert!(
-        matches!(result, Err(BuildViewError::ViewCreationFailed { .. })),
+        matches!(result, Err(UpdateError::ViewCreationFailed { .. })),
         "expected ViewCreationFailedException"
     );
     t.assert_contains_event("'*' is not allowed in 'attr_aspects' list");
@@ -305,7 +305,7 @@ fn invalid_return_value_build_fails() {
     t.remove_fail_fast_handler();
     let result = t.update_with_aspects(&["//test:defs.bzl%cmdline_aspect"], &["//pkg1:t1"]);
     assert!(
-        matches!(result, Err(BuildViewError::ViewCreationFailed { .. })),
+        matches!(result, Err(UpdateError::ViewCreationFailed { .. })),
         "expected ViewCreationFailedException"
     );
     t.assert_contains_event("at index 0 of attr_aspects, got element of type int, want string");

@@ -467,7 +467,10 @@ fn access_private_aspect_attribute_fails() {
     t.remove_fail_fast_handler();
     let result = t.update_with_aspects(&["//test:defs.bzl%cmdline_aspect"], &["//pkg1:t1"]);
     assert!(
-        matches!(result, Err(BuildViewError::ViewCreationFailed { .. })),
+        matches!(
+            result,
+            Err(crate::testing::UpdateError::ViewCreationFailed { .. })
+        ),
         "expected ViewCreationFailedException"
     );
     t.assert_contains_event("'_tool' is not a public parameter of the aspect.");

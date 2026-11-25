@@ -91,8 +91,8 @@ pub fn add_to_fingerprint(
 pub fn create(
     action: &dyn Action,
     output_paths_mode: OutputPathsMode,
-    _is_starlark_action: bool,
-    _input_metadata_provider: Option<&dyn InputMetadataProvider>,
+    is_starlark_action: bool,
+    input_metadata_provider: Option<&dyn InputMetadataProvider>,
 ) -> Arc<dyn PathMapper> {
     if get_effective_output_paths_mode(
         output_paths_mode,
@@ -102,7 +102,14 @@ pub fn create(
     {
         return Arc::new(NoopPathMapper);
     }
-    unported!("StrippingPathMapper.tryCreate")
+    match super::stripping_path_mapper::StrippingPathMapper::try_create(
+        action,
+        is_starlark_action,
+        input_metadata_provider,
+    ) {
+        Some(mapper) => Arc::new(mapper),
+        None => Arc::new(NoopPathMapper),
+    }
 }
 
 // PORT: `getOutputPathsMode(BuildConfigurationValue)` reads `CoreOptions.outputPathsMode` from a

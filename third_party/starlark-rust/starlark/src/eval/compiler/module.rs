@@ -61,6 +61,13 @@ impl<'v> Compiler<'v, '_, '_, '_> {
 
         let span = FrameSpan::new(FrozenFileSpan::new(self.codemap, load.span));
 
+        // BLAZE PATCH 0057: load bindings are file-local in Bazel, not globals of the module.
+        for load_arg in &load.node.args {
+            self.eval
+                .module_env
+                .add_load_bound_name(&load_arg.local.ident);
+        }
+
         let loadenv = match self.eval.loader.as_ref() {
             None => {
                 return Err(add_span_to_expr_error(
@@ -80,11 +87,19 @@ impl<'v> Compiler<'v, '_, '_, '_> {
                 Slot::Local(..) => unreachable!("symbol need to be resolved to module"),
                 Slot::Module(slot) => slot,
             };
+            // BLAZE PATCH 0057: Java's error is located at the original name, one char after the
+            // start of its string literal (Parser.java:1442/1460, `token.start + 1`); an empty
+            // span, so that Blaze's location mapping takes its start as it is.
+            let their = load_arg.their.span;
+            let at = crate::codemap::Pos::new(their.begin().get() + 1);
             let value = expr_throw(
                 self.eval
                     .module_env
-                    .load_symbol(&loadenv, &load_arg.their.node),
-                FrameSpan::new(FrozenFileSpan::new(self.codemap, load_arg.span())),
+                    .load_symbol(&loadenv, name, &load_arg.their.node),
+                FrameSpan::new(FrozenFileSpan::new(
+                    self.codemap,
+                    crate::codemap::Span::new(at, at),
+                )),
                 self.eval,
             )?;
             self.eval.set_slot_module(slot, value)

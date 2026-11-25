@@ -100,6 +100,7 @@ fn java_trim(s: &str) -> &str {
 }
 
 // Java: com/google/devtools/common/options/OptionsParserImpl.java:57 OptionsParserImpl
+#[derive(Clone)]
 pub(crate) struct OptionsParserImpl {
     pub(crate) options_data: Arc<OptionsData>,
     option_values: IndexMap<OptionDefinitionRef, OptionValueDescription>,

@@ -19,7 +19,7 @@ use super::provider_util::{
 use super::starlark_info_wrapper::{StarlarkInfoWrapper, struct_get_value};
 use crate::cpp::util::errorf;
 
-// Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:48 JavaPluginInfo.PROVIDER_NAME
+// Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:50 JavaPluginInfo.PROVIDER_NAME
 pub const PROVIDER_NAME: &str = "JavaPluginInfo";
 
 /// `JavaPluginInfo.PROVIDER.getKey()`.
@@ -48,13 +48,13 @@ pub fn provider_get_location() -> blaze_starlark::error::Location {
 }
 
 /// `JavaPluginInfo.RULES_JAVA_PROVIDER.getKey()`.
-// Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:76 JavaPluginInfo.RulesJavaProvider.<init>
+// Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:81 JavaPluginInfo.RulesJavaProvider.<init>
 pub fn rules_java_provider_key_() -> ProviderKey {
     main_repo_provider_key("java/private:java_info.bzl", PROVIDER_NAME)
 }
 
 /// Information about a Java plugin, except for whether it generates API.
-// Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:129 JavaPluginInfo.JavaPluginData
+// Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:141 JavaPluginInfo.JavaPluginData
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JavaPluginData {
     /// The class that should be passed to javac in order to run the annotation processor this
@@ -65,7 +65,7 @@ pub struct JavaPluginData {
     data: NestedSet<Artifact>,
 }
 
-// Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:131 JavaPluginInfo.JavaPluginData.EMPTY
+// Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:142 JavaPluginInfo.JavaPluginData.EMPTY
 static EMPTY_PLUGIN_DATA: LazyLock<JavaPluginData> = LazyLock::new(|| JavaPluginData {
     processor_classes: NestedSetBuilder::empty_set(Order::NAIVE_LINK_ORDER),
     processor_classpath: NestedSetBuilder::empty_set(Order::NAIVE_LINK_ORDER),
@@ -73,7 +73,7 @@ static EMPTY_PLUGIN_DATA: LazyLock<JavaPluginData> = LazyLock::new(|| JavaPlugin
 });
 
 impl JavaPluginData {
-    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:137 JavaPluginInfo.JavaPluginData.create
+    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:148 JavaPluginInfo.JavaPluginData.create
     pub fn create(
         processor_classes: NestedSet<String>,
         processor_classpath: NestedSet<Artifact>,
@@ -89,12 +89,12 @@ impl JavaPluginData {
         }
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:148 JavaPluginInfo.JavaPluginData.empty
+    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:159 JavaPluginInfo.JavaPluginData.empty
     pub fn empty() -> JavaPluginData {
         EMPTY_PLUGIN_DATA.clone()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:152 JavaPluginInfo.JavaPluginData.merge
+    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:163 JavaPluginInfo.JavaPluginData.merge
     pub fn merge<'a>(plugins: impl IntoIterator<Item = &'a JavaPluginData>) -> JavaPluginData {
         let mut processor_classes = NestedSetBuilder::naive_link_order();
         let mut processor_classpath = NestedSetBuilder::naive_link_order();
@@ -111,7 +111,7 @@ impl JavaPluginData {
         )
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:165 JavaPluginInfo.JavaPluginData.wrap
+    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:175 JavaPluginInfo.JavaPluginData.wrap
     pub fn wrap<'v>(obj: Option<Value<'v>>, heap: Heap<'v>) -> starlark::Result<JavaPluginData> {
         if let Some(obj) = obj
             && let Some(data) =
@@ -145,22 +145,22 @@ impl JavaPluginData {
         )))
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:180 JavaPluginInfo.JavaPluginData.processorClasses
+    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:191 JavaPluginInfo.JavaPluginData.processorClasses
     pub fn processor_classes(&self) -> &NestedSet<String> {
         &self.processor_classes
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:183 JavaPluginInfo.JavaPluginData.processorClasspath
+    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:194 JavaPluginInfo.JavaPluginData.processorClasspath
     pub fn processor_classpath(&self) -> &NestedSet<Artifact> {
         &self.processor_classpath
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:185 JavaPluginInfo.JavaPluginData.data
+    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:196 JavaPluginInfo.JavaPluginData.data
     pub fn data(&self) -> &NestedSet<Artifact> {
         &self.data
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:202 JavaPluginInfo.JavaPluginData.isEmpty
+    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:213 JavaPluginInfo.JavaPluginData.isEmpty
     pub fn is_empty(&self) -> bool {
         self.processor_classes.is_empty()
             && self.processor_classpath.is_empty()
@@ -169,7 +169,7 @@ impl JavaPluginData {
 }
 
 /// Provider for users of Java plugins.
-// Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:45 JavaPluginInfo
+// Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:48 JavaPluginInfo
 #[derive(Clone, Debug)]
 pub struct JavaPluginInfo {
     java_outputs: Vec<JavaOutput>,
@@ -181,10 +181,10 @@ pub struct JavaPluginInfo {
 impl JavaPluginInfo {
     /// This wrapped instance is not propagated back to Starlark, so we don't need every type: we
     /// just use the single type that is checked for in tests.
-    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:58 JavaPluginInfo.wrap
+    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:62 JavaPluginInfo.wrap
     pub fn wrap<'v>(info: Value<'v>, heap: Heap<'v>) -> starlark::Result<JavaPluginInfo> {
         // Java: PROVIDER.wrap(info)
-        // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:108 JavaPluginInfo.Provider.wrap
+        // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:116 JavaPluginInfo.Provider.wrap
         if let Some(native) =
             info.downcast_ref::<super::java_plugins_flag_alias::JavaPluginInfoValue>()
         {
@@ -239,7 +239,7 @@ impl JavaPluginInfo {
         })
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:243 JavaPluginInfo.mergeWithoutJavaOutputs
+    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:218 JavaPluginInfo.mergeWithoutJavaOutputs
     pub fn merge_without_java_outputs_pair(
         a: &JavaPluginInfo,
         b: &JavaPluginInfo,
@@ -253,7 +253,7 @@ impl JavaPluginInfo {
         }
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:249 JavaPluginInfo.mergeWithoutJavaOutputs
+    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:224 JavaPluginInfo.mergeWithoutJavaOutputs
     pub fn merge_without_java_outputs<'a>(
         providers: impl IntoIterator<Item = &'a JavaPluginInfo>,
         provider_type: ProviderKey,
@@ -279,7 +279,7 @@ impl JavaPluginInfo {
         }
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:271 JavaPluginInfo.empty
+    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:247 JavaPluginInfo.empty
     pub fn empty(provider_type: ProviderKey) -> JavaPluginInfo {
         // Java: EMPTY_RULES_JAVA when providerType is RULES_JAVA_PROVIDER, else EMPTY.
         let provider_type = if provider_type == rules_java_provider_key_() {
@@ -299,23 +299,23 @@ impl JavaPluginInfo {
         &self.java_outputs
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:278 JavaPluginInfo.plugins
+    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:255 JavaPluginInfo.plugins
     pub fn plugins(&self) -> &JavaPluginData {
         &self.plugins
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:281 JavaPluginInfo.apiGeneratingPlugins
+    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:258 JavaPluginInfo.apiGeneratingPlugins
     pub fn api_generating_plugins(&self) -> &JavaPluginData {
         &self.api_generating_plugins
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:66 JavaPluginInfo.getProvider
+    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:75 JavaPluginInfo.getProvider
     pub fn get_provider(&self) -> &ProviderKey {
         &self.provider_type
     }
 
     /// Returns true if the provider has no associated data.
-    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:286 JavaPluginInfo.isEmpty
+    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:263 JavaPluginInfo.isEmpty
     pub fn is_empty(&self) -> bool {
         // apiGeneratingPlugins is a subset of plugins, so checking if plugins is empty is
         // sufficient
@@ -324,7 +324,7 @@ impl JavaPluginInfo {
 
     /// Returns true if the provider has any associated annotation processors (regardless of
     /// whether it has a classpath or data).
-    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:295 JavaPluginInfo.hasProcessors
+    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:272 JavaPluginInfo.hasProcessors
     pub fn has_processors(&self) -> bool {
         // apiGeneratingPlugins is a subset of plugins, so checking if plugins is empty is
         // sufficient
@@ -332,7 +332,7 @@ impl JavaPluginInfo {
     }
 
     /// Translates the plugin information from a `JavaInfo` instance.
-    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:309 JavaPluginInfo.fromStarlarkJavaInfo
+    // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:286 JavaPluginInfo.fromStarlarkJavaInfo
     pub fn from_starlark_java_info<'v>(
         java_info: Value<'v>,
         heap: Heap<'v>,

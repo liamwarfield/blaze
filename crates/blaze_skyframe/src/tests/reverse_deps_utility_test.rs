@@ -25,6 +25,8 @@ impl fmt::Debug for IntKey {
 impl Key for IntKey {
     type Value = ();
     const FUNCTION: SkyFunctionName = SkyFunctionName("FOR_TESTING");
+    // Java: SkyFunctionName.FOR_TESTING (createHermetic), src/main/java com/google/devtools/build/skyframe/SkyFunctionName.java:32
+    const HERMETICITY: crate::FunctionHermeticity = crate::FunctionHermeticity::Hermetic;
 }
 
 // Java: ReverseDepsUtilityTest.Key.create

@@ -23,9 +23,10 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+use blaze_analysis::rule::rule_error_consumer::AnalysisRootCauseEvent;
 use blaze_bep::bep_module::{
     BepCommandContext, BepStreamer, BuildEventPost, BuildEventStreamerBuilder,
 };
@@ -40,7 +41,9 @@ use blaze_bep::buildeventstream::{
 use blaze_bep::events::actions_events::{
     ActionExecutedEvent, ActionFailure, ErrorTiming, ExecutedActionInfo, ExecutedActionOwner,
 };
-use blaze_bep::events::analysis_events::AnalysisFailureBuildEvent;
+use blaze_bep::events::analysis_events::{
+    AnalysisFailureBuildEvent, AnalysisRootCauseBuildEvent, RepositoryFailedBuildEvent,
+};
 use blaze_bep::events::analysis_events::{
     BuildInfoEvent, ConfiguredTargetInfo, NoBuildEvent, PackagesTestSize, TargetConfiguredEvent,
 };
@@ -61,6 +64,7 @@ use blaze_bep::events::target_complete_event::{
 use blaze_bep::metrics::metrics_collector::{
     AnalysisPhaseCompleteInfo, BuildMetricsFinishInputs, JvmMemoryFacts, MetricsCollector,
     RemoteAnalysisCachingFacts, SkyframeStats, TotalAndConfiguredTargetOnlyMetric,
+    WorkerProcessMetricsInfo,
 };
 use blaze_bep::runtime::BuildEventArtifactUploaderFactoryMap;
 use blaze_bep::runtime::ReleaseReplaceableBuildEvent;
@@ -84,13 +88,13 @@ use blaze_buildtool::runtime::test_command_support::{
     NoTestsFound, TestingCompleteEvent as ToolTestingCompleteEvent,
 };
 use blaze_buildtool::runtime::test_summary::{TestSummary, get_test_params};
+use blaze_buildtool::runtime::ui_state_tracker::TransportId;
 use blaze_cmdline::Label;
 use blaze_events::OutErr;
 use blaze_events::{Clock, Event, EventBus, EventHandler, JavaClock, Postable, Reporter};
 use blaze_exec::actions::cache::PostableActionCacheStats;
 use blaze_exec::analysis::actions::bazel_workspace_status_module::BuildInfoEvent as ExecBuildInfoEvent;
 use blaze_exec::runtime::spawn_stats::SpawnStats;
-use blaze_optdefs::command::blaze_server_startup_options::BlazeServerStartupOptions;
 use blaze_optdefs::command::build_request_options::{BuildRequestOptions, ConvenienceSymlinksMode};
 use blaze_optdefs::command::common_command_options::CommonCommandOptions;
 use blaze_optdefs::command::execution_options::ExecutionOptions;
@@ -110,12 +114,14 @@ use blaze_packages::target::target_utils;
 use blaze_packages::types::{AttrValue, Type};
 use blaze_protos::build_event_stream::aborted::AbortReason;
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail};
+use blaze_repo_rules::repository::repository_fetch_function::RepositoryFailedEvent;
 use blaze_shell::util::shell_escaper::ShellEscaper;
 use blaze_sky_exec::events::{
     ActionCompletionEvent, ActionExecutedEvent as SkyActionExecutedEvent,
     ActionResultReceivedEvent, AspectCompleteEvent as SkyAspectCompleteEvent, CompletionRootCause,
-    ErrorTiming as SkyErrorTiming, TargetCompleteEvent as SkyTargetCompleteEvent,
-    TopLevelTargetPendingExecutionEvent, downcast_event,
+    ErrorTiming as SkyErrorTiming, SomeExecutionStartedEvent,
+    TargetCompleteEvent as SkyTargetCompleteEvent, TopLevelTargetPendingExecutionEvent,
+    downcast_event,
 };
 use blaze_sky_top::analysis_failure_event::{AnalysisFailureEvent, AnalysisRootCause};
 use blaze_sky_top::build_tool::{BuildEventHooks, BuildRequest};
@@ -205,6 +211,14 @@ struct Shared {
     clock: Arc<dyn Clock>,
     /// `CommandEnvironment.buildInfoPosted` (set by its `gotBuildInfo` subscription).
     build_info_posted: AtomicBool,
+    /// The `executionTimer` of `BuildTool.buildTargetsWithMergedAnalysisExecution` (a
+    /// `Stopwatch`): `Some(start)` while running.
+    execution_timer: Mutex<Option<Instant>>,
+    /// `failedPatterns` of `TargetPatternPhaseFunction.compute`, in the order they failed.
+    failed_target_patterns: Mutex<Vec<String>>,
+    /// The configuration events made so far, by checksum (for the events that carry only a
+    /// configuration's checksum: `AnalysisRootCauseEvent`).
+    configuration_events: Mutex<std::collections::HashMap<String, Arc<dyn BuildEvent>>>,
 }
 
 /// The subscriber of the command's event bus: the `@Subscribe` methods of the
@@ -249,6 +263,27 @@ impl EventBus for BepSubscriber {
             shared
                 .metrics
                 .on_critical_path(e.get_critical_path().get_aggregated_elapsed_time());
+            return;
+        }
+        if let Some(e) = downcast_event::<SomeExecutionStartedEvent>(&event) {
+            // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:221 MetricsCollector.onSomeExecutionStarted
+            // Profiler.getProfileElapsedTime() never returns null; Duration.toMillis truncates.
+            shared.metrics.on_some_execution_started(
+                e.counted_in_execution_time,
+                Some(blaze_util::profiler::Profiler::get_profile_elapsed_time_nanos() / 1_000_000),
+            );
+            // ExecutionProgressReceiverSetup.setupExecutionProgressReceiver: the build's
+            // executionTimer (BuildTool.buildTargetsWithMergedAnalysisExecution) starts with the
+            // first execution activity counted in execution time.
+            // PORT: the timer belongs to the BEP support, its only reader here (through the
+            // ExecutionPhaseCompleteEvent the MetricsCollector receives).
+            // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:1073 ExecutionTool.ExecutionProgressReceiverSetup.setupExecutionProgressReceiver
+            if e.counted_in_execution_time {
+                let mut timer = shared.execution_timer.lock();
+                if timer.is_none() {
+                    *timer = Some(Instant::now());
+                }
+            }
             return;
         }
         if let Some(e) = downcast_event::<TopLevelTargetPendingExecutionEvent>(&event) {
@@ -347,7 +382,7 @@ impl EventBus for BepSubscriber {
                 .streamer
                 .build_event(Arc::new(TargetConfiguredEvent::new(
                     configured_target_info(&e.target),
-                    configuration.map(configuration_event),
+                    configuration.map(|c| shared.configuration_event(c)),
                     configuration.map(|c| c.checksum().to_string()),
                 )));
             return;
@@ -356,16 +391,72 @@ impl EventBus for BepSubscriber {
             // Java: com/google/devtools/build/lib/analysis/BuildView.java:350 BuildView.update
             shared
                 .streamer
-                .build_event(configuration_event(&e.configuration));
+                .build_event(shared.configuration_event(&e.configuration));
             return;
         }
         if let Some(e) = downcast_event::<PatternExpandingError>(&event) {
+            // TargetPatternPhaseFunction.getTargetsToBuild: each pattern that failed to parse or
+            // expand is added to failedPatterns where its PatternExpandingError.failed is posted.
+            // Java: com/google/devtools/build/lib/skyframe/TargetPatternPhaseFunction.java:303 TargetPatternPhaseFunction.getTargetsToBuild
+            if !e.is_skipped() {
+                shared
+                    .failed_target_patterns
+                    .lock()
+                    .extend(e.get_pattern().iter().cloned());
+            }
             shared
                 .streamer
                 .build_event(Arc::new(PatternExpandingErrorEvent::new(
                     e.get_pattern().to_vec(),
                     e.get_message().to_string(),
                     e.is_skipped(),
+                )));
+            return;
+        }
+        if let Some(e) = downcast_event::<AnalysisRootCauseEvent>(&event) {
+            // Java: com/google/devtools/build/lib/analysis/AnalysisRootCauseEvent.java:60 AnalysisRootCauseEvent.withConfigurationValue
+            // PORT: the posted event carries the configuration's checksum. Its configuration
+            // event is the one this command made for that checksum; a configuration the BEP has
+            // not seen is treated as Java's unavailable configuration (no configuration event),
+            // which is what Java does for the keys whose value is never computed
+            // (ConfiguredTargetFunction) and differs for a computed configuration not yet in the
+            // stream (review response 2026-11-25).
+            let event = match &e.configuration_checksum {
+                None => AnalysisRootCauseBuildEvent::with_configuration_value(
+                    None,
+                    None,
+                    e.label.clone(),
+                    e.error_message.clone(),
+                ),
+                Some(checksum) => {
+                    let configuration = shared.configuration_events.lock().get(checksum).cloned();
+                    match configuration {
+                        Some(configuration) => {
+                            AnalysisRootCauseBuildEvent::with_configuration_value(
+                                Some(checksum),
+                                Some(configuration),
+                                e.label.clone(),
+                                e.error_message.clone(),
+                            )
+                        }
+                        None => AnalysisRootCauseBuildEvent::with_unavailable_configuration(
+                            build_event_id_util::configuration_id_message(checksum),
+                            e.label.clone(),
+                            e.error_message.clone(),
+                        ),
+                    }
+                }
+            };
+            shared.streamer.build_event(Arc::new(event));
+            return;
+        }
+        if let Some(e) = downcast_event::<RepositoryFailedEvent>(&event) {
+            // Java: com/google/devtools/build/lib/bazel/repository/RepositoryFetchFunction.java:542 RepositoryFetchFunction.fetchRepository
+            shared
+                .streamer
+                .build_event(Arc::new(RepositoryFailedBuildEvent::new(
+                    e.get_repo().get_name().to_string(),
+                    e.get_message().to_string(),
                 )));
             return;
         }
@@ -385,7 +476,7 @@ impl EventBus for BepSubscriber {
                     e.get_aspect_class_name().to_string(),
                     e.get_aspect_description().to_string(),
                     configuration.map(|c| c.checksum().to_string()),
-                    configuration.map(|c| configuration_event(c)),
+                    configuration.map(|c| shared.configuration_event(c)),
                 )));
             return;
         }
@@ -616,6 +707,15 @@ impl TargetSummarySink for StreamerSink {
 }
 
 impl Shared {
+    /// `configuration.toBuildEvent()`, remembered by checksum.
+    fn configuration_event(&self, configuration: &BuildConfigurationValue) -> Arc<dyn BuildEvent> {
+        let event = configuration_event(configuration);
+        self.configuration_events
+            .lock()
+            .insert(configuration.checksum().to_string(), event.clone());
+        event
+    }
+
     /// `TopLevelTargetPendingExecutionEvent.configuredTarget()` as the publisher sees it: the
     /// configured top-level target with this (dependency) label.
     fn summary_target(&self, label: &Label) -> TargetSummaryTarget {
@@ -792,30 +892,23 @@ fn timestamp_proto(time: std::time::SystemTime) -> blaze_protos::google::protobu
     blaze_protos::google::protobuf::Timestamp { seconds, nanos }
 }
 
-/// What the UI reads to draw its progress bar after the build completed.
-struct UiFacts {
-    /// `UiOptions.showProgress`.
-    show_progress: bool,
-    /// `UiEventHandler.quiet` (`--quiet`).
-    quiet: bool,
-    /// `UiOptions.useCursorControl()`.
-    cursor_control: bool,
-    /// `UiOptions.showTimestamp`.
-    show_timestamp: bool,
-}
-
 /// The BEP of one `build` / `test` command.
 pub struct BepCommandSupport {
     shared: Arc<Shared>,
     event_bus: Arc<CommandEventBus>,
     reporter: Arc<Reporter>,
     exec_root: Path,
-    ui: UiFacts,
     /// `BuildTool.shouldStopOnFailure(request)` (`None` for a command without `ExecutionOptions`).
     stop_on_first_failure: Option<bool>,
     publish_package_metrics_in_bep: bool,
     /// The uploader factory map of the file transports with path conversion.
     uploader_factory_map: Arc<DeferredUploaderFactory>,
+    /// The UI's subscriber on the event bus: `reporter.post` of `AnnounceBuildEventTransportsEvent`
+    /// and `BuildEventTransportClosedEvent` reaches its `@Subscribe` methods.
+    ui_subscriber:
+        Mutex<Option<Arc<blaze_buildtool::runtime::ui_event_subscriber::UiEventSubscriber>>>,
+    /// `--experimental_ui_debug_all_events`.
+    ui_debug_all_events: bool,
     /// `getOutputListener()`: the command's stdout and stderr for the progress events.
     output_listener: OutErr,
     /// Whether `CommandPrecompleteEvent` was handled (see [`BepCommandSupport::command_precomplete`]).
@@ -829,6 +922,13 @@ pub struct BepCommandSupport {
     build_starting_posted: AtomicBool,
     /// `--aspects` is not empty (`TargetSummaryPublisher.buildStarting`).
     has_aspects: bool,
+    /// The build tool log files of the `CoverageReportCollector` that
+    /// `BazelCoverageReportModule`'s factory registered on the event bus (see
+    /// [`BepCommandSupport::register_coverage_report_collector`]).
+    coverage_report_log_files: Mutex<Vec<(&'static str, Path)>>,
+    /// The execution log `SpawnLogModule.buildComplete` publishes (see
+    /// [`BepCommandSupport::add_execution_log`]).
+    execution_log_file: Mutex<Option<(String, Path)>>,
 }
 
 /// `BazelBuildEventServiceModule.ALLOWED_COMMANDS`: the commands that stream build events.
@@ -1046,6 +1146,24 @@ fn build_tool_logs_event(collection: &tool_build_result::BuildToolLogCollection)
     )
 }
 
+/// `BuildEventServiceModule.createAbruptExitException`: the message is `message + " " +
+/// e.getMessage()`.
+// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:934 BuildEventServiceModule.createAbruptExitException
+fn create_abrupt_exit_exception(
+    exception_message: &str,
+    message: &str,
+    bes_code: failure_details::build_progress::Code,
+) -> AbruptExitException {
+    AbruptExitException::new(DetailedExitCode::of(FailureDetail {
+        message: format!("{message} {exception_message}"),
+        category: Some(failure_detail::Category::BuildProgress(
+            failure_details::BuildProgress {
+                code: bes_code as i32,
+            },
+        )),
+    }))
+}
+
 /// The `AbruptExitException` a transport's close future fails with
 /// (`createAbruptExitException(e, message, BuildProgress.Code)`).
 // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:533 BuildEventServiceModule.waitForBuildEventTransportsToClose
@@ -1103,10 +1221,7 @@ impl BepCommandSupport {
         // BuildEventOutputStreamFactoryImpl.create: DestinationRelativeTo.WORKSPACE_OR_HOME.
         // Java: com/google/devtools/build/lib/runtime/InstrumentationOutputFactory.java:164 InstrumentationOutputFactory.createInstrumentationOutput
         let workspace_or_home = match env.get_workspace() {
-            Some(workspace) => std::path::PathBuf::from(
-                blaze_util::string_encoding::internal_to_platform(workspace.get_path_string())
-                    .into_owned(),
-            ),
+            Some(workspace) => workspace.clone(),
             None => blaze_util::unported!(
                 "InstrumentationOutputFactory.createInstrumentationOutput (no workspace: home directory)"
             ),
@@ -1126,11 +1241,27 @@ impl BepCommandSupport {
             },
             uploader_factory,
         );
-        if let Some(error) = errors.first() {
-            // Java reports the IOException's message and exits the command through the module
-            // environment (BES_LOCAL_WRITE_ERROR).
-            blaze_util::unported!("BuildEventServiceModule.reportError", "{}", error);
+        // createBepTransports: each transport that cannot be opened is omitted and reported.
+        for error in errors {
+            // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:180 BuildEventServiceModule.reportError
+            // logger.atSevere().withCause(exception).log("%s", msg): logging is not ported.
+            // reportCommandLineError(commandLineReporter, exception)
+            // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:168 BuildEventServiceModule.reportCommandLineError
+            env.get_reporter()
+                .handle(&Event::error(error.exception.to_string()));
+            // moduleEnvironment.exit(createAbruptExitException(exception, msg, besCode))
+            env.exit(create_abrupt_exit_exception(
+                &error.exception.to_string(),
+                &error.message,
+                failure_details::build_progress::Code::BesLocalWriteError,
+            ));
         }
+        let ui_debug_all_events = ui_options.experimental_ui_debug_all_events;
+        // PORT: with no transports Java still posts AnnounceBuildEventTransportsEvent with the
+        // empty set ("so that interested parties always get this event"); its only effect on the
+        // UI is the --experimental_ui_debug_all_events line "Transports announced:", which is not
+        // written here (no BEP support exists for the command to replay it).
+        // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:407 BuildEventServiceModule.beforeCommand
         let streamer = streamer?;
 
         // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:417 BuildEventServiceModule.beforeCommand
@@ -1141,17 +1272,24 @@ impl BepCommandSupport {
         });
 
         // MetricsModule.beforeCommand: MetricsCollector.installInEnv(env, numAnalyses,
-        // numBuilds).
-        // PORT: the module's counters live as long as the server; Blaze runs one command per
-        // server process.
+        // numBuilds), with the module's counters (they live as long as the server).
+        // PORT: the collector is installed for the commands that stream build events; Java
+        // installs it for every command, so a command without a BEP transport also counts its
+        // analysis and build in the server's cumulative metrics, and here it does not.
+        // Java: com/google/devtools/build/lib/metrics/MetricsModule.java:78 MetricsModule.beforeCommand
         let clock: Arc<dyn Clock> = Arc::new(JavaClock);
         let metrics_options: Option<MetricsModuleOptions> = parsing_result.get_options();
+        let (num_analyses, num_builds) = crate::bazel_modules::MetricsModule::counters();
         let metrics = Arc::new(MetricsCollector::install_in_env(
             metrics_options.as_ref(),
             clock.clone(),
-            Arc::new(AtomicI32::new(0)),
-            Arc::new(AtomicI32::new(0)),
+            num_analyses,
+            num_builds,
         ));
+        // MetricsCollector.<init>: WorkerProcessMetricsCollector.instance().setClock(env.getClock()).
+        // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:133 MetricsCollector.<init>
+        blaze_exec::worker::worker_process_metrics::WorkerProcessMetricsCollector::instance()
+            .set_clock(clock.clone());
         let publish_package_metrics_in_bep = parsing_result
             .get_options::<PackageMetricsModuleOptions>()
             .is_some_and(|o| o.publish_package_metrics_in_bep);
@@ -1166,6 +1304,9 @@ impl BepCommandSupport {
             publish_all_actions: bes_stream_options.publish_all_actions,
             clock,
             build_info_posted: AtomicBool::new(false),
+            execution_timer: Mutex::new(None),
+            failed_target_patterns: Mutex::new(Vec::new()),
+            configuration_events: Mutex::new(std::collections::HashMap::new()),
         });
         // cmdEnv.getEventBus().register(streamer) (and the MetricsCollector's registration).
         env.get_event_bus().register(Arc::new(BepSubscriber {
@@ -1188,22 +1329,11 @@ impl BepCommandSupport {
         let test_keep_going = options
             .get_options::<ExecutionOptions>()
             .map(|o| o.test_keep_going);
-        let quiet = env
-            .get_runtime()
-            .get_startup_options_provider()
-            .get_options::<BlazeServerStartupOptions>()
-            .is_some_and(|o| o.quiet);
         let support = Arc::new(BepCommandSupport {
             shared,
             event_bus: env.get_event_bus().clone(),
             reporter: env.get_reporter().clone(),
             exec_root: env.get_exec_root(),
-            ui: UiFacts {
-                show_progress: ui_options.show_progress,
-                quiet,
-                cursor_control: ui_options.use_cursor_control(),
-                show_timestamp: ui_options.show_timestamp,
-            },
             // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1127 BuildTool.shouldStopOnFailure
             stop_on_first_failure: test_keep_going
                 .map(|test_keep_going| !(keep_going && test_keep_going)),
@@ -1230,11 +1360,48 @@ impl BepCommandSupport {
                 targets: Vec::new(),
             }),
             build_starting_posted: AtomicBool::new(false),
+            coverage_report_log_files: Mutex::new(Vec::new()),
+            execution_log_file: Mutex::new(None),
             has_aspects: options
                 .get_options::<BuildRequestOptions>()
                 .is_some_and(|o| !o.aspects.is_empty()),
+            ui_subscriber: Mutex::new(None),
+            ui_debug_all_events,
         });
+        // reporter.post(new AnnounceBuildEventTransportsEvent(bepTransports)) is posted at the
+        // end of beforeCommand; it reaches the UI when the dispatcher replays the events stored
+        // during the modules' beforeCommand: see `post_before_command_events`.
         Some(support)
+    }
+
+    /// The streamer's transports as the UI tells them apart (`BuildEventTransport` identity and
+    /// `name()`), in the streamer's order.
+    fn transport_ids(&self) -> Vec<TransportId> {
+        self.shared
+            .streamer
+            .streamer()
+            .get_transports()
+            .iter()
+            .map(|transport| TransportId {
+                id: Arc::as_ptr(transport) as *const () as usize as u64,
+                name: transport.name(),
+            })
+            .collect()
+    }
+
+    /// The `AnnounceBuildEventTransportsEvent` as the build's own state tracker receives it.
+    ///
+    /// PORT: a build replaces the UI's state tracker after the modules' `beforeCommand`
+    /// (`crate::commands::build`: the `SkymeldUiStateTracker` is chosen once the build knows
+    /// whether analysis and execution are merged; Java creates the right tracker before
+    /// `beforeCommand`). The replacement has not seen the announcement, so it is told again when
+    /// the build starts, without the handler's debug line, which Java writes once.
+    fn reannounce_transports_to_build_tracker(&self) {
+        if let Some(subscriber) = &*self.ui_subscriber.lock() {
+            subscriber
+                .get_state_tracker()
+                .build_event_transports_announced(&self.transport_ids());
+        }
     }
 
     /// `BuildEventServiceModule.getOutputListener()`: the dispatcher tees the command's output
@@ -1306,6 +1473,20 @@ impl BepCommandSupport {
     /// `CommandEnvironment.beforeCommand`: the build metadata and the parsed options.
     // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:919 CommandEnvironment.beforeCommand
     pub(crate) fn post_before_command_events(&self, env: &CommandEnvironment) {
+        // BlazeCommandDispatcher.execExclusively: the events stored while the modules ran
+        // beforeCommand (storedEventHandler) are replayed once the UI's handler exists, just
+        // before CommandEnvironment.beforeCommand. The BES module's
+        // AnnounceBuildEventTransportsEvent is one of them: its @Subscribe in the UI is
+        // UiEventHandler.buildEventTransportsAnnounced.
+        // PORT: the dispatcher does not replay posts; the announcement is delivered here, the
+        // first point after the replay where the UI's subscriber is known.
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:581 BlazeCommandDispatcher.execExclusively
+        // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:442 BuildEventServiceModule.beforeCommand
+        if let Some(subscriber) = env.get_ui_event_subscriber() {
+            *self.ui_subscriber.lock() = Some(subscriber.clone());
+            subscriber
+                .build_event_transports_announced(&self.transport_ids(), self.ui_debug_all_events);
+        }
         let common_options: CommonCommandOptions = env
             .get_options()
             .get_options()
@@ -1400,6 +1581,7 @@ impl BepCommandSupport {
         host: String,
     ) {
         self.build_starting_posted.store(true, Ordering::SeqCst);
+        self.reannounce_transports_to_build_tracker();
         // Java: com/google/devtools/build/lib/runtime/TargetSummaryPublisher.java:80 TargetSummaryPublisher.buildStarting
         if let Some(publisher) = &self.shared.target_summary_publisher {
             publisher.build_starting(
@@ -1436,10 +1618,9 @@ impl BepCommandSupport {
         skyframe_executor: &SkyframeExecutor,
         loading_result: &TargetPatternPhaseValue,
     ) {
-        if loading_result.has_error() {
-            // The failed patterns (keep-going pattern errors) are not part of the value.
-            blaze_util::unported!("TargetParsingCompleteEvent.failedTargetPatterns");
-        }
+        // ImmutableList.copyOf(failedPatterns): the value does not keep them; they are the
+        // patterns of the PatternExpandingError.failed events posted while it was computed.
+        let failed_target_patterns = self.shared.failed_target_patterns.lock().clone();
         let target_of = |label: &Label| -> Target {
             let pkg = skyframe_executor
                 .get_existing_package(label.get_package_identifier())
@@ -1487,7 +1668,7 @@ impl BepCommandSupport {
             Vec::new(),
             request.targets.clone(),
             expanded_targets,
-            Vec::new(),
+            failed_target_patterns,
             Vec::new(),
             test_suite_expansions,
         )));
@@ -1545,7 +1726,9 @@ impl BepCommandSupport {
             if post_events {
                 self.post(Arc::new(TargetConfiguredEvent::new(
                     configured_target_info(target),
-                    configuration.as_deref().map(configuration_event),
+                    configuration
+                        .as_deref()
+                        .map(|c| self.shared.configuration_event(c)),
                     checksum,
                 )));
             }
@@ -1565,7 +1748,9 @@ impl BepCommandSupport {
                 (view.get_label(), view.get_configuration_checksum()),
                 CompletedTargetFacts {
                     original_label,
-                    configuration_event: configuration.as_deref().map(configuration_event),
+                    configuration_event: configuration
+                        .as_deref()
+                        .map(|c| self.shared.configuration_event(c)),
                     configuration: configuration.clone(),
                     // Java: the event's ConfiguredTargetAndData holds the target of
                     // `configuredTarget.getLabel()`: for an alias, the actual target.
@@ -1639,6 +1824,22 @@ impl BepCommandSupport {
         }
     }
 
+    /// `SpawnLogModule.buildComplete`: `event.getResult().getBuildToolLogCollection()
+    /// .addLocalFile(EXEC_LOG_FILENAME, outputPath)`, added by [`BepCommandSupport::build_complete`]
+    /// after the entries of `BuildSummaryStatsModule` and before those of the
+    /// `CoverageReportCollector` (the order of the oracle's `buildToolLogs`).
+    // Java: com/google/devtools/build/lib/bazel/SpawnLogModule.java:218 SpawnLogModule.buildComplete
+    pub fn add_execution_log(&self, name: String, path: Path) {
+        *self.execution_log_file.lock() = Some((name, path));
+    }
+
+    /// `eventBus.register(new CoverageReportCollector(wrapper))`: the build tool log files the
+    /// collector adds when the build completes.
+    // Java: com/google/devtools/build/lib/bazel/coverage/BazelCoverageReportModule.java:113 BazelCoverageReportModule.getCoverageReportFactory
+    pub fn register_coverage_report_collector(&self, files: Vec<(&'static str, Path)>) {
+        self.coverage_report_log_files.lock().extend(files);
+    }
+
     /// `BuildTool.stopRequest` from the BEP's side: the `BuildCompleteEvent` reaches
     /// `BuildSummaryStatsModule` (which adds its tool log values to the result), the UI (which
     /// draws its progress bar while the BEP transports are still open) and the streamer; then
@@ -1652,6 +1853,11 @@ impl BepCommandSupport {
         detailed_exit_code: &blaze_util::DetailedExitCode,
         collector: &ExecutionEventCollector,
     ) {
+        // ExecutionTool.unconditionalExecutionPhaseFinalizations, as the MetricsCollector receives
+        // it (posted whenever the build's ExecutionTool exists, before stopRequest).
+        if collector.executor_initialized() {
+            self.unconditional_execution_phase_finalizations();
+        }
         // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:154 BuildSummaryStatsModule.buildComplete
         let elapsed_seconds = build_result.get_elapsed_seconds();
         build_result
@@ -1675,10 +1881,21 @@ impl BepCommandSupport {
         build_result
             .get_build_tool_log_collection()
             .add_direct_value("process stats", spawn_summary_string.as_bytes());
-
-        // UiEventHandler.buildComplete: the progress bar stays while there are activities (the
-        // open BEP transports).
-        self.write_build_complete_progress_bar(build_result.get_success());
+        // SpawnLogModule.buildComplete.
+        // Java: com/google/devtools/build/lib/bazel/SpawnLogModule.java:218 SpawnLogModule.buildComplete
+        if let Some((name, path)) = self.execution_log_file.lock().take() {
+            build_result
+                .get_build_tool_log_collection()
+                .add_local_file(&name, path);
+        }
+        // CoverageReportCollector.buildComplete (registered on the event bus during the build,
+        // after the modules).
+        // Java: com/google/devtools/build/lib/bazel/coverage/BazelCoverageReportModule.java:144 CoverageReportCollector.buildComplete
+        for (name, path) in self.coverage_report_log_files.lock().iter() {
+            build_result
+                .get_build_tool_log_collection()
+                .add_local_file(name, path.clone());
+        }
 
         self.post(Arc::new(blaze_bep::bep_module::BuildEventPost(Arc::new(
             build_complete_event(
@@ -1744,61 +1961,28 @@ impl BepCommandSupport {
         ))));
     }
 
-    /// `UiEventHandler.buildComplete` → `refresh()` → `addProgressBar()` with
-    /// `SkymeldUiStateTracker.writeProgressBar` in the `BUILD_COMPLETED` state: while the BEP
-    /// transports announced by `AnnounceBuildEventTransportsEvent` are open
-    /// (`UiStateTracker.hasActivities()`), the build-complete progress bar (`INFO: ` or
-    /// `FAILED: ` and the empty additional message) is written to the terminal.
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:715 UiEventHandler.buildComplete
-    // Java: com/google/devtools/build/lib/runtime/UiEventHandler.java:1139 UiEventHandler.addProgressBar
-    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:72 SkymeldUiStateTracker.writeProgressBar
-    fn write_build_complete_progress_bar(&self, ok: bool) {
-        if !self.ui.show_progress || self.ui.quiet {
-            return;
+    /// `ExecutionTool.unconditionalExecutionPhaseFinalizations` from the `MetricsCollector`'s
+    /// side: the `ExecutionFinishedEvent` (`onExecutionComplete`, the artifact metrics) and, when
+    /// some execution activity started the timer, the `ExecutionPhaseCompleteEvent`
+    /// (`handleExecutionPhaseComplete`).
+    ///
+    /// PORT: called from `build_complete` (right after the point Java posts the events: the
+    /// ExecutionTool's finalizations precede `BuildTool.stopRequest`, and nothing between them
+    /// reads the metrics). The `ExecutionFinishedEvent`'s artifact counts
+    /// (`SkyframeExecutor.createExecutionFinishedEvent`: the `FilesMetricConsumer`s fed by
+    /// `ArtifactFunction`, `SkyframeActionExecutor.addOutputToMetrics` and `CompletionFunction`)
+    /// are not ported in `blaze_sky_exec`, so `onExecutionComplete` is not called and
+    /// `artifactMetrics` stays empty (review response 2026-11-25, S1-1).
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:592 ExecutionTool.unconditionalExecutionPhaseFinalizations
+    fn unconditional_execution_phase_finalizations(&self) {
+        // env.getEventBus().post(skyframeExecutor.createExecutionFinishedEvent()): see above.
+        if let Some(start) = self.shared.execution_timer.lock().take() {
+            // new ExecutionPhaseCompleteEvent(executionTimer.stop().elapsed().toMillis())
+            // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:233 MetricsCollector.handleExecutionPhaseComplete
+            self.shared
+                .metrics
+                .handle_execution_phase_complete(start.elapsed().as_millis() as i64);
         }
-        if self.ui.cursor_control {
-            blaze_util::unported!(
-                "UiEventHandler.addProgressBar (cursor control: LineWrappingAnsiTerminalWriter, the full progress bar)"
-            );
-        }
-        // PORT: the UI's terminal is the command's stderr; the reporter's stderr reaches it (and
-        // its --color=no stripping) as STDERR events.
-        let terminal =
-            blaze_events::AnsiTerminal::new(self.reporter.get_out_err().get_error_stream().clone());
-        // PORT: write errors are logged and ignored in Java ("IO Error writing to output
-        // stream"); logging is not ported.
-        let _ = self.write_build_complete_progress(&terminal, ok);
-    }
-
-    /// `addProgressBar`'s writes: the timestamp, `writeBaseProgress(ok ? "INFO" : "FAILED",
-    /// additionalMessage)` and the newline.
-    // Java: com/google/devtools/build/lib/runtime/SkymeldUiStateTracker.java:123 SkymeldUiStateTracker.writeBaseProgress
-    fn write_build_complete_progress(
-        &self,
-        terminal: &blaze_events::AnsiTerminal,
-        ok: bool,
-    ) -> std::io::Result<()> {
-        if self.ui.show_timestamp {
-            terminal.write_string(&blaze_events::ui::format_timestamp(
-                self.shared.clock.current_time_millis(),
-            ))?;
-        }
-        if ok {
-            // LineCountingAnsiTerminalWriter.okStatus
-            terminal.text_green()?;
-        } else {
-            // LineCountingAnsiTerminalWriter.failStatus
-            terminal.text_red()?;
-            terminal.text_bold()?;
-        }
-        terminal.write_string(if ok { "INFO" } else { "FAILED" })?;
-        terminal.write_string(":")?;
-        // normal(); UiStateTracker.buildComplete reset the additional message to "".
-        terminal.reset_terminal()?;
-        terminal.write_string(" ")?;
-        // terminalWriter.newline(): System.lineSeparator().
-        terminal.write_string("\n")?;
-        terminal.flush()
     }
 
     /// `env.precompleteCommand`: `MetricsCollector.onCommandPrecompleteEvent` posts the
@@ -1811,28 +1995,120 @@ impl BepCommandSupport {
         if self.precompleted.swap(true, Ordering::SeqCst) {
             return;
         }
+        // createBuildMetrics: WorkerProcessMetricsCollector.instance().collectMetrics().
+        let worker_process_metrics =
+            blaze_exec::worker::worker_process_metrics::WorkerProcessMetricsCollector::instance()
+                .collect_metrics();
+        // Java: com/google/devtools/build/lib/profiler/Profiler.java:420 Profiler.getProfileElapsedTime
+        // Duration.toMillis() of a non-negative duration truncates.
+        let profile_elapsed_time_ms =
+            blaze_util::profiler::Profiler::get_profile_elapsed_time_nanos() / 1_000_000;
+        // Java: com/google/devtools/build/lib/profiler/Profiler.java:433 Profiler.getServerProcessCpuTime
+        let server_process_cpu_time_ms =
+            blaze_util::profiler::Profiler::get_server_process_cpu_time_nanos() / 1_000_000;
         let event = self
             .shared
             .metrics
             .on_command_precomplete_event(BuildMetricsFinishInputs {
-                // PORT: Blaze has no persistent workers.
-                worker_process_metrics: Vec::new(),
-                has_pending_exception: false,
-                // PORT: getSkyframeStats is not ported; it is only asked for with
-                // --experimental_record_skyframe_metrics.
-                skyframe_stats: &|| -> Option<SkyframeStats> {
-                    blaze_util::unported!("SkyframeExecutor.getSkyframeStats")
-                },
-                // PORT: remote analysis caching is not ported.
-                remote_analysis_caching: RemoteAnalysisCachingFacts::default(),
-                // PORT: Blaze is not a JVM (no heap or GC measurements).
-                memory: JvmMemoryFacts::default(),
-                // PORT: the profiler and the network metrics collector are not ported.
-                profile_elapsed_time_ms: None,
-                server_process_cpu_time_ms: None,
-                network_metrics: None,
-            });
+            worker_process_metrics: worker_process_metrics
+                .iter()
+                .map(|wpm| WorkerProcessMetricsInfo::of(wpm))
+                .collect(),
+            worker_metrics: worker_process_metrics
+                .iter()
+                .map(|wpm| wpm.to_proto())
+                .collect(),
+            // PORT: env.getPendingException() is always null when a command precompletes in
+            // Blaze: the pending exception is thrown before the command returns.
+            has_pending_exception: false,
+            // getSkyframeStats is asked for only with --experimental_record_skyframe_metrics.
+            skyframe_stats: &|| -> Option<SkyframeStats> {
+                blaze_util::unported!("SkyframeExecutor.getSkyframeStats")
+            },
+            // PORT: remote analysis caching is not ported (no cache hits, misses or stores).
+            remote_analysis_caching: RemoteAnalysisCachingFacts::default(),
+            // PORT: Blaze is not a JVM: there is no heap, no garbage collector and no
+            // MemoryProfiler heap reading (docs/decisions.md, review response 2026-11-25).
+            memory: JvmMemoryFacts::default(),
+            // Profiler.getProfileElapsedTime() and getServerProcessCpuTime() never return
+            // null.
+            profile_elapsed_time_ms: Some(profile_elapsed_time_ms),
+            server_process_cpu_time_ms: Some(server_process_cpu_time_ms),
+            network_metrics:
+                blaze_util::profiler::network_metrics_collector::NetworkMetricsCollector::instance()
+                    .collect_metrics(),
+        });
         self.post(Arc::new(event));
+    }
+
+    /// `BuildEventServiceModule.closeBepTransports`: every file transport blocks
+    /// (`!mayBeSlow()`), so all are waited for (`waitForBuildEventTransportsToClose`), and the
+    /// UI is told of each transport that finished closing (`BuildEventTransportClosedEvent`).
+    ///
+    /// PORT: the file transports close synchronously in Blaze, so each close future is complete
+    /// when it is read; the UI is notified in the transports' order (Java notifies from the
+    /// `bes-notify-ui` thread as each future completes). A failed close is the module's
+    /// `AbruptExitException` (Java: `Throwables.throwIfInstanceOf(e.getCause(),
+    /// AbruptExitException.class)` of the transport's close failure).
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:628 BuildEventServiceModule.closeBepTransports
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:533 BuildEventServiceModule.waitForBuildEventTransportsToClose
+    fn close_bep_transports(&self) -> Result<(), AbruptExitException> {
+        let ids = self.transport_ids();
+        let results = self.shared.streamer.streamer().get_close_futures_map();
+        let mut failure = None;
+        for (index, (_name, result)) in results.into_iter().enumerate() {
+            // closeFuture.addListener(() -> reporter.post(new BuildEventTransportClosedEvent(
+            // bepTransport)), executor): the listener runs whether the close failed or not.
+            if let (Some(subscriber), Some(id)) = (&*self.ui_subscriber.lock(), ids.get(index)) {
+                subscriber.build_event_transport_closed(id, self.ui_debug_all_events);
+            }
+            if let Err(e) = result
+                && failure.is_none()
+            {
+                failure = Some(transport_close_exception(&e));
+            }
+        }
+        match failure {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// `BuildEventServiceModule.forceShutdownBuildEventStreamer`: closes the streamer with the
+    /// abort reason (each announced event not yet posted gets an `Aborted` event, then the last
+    /// message) and waits for the transports to close.
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:476 BuildEventServiceModule.forceShutdownBuildEventStreamer
+    pub(crate) fn force_shutdown_build_event_streamer(&self, reason: AbortReason) {
+        let streamer = &self.shared.streamer;
+        streamer.close_on_abort(reason);
+        // closeFuturesWithTimeoutsMap = constructCloseFuturesMapWithTimeouts(...), then
+        // Uninterruptibles.getUninterruptibly(besClosedFuture).
+        // PORT: the file transports close synchronously (see `after_command`); the close results
+        // are the futures' outcomes. For OUT_OF_MEMORY Java waits at most
+        // --bes_oom_finish_upload_timeout, which only matters for a Build Event Service upload.
+        for (_name, result) in streamer.streamer().get_close_futures_map() {
+            if result.is_err() {
+                // logger.atSevere().withCause(e).log("Failed to close a build event transport")
+                // PORT: logging is not ported.
+            }
+        }
+        // finally: cancelAndResetPendingUploads() (nothing pending: the closes are synchronous).
+    }
+
+    /// `BuildEventServiceModule.blazeShutdownOnCrash`: the module's streamer is closed with
+    /// `INTERNAL` (`OUT_OF_MEMORY` for an OOM crash), then the uploader factory is shut down.
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:500 BuildEventServiceModule.blazeShutdownOnCrash
+    pub(crate) fn blaze_shutdown_on_crash(&self, exit_code: &DetailedExitCode) {
+        // logger.atWarning().log("Attempting to close BES streamer on crash")
+        self.force_shutdown_build_event_streamer(
+            if exit_code.get_exit_code() == blaze_util::ExitCode::OOM_ERROR {
+                AbortReason::OutOfMemory
+            } else {
+                AbortReason::Internal
+            },
+        );
+        // uploaderFactoryToCleanup.shutdown()
+        self.uploader_factory_map.shutdown();
     }
 
     /// `BuildEventServiceModule.afterCommand`: closes the streamer if it did not close itself,
@@ -1852,15 +2128,10 @@ impl BepCommandSupport {
             // BuildEventStreamer} bug manifests as an unclosed streamer.
             self.reporter
                 .handle(&Event::warn("BES was not properly closed"));
-            // forceShutdownBuildEventStreamer(AbortReason.INTERNAL)
-            streamer.close_on_abort(AbortReason::Internal);
+            self.force_shutdown_build_event_streamer(AbortReason::Internal);
         }
 
-        // closeBepTransports(): the file transports close synchronously (PORT: the close is
-        // blocking in Blaze, so the futures are the close results).
-        for (_name, result) in streamer.streamer().get_close_futures_map() {
-            result.map_err(|e| transport_close_exception(&e))?;
-        }
+        self.close_bep_transports()?;
 
         // PORT: the Build Event Service upload is not ported (--bes_backend fails loudly before
         // the command runs, crate::unported_options); only the local files are produced.
@@ -1868,26 +2139,6 @@ impl BepCommandSupport {
             "Build Event Protocol files produced successfully.",
         ));
         Ok(())
-    }
-}
-
-/// `BuildEventServiceModule.blazeShutdownOnCrash` (`forceShutdownBuildEventStreamer`): a crash
-/// that unwinds out of the command closes the streamer with `AbortReason.INTERNAL`.
-///
-/// PORT: Java closes the streamer from `BugReport.handleCrash` (via
-/// `BlazeRuntime.cleanUpForCrash`) after printing the crash; Blaze's streamer belongs to the
-/// command, so it is closed while the panic unwinds out of the command, before the dispatcher
-/// prints the crash. The transports close synchronously (see `after_command`).
-// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:500 BuildEventServiceModule.blazeShutdownOnCrash
-impl Drop for BepCommandSupport {
-    fn drop(&mut self) {
-        if std::thread::panicking() && !self.shared.streamer.is_closed() {
-            // Nothing may panic here (a panic while unwinding aborts the process).
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                // forceShutdownBuildEventStreamer(AbortReason.INTERNAL)
-                self.shared.streamer.close_on_abort(AbortReason::Internal);
-            }));
-        }
     }
 }
 
@@ -1902,6 +2153,7 @@ impl BuildEventHooks for BepCommandSupport {
         if self.build_starting_posted.swap(true, Ordering::SeqCst) {
             return;
         }
+        self.reannounce_transports_to_build_tracker();
         // Java: com/google/devtools/build/lib/runtime/TargetSummaryPublisher.java:80 TargetSummaryPublisher.buildStarting
         if let Some(publisher) = &self.shared.target_summary_publisher {
             publisher.build_starting(self.has_aspects);
@@ -2099,6 +2351,12 @@ impl BuildEventArtifactUploaderFactory for DeferredUploaderFactory {
             delegate: Mutex::new(None),
             pending_retains: Mutex::new(0),
         })
+    }
+
+    /// `uploaderFactoryToCleanup.shutdown()`: the selected factory's.
+    // Java: com/google/devtools/build/lib/runtime/BuildEventArtifactUploaderFactory.java:37 BuildEventArtifactUploaderFactory.shutdown
+    fn shutdown(&self) {
+        self.state.select().shutdown();
     }
 }
 

@@ -17,12 +17,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 CACHE = os.path.expanduser("~/.cache/blaze")
 ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
-WORK = os.path.join(CACHE, "work", "remote")
-OUT_ROOT = os.path.join(CACHE, "oracle-out", "ur-remote")
+WORK = os.environ.get("BLAZE_REMOTE_WORK") or os.path.join(CACHE, "work", "remote")
+OUT_ROOT = os.environ.get("BLAZE_REMOTE_UR") or os.path.join(CACHE, "oracle-out", "ur-remote")
 REPO_CACHE = os.path.join(CACHE, "repo-cache")
 
 USAGE = """\
-usage: scripts/remote/oracle-run <run-name> <project> [--fresh] [--binary PATH] [--clean]
+usage: scripts/remote/oracle-run <run-name> <project> [--fresh] [--binary PATH] [--clean|--expunge]
                                  [--command "build //..."] [-- <extra command options>]
        scripts/remote/oracle-run help
 
@@ -32,6 +32,8 @@ Runs the project's command (corpus/projects.json; brotli: `build //...`, re2:
   workspace          ~/.cache/blaze/work/remote/<run-name>/ws   (rsync of the read-only checkout,
                      restored to git HEAD, as scripts/oracle/record does)
   output user root   ~/.cache/blaze/oracle-out/ur-remote/<run-name>
+  ($BLAZE_REMOTE_WORK and $BLAZE_REMOTE_UR, when set, replace ~/.cache/blaze/work/remote and
+  ~/.cache/blaze/oracle-out/ur-remote)
   results            ~/.cache/blaze/work/remote/<run-name>/<step>/{stdout,stderr,execlog.json,
                      command.json}; <step> is `run1`, `run2`, ... (one per call)
 
@@ -49,6 +51,9 @@ SIGPIPE, SIGHUP, SIGINT or SIGTERM).
   --fresh     delete the workspace copy and the output user root first (cold output base)
   --clean     run `bazel clean` (same startup options) before the command: same output base and
               install base, no local action cache or outputs
+  --expunge   run `bazel clean --expunge` (same startup options) before the command: the output
+              user root and its install base are reused, the output base is emptied (cold, as
+              --fresh, without a second output user root)
   --binary    another Bazel-compatible binary (default: the oracle)
   --command   override the project's command (one string, split on spaces)
 
@@ -85,7 +90,7 @@ def main():
         print(USAGE, end="", file=sys.stderr)
         return 2
     name, project = args[0], args[1]
-    fresh = clean = False
+    fresh = clean = expunge = False
     binary = ORACLE
     command = None
     rest = args[2:]
@@ -95,6 +100,8 @@ def main():
             fresh = True
         elif a == "--clean":
             clean = True
+        elif a == "--expunge":
+            expunge = True
         elif a == "--binary":
             binary = os.path.abspath(os.path.expanduser(rest.pop(0)))
         elif a == "--command":
@@ -131,8 +138,8 @@ def main():
     os.makedirs(step)
 
     startup = [binary, "--output_user_root=" + our, "--nohome_rc", "--nosystem_rc"]
-    if clean:
-        systemd(startup + ["clean", "--color=no", "--curses=no"], ws,
+    if clean or expunge:
+        systemd(startup + ["clean", "--color=no", "--curses=no"] + (["--expunge"] if expunge else []), ws,
                 os.path.join(step, "clean.stdout"), os.path.join(step, "clean.stderr"),
                 os.path.join(step, ".unit-status.clean"))
     cmd = startup + [command[0],

@@ -21,7 +21,8 @@ use blaze_cmdline::{
 use blaze_sky_loading::repos::RepositoryMappingKey;
 use blaze_sky_loading::target_pattern_function::{FilterFn, FilteringPolicy};
 use blaze_skyframe::{
-    ComputeError, Environment, Key, SkyFunctionException, SkyFunctionName, SkyKey, Transience,
+    ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionException, SkyFunctionName,
+    SkyKey, Transience,
 };
 use blaze_vfs::PathFragment;
 use indexmap::{IndexMap, IndexSet};
@@ -95,6 +96,16 @@ impl fmt::Debug for RegisteredExecutionPlatformsKey {
 impl Key for RegisteredExecutionPlatformsKey {
     type Value = RegisteredExecutionPlatformsValue;
     const FUNCTION: SkyFunctionName = REGISTERED_EXECUTION_PLATFORMS;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:140 SkyFunctions.REGISTERED_EXECUTION_PLATFORMS (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: a record of the platform keys (a list) and the nullable rejection reasons (a map).
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredExecutionPlatformsValue.java:42 RegisteredExecutionPlatformsValue
+    fn values_equal(
+        old: &RegisteredExecutionPlatformsValue,
+        new: &RegisteredExecutionPlatformsValue,
+    ) -> bool {
+        old == new
+    }
 }
 
 fn persistent(e: ToolchainException) -> ComputeError {

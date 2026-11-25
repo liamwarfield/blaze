@@ -465,7 +465,7 @@ impl SpawnExecutionContext for RecordingSpawnExecutionContext {
         &self,
         _exit_code: i32,
         _error_message: &str,
-        _out_err: &FileOutErr,
+        _out_err: Option<&FileOutErr>,
     ) -> Result<(), ExecException> {
         Ok(())
     }

@@ -101,6 +101,8 @@ fn mod_exec_internal(
         .unwrap_or(blaze_sky_top::skyframe_executor::DEFAULT_THREAD_COUNT);
 
     // env.syncPackageLoading(options)
+    // Java: com/google/devtools/build/lib/bazel/commands/ModCommand.java:282 ModCommand.execInternal
+    crate::commands::query::prepare_package_loading();
     let skyframe_executor = match create_skyframe_executor(env, None) {
         Ok(e) => e,
         Err(result) => return result,
@@ -132,8 +134,25 @@ fn mod_exec_internal(
         Err(_) => return interrupted_result(env, "mod command interrupted: null"),
     };
     if evaluation_result.has_error() {
-        // PORT: the CyclesReporter (BzlmodRepoCycleReporter, BzlLoadCycleReporter) is not
-        // ported; cycles report the generic message.
+        // Java: com/google/devtools/build/lib/bazel/commands/ModCommand.java:295 ModCommand.execInternal
+        if let Some(error) = evaluation_result.get_first_error() {
+            let cycle_info = error.get_cycle_info();
+            if !cycle_info.is_empty() {
+                // We don't expect target-level cycles here, so restrict to the subset of
+                // reporters that are relevant for the (conceptual) loading phase.
+                let reporter_handler: Arc<dyn blaze_events::ExtendedEventHandler> =
+                    reporter.clone();
+                blaze_sky_top::cycles_reporter::CyclesReporter::new(vec![
+                    Box::new(crate::bzlmod_cycle_reporters::BzlmodRepoCycleReporter),
+                    Box::new(crate::bzlmod_cycle_reporters::BzlLoadCycleReporter),
+                ])
+                .report_cycles(
+                    cycle_info,
+                    cycle_info[0].get_top_key(),
+                    &reporter_handler,
+                );
+            }
+        }
         let message = evaluation_result
             .get_first_error()
             .and_then(|e| e.get_exception())

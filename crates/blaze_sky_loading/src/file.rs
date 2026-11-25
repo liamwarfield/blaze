@@ -10,7 +10,9 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 
-use blaze_skyframe::{ComputeError, Environment, Key, SkyFunctionException, SkyFunctionName};
+use blaze_skyframe::{
+    ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionException, SkyFunctionName,
+};
 use blaze_vfs::{Path, PathFragment, Root, RootedPath};
 use parking_lot::RwLock;
 
@@ -50,6 +52,13 @@ impl fmt::Debug for FileKey {
 impl Key for FileKey {
     type Value = FileValue;
     const FUNCTION: SkyFunctionName = sky_functions::FILE;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:53 SkyFunctions.FILE (createSemiHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::SemiHermetic;
+    /// Java: the `FileValue` subclasses' `equals` over the same fields. PORT: Java's `SymlinkFileValueWithStoredChain.equals` uses `instanceof`, so an old value of that class equals a new `SymlinkFileValueWithUnboundedAncestorExpansion` with the same fields; here variants never compare equal (less pruning, never wrong).
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:294 FileValue.DifferentRealPathFileValueWithUnboundedAncestorExpansion.equals
+    fn values_equal(old: &FileValue, new: &FileValue) -> bool {
+        old == new
+    }
 }
 
 /// Separates path and cycle from a combined list: elements before the first one matching

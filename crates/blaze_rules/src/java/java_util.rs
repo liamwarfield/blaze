@@ -7,7 +7,7 @@
 use blaze_vfs::PathFragment;
 
 /// Java source roots, used to relativize resource paths and infer main_class values.
-// Java: com/google/devtools/build/lib/rules/java/JavaUtil.java:56 JavaUtil.KNOWN_SOURCE_ROOTS
+// Java: com/google/devtools/build/lib/rules/java/JavaUtil.java:55 JavaUtil.KNOWN_SOURCE_ROOTS
 pub const KNOWN_SOURCE_ROOTS: &[&str] = &["java", "javatests", "src", "testsrc"];
 
 /// Finds the index of the segment in a Java path fragment that precedes the source root. Starts
@@ -19,7 +19,7 @@ pub const KNOWN_SOURCE_ROOTS: &[&str] = &["java", "javatests", "src", "testsrc"]
 /// positives.
 ///
 /// Returns the index of the java segment or -1 iff no java segment was found.
-// Java: com/google/devtools/build/lib/rules/java/JavaUtil.java:71 JavaUtil.javaSegmentIndex
+// Java: com/google/devtools/build/lib/rules/java/JavaUtil.java:70 JavaUtil.javaSegmentIndex
 fn java_segment_index(path: &PathFragment) -> i64 {
     if path.is_absolute() {
         panic!("IllegalArgumentException: path must not be absolute: '{path}'");

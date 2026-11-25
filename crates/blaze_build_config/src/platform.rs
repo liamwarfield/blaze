@@ -13,7 +13,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use blaze_cmdline::Label;
-use blaze_skyframe::{ComputeError, Environment, Key, SkyError, SkyFunctionName};
+use blaze_skyframe::{
+    ComputeError, Environment, FunctionHermeticity, Key, SkyError, SkyFunctionName,
+};
 
 /// `PlatformValue.key(platformLabel, flagAliasMappings)`.
 #[derive(Clone, PartialEq, Eq)]
@@ -48,6 +50,21 @@ impl fmt::Debug for PlatformValueKey {
 impl Key for PlatformValueKey {
     type Value = PlatformValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("PLATFORM");
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:129 SkyFunctions.PLATFORM (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: a record of the `PlatformInfo` (`PlatformInfo.equals`, by value) and the optional
+    /// `ParsedFlagsValue` (`ParsedFlagsValue.equals`). The other fields here are projections of
+    /// those two. A value recorded from the oracle has no `PlatformInfo` and is never equal (less
+    /// pruning than Java, never more).
+    // Java: com/google/devtools/build/lib/analysis/platform/PlatformValue.java:35 PlatformValue
+    fn values_equal(old: &PlatformValue, new: &PlatformValue) -> bool {
+        match (&old.platform_info, &new.platform_info) {
+            (Some(old_info), Some(new_info)) => {
+                old_info.java_equals(new_info) && old.parsed_flags == new.parsed_flags
+            }
+            _ => false,
+        }
+    }
 }
 
 /// The parts of `PlatformValue` (`platformInfo()`, `parsedFlags()`) configurations read.
@@ -69,9 +86,37 @@ pub struct PlatformValue {
 
 /// Java `PlatformValue.platformInfo()`: the `PlatformInfo`, which is defined downstream
 /// (`blaze_analysis::platform::PlatformInfo`) and therefore held here as `dyn Any`; the analysis
-/// crates downcast it. Two values are equal when they are the same object.
+/// crates downcast it. `==` is "the same object"; [`OpaquePlatformInfo::java_equals`] is Java's
+/// `PlatformInfo.equals`, captured when the value is made.
 #[derive(Clone)]
-pub struct OpaquePlatformInfo(pub std::sync::Arc<dyn std::any::Any + Send + Sync>);
+pub struct OpaquePlatformInfo(
+    pub std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    fn(&(dyn std::any::Any + Send + Sync), &(dyn std::any::Any + Send + Sync)) -> bool,
+);
+
+impl OpaquePlatformInfo {
+    /// Wraps `platform_info`, keeping its `PartialEq` (Java's `PlatformInfo.equals`).
+    pub fn new<T: PartialEq + Send + Sync + 'static>(
+        platform_info: std::sync::Arc<T>,
+    ) -> OpaquePlatformInfo {
+        fn equals<T: PartialEq + 'static>(
+            a: &(dyn std::any::Any + Send + Sync),
+            b: &(dyn std::any::Any + Send + Sync),
+        ) -> bool {
+            match (a.downcast_ref::<T>(), b.downcast_ref::<T>()) {
+                (Some(a), Some(b)) => a == b,
+                _ => false,
+            }
+        }
+        OpaquePlatformInfo(platform_info, equals::<T>)
+    }
+
+    /// Java `PlatformInfo.equals`.
+    // Java: com/google/devtools/build/lib/analysis/platform/PlatformInfo.java:182 PlatformInfo.equals
+    pub fn java_equals(&self, other: &OpaquePlatformInfo) -> bool {
+        (self.1)(&*self.0, &*other.0)
+    }
+}
 
 impl PartialEq for OpaquePlatformInfo {
     fn eq(&self, other: &Self) -> bool {

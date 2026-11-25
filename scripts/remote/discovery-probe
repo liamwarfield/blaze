@@ -24,7 +24,7 @@
 set -euo pipefail
 if [[ "${1:-help}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,24p' "$0"; exit 0; fi
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-W="$HOME/.cache/blaze/work/remote"
+W="${BLAZE_REMOTE_WORK:-$HOME/.cache/blaze/work/remote}"
 src="$W/r2-discovery/src"
 bin=$1; label=$2; shift 2
 if [[ ! -f $src/BUILD.bazel ]]; then

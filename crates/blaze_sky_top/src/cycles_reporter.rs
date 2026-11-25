@@ -552,6 +552,9 @@ mod tests {
     impl Key for TestKey {
         type Value = ();
         const FUNCTION: SkyFunctionName = SkyFunctionName("TEST_CYCLE_KEY");
+        // test key; hermetic like Java's SkyFunctionName.FOR_TESTING
+        const HERMETICITY: blaze_skyframe::FunctionHermeticity =
+            blaze_skyframe::FunctionHermeticity::Hermetic;
     }
 
     fn keys(names: &[&'static str]) -> Vec<SkyKey> {

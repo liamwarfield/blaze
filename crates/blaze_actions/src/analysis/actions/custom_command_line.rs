@@ -161,6 +161,11 @@ pub trait VectorArgElement: Clone + Eq + Hash + Send + Sync + fmt::Debug + 'stat
         None
     }
 
+    /// `object instanceof String`.
+    fn as_java_string(&self) -> Option<&str> {
+        None
+    }
+
     /// `actionKeyContext.addNestedSetToFingerprint(fingerprint, nestedSet)` (with
     /// `CommandLineItem.MapFn.DEFAULT`).
     fn add_nested_set_to_fingerprint(
@@ -200,6 +205,10 @@ impl<T: VectorArgElement> ExceptionlessMapFn<T> for ExpandItemMapFn<T> {}
 impl VectorArgElement for String {
     fn expand_item_to_command_line(&self) -> String {
         self.clone()
+    }
+
+    fn as_java_string(&self) -> Option<&str> {
+        Some(self)
     }
 
     fn add_nested_set_to_fingerprint(
@@ -243,16 +252,29 @@ impl VectorArgElement for Label {
 
 /// Java `pathMapper.getMapFn(previousFlag)` applied to an arbitrary value.
 ///
-/// PORT: the Rust `PathMapper::get_map_fn` is typed over artifacts. `MapFn.DEFAULT` (the only map
-/// fn of the ported path mappers) expands any value; a custom path mapper map fn applied to a
-/// non-artifact value needs `StrippingPathMapper`, which is not ported.
+/// PORT: the Rust `PathMapper::get_map_fn` is typed over artifacts. `MapFn.DEFAULT` expands any
+/// value. `StrippingPathMapper`'s `structuredArgStripper` strips a `String` with its
+/// `argStripper`, which is the mapper's `mapHeuristically`, and expands anything else with
+/// `CommandLineItem.expandToCommandLine`.
 fn apply_path_mapper_map_fn<T: VectorArgElement>(
     map_fn: &dyn ExceptionlessMapFn<Artifact>,
+    path_mapper: &dyn PathMapper,
     object: &T,
     out: &mut Vec<String>,
 ) {
     if map_fn.class_name() == std::any::type_name::<DefaultMapFn>() {
         out.push(object.expand_item_to_command_line());
+        return;
+    }
+    if map_fn.class_name()
+        == std::any::type_name::<super::stripping_path_mapper::StructuredArgStripper>()
+    {
+        // Java: object instanceof String str ? argStripper.strip(str)
+        //       : CommandLineItem.expandToCommandLine(object)
+        match object.as_java_string() {
+            Some(str) => out.push(path_mapper.map_heuristically(str)),
+            None => out.push(object.expand_item_to_command_line()),
+        }
         return;
     }
     match object.as_action_input() {
@@ -264,7 +286,10 @@ fn apply_path_mapper_map_fn<T: VectorArgElement>(
                 panic!("IllegalStateException: ExceptionlessMapFn threw: {e}");
             }
         }
-        None => unported!("StrippingPathMapper.getMapFn"),
+        None => unported!(
+            "PathMapper.getMapFn",
+            "a map fn of an unknown path mapper applied to a non-artifact value"
+        ),
     }
 }
 
@@ -360,7 +385,7 @@ impl<T: VectorArgElement> TypedVectorValues<T> {
             // (never a String), so the previous argument is always null.
             let map_fn = path_mapper.get_map_fn(None);
             for object in list {
-                apply_path_mapper_map_fn(map_fn, object, &mut mutated_values);
+                apply_path_mapper_map_fn(map_fn, path_mapper, object, &mut mutated_values);
             }
         } else {
             for object in list {
@@ -431,7 +456,7 @@ impl<T: VectorArgElement> ErasedVectorValues for TypedVectorValues<T> {
             Some(action_input) => {
                 builder.push(path_mapper.get_mapped_exec_path_string(action_input))
             }
-            None => apply_path_mapper_map_fn(map_fn, value, builder),
+            None => apply_path_mapper_map_fn(map_fn, path_mapper, value, builder),
         };
         match &self.values {
             VectorValues::NestedSet(values) => {

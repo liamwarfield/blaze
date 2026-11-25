@@ -19,7 +19,7 @@
 set -euo pipefail
 if [[ $# -lt 2 || $1 == help ]]; then sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi
 here=$(cd "$(dirname "$0")" && pwd)
-W=~/.cache/blaze/work/remote
+W="${BLAZE_REMOTE_WORK:-$HOME/.cache/blaze/work/remote}"
 src=$W/probe-trees/src
 bin=$1; label=$2; shift 2
 if [[ ! -d $W/pt-dc-seed ]]; then

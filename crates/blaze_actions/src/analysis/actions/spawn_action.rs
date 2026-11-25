@@ -271,19 +271,16 @@ impl SpawnAction {
         !matches!(self.class, SpawnActionClass::Spawn)
     }
 
-    /// The path mapper of `PathMappers.create(this, outputPathsMode, isStarlarkAction, null)`.
-    // Java: com/google/devtools/build/lib/analysis/actions/PathMappers.java PathMappers.create
-    fn path_mapper_for_arguments(&self) -> &'static dyn PathMapper {
-        let effective = path_mappers::get_effective_output_paths_mode(
+    /// The path mapper of `PathMappers.create(this, outputPathsMode, this instanceof
+    /// StarlarkAction, null)`.
+    // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:207 SpawnAction.getArguments
+    fn path_mapper_for_arguments(&self) -> std::sync::Arc<dyn PathMapper> {
+        path_mappers::create(
+            self,
             self.output_paths_mode,
-            &self.mnemonic,
-            &self.get_execution_info(),
-        );
-        if effective == OutputPathsMode::OFF {
-            &NOOP
-        } else {
-            blaze_util::unported!("PathMappers.create (StrippingPathMapper)")
-        }
+            self.is_starlark_action(),
+            /* input_metadata_provider= */ None,
+        )
     }
 
     /// Returns command argument, argv[0].
@@ -648,7 +645,7 @@ impl CommandAction for SpawnAction {
     // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:207 SpawnAction.getArguments
     fn get_arguments(&self) -> Result<Vec<String>, CommandLineError> {
         self.command_lines
-            .all_arguments_with(self.path_mapper_for_arguments())
+            .all_arguments_with(self.path_mapper_for_arguments().as_ref())
     }
 }
 

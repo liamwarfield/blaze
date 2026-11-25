@@ -290,8 +290,11 @@ fn tracking_receiver_check_evaluation_results() {
 fn key_hermeticity_is_declared_per_key_type() {
     assert_eq!(
         ERROR_TRANSIENCE_KEY.hermeticity(),
-        Some(FunctionHermeticity::Nonhermetic)
+        FunctionHermeticity::Nonhermetic
     );
-    assert_eq!(key("a").hermeticity(), Some(FunctionHermeticity::Hermetic));
-    assert_eq!(SkyKey::new(Num(1)).hermeticity(), None);
+    assert_eq!(key("a").hermeticity(), FunctionHermeticity::Hermetic);
+    assert_eq!(
+        SkyKey::new(Num(1)).hermeticity(),
+        FunctionHermeticity::Hermetic
+    );
 }

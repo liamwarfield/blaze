@@ -25,13 +25,13 @@ pub fn provider_key() -> ProviderKey {
 }
 
 /// `JavaRuntimeInfo.RULES_JAVA_PROVIDER.getKey()`.
-// Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:136 JavaRuntimeInfo.RulesJavaProvider.<init>
+// Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:132 JavaRuntimeInfo.RulesJavaProvider.<init>
 pub fn rules_java_provider_key_() -> ProviderKey {
     main_repo_provider_key(BZL, "JavaRuntimeInfo")
 }
 
 /// Information about the Java runtime used by the `java_*` rules.
-// Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:44 JavaRuntimeInfo
+// Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:42 JavaRuntimeInfo
 #[derive(Clone, Copy)]
 pub struct JavaRuntimeInfo<'v> {
     wrapper: StarlarkInfoWrapper<'v>,
@@ -114,12 +114,12 @@ impl<'v> JavaRuntimeInfo<'v> {
         None
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:98 JavaRuntimeInfo.wrap
+    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:94 JavaRuntimeInfo.wrap
     pub fn wrap(info: Value<'v>, heap: Heap<'v>) -> starlark::Result<JavaRuntimeInfo<'v>> {
         let key = info_key(info);
         if key == Some(provider_key()) || key == Some(rules_java_provider_key_()) {
             // Java: JavaRuntimeInfo.Provider.wrap
-            // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:153 JavaRuntimeInfo.Provider.wrap
+            // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:152 JavaRuntimeInfo.Provider.wrap
             if is_starlark_info_with_schema(info) {
                 return Ok(JavaRuntimeInfo {
                     wrapper: StarlarkInfoWrapper::new(info, heap),
@@ -138,18 +138,18 @@ impl<'v> JavaRuntimeInfo<'v> {
     }
 
     /// All input artifacts in the javabase.
-    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:110 JavaRuntimeInfo.javaBaseInputs
+    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:106 JavaRuntimeInfo.javaBaseInputs
     pub fn java_base_inputs(&self) -> starlark::Result<NestedSet<Artifact>> {
         self.wrapper.get_underlying_nested_set_artifacts("files")
     }
 
     /// The root directory of the Java installation.
-    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:115 JavaRuntimeInfo.javaHome
+    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:111 JavaRuntimeInfo.javaHome
     pub fn java_home(&self) -> starlark::Result<Option<String>> {
         self.wrapper.get_underlying_string("java_home")
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:119 JavaRuntimeInfo.javaBinaryExecPathFragment
+    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:115 JavaRuntimeInfo.javaBinaryExecPathFragment
     pub fn java_binary_exec_path_fragment(&self) -> starlark::Result<PathFragment> {
         let s = self
             .wrapper
@@ -158,7 +158,7 @@ impl<'v> JavaRuntimeInfo<'v> {
         Ok(PathFragment::create(&s))
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:123 JavaRuntimeInfo.javaBinaryRunfilesPathFragment
+    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:119 JavaRuntimeInfo.javaBinaryRunfilesPathFragment
     pub fn java_binary_runfiles_path_fragment(&self) -> starlark::Result<PathFragment> {
         let s = self
             .wrapper
@@ -167,12 +167,12 @@ impl<'v> JavaRuntimeInfo<'v> {
         Ok(PathFragment::create(&s))
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:127 JavaRuntimeInfo.hermeticStaticLibs
+    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:123 JavaRuntimeInfo.hermeticStaticLibs
     pub fn hermetic_static_libs(&self) -> starlark::Result<Vec<Value<'v>>> {
         self.wrapper.get_underlying_sequence("hermetic_static_libs")
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:131 JavaRuntimeInfo.version
+    // Java: com/google/devtools/build/lib/rules/java/JavaRuntimeInfo.java:127 JavaRuntimeInfo.version
     pub fn version(&self) -> starlark::Result<i32> {
         match self.wrapper.get_underlying_value("version") {
             None => panic!("NullPointerException: version"),

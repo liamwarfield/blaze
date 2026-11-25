@@ -12,7 +12,8 @@ use std::sync::Arc;
 use blaze_cmdline::Label;
 use blaze_events::{Event, ExtendedEventHandler, Location};
 use blaze_skyframe::{
-    ComputeError, Environment, Key, SkyFunctionException, SkyFunctionName, Transience,
+    ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionException, SkyFunctionName,
+    Transience,
 };
 use blaze_starlark::eval::{CompiledFile, compile_with_options};
 use blaze_starlark::file_kind::FileOptions;
@@ -174,6 +175,11 @@ impl fmt::Debug for BzlCompileKey {
 impl Key for BzlCompileKey {
     type Value = BzlCompileValue;
     const FUNCTION: SkyFunctionName = sky_functions::BZL_COMPILE;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:47 SkyFunctions.BZL_COMPILE (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal): Java's `BzlCompileValue` is a
+    // `NotComparableSkyValue` (comparing syntax trees is not worth it).
+    // Java: com/google/devtools/build/lib/skyframe/BzlCompileValue.java:51 BzlCompileValue
 }
 
 /// The result of BzlCompileFunction: `Success` when the file is compiled successfully, `Failure`

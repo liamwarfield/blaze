@@ -62,7 +62,10 @@ pub struct BazelModuleContext {
 }
 
 /// The registered contexts by compiled file name, in the build arena (`blaze_util::build_arena`,
-/// decision D7): every command loads its .bzl files again and registers them anew.
+/// decision D7): every command loads its .bzl files again and registers them anew. The arena
+/// lives for one command in every mode (the persistent server releases it after every
+/// command), so a context registered by an earlier command is never read; within one command
+/// the last registration of a file name wins.
 #[derive(Default)]
 struct ByFilename(RwLock<HashMap<String, Arc<BazelModuleContext>>>);
 

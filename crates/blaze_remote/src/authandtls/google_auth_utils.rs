@@ -394,7 +394,8 @@ fn http_connector(builder: &Endpoint) -> hyper_util::client::legacy::connect::Ht
 /// The rustls configuration tonic's `TlsConnector::new` builds from the `ClientTlsConfig` of
 /// [`create_ssl_context`] (same inputs; called after tonic accepted them): the process's
 /// default crypto provider or ring, the safe default protocol versions, the given root
-/// certificate or the webpki roots, the client certificate, and ALPN `h2`.
+/// certificate or the webpki roots (checked by `JdkServerCertVerifier`), the client
+/// certificate, and ALPN `h2`.
 fn rustls_client_config(
     root_cert: Option<&str>,
     client_cert: Option<&str>,
@@ -406,8 +407,8 @@ fn rustls_client_config(
     let provider = crypto::CryptoProvider::get_default()
         .cloned()
         .unwrap_or_else(|| Arc::new(crypto::ring::default_provider()));
-    let builder =
-        ClientConfig::builder_with_provider(provider).with_safe_default_protocol_versions()?;
+    let builder = ClientConfig::builder_with_provider(provider.clone())
+        .with_safe_default_protocol_versions()?;
     let invalid = |what: &str| -> Box<dyn std::error::Error + Send + Sync> {
         format!("invalid {what}").into()
     };
@@ -420,7 +421,14 @@ fn rustls_client_config(
         }
         None => roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()),
     }
-    let builder = builder.with_root_certificates(roots);
+    // PORT: Java's trust manager is the JDK's PKIX one, which also accepts a pre-v3 server
+    // certificate; rustls' webpki verifier, used for every v3 certificate, does not (see
+    // jdk_server_cert_verifier).
+    let builder = builder
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(
+            super::jdk_server_cert_verifier::JdkServerCertVerifier::new(Arc::new(roots), provider)?,
+        ));
     let mut config = match (client_cert, client_key) {
         (Some(client_cert), Some(client_key)) => {
             let pem =

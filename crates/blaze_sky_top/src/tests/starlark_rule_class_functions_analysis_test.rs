@@ -347,7 +347,6 @@ my_library(
 
 // Java: StarlarkRuleClassFunctionsTest.extendRule_superCalledTwice
 #[test]
-#[ignore = "BLAZE GAP (finding): the traceback names the built-in method `<built-in method super of ctx value>` where Bazel prints `Error in super:`"]
 fn extend_rule_super_called_twice() {
     let mut t = BuildViewTestCase::new();
     scratch_parent_rule(&t, "parent_library", &[]);
@@ -390,7 +389,6 @@ my_library(
 
 // Java: StarlarkRuleClassFunctionsTest.extendRule_noParent_superCalled
 #[test]
-#[ignore = "BLAZE GAP (finding): the traceback names the built-in method `<built-in method super of ctx value>` where Bazel prints `Error in super:`"]
 fn extend_rule_no_parent_super_called() {
     let mut t = BuildViewTestCase::new();
     scratch_parent_rule(&t, "parent_library", &[]);
@@ -550,7 +548,6 @@ library_extended_twice(name = "my_target")
 
 // Java: StarlarkRuleClassFunctionsTest.ctxSuper_calledFromAspect
 #[test]
-#[ignore = "BLAZE GAP (finding): the traceback names the built-in method `<built-in method super of ctx value>` where Bazel prints `Error in super:`"]
 fn ctx_super_called_from_aspect() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(

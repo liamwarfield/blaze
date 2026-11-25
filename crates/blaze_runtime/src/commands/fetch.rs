@@ -94,15 +94,9 @@ impl BlazeCommand for FetchCommand {
                     "Target patterns and --repo cannot both be specified",
                 );
             }
-            if fetch_options.force {
-                // PORT: the build's Skyframe executor (crate::commands::build) is created without
-                // the injected FORCE_FETCH value.
-                blaze_util::unported!(
-                    "FetchCommand.exec",
-                    "--force with target patterns (FORCE_FETCH for the build of TargetFetcher)"
-                );
-            }
-            let result = Self::fetch_target(env, options, targets);
+            // PORT: the injected FORCE_FETCH value reaches the build's Skyframe executor
+            // (crate::commands::build creates it) through the RunBuild hook.
+            let result = Self::fetch_target(env, options, targets, repo_precomputed);
             return post_no_build_request_finished_event(env, result);
         }
 
@@ -128,8 +122,12 @@ impl BlazeCommand for FetchCommand {
             // --all or just 'fetch' (equivalent) or --configure
             Self::fetch_all(env, &skyframe_executor, threads, fetch_options.configure)
         };
-        // PORT: Java returns "Fetch interrupted" from exec without this event; Blaze's fetchRepos
-        // and fetchAll return it as their result, so an interrupted fetch posts it too.
+        // catch (InterruptedException e): returns before the NoBuildRequestFinishedEvent.
+        // Java: com/google/devtools/build/lib/bazel/commands/FetchCommand.java:133 FetchCommand.exec
+        let result = match result {
+            Ok(result) => result,
+            Err(FetchInterrupted) => return fetch_interrupted(env),
+        };
         post_no_build_request_finished_event(env, result)
     }
 }
@@ -172,7 +170,7 @@ impl FetchCommand {
         skyframe_executor: &SkyframeExecutor,
         threads: usize,
         configure_enabled: bool,
-    ) -> BlazeCommandResult {
+    ) -> Result<BlazeCommandResult, FetchInterrupted> {
         let evaluation_result = match skyframe_executor.evaluate(
             &[SkyKey::new(BazelFetchAllValue::key(configure_enabled))],
             /* keep_going= */ false,
@@ -180,25 +178,25 @@ impl FetchCommand {
             env.get_reporter().clone(),
         ) {
             Ok(r) => r,
-            Err(_) => return fetch_interrupted(env),
+            Err(_) => return Err(FetchInterrupted),
         };
         if evaluation_result.has_error() {
             let message = evaluation_result
                 .get_first_error()
                 .and_then(|e| e.get_exception())
                 .map(|e| e.to_string());
-            return create_failed_blaze_command_result(
+            return Ok(create_failed_blaze_command_result(
                 env.get_reporter(),
                 message
                     .as_deref()
                     .unwrap_or("Unexpected error during fetching all external deps."),
-            );
+            ));
         }
 
         env.get_reporter().handle(&Event::info(
             "All external dependencies fetched successfully.",
         ));
-        BlazeCommandResult::success()
+        Ok(BlazeCommandResult::success())
     }
 
     // Java: com/google/devtools/build/lib/bazel/commands/FetchCommand.java:195 FetchCommand.fetchRepos
@@ -207,21 +205,24 @@ impl FetchCommand {
         skyframe_executor: &SkyframeExecutor,
         threads: usize,
         repos: &[String],
-    ) -> BlazeCommandResult {
+    ) -> Result<BlazeCommandResult, FetchInterrupted> {
         let repository_names_and_values =
             match RepositoryFetcher::fetch_repos(repos, env, skyframe_executor, threads) {
                 Ok(values) => values,
                 Err(RepositoryFetcherError::RepositoryMappingResolution(message, exit_code)) => {
-                    return create_failed_blaze_command_result_with_exit_code(
+                    return Ok(create_failed_blaze_command_result_with_exit_code(
                         env.get_reporter(),
                         &format!("Invalid repo name: {}", message),
                         exit_code,
-                    );
+                    ));
                 }
                 Err(RepositoryFetcherError::RepositoryFetcher(message)) => {
-                    return create_failed_blaze_command_result(env.get_reporter(), &message);
+                    return Ok(create_failed_blaze_command_result(
+                        env.get_reporter(),
+                        &message,
+                    ));
                 }
-                Err(RepositoryFetcherError::Interrupted) => return fetch_interrupted(env),
+                Err(RepositoryFetcherError::Interrupted) => return Err(FetchInterrupted),
             };
 
         let not_found_repos = repository_names_and_values
@@ -233,17 +234,17 @@ impl FetchCommand {
             .collect::<Vec<_>>()
             .join("; ");
         if !not_found_repos.is_empty() {
-            return create_failed_blaze_command_result(
+            return Ok(create_failed_blaze_command_result(
                 env.get_reporter(),
                 &format!(
                     "Fetching some repos failed with errors: {}",
                     not_found_repos
                 ),
-            );
+            ));
         }
         env.get_reporter()
             .handle(&Event::info("All requested repos fetched successfully."));
-        BlazeCommandResult::success()
+        Ok(BlazeCommandResult::success())
     }
 
     // Java: com/google/devtools/build/lib/bazel/commands/FetchCommand.java:225 FetchCommand.fetchTarget
@@ -251,8 +252,9 @@ impl FetchCommand {
         env: &mut CommandEnvironment,
         options: &OptionsParsingResult,
         targets: Vec<String>,
+        repo_precomputed: RepoPrecomputedValues,
     ) -> BlazeCommandResult {
-        TargetFetcher::fetch_targets(env, options, targets)
+        TargetFetcher::fetch_targets(env, options, targets, repo_precomputed)
     }
 }
 
@@ -275,6 +277,9 @@ fn post_no_build_request_finished_event(
     }
     result
 }
+
+/// The `InterruptedException` `fetchAll` and `fetchRepos` throw.
+struct FetchInterrupted;
 
 /// `"Fetch interrupted: " + e.getMessage()` (the message of Blaze's interrupts is null).
 fn fetch_interrupted(env: &CommandEnvironment) -> BlazeCommandResult {
@@ -506,6 +511,7 @@ impl TargetFetcher {
         env: &mut CommandEnvironment,
         options: &OptionsParsingResult,
         targets: Vec<String>,
+        repo_precomputed: RepoPrecomputedValues,
     ) -> BlazeCommandResult {
         // PORT: Java builds the BuildRequest here and runs `new BuildTool(env).processRequest`;
         // Blaze runs the build command's driver (crate::commands::build::run_build) on the
@@ -519,6 +525,7 @@ impl TargetFetcher {
             Some(RunBuild {
                 targets,
                 validator: &validator,
+                repo_precomputed,
                 after_build: Box::new(|outcome: RunBuildOutcome<'_>| {
                     let reporter = outcome.env.get_reporter().clone();
                     if !outcome.build_result.get_success() {

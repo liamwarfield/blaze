@@ -130,3 +130,45 @@ fn test_error_message_with_exception() {
          java.lang.IllegalStateException: Hello World"
     ));
 }
+
+// Review exec-2, E2-2: an I/O error of a system call carries the JDK's message, strerror(errno)
+// alone (`java.io.IOException: Broken pipe`), never Rust's `Broken pipe (os error 32)`.
+#[test]
+fn from_io_error_uses_the_jdk_message_for_an_errno() {
+    let e = std::io::Error::from_raw_os_error(libc_epipe());
+    let java = JavaException::from_io_error(&e);
+    assert_eq!(java.to_string(), "java.io.IOException: Broken pipe");
+    let error_message = ErrorMessage::builder()
+        .message(
+            "Worker process quit or closed its stdin stream when we tried to send a WorkRequest:",
+        )
+        .exception(java)
+        .build();
+    assert!(error_message.to_string().contains(
+        "---8<---8<--- Exception details ---8<---8<---\njava.io.IOException: Broken pipe\n"
+    ));
+    let e = std::io::Error::from_raw_os_error(2);
+    assert_eq!(
+        JavaException::from_io_error(&e).to_string(),
+        "java.io.IOException: No such file or directory"
+    );
+}
+
+// A message Blaze gave the error is kept; an empty message is Java's null.
+#[test]
+fn from_io_error_keeps_a_given_message() {
+    let e = std::io::Error::other("Stream closed");
+    assert_eq!(
+        JavaException::from_io_error(&e).to_string(),
+        "java.io.IOException: Stream closed"
+    );
+    let e = std::io::Error::other("");
+    assert_eq!(
+        JavaException::from_io_error(&e).to_string(),
+        "java.io.IOException"
+    );
+}
+
+fn libc_epipe() -> i32 {
+    32
+}

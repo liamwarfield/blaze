@@ -53,13 +53,37 @@ impl JavaException {
     /// `NoSuchFileException`, ...); Blaze knows only the `io::Error`, so the class is
     /// `java.io.IOException` unless the error wraps a [`JavaException`] (see
     /// [`JavaException::into_io_error`]).
+    ///
+    /// The message is the JDK's: an error from a system call carries `strerror(errno)` alone
+    /// (`Broken pipe`, not Rust's `Broken pipe (os error 32)`), as the JDK's native I/O
+    /// (`JNU_ThrowIOExceptionWithLastError`, `UnixException.errorString`) builds it; an error
+    /// Blaze made with a message carries that message; an empty message is Java's null.
+    // Java: java/io/FileOutputStream.java FileOutputStream.writeBytes (io_util_md.c handleWrite)
     pub fn from_io_error(e: &io::Error) -> JavaException {
         if let Some(inner) = e.get_ref()
             && let Some(java) = inner.downcast_ref::<JavaIoError>()
         {
             return java.0.clone();
         }
-        JavaException::io(e.to_string())
+        JavaException {
+            class_name: "java.io.IOException".to_string(),
+            message: blaze_shell::java_process::java_io_message(e),
+            cause: None,
+        }
+    }
+
+    /// `new InterruptedIOException(message)`: an `IOException` that Java's callers keep as an
+    /// I/O failure (after restoring the thread's interrupt flag), never an
+    /// `InterruptedException`.
+    pub fn interrupted_io(message: impl Into<String>) -> JavaException {
+        JavaException::new("java.io.InterruptedIOException", message)
+    }
+
+    /// `e instanceof InterruptedIOException`.
+    pub fn is_interrupted_io_exception(e: &io::Error) -> bool {
+        e.get_ref()
+            .and_then(|inner| inner.downcast_ref::<JavaIoError>())
+            .is_some_and(|java| java.0.class_name == "java.io.InterruptedIOException")
     }
 
     /// Wraps this exception in an `io::Error` whose `Display` is `getMessage()`, so that it can

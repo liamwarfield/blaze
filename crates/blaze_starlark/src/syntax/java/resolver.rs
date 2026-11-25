@@ -9,7 +9,7 @@
 //! checking, off in Bazel unless `--experimental_starlark_type_checking`) is not ported: type
 //! expressions are not resolved, as in Bazel's default.
 
-use std::collections::HashMap;
+use starlark_map::small_map::SmallMap;
 use std::collections::HashSet;
 
 use super::JavaOptions;
@@ -53,7 +53,9 @@ struct Binding {
 
 struct Block<'t> {
     kind: BlockKind,
-    bindings: HashMap<&'t str, usize>,
+    /// Java's `HashMap`; kept in insertion order so that its Java iteration order can be
+    /// computed (`java_hash_set_order`), see `get_all_symbols`.
+    bindings: SmallMap<&'t str, usize>,
 }
 
 // Java: net/starlark/java/syntax/Resolver.java:33 Resolver
@@ -62,7 +64,8 @@ struct Resolver<'m, 't> {
     options: JavaOptions,
     module: &'m dyn ResolverModule,
     bindings: Vec<Binding>,
-    toplevel: HashMap<&'t str, usize>,
+    /// Java's `HashMap`, in insertion order (see `Block::bindings`).
+    toplevel: SmallMap<&'t str, usize>,
     /// Innermost last.
     blocks: Vec<Block<'t>>,
     loop_count: usize,
@@ -80,7 +83,7 @@ pub fn resolve_file(
         options,
         module,
         bindings: Vec::new(),
-        toplevel: HashMap::new(),
+        toplevel: SmallMap::new(),
         blocks: Vec::new(),
         loop_count: 0,
     };
@@ -104,7 +107,7 @@ impl<'t> Resolver<'_, 't> {
     fn push_block(&mut self, kind: BlockKind) {
         self.blocks.push(Block {
             kind,
-            bindings: HashMap::new(),
+            bindings: SmallMap::new(),
         });
     }
 
@@ -375,14 +378,22 @@ impl<'t> Resolver<'_, 't> {
     }
 
     // Java: net/starlark/java/syntax/Resolver.java:1266 Resolver.getAllSymbols
+    // Each source is a Java HashMap/HashSet whose iteration order (filled in insertion order)
+    // decides the insertion order into `all`, a HashSet, whose own order is the result.
     fn get_all_symbols(&self, predeclared: Vec<String>) -> Vec<String> {
+        use starlark::errors::spell_checker::java_hash_set_order;
         let mut words = Vec::new();
         for b in self.blocks.iter().rev() {
-            words.extend(b.bindings.keys().map(|k| (*k).to_owned()));
+            words.extend(java_hash_set_order(
+                b.bindings.keys().map(|k| (*k).to_owned()),
+            ));
         }
-        words.extend(predeclared);
-        words.extend(self.toplevel.keys().map(|k| (*k).to_owned()));
-        starlark::errors::spell_checker::java_hash_set_order(words)
+        // Module.resolve's `candidates`, a HashSet filled in this order (Module.java:252).
+        words.extend(java_hash_set_order(predeclared));
+        words.extend(java_hash_set_order(
+            self.toplevel.keys().map(|k| (*k).to_owned()),
+        ));
+        java_hash_set_order(words)
     }
 
     fn visit_block(&mut self, stmts: &'t [Stmt]) {

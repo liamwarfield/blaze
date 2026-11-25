@@ -21,10 +21,10 @@ use blaze_bzlmod_model::gson::JsonWriter;
 use blaze_cmdline::RepositoryMapping;
 use blaze_cmdline::RepositoryName;
 use blaze_events::Location;
-use blaze_skyframe::ComputeError;
 use blaze_skyframe::Environment;
 use blaze_skyframe::Key;
 use blaze_skyframe::SkyFunctionName;
+use blaze_skyframe::{ComputeError, FunctionHermeticity};
 use blaze_util::string_encoding::internal_to_unicode;
 use indexmap::IndexMap;
 use sha2::Digest;
@@ -167,6 +167,13 @@ impl fmt::Debug for SingleExtensionUsagesKey {
 impl Key for SingleExtensionUsagesKey {
     type Value = SingleExtensionUsagesValue;
     const FUNCTION: SkyFunctionName = SINGLE_EXTENSION_USAGES;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:164 SkyFunctions.SINGLE_EXTENSION_USAGES (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: an AutoValue of the usages, unique name, abridged modules, repo mappings and the main repo mapping.
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/SingleExtensionUsagesValue.java:43 SingleExtensionUsagesValue
+    fn values_equal(old: &SingleExtensionUsagesValue, new: &SingleExtensionUsagesValue) -> bool {
+        old == new
+    }
 }
 
 /// A simple SkyFunction that takes the information needed by `SingleExtensionEvalFunction` out

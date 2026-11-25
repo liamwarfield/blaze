@@ -131,6 +131,26 @@ impl EvaluationProgressReceiver for ExecutionProgressReceiver {
     }
 }
 
+// Java: com/google/devtools/build/lib/buildtool/ExecutionProgressReceiver.java:54 ExecutionProgressReceiver
+// (implements SkyframeActionExecutor.ProgressSupplier)
+impl blaze_sky_exec::skyframe_action_executor::ProgressSupplier for ExecutionProgressReceiver {
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionProgressReceiver.java:181 ExecutionProgressReceiver.getProgressString
+    fn get_progress_string(&self) -> String {
+        ExecutionProgressReceiver::get_progress_string(self)
+    }
+}
+
+// Java: com/google/devtools/build/lib/buildtool/ExecutionProgressReceiver.java:54 ExecutionProgressReceiver
+// (implements SkyframeActionExecutor.ActionCompletedReceiver)
+impl blaze_sky_exec::skyframe_action_executor::ActionCompletedReceiver
+    for ExecutionProgressReceiver
+{
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionProgressReceiver.java:175 ExecutionProgressReceiver.actionCompleted
+    fn action_completed(&self, action_lookup_data: &ActionLookupData) {
+        ExecutionProgressReceiver::action_completed(self, action_lookup_data)
+    }
+}
+
 impl ExecutionProgress for ExecutionProgressReceiver {
     fn get_progress_string(&self) -> String {
         ExecutionProgressReceiver::get_progress_string(self)

@@ -9,7 +9,9 @@ use std::hash::{Hash, Hasher};
 
 use blaze_cmdline::RepositoryName;
 use blaze_cmdline::repository_name::MAIN;
-use blaze_skyframe::{ComputeError, Environment, Key, SkyFunctionException, SkyFunctionName};
+use blaze_skyframe::{
+    ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionException, SkyFunctionName,
+};
 use blaze_vfs::{PathFragment, RootedPath};
 use indexmap::IndexSet;
 
@@ -247,6 +249,13 @@ impl fmt::Debug for IgnoredSubdirectoriesKey {
 impl Key for IgnoredSubdirectoriesKey {
     type Value = IgnoredSubdirectoriesValue;
     const FUNCTION: SkyFunctionName = sky_functions::IGNORED_SUBDIRECTORIES;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:85 SkyFunctions.IGNORED_SUBDIRECTORIES (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: `IgnoredSubdirectories.equals`: the prefixes as a set, the patterns as a list.
+    // Java: com/google/devtools/build/lib/skyframe/IgnoredSubdirectoriesValue.java:74 IgnoredSubdirectoriesValue.equals
+    fn values_equal(old: &IgnoredSubdirectoriesValue, new: &IgnoredSubdirectoriesValue) -> bool {
+        old == new
+    }
 }
 
 /// Exception thrown when an ignore path is wrong for some reason.

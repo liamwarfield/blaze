@@ -265,9 +265,10 @@ impl JavaObject {
             JavaObject::List(l) | JavaObject::StarlarkList(l) | JavaObject::Tuple(l) => Some(
                 OptionValue::list(l.iter().filter_map(|e| e.to_option_value()).collect()),
             ),
-            // PORT: a Map or Set object is only set on an option whose Java type is a Map or a Set
-            // (`def.getType().isInstance(optionValue)`); no option of Bazel 9.3.2's fragments has
-            // such a type, so `isInstance` is false for these and they are never set.
+            // PORT: a Map object reaches a native option only through `isInstance` on a Map-typed
+            // field (`JavaOptions.bytecodeOptimizers`, `TestOptions.testTimeout`), which
+            // `function_transition_util::map_option_value` converts to the field's type; no
+            // fragment option of Bazel 9.3.2 has a Set type. Nothing else calls this for them.
             JavaObject::Map(_) | JavaObject::Set(_) => {
                 blaze_util::unported!(
                     "FunctionTransitionUtil.applyTransition",

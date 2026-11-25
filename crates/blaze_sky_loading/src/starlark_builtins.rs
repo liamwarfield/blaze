@@ -11,7 +11,8 @@ use blaze_cmdline::Label;
 use blaze_packages::builtins::BazelStarlarkEnvironment;
 use blaze_packages::builtins::env::{EnvEntry, GlobalsCache, StarlarkEnv};
 use blaze_skyframe::{
-    ComputeError, Environment, Key, SkyFunctionException, SkyFunctionName, SkyKey, Transience,
+    ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionException, SkyFunctionName,
+    SkyKey, Transience,
 };
 use blaze_starlark::StarlarkSemantics;
 use starlark::environment::{FrozenModule, Globals};
@@ -137,6 +138,10 @@ impl fmt::Debug for StarlarkBuiltinsKey {
 impl Key for StarlarkBuiltinsKey {
     type Value = StarlarkBuiltinsValue;
     const FUNCTION: SkyFunctionName = sky_functions::STARLARK_BUILTINS;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:49 SkyFunctions.STARLARK_BUILTINS (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal): Java's `StarlarkBuiltinsValue` has no `equals`.
+    // Java: com/google/devtools/build/lib/skyframe/StarlarkBuiltinsValue.java:34 StarlarkBuiltinsValue
 }
 
 /// An exception that occurs while trying to determine the injected builtins. This exception type

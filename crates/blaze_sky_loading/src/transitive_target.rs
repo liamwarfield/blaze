@@ -15,8 +15,8 @@ use blaze_packages::exceptions::{
 use blaze_packages::target::label_visitation_utils;
 use blaze_packages::target::{Target, target_utils};
 use blaze_skyframe::{
-    ComputeError, Environment, Key, SkyFunctionException, SkyFunctionName, SkyKey,
-    SkyframeLookupResult,
+    ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionException, SkyFunctionName,
+    SkyKey, SkyframeLookupResult,
 };
 use blaze_vfs::PathFragment;
 use indexmap::IndexSet;
@@ -55,6 +55,10 @@ impl fmt::Debug for TransitiveTargetKey {
 impl Key for TransitiveTargetKey {
     type Value = TransitiveTargetValue;
     const FUNCTION: SkyFunctionName = TRANSITIVE_TARGET;
+    // Java: com/google/devtools/build/lib/skyframe/TransitiveTargetKey.java:31 TransitiveTargetKey.NAME (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal): Java's `TransitiveTargetValue` has no `equals`.
+    // Java: com/google/devtools/build/lib/skyframe/TransitiveTargetValue.java:34 TransitiveTargetValue
 }
 
 /// Java `NestedSet<Label>` in `STABLE_ORDER`: the target's label and its deps' sets.

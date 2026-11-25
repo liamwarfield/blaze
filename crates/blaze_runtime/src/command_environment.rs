@@ -904,6 +904,20 @@ impl CommandEventBus {
     pub fn register(&self, subscriber: Arc<dyn blaze_events::EventBus>) {
         self.subscribers.write().push(subscriber);
     }
+
+    /// Drops every subscriber: the end of the command's event bus in `BlazeRuntime.afterCommand`
+    /// (`BlazeWorkspace.clearEventBus`, "this is how we release memory associated with
+    /// handlers", and `Reporter.clearEventBus`). Events posted later reach no subscriber.
+    ///
+    /// PORT: Java leaves the bus to the collector once the workspace and the reporter no longer
+    /// reference it. A Blaze subscriber may hold the bus (`ExecutionProgressReceiverSetup`, the
+    /// test result aggregator), and the bus holds its subscribers, so neither would be freed.
+    // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:357 BlazeWorkspace.clearEventBus
+    pub fn clear_subscribers(&self) {
+        let subscribers = std::mem::take(&mut *self.subscribers.write());
+        // Dropped outside the lock: a subscriber's drop may post or register.
+        drop(subscribers);
+    }
 }
 
 impl blaze_events::EventBus for CommandEventBus {

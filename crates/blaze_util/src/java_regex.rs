@@ -149,7 +149,12 @@ impl std::error::Error for PatternSyntaxException {}
 /// construct listed as `unported!` in the module docs panics.
 pub fn translate(pattern: &str, flags: i32) -> Result<String, String> {
     match Translation::new(pattern, flags) {
-        Ok(t) => t.emit(Mode::Find).map_err(|what| unported(pattern, &what)),
+        Ok(t) => {
+            if let Some(what) = find_span_issue(&t.root) {
+                unported(pattern, &what);
+            }
+            t.emit(Mode::Find).map_err(|what| unported(pattern, &what))
+        }
         Err(Fail::Syntax(e)) => Err(e.get_message()),
         Err(Fail::Unported(what)) => unported(pattern, &what),
     }
@@ -180,6 +185,9 @@ pub struct Pattern {
     /// `Err` holds the construct that is `unported!` under `matches()` (an atomic group or a
     /// possessive quantifier that ends the pattern).
     matches: Result<Regex, String>,
+    /// A construct whose `find()` span is `unported!` (see [`find_span_issue`]); `is_match` and
+    /// `matches` are exact.
+    find_span: Option<String>,
     guards: Guards,
 }
 
@@ -206,6 +214,7 @@ impl Pattern {
             flags,
             find,
             matches,
+            find_span: find_span_issue(&translation.root),
             guards: translation.guards,
         })
     }
@@ -225,7 +234,8 @@ impl Pattern {
         self.flags
     }
 
-    /// The translated pattern for `find()`, without the checks of [`Pattern::find`].
+    /// The translated pattern for `find()`, without the checks of [`Pattern::find`] (its spans
+    /// can differ from Java's where [`Pattern::find`] is `unported!`).
     pub fn regex(&self) -> &Regex {
         &self.find
     }
@@ -234,6 +244,12 @@ impl Pattern {
     /// into `input`.
     pub fn find(&self, input: &str) -> Option<(usize, usize)> {
         self.guards.check(&self.pattern, input);
+        if let Some(what) = &self.find_span {
+            unported(
+                &self.pattern,
+                &format!("{what} under Matcher.find() with start()/end()"),
+            );
+        }
         self.find.find(input).map(|m| (m.start(), m.end()))
     }
 
@@ -385,8 +401,8 @@ impl Translation {
         let mut parser = Parser::new(pattern, flags);
         let root = parser.compile()?;
         Ok(Translation {
+            unported: parser.unported.or_else(|| assertion_loop_issue(&root)),
             root,
-            unported: parser.unported,
             guards: parser.guards,
         })
     }
@@ -399,6 +415,154 @@ impl Translation {
         let mut out = String::new();
         emit(&self.root, mode == Mode::Find, &mut out)?;
         Ok(out)
+    }
+}
+
+/// Whether `node` can match the empty string, and if so whether that is its last choice (every
+/// way of matching a non-empty string comes first in Java's backtracking order).
+///
+/// Zero-width leaves (anchors, word boundaries, the empty slice) match only the empty string.
+/// The answer is conservative: `(true, false)` whenever the order is not plainly so.
+fn empty_shape(node: &Node) -> (bool, bool) {
+    match node {
+        Node::Raw(s) => {
+            let zero_width = matches!(
+                s.as_str(),
+                "" | r"\A"
+                    | r"\z"
+                    | "(?m:^)"
+                    | "(?m:$)"
+                    | r"\b"
+                    | r"\B"
+                    | r"(?-u:\b)"
+                    | r"(?-u:\B)"
+            );
+            (zero_width, true)
+        }
+        Node::Concat(items) => {
+            let mut nullable = true;
+            let mut last = true;
+            for item in items {
+                let (n, l) = empty_shape(item);
+                nullable &= n;
+                last &= l;
+            }
+            (nullable, !nullable || last)
+        }
+        Node::Alt(alternatives) => {
+            let shapes: Vec<(bool, bool)> = alternatives.iter().map(empty_shape).collect();
+            let nullable = shapes.iter().any(|(n, _)| *n);
+            let n = shapes.len();
+            let last = shapes[..n - 1].iter().all(|(n, _)| !n) && shapes[n - 1].1;
+            (nullable, !nullable || last)
+        }
+        Node::Group { body, .. } => empty_shape(body),
+        Node::Repeat {
+            body,
+            min,
+            max,
+            qtype,
+        } => {
+            if *max == Some(0) {
+                return (true, true);
+            }
+            let (bn, bl) = empty_shape(body);
+            let nullable = *min == 0 || bn;
+            let last = match qtype {
+                // Iterations first, the exit last.
+                Qtype::Greedy | Qtype::Possessive => !bn || bl,
+                // The exit first.
+                Qtype::Lazy if *min == 0 => false,
+                Qtype::Lazy => !bn || bl,
+            };
+            (nullable, !nullable || last)
+        }
+    }
+}
+
+fn is_zero_width_assertion(s: &str) -> bool {
+    matches!(
+        s,
+        r"\A" | r"\z" | "(?m:^)" | "(?m:$)" | r"\b" | r"\B" | r"(?-u:\b)" | r"(?-u:\B)"
+    )
+}
+
+/// Whether `node` can match a non-empty string.
+fn can_consume(node: &Node) -> bool {
+    match node {
+        Node::Raw(s) => !s.is_empty() && !is_zero_width_assertion(s),
+        Node::Concat(items) | Node::Alt(items) => items.iter().any(can_consume),
+        Node::Group { body, .. } => can_consume(body),
+        Node::Repeat { body, max, .. } => *max != Some(0) && can_consume(body),
+    }
+}
+
+fn contains_assertion(node: &Node) -> bool {
+    match node {
+        Node::Raw(s) => is_zero_width_assertion(s),
+        Node::Concat(items) | Node::Alt(items) => items.iter().any(contains_assertion),
+        Node::Group { body, .. } | Node::Repeat { body, .. } => contains_assertion(body),
+    }
+}
+
+/// The first repetition (`m >= 2` iterations possible) whose body can match the empty string
+/// and contains a zero-width assertion (`(?:a|\b){2}`, `(?:^|a)+`). Java's loop ends at the
+/// first empty iteration (also below the minimum count: Pattern.Loop.match goes to `next` when
+/// `i == locals[beginIndex]`), so an empty iteration is never followed by a non-empty one; the
+/// crate allows that, and where the assertion holds at one position and not at the next the two
+/// engines accept different strings (JDK 25: `(?:a|\b){2}b` does not match `abc`, the crate
+/// does). `unported!` in every mode.
+// Java: java/util/regex/Pattern.java Pattern.Loop.match
+fn assertion_loop_issue(node: &Node) -> Option<String> {
+    match node {
+        Node::Raw(_) => None,
+        Node::Concat(items) | Node::Alt(items) => items.iter().find_map(assertion_loop_issue),
+        Node::Group { body, .. } => assertion_loop_issue(body),
+        Node::Repeat { body, max, .. } => {
+            if max.is_none_or(|m| m >= 2)
+                && empty_shape(body).0
+                && can_consume(body)
+                && contains_assertion(body)
+            {
+                return Some(
+                    "a repetition whose body can match the empty string through a zero-width \
+                     assertion (Java's loop stops at an empty iteration)"
+                        .into(),
+                );
+            }
+            assertion_loop_issue(body)
+        }
+    }
+}
+
+/// The first construct whose `Matcher.find()` span the crate does not reproduce: a greedy
+/// repetition (`*`, `+`, `{n,m}` with `m >= 2`) whose body can match the empty string before
+/// trying a non-empty match (`(?:a*|b)*`, `(?:\s*|#.*)*`, `(?:x??)*`). Java ends the loop when an
+/// iteration matched the empty string and continues after it (Pattern.Loop.match, the
+/// `i > locals[beginIndex]` test), before the body's later choices; the crate drops that
+/// iteration and tries the later choices first, so it can match further. Boolean results
+/// (`find()` succeeds, `matches()`) are the same in both. Lazy repetitions try the exit first
+/// in both and agree.
+// Java: java/util/regex/Pattern.java Pattern.Loop.match
+fn find_span_issue(node: &Node) -> Option<String> {
+    match node {
+        Node::Raw(_) => None,
+        Node::Concat(items) | Node::Alt(items) => items.iter().find_map(find_span_issue),
+        Node::Group { body, .. } => find_span_issue(body),
+        Node::Repeat {
+            body, max, qtype, ..
+        } => {
+            let (bn, bl) = empty_shape(body);
+            if *qtype != Qtype::Lazy && max.is_none_or(|m| m >= 2) && bn && !bl && can_consume(body)
+            {
+                return Some(
+                    "a repetition whose body can match the empty string before a non-empty \
+                     string (Java's loop stops at an empty iteration)"
+                        .into(),
+                );
+            }
+            find_span_issue(body)
+        }
     }
 }
 

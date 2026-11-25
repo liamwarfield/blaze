@@ -210,9 +210,12 @@ pub enum TokenValue {
     /// INT: its decimal digits (Java Integer/Long/BigInteger `toString`).
     Int(String),
     Float(f64),
-    /// DOC_COMMENT_BLOCK / DOC_COMMENT_TRAILING: the line of the last comment (1-based).
+    /// DOC_COMMENT_BLOCK / DOC_COMMENT_TRAILING: the line of the last comment (1-based) and
+    /// Java's `DocComments.toString()` (the comments' texts, each from its `#` to the end of
+    /// its line, joined by newlines), which `Parser.tokenString` prints.
     DocComments {
         end_line: usize,
+        text: String,
     },
 }
 
@@ -697,6 +700,8 @@ impl<'a> Lexer<'a> {
     // Java: net/starlark/java/syntax/Lexer.java:516 Lexer.docComments
     fn doc_comments(&mut self, first_start: usize, is_block: bool, errors: &mut Vec<OffsetError>) {
         let mut last_end = self.pos;
+        // Java: DocComments.java:53 DocComments.toString (Comment.toString is its text).
+        let mut texts = vec![self.buffer_slice(first_start, self.pos)];
         if is_block {
             let mut prev_line = self.line_of(first_start);
             while self.peek(0) == Some('\n') {
@@ -710,17 +715,21 @@ impl<'a> Lexer<'a> {
                     break;
                 }
                 prev_line = line;
+                let start_pos = self.pos;
                 self.scan_to_newline();
+                texts.push(self.buffer_slice(start_pos, self.pos));
                 last_end = self.pos;
             }
             self.set_token(TokenKind::DocCommentBlock, first_start, last_end);
             self.value = TokenValue::DocComments {
                 end_line: prev_line,
+                text: texts.join("\n"),
             };
         } else {
             self.set_token(TokenKind::DocCommentTrailing, first_start, last_end);
             self.value = TokenValue::DocComments {
                 end_line: self.line_of(first_start),
+                text: texts.join("\n"),
             };
         }
     }

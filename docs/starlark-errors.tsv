@@ -154,7 +154,7 @@ eval/Eval.java:191	eval/Eval.java	191	newFunction	errorf	Starlark.errorf( "%s():
 eval/Eval.java:218	eval/Eval.java	218	newFunction	throw	IllegalStateException("unexpected: " + bind)		internal		
 eval/Eval.java:250	eval/Eval.java	250	execLoad	errorf	Starlark.errorf("load statements may not be executed in this thread")		not-triggerable		not reachable from a Bazel file (every Bazel thread loads; every callable implements call)
 eval/Eval.java:258	eval/Eval.java	258	execLoad	errorf	Starlark.errorf("module '%s' not found", moduleName)		no-case		
-eval/Eval.java:267	eval/Eval.java	267	execLoad	errorf	Starlark.errorf( "file '%s' does not contain symbol '%s'%s", moduleName, orig.getName(), SpellChecker.didYouMean(orig.getName(), module.getGlobals().keySet()))		no-case		
+eval/Eval.java:267	eval/Eval.java	267	execLoad	errorf	Starlark.errorf( "file '%s' does not contain symbol '%s'%s", moduleName, orig.getName(), SpellChecker.didYouMean(orig.getName(), module.getGlobals().keySet()))		matched	patch_0057_load_missing_symbol	oracle: loading-fix-1 probes c01-c05 (BUILD and .bzl loads, load-bound and private candidates, no suggestion), text and location equal
 eval/Eval.java:296	eval/Eval.java	296	exec	eval-exception	EvalException("Starlark computation cancelled: too many steps")		not-triggerable		step limit (StarlarkThread.setMaxExecutionSteps), not set by Bazel
 eval/Eval.java:327	eval/Eval.java	327	exec	throw	IllegalArgumentException("unexpected statement: " + st.kind())		internal		
 eval/Eval.java:358	eval/Eval.java	358	assign	throw	ex		rethrow		

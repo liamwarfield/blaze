@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use blaze_cmdline::{Label, PackageIdentifier};
 use blaze_skyframe::{
-    ComputeError, Environment, EvaluatorBuilder, Key, SkyFunctionException, SkyFunctionName,
-    Transience,
+    ComputeError, Environment, EvaluatorBuilder, FunctionHermeticity, Key, SkyFunctionException,
+    SkyFunctionName, Transience,
 };
 use blaze_vfs::RootedPath;
 use indexmap::IndexMap;
@@ -61,6 +61,13 @@ impl fmt::Debug for ProjectFilesLookupKey {
 impl Key for ProjectFilesLookupKey {
     type Value = ProjectFilesLookupValue;
     const FUNCTION: SkyFunctionName = PROJECT_FILES_LOOKUP;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:46 SkyFunctions.PROJECT_FILES_LOOKUP (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: the list of project files.
+    // Java: com/google/devtools/build/lib/skyframe/ProjectFilesLookupValue.java:78 ProjectFilesLookupValue.equals
+    fn values_equal(old: &ProjectFilesLookupValue, new: &ProjectFilesLookupValue) -> bool {
+        old == new
+    }
 }
 
 /// The project files of a package: every `PROJECT.scl` in the package and in the packages above
@@ -370,6 +377,10 @@ impl fmt::Debug for ProjectKey {
 impl Key for ProjectKey {
     type Value = ProjectValue;
     const FUNCTION: SkyFunctionName = PROJECT;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:44 SkyFunctions.PROJECT (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal): Java's `ProjectValue` has no `equals` (identity).
+    // Java: com/google/devtools/build/lib/skyframe/ProjectValue.java:32 ProjectValue
 }
 
 // -------------------------------------------------------------------------------------------

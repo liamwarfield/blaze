@@ -128,13 +128,23 @@ impl InvocationPolicyParser {
             Ok(bytes) => {
                 // `InvocationPolicy.parseFrom(bytes)`: the descriptor-driven parser is the port
                 // of protobuf-java's (CodedInputStream, string decoding, error cases).
-                // PORT: unknown fields are kept by Java (and printed by `toString()`); they are
-                // dropped by the conversion to the generated type.
                 let descriptor = pool()
                     .find_message_type_by_name(InvocationPolicy::FULL_NAME)
                     .expect("InvocationPolicy descriptor");
                 let message =
                     DynamicMessage::parse_from(descriptor, &bytes).map_err(|_| malformed())?;
+                // PORT: Java keeps unknown fields (a field number this version does not know, or
+                // an unknown value of a closed enum) in the message's UnknownFieldSet; the
+                // policy's `toString()` (`--canonicalize_policy`, the error texts of the
+                // enforcer) prints them, and `toBuilder` carries them into the expanded
+                // policies. The generated type has no unknown field set, so a policy with one
+                // fails loudly instead of losing it.
+                if has_unknown_fields(&message) {
+                    blaze_util::unported!(
+                        "InvocationPolicyParser.parsePolicy",
+                        "unknown fields in a binary --invocation_policy"
+                    );
+                }
                 Ok(message.into_message::<InvocationPolicy>())
             }
             // If the flag value can't be decoded from base64, try decoding the policy as a text
@@ -145,6 +155,18 @@ impl InvocationPolicyParser {
             }
         }
     }
+}
+
+/// Whether `message` or a message nested in it has a non-empty `getUnknownFields()`.
+fn has_unknown_fields(message: &DynamicMessage) -> bool {
+    use blaze_protos::dynamic_message::Value as FieldValue;
+    !message.get_unknown_fields().is_empty()
+        || message.get_all_fields().into_iter().any(|(_, values)| {
+            values.iter().any(|value| match value {
+                FieldValue::Message(nested) => has_unknown_fields(nested),
+                _ => false,
+            })
+        })
 }
 
 /// `CharMatcher.whitespace().matches(c)` (Guava): the Unicode White_Space characters, without
@@ -560,8 +582,16 @@ fn expand_policy(
 
     // Repeated flags are special, and could set multiple times in an expansion, with the user
     // expecting both values to be valid. Collect these separately.
-    // PORT: Java's ArrayListMultimap is keyed by OptionDescription, whose hashCode is the
-    // identity hash, so its key order is arbitrary; the first-appearance order is used here.
+    // PORT: java-hash-order. Java's ArrayListMultimap iterates its keys in the order of a
+    // `HashMap` keyed by OptionDescription, whose hashCode is deterministic
+    // (`optionDefinition.hashCode() + evaluatedExpansion.hashCode()`, the first being
+    // `Field.hashCode()`: the hash of the declaring class's binary name XOR the hash of the Java
+    // field name). Blaze's option definitions do not carry the Java class and field names, so
+    // that order cannot be computed: with one key it does not matter, with more than one the
+    // loop below fails loudly. No expansion or implicit requirement at the pin names two
+    // different repeatable flags.
+    // Java: com/google/devtools/common/options/OptionsParser.java:417 OptionsParser.OptionDescription.hashCode
+    // Java: com/google/devtools/common/options/FieldOptionDefinition.java:376 FieldOptionDefinition.hashCode
     let mut repeatable_subflags_in_set_values: IndexMap<
         OptionDefinitionRef,
         (OptionDescription, Vec<ParsedOptionRef>),
@@ -604,6 +634,17 @@ fn expand_policy(
     // If there are any repeatable flag SetValues, deal with them together now.
     // Note that expansion flags have no value, and so cannot have multiple values either.
     // Skipping the recursion above is fine.
+    if repeatable_subflags_in_set_values.len() > 1 {
+        blaze_util::unported!(
+            "InvocationPolicyEnforcer.expandPolicy",
+            "HashMap order of {} repeatable subflags of a SetValue policy on --{}",
+            repeatable_subflags_in_set_values.len(),
+            original_policy
+                .description
+                .get_option_definition()
+                .get_option_name()
+        );
+    }
     for (repeatable_flag, set_values) in repeatable_subflags_in_set_values.values() {
         let mut new_values: Vec<String> = Vec::with_capacity(set_values.len());
         let mut origins: Vec<&OptionInstanceOrigin> = Vec::with_capacity(set_values.len());
@@ -1206,5 +1247,28 @@ mod tests {
         assert!(base64_decode("QQ=A").is_err());
         assert!(base64_decode("Q-==").is_err());
         assert!(base64_decode("flag_policies").is_err());
+    }
+
+    /// A binary policy without unknown fields parses (`flag_policies { flag_name: "x" }`).
+    #[test]
+    fn binary_policy_without_unknown_fields_parses() {
+        let policy = InvocationPolicyParser::parse_policy(Some("CgMKAXg=")).unwrap();
+        assert_eq!(policy.flag_policies.len(), 1);
+        assert_eq!(policy.flag_policies[0].flag_name.as_deref(), Some("x"));
+    }
+
+    /// Review finding F5: Java keeps an unknown field (here field 99 of `InvocationPolicy`,
+    /// varint 1) and prints it; Blaze fails loudly instead of dropping it.
+    #[test]
+    #[should_panic(expected = "InvocationPolicyParser.parsePolicy")]
+    fn binary_policy_with_unknown_field_fails_loudly() {
+        let _ = InvocationPolicyParser::parse_policy(Some("mAYB"));
+    }
+
+    /// The same for an unknown field (50) of a nested `FlagPolicy`.
+    #[test]
+    #[should_panic(expected = "InvocationPolicyParser.parsePolicy")]
+    fn binary_policy_with_nested_unknown_field_fails_loudly() {
+        let _ = InvocationPolicyParser::parse_policy(Some("CgOQAwA="));
     }
 }

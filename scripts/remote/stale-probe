@@ -23,7 +23,7 @@ if [[ $# -lt 2 || "$1" == help || "$1" == --help ]]; then sed -n '2,19p' "$0" | 
 run="$1"; bin="$2"; shift 2
 cmds=("$@"); [[ ${#cmds[@]} -eq 0 ]] && cmds=("query //..." "build //..." "info" "clean")
 if [[ ${#cmds[@]} -eq 1 && "${cmds[0]}" == remote-variants ]]; then
-  dc="--disk_cache=$HOME/.cache/blaze/work/remote/$run-dc"
+  dc="--disk_cache=${BLAZE_REMOTE_WORK:-$HOME/.cache/blaze/work/remote}/$run-dc"
   rc="--remote_cache=grpc://localhost:9499"
   cmds=()
   for c in "query //:brotlicommon" "cquery //:brotlicommon" "aquery //:brotlicommon --output=jsonproto" "info release"; do
@@ -37,7 +37,7 @@ dir="$ob/execroot/_main/bazel-out/_tmp/actions/remote"
 echo "output base: $ob"
 for c in "${cmds[@]}"; do
   mkdir -p "$dir/x"; echo junk > "$dir/x/stale"
-  find "$HOME/.cache/blaze/work/remote/$run/ws" -maxdepth 1 -name 'bazel-*' -type l -delete
+  find "${BLAZE_REMOTE_WORK:-$HOME/.cache/blaze/work/remote}/$run/ws" -maxdepth 1 -name 'bazel-*' -type l -delete
   # shellcheck disable=SC2086
   out=$("$here/ws-run" "$run" "$src" "$bin" -- $c || true)
   s=$(echo "$out" | sed -n 's/^step: //p'); code=$(echo "$out" | sed -n 's/^exit code: //p')

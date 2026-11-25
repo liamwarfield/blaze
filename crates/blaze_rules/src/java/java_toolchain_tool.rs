@@ -16,7 +16,7 @@ use super::starlark_info_wrapper::{StarlarkInfoWrapper, struct_get_value};
 ///
 /// PORT: Java interns instances and caches the command line per toolchain (a memory
 /// optimisation with no observable effect); the command line is computed on each request.
-// Java: com/google/devtools/build/lib/rules/java/JavaToolchainTool.java:35 JavaToolchainTool
+// Java: com/google/devtools/build/lib/rules/java/JavaToolchainTool.java:36 JavaToolchainTool
 #[derive(Clone)]
 pub struct JavaToolchainTool {
     /// The executable, possibly a `_deploy.jar`.
@@ -29,7 +29,7 @@ pub struct JavaToolchainTool {
 }
 
 impl JavaToolchainTool {
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainTool.java:43 JavaToolchainTool.fromStarlark
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainTool.java:44 JavaToolchainTool.fromStarlark
     pub fn from_starlark<'v>(
         r#struct: Option<Value<'v>>,
         heap: Heap<'v>,
@@ -65,7 +65,7 @@ impl JavaToolchainTool {
         Ok(Some(Self::create(tool, data, jvm_opts)))
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainTool.java:86 JavaToolchainTool.create
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainTool.java:85 JavaToolchainTool.create
     fn create(
         tool: Arc<FilesToRunProvider>,
         data: NestedSet<Artifact>,
@@ -79,17 +79,17 @@ impl JavaToolchainTool {
     }
 
     /// The executable, possibly a `_deploy.jar`.
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainTool.java:62 JavaToolchainTool.tool
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainTool.java:61 JavaToolchainTool.tool
     pub fn tool(&self) -> &Arc<FilesToRunProvider> {
         &self.tool
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainTool.java:65 JavaToolchainTool.data
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainTool.java:64 JavaToolchainTool.data
     pub fn data(&self) -> &NestedSet<Artifact> {
         &self.data
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainTool.java:71 JavaToolchainTool.jvmOpts
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainTool.java:70 JavaToolchainTool.jvmOpts
     pub fn jvm_opts(&self) -> &NestedSet<String> {
         &self.jvm_opts
     }
@@ -140,7 +140,7 @@ impl JavaToolchainTool {
     }
 
     /// Adds its inputs for the tool to provided input builder.
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainTool.java:119 JavaToolchainTool.addInputs
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainTool.java:122 JavaToolchainTool.addInputs
     pub fn add_inputs(
         &self,
         toolchain: &JavaToolchainProvider<'_>,
@@ -157,7 +157,7 @@ impl JavaToolchainTool {
         Ok(())
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainTool.java:132 JavaToolchainTool.withAdditionalJvmFlags
+    // Java: com/google/devtools/build/lib/rules/java/JavaToolchainTool.java:134 JavaToolchainTool.withAdditionalJvmFlags
     pub fn with_additional_jvm_flags(
         &self,
         additional_jvm_flags: &NestedSet<String>,

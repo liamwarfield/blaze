@@ -33,6 +33,8 @@ struct Num(u64);
 impl Key for Num {
     type Value = u64;
     const FUNCTION: SkyFunctionName = SkyFunctionName("NUM");
+    // test key; hermetic like Java's SkyFunctionName.FOR_TESTING
+    const HERMETICITY: crate::FunctionHermeticity = crate::FunctionHermeticity::Hermetic;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -40,6 +42,8 @@ struct Cyc(u32);
 impl Key for Cyc {
     type Value = u32;
     const FUNCTION: SkyFunctionName = SkyFunctionName("CYC");
+    // test key; hermetic like Java's SkyFunctionName.FOR_TESTING
+    const HERMETICITY: crate::FunctionHermeticity = crate::FunctionHermeticity::Hermetic;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -47,6 +51,9 @@ struct Flag(&'static str);
 impl Key for Flag {
     type Value = String;
     const FUNCTION: SkyFunctionName = SkyFunctionName("FLAG");
+    // An injected variable, re-injected between evaluations: non-hermetic, like Java's
+    // `SkyFunctions.PRECOMPUTED` (createNonHermetic).
+    const HERMETICITY: crate::FunctionHermeticity = crate::FunctionHermeticity::Nonhermetic;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -145,6 +152,8 @@ fn get_value_or_throw_catches() {
     impl Key for Catcher {
         type Value = String;
         const FUNCTION: SkyFunctionName = SkyFunctionName("CATCHER");
+        // test key; hermetic like Java's SkyFunctionName.FOR_TESTING
+        const HERMETICITY: crate::FunctionHermeticity = crate::FunctionHermeticity::Hermetic;
     }
     let ev = EvaluatorBuilder::new()
         .typed_function::<Num, _>(num_fn)
@@ -198,6 +207,8 @@ fn inject_between_evaluations_invalidates_dependents() {
     impl Key for Mode {
         type Value = String;
         const FUNCTION: SkyFunctionName = SkyFunctionName("MODE");
+        // test key; hermetic like Java's SkyFunctionName.FOR_TESTING
+        const HERMETICITY: crate::FunctionHermeticity = crate::FunctionHermeticity::Hermetic;
     }
     let ev = EvaluatorBuilder::new()
         .typed_function::<Mode, _>(|_, env| {
@@ -294,6 +305,8 @@ fn function_panic_is_rethrown_without_hanging() {
     impl Key for Crash {
         type Value = u32;
         const FUNCTION: SkyFunctionName = SkyFunctionName("CRASH");
+        // test key; hermetic like Java's SkyFunctionName.FOR_TESTING
+        const HERMETICITY: crate::FunctionHermeticity = crate::FunctionHermeticity::Hermetic;
     }
     let ev = EvaluatorBuilder::new()
         .typed_function::<Crash, _>(|k: &Crash, env| {
@@ -326,7 +339,7 @@ impl Key for T {
     /// Java: `GraphTester.NODE_TYPE = SkyFunctionName.FOR_TESTING`, created with
     /// `SkyFunctionName.createHermetic("FOR_TESTING")` (SkyFunctionName.java:32). Java's
     /// non-hermetic test key is `GraphTester.NonHermeticKey` (`FOR_TESTING_NONHERMETIC`).
-    const HERMETICITY: Option<FunctionHermeticity> = Some(FunctionHermeticity::Hermetic);
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
     /// Java: `GraphTester.StringValue.equals` compares the strings.
     // Java: src/test/java/com/google/devtools/build/skyframe/GraphTester.java:451 StringValue.equals
     fn values_equal(old: &String, new: &String) -> bool {
@@ -348,7 +361,7 @@ impl Key for N {
     type Value = String;
     const FUNCTION: SkyFunctionName = SkyFunctionName("TEST_NONHERMETIC");
     // Java: src/test/java/com/google/devtools/build/skyframe/GraphTester.java:584 GraphTester.FOR_TESTING_NONHERMETIC
-    const HERMETICITY: Option<FunctionHermeticity> = Some(FunctionHermeticity::Nonhermetic);
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
     // Java: src/test/java/com/google/devtools/build/skyframe/GraphTester.java:451 StringValue.equals
     fn values_equal(old: &String, new: &String) -> bool {
         old == new
@@ -1779,6 +1792,8 @@ struct Fan(u32, u32);
 impl Key for Fan {
     type Value = u64;
     const FUNCTION: SkyFunctionName = SkyFunctionName("FAN");
+    // test key; hermetic like Java's SkyFunctionName.FOR_TESTING
+    const HERMETICITY: crate::FunctionHermeticity = crate::FunctionHermeticity::Hermetic;
 }
 
 /// Fan(depth, i): a batch of 6 children per level, 4 levels deep (1555 nodes), shared children.
@@ -1823,6 +1838,8 @@ struct Chain(u32, u32);
 impl Key for Chain {
     type Value = u32;
     const FUNCTION: SkyFunctionName = SkyFunctionName("CHAIN");
+    // test key; hermetic like Java's SkyFunctionName.FOR_TESTING
+    const HERMETICITY: crate::FunctionHermeticity = crate::FunctionHermeticity::Hermetic;
 }
 
 /// Chain(len, i) depends on Chain(len, i + 1); Chain(len, len) depends on Chain(len, 0) when
@@ -1961,6 +1978,8 @@ fn get_value_or_throw_with_catches_several_types() {
     impl Key for Multi {
         type Value = String;
         const FUNCTION: SkyFunctionName = SkyFunctionName("MULTI");
+        // test key; hermetic like Java's SkyFunctionName.FOR_TESTING
+        const HERMETICITY: crate::FunctionHermeticity = crate::FunctionHermeticity::Hermetic;
     }
     #[derive(Debug, Clone)]
     struct OtherError;
@@ -2012,7 +2031,7 @@ impl fmt::Debug for NotComparableKey {
 impl Key for NotComparableKey {
     type Value = String;
     const FUNCTION: SkyFunctionName = SkyFunctionName("TEST_NONHERMETIC_NOT_COMPARABLE");
-    const HERMETICITY: Option<FunctionHermeticity> = Some(FunctionHermeticity::Nonhermetic);
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
 }
 
 /// Java: `MemoizingEvaluatorTest.MemoizingEvaluatorTester`: a [`Tester`] (its `GraphTester`

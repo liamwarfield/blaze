@@ -31,7 +31,7 @@ use blaze_sky_analysis::dependency_resolver::{DependencyResolver, DependencyReso
 use blaze_sky_analysis::producers::errors::TargetAndConfiguration;
 use blaze_sky_loading::package_function::PackageKey;
 use blaze_sky_loading::starlark_builtins::StarlarkBuiltinsKey;
-use blaze_skyframe::{EvaluatorBuilder, Key, SkyFunctionName};
+use blaze_skyframe::{EvaluatorBuilder, FunctionHermeticity, Key, SkyFunctionName};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use starlark::values::OwnedFrozenValue;
@@ -68,6 +68,11 @@ impl fmt::Debug for RuleContextForTestingKey {
 impl Key for RuleContextForTestingKey {
     type Value = RuleContextForTestingValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("RULE_CONTEXT_FOR_TESTING");
+    // PORT: test harness key, no Java SkyFunctionName (see below).
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
+    // PORT: no Java key (Java computes the rule context outside Skyframe); the function reads the
+    // harness's analysis services slot, state Skyframe does not track, so it is declared
+    // non-hermetic. Default `values_equal` (never equal).
 }
 
 /// The rule context.

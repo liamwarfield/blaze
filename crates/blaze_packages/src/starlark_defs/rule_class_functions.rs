@@ -1843,8 +1843,11 @@ fn create_rule<'v>(
     if !a.implicit_outputs.is_none() {
         if is_starlark_function(a.implicit_outputs) {
             let p = PendingValue::new(a.implicit_outputs, eval);
+            // Java: new StarlarkCallbackHelper(implicitOutputs, thread.getSemantics())
+            let semantics = ThreadContext::get(eval)?.semantics.clone();
             builder.set_implicit_outputs_function(ImplicitOutputsFunction::StarlarkWithCallback {
                 callback: p.handle,
+                semantics: Some(semantics),
             });
             pending.push(p);
         } else {
@@ -2157,6 +2160,20 @@ pub fn register_rule_class_functions(builder: &mut GlobalsBuilder) {
             && starlark::values::dict::DictRef::from_value(attrs).is_none()
         {
             return Err(param_type_error("rule", "attrs", attrs, "dict"));
+        }
+        // Java: `@Param(name = "outputs", allowedTypes = {Dict, NoneType, StarlarkFunction})`
+        // (StarlarkRuleFunctionsApi.java), checked before the method body.
+        if let Some(o) = outputs
+            && !(o.is_none()
+                || starlark::values::dict::DictRef::from_value(o).is_some()
+                || is_starlark_function(o))
+        {
+            return Err(param_type_error(
+                "rule",
+                "outputs",
+                o,
+                "dict, NoneType, or function",
+            ));
         }
         let executable_unchecked = bool_or_unbound("rule", "executable", executable)?;
         let doc = optional_str("rule", "doc", doc)?;

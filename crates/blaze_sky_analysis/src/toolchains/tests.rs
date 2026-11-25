@@ -192,3 +192,92 @@ fn test_registered_execution_platforms_value_equals_and_hash_code() {
 }
 
 // The harness-based tests of these classes are in blaze_sky_top/src/tests/ (one file per Java class).
+
+// Package I2: the Java `EqualsTester` groups above, over `Key::values_equal` (change pruning),
+// and through the evaluator.
+// Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionValue.java:46 SingleToolchainResolutionValue
+#[test]
+fn single_toolchain_resolution_values_equal_prunes_parent() {
+    use crate::toolchains::platform_keys::empty_options_configuration_key;
+    use crate::toolchains::single_toolchain_resolution::SingleToolchainResolutionKey;
+    use blaze_analysis::toolchains::ToolchainTypeRequirement;
+    use blaze_skyframe::testing::{parent_rebuilt, values_equal_tester};
+
+    let toolchain_type_info = ToolchainTypeInfo::create(label("//test:toolchain"));
+    let linux = ConfiguredTargetKey::builder()
+        .set_label(label("//platforms:linux"))
+        .build();
+    let mac = ConfiguredTargetKey::builder()
+        .set_label(label("//platforms:mac"))
+        .build();
+    let value = |entries: &[(&ConfiguredTargetKey, &str)]| {
+        let mut m = IndexMap::new();
+        for (k, l) in entries {
+            m.insert((*k).clone(), label(l));
+        }
+        SingleToolchainResolutionValue::create(toolchain_type_info.clone(), m)
+    };
+    values_equal_tester::<SingleToolchainResolutionKey>(&[
+        vec![
+            value(&[(&linux, "//test:toolchain_impl_1")]),
+            value(&[(&linux, "//test:toolchain_impl_1")]),
+        ],
+        vec![value(&[(&mac, "//test:toolchain_impl_1")])],
+        vec![value(&[(&linux, "//test:toolchain_impl_2")])],
+        vec![value(&[
+            (&linux, "//test:toolchain_impl_1"),
+            (&mac, "//test:toolchain_impl_1"),
+        ])],
+    ]);
+    let key = SingleToolchainResolutionKey::key(
+        empty_options_configuration_key(),
+        ToolchainTypeRequirement::create(label("//test:toolchain")),
+        toolchain_type_info.clone(),
+        linux.clone(),
+        vec![linux.clone()],
+        false,
+    );
+    assert!(!parent_rebuilt(
+        key.clone(),
+        value(&[(&linux, "//test:toolchain_impl_1")]),
+        value(&[(&linux, "//test:toolchain_impl_1")]),
+    ));
+    assert!(parent_rebuilt(
+        key,
+        value(&[(&linux, "//test:toolchain_impl_1")]),
+        value(&[(&linux, "//test:toolchain_impl_2")]),
+    ));
+}
+
+// Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredToolchainsValue.java:42 RegisteredToolchainsValue
+#[test]
+fn registered_toolchains_values_equal_contract() {
+    use crate::toolchains::registered_toolchains::RegisteredToolchainsKey;
+    use blaze_skyframe::testing::values_equal_tester;
+
+    let toolchain = |impl_: &str, target: &str| {
+        DeclaredToolchainInfo::builder()
+            .toolchain_type(Some(ToolchainTypeInfo::create(label("//test:toolchain"))))
+            .add_exec_constraints([])
+            .add_target_constraints([])
+            .resolved_toolchain_label(label(impl_))
+            .target_label(label(target))
+            .build()
+            .unwrap()
+    };
+    let toolchain1 = toolchain("//test/toolchain_impl_1", "//test/toolchain_1");
+    let toolchain2 = toolchain("//test/toolchain_impl_2", "//test/toolchain_2");
+    let value = |v: Vec<DeclaredToolchainInfo>| RegisteredToolchainsValue {
+        registered_toolchains: v,
+        rejected_toolchains: None,
+    };
+    values_equal_tester::<RegisteredToolchainsKey>(&[
+        vec![
+            value(vec![toolchain1.clone(), toolchain2.clone()]),
+            value(vec![toolchain1.clone(), toolchain2.clone()]),
+        ],
+        vec![value(vec![toolchain1.clone()])],
+        vec![value(vec![toolchain2.clone()])],
+        vec![value(vec![toolchain2, toolchain1])],
+    ]);
+}

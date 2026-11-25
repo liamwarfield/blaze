@@ -215,3 +215,44 @@ fn resolve_uses_the_compiled_type_syntax() {
         .build(FileKind::Bzl, &blaze_starlark::StarlarkSemantics::default());
     assert!(blaze_starlark::eval::resolve(&compiled, &globals).is_ok());
 }
+
+/// Java Parser.tokenString prints a doc comment's text (DocComments.toString): oracle probes
+/// c06 (`x = #: doc` in a BUILD file) and c07 (`if x #: doc` in a .bzl file) of loading-fix-1.
+#[test]
+fn doc_comment_token_in_syntax_error() {
+    assert_eq!(
+        errors(FileKind::Build, "BUILD", "x = #: doc\n"),
+        ["BUILD:1:5: syntax error at '#: doc': expected expression"]
+    );
+    assert_eq!(
+        errors(
+            FileKind::Bzl,
+            "a.bzl",
+            "def f(x):\n    if x #: doc\n        pass\n"
+        ),
+        ["a.bzl:2:10: syntax error at '#: doc': expected :"]
+    );
+}
+
+/// A .bzl file's parse errors are followed by the resolver's errors on the recovered tree
+/// (BzlCompileFunction.java:234, Resolver.java:946 "contains syntax errors"); a BUILD file's
+/// parse errors come alone (PackageFunction.java:1367). Expected lines: oracle probes s01, s02
+/// of loading-fix-1.
+#[test]
+fn bzl_parse_errors_then_resolver_errors() {
+    assert_eq!(
+        errors(
+            FileKind::Bzl,
+            "a.bzl",
+            "x = (1 +)\ny = 1\ny = 2\nz = [i for i in undefined]\n"
+        ),
+        [
+            "a.bzl:1:9: syntax error at ')': expected expression",
+            "a.bzl:1:5: contains syntax errors",
+        ]
+    );
+    assert_eq!(
+        errors(FileKind::Build, "BUILD", "x = (1 +)\ny = undefined\n"),
+        ["BUILD:1:9: syntax error at ')': expected expression"]
+    );
+}

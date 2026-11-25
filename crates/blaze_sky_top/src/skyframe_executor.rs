@@ -123,7 +123,8 @@ pub enum SkyframeExecutorCreationError {
     /// The repository setup (`BazelRepositoryModule.beforeCommand`) failed.
     #[error("{0}")]
     ExternalRepos(String),
-    /// `BzlmodConfigError` (message and `ExternalRepository` code name).
+    /// `BzlmodConfigError` or an `AbruptExitException` of `BazelRepositoryModule.beforeCommand`
+    /// (message and `ExternalRepository` code name).
     #[error("{message}")]
     Bzlmod { message: String, code: &'static str },
     /// `setBaselineConfiguration` failed (the exec transition could not be loaded or applied).
@@ -295,7 +296,14 @@ impl SkyframeExecutor {
             },
             inputs.output_base.get_file_system().clone(),
         )
-        .map_err(SkyframeExecutorCreationError::ExternalRepos)?;
+        .map_err(|e| match e.code {
+            // AbruptExitException(detailedExitCode(message, code)).
+            Some(code) => SkyframeExecutorCreationError::Bzlmod {
+                message: e.message,
+                code,
+            },
+            None => SkyframeExecutorCreationError::ExternalRepos(e.message),
+        })?;
         let mut repository_functions = repository_functions;
         if let Some(builtin_modules) = builtin_modules {
             repository_functions.bzlmod_config.builtin_modules = builtin_modules;
@@ -476,6 +484,18 @@ impl SkyframeExecutor {
             builder = builder
                 .typed_function::<blaze_analysis::analysis_services::WorkspaceStatusKey, _>(
                     move |_, _| Ok(Some(status_services.compute_workspace_status_value())),
+                );
+            // Java: CoverageReportFunction (SkyFunctions.COVERAGE_REPORT).
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:932 SkyframeExecutor.skyFunctions
+            let coverage_services = services.clone();
+            builder = builder
+                .typed_function::<blaze_analysis::coverage_report_value::CoverageReportKey, _>(
+                    move |_, env| {
+                        blaze_analysis::coverage_report_value::compute_coverage_report_value(
+                            &coverage_services.action_key_context,
+                            env,
+                        )
+                    },
                 );
             if let Some(mut setup) = inputs.execution {
                 // Java: CommandEnvironment's package locator path entries and

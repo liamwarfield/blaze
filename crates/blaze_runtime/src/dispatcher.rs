@@ -60,6 +60,10 @@ pub struct BlazeCommandDispatcher {
     /// Set by [`Self::exec_exclusively`] when the command ended with `REMOTE_CACHE_EVICTED` and
     /// may be retried: Java's `RemoteCacheTransientErrorException`.
     remote_cache_transient_error: Mutex<bool>,
+    /// Whether [`Self::exec`] releases the build arena (`blaze_util::build_arena`) when a
+    /// command has ended: only the server that runs many commands in one process does
+    /// ([`Self::release_build_arena_after_commands`]).
+    release_build_arena: bool,
 }
 
 // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:111 BlazeCommandDispatcher.HELP_COMMAND
@@ -80,7 +84,19 @@ impl BlazeCommandDispatcher {
             current_client_description: Monitor::new(None),
             shutdown_reason: Arc::new(Mutex::new(None)),
             remote_cache_transient_error: Mutex::new(false),
+            release_build_arena: false,
         }
+    }
+
+    /// Makes [`Self::exec`] release the build arena after every command that ended normally,
+    /// while it still holds the command lock (see [`release_build_arena`]).
+    ///
+    /// PORT: Blaze only (decision D7). The persistent server (`BlazeRuntime.serverMain`) runs
+    /// many commands in one process; batch mode and the in-process server run one and never
+    /// release it.
+    pub fn release_build_arena_after_commands(mut self) -> Self {
+        self.release_build_arena = true;
+        self
     }
 
     /// Executes a single command: the `exec` that batch mode and the in-process server call,
@@ -313,6 +329,8 @@ impl BlazeCommandDispatcher {
                         format!("explicitly by client {}", client_description)
                     }
                 ));
+            } else if self.release_build_arena {
+                release_build_arena();
             }
             result
         })();
@@ -487,7 +505,7 @@ impl BlazeCommandDispatcher {
             );
             post_no_build_event(&env);
             let result = BlazeCommandResult::detailed_exit_code(early_exit_code);
-            return self.after_command(&mut env, result, &out_err);
+            return self.after_command_on_early_exit(&mut env, result, &out_err);
         }
 
         // Setup the event handler.
@@ -633,7 +651,7 @@ impl BlazeCommandDispatcher {
         if let Err(e) = env_before_command {
             reporter.handle(&Event::error(e.get_message()));
             let result = BlazeCommandResult::detailed_exit_code(e.get_detailed_exit_code().clone());
-            return self.after_command(&mut env, result, &out_err);
+            return self.after_command_on_early_exit(&mut env, result, &out_err);
         }
 
         let mut options = options;
@@ -653,6 +671,7 @@ impl BlazeCommandDispatcher {
                 reporter.clone(),
                 ui_filter.clone(),
             ));
+            crate::commands::query::prepare_package_loading();
             let skyframe_executor =
                 match crate::commands::query::create_skyframe_executor_reporting_to(
                     &env,
@@ -664,7 +683,7 @@ impl BlazeCommandDispatcher {
                     Ok(skyframe_executor) => skyframe_executor,
                     Err(result) => {
                         post_no_build_event(&env);
-                        return self.after_command(&mut env, result, &out_err);
+                        return self.after_command_on_early_exit(&mut env, result, &out_err);
                     }
                 };
 
@@ -759,7 +778,7 @@ impl BlazeCommandDispatcher {
             if !early_exit_code.is_success() {
                 post_no_build_event(&env);
                 let result = BlazeCommandResult::detailed_exit_code(early_exit_code);
-                return self.after_command(&mut env, result, &out_err);
+                return self.after_command_on_early_exit(&mut env, result, &out_err);
             }
             let mut options_parser = options_parser.expect("the options parser was rebuilt");
             // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:739 BlazeCommandDispatcher.execExclusively
@@ -785,7 +804,7 @@ impl BlazeCommandDispatcher {
             if !early_exit_code.is_success() {
                 post_no_build_event(&env);
                 let result = BlazeCommandResult::detailed_exit_code(early_exit_code);
-                return self.after_command(&mut env, result, &out_err);
+                return self.after_command_on_early_exit(&mut env, result, &out_err);
             }
 
             // Parse starlark options.
@@ -814,7 +833,7 @@ impl BlazeCommandDispatcher {
             if !early_exit_code.is_success() {
                 post_no_build_event(&env);
                 let result = BlazeCommandResult::detailed_exit_code(early_exit_code);
-                return self.after_command(&mut env, result, &out_err);
+                return self.after_command_on_early_exit(&mut env, result, &out_err);
             }
             // optionHandler.getOptionsResult(). Like Java, env.getOptions() keeps the first
             // parse; the command gets this one.
@@ -893,6 +912,21 @@ impl BlazeCommandDispatcher {
         Ok(())
     }
 
+    /// An early `return result` of execExclusively: its `finally` block calls `afterCommand`
+    /// (`needToCallAfterCommand` is still true) and only logs `afterCommand`'s result when it
+    /// differs; the command's result is `result`.
+    // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:884 BlazeCommandDispatcher.execExclusively
+    fn after_command_on_early_exit(
+        &self,
+        env: &mut CommandEnvironment,
+        result: BlazeCommandResult,
+        out_err: &OutErr,
+    ) -> BlazeCommandResult {
+        // PORT: skipped, logging ("afterCommand yielded different result").
+        let _new_result = self.after_command(env, result.clone(), out_err);
+        result
+    }
+
     /// `BlazeRuntime.afterCommand` plus the stream flushing of execExclusively's finally block.
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:750 BlazeRuntime.afterCommand
     fn after_command(
@@ -911,6 +945,12 @@ impl BlazeCommandDispatcher {
         }
         // this.env = null
         self.runtime.clear_env();
+
+        // Remove any filters that the command might have added to the reporter.
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:756 BlazeRuntime.afterCommand
+        env.get_reporter()
+            .set_output_filter(blaze_events::output_filter::output_everything());
+
         let mut module_exit_code: Option<DetailedExitCode> = None;
         // Ensure deterministic ordering of doing the metrics upload before everything else that
         // happens when BuildCompleteEvent is posted.
@@ -959,6 +999,13 @@ impl BlazeCommandDispatcher {
             final_command_result =
                 BlazeCommandResult::detailed_exit_code(other_thread_won_exit_code);
         }
+        // env.getBlazeWorkspace().clearEventBus(): "EventBus does not have an unregister()
+        // method, so this is how we release memory associated with handlers" (the workspace's
+        // SkyframeExecutor drops its reference to the command's event bus).
+        // PORT: Blaze's Skyframe executors belong to the command and are gone by now; the
+        // memory of the handlers is released below, where the last reference Java keeps (the
+        // reporter's) is cleared.
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:810 BlazeRuntime.afterCommand
         if let Some(handler) = env.get_ui_event_handler() {
             // UiEventHandler is subscribed to AfterCommandEvent / BuildComplete; it flushes its
             // buffers there.
@@ -981,6 +1028,16 @@ impl BlazeCommandDispatcher {
         // Swallow IOException, as we are already in a finally clause
         let _ = out_err.get_output_stream().flush();
         let _ = out_err.get_error_stream().flush();
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:832 BlazeRuntime.afterCommand
+        env.get_reporter().clear_event_bus();
+        // PORT: with the reporter's and the workspace's references gone, Java's collector frees
+        // the command's event bus and the subscribers registered on it. Blaze's subscribers can
+        // hold the bus themselves (ExecutionProgressReceiverSetup, the test result aggregator),
+        // so the bus and its subscribers would keep each other alive for the life of the server;
+        // the bus drops its subscribers here instead.
+        env.get_event_bus().clear_subscribers();
+        // PORT: actionKeyContext.clear(): Blaze's ActionKeyContext belongs to the command's
+        // Skyframe executor, which is gone.
         // storedExitCode.set(null)
         self.runtime.clear_stored_exit_code();
         // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:836 BlazeRuntime.afterCommand
@@ -1098,6 +1155,24 @@ fn set_shutdown_reason(reason: &Mutex<Option<String>>, shutdown_reason: String) 
     if reason.is_none() {
         *reason = Some(shutdown_reason);
     }
+}
+
+/// Releases the build arena (`blaze_util::build_arena::release_if_unused`) once a command has
+/// completely ended: `exec_exclusively` has returned, so `afterCommand` ran and the command's
+/// environment, its Skyframe executors (whose leases keep the arena) and the threads they join
+/// are gone; the command lock is still held, so no other command has started to fill the arena.
+///
+/// PORT: Blaze only (decision D7; docs/research/08-server-and-incrementality.md 3.3 a). Java's
+/// collector frees the frozen Starlark heaps, the memo tables keyed by their values and the
+/// evaluator's graph once nothing references them; Blaze's server discards its graph after
+/// every command (decision D2), so everything the arena holds belongs to the command that ended.
+/// Not after a crash or a `shutdown` (the server exits; a crashed command's threads may still
+/// run). If a lease is still held (an executor outlived its command) nothing is released and
+/// the next command shares this arena, as in a process that never releases it.
+fn release_build_arena() {
+    let leases = blaze_util::build_arena::active_leases();
+    let released = blaze_util::build_arena::release_if_unused();
+    eprintln!("TEMPDIAG release_build_arena leases={leases} released={released} generation={}", blaze_util::build_arena::generation());
 }
 
 /// The `systemOutErrPatcher.close()` of execExclusively's `finally`: run when the command's

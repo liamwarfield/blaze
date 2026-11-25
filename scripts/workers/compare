@@ -41,9 +41,11 @@ install base and $HOME by placeholders, scripts/oracle/normalise.py):
                compare_common's VOLATILE_RULES (timer-driven progress lines, times), the bare
                "Loading:" lines, blank lines, the worker key hash (it hashes the execroot path,
                which differs between the two output roots; that it equals Bazel's for equal
-               paths is checked by the `samehash` case), and the Java stack frames ("\\tat ..."
+               paths is checked by the `samehash` case). The Java stack frames ("\\tat ..."
                and "\\t... N more") of the oracle's "Exception details", which Blaze cannot
-               print (declared normalisation: blaze_exec::worker::error_message). "stderr order"
+               print (blaze_exec::worker::error_message), are a gap rule: removed from the
+               line comparison and compared separately, so a case that differs only there is
+               KNOWN-GAP, never IDENTICAL (audit 4r2, B4). "stderr order"
                when the same lines come in another order (a difference all the same).
   outputs      sha256 of every bazel-bin/*.out and bazel-bin/java/*.jar
   logs         the names of <output_base>/bazel-workers/*.log and the contents of each
@@ -139,9 +141,12 @@ RULES = cc.VOLATILE_RULES + [
     cc.Rule("worker_key_hash", r"key hash -?\d+", "the worker key hash hashes the execroot path, "
             "which differs between the two output roots (the samehash case checks it)",
             repl="key hash <H>", streams=("stdout", "stderr")),
+    # A deviation of Blaze, not a volatile line (audit 4r2, B4): a gap rule, so a case whose
+    # stderr differs only in these frames is KNOWN-GAP, never IDENTICAL.
     cc.Rule("java_frames", r"^\t(at |\.\.\. \d+ more)", "the Java stack frames of the "
-            "oracle's \"Exception details\", which Blaze cannot print (declared normalisation: "
-            "blaze_exec::worker::error_message)")]
+            "oracle's \"Exception details\", which Blaze cannot print (no JVM; "
+            "blaze_exec::worker::error_message): a gap of Blaze, compared separately",
+            kind="gap")]
 
 
 def make_writable_and_remove(path):
@@ -317,8 +322,10 @@ def compare_case(cid, declared, o, b, odir, bdir, octx, bctx):
     differing = []
     oerr = open(os.path.join(odir, cid + ".stderr"), "rb").read().decode("latin-1")
     berr = open(os.path.join(bdir, cid + ".stderr"), "rb").read().decode("latin-1")
-    ol_ = NORM.apply(oerr, "oracle", "stderr", octx._pairs).text.splitlines()
-    bl_ = NORM.apply(berr, "blaze", "stderr", bctx._pairs).text.splitlines()
+    on_ = NORM.apply(oerr, "oracle", "stderr", octx._pairs)
+    bn_ = NORM.apply(berr, "blaze", "stderr", bctx._pairs)
+    ol_, bl_ = on_.text.splitlines(), bn_.text.splitlines()
+    gaps = sorted(n for n in set(on_.gaps) | set(bn_.gaps) if on_.gaps.get(n) != bn_.gaps.get(n))
     details = []
     eq_out, _ = NORM.compare(open(os.path.join(odir, cid + ".stdout"), "rb").read(),
                              open(os.path.join(bdir, cid + ".stdout"), "rb").read(), "stdout",
@@ -365,7 +372,7 @@ def compare_case(cid, declared, o, b, odir, bdir, octx, bctx):
                     fields.update(f for f in set(a) | set(c) if a.get(f) != c.get(f))
         differing.append("execlog (%s)" % ", ".join(sorted(fields)))
     cls, detail = cc.judge(ot, bt, differing, declared_exit=declared,
-                           blaze_unported=bc.get("unported"))
+                           blaze_unported=bc.get("unported"), gaps=gaps)
     return cls, detail, details
 
 
@@ -410,8 +417,18 @@ def selftest():
     def argv(blaze, label):
         return ["--binary", blaze, "--case", first, "--label", label]
 
+    def extra(st, fh, run):
+        # B4: the oracle's Java stack frames are a gap, never volatile.
+        err = b"ERROR: worker failed\nException details:\n"
+        o, b = fh.fakes(dict(out=b"x\n", err=err + b"\tat a.B.c(B.java:1)\n\t... 3 more\n"),
+                        dict(out=b"x\n", err=err))
+        rc, rep, log = run(argv(b, "selftest-java-frames"))
+        cls = [r["class"] for r in (rep or {}).get("cases", []) if r["case"] == first]
+        st.check("B4: a case differing only in Java frames is KNOWN-GAP", rc == 1
+                 and cls == [cc.KNOWN_GAP], "exit %s, %s" % (rc, cls))
+
     return cc.selftest_tool(
-        TOOL, THIS, argv,
+        TOOL, THIS, argv, extra=extra,
         empty=lambda b, l: ["--binary", b, "--case", "no-such-case", "--label", l],
         reuse=lambda b, l: argv(b, l) + ["--skip-oracle"],
         oracle_outputs=lambda home, l: [os.path.join(home, ".cache", "blaze", "workers-compare",

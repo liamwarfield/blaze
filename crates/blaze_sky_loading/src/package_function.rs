@@ -32,8 +32,8 @@ use blaze_packages::package::{
     GlobberToken, Package, PackageArgs, RuleVisibility, TargetDefinitionContext,
 };
 use blaze_skyframe::{
-    ComputeError, Environment, Interrupted, Key, SkyFunctionException, SkyFunctionName, SkyKey,
-    Transience,
+    ComputeError, Environment, FunctionHermeticity, Interrupted, Key, SkyFunctionException,
+    SkyFunctionName, SkyKey, Transience,
 };
 use blaze_starlark::error::EvalErrorKind;
 use blaze_starlark::eval::{CompiledFile, EvalOptions};
@@ -100,6 +100,11 @@ impl fmt::Debug for PackageKey {
 impl Key for PackageKey {
     type Value = PackageValue;
     const FUNCTION: SkyFunctionName = sky_functions::PACKAGE;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:56 SkyFunctions.PACKAGE (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal): Java's `PackageValue` is a `PackageoidValue`, a
+    // `NotComparableSkyValue`.
+    // Java: com/google/devtools/build/lib/skyframe/PackageoidValue.java:21 PackageoidValue
 }
 
 /// A Skyframe value representing a package.

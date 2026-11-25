@@ -38,13 +38,13 @@ use crate::cpp::util::errorf;
 
 // Java: com/google/devtools/build/lib/actions/ExecutionRequirements.java:403 ExecutionRequirements.SUPPORTS_PATH_MAPPING
 const SUPPORTS_PATH_MAPPING: &str = "supports-path-mapping";
-// Java: com/google/devtools/build/lib/actions/ExecutionRequirements.java:142 ExecutionRequirements.SUPPORTS_WORKERS
+// Java: com/google/devtools/build/lib/actions/ExecutionRequirements.java:274 ExecutionRequirements.SUPPORTS_WORKERS
 const SUPPORTS_WORKERS: &str = "supports-workers";
-// Java: com/google/devtools/build/lib/actions/ExecutionRequirements.java:145 ExecutionRequirements.SUPPORTS_MULTIPLEX_WORKERS
+// Java: com/google/devtools/build/lib/actions/ExecutionRequirements.java:276 ExecutionRequirements.SUPPORTS_MULTIPLEX_WORKERS
 const SUPPORTS_MULTIPLEX_WORKERS: &str = "supports-multiplex-workers";
-// Java: com/google/devtools/build/lib/actions/ExecutionRequirements.java:151 ExecutionRequirements.SUPPORTS_WORKER_CANCELLATION
+// Java: com/google/devtools/build/lib/actions/ExecutionRequirements.java:281 ExecutionRequirements.SUPPORTS_WORKER_CANCELLATION
 const SUPPORTS_WORKER_CANCELLATION: &str = "supports-worker-cancellation";
-// Java: com/google/devtools/build/lib/actions/ExecutionRequirements.java:148 ExecutionRequirements.SUPPORTS_MULTIPLEX_SANDBOXING
+// Java: com/google/devtools/build/lib/actions/ExecutionRequirements.java:283 ExecutionRequirements.SUPPORTS_MULTIPLEX_SANDBOXING
 const SUPPORTS_MULTIPLEX_SANDBOXING: &str = "supports-multiplex-sandboxing";
 
 /// `ruleContext.registerAction(action)` from a native called by a rule implementation.
@@ -55,7 +55,7 @@ pub fn register_action(eval: &Evaluator, action: ActionRef) -> starlark::Result<
 /// A helper class for compiling Java targets.
 ///
 /// PORT: Java's interners of javacopts and execution info only share memory.
-// Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:66 JavaCompilationHelper
+// Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:60 JavaCompilationHelper
 pub struct JavaCompilationHelper<'a, 'v> {
     rule_context: &'a RuleContext,
     java_toolchain: JavaToolchainProvider<'v>,
@@ -72,7 +72,7 @@ pub struct JavaCompilationHelper<'a, 'v> {
 }
 
 impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:87 JavaCompilationHelper.<init>
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:80 JavaCompilationHelper.<init>
     pub fn new(
         rule_context: &'a RuleContext,
         semantics: &'static dyn JavaSemantics,
@@ -102,22 +102,22 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
         }
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:107 JavaCompilationHelper.javaBuilderJvmFlags
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:101 JavaCompilationHelper.javaBuilderJvmFlags
     pub fn java_builder_jvm_flags(&mut self, java_builder_jvm_flags: NestedSet<String>) {
         self.java_builder_jvm_flags = java_builder_jvm_flags;
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:111 JavaCompilationHelper.enableJspecify
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:105 JavaCompilationHelper.enableJspecify
     pub fn enable_jspecify(&mut self, enable_jspecify: bool) {
         self.enable_jspecify = enable_jspecify;
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:115 JavaCompilationHelper.setExtraCommandLineArgs
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:109 JavaCompilationHelper.setExtraCommandLineArgs
     pub fn set_extra_command_line_args(&mut self, extra_command_line_args: Vec<CommandLineRef>) {
         self.extra_command_line_args = extra_command_line_args;
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:119 JavaCompilationHelper.getAttributes
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:113 JavaCompilationHelper.getAttributes
     fn get_attributes(&mut self) -> JavaTargetAttributes<'v> {
         if self.built_attributes.is_none() {
             self.built_attributes = Some(self.attributes.build());
@@ -125,12 +125,12 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
         self.built_attributes.clone().unwrap()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:126 JavaCompilationHelper.enableDirectClasspath
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:120 JavaCompilationHelper.enableDirectClasspath
     pub fn enable_direct_classpath(&mut self, enable_direct_classpath: bool) {
         self.enable_direct_classpath = enable_direct_classpath;
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:130 JavaCompilationHelper.getRuleContext
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:124 JavaCompilationHelper.getRuleContext
     pub fn get_rule_context(&self) -> &'a RuleContext {
         self.rule_context
     }
@@ -151,7 +151,7 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
         self.rule_context.get_configuration()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:142 JavaCompilationHelper.getJavaConfiguration
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:136 JavaCompilationHelper.getJavaConfiguration
     fn get_java_configuration(&self) -> &'a JavaConfiguration {
         self.rule_context
             .get_fragment::<JavaConfiguration>("JavaConfiguration", Some("java"))
@@ -162,7 +162,7 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
         config_util::is_sibling_repository_layout(self.get_configuration())
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:146 JavaCompilationHelper.createCompileAction
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:140 JavaCompilationHelper.createCompileAction
     pub fn create_compile_action(
         &mut self,
         eval: &Evaluator,
@@ -410,7 +410,7 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
     }
 
     /// Returns the per-package configured runfiles.
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:327 JavaCompilationHelper.computePerPackageData
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:339 JavaCompilationHelper.computePerPackageData
     fn compute_per_package_data(
         rule_context: &RuleContext,
         toolchain: &JavaToolchainProvider<'_>,
@@ -427,7 +427,7 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
 
     /// If there are sources and no resource, the only output is from the javac action.
     /// Otherwise create a separate jar for the compilation and add resources with singlejar.
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:344 JavaCompilationHelper.separateResourceJar
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:355 JavaCompilationHelper.separateResourceJar
     fn separate_resource_jar(
         &self,
         resource_jars: &[Artifact],
@@ -439,7 +439,7 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
             || !attributes.get_class_path_resources().is_empty()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:352 JavaCompilationHelper.getExecutionInfo
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:363 JavaCompilationHelper.getExecutionInfo
     fn get_execution_info(&self) -> starlark::Result<IndexMap<String, String>> {
         let mut modifiable_execution_info = IndexMap::new();
         modifiable_execution_info.insert(SUPPORTS_PATH_MAPPING.to_owned(), "1".to_owned());
@@ -482,7 +482,7 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
     }
 
     /// Returns the bootclasspath explicit set in attributes if present, or else the default.
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:378 JavaCompilationHelper.getBootclasspathOrDefault
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:390 JavaCompilationHelper.getBootclasspathOrDefault
     pub fn get_bootclasspath_or_default(&mut self) -> starlark::Result<BootClassPathInfo<'v>> {
         let attributes = self.get_attributes();
         if !attributes.get_boot_class_path().is_empty()? {
@@ -497,7 +497,7 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
     /// The Artifact is created in the same directory as the given `compileJar` and has the
     /// suffix `-paths-for-coverage.txt`. Returns `None` if `compileJar` should not be
     /// instrumented.
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:396 JavaCompilationHelper.maybeCreateCoverageArtifact
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:408 JavaCompilationHelper.maybeCreateCoverageArtifact
     fn maybe_create_coverage_artifact(&self, compile_jar: &Artifact) -> Option<Artifact> {
         if !self.should_instrument_jar() {
             return None;
@@ -512,7 +512,7 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
         )
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:407 JavaCompilationHelper.shouldInstrumentJar
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:419 JavaCompilationHelper.shouldInstrumentJar
     fn should_instrument_jar(&self) -> bool {
         let rule_context = self.get_rule_context();
         config_util::is_code_coverage_enabled(rule_context.get_configuration())
@@ -524,7 +524,7 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
             )
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:415 JavaCompilationHelper.turbineOutput
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:427 JavaCompilationHelper.turbineOutput
     fn turbine_output(&self, class_jar: &Artifact, new_extension: &str) -> Artifact {
         self.get_analysis_environment().get_derived_artifact(
             &replace_extension(
@@ -536,7 +536,7 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
     }
 
     /// Creates the Action that compiles ijars from source.
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:430 JavaCompilationHelper.createHeaderCompilationAction
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:442 JavaCompilationHelper.createHeaderCompilationAction
     pub fn create_header_compilation_action(
         &mut self,
         eval: &Evaluator,
@@ -567,7 +567,7 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
         builder.build(eval, &self.java_toolchain)
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:454 JavaCompilationHelper.getJavaHeaderCompileActionBuilder
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:451 JavaCompilationHelper.getJavaHeaderCompileActionBuilder
     fn get_java_header_compile_action_builder(
         &mut self,
     ) -> starlark::Result<JavaHeaderCompileActionBuilder<'a>> {
@@ -602,14 +602,14 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
     }
 
     /// Returns whether this target uses annotation processing.
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:482 JavaCompilationHelper.usesAnnotationProcessing
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:493 JavaCompilationHelper.usesAnnotationProcessing
     pub fn uses_annotation_processing(&mut self) -> bool {
         let attributes = self.get_attributes();
         self.get_javac_opts().iter().any(|o| o == "-processor")
             || attributes.plugins().has_processors()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:487 JavaCompilationHelper.createGenJarAction
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:498 JavaCompilationHelper.createGenJarAction
     fn create_gen_jar_action(
         &self,
         eval: &Evaluator,
@@ -657,7 +657,7 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
     }
 
     /// Returns the GenClass deploy jar Artifact.
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:513 JavaCompilationHelper.getGenClassJar
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:510 JavaCompilationHelper.getGenClassJar
     fn get_gen_class_jar(&self) -> starlark::Result<Artifact> {
         if let Some(gen_class) = self.java_toolchain.get_gen_class()? {
             return Ok(gen_class);
@@ -668,7 +668,7 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
             .unwrap_or_else(|| panic!("NullPointerException: $genclass")))
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:521 JavaCompilationHelper.createResourceJarAction
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:533 JavaCompilationHelper.createResourceJarAction
     fn create_resource_jar_action(
         &mut self,
         eval: &Evaluator,
@@ -691,7 +691,7 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
             .build(eval, self.semantics, self.rule_context, &self.exec_group)
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:536 JavaCompilationHelper.createLocalOptimizationAction
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:549 JavaCompilationHelper.createLocalOptimizationAction
     fn create_local_optimization_action(
         &self,
         eval: &Evaluator,
@@ -747,7 +747,7 @@ impl<'a, 'v> JavaCompilationHelper<'a, 'v> {
     /// Gets the value of the "javacopts" attribute combining them with the default options. If
     /// the current rule has no javacopts attribute, this method only returns the default
     /// options.
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:578 JavaCompilationHelper.getJavacOpts
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompilationHelper.java:587 JavaCompilationHelper.getJavacOpts
     fn get_javac_opts(&self) -> &[String] {
         &self.custom_javac_opts
     }

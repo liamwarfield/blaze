@@ -34,8 +34,8 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      args: &'a Arguments<'v, 'a>,
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/environment/modules.rs starlark/src/environment/modules.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/environment/modules.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/environment/modules.rs	2026-11-18 09:57:21.308667630 -0700
-@@ -179,6 +179,11 @@
++++ starlark/src/environment/modules.rs	2026-11-25 10:38:27.300465526 -0700
+@@ -179,6 +179,16 @@
      /// serialization and restore as `None`.
      #[starlark_pagable(skip)]
      heap_profile: Option<RetainedHeapProfile>,
@@ -44,10 +44,24 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +    /// page modules).
 +    #[starlark_pagable(skip)]
 +    pub(crate) extra_value: Option<FrozenValue>,
++    /// BLAZE PATCH 0057: the names bound by this module's `load` statements. Bazel's load
++    /// bindings are file-local (Java Resolver.java:1170, `loadBindsGlobally` false for every
++    /// file another file can load), so they are not among `Module.getGlobals()`.
++    #[starlark_pagable(skip)]
++    pub(crate) load_bound: Vec<String>,
  }
  
  /// A container for user values, used during execution.
-@@ -292,6 +297,12 @@
+@@ -208,6 +218,8 @@
+     extra_value: Cell<Option<Value<'v>>>,
+     /// When `Some`, heap profile is collected on freeze.
+     heap_profile_on_freeze: Cell<Option<RetainedHeapProfileMode>>,
++    /// BLAZE PATCH 0057: names bound by `load` (see `FrozenModuleData::load_bound`).
++    load_bound: RefCell<Vec<String>>,
+ }
+ 
+ impl FrozenModule {
+@@ -292,6 +304,42 @@
          self.module.names()
      }
  
@@ -57,17 +71,133 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +        self.module.names.all_symbols().map(|x| x.0)
 +    }
 +
++    /// BLAZE PATCH 0057: Bazel's `Module.getGlobals().keySet()`: the names this module binds at
++    /// top level and assigned a value, in binding order, without the names bound by `load`.
++    ///
++    /// PORT: the order is starlark-rust's module slot order (first binding of each top-level
++    /// name, statement by statement, targets left to right), which is the order of Java's
++    /// `Resolver.createBindings` that fills `Module.globalIndex`.
++    // Java: net/starlark/java/eval/Module.java:216 Module.getGlobals
++    pub fn java_globals(&self) -> impl Iterator<Item = FrozenStringValue> + '_ {
++        let data = &self.module;
++        data.names.all_symbols().filter_map(move |(name, slot)| {
++            if data.slots.get_slot(slot).is_none()
++                || data.load_bound.iter().any(|l| l.as_str() == name.as_str())
++            {
++                None
++            } else {
++                Some(name)
++            }
++        })
++    }
++
++    /// BLAZE PATCH 0057: Java `Module.getGlobal(name)`: a top-level binding of this module that
++    /// is not a `load` binding, whatever its visibility.
++    // Java: net/starlark/java/eval/Module.java:280 Module.getGlobal
++    pub fn java_get_global(&self, name: &str) -> Option<OwnedFrozenValue> {
++        if self.module.load_bound.iter().any(|l| l == name) {
++            return None;
++        }
++        self.get_any_visibility_option(name).map(|(v, _)| v)
++    }
++
      /// Obtain the [`FrozenHeapRef`] which owns the storage of all values defined in this module.
      pub fn frozen_heap(&self) -> &FrozenHeapRef {
          &self.heap
-@@ -561,6 +572,7 @@
+@@ -436,6 +484,7 @@
+             eval_duration: Cell::new(Duration::ZERO),
+             extra_value: Cell::new(None),
+             heap_profile_on_freeze: Cell::new(None),
++            load_bound: RefCell::new(Vec::new()), // BLAZE PATCH 0057
+         }
+     }
+ 
+@@ -531,6 +580,7 @@
+             eval_duration,
+             extra_value,
+             heap_profile_on_freeze,
++            load_bound, // BLAZE PATCH 0057
+         } = self;
+         #[cfg(not(target_arch = "wasm32"))]
+         let start = Instant::now();
+@@ -561,6 +611,8 @@
              slots,
              docstring: docstring.into_inner(),
              heap_profile: stacks,
-+            extra_value, // BLAZE PATCH 0022
++            extra_value,                         // BLAZE PATCH 0022
++            load_bound: load_bound.into_inner(), // BLAZE PATCH 0057
          };
          let frozen_module_ref = freezer.heap.alloc_any_value(rest);
          for frozen_def in freezer.frozen_defs.borrow().as_slice() {
+@@ -617,9 +669,23 @@
+         }
+     }
+ 
++    /// BLAZE PATCH 0057: records a name bound by a `load` statement of this module.
++    pub(crate) fn add_load_bound_name(&self, name: &str) {
++        let mut l = self.load_bound.borrow_mut();
++        if !l.iter().any(|x| x == name) {
++            l.push(name.to_owned());
++        }
++    }
++
++    /// BLAZE PATCH 0057: one binding of `load(module_name, ..., symbol)`, as Java's `execLoad`:
++    /// the loaded module's global `symbol` (any visibility, not a `load` binding), else
++    /// `file 'M' does not contain symbol 'S'` with a suggestion over the module's globals.
++    /// (Java's Resolver rejects a private `symbol` before execution, Resolver.java:609.)
++    // Java: net/starlark/java/eval/Eval.java:261 Eval.execLoad
+     pub(crate) fn load_symbol(
+         &self,
+         module: &FrozenModule,
++        module_name: &str,
+         symbol: &str,
+     ) -> crate::Result<Value<'v>> {
+         if Self::default_visibility(symbol) != Visibility::Public {
+@@ -627,11 +693,21 @@
+                 EnvironmentError::CannotImportPrivateSymbol(symbol.to_owned()),
+             ));
+         }
+-        match module.get_any_visibility(symbol)? {
+-            (v, Visibility::Public) => Ok(self.heap().access_owned_frozen_value(&v)),
+-            (_, Visibility::Private) => Err(crate::Error::new_other(
+-                EnvironmentError::ModuleSymbolIsNotExported(symbol.to_owned()),
+-            )),
++        match module.java_get_global(symbol) {
++            Some(v) => Ok(self.heap().access_owned_frozen_value(&v)),
++            None => {
++                let globals: Vec<FrozenStringValue> = module.java_globals().collect();
++                Err(crate::Error::new_other(
++                    EnvironmentError::FileDoesNotContainSymbol(
++                        module_name.to_owned(),
++                        symbol.to_owned(),
++                        crate::errors::spell_checker::did_you_mean(
++                            symbol,
++                            globals.iter().map(|g| g.as_str()),
++                        ),
++                    ),
++                ))
++            }
+         }
+     }
+ 
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/environment.rs starlark/src/environment.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/environment.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/environment.rs	2026-11-25 10:16:49.500478722 -0700
+@@ -38,8 +38,13 @@
+ #[derive(Debug, Error)]
+ enum EnvironmentError {
+     /// Cannot import private symbol, i.e. underscore prefixed
+-    #[error("Cannot import private symbol `{0}`")]
++    // BLAZE PATCH 0057: Java's text (Resolver.java:610; the Java front end reports it first).
++    #[error("symbol '{0}' is private and cannot be imported")]
+     CannotImportPrivateSymbol(String),
++    /// BLAZE PATCH 0057: Java `Eval.execLoad` (Eval.java:266): module name as written in the
++    /// `load` statement, the symbol, and `SpellChecker.didYouMean`'s suffix.
++    #[error("file '{0}' does not contain symbol '{1}'{2}")]
++    FileDoesNotContainSymbol(String, String, String),
+     #[error("Module has no symbol `{0}`")]
+     ModuleHasNoSymbol(String),
+     #[error("Module has no symbol `{0}`, did you mean `{1}`?")]
 Only in starlark/src/errors: spell_checker.rs
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/errors.rs starlark/src/errors.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/errors.rs	2006-07-23 19:21:28.000000000 -0600
@@ -906,8 +1036,44 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +} // BLAZE PATCH 0045
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/module.rs starlark/src/eval/compiler/module.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/module.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/compiler/module.rs	2026-11-18 10:00:27.727146091 -0700
-@@ -148,7 +148,11 @@
++++ starlark/src/eval/compiler/module.rs	2026-11-25 10:17:27.436220987 -0700
+@@ -61,6 +61,13 @@
+ 
+         let span = FrameSpan::new(FrozenFileSpan::new(self.codemap, load.span));
+ 
++        // BLAZE PATCH 0057: load bindings are file-local in Bazel, not globals of the module.
++        for load_arg in &load.node.args {
++            self.eval
++                .module_env
++                .add_load_bound_name(&load_arg.local.ident);
++        }
++
+         let loadenv = match self.eval.loader.as_ref() {
+             None => {
+                 return Err(add_span_to_expr_error(
+@@ -80,11 +87,19 @@
+                 Slot::Local(..) => unreachable!("symbol need to be resolved to module"),
+                 Slot::Module(slot) => slot,
+             };
++            // BLAZE PATCH 0057: Java's error is located at the original name, one char after the
++            // start of its string literal (Parser.java:1442/1460, `token.start + 1`); an empty
++            // span, so that Blaze's location mapping takes its start as it is.
++            let their = load_arg.their.span;
++            let at = crate::codemap::Pos::new(their.begin().get() + 1);
+             let value = expr_throw(
+                 self.eval
+                     .module_env
+-                    .load_symbol(&loadenv, &load_arg.their.node),
+-                FrameSpan::new(FrozenFileSpan::new(self.codemap, load_arg.span())),
++                    .load_symbol(&loadenv, name, &load_arg.their.node),
++                FrameSpan::new(FrozenFileSpan::new(
++                    self.codemap,
++                    crate::codemap::Span::new(at, at),
++                )),
+                 self.eval,
+             )?;
+             self.eval.set_slot_module(slot, value)
+@@ -148,7 +163,11 @@
  
          let mut last = Value::new_none();
          for stmt in stmts.iter_mut() {
@@ -2479,6 +2645,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              match (start, stop) {
                  (Ok(s1), Ok(s2)) => Ok((s1, s2, stride)),
                  (Err(x), ..) => Err(x),
+Only in starlark/src/values: java_param_types.tsv
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/layout/heap/allocator/alloc/per_thread.rs starlark/src/values/layout/heap/allocator/alloc/per_thread.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/layout/heap/allocator/alloc/per_thread.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/layout/heap/allocator/alloc/per_thread.rs	2026-11-18 02:31:09.625208761 -0700
@@ -2715,6 +2882,26 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              repr_stack.set(stack);
              Err(ReprCycle)
          } else {
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/stack_guard.rs starlark/src/values/stack_guard.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/stack_guard.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/stack_guard.rs	2026-11-25 10:53:22.505532689 -0700
+@@ -24,11 +24,11 @@
+ 
+ // Maximum recursion level for comparison
+ // TODO(dmarting): those are rather short, maybe make it configurable?
+-#[cfg(debug_assertions)]
+-const MAX_RECURSION: u32 = 200;
+-
+-#[cfg(not(debug_assertions))]
+-const MAX_RECURSION: u32 = 3000;
++// BLAZE PATCH 0060: Java compares nested values without a depth limit (a JVM stack overflow is
++// a Bazel crash; Bazel 9.3.2 compares two 5000-deep lists with `==`). Blaze evaluates on
++// threads with a 256 MiB stack (blaze_starlark eval::EVAL_STACK_SIZE); this guard only keeps a
++// native stack overflow from aborting the process, in debug and release builds alike.
++const MAX_RECURSION: u32 = 20000; // BLAZE PATCH 0060
+ 
+ // A thread-local counter is used to detect too deep recursion.
+ //
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/traits.rs starlark/src/values/traits.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/traits.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/traits.rs	2026-11-19 13:14:27.607700659 -0700
@@ -3790,7 +3977,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  }
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/function.rs starlark/src/values/types/function.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/function.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/function.rs	2026-11-19 13:24:17.935277557 -0700
++++ starlark/src/values/types/function.rs	2026-11-25 10:52:26.706140917 -0700
 @@ -67,6 +67,10 @@
  /// Return value of `type(any function)`.
  pub const FUNCTION_TYPE: &str = "function";
@@ -3840,22 +4027,51 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      fn invoke(
          &self,
          _me: Value<'v>,
-@@ -265,7 +279,13 @@
+@@ -193,18 +207,11 @@
+         Some(self.ty.dupe())
+     }
+ 
+-    fn at(&self, index: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
+-        match &self.special_builtin_function {
+-            Some(SpecialBuiltinFunction::List) => {
+-                let index = TypeCompiled::new(index, heap)?;
+-                Ok(TypeCompiled::type_list_of(index, heap).to_inner())
+-            }
+-            Some(SpecialBuiltinFunction::Set) => {
+-                let index = TypeCompiled::new(index, heap)?;
+-                Ok(TypeCompiled::type_set_of(index, heap).to_inner())
+-            }
+-            _ => ValueError::unsupported(self, "[]"),
+-        }
++    // BLAZE PATCH 0059: Bazel's builtins have no `[]` (`list[int]` is not a value in Bazel;
++    // type expressions are not evaluated, patch 0020): Java's "type
++    // 'builtin_function_or_method' has no operator [](T)" (EvalUtils.index).
++    fn at(&self, index: Value<'v>, _heap: Heap<'v>) -> crate::Result<Value<'v>> { // BLAZE PATCH 0059
++        ValueError::unsupported_with(self, "[]", index) // BLAZE PATCH 0059
+     }
+ 
+     fn at2(
+@@ -265,7 +272,18 @@
          this: Value<'v>,
          args: &Arguments<'v, '_>,
      ) -> crate::Result<Value<'v>> {
 -        (self.0)(eval, this, &self.1, args)
-+        (self.0)(eval, this, &self.1, args).map_err(|e| self.java_error(e)) // BLAZE PATCH 0052
++        (self.0)(eval, this, &self.1, args).map_err(|e| self.java_error(e, this)) // BLAZE PATCH 0052
 +    }
 +
-+    /// BLAZE PATCH 0052: names the builtin in Java's parameter type errors.
++    /// BLAZE PATCH 0052: names the builtin in Java's parameter type errors (0058: and the
++    /// receiver's type).
 +    #[cold]
-+    fn java_error(&self, e: crate::Error) -> crate::Error {
-+        crate::values::unpack::BazelParamTypeError::with_function(e, self.1.function_name())
++    fn java_error<'v>(&self, e: crate::Error, this: Value<'v>) -> crate::Error {
++        crate::values::unpack::BazelParamTypeError::with_function_receiver(
++            e,
++            self.1.function_name(),
++            Some(this.get_type()),
++        )
      }
  }
  
-@@ -386,11 +406,22 @@
+@@ -386,11 +404,22 @@
      }
  }
  
@@ -7743,10 +7959,29 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          let mut result = Vec::new();
          for _i in 0..l {
              result.extend(self.content().iter().map(|e| e.to_value()));
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/typing/type_compiled/compiled.rs starlark/src/values/typing/type_compiled/compiled.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/typing/type_compiled/compiled.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/typing/type_compiled/compiled.rs	2026-11-25 10:52:49.805222141 -0700
+@@ -441,6 +441,7 @@
+         }))
+     }
+ 
++    #[allow(dead_code)] // BLAZE PATCH 0059: `list[T]` is not evaluated in Bazel
+     pub(crate) fn type_list_of(
+         t: TypeCompiled<Value<'v>>,
+         heap: Heap<'v>,
+@@ -448,6 +449,7 @@
+         TypeCompiledFactory::alloc_ty(&Ty::list(t.as_ty().clone()), heap)
+     }
+ 
++    #[allow(dead_code)] // BLAZE PATCH 0059: `set[T]` is not evaluated in Bazel
+     pub(crate) fn type_set_of(
+         t: TypeCompiled<Value<'v>>,
+         heap: Heap<'v>,
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/unpack.rs starlark/src/values/unpack.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/unpack.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/unpack.rs	2026-11-19 16:23:55.120113265 -0700
-@@ -226,17 +226,26 @@
++++ starlark/src/values/unpack.rs	2026-11-25 10:21:07.156612644 -0700
+@@ -226,17 +226,27 @@
      fn unpack_named_param(value: Value<'v>, param_name: &str) -> crate::Result<Self> {
          #[cold]
          fn error<'v>(value: Value<'v>, param_name: &str, ty: fn() -> Ty) -> crate::Error {
@@ -7763,6 +7998,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +            // function name is filled in by the native function's call (`NativeFunc::invoke`).
 +            crate::Error::new_value(BazelParamTypeError {
 +                function: None,
++                receiver: None, // BLAZE PATCH 0058
 +                param: param_name.to_owned(),
 +                actual: value.get_type().to_owned(),
 +                ty: ty(),
@@ -7782,7 +8018,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          Self::unpack_value(value)
              .into_anyhow_result()
              .with_context(|| {
-@@ -273,3 +282,174 @@
+@@ -273,3 +283,237 @@
          }
      }
  }
@@ -7794,6 +8030,9 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +pub(crate) struct BazelParamTypeError {
 +    /// The builtin's name; set by the call (`NativeFunc::invoke`, `NativeMeth::invoke`).
 +    pub(crate) function: Option<String>,
++    /// BLAZE PATCH 0058: `type()` of the method's receiver (`NativeMeth::invoke`); `None` for a
++    /// function.
++    pub(crate) receiver: Option<String>,
 +    pub(crate) param: String,
 +    /// `type(value)`.
 +    pub(crate) actual: String,
@@ -7811,7 +8050,12 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +            "in call to {function}(), parameter '{}' got value of type '{}', want '{}'",
 +            self.param,
 +            self.actual,
-+            java_allowed_types(function, &self.param, &self.ty)
++            java_param_type_error_message(
++                function,
++                self.receiver.as_deref(),
++                &self.param,
++                &self.ty
++            )
 +        )
 +    }
 +}
@@ -7819,11 +8063,21 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +impl BazelParamTypeError {
 +    /// `e` with the builtin's name set, if `e` is a parameter type error without one.
 +    pub(crate) fn with_function(e: crate::Error, function: &str) -> crate::Error {
++        Self::with_function_receiver(e, function, None)
++    }
++
++    /// BLAZE PATCH 0058: [`Self::with_function`] for a method, with its receiver's `type()`.
++    pub(crate) fn with_function_receiver(
++        e: crate::Error,
++        function: &str,
++        receiver: Option<&str>,
++    ) -> crate::Error {
 +        if let crate::ErrorKind::Value(a) = e.kind() {
 +            if let Some(p) = a.downcast_ref::<BazelParamTypeError>() {
 +                if p.function.is_none() {
 +                    let mut p = p.clone();
 +                    p.function = Some(function.to_owned());
++                    p.receiver = receiver.map(str::to_owned); // BLAZE PATCH 0058
 +                    return crate::Error::new_value(p);
 +                }
 +            }
@@ -7844,6 +8098,51 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +        }
 +        e
 +    }
++}
++
++/// BLAZE PATCH 0058: Java's `ParamDescriptor.getTypeErrorMessage` of every `@StarlarkMethod`
++/// parameter of Bazel 9.3.2 (`receiver`, `method`, `param`, `want`; receiver is the declaring
++/// class's `@StarlarkBuiltin` name or empty; want `-` for a parameter that accepts `Object`),
++/// computed from the oracle's server jar by Bazel's own classes
++/// (`scripts/java-param-types/run`).
++static JAVA_PARAM_TYPES: std::sync::LazyLock<
++    std::collections::HashMap<(&'static str, &'static str), Vec<(&'static str, &'static str)>>,
++> = std::sync::LazyLock::new(|| {
++    let mut m: std::collections::HashMap<_, Vec<_>> = std::collections::HashMap::new();
++    for line in include_str!("java_param_types.tsv").lines() {
++        let cols: Vec<&str> = line.split('\t').collect();
++        if let [receiver, method, param, want] = cols[..] {
++            m.entry((method, param)).or_default().push((receiver, want));
++        }
++    }
++    m
++});
++
++/// BLAZE PATCH 0058: the "want" part of Java's parameter type error for a builtin named
++/// `function` (a method of a value of type `receiver`), from Bazel's annotations when they
++/// decide it: the receiver's entry, else the one text all of Bazel's methods of that name give
++/// for that parameter. Otherwise (a builtin Bazel does not have, or a parameter Bazel declares
++/// `Object`) [`java_allowed_types`]' derivation.
++// Java: net/starlark/java/eval/ParamDescriptor.java:123 ParamDescriptor.getTypeErrorMessage
++pub(crate) fn java_param_type_error_message(
++    function: &str,
++    receiver: Option<&str>,
++    param: &str,
++    ty: &Ty,
++) -> String {
++    if let Some(entries) = JAVA_PARAM_TYPES.get(&(function, param)) {
++        let chosen = match receiver.and_then(|r| entries.iter().find(|(rc, _)| *rc == r)) {
++            Some((_, want)) => Some(*want),
++            None if entries.iter().all(|(_, w)| *w == entries[0].1) => Some(entries[0].1),
++            None => None,
++        };
++        if let Some(want) = chosen {
++            if want != "-" {
++                return want.to_owned();
++            }
++        }
++    }
++    java_allowed_types(function, param, ty)
 +}
 +
 +/// BLAZE PATCH 0052: Java `ParamDescriptor.getTypeErrorMessage` for a parameter of a builtin:

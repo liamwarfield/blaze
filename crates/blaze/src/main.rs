@@ -54,12 +54,17 @@ impl InProcessServer for BazelServer {
 /// startup options and, in `--batch` mode, the command): the arguments after `-jar <path>`.
 ///
 /// PORT: Blaze only (lead's rule). A JVM reads its own flags up to `-jar`; the vector is a
-/// server start iff some argument equals `-jar` and every argument between `argv[0]` and it
-/// starts with `-` (every JVM flag `GetServerExeArgs` writes does, and no client invocation of
-/// `blaze` starts with such a sequence followed by `-jar`).
+/// server start iff some argument equals `-jar`, every argument between `argv[0]` and it
+/// starts with `-` (every JVM flag `GetServerExeArgs` writes does), and among them is
+/// [`ADD_OPENS_FLAG`], which `GetServerExeArgs` always writes and which is not a Bazel startup
+/// option, so that a client invocation such as `blaze --batch -jar x build` stays a client
+/// invocation (Bazel's client rejects `-jar` as an unknown startup option).
 fn server_args(argv: &[String]) -> Option<Vec<String>> {
     let jar = argv.iter().skip(1).position(|a| a == "-jar")? + 1;
     if !argv[1..jar].iter().all(|a| a.starts_with('-')) {
+        return None;
+    }
+    if !argv[1..jar].iter().any(|a| a == ADD_OPENS_FLAG) {
         return None;
     }
     // `-jar` is followed by the jar's path; the JVM's `main` gets what comes after it.
@@ -73,6 +78,10 @@ fn server_args(argv: &[String]) -> Option<Vec<String>> {
     }
     Some(argv[jar + 2..].to_vec())
 }
+
+/// The first JVM flag `GetServerExeArgs` writes after the prefix, unconditionally.
+// Java: src/main/cpp/blaze.cc:390 GetServerExeArgs
+const ADD_OPENS_FLAG: &str = "--add-opens=java.base/java.lang=ALL-UNNAMED";
 
 fn main() {
     // The raw bytes of each argument, as internal strings (one char per byte), as the C++
@@ -117,7 +126,15 @@ mod tests {
         );
         assert_eq!(
             server_args(&v(&[
-                "java", "-jar", "/j", "--batch", "--x", "build", "//:a"
+                "java",
+                "--add-opens=java.base/java.lang=ALL-UNNAMED",
+                "-Xverify:none",
+                "-jar",
+                "/j",
+                "--batch",
+                "--x",
+                "build",
+                "//:a"
             ])),
             Some(v(&["--batch", "--x", "build", "//:a"]))
         );
@@ -132,5 +149,14 @@ mod tests {
         );
         assert_eq!(server_args(&v(&["blaze"])), None);
         assert_eq!(server_args(&v(&["blaze", "-jar"])), None);
+        // Startup options before `-jar`, but not the JVM flags of GetServerExeArgs.
+        assert_eq!(
+            server_args(&v(&["blaze", "--batch", "-jar", "x", "build"])),
+            None
+        );
+        assert_eq!(
+            server_args(&v(&["java", "-jar", "/j", "--batch", "build", "//:a"])),
+            None
+        );
     }
 }

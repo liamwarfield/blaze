@@ -5114,3 +5114,80 @@ fn duplicate_unfinished_deps_no_keep_going() {
     let exception = tester.eval_and_get_error(keep_going, &parent_key);
     assert_eq!(exception_message(&exception), "bad");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Review 2026-11-25 (I1), S2-1 and S2-2: no Java test; each checks the Java behaviour named.
+
+/// A graph whose dirty node has lost a dep of its last build (an inconsistency: deletion takes
+/// the reverse transitive closure, so only the test hook `graph.remove` makes it). `top` asks
+/// `first`, then `second`; `changed` (non-hermetic) is invalidated with a new value.
+fn graph_with_missing_old_dep(first: SkyKey, second: SkyKey, missing: &SkyKey) -> MemoizingTester {
+    let tester = MemoizingTester::new();
+    tester.add_dependency_key(k("top"), first);
+    tester.add_dependency_key(k("top"), second);
+    tester.set("kept", "kept");
+    tester.set_key(nk("changed"), "old");
+    assert!(!tester.eval(true, &[k("top")]).has_error());
+    tester.set_key(nk("changed"), "new");
+    tester.invalidate();
+    tester.evaluator.graph.remove(missing);
+    tester
+}
+
+fn panic_message(e: Box<dyn std::any::Any + Send>) -> String {
+    match e.downcast::<String>() {
+        Ok(s) => *s,
+        Err(e) => e
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .unwrap_or_default(),
+    }
+}
+
+/// The dirty check of `top` reaches its first old dep, which is missing.
+// Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:394 Evaluate.handleKnownChildrenForDirtyNode
+#[test]
+fn dirty_parent_with_missing_child_fails_with_java_text() {
+    let tester = graph_with_missing_old_dep(k("kept"), nk("changed"), &k("kept"));
+    let e = catch_unwind(AssertUnwindSafe(|| tester.try_eval(true, &[k("top")])))
+        .expect_err("checkNotNull fails");
+    let message = panic_message(e);
+    assert!(
+        message.contains("Dirty parent had missing child (child=kept, parent=top "),
+        "{message}"
+    );
+}
+
+/// `changed` makes `top` rebuild; the function then asks again for `kept`, an old dep that is
+/// missing from the graph.
+// Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:1022 Evaluate.run
+#[test]
+fn rebuilt_parent_with_missing_declared_dep_fails_with_java_text() {
+    let tester = graph_with_missing_old_dep(nk("changed"), k("kept"), &k("kept"));
+    let e = catch_unwind(AssertUnwindSafe(|| tester.try_eval(true, &[k("top")])))
+        .expect_err("checkState fails");
+    let message = panic_message(e);
+    assert!(
+        message.contains("Missing already declared dep kept (parent=top)"),
+        "{message}"
+    );
+}
+
+/// With an interrupt pending and every root done, Java's `ParallelEvaluator.eval` returns the
+/// cached result (no interrupt check on that path); a root that is not done sees the interrupt.
+// Java: com/google/devtools/build/skyframe/ParallelEvaluator.java:641 ParallelEvaluator.eval
+#[test]
+fn interrupt_pending_with_all_roots_done_returns_cached_result() {
+    let tester = MemoizingTester::new();
+    tester.set("done", "value");
+    tester.set("other", "other");
+    assert_eq!(tester.eval_and_get(false, &k("done")), "value");
+    tester.evaluator.interrupt();
+    let r = tester.try_eval(false, &[k("done")]).expect("cached result");
+    assert_eq!(*r.get(&T("done")).unwrap(), "value");
+    assert_eq!(
+        tester.try_eval(false, &[k("other")]).err(),
+        Some(Interrupted)
+    );
+    tester.evaluator.clear_interrupt();
+}

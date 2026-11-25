@@ -13,6 +13,7 @@ pub mod query;
 // Integration lead: mod, build, test.
 pub mod bep;
 pub mod build;
+pub mod coverage;
 mod exclusive_test_order;
 pub mod mod_command;
 pub mod target_patterns_helper;
@@ -22,3 +23,7 @@ pub mod run;
 pub mod canonicalize;
 pub mod fetch;
 pub mod license;
+// commands-fix-1: config, dump, print_action.
+pub mod config;
+pub mod dump;
+pub mod print_action;

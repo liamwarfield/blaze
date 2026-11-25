@@ -36,9 +36,47 @@ pub fn execute(
     build_options: &Arc<BuildOptions>,
 ) -> Result<Option<AnalysisResult>, BuildToolError> {
     // Compute the heuristic instrumentation filter if needed.
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:115 AnalysisPhaseRunner.execute
+    let mut patched_build_options: Option<Arc<BuildOptions>> = None;
     if request.needs_instrumentation_filter() {
-        blaze_util::unported!("InstrumentationFilterSupport.computeInstrumentationFilter");
+        // PORT: skipped, profiling ("Compute instrumentation filter").
+        // TODO(ulfjack): Expensive. Make this part of the TargetPatternPhaseValue or write a new
+        // SkyFunction to compute it?
+        let tests_to_run = target_pattern_phase_value
+            .get_tests_to_run(reporter.clone(), skyframe_executor.get_package_manager())
+            .map_err(|blaze_skyframe::Interrupted| BuildToolError::Interrupted)?;
+        let instrumentation_filter =
+            crate::instrumentation_filter_support::InstrumentationFilterSupport::compute_instrumentation_filter(
+                reporter.as_ref(),
+                &tests_to_run,
+            );
+        match blaze_optdefs::common::regex_filter::RegexFilterConverter
+            .convert_filter(&instrumentation_filter)
+        {
+            Ok(filter) => {
+                // We're modifying the buildOptions in place, which is not ideal, but we also
+                // don't want to pay the price for making a copy. Maybe reconsider later if this
+                // turns out to be a problem (and the performance loss may not be a big deal).
+                // PORT: the options are shared (Arc); the copy gets the new filter and computes
+                // its checksum from it.
+                let mut options = (**build_options).clone();
+                options
+                    .get_mut::<blaze_optdefs::fragment::core_options::CoreOptions>()
+                    .expect("NullPointerException: CoreOptions")
+                    .instrumentation_filter = filter;
+                patched_build_options = Some(Arc::new(options));
+            }
+            Err(e) => {
+                return Err(BuildToolError::InvalidConfiguration(
+                    blaze_build_config::fragment::InvalidConfigurationException::with_code(
+                        e.get_message(),
+                        "HEURISTIC_INSTRUMENTATION_FILTER_INVALID",
+                    ),
+                ));
+            }
+        }
     }
+    let build_options = patched_build_options.as_ref().unwrap_or(build_options);
 
     // PORT: env.throwPendingException() (an exit requested by a module while the command runs)
     // is checked by the command dispatcher.

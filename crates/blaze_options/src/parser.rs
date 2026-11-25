@@ -243,6 +243,10 @@ impl Builder {
 
 // Java: com/google/devtools/common/options/OptionsParser.java:75 OptionsParser
 /// A parser for options. Implements Java's `OptionsParsingResult` as inherent methods.
+///
+/// `Clone` copies the parser with all its parsed state (Blaze shares a command's parser behind
+/// an `Arc`; where Java parses more flags into it, Blaze parses them into a copy).
+#[derive(Clone)]
 pub struct OptionsParser {
     impl_: OptionsParserImpl,
     residue: Vec<String>,

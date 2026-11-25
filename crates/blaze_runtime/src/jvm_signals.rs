@@ -68,30 +68,36 @@ pub fn install() {
         std::thread::Builder::new()
             .name("SIGTERM handler".to_owned())
             .spawn(move || {
-                loop {
-                    let mut byte: u8 = 0;
-                    // SAFETY: reads one byte into a valid buffer.
-                    let n =
-                        unsafe { libc::read(read_fd, (&raw mut byte).cast::<libc::c_void>(), 1) };
-                    if n < 0
-                        && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
-                    {
-                        continue;
+                // An exception of the shutdown hooks reaches the default uncaught exception
+                // handler.
+                blaze_util::uncaught_exception::run_catching(|| {
+                    loop {
+                        let mut byte: u8 = 0;
+                        // SAFETY: reads one byte into a valid buffer.
+                        let n = unsafe {
+                            libc::read(read_fd, (&raw mut byte).cast::<libc::c_void>(), 1)
+                        };
+                        if n < 0
+                            && std::io::Error::last_os_error().kind()
+                                == std::io::ErrorKind::Interrupted
+                        {
+                            continue;
+                        }
+                        if n <= 0 {
+                            return;
+                        }
+                        // Shutdown.exit(128 + signal): the shutdown hooks, then halt.
+                        blaze_server::shutdown_hooks::run_registered_shutdown_hooks();
+                        let _ = blaze_events::OutErr::system_out_err()
+                            .get_error_stream()
+                            .flush();
+                        let _ = blaze_events::OutErr::system_out_err()
+                            .get_output_stream()
+                            .flush();
+                        // SAFETY: _exit ends the process, as Runtime.halt does after the hooks.
+                        unsafe { libc::_exit(128 + byte as libc::c_int) }
                     }
-                    if n <= 0 {
-                        return;
-                    }
-                    // Shutdown.exit(128 + signal): the shutdown hooks, then halt.
-                    blaze_server::shutdown_hooks::run_registered_shutdown_hooks();
-                    let _ = blaze_events::OutErr::system_out_err()
-                        .get_error_stream()
-                        .flush();
-                    let _ = blaze_events::OutErr::system_out_err()
-                        .get_output_stream()
-                        .flush();
-                    // SAFETY: _exit ends the process, as Runtime.halt does after the hooks.
-                    unsafe { libc::_exit(128 + byte as libc::c_int) }
-                }
+                });
             })
             .unwrap_or_else(|e| panic!("OutOfMemoryError: unable to create native thread: {e}"));
         set_handler(libc::SIGTERM, on_terminate);

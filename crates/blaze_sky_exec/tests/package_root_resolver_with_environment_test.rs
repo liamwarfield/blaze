@@ -38,6 +38,9 @@ struct ResolveKey(Vec<&'static str>);
 impl Key for ResolveKey {
     type Value = Outcome;
     const FUNCTION: SkyFunctionName = SkyFunctionName("TEST_RESOLVE");
+    // test key; hermetic like Java's SkyFunctionName.FOR_TESTING
+    const HERMETICITY: blaze_skyframe::FunctionHermeticity =
+        blaze_skyframe::FunctionHermeticity::Hermetic;
 }
 
 fn fs() -> FileSystemRef {

@@ -7,7 +7,9 @@
 use std::fmt;
 use std::sync::Arc;
 
-use blaze_skyframe::{ComputeError, Environment, Key, SkyFunctionException, SkyFunctionName};
+use blaze_skyframe::{
+    ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionException, SkyFunctionName,
+};
 use blaze_vfs::{Dirent, RootedPath, Symlinks};
 
 use crate::file::FileKey;
@@ -105,6 +107,13 @@ impl fmt::Debug for DirectoryListingStateKey {
 impl Key for DirectoryListingStateKey {
     type Value = DirectoryListingStateValue;
     const FUNCTION: SkyFunctionName = sky_functions::DIRECTORY_LISTING_STATE;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:33 SkyFunctions.DIRECTORY_LISTING_STATE (createNonHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
+    /// Java: `CompactSortedDirents.equals`, the dirents sorted by name, each name and type.
+    // Java: com/google/devtools/build/lib/skyframe/DirectoryListingStateValue.java:99 DirectoryListingStateValue.equals
+    fn values_equal(old: &DirectoryListingStateValue, new: &DirectoryListingStateValue) -> bool {
+        old == new
+    }
 }
 
 /// A SkyFunction for [`DirectoryListingStateValue`]s.
@@ -237,6 +246,13 @@ impl fmt::Debug for DirectoryListingKey {
 impl Key for DirectoryListingKey {
     type Value = DirectoryListingValue;
     const FUNCTION: SkyFunctionName = sky_functions::DIRECTORY_LISTING;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:35 SkyFunctions.DIRECTORY_LISTING (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: the state value (and, for a different real path, the real path).
+    // Java: com/google/devtools/build/lib/skyframe/DirectoryListingValue.java:85 DirectoryListingValue.RegularDirectoryListingValue.equals
+    fn values_equal(old: &DirectoryListingValue, new: &DirectoryListingValue) -> bool {
+        old == new
+    }
 }
 
 /// A SkyFunction for [`DirectoryListingValue`]s.

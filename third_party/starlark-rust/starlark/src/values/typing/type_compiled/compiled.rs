@@ -441,6 +441,7 @@ impl<'v> TypeCompiled<Value<'v>> {
         }))
     }
 
+    #[allow(dead_code)] // BLAZE PATCH 0059: `list[T]` is not evaluated in Bazel
     pub(crate) fn type_list_of(
         t: TypeCompiled<Value<'v>>,
         heap: Heap<'v>,
@@ -448,6 +449,7 @@ impl<'v> TypeCompiled<Value<'v>> {
         TypeCompiledFactory::alloc_ty(&Ty::list(t.as_ty().clone()), heap)
     }
 
+    #[allow(dead_code)] // BLAZE PATCH 0059: `set[T]` is not evaluated in Bazel
     pub(crate) fn type_set_of(
         t: TypeCompiled<Value<'v>>,
         heap: Heap<'v>,

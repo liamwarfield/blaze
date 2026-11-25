@@ -32,6 +32,7 @@ pub mod build_view;
 pub mod cycles_reporter;
 pub mod execution_phase;
 pub mod execution_seam;
+pub mod instrumentation_filter_support;
 pub mod pattern_expanding_error;
 pub mod project;
 pub mod skyframe_build_view;

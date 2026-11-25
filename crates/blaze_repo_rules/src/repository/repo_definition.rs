@@ -11,8 +11,8 @@ use allocative::Allocative;
 use blaze_bzlmod_model::AttributeValues;
 use blaze_cmdline::RepositoryName;
 use blaze_options::spelling::SpellChecker;
-use blaze_skyframe::Key;
 use blaze_skyframe::SkyFunctionName;
+use blaze_skyframe::{FunctionHermeticity, Key};
 use blaze_starlark::structs::DeeplyImmutable;
 use blaze_starlark::structs::StructureMarker;
 use blaze_vfs::PathFragment;
@@ -229,4 +229,10 @@ impl fmt::Debug for RepoDefinitionKey {
 impl Key for RepoDefinitionKey {
     type Value = RepoDefinitionValue;
     const FUNCTION: SkyFunctionName = REPO_DEFINITION;
+    // Java: com/google/devtools/build/lib/bazel/repository/RepoDefinitionValue.java:50 RepoDefinitionValue.REPO_DEFINITION (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal): Java's `RepoDefinitionValue` is a
+    // `NotComparableSkyValue` (the repo mapping of the rule's .bzl is not in the value; the repo
+    // marker files are the change pruners). Its `PartialEq` must not be used for pruning.
+    // Java: com/google/devtools/build/lib/bazel/repository/RepoDefinitionValue.java:49 RepoDefinitionValue
 }

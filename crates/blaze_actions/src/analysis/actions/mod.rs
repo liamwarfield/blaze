@@ -11,6 +11,7 @@ pub mod parameter_file_write_action;
 pub mod path_mappers;
 pub mod spawn_action;
 pub mod starlark_action;
+pub mod stripping_path_mapper;
 pub mod substitution;
 pub mod symlink_action;
 pub mod symlink_tree_action;

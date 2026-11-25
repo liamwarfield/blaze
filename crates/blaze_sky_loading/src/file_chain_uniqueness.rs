@@ -8,7 +8,7 @@
 use std::fmt;
 
 use blaze_events::Event;
-use blaze_skyframe::{ComputeError, Environment, Key, SkyFunctionName};
+use blaze_skyframe::{ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionName};
 use blaze_vfs::RootedPath;
 
 use crate::sky_functions;
@@ -72,6 +72,13 @@ impl fmt::Debug for FileSymlinkCycleUniquenessKey {
 impl Key for FileSymlinkCycleUniquenessKey {
     type Value = EmptySkyValue;
     const FUNCTION: SkyFunctionName = sky_functions::FILE_SYMLINK_CYCLE_UNIQUENESS;
+    // Java: com/google/devtools/build/lib/io/FileSymlinkCycleUniquenessFunction.java:32 FileSymlinkCycleUniquenessFunction.NAME (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: the function returns the singleton `EmptySkyValue.INSTANCE`, equal to itself.
+    // Java: com/google/devtools/build/skyframe/EmptySkyValue.java:24 EmptySkyValue.INSTANCE
+    fn values_equal(old: &EmptySkyValue, new: &EmptySkyValue) -> bool {
+        old == new
+    }
 }
 
 /// Key of FILE_SYMLINK_INFINITE_EXPANSION_UNIQUENESS: a canonicalized chain.
@@ -95,6 +102,13 @@ impl fmt::Debug for FileSymlinkInfiniteExpansionUniquenessKey {
 impl Key for FileSymlinkInfiniteExpansionUniquenessKey {
     type Value = EmptySkyValue;
     const FUNCTION: SkyFunctionName = sky_functions::FILE_SYMLINK_INFINITE_EXPANSION_UNIQUENESS;
+    // Java: com/google/devtools/build/lib/io/FileSymlinkInfiniteExpansionUniquenessFunction.java:33 FileSymlinkInfiniteExpansionUniquenessFunction.NAME (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: the function returns the singleton `EmptySkyValue.INSTANCE`, equal to itself.
+    // Java: com/google/devtools/build/skyframe/EmptySkyValue.java:24 EmptySkyValue.INSTANCE
+    fn values_equal(old: &EmptySkyValue, new: &EmptySkyValue) -> bool {
+        old == new
+    }
 }
 
 /// Given a "cycle" of [`RootedPath`] files, emits an error message for this cycle.

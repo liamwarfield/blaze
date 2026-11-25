@@ -1,0 +1,1213 @@
+	Label	input	string or Label
+	abs	x	int or float
+	all	elements	iterable
+	analysis_test_transition	settings	dict
+	any	elements	iterable
+	archive_override	module_name	string
+	aspect	apply_to_generating_rules	bool
+	aspect	attr_aspects	sequence or function
+	aspect	attrs	dict
+	aspect	doc	string or NoneType
+	aspect	exec_compatible_with	sequence
+	aspect	exec_groups	dict or NoneType
+	aspect	fragments	sequence
+	aspect	host_fragments	sequence
+	aspect	implementation	function
+	aspect	propagation_predicate	function or NoneType
+	aspect	provides	sequence
+	aspect	required_aspect_providers	sequence
+	aspect	required_providers	sequence
+	aspect	requires	sequence
+	aspect	subrules	sequence
+	aspect	toolchains	sequence
+	aspect	toolchains_aspects	sequence or function
+	bazel_dep	dev_dependency	bool
+	bazel_dep	max_compatibility_level	int
+	bazel_dep	name	string
+	bazel_dep	repo_name	string or NoneType
+	bazel_dep	version	string
+	bool	x	-
+	build_options	target	CqueryNode
+	configuration_field	fragment	string
+	configuration_field	name	string
+	configure_features	requested_features	list
+	depset	direct	sequence or NoneType
+	depset	order	string
+	depset	transitive	sequence or NoneType
+	dict	pairs	-
+	dir	x	-
+	download	allow_fail	bool
+	download	auth	dict
+	download	block	bool
+	download	canonical_id	string
+	download	executable	bool
+	download	headers	dict
+	download	integrity	string
+	download	output	string, Label, or path
+	download	sha256	string
+	download	url	string or Iterable
+	download_and_extract	allow_fail	bool
+	download_and_extract	auth	dict
+	download_and_extract	canonical_id	string
+	download_and_extract	headers	dict
+	download_and_extract	integrity	string
+	download_and_extract	output	string, Label, or path
+	download_and_extract	rename_files	dict
+	download_and_extract	sha256	string
+	download_and_extract	stripPrefix	string
+	download_and_extract	strip_components	int
+	download_and_extract	strip_prefix	string
+	download_and_extract	type	string
+	download_and_extract	url	string or Iterable
+	enumerate	list	-
+	enumerate	start	int
+	environment_group	defaults	sequence
+	environment_group	environments	sequence
+	environment_group	name	string
+	exec_group	exec_compatible_with	sequence
+	exec_group	toolchains	sequence
+	exec_transition	implementation	callable
+	exec_transition	inputs	sequence
+	exec_transition	outputs	sequence
+	execute	arguments	sequence
+	execute	environment	dict
+	execute	quiet	bool
+	execute	timeout	int
+	execute	working_directory	string
+	execute_wasm	function	string
+	execute_wasm	input	string
+	execute_wasm	memory_limit	int
+	execute_wasm	module	string, Label, path, or wasm_module
+	execute_wasm	timeout	int
+	execute_wasm	watch	string
+	extract	archive	string, Label, or path
+	extract	output	string, Label, or path
+	extract	rename_files	dict
+	extract	stripPrefix	string
+	extract	strip_components	int
+	extract	strip_prefix	string
+	extract	type	string
+	extract	watch_archive	string
+	fail	attr	string or NoneType
+	fail	msg	-
+	fail	sep	string
+	fail	stack_trace	bool
+	file	content	string
+	file	executable	bool
+	file	legacy_utf8	bool
+	file	path	string, Label, or path
+	flag_alias	name	string
+	flag_alias	starlark_flag	string
+	float	x	string, bool, int, or float
+	get	default	-
+	get	key	-
+	getattr	default	-
+	getattr	name	string
+	getattr	x	-
+	getenv	default	string or NoneType
+	getenv	name	string
+	git_override	module_name	string
+	hasattr	name	string
+	hasattr	x	-
+	hash	value	string
+	ignore_directories	dirs	sequence
+	include	dev_dependency	bool
+	include	label	string
+	inject_repo	extension_proxy	module_extension_proxy
+	int	base	int
+	int	x	string, bool, int, or float
+	len	x	iterable or string
+	licenses	license_strings	sequence
+	list	x	iterable
+	load_wasm	allocate_fn	string
+	load_wasm	path	string, Label, or path
+	load_wasm	watch	string
+	local_path_override	module_name	string
+	local_path_override	path	string
+	macro	attrs	dict
+	macro	doc	string or NoneType
+	macro	finalizer	bool
+	macro	implementation	function
+	macro	inherit_attrs	rule, macro, string, or NoneType
+	materializer_rule	allow_real_deps	bool
+	materializer_rule	attrs	dict
+	materializer_rule	doc	string or NoneType
+	materializer_rule	implementation	function
+	max	key	callable or NoneType
+	min	key	callable or NoneType
+	module	bazel_compatibility	Iterable
+	module	compatibility_level	int
+	module	name	string
+	module	repo_name	string
+	module	version	string
+	module_extension	arch_dependent	bool
+	module_extension	doc	string or NoneType
+	module_extension	environ	sequence
+	module_extension	facts_version	int
+	module_extension	implementation	callable
+	module_extension	os_dependent	bool
+	module_extension	tag_classes	dict
+	multiple_version_override	module_name	string
+	multiple_version_override	registry	string
+	multiple_version_override	versions	Iterable
+	override_repo	extension_proxy	module_extension_proxy
+	path	path	string, Label, or path
+	print	sep	string
+	provider	doc	string or NoneType
+	provider	fields	sequence, dict, or NoneType
+	provider	init	callable or NoneType
+	providers	target	CqueryNode
+	range	start_or_stop	int
+	range	step	int
+	range	stop	int
+	read	path	string, Label, or path
+	read	watch	string
+	register_execution_platforms	dev_dependency	bool
+	register_toolchains	dev_dependency	bool
+	report_progress	status	string
+	repository_rule	attrs	dict or NoneType
+	repository_rule	configure	bool
+	repository_rule	doc	string or NoneType
+	repository_rule	environ	sequence
+	repository_rule	implementation	callable
+	repository_rule	local	bool
+	repository_rule	remotable	bool
+	repr	x	-
+	reversed	sequence	iterable
+	rule	_skylark_testable	bool
+	rule	analysis_test	bool
+	rule	attrs	dict
+	rule	build_setting	BuildSetting or NoneType
+	rule	cfg	-
+	rule	dependency_resolution_rule	bool
+	rule	doc	string or NoneType
+	rule	exec_compatible_with	sequence
+	rule	exec_groups	dict or NoneType
+	rule	executable	bool
+	rule	extendable	bool, Label, string, or NoneType
+	rule	fragments	sequence
+	rule	host_fragments	sequence
+	rule	implementation	function
+	rule	initializer	-
+	rule	output_to_genfiles	bool
+	rule	outputs	dict, NoneType, or function
+	rule	parent	-
+	rule	provides	sequence
+	rule	subrules	sequence
+	rule	test	bool
+	rule	toolchains	sequence
+	select	no_match_error	string
+	select	x	dict
+	set	elements	iterable
+	single_version_override	module_name	string
+	single_version_override	patch_cmds	Iterable
+	single_version_override	patch_strip	int
+	single_version_override	patches	Iterable
+	single_version_override	registry	string
+	single_version_override	version	string
+	sorted	iterable	iterable
+	sorted	key	callable or NoneType
+	sorted	reverse	bool
+	str	x	-
+	subrule	attrs	dict
+	subrule	fragments	sequence
+	subrule	implementation	function
+	subrule	subrules	sequence
+	subrule	toolchains	sequence
+	tag_class	attrs	dict
+	tag_class	doc	string or NoneType
+	transition	implementation	callable
+	transition	inputs	sequence
+	transition	outputs	sequence
+	tuple	x	iterable
+	type	x	-
+	use_extension	dev_dependency	bool
+	use_extension	extension_bzl_file	string
+	use_extension	extension_name	string
+	use_extension	isolate	bool
+	use_repo	extension_proxy	module_extension_proxy
+	use_repo_rule	repo_rule_bzl_file	string
+	use_repo_rule	repo_rule_name	string
+	validate_layering_check_features	cc_toolchain	Info
+	validate_layering_check_features	ctx	ctx
+	validate_layering_check_features	unsupported_features	sequence
+	visibility	value	-
+	watch	path	string, Label, or path
+	which	program	string
+Args	add	arg_name_or_value	-
+Args	add	format	string or NoneType
+Args	add	value	-
+Args	add_all	allow_closure	bool
+Args	add_all	arg_name_or_values	-
+Args	add_all	before_each	string or NoneType
+Args	add_all	expand_directories	bool
+Args	add_all	format_each	string or NoneType
+Args	add_all	map_each	callable or NoneType
+Args	add_all	omit_if_empty	bool
+Args	add_all	terminate_with	string or NoneType
+Args	add_all	uniquify	bool
+Args	add_all	values	sequence or depset
+Args	add_joined	allow_closure	bool
+Args	add_joined	arg_name_or_values	-
+Args	add_joined	expand_directories	bool
+Args	add_joined	format_each	string or NoneType
+Args	add_joined	format_joined	string or NoneType
+Args	add_joined	join_with	string
+Args	add_joined	map_each	callable or NoneType
+Args	add_joined	omit_if_empty	bool
+Args	add_joined	uniquify	bool
+Args	add_joined	values	sequence or depset
+Args	set_param_file_format	format	string
+Args	use_param_file	param_file_arg	string
+Args	use_param_file	use_always	bool
+CcToolchainInfo	dynamic_runtime_lib	feature_configuration	-
+CcToolchainInfo	needs_pic_for_dynamic_libraries	feature_configuration	-
+CcToolchainInfo	static_runtime_lib	feature_configuration	-
+ConstraintCollection	get	constraint	ConstraintSettingInfo
+ConstraintCollection	has	constraint	ConstraintSettingInfo
+ConstraintCollection	has_constraint_value	constraint_value	ConstraintValueInfo
+DirectoryExpander	expand	file	File
+DottedVersion	compare_to	other	DottedVersion
+Facts	get	default	-
+Facts	get	key	string
+FeatureConfiguration	is_enabled	feature	string
+FeatureConfiguration	is_requested	feature	string
+FeatureFlagInfo	FeatureFlagInfo	value	string
+FeatureFlagInfo	is_valid_value	value	string
+Label	relative	relName	string
+Label	same_package_label	target_name	string
+PackageSpecificationInfo	contains	target	Label or string
+Provider	AnalysisTestResultInfo	message	string
+Provider	AnalysisTestResultInfo	success	bool
+Provider	CcInfo	cc_native_library_info	struct or NoneType
+Provider	CcInfo	compilation_context	CompilationContext or NoneType
+Provider	CcInfo	debug_context	struct or NoneType
+Provider	CcInfo	linking_context	struct or NoneType
+Provider	DebugPackageInfo	dwp_file	File or NoneType
+Provider	DebugPackageInfo	stripped_file	File or NoneType
+Provider	DebugPackageInfo	target_label	Label
+Provider	DebugPackageInfo	unstripped_file	File
+Provider	DefaultInfo	data_runfiles	runfiles or NoneType
+Provider	DefaultInfo	default_runfiles	runfiles or NoneType
+Provider	DefaultInfo	executable	File or NoneType
+Provider	DefaultInfo	files	depset or NoneType
+Provider	DefaultInfo	runfiles	runfiles or NoneType
+Provider	ExecutionInfo	exec_group	string
+Provider	ExecutionInfo	requirements	dict
+Provider	MaterializedDepsInfo	deps	sequence
+Provider	RunEnvironmentInfo	environment	dict
+Provider	RunEnvironmentInfo	inherited_environment	sequence
+Provider	TemplateVariableInfo	vars	dict
+TemplateDict	add	key	string
+TemplateDict	add	value	string
+TemplateDict	add_joined	allow_closure	bool
+TemplateDict	add_joined	format_joined	string or NoneType
+TemplateDict	add_joined	join_with	string
+TemplateDict	add_joined	key	string
+TemplateDict	add_joined	map_each	callable
+TemplateDict	add_joined	uniquify	bool
+TemplateDict	add_joined	values	depset
+_builtins	get_flag	default	-
+_builtins	get_flag	name	string
+actions	declare_directory	filename	string
+actions	declare_directory	sibling	File or NoneType
+actions	declare_file	filename	string
+actions	declare_file	sibling	File or NoneType
+actions	declare_shareable_artifact	artifact_root	-
+actions	declare_shareable_artifact	path	string
+actions	declare_shareable_directory	path	string
+actions	declare_symlink	filename	string
+actions	declare_symlink	sibling	File or NoneType
+actions	do_nothing	inputs	sequence or depset
+actions	do_nothing	mnemonic	string
+actions	expand_template	computed_substitutions	TemplateDict
+actions	expand_template	is_executable	bool
+actions	expand_template	output	File
+actions	expand_template	substitutions	dict
+actions	expand_template	template	File
+actions	map_directory	additional_inputs	dict
+actions	map_directory	additional_params	dict
+actions	map_directory	env	dict or NoneType
+actions	map_directory	exec_group	string or NoneType
+actions	map_directory	execution_requirements	dict or NoneType
+actions	map_directory	implementation	function
+actions	map_directory	input_directories	dict
+actions	map_directory	mnemonic	string or NoneType
+actions	map_directory	output_directories	dict
+actions	map_directory	resource_set	callable, dict, or NoneType
+actions	map_directory	toolchain	Label, string, or NoneType
+actions	map_directory	tools	dict
+actions	map_directory	use_default_shell_env	bool
+actions	run	arguments	sequence
+actions	run	env	dict or NoneType
+actions	run	exec_group	string or NoneType
+actions	run	executable	File, string, or FilesToRunProvider
+actions	run	execution_requirements	dict or NoneType
+actions	run	input_manifests	sequence or NoneType
+actions	run	inputs	sequence or depset
+actions	run	mnemonic	string or NoneType
+actions	run	outputs	sequence
+actions	run	progress_message	string or NoneType
+actions	run	resource_set	callable, dict, or NoneType
+actions	run	shadowed_action	Action
+actions	run	toolchain	Label, string, or NoneType
+actions	run	tools	sequence or depset
+actions	run	unused_inputs_list	File or NoneType
+actions	run	use_default_shell_env	bool
+actions	run_shell	arguments	sequence
+actions	run_shell	command	string or sequence
+actions	run_shell	env	dict or NoneType
+actions	run_shell	exec_group	string or NoneType
+actions	run_shell	execution_requirements	dict or NoneType
+actions	run_shell	input_manifests	sequence or NoneType
+actions	run_shell	inputs	sequence or depset
+actions	run_shell	mnemonic	string or NoneType
+actions	run_shell	outputs	sequence
+actions	run_shell	progress_message	string or NoneType
+actions	run_shell	resource_set	callable, dict, or NoneType
+actions	run_shell	shadowed_action	Action
+actions	run_shell	toolchain	Label, string, or NoneType
+actions	run_shell	tools	sequence or depset
+actions	run_shell	use_default_shell_env	bool
+actions	symlink	is_executable	bool
+actions	symlink	output	File
+actions	symlink	progress_message	string or NoneType
+actions	symlink	target_file	File or NoneType
+actions	symlink	target_path	string or NoneType
+actions	symlink	target_type	string or NoneType
+actions	symlink	use_exec_root_for_source	-
+actions	transform_info_file	output_file_name	string
+actions	transform_info_file	template	File
+actions	transform_info_file	transform_func	function
+actions	transform_version_file	output_file_name	string
+actions	transform_version_file	template	File
+actions	transform_version_file	transform_func	function
+actions	write	content	string or Args
+actions	write	execution_requirements	dict or NoneType
+actions	write	is_executable	bool
+actions	write	mnemonic	string or NoneType
+actions	write	output	File
+android_common	create_dex_merger_actions	ctx	ctx
+android_common	create_dex_merger_actions	desugar_globals	File or NoneType
+android_common	create_dex_merger_actions	dexmerger	FilesToRunProvider
+android_common	create_dex_merger_actions	dexopts	sequence
+android_common	create_dex_merger_actions	input	File
+android_common	create_dex_merger_actions	min_sdk_version	int
+android_common	create_dex_merger_actions	output	File
+android_common	resource_source_directory	resource	File
+apple_common	apple_host_system_env	xcode_config	-
+apple_common	dotted_version	version	string
+apple_common	target_apple_env	platform	-
+apple_common	target_apple_env	xcode_config	-
+attr	bool	configurable	bool or unbound
+attr	bool	default	bool
+attr	bool	doc	string or NoneType
+attr	bool	mandatory	bool
+attr	dormant_label	default	Label, string, or NoneType
+attr	dormant_label	doc	string or NoneType
+attr	dormant_label	mandatory	bool
+attr	dormant_label_list	allow_empty	bool
+attr	dormant_label_list	default	sequence
+attr	dormant_label_list	doc	string or NoneType
+attr	dormant_label_list	mandatory	bool
+attr	int	configurable	bool or unbound
+attr	int	default	int
+attr	int	doc	string or NoneType
+attr	int	mandatory	bool
+attr	int	values	sequence
+attr	int_list	allow_empty	bool
+attr	int_list	configurable	bool or unbound
+attr	int_list	default	sequence
+attr	int_list	doc	string or NoneType
+attr	int_list	mandatory	bool
+attr	label	allow_files	bool, sequence, or NoneType
+attr	label	allow_rules	sequence or NoneType
+attr	label	allow_single_file	-
+attr	label	aspects	sequence
+attr	label	cfg	-
+attr	label	configurable	bool or unbound
+attr	label	default	Label, string, LateBoundDefault, function, or NoneType
+attr	label	doc	string or NoneType
+attr	label	executable	bool
+attr	label	flags	sequence
+attr	label	for_dependency_resolution	-
+attr	label	mandatory	bool
+attr	label	materializer	function
+attr	label	providers	sequence
+attr	label	skip_validations	bool
+attr	label_keyed_string_dict	allow_empty	bool
+attr	label_keyed_string_dict	allow_files	bool, sequence, or NoneType
+attr	label_keyed_string_dict	allow_rules	sequence or NoneType
+attr	label_keyed_string_dict	aspects	sequence
+attr	label_keyed_string_dict	cfg	-
+attr	label_keyed_string_dict	configurable	bool or unbound
+attr	label_keyed_string_dict	default	dict or function
+attr	label_keyed_string_dict	doc	string or NoneType
+attr	label_keyed_string_dict	flags	sequence
+attr	label_keyed_string_dict	for_dependency_resolution	-
+attr	label_keyed_string_dict	mandatory	bool
+attr	label_keyed_string_dict	providers	sequence
+attr	label_keyed_string_dict	skip_validations	bool
+attr	label_list	allow_empty	bool
+attr	label_list	allow_files	bool, sequence, or NoneType
+attr	label_list	allow_rules	sequence or NoneType
+attr	label_list	aspects	sequence
+attr	label_list	cfg	-
+attr	label_list	configurable	bool or unbound
+attr	label_list	default	sequence or function
+attr	label_list	doc	string or NoneType
+attr	label_list	flags	sequence
+attr	label_list	for_dependency_resolution	-
+attr	label_list	mandatory	bool
+attr	label_list	materializer	function
+attr	label_list	providers	sequence
+attr	label_list	skip_validations	bool
+attr	label_list_dict	allow_empty	bool
+attr	label_list_dict	allow_files	bool, sequence, or NoneType
+attr	label_list_dict	allow_rules	sequence or NoneType
+attr	label_list_dict	aspects	sequence
+attr	label_list_dict	cfg	-
+attr	label_list_dict	configurable	bool or unbound
+attr	label_list_dict	default	dict
+attr	label_list_dict	doc	string or NoneType
+attr	label_list_dict	flags	sequence
+attr	label_list_dict	for_dependency_resolution	-
+attr	label_list_dict	mandatory	bool
+attr	label_list_dict	providers	sequence
+attr	label_list_dict	skip_validations	bool
+attr	license	default	-
+attr	license	doc	string or NoneType
+attr	license	mandatory	bool
+attr	output	doc	string or NoneType
+attr	output	mandatory	bool
+attr	output_list	allow_empty	bool
+attr	output_list	doc	string or NoneType
+attr	output_list	mandatory	bool
+attr	string	configurable	bool or unbound
+attr	string	default	string
+attr	string	doc	string or NoneType
+attr	string	mandatory	bool
+attr	string	values	sequence
+attr	string_dict	allow_empty	bool
+attr	string_dict	configurable	bool or unbound
+attr	string_dict	default	dict
+attr	string_dict	doc	string or NoneType
+attr	string_dict	mandatory	bool
+attr	string_keyed_label_dict	allow_empty	bool
+attr	string_keyed_label_dict	allow_files	bool, sequence, or NoneType
+attr	string_keyed_label_dict	allow_rules	sequence or NoneType
+attr	string_keyed_label_dict	aspects	sequence
+attr	string_keyed_label_dict	cfg	-
+attr	string_keyed_label_dict	configurable	bool or unbound
+attr	string_keyed_label_dict	default	dict or function
+attr	string_keyed_label_dict	doc	string or NoneType
+attr	string_keyed_label_dict	flags	sequence
+attr	string_keyed_label_dict	for_dependency_resolution	-
+attr	string_keyed_label_dict	mandatory	bool
+attr	string_keyed_label_dict	providers	sequence
+attr	string_list	allow_empty	bool
+attr	string_list	configurable	bool or unbound
+attr	string_list	default	sequence
+attr	string_list	doc	string or NoneType
+attr	string_list	mandatory	bool
+attr	string_list_dict	allow_empty	bool
+attr	string_list_dict	configurable	bool or unbound
+attr	string_list_dict	default	dict
+attr	string_list_dict	doc	string or NoneType
+attr	string_list_dict	mandatory	bool
+cc_common	action_is_enabled	action_name	string
+cc_common	action_is_enabled	feature_configuration	FeatureConfiguration
+cc_common	compile	actions	actions
+cc_common	compile	additional_exported_hdrs	sequence
+cc_common	compile	additional_include_scanning_roots	sequence
+cc_common	compile	additional_inputs	sequence
+cc_common	compile	additional_module_maps	sequence
+cc_common	compile	cc_toolchain	Info
+cc_common	compile	code_coverage_enabled	bool
+cc_common	compile	compilation_contexts	sequence
+cc_common	compile	conly_flags	sequence
+cc_common	compile	copts_filter	string or NoneType
+cc_common	compile	cxx_flags	sequence
+cc_common	compile	defines	sequence
+cc_common	compile	disallow_nopic_outputs	bool
+cc_common	compile	disallow_pic_outputs	bool
+cc_common	compile	do_not_generate_module_map	bool
+cc_common	compile	feature_configuration	FeatureConfiguration
+cc_common	compile	framework_includes	sequence
+cc_common	compile	hdrs_checking_mode	string or NoneType
+cc_common	compile	implementation_compilation_contexts	sequence or NoneType
+cc_common	compile	include_prefix	string
+cc_common	compile	includes	sequence or depset
+cc_common	compile	language	string or NoneType
+cc_common	compile	local_defines	sequence
+cc_common	compile	loose_includes	sequence or NoneType
+cc_common	compile	module_interfaces	sequence
+cc_common	compile	module_map	CcModuleMap or NoneType
+cc_common	compile	name	string
+cc_common	compile	non_compilation_additional_inputs	sequence
+cc_common	compile	private_hdrs	sequence
+cc_common	compile	public_hdrs	sequence
+cc_common	compile	purpose	string or NoneType
+cc_common	compile	quote_includes	sequence
+cc_common	compile	separate_module_headers	sequence
+cc_common	compile	srcs	sequence
+cc_common	compile	strip_include_prefix	string
+cc_common	compile	system_includes	sequence
+cc_common	compile	textual_hdrs	sequence or depset
+cc_common	compile	user_compile_flags	sequence
+cc_common	compile	variables_extension	dict
+cc_common	configure_features	cc_toolchain	Info
+cc_common	configure_features	ctx	ctx
+cc_common	configure_features	language	string or NoneType
+cc_common	configure_features	requested_features	sequence
+cc_common	configure_features	unsupported_features	sequence
+cc_common	create_cc_toolchain_config_info	abi_libc_version	string or NoneType
+cc_common	create_cc_toolchain_config_info	abi_version	string or NoneType
+cc_common	create_cc_toolchain_config_info	action_configs	sequence
+cc_common	create_cc_toolchain_config_info	artifact_name_patterns	sequence
+cc_common	create_cc_toolchain_config_info	builtin_sysroot	string or NoneType
+cc_common	create_cc_toolchain_config_info	compiler	string
+cc_common	create_cc_toolchain_config_info	ctx	ctx
+cc_common	create_cc_toolchain_config_info	cxx_builtin_include_directories	sequence
+cc_common	create_cc_toolchain_config_info	features	sequence
+cc_common	create_cc_toolchain_config_info	host_system_name	string or NoneType
+cc_common	create_cc_toolchain_config_info	make_variables	sequence
+cc_common	create_cc_toolchain_config_info	target_cpu	string or NoneType
+cc_common	create_cc_toolchain_config_info	target_libc	string or NoneType
+cc_common	create_cc_toolchain_config_info	target_system_name	string or NoneType
+cc_common	create_cc_toolchain_config_info	tool_paths	sequence
+cc_common	create_cc_toolchain_config_info	toolchain_identifier	string
+cc_common	create_compilation_context	add_public_headers_to_modular_headers	-
+cc_common	create_compilation_context	defines	-
+cc_common	create_compilation_context	dependent_cc_compilation_contexts	sequence
+cc_common	create_compilation_context	direct_private_headers	sequence
+cc_common	create_compilation_context	direct_public_headers	sequence
+cc_common	create_compilation_context	direct_textual_headers	sequence
+cc_common	create_compilation_context	exported_dependent_cc_compilation_contexts	sequence
+cc_common	create_compilation_context	external_includes	-
+cc_common	create_compilation_context	framework_includes	-
+cc_common	create_compilation_context	header_module	-
+cc_common	create_compilation_context	headers	-
+cc_common	create_compilation_context	includes	-
+cc_common	create_compilation_context	local_defines	-
+cc_common	create_compilation_context	module_map	-
+cc_common	create_compilation_context	non_code_inputs	sequence
+cc_common	create_compilation_context	pic_header_module	-
+cc_common	create_compilation_context	quote_includes	-
+cc_common	create_compilation_context	separate_module	-
+cc_common	create_compilation_context	separate_module_headers	sequence
+cc_common	create_compilation_context	separate_pic_module	-
+cc_common	create_compilation_context	system_includes	-
+cc_common	create_compilation_context	virtual_to_original_headers	-
+cc_common	create_compilation_outputs	dwo_objects	depset
+cc_common	create_compilation_outputs	lto_compilation_context	-
+cc_common	create_compilation_outputs	objects	depset or NoneType
+cc_common	create_compilation_outputs	pic_dwo_objects	depset
+cc_common	create_compilation_outputs	pic_objects	depset or NoneType
+cc_common	create_compile_variables	add_legacy_cxx_options	bool
+cc_common	create_compile_variables	cc_toolchain	Info
+cc_common	create_compile_variables	feature_configuration	FeatureConfiguration
+cc_common	create_compile_variables	framework_include_directories	depset or NoneType
+cc_common	create_compile_variables	include_directories	depset or NoneType
+cc_common	create_compile_variables	input_file	File, string, or NoneType
+cc_common	create_compile_variables	output_file	File, string, or NoneType
+cc_common	create_compile_variables	preprocessor_defines	depset or NoneType
+cc_common	create_compile_variables	quote_include_directories	depset or NoneType
+cc_common	create_compile_variables	source_file	File, string, or NoneType
+cc_common	create_compile_variables	strip_opts	sequence or NoneType
+cc_common	create_compile_variables	system_include_directories	depset or NoneType
+cc_common	create_compile_variables	thinlto_index	string or NoneType
+cc_common	create_compile_variables	thinlto_input_bitcode_file	string or NoneType
+cc_common	create_compile_variables	thinlto_output_object_file	string or NoneType
+cc_common	create_compile_variables	use_pic	bool
+cc_common	create_compile_variables	user_compile_flags	sequence or NoneType
+cc_common	create_compile_variables	variables_extension	dict
+cc_common	create_extra_link_time_library	build_library_func	callable
+cc_common	create_library_to_link	actions	-
+cc_common	create_library_to_link	alwayslink	bool
+cc_common	create_library_to_link	cc_toolchain	-
+cc_common	create_library_to_link	dynamic_library	File or NoneType
+cc_common	create_library_to_link	dynamic_library_symlink_path	string
+cc_common	create_library_to_link	feature_configuration	-
+cc_common	create_library_to_link	interface_library	File or NoneType
+cc_common	create_library_to_link	interface_library_symlink_path	string
+cc_common	create_library_to_link	lto_compilation_context	-
+cc_common	create_library_to_link	must_keep_debug	-
+cc_common	create_library_to_link	objects	sequence
+cc_common	create_library_to_link	pic_objects	sequence
+cc_common	create_library_to_link	pic_static_library	File or NoneType
+cc_common	create_library_to_link	static_library	File or NoneType
+cc_common	create_link_variables	cc_toolchain	Info
+cc_common	create_link_variables	feature_configuration	FeatureConfiguration
+cc_common	create_link_variables	is_linking_dynamic_library	bool
+cc_common	create_link_variables	is_static_linking_mode	bool
+cc_common	create_link_variables	is_using_linker	bool
+cc_common	create_link_variables	library_search_directories	depset
+cc_common	create_link_variables	must_keep_debug	bool
+cc_common	create_link_variables	output_file	-
+cc_common	create_link_variables	param_file	-
+cc_common	create_link_variables	runtime_library_search_directories	depset
+cc_common	create_link_variables	use_test_only_flags	bool
+cc_common	create_link_variables	user_link_flags	sequence
+cc_common	create_linker_input	additional_inputs	NoneType or depset
+cc_common	create_linker_input	libraries	NoneType or depset
+cc_common	create_linker_input	linkstamps	NoneType or depset
+cc_common	create_linker_input	owner	Label
+cc_common	create_linker_input	user_link_flags	NoneType, depset, or sequence
+cc_common	create_linking_context	extra_link_time_library	struct or NoneType
+cc_common	create_linking_context	linker_inputs	depset
+cc_common	create_linking_context_from_compilation_outputs	actions	actions
+cc_common	create_linking_context_from_compilation_outputs	additional_inputs	sequence
+cc_common	create_linking_context_from_compilation_outputs	alwayslink	bool
+cc_common	create_linking_context_from_compilation_outputs	cc_toolchain	Info
+cc_common	create_linking_context_from_compilation_outputs	compilation_outputs	CcCompilationOutputs
+cc_common	create_linking_context_from_compilation_outputs	disallow_dynamic_library	bool
+cc_common	create_linking_context_from_compilation_outputs	disallow_static_libraries	bool
+cc_common	create_linking_context_from_compilation_outputs	feature_configuration	FeatureConfiguration
+cc_common	create_linking_context_from_compilation_outputs	language	string
+cc_common	create_linking_context_from_compilation_outputs	linked_dll_name_suffix	-
+cc_common	create_linking_context_from_compilation_outputs	linking_contexts	sequence
+cc_common	create_linking_context_from_compilation_outputs	name	string
+cc_common	create_linking_context_from_compilation_outputs	stamp	-
+cc_common	create_linking_context_from_compilation_outputs	test_only_target	bool
+cc_common	create_linking_context_from_compilation_outputs	user_link_flags	sequence
+cc_common	create_linking_context_from_compilation_outputs	variables_extension	dict
+cc_common	create_lto_compilation_context	objects	dict
+cc_common	create_module_map	file	File
+cc_common	create_module_map	name	string
+cc_common	get_environment_variables	action_name	string
+cc_common	get_environment_variables	feature_configuration	FeatureConfiguration
+cc_common	get_environment_variables	variables	Variables
+cc_common	get_execution_requirements	action_name	string
+cc_common	get_execution_requirements	feature_configuration	FeatureConfiguration
+cc_common	get_memory_inefficient_command_line	action_name	string
+cc_common	get_memory_inefficient_command_line	feature_configuration	FeatureConfiguration
+cc_common	get_memory_inefficient_command_line	variables	Variables
+cc_common	get_tool_for_action	action_name	string
+cc_common	get_tool_for_action	feature_configuration	FeatureConfiguration
+cc_common	get_tool_requirement_for_action	action_name	string
+cc_common	get_tool_requirement_for_action	feature_configuration	FeatureConfiguration
+cc_common	is_enabled	feature_configuration	FeatureConfiguration
+cc_common	is_enabled	feature_name	string
+cc_common	legacy_cc_flags_make_variable_do_not_use	cc_toolchain	Info
+cc_common	link	actions	actions
+cc_common	link	additional_inputs	sequence or depset
+cc_common	link	additional_linkstamp_defines	sequence
+cc_common	link	additional_outputs	sequence
+cc_common	link	always_link	bool
+cc_common	link	build_config	configuration or NoneType
+cc_common	link	cc_toolchain	Info
+cc_common	link	compilation_outputs	CcCompilationOutputs or NoneType
+cc_common	link	emit_interface_shared_library	bool
+cc_common	link	feature_configuration	FeatureConfiguration
+cc_common	link	language	string
+cc_common	link	link_artifact_name_suffix	string
+cc_common	link	link_deps_statically	bool
+cc_common	link	linking_contexts	sequence
+cc_common	link	main_output	File or NoneType
+cc_common	link	name	string
+cc_common	link	native_deps	bool
+cc_common	link	never_link	bool
+cc_common	link	output_type	string
+cc_common	link	stamp	int
+cc_common	link	test_only_target	bool
+cc_common	link	use_shareable_artifact_factory	bool
+cc_common	link	use_test_only_flags	bool
+cc_common	link	user_link_flags	sequence
+cc_common	link	variables_extension	dict
+cc_common	link	whole_archive	bool
+cc_common	merge_cc_infos	cc_infos	sequence
+cc_common	merge_cc_infos	direct_cc_infos	sequence
+cc_common	merge_compilation_contexts	compilation_contexts	sequence
+cc_common	merge_compilation_outputs	compilation_outputs	sequence
+cc_internal	absolute_symlink	ctx	StarlarkActionContext
+cc_internal	absolute_symlink	output	File
+cc_internal	absolute_symlink	progress_message	string
+cc_internal	absolute_symlink	target_path	string
+cc_internal	actions2ctx_cheat	actions	actions
+cc_internal	aspect_class	ctx	ctx
+cc_internal	cc_toolchain_features	toolchain_config_info	struct
+cc_internal	cc_toolchain_features	tools_directory	string
+cc_internal	cc_toolchain_variables	vars	dict
+cc_internal	check_private_api	allowlist	sequence
+cc_internal	check_private_api	depth	-
+cc_internal	check_toplevel	fn	function
+cc_internal	collect_per_file_lto_backend_opts	cpp_config	cpp
+cc_internal	collect_per_file_lto_backend_opts	obj	File
+cc_internal	combine_cc_toolchain_variables	parent	Variables
+cc_internal	compute_output_name_prefix_dir	configuration	configuration
+cc_internal	compute_output_name_prefix_dir	purpose	string
+cc_internal	create_cc_compile_action	action_construction_context	ctx
+cc_internal	create_cc_compile_action	action_name	string or NoneType
+cc_internal	create_cc_compile_action	additional_compilation_inputs	sequence
+cc_internal	create_cc_compile_action	additional_compilation_inputs_set	depset or NoneType
+cc_internal	create_cc_compile_action	additional_include_scanning_roots	sequence
+cc_internal	create_cc_compile_action	additional_outputs	sequence
+cc_internal	create_cc_compile_action	build_info_header_files	sequence or NoneType
+cc_internal	create_cc_compile_action	cache_key_inputs	depset or NoneType
+cc_internal	create_cc_compile_action	cc_compilation_context	struct
+cc_internal	create_cc_compile_action	cc_toolchain	struct
+cc_internal	create_cc_compile_action	compile_build_variables	Variables
+cc_internal	create_cc_compile_action	configuration	configuration
+cc_internal	create_cc_compile_action	copts_filter	string or NoneType
+cc_internal	create_cc_compile_action	diagnostics_file	-
+cc_internal	create_cc_compile_action	dotd_file	-
+cc_internal	create_cc_compile_action	dwo_file	-
+cc_internal	create_cc_compile_action	feature_configuration	FeatureConfiguration
+cc_internal	create_cc_compile_action	gcno_file	-
+cc_internal	create_cc_compile_action	lto_indexing_file	-
+cc_internal	create_cc_compile_action	modmap_file	-
+cc_internal	create_cc_compile_action	modmap_input_file	-
+cc_internal	create_cc_compile_action	module_files	-
+cc_internal	create_cc_compile_action	needs_include_validation	bool
+cc_internal	create_cc_compile_action	output_file	-
+cc_internal	create_cc_compile_action	shareable	bool or NoneType
+cc_internal	create_cc_compile_action	should_scan_includes	bool or NoneType
+cc_internal	create_cc_compile_action	source	File
+cc_internal	create_cc_compile_action	toolchain_type	string
+cc_internal	create_cc_compile_action	use_pic	bool
+cc_internal	create_cc_compile_action_template	action_construction_context	ctx
+cc_internal	create_cc_compile_action_template	additional_compilation_inputs	sequence
+cc_internal	create_cc_compile_action_template	additional_include_scanning_roots	sequence
+cc_internal	create_cc_compile_action_template	cc_compilation_context	struct
+cc_internal	create_cc_compile_action_template	cc_toolchain	struct
+cc_internal	create_cc_compile_action_template	compile_build_variables	Variables
+cc_internal	create_cc_compile_action_template	configuration	configuration
+cc_internal	create_cc_compile_action_template	copts_filter	string or NoneType
+cc_internal	create_cc_compile_action_template	diagnostics_tree_artifact	-
+cc_internal	create_cc_compile_action_template	dotd_tree_artifact	-
+cc_internal	create_cc_compile_action_template	feature_configuration	FeatureConfiguration
+cc_internal	create_cc_compile_action_template	lto_indexing_tree_artifact	-
+cc_internal	create_cc_compile_action_template	needs_include_validation	bool
+cc_internal	create_cc_compile_action_template	output_categories	sequence
+cc_internal	create_cc_compile_action_template	output_files	File
+cc_internal	create_cc_compile_action_template	source	File
+cc_internal	create_cc_compile_action_template	toolchain_type	string
+cc_internal	create_cc_compile_action_template	use_pic	bool
+cc_internal	create_header_info	header_module	-
+cc_internal	create_header_info	modular_private_headers	sequence
+cc_internal	create_header_info	modular_public_headers	sequence
+cc_internal	create_header_info	pic_header_module	-
+cc_internal	create_header_info	separate_module	-
+cc_internal	create_header_info	separate_module_headers	sequence
+cc_internal	create_header_info	separate_pic_module	-
+cc_internal	create_header_info	textual_headers	sequence
+cc_internal	create_header_info_with_deps	deps	sequence
+cc_internal	create_header_info_with_deps	header_info	HeaderInfo
+cc_internal	create_header_info_with_deps	merged_deps	sequence
+cc_internal	create_lto_backend_action	actions	actions
+cc_internal	create_lto_backend_action	all_bitcode_files	depset or NoneType
+cc_internal	create_lto_backend_action	build_variables	Variables
+cc_internal	create_lto_backend_action	env	dict
+cc_internal	create_lto_backend_action	feature_configuration	FeatureConfiguration
+cc_internal	create_lto_backend_action	imports	File or NoneType
+cc_internal	create_lto_backend_action	inputs	depset
+cc_internal	create_lto_backend_action	outputs	sequence
+cc_internal	create_lto_backend_action	use_pic	bool
+cc_internal	create_lto_backend_action_template	actions	actions
+cc_internal	create_lto_backend_action_template	additional_inputs	depset
+cc_internal	create_lto_backend_action_template	all_bitcode_files	depset or NoneType
+cc_internal	create_lto_backend_action_template	bitcode_file	File or NoneType
+cc_internal	create_lto_backend_action_template	build_variables	Variables
+cc_internal	create_lto_backend_action_template	dwo_file	File or NoneType
+cc_internal	create_lto_backend_action_template	env	dict
+cc_internal	create_lto_backend_action_template	feature_configuration	FeatureConfiguration
+cc_internal	create_lto_backend_action_template	index	File or NoneType
+cc_internal	create_lto_backend_action_template	object_file	File or NoneType
+cc_internal	create_lto_backend_action_template	use_pic	bool
+cc_internal	declare_compile_output_file	configuration	configuration
+cc_internal	declare_compile_output_file	ctx	ctx
+cc_internal	declare_compile_output_file	label	Label
+cc_internal	declare_compile_output_file	output_name	string
+cc_internal	declare_other_output_file	ctx	ctx
+cc_internal	declare_other_output_file	object_file	File
+cc_internal	declare_other_output_file	output_name	string
+cc_internal	dynamic_library_soname	actions	actions
+cc_internal	dynamic_library_soname	path	string
+cc_internal	dynamic_library_soname	preserve_name	bool
+cc_internal	dynamic_library_symlink	actions	actions
+cc_internal	dynamic_library_symlink	library	File
+cc_internal	dynamic_library_symlink	prefix_consumer	bool
+cc_internal	dynamic_library_symlink	preserve_name	bool
+cc_internal	dynamic_library_symlink	solib_directory	string
+cc_internal	dynamic_library_symlink2	actions	actions
+cc_internal	dynamic_library_symlink2	library	File
+cc_internal	dynamic_library_symlink2	path	string
+cc_internal	dynamic_library_symlink2	solib_directory	string
+cc_internal	exec_os	ctx	ctx
+cc_internal	expand_and_tokenize	attr	string
+cc_internal	expand_and_tokenize	ctx	ctx
+cc_internal	expand_and_tokenize	flags	sequence
+cc_internal	freeze	value	StarlarkValue
+cc_internal	get_artifact_name_extension_for_category	category	string
+cc_internal	get_artifact_name_extension_for_category	cc_toolchain	Info
+cc_internal	get_artifact_name_for_category	category	string
+cc_internal	get_artifact_name_for_category	cc_toolchain	Info
+cc_internal	get_artifact_name_for_category	output_name	string
+cc_internal	get_link_args	action_name	string
+cc_internal	get_link_args	build_variables	Variables
+cc_internal	get_link_args	feature_configuration	FeatureConfiguration
+cc_internal	get_link_args	parameter_file_type	string or NoneType
+cc_internal	intern_seq	seq	sequence
+cc_internal	intern_string_sequence_variable_value	string_sequence	sequence
+cc_internal	is_package_headers_checking_mode_set	ctx	ctx
+cc_internal	is_package_headers_checking_mode_set_for_aspect	ctx	ctx
+cc_internal	is_tree_artifact	artifact	File
+cc_internal	package_headers_checking_mode	ctx	ctx
+cc_internal	package_headers_checking_mode_for_aspect	ctx	ctx
+cc_internal	per_file_copts	cpp_configuration	cpp
+cc_internal	per_file_copts	label	Label
+cc_internal	per_file_copts	source_file	File
+cc_internal	rule_class	ctx	ctx
+cc_internal	solib_symlink_action	artifact	File
+cc_internal	solib_symlink_action	ctx	ctx
+cc_internal	solib_symlink_action	runtime_solib_dir_base	string
+cc_internal	solib_symlink_action	solib_directory	string
+cc_internal	wrap_link_actions	actions	actions
+cc_internal	wrap_link_actions	build_configuration	-
+cc_internal	wrap_link_actions	sharable_artifacts	bool
+config	bool	flag	bool
+config	exec	exec_group	string or NoneType
+config	int	flag	bool
+config	string	allow_multiple	bool
+config	string	flag	bool
+config	string_list	flag	bool
+config	string_list	repeatable	bool
+config	string_set	flag	bool
+config	string_set	repeatable	bool
+config_common	config_feature_flag_transition	attribute	string
+config_common	toolchain_type	mandatory	bool
+config_common	toolchain_type	name	string or Label
+coverage_common	instrumented_files_info	baseline_coverage_files	sequence or NoneType
+coverage_common	instrumented_files_info	coverage_environment	dict
+coverage_common	instrumented_files_info	coverage_support_files	sequence or depset
+coverage_common	instrumented_files_info	ctx	ctx
+coverage_common	instrumented_files_info	dependency_attributes	sequence
+coverage_common	instrumented_files_info	extensions	sequence or NoneType
+coverage_common	instrumented_files_info	metadata_files	sequence
+coverage_common	instrumented_files_info	reported_to_actual_sources	depset or NoneType
+coverage_common	instrumented_files_info	source_attributes	sequence
+ctx	check_placeholders	allowed_placeholders	sequence
+ctx	check_placeholders	template	string
+ctx	coverage_instrumented	target	Target or NoneType
+ctx	expand_location	input	string
+ctx	expand_location	short_paths	bool
+ctx	expand_location	targets	sequence
+ctx	expand_make_variables	additional_substitutions	dict
+ctx	expand_make_variables	attribute_name	string
+ctx	expand_make_variables	command	string
+ctx	package_relative_label	input	string or Label
+ctx	resolve_command	attribute	string or NoneType
+ctx	resolve_command	command	string
+ctx	resolve_command	execution_requirements	dict
+ctx	resolve_command	expand_locations	bool
+ctx	resolve_command	label_dict	dict
+ctx	resolve_command	make_variables	dict or NoneType
+ctx	resolve_command	tools	sequence
+ctx	resolve_tools	tools	sequence
+ctx	runfiles	collect_data	bool
+ctx	runfiles	collect_default	bool
+ctx	runfiles	files	sequence
+ctx	runfiles	root_symlinks	dict or depset
+ctx	runfiles	skip_conflict_checking	bool
+ctx	runfiles	symlinks	dict or depset
+ctx	runfiles	transitive_files	depset or NoneType
+ctx	target_platform_has_constraint	constraintValue	ConstraintValueInfo
+ctx	tokenize	option	string
+dict	get	default	-
+dict	get	key	-
+dict	pop	default	-
+dict	pop	key	-
+dict	setdefault	default	-
+dict	setdefault	key	-
+dict	update	pairs	-
+java_common	_check_java_toolchain_is_declared_on_rule	actions	actions
+java_common	check_provider_instances	provider_type	Provider
+java_common	check_provider_instances	providers	sequence
+java_common	check_provider_instances	what	string
+java_common	collect_native_deps_dirs	libraries	depset
+java_common	compile	add_exports	sequence
+java_common	compile	add_opens	sequence
+java_common	compile	annotation_processor_additional_inputs	sequence
+java_common	compile	annotation_processor_additional_outputs	sequence
+java_common	compile	bootclasspath	-
+java_common	compile	classpath_resources	sequence
+java_common	compile	ctx	ctx
+java_common	compile	deps	sequence
+java_common	compile	enable_annotation_processing	bool
+java_common	compile	enable_compile_jar_action	bool
+java_common	compile	enable_jspecify	bool
+java_common	compile	exported_plugins	sequence or sequence
+java_common	compile	exports	sequence
+java_common	compile	include_compilation_info	bool
+java_common	compile	injecting_rule_kind	string or NoneType
+java_common	compile	java_toolchain	Info
+java_common	compile	javac_opts	sequence
+java_common	compile	native_libraries	sequence
+java_common	compile	neverlink	bool
+java_common	compile	output	File
+java_common	compile	output_source_jar	File or NoneType
+java_common	compile	plugins	sequence or sequence
+java_common	compile	resource_jars	sequence
+java_common	compile	resources	sequence
+java_common	compile	runtime_deps	sequence
+java_common	compile	source_files	sequence
+java_common	compile	source_jars	sequence
+java_common	compile	sourcepath	sequence
+java_common	compile	strict_deps	string
+java_common	create_compilation_action	additional_inputs	sequence
+java_common	create_compilation_action	additional_outputs	sequence
+java_common	create_compilation_action	bootclasspath	-
+java_common	create_compilation_action	classpath_resources	sequence
+java_common	create_compilation_action	compilation_classpath	depset
+java_common	create_compilation_action	compile_time_java_deps	depset
+java_common	create_compilation_action	ctx	ctx
+java_common	create_compilation_action	deps_proto	-
+java_common	create_compilation_action	direct_jars	depset
+java_common	create_compilation_action	enable_direct_classpath	bool
+java_common	create_compilation_action	enable_jspecify	bool
+java_common	create_compilation_action	extra_args	sequence
+java_common	create_compilation_action	gen_class	-
+java_common	create_compilation_action	gen_source	-
+java_common	create_compilation_action	injecting_rule_kind	-
+java_common	create_compilation_action	java_toolchain	Info
+java_common	create_compilation_action	javabuilder_jvm_flags	depset
+java_common	create_compilation_action	javac_opts	depset
+java_common	create_compilation_action	manifest_proto	File
+java_common	create_compilation_action	native_header_jar	-
+java_common	create_compilation_action	output	File
+java_common	create_compilation_action	plugin_info	Info
+java_common	create_compilation_action	resource_jars	-
+java_common	create_compilation_action	resources	sequence
+java_common	create_compilation_action	source_jars	sequence
+java_common	create_compilation_action	sourcepath	sequence
+java_common	create_compilation_action	sources	-
+java_common	create_compilation_action	strict_deps_mode	string
+java_common	create_compilation_action	target_label	Label
+java_common	create_header_compilation_action	additional_inputs	sequence
+java_common	create_header_compilation_action	bootclasspath	-
+java_common	create_header_compilation_action	compilation_classpath	depset
+java_common	create_header_compilation_action	compile_deps_proto	File
+java_common	create_header_compilation_action	compile_jar	File
+java_common	create_header_compilation_action	compile_time_java_deps	depset
+java_common	create_header_compilation_action	ctx	ctx
+java_common	create_header_compilation_action	direct_jars	depset
+java_common	create_header_compilation_action	enable_direct_classpath	bool
+java_common	create_header_compilation_action	header_compilation_direct_deps	depset
+java_common	create_header_compilation_action	header_compilation_jar	File
+java_common	create_header_compilation_action	injecting_rule_kind	-
+java_common	create_header_compilation_action	java_toolchain	Info
+java_common	create_header_compilation_action	javac_opts	depset
+java_common	create_header_compilation_action	plugin_info	Info
+java_common	create_header_compilation_action	source_files	depset
+java_common	create_header_compilation_action	source_jars	sequence
+java_common	create_header_compilation_action	strict_deps_mode	string
+java_common	create_header_compilation_action	target_label	Label
+java_common	default_javac_opts	as_depset	bool
+java_common	default_javac_opts	java_toolchain	Info
+java_common	expand_java_opts	attr	string
+java_common	expand_java_opts	ctx	ctx
+java_common	expand_java_opts	exec_paths	bool
+java_common	expand_java_opts	tokenize	bool
+java_common	get_runtime_classpath_for_archive	excluded_jars	depset
+java_common	get_runtime_classpath_for_archive	jars	depset
+java_common	merge	providers	sequence
+java_common	pack_sources	actions	actions
+java_common	pack_sources	java_toolchain	Info
+java_common	pack_sources	output_source_jar	File or NoneType
+java_common	pack_sources	source_jars	sequence
+java_common	pack_sources	sources	sequence
+java_common	run_ijar	actions	actions
+java_common	run_ijar	jar	File
+java_common	run_ijar	java_toolchain	Info
+java_common	run_ijar	target_label	Label or NoneType
+java_common	stamp_jar	actions	actions
+java_common	stamp_jar	jar	File
+java_common	stamp_jar	java_toolchain	Info
+java_common	stamp_jar	target_label	Label
+java_common	target_kind	target	-
+java_common	tokenize_javacopts	opts	sequence
+json	decode	default	-
+json	decode	x	string
+json	encode	x	-
+json	encode_indent	indent	string
+json	encode_indent	prefix	string
+json	encode_indent	x	-
+json	indent	indent	string
+json	indent	prefix	string
+json	indent	s	string
+list	append	item	-
+list	extend	items	iterable
+list	index	end	int
+list	index	start	int
+list	index	x	-
+list	insert	index	int
+list	insert	item	-
+list	pop	i	int
+list	remove	x	-
+module_ctx	extension_metadata	facts	dict
+module_ctx	extension_metadata	reproducible	bool
+module_ctx	extension_metadata	root_module_direct_deps	sequence, string, or NoneType
+module_ctx	extension_metadata	root_module_direct_dev_deps	sequence, string, or NoneType
+module_ctx	is_dev_dependency	tag	bazel_module_tag
+module_ctx	tag_sort_key	tag	bazel_module_tag
+native	existing_rule	name	string
+native	exports_files	licenses	sequence or NoneType
+native	exports_files	srcs	sequence
+native	exports_files	visibility	sequence or NoneType
+native	glob	allow_empty	-
+native	glob	exclude	sequence
+native	glob	exclude_directories	int
+native	glob	include	sequence
+native	package_group	includes	sequence
+native	package_group	name	string
+native	package_group	packages	sequence
+native	package_relative_label	input	string or Label
+native	subpackages	allow_empty	bool
+native	subpackages	exclude	sequence
+native	subpackages	include	sequence
+objc	target_should_alwayslink	ctx	ctx
+path	readdir	watch	string
+proto	encode_text	x	structure or NativeInfo
+py_builtins	add_py_extra_pseudo_action	ctx	ctx
+py_builtins	add_py_extra_pseudo_action	dependency_transitive_python_sources	depset
+py_builtins	are_action_listeners_enabled	ctx	ctx
+py_builtins	copy_without_caching	ctx	ctx
+py_builtins	copy_without_caching	read_from	File
+py_builtins	copy_without_caching	write_to	File
+py_builtins	create_repo_mapping_manifest	ctx	ctx
+py_builtins	create_repo_mapping_manifest	output	File
+py_builtins	create_repo_mapping_manifest	runfiles	runfiles
+py_builtins	create_sources_only_manifest	ctx	ctx
+py_builtins	create_sources_only_manifest	output	File
+py_builtins	create_sources_only_manifest	runfiles	runfiles
+py_builtins	declare_constant_metadata_file	ctx	ctx
+py_builtins	declare_constant_metadata_file	name	string
+py_builtins	declare_constant_metadata_file	root	-
+py_builtins	expand_location_and_make_variables	attribute_name	string
+py_builtins	expand_location_and_make_variables	ctx	ctx
+py_builtins	expand_location_and_make_variables	expression	string
+py_builtins	expand_location_and_make_variables	targets	sequence
+py_builtins	get_label_repo_runfiles_path	label	Label
+py_builtins	get_rule_name	ctx	ctx
+py_builtins	is_bzlmod_enabled	ctx	ctx
+py_builtins	is_singleton_depset	value	depset
+py_builtins	merge_runfiles_with_generated_inits_empty_files_supplier	ctx	ctx
+py_builtins	merge_runfiles_with_generated_inits_empty_files_supplier	runfiles	runfiles
+py_builtins	regex_match	pattern	string
+py_builtins	regex_match	subject	string
+repo_rule_proxy	call	dev_dependency	bool
+repo_rule_proxy	call	name	string
+repository_ctx	delete	path	string or path
+repository_ctx	patch	directory	string, Label, or path
+repository_ctx	patch	patch_file	string, Label, or path
+repository_ctx	patch	strip	int
+repository_ctx	patch	watch_patch	string
+repository_ctx	rename	dst	string, Label, or path
+repository_ctx	rename	src	string, Label, or path
+repository_ctx	repo_metadata	attrs_for_reproducibility	dict
+repository_ctx	repo_metadata	reproducible	bool
+repository_ctx	symlink	link_name	string, Label, or path
+repository_ctx	symlink	target	string, Label, or path
+repository_ctx	template	executable	bool
+repository_ctx	template	path	string, Label, or path
+repository_ctx	template	substitutions	dict
+repository_ctx	template	template	string, Label, or path
+repository_ctx	template	watch_template	string
+repository_ctx	watch_tree	path	string, Label, or path
+runfiles	merge	other	runfiles
+runfiles	merge_all	other	sequence
+set	add	element	-
+set	discard	element	-
+set	isdisjoint	other	-
+set	issubset	other	-
+set	issuperset	other	-
+set	remove	element	-
+set	symmetric_difference	other	-
+set	symmetric_difference_update	other	-
+string	capitalize	self	string
+string	count	end	int or NoneType
+string	count	self	string
+string	count	start	int or NoneType
+string	count	sub	string
+string	elems	self	string
+string	endswith	end	int or NoneType
+string	endswith	self	string
+string	endswith	start	int or NoneType
+string	endswith	sub	string or tuple
+string	find	end	int or NoneType
+string	find	self	string
+string	find	start	int or NoneType
+string	find	sub	string
+string	format	self	string
+string	index	end	int or NoneType
+string	index	self	string
+string	index	start	int or NoneType
+string	index	sub	string
+string	isalnum	self	string
+string	isalpha	self	string
+string	isdigit	self	string
+string	islower	self	string
+string	isspace	self	string
+string	istitle	self	string
+string	isupper	self	string
+string	join	elements	iterable
+string	join	self	string
+string	lower	self	string
+string	lstrip	chars	string or NoneType
+string	lstrip	self	string
+string	partition	self	string
+string	partition	sep	string
+string	removeprefix	prefix	string
+string	removeprefix	self	string
+string	removesuffix	self	string
+string	removesuffix	suffix	string
+string	replace	count	int
+string	replace	new	string
+string	replace	old	string
+string	replace	self	string
+string	rfind	end	int or NoneType
+string	rfind	self	string
+string	rfind	start	int or NoneType
+string	rfind	sub	string
+string	rindex	end	int or NoneType
+string	rindex	self	string
+string	rindex	start	int or NoneType
+string	rindex	sub	string
+string	rpartition	self	string
+string	rpartition	sep	string
+string	rsplit	maxsplit	int
+string	rsplit	self	string
+string	rsplit	sep	string
+string	rstrip	chars	string or NoneType
+string	rstrip	self	string
+string	split	maxsplit	int
+string	split	self	string
+string	split	sep	string
+string	splitlines	keepends	bool
+string	splitlines	self	string
+string	startswith	end	int or NoneType
+string	startswith	self	string
+string	startswith	start	int or NoneType
+string	startswith	sub	string or tuple
+string	strip	chars	string or NoneType
+string	strip	self	string
+string	title	self	string
+string	upper	self	string
+template_ctx	declare_file	directory	File
+template_ctx	declare_file	filename	string
+template_ctx	run	arguments	sequence
+template_ctx	run	executable	File, string, or FilesToRunProvider
+template_ctx	run	inputs	sequence or depset
+template_ctx	run	outputs	sequence
+template_ctx	run	progress_message	string or NoneType
+template_ctx	run	tools	sequence, depset, or NoneType
+testing	TestEnvironment	environment	dict
+testing	TestEnvironment	inherited_environment	sequence
+testing	analysis_test	attr_values	dict
+testing	analysis_test	attrs	dict
+testing	analysis_test	fragments	sequence
+testing	analysis_test	implementation	function
+testing	analysis_test	name	string
+testing	analysis_test	toolchains	sequence
+transition	and_then	transition	transition

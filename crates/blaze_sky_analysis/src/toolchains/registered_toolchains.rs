@@ -21,8 +21,8 @@ use blaze_packages::target::Target;
 use blaze_sky_loading::repos::RepositoryMappingKey;
 use blaze_sky_loading::target_pattern_function::{FilterFn, FilteringPolicy};
 use blaze_skyframe::{
-    ComputeError, Environment, Key, SkyError, SkyFunctionException, SkyFunctionName, SkyKey,
-    Transience,
+    ComputeError, Environment, FunctionHermeticity, Key, SkyError, SkyFunctionException,
+    SkyFunctionName, SkyKey, Transience,
 };
 use blaze_vfs::PathFragment;
 use indexmap::{IndexMap, IndexSet};
@@ -92,6 +92,13 @@ impl fmt::Debug for RegisteredToolchainsKey {
 impl Key for RegisteredToolchainsKey {
     type Value = RegisteredToolchainsValue;
     const FUNCTION: SkyFunctionName = REGISTERED_TOOLCHAINS;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:142 SkyFunctions.REGISTERED_TOOLCHAINS (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: a record of the declared toolchains (a list; `DeclaredToolchainInfo` by value) and the nullable rejected toolchains (a table, equal as cell sets).
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredToolchainsValue.java:42 RegisteredToolchainsValue
+    fn values_equal(old: &RegisteredToolchainsValue, new: &RegisteredToolchainsValue) -> bool {
+        old == new
+    }
 }
 
 fn persistent(e: ToolchainException) -> ComputeError {

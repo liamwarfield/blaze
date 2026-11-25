@@ -542,6 +542,71 @@ mod action_execution_value_test {
         blaze_util::unported!("SerializationTester");
     }
 
+    /// Package I2: `ActionExecutionValueTest.equality`'s groups of output files, over
+    /// `Key::values_equal`, with local file values (remote values never prune here, see
+    /// `keys::file_values_equal_for_pruning`).
+    // Java: ActionExecutionValueTest.java:62 ActionExecutionValueTest.equality
+    #[test]
+    fn values_equal_of_output_files() {
+        use crate::keys::ActionExecutionKey;
+        use blaze_skyframe::Key;
+        use blaze_skyframe::testing::values_equal_tester;
+        let root = output_root();
+        let local = |d: u8| FileArtifactValue::create_for_normal_file(Some(vec![d]), None, 1);
+        let with = |entries: &[(&str, FileArtifactValue)]| {
+            ActionExecutionValue::create(
+                entries
+                    .iter()
+                    .map(|(name, value)| (output(&root, name), value.clone()))
+                    .collect(),
+                IndexMap::new(),
+                None,
+            )
+        };
+        values_equal_tester::<ActionExecutionKey>(&[
+            vec![with(&[("file1", local(1))]), with(&[("file1", local(1))])],
+            vec![with(&[("file1", local(2))])],
+            vec![with(&[("file2", local(1))])],
+            vec![with(&[("file1", local(1)), ("file2", local(2))])],
+        ]);
+        let remote = with(&[(
+            "file1",
+            FileArtifactValue::create_for_remote_file(vec![1], 1, 1),
+        )]);
+        assert!(!ActionExecutionKey::values_equal(&remote, &remote));
+    }
+
+    /// Package I2: an output artifact recomputed to equal local metadata prunes its parent; a
+    /// completion value (a Java singleton) always does.
+    #[test]
+    fn recomputed_equal_artifact_and_completion_prune_parent() {
+        use crate::artifact_function::ArtifactValue;
+        use crate::completion_function::TargetCompletionValue;
+        use crate::keys::{ArtifactKey, TargetCompletionKey};
+        use blaze_skyframe::testing::parent_rebuilt;
+        let root = output_root();
+        let key = ArtifactKey(output(&root, "file1"));
+        let local = |d: u8| {
+            ArtifactValue::File(FileArtifactValue::create_for_normal_file(
+                Some(vec![d]),
+                None,
+                1,
+            ))
+        };
+        assert!(!parent_rebuilt(key.clone(), local(1), local(1)));
+        assert!(parent_rebuilt(key, local(1), local(2)));
+        let completion = TargetCompletionKey {
+            action_lookup_key: ActionLookupKeyRef::new(NullArtifactOwner),
+            output_groups: vec![],
+            will_test: false,
+        };
+        assert!(!parent_rebuilt(
+            completion,
+            TargetCompletionValue::default(),
+            TargetCompletionValue::default()
+        ));
+    }
+
     /// Not a Java test: the first `checkArgument` of `ActionExecutionValue.create`
     /// (skyframe/ActionExecutionValue.java:72-75).
     #[test]

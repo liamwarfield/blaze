@@ -12,7 +12,8 @@ use blaze_cmdline::{PackageIdentifier, RepositoryName};
 use blaze_events::Event;
 use blaze_packages::exceptions::{DetailedExitCode, NoSuchPackageException, PackageLoadingCode};
 use blaze_skyframe::{
-    ComputeError, Environment, Key, SkyFunctionException, SkyFunctionName, SkyKey,
+    ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionException, SkyFunctionName,
+    SkyKey,
 };
 use blaze_vfs::{DirentType, PathFragment, Root, RootedPath};
 
@@ -119,6 +120,16 @@ impl fmt::Debug for RecursivePkgKey {
 impl Key for RecursivePkgKey {
     type Value = RecursivePkgValue;
     const FUNCTION: SkyFunctionName = RECURSIVE_PKG;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:94 SkyFunctions.RECURSIVE_PKG (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: `RecursivePkgValue` has no `equals`; `create` returns the singleton `EMPTY` for no
+    /// packages and no errors, and a new object otherwise. So only two empty, error-free values are
+    /// equal.
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePkgValue.java:51 RecursivePkgValue.create
+    fn values_equal(old: &RecursivePkgValue, new: &RecursivePkgValue) -> bool {
+        let is_empty = |v: &RecursivePkgValue| v.get_packages().is_empty() && !v.has_errors();
+        is_empty(old) && is_empty(new)
+    }
 }
 
 /// The packages beneath a directory (Java `RecursivePkgValue`). `packages` is Java's
@@ -132,6 +143,15 @@ pub struct RecursivePkgValue {
 }
 
 impl RecursivePkgValue {
+    /// A value with these fields (tests).
+    #[cfg(test)]
+    pub(crate) fn for_testing(packages: Vec<String>, has_errors: bool) -> Self {
+        RecursivePkgValue {
+            packages,
+            has_errors,
+        }
+    }
+
     pub fn get_packages(&self) -> &[String] {
         &self.packages
     }
@@ -588,6 +608,13 @@ impl fmt::Debug for PackageErrorMessageKey {
 impl Key for PackageErrorMessageKey {
     type Value = PackageErrorMessageValue;
     const FUNCTION: SkyFunctionName = PACKAGE_ERROR_MESSAGE;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:61 SkyFunctions.PACKAGE_ERROR_MESSAGE (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: the `NO_ERROR_VALUE` and `ERROR_VALUE` singletons, and the exception message.
+    // Java: com/google/devtools/build/lib/skyframe/PackageErrorMessageValue.java:154 PackageErrorMessageValue.NoSuchPackageExceptionValue.equals
+    fn values_equal(old: &PackageErrorMessageValue, new: &PackageErrorMessageValue) -> bool {
+        old == new
+    }
 }
 
 /// Whether a package loaded, loaded with errors, or failed (Java `PackageErrorMessageValue`).
@@ -646,6 +673,10 @@ pub struct PackageErrorValue;
 impl Key for PackageErrorKey {
     type Value = PackageErrorValue;
     const FUNCTION: SkyFunctionName = PACKAGE_ERROR;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:59 SkyFunctions.PACKAGE_ERROR (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal`: Java's function always throws; there is no value.
+    // Java: com/google/devtools/build/lib/skyframe/PackageErrorFunction.java:78 PackageErrorFunction.compute
 }
 
 /// PACKAGE_ERROR: throws `BuildFileContainsErrorsException` for a package in error, so that a

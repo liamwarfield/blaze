@@ -53,7 +53,7 @@ use blaze_analysis::configured_rule_class_provider::ConfiguredRuleClassProviderB
 
 /// Registers the Java rules' native configured target factories under their Java factory class
 /// simple names (the names `blaze_packages::native_rules::java_rules` records).
-// Java: com/google/devtools/build/lib/bazel/rules/JavaRules.java:71 JavaRules.init
+// Java: com/google/devtools/build/lib/bazel/rules/JavaRules.java:38 JavaRules.init
 pub fn register(builder: &mut ConfiguredRuleClassProviderBuilder) {
     builder.add_factory(
         "JavaPluginsFlagAlias",

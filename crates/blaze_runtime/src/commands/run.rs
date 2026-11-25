@@ -198,7 +198,11 @@ impl BlazeCommand for RunCommand {
                     detailed_exit_code: _,
                     skyframe_executor,
                     analyzed_targets,
+                    updated_options,
                 } = outcome;
+                // The options after BuildTool.buildTargets parsed a project file's flags into
+                // the command's parser.
+                let options: &OptionsParsingResult = updated_options.as_deref().unwrap_or(options);
                 let built_targets = match get_built_targets(
                     env,
                     skyframe_executor,
@@ -446,6 +450,7 @@ where
         Some(RunBuild {
             targets: targets_to_build,
             validator: &validator,
+            repo_precomputed: Default::default(),
             after_build: Box::new(move |outcome: RunBuildOutcome<'_>| {
                 if !outcome.build_result.get_success() {
                     outcome

@@ -504,16 +504,28 @@ impl BlazeModule for BazelRepositoryModule {
     }
 }
 
-/// Module for the Starlark repository debugger.
-/// PORT: beforeCommand, afterCommand are not ported: the module prints a repository's
-/// definition when a `RequestRepositoryInformationEvent` asks for it, and no ported code posts
-/// that event.
+/// Module for the Starlark repository debugger: reports back the place an external repository
+/// was defined, if requested by some error involving that repository
+/// (`crate::bzlmod_cycle_reporters::StarlarkRepositoryDebugSubscriber`).
+/// PORT: afterCommand only drops the module's per-command state, which lives in the subscriber
+/// (dropped with the command's event bus).
 // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkRepositoryDebugModule.java:31 StarlarkRepositoryDebugModule
 pub struct StarlarkRepositoryDebugModule;
 
 impl BlazeModule for StarlarkRepositoryDebugModule {
     fn name(&self) -> &'static str {
         "StarlarkRepositoryDebugModule"
+    }
+
+    // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkRepositoryDebugModule.java:37 StarlarkRepositoryDebugModule.beforeCommand
+    fn before_command(&self, env: &mut CommandEnvironment) -> Result<(), AbruptExitException> {
+        let subscriber = Arc::new(
+            crate::bzlmod_cycle_reporters::StarlarkRepositoryDebugSubscriber::new(
+                env.get_reporter().clone(),
+            ),
+        );
+        env.get_event_bus().register(subscriber);
+        Ok(())
     }
 }
 
@@ -535,8 +547,8 @@ impl BlazeModule for WorkspaceRuleModule {
 }
 
 /// Adds support for coverage report generation.
-/// PORT: getCoverageReportFactory is not ported; a `test` that collects coverage with a
-/// combined report fails loudly (`crate::commands::build`).
+/// PORT: getCoverageReportFactory is blaze_analysis'
+/// (`bazel::coverage::bazel_coverage_report_module`); the build command asks it for the factory.
 // Java: com/google/devtools/build/lib/bazel/coverage/BazelCoverageReportModule.java:42 BazelCoverageReportModule
 pub struct BazelCoverageReportModule;
 
@@ -977,7 +989,8 @@ impl BlazeModule for BlockWaitingModule {
 /// (`--bes_backend`: workspaceInit, getBesKeywords, getBesClient, clearBesClient,
 /// getInvocationIdPrefix, getBuildRequestIdPrefix) fails loudly (`crate::unported_options`).
 /// getOutputListener returns the command's BEP output listener (stdout and stderr in the BEP's
-/// progress events). blazeShutdown, blazeShutdownOnCrash close a streamer the server left open.
+/// progress events). blazeShutdownOnCrash closes the command's streamer with an abort reason
+/// (`BepCommandSupport::blaze_shutdown_on_crash`).
 // Java: com/google/devtools/build/lib/buildeventservice/BazelBuildEventServiceModule.java:52 BazelBuildEventServiceModule
 #[derive(Default)]
 pub struct BazelBuildEventServiceModule {
@@ -1024,6 +1037,16 @@ impl BlazeModule for BazelBuildEventServiceModule {
             return Ok(());
         };
         bep.after_command()
+    }
+
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:500 BuildEventServiceModule.blazeShutdownOnCrash
+    fn blaze_shutdown_on_crash(&self, exit_code: &crate::exit_code::DetailedExitCode) {
+        // `if (streamer != null)`: the command's streamer, kept until afterCommand (which a crash
+        // skips).
+        let bep = self.current.lock().clone();
+        if let Some(bep) = bep {
+            bep.blaze_shutdown_on_crash(exit_code);
+        }
     }
 }
 
@@ -1072,6 +1095,31 @@ impl BlazeModule for PostGCMemoryUseRecorderGcAfterBuildModule {
 /// test (`crate::commands::bep::BepCommandSupport::before_command`).
 // Java: com/google/devtools/build/lib/metrics/MetricsModule.java:29 MetricsModule
 pub struct MetricsModule;
+
+impl MetricsModule {
+    /// The module's `numAnalyses` and `numBuilds` (`AtomicInteger`s that live as long as the
+    /// module, that is the server), handed to each command's `MetricsCollector`.
+    /// PORT: the module object is not reachable from the command's BEP support, which installs
+    /// the collector; the counters are the process's, and there is one runtime (one
+    /// `MetricsModule`) per server process.
+    // Java: com/google/devtools/build/lib/metrics/MetricsModule.java:60 MetricsModule.numAnalyses
+    pub(crate) fn counters() -> (
+        Arc<std::sync::atomic::AtomicI32>,
+        Arc<std::sync::atomic::AtomicI32>,
+    ) {
+        static COUNTERS: std::sync::OnceLock<(
+            Arc<std::sync::atomic::AtomicI32>,
+            Arc<std::sync::atomic::AtomicI32>,
+        )> = std::sync::OnceLock::new();
+        let (num_analyses, num_builds) = COUNTERS.get_or_init(|| {
+            (
+                Arc::new(std::sync::atomic::AtomicI32::new(0)),
+                Arc::new(std::sync::atomic::AtomicI32::new(0)),
+            )
+        });
+        (num_analyses.clone(), num_builds.clone())
+    }
+}
 
 impl BlazeModule for MetricsModule {
     fn name(&self) -> &'static str {

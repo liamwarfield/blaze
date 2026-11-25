@@ -103,8 +103,8 @@ fn token_string(kind: TokenKind, value: &TokenValue) -> String {
         (_, TokenValue::Str(s)) => s.clone(),
         (_, TokenValue::Int(s)) => s.clone(),
         (_, TokenValue::Float(f)) => java_double_to_string(*f),
-        // A doc comment's value is a DocComments object; its toString is not used by Bazel's
-        // error paths that reach a user.
+        // Java: net/starlark/java/syntax/DocComments.java:53 DocComments.toString
+        (_, TokenValue::DocComments { text, .. }) => text.clone(),
         _ => kind.to_string(),
     }
 }

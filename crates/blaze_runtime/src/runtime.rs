@@ -374,7 +374,10 @@ impl BlazeRuntime {
             let shutdown_hooks = ShutdownHooks::create_and_register();
             shutdown_hooks.cleanup_pid_file(pid_file, pid_file_watcher.clone());
 
-            let dispatcher = Arc::new(BlazeCommandDispatcher::new(runtime.clone(), server_pid));
+            let dispatcher = Arc::new(
+                BlazeCommandDispatcher::new(runtime.clone(), server_pid)
+                    .release_build_arena_after_commands(),
+            );
             let startup_options = runtime
                 .startup_options_provider
                 .get_options::<BlazeServerStartupOptions>()
@@ -509,8 +512,11 @@ impl BlazeRuntime {
     /// reported and the proper exit code is reported.
     ///
     /// PORT: the panic hook records panics for the crash handling (crate::bugreport); the
-    /// handler of the server's threads (`blaze_server::uncaught_exception`) is Java's default
-    /// uncaught exception handler: `BugReport.handleCrash(throwable, args)`, which halts.
+    /// process's default uncaught exception handler (`blaze_util::uncaught_exception`, set through
+    /// `blaze_server::uncaught_exception`) is Java's: `BugReport.handleCrash(throwable, args)`,
+    /// which halts. It receives every panic that escapes the body of a thread whose Java
+    /// counterpart is a plain thread, in the persistent server, in batch mode and in the
+    /// in-process server alike.
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1610 BlazeRuntime.setupUncaughtHandlerAtStartup
     fn setup_uncaught_handler_at_startup() {
         Self::setup_uncaught_handler_at_startup_with_args(&[]);
@@ -521,14 +527,27 @@ impl BlazeRuntime {
         crate::bugreport::install_panic_hook();
         let args = args.to_vec();
         blaze_server::uncaught_exception::set_uncaught_exception_handler(Arc::new(
-            move |message: &str| {
-                // Java: com/google/devtools/build/lib/bugreport/BugReport.java:244 BugReport.handleCrash
+            move |message: &str, kind: blaze_util::uncaught_exception::CrashContextKind| {
                 let crash = crate::bugreport::Crash::from_message(message.to_owned());
-                crate::bugreport::BugReport::handle_crash(
-                    &crash,
-                    crate::bugreport::CrashContext::halt().with_args(&args),
-                );
-                unreachable!("Should have halted")
+                match kind {
+                    blaze_util::uncaught_exception::CrashContextKind::Halt => {
+                        // Java: com/google/devtools/build/lib/bugreport/BugReport.java:244 BugReport.handleCrash
+                        crate::bugreport::BugReport::handle_crash(
+                            &crash,
+                            crate::bugreport::CrashContext::halt().with_args(&args),
+                        );
+                        unreachable!("Should have halted")
+                    }
+                    // A thread that reports its own crash: `BugReport.handleCrash(Crash.from(t),
+                    // CrashContext.haltOrReturnIfCrashInProgress())`, which returns while another
+                    // crash is being reported.
+                    blaze_util::uncaught_exception::CrashContextKind::HaltOrReturnIfCrashInProgress => {
+                        crate::bugreport::BugReport::handle_crash(
+                            &crash,
+                            crate::bugreport::CrashContext::halt_or_return_if_crash_in_progress(),
+                        );
+                    }
+                }
             },
         ));
     }
@@ -942,16 +961,12 @@ impl BlazeRuntime {
 
         // PORT: BazelFileSystemModule.getFileSystem: on Linux the Unix file system with the
         // digest function of --digest_function (its converter only accepts SHA-256, the only
-        // function ported) and --unix_digest_hash_attribute_name, which is not ported.
+        // function ported) and --unix_digest_hash_attribute_name.
         // Java: com/google/devtools/build/lib/bazel/BazelFileSystemModule.java:90 BazelFileSystemModule.getFileSystem
-        if !startup_options.unix_digest_hash_attribute_name.is_empty() {
-            blaze_util::unported!(
-                "UnixFileSystem.getFastDigest",
-                "--unix_digest_hash_attribute_name"
-            );
-        }
-        let fs: FileSystemRef =
-            Arc::new(UnixFileSystem::new(blaze_vfs::DigestHashFunction::Sha256));
+        let fs: FileSystemRef = Arc::new(UnixFileSystem::with_hash_attribute_name(
+            blaze_vfs::DigestHashFunction::Sha256,
+            startup_options.unix_digest_hash_attribute_name.clone(),
+        ));
 
         // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1396 BlazeRuntime.newRuntime
         if startup_options.lock_install_base {

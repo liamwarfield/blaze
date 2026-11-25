@@ -346,7 +346,11 @@ impl<'p> BlazeOptionHandler<'p> {
             None,
         )?;
 
-        // PORT: ProjectFileSupport.handleProjectFiles (commands that analyze) is not ported.
+        // ProjectFileSupport.handleProjectFiles (commands that analyze) does nothing in Bazel:
+        // no module of Bazel's defines a ProjectFile.Provider, so the provider it is given is
+        // null.
+        // Java: com/google/devtools/build/lib/runtime/BlazeOptionHandler.java:310 BlazeOptionHandler.parseArgsAndConfigs
+        // Java: com/google/devtools/build/lib/runtime/ProjectFileSupport.java:55 ProjectFileSupport.handleProjectFiles
 
         self.expand_config_options(event_handler, &command_to_rc_args)?;
         Ok(command_to_rc_args)

@@ -123,7 +123,7 @@ impl SpawnRunner for LocalSpawnRunner {
             if !self.local_execution_options.local_lockfree_output {
                 // Without local-lockfree, we grab the lock before running the action, so we can't
                 // check for failures while taking the lock.
-                context.lock_output_files(0, "", context.get_file_out_err())?;
+                context.lock_output_files(0, "", Some(context.get_file_out_err()))?;
             }
             let result = SubprocessHandler::new(
                 self,
@@ -140,7 +140,11 @@ impl SpawnRunner for LocalSpawnRunner {
                 // We aren't going to write any output, but we should either abort the remote
                 // branch early or let it finish if this error can be ignored. If the latter, this
                 // call will throw DynamicInterruptedException.
-                context.lock_output_files(result.exit_code(), "", context.get_file_out_err())?;
+                context.lock_output_files(
+                    result.exit_code(),
+                    "",
+                    Some(context.get_file_out_err()),
+                )?;
             }
             Ok(result)
         })();

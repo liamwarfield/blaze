@@ -13,7 +13,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-DUMP = os.path.join(ROOT, "target", "debug", "blaze-remote-grpc-log")
+DUMP = os.environ.get("BLAZE_GRPC_LOG_DUMP") or os.path.join(ROOT, "target", "debug", "blaze-remote-grpc-log")
 
 USAGE = """\
 usage: scripts/remote/compare-grpc-log <reference.log> <candidate.log> [--verbose] [--max N]
@@ -22,8 +22,8 @@ usage: scripts/remote/compare-grpc-log <reference.log> <candidate.log> [--verbos
 Both files are --remote_grpc_log outputs (length-delimited remote_logging.LogEntry); the
 reference is real Bazel's, the candidate Blaze's. Each is dumped with
 target/debug/blaze-remote-grpc-log (build it with
-`scripts/cargo-capped build -p blaze_remote --bins`) and every entry is
-normalised:
+`scripts/cargo-capped build -p blaze_remote --bins`; $BLAZE_GRPC_LOG_DUMP names a copy instead)
+and every entry is normalised:
 
   dropped       startTime, endTime
   metadata      toolInvocationId and correlatedInvocationsId -> <id> (per-invocation UUIDs)

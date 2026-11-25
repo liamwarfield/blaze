@@ -11,7 +11,9 @@ What lives here, so the tools agree on it (audit 3, "Batch B", rules for compari
   * `Status`: the true termination of a process: `exit N`, `signal N NAME`, plus a separate
     `timed out` flag (never a sentinel exit code).
   * `in_unit()`: the tool re-executes itself as the main process of
-    `systemd-run --user --collect --wait --pipe -p MemoryMax=12G -p MemorySwapMax=0` under
+    `systemd-run --user --collect --wait --pipe -p MemoryMax=12G -p MemorySwapMax=0
+    -p OOMPolicy=continue` (an OOM kill of a server or client does not stop the tool, which
+    records it on the step: `OomWatch`) under
     scripts/remote/unit-supervisor, which records the tool's own status inside the unit
     (a bare `systemd-run --wait` reports 0 for a death by SIGTERM, SIGINT, SIGHUP, SIGPIPE).
   * `oom_kills()`: the oom_kill counter of the unit's cgroup, read before and after each step.
@@ -21,8 +23,16 @@ What lives here, so the tools agree on it (audit 3, "Batch B", rules for compari
     names that output user root.
   * `safe_rmtree(path, root)`: deletes `path` only when it lies strictly inside `root` and
     `root` lies inside ~/.cache/blaze/work/server/.
-  * Step classes: IDENTICAL (equal, and every exit was 0), SAME-FAILURE (equal, and some exit
-    was not 0, or a side recorded a failure: never counted as a match), DIFFERENT, NOT-RUN.
+  * Step classes (audit 4r2, SV-2/SV-3): compare_common's, through `judge_step`: IDENTICAL
+    (termination and transcript equal; the oracle side exited 0, or the step declares its exit
+    code), BOTH-FAILED (equal failures not declared: listed, never a match, the run fails),
+    DIFFERENT, SKIPPED (a side has no such step), DECLARED-GAP (a named deviation with its
+    texts). An OOM kill in the unit during a step (`OomWatch`) makes its termination
+    `oom-kill`, so it is never IDENTICAL to a normal end. Every tool reports through
+    compare_common.Report: exit 0 only when every step is IDENTICAL or DECLARED-GAP.
+  * Selftests: `selftest_passthrough()` carries compare_common's selftest variables into the
+    unit; `tripwire_env()` gives the fake binaries their token only inside the tool's unit, so a
+    launch outside it trips.
 """
 
 import hashlib
@@ -52,6 +62,9 @@ import oracle_common as oc  # noqa: E402  (imported, not edited)
 import normalise as onorm  # noqa: E402
 import surfaces as osurf  # noqa: E402
 sys.path.pop(0)
+sys.path.insert(0, os.path.join(REPO, "scripts", "lib"))
+import compare_common as cc  # noqa: E402  (classes, judge, Report, selftest fakes)
+sys.path.pop(0)
 
 with open(os.path.join(REPO, "UPSTREAM.json")) as _f:
     _UPSTREAM = json.load(_f)
@@ -80,15 +93,25 @@ def sha256_file(path):
 
 
 def verified_oracle(tool, path=None):
-    """The oracle binary, after checking its sha256 against the pin; exits otherwise."""
-    path = os.path.abspath(os.path.expanduser(path or ORACLE))
-    if not os.path.isfile(path):
-        die(tool, "no oracle binary at %s" % path)
-    got = sha256_file(path)
-    if got != ORACLE_SHA256:
-        die(tool, "refused: %s has sha256 %s, the pinned oracle (UPSTREAM.json) is %s"
-            % (path, got, ORACLE_SHA256))
-    return path
+    """The oracle binary, after checking its sha256 against the pin (compare_common
+    require_oracle: under its selftest the pin of the fake oracle); exits 2 otherwise."""
+    try:
+        return cc.require_oracle(path or cc.PINNED_ORACLE)[0]
+    except cc.Refusal as e:
+        die(tool, "refused: %s" % e)
+
+
+def refuse_oracle_as_blaze(tool, path):
+    """Exits 2 when `path` (the binary under test) is the oracle (audit 4r2, SV-4)."""
+    try:
+        cc.blaze_identity(path)
+    except cc.Refusal as e:
+        die(tool, "refused: %s (use --control to run the oracle on both sides)" % e)
+
+
+def oracle_sha256():
+    """The pinned sha256 (under the compare_common selftest: the fake oracle's)."""
+    return cc.pinned_sha256()
 
 
 def blaze_binary(path=None):
@@ -203,7 +226,137 @@ def oom_kills():
 
 
 UNIT_ENV = "BLAZE_SERVER_TOOL_UNIT"
+SELFTEST_VARS = ("COMPARE_COMMON_SELFTEST", "COMPARE_COMMON_SELFTEST_PIN",
+                 "COMPARE_COMMON_SELFTEST_REPORT", "COMPARE_COMMON_SELFTEST_MEMORY")
 
+
+def selftest_passthrough():
+    """The `K=V` words that carry a compare_common selftest into a unit (env -i drops them)."""
+    if not cc.selftest_active():
+        return []
+    return ["%s=%s" % (k, os.environ[k]) for k in SELFTEST_VARS if k in os.environ]
+
+
+def selftest_memory(memory_max):
+    """The unit's memory cap; a selftest may lower it to provoke an OOM kill."""
+    if cc.selftest_active() and os.environ.get("COMPARE_COMMON_SELFTEST_MEMORY"):
+        return os.environ["COMPARE_COMMON_SELFTEST_MEMORY"]
+    return memory_max
+
+
+def tripwire_env():
+    """{COMPARE_COMMON_TRIPWIRE: token} for the commands a tool starts, only under a
+    compare_common selftest and only inside the tool's own unit: a fake binary started outside
+    the unit (a bypass of the tool's launcher) does not get the token and trips."""
+    if cc.selftest_active() and os.environ.get(UNIT_ENV) == "1":
+        return {"COMPARE_COMMON_TRIPWIRE": os.environ["COMPARE_COMMON_SELFTEST"]}
+    return {}
+
+
+def tripwire_env_token():
+    """The selftest token for a side runner the tool starts in its own unit (the runner adds it
+    to the commands' environment only when it finds itself inside that unit), or None."""
+    return os.environ["COMPARE_COMMON_SELFTEST"] if cc.selftest_active() else None
+
+
+class OomWatch:
+    """The unit's oom_kill counter between two steps (the tool runs in its own unit)."""
+
+    def __init__(self):
+        self.seen = oom_kills()
+
+    def delta(self):
+        now = oom_kills()
+        d = (now - self.seen) if (now is not None and self.seen is not None) else 0
+        self.seen = now
+        return max(0, d)
+
+
+def termination(status, oom=0):
+    """The compare_common Termination of a client's Status; an OOM kill in the unit during the
+    step makes it `oom-kill` whatever the client's own status (audit 4r2, SV-3)."""
+    if oom:
+        return cc.Termination("oom-kill", detail="%d OOM kill(s) in the unit during the step; "
+                              "the client ended with %s" % (oom, status))
+    if status.timed_out:
+        return cc.Termination("timeout", detail="killed by the tool; %s" % status)
+    rc = status.returncode
+    if rc is None:
+        return cc.Termination("not-run")
+    if rc < 0:
+        try:
+            name = signal.Signals(-rc).name
+        except ValueError:
+            name = "SIG%d" % -rc
+        return cc.Termination("signal", 128 - rc, name)
+    return cc.Termination("exit", rc)
+
+
+def status_line(status, oom=0):
+    """The first transcript line of a step."""
+    if oom:
+        return "oom-kill in the unit (%d); client %s" % (oom, status)
+    return str(status)
+
+
+def fake(path, fh, role, **kw):
+    """A compare_common fake binary for the server tools' selftests: every command (info and
+    shutdown included) prints `out` and `err` and ends with `code`/`sig`, except where a `when`
+    needle (checked first) names another exit code."""
+    text = cc.fake_script(token=fh.token, tripfile=fh.tripfile, role=role, **kw)
+    lines = [l for l in text.split("\n") if not l.startswith('case "$cmd" in info)')]
+    whens = [l for l in lines if l.startswith('case " $* " in')]
+    rest = [l for l in lines if l not in whens]
+    at = rest.index('cmd=""')
+    rest[at:at] = whens
+    with open(path, "w") as f:
+        f.write("\n".join(rest))
+    os.chmod(path, 0o755)
+    return path
+
+
+def term_text(term):
+    """`exit N`, `signal NAME` or the kind of a Termination (the form of a declaration)."""
+    if term.kind == "exit":
+        return "exit %d" % term.code
+    if term.kind == "signal":
+        return "signal %s" % term.sig
+    return term.kind
+
+
+def judge_step(a, b, declared=None):
+    """(class, detail) of one step pair. a, b: (title, text, failed, termination or None for a
+    fact) or None when the side has no such step. compare_common.judge: equal failures are
+    BOTH-FAILED unless `declared` (the oracle side's designed termination, `exit N` or `signal
+    NAME`) names them; an oracle side that ends otherwise is ORACLE-UNEXPECTED."""
+    if declared is not None and a is not None and a[3] is not None:
+        ta, tb = a[3], (b[3] if b is not None else None)
+        if term_text(ta) != declared:
+            return cc.ORACLE_UNEXPECTED, "declared %s, oracle %s" % (declared, ta)
+        if b is None:
+            return cc.SKIPPED, "not run on side B"
+        if tb is None:
+            return cc.DIFFERENT, "a fact on one side, a command on the other"
+        differing = [] if a[1] == b[1] else ["transcript"]
+        if ta.kind == "exit":
+            return cc.judge(ta, tb, differing, declared_exit=ta.code)
+        cls, detail = cc.judge(ta, tb, differing)
+        if cls == cc.BOTH_FAILED:
+            return cc.IDENTICAL, "declared failure: %s" % ta
+        return cls, detail
+    if a is None or b is None:
+        return cc.SKIPPED, "not run on side %s" % ("A" if a is None else "B")
+    ta, tb = a[3], b[3]
+    differing = [] if a[1] == b[1] else ["transcript"]
+    if ta is None and tb is None:
+        if differing:
+            return cc.DIFFERENT, "fact differs"
+        if a[2] or b[2]:
+            return cc.BOTH_FAILED, "fact failed on both sides"
+        return cc.IDENTICAL, "fact"
+    if ta is None or tb is None:
+        return cc.DIFFERENT, "a fact on one side, a command on the other"
+    return cc.judge(ta, tb, differing)
 
 def in_unit(tool, argv, status_dir, memory_max="12G"):
     """Re-executes `argv` (this tool) as the main process of a systemd unit under
@@ -213,12 +366,14 @@ def in_unit(tool, argv, status_dir, memory_max="12G"):
         return None
     os.makedirs(status_dir, exist_ok=True)
     status = os.path.join(status_dir, "unit-status-%d" % os.getpid())
+    memory_max = selftest_memory(memory_max)
     cmd = ["systemd-run", "--user", "--collect", "--wait", "--pipe", "--quiet", "--same-dir",
-           "-p", "MemoryMax=" + memory_max, "-p", "MemorySwapMax=0",
+           "-p", "MemoryMax=" + memory_max, "-p", "MemorySwapMax=0", "-p", "OOMPolicy=continue",
            "/usr/bin/python3", "-I", SUPERVISOR, status,
            "env", "-i", "HOME=" + HOME, "PATH=/usr/bin:/bin", UNIT_ENV + "=1"]
     if "BLAZE" in os.environ:
         cmd.append("BLAZE=" + os.environ["BLAZE"])
+    cmd += selftest_passthrough()
     cmd += ["/usr/bin/python3", "-I"] + list(argv)
     rc = subprocess.call(cmd, stdin=subprocess.DEVNULL)
     try:
@@ -491,22 +646,6 @@ def write_template(dest):
     for name, content in INTEROP_TEMPLATE.items():
         with open(os.path.join(dest, name), "w") as f:
             f.write(content)
-
-
-# ---------------------------------------------------------------------------------------------
-# Step classes.
-
-IDENTICAL, SAME_FAILURE, DIFFERENT, NOT_RUN = "IDENTICAL", "SAME-FAILURE", "DIFFERENT", "NOT-RUN"
-
-
-def classify(a_text, b_text, a_failed, b_failed):
-    """Class of one compared step. a_failed/b_failed: the side's step did not succeed (non-zero
-    exit, signal, timeout, or a tool failure). Equal failures are SAME-FAILURE, never a match."""
-    if a_text is None or b_text is None:
-        return NOT_RUN
-    if a_text != b_text:
-        return DIFFERENT
-    return SAME_FAILURE if (a_failed or b_failed) else IDENTICAL
 
 
 if __name__ == "__main__":

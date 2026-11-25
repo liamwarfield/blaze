@@ -279,8 +279,9 @@ impl BuildRequest {
             if result.contains_key(key) {
                 let error_message = "Error in top-level aspects parameters";
                 // The cause is Guava's IllegalArgumentException from ImmutableMap's
-                // builder ("Multiple entries with same key: k=v1 and k=v2"); the three-argument
-                // constructor appends its message.
+                // builder (RegularImmutableMap.checkNoConflictInKeyBucket: the new entry, then
+                // the one already present: "Multiple entries with same key: k=v2 and k=v1");
+                // the three-argument constructor appends its message.
                 return Err(crate::skyframe_error_processor::ViewCreationFailedException::with_cause(
                     error_message,
                     blaze_protos::failure_details::FailureDetail {
@@ -294,7 +295,7 @@ impl BuildRequest {
                     },
                     Some(&format!(
                         "Multiple entries with same key: {}={} and {}={}",
-                        key, result[key], key, value
+                        key, value, key, result[key]
                     )),
                 ));
             }
@@ -344,6 +345,13 @@ impl BuildRequest {
     // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:310 BuildRequest.shouldRunTests
     pub fn should_run_tests(&self) -> bool {
         self.run_tests
+    }
+
+    /// `BuildRequest.Builder.setNeedsInstrumentationFilter` (`TestCommand.doTest` under
+    /// `--collect_code_coverage` without an explicit `--instrumentation_filter`).
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:136 BuildRequest.Builder.setNeedsInstrumentationFilter
+    pub fn set_needs_instrumentation_filter(&mut self, needs_instrumentation_filter: bool) {
+        self.needs_instrumentation_filter = needs_instrumentation_filter;
     }
 
     // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:381 BuildRequest.needsInstrumentationFilter
@@ -499,6 +507,13 @@ pub struct BuildTool<'a> {
     validator: Option<&'a dyn TargetValidator>,
     /// The build event stream's posting points (`None` without a build event stream).
     build_event_hooks: Option<&'a dyn BuildEventHooks>,
+    /// Whether `buildTargets` called `buildTargetsWithMergedAnalysisExecution` (or the
+    /// non-Skymeld variant): the target patterns were evaluated and validated and the project
+    /// file was applied.
+    /// PORT: Java's caller knows this by control flow (the `finally` block of that method, the
+    /// `ExecutionTool` it creates); blaze_runtime's build command reads it after
+    /// `process_request` returned.
+    analysis_and_execution_entered: std::sync::atomic::AtomicBool,
 }
 
 impl<'a> BuildTool<'a> {
@@ -517,7 +532,17 @@ impl<'a> BuildTool<'a> {
             execution_phase: None,
             validator: None,
             build_event_hooks: None,
+            analysis_and_execution_entered: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Whether the last `process_request` got past `evaluateTargetPatterns` (the target
+    /// validator included) and the project file into
+    /// `buildTargetsWithMergedAnalysisExecution`, where Java creates the `ExecutionTool`.
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:409 BuildTool.buildTargets
+    pub fn analysis_and_execution_entered(&self) -> bool {
+        self.analysis_and_execution_entered
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The build event stream's posting points.
@@ -679,28 +704,9 @@ impl<'a> BuildTool<'a> {
         let target_patterns_for_project_resolution = match &request.targets_for_project_resolution {
             None => None,
             // Don't report this because it'll throw off our tracking of the complete target set.
-            Some(targets) => Some(
-                self.skyframe_executor
-                    .load_target_patterns_with_filters_detailed(
-                        Arc::new(NoopHandler),
-                        targets,
-                        &self.relative_working_directory,
-                        &request.loading_options,
-                        request.loading_phase_threads,
-                        request.keep_going,
-                        request.should_run_tests(),
-                    )
-                    .map_err(|e| match e {
-                        TargetPatternPhaseDetailedError::TargetParsing {
-                            exception,
-                            detailed_exit_code,
-                        } => BuildToolError::TargetParsing {
-                            exception,
-                            detailed_exit_code,
-                        },
-                        TargetPatternPhaseDetailedError::Interrupted => BuildToolError::Interrupted,
-                    })?,
-            ),
+            Some(targets) => {
+                Some(self.evaluate_target_patterns_for(Arc::new(NoopHandler), targets, request)?)
+            }
         };
         let target_patterns_for_project_resolution = target_patterns_for_project_resolution
             .as_ref()
@@ -752,6 +758,8 @@ impl<'a> BuildTool<'a> {
 
         // buildTargetsWithoutMergedAnalysisExecution
         // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:496 BuildTool.buildTargetsWithoutMergedAnalysisExecution
+        self.analysis_and_execution_entered
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let analysis_result = analysis_phase_runner::execute(
             self.skyframe_executor,
             &self.reporter,
@@ -807,11 +815,23 @@ impl<'a> BuildTool<'a> {
         &self,
         request: &BuildRequest,
     ) -> Result<crate::target_pattern_phase::TargetPatternPhaseValue, BuildToolError> {
+        self.evaluate_target_patterns_for(self.reporter.clone(), &request.targets, request)
+    }
+
+    /// `evaluateTargetPatterns` with its reporter and targets: the request's, or the targets for
+    /// project resolution with a no-op handler.
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:468 BuildTool.evaluateTargetPatterns
+    fn evaluate_target_patterns_for(
+        &self,
+        reporter: Arc<dyn ExtendedEventHandler>,
+        targets: &[String],
+        request: &BuildRequest,
+    ) -> Result<crate::target_pattern_phase::TargetPatternPhaseValue, BuildToolError> {
         let result = self
             .skyframe_executor
             .load_target_patterns_with_filters_detailed(
-                self.reporter.clone(),
-                &request.targets,
+                reporter.clone(),
+                targets,
                 &self.relative_working_directory,
                 &request.loading_options,
                 request.loading_phase_threads,
@@ -831,10 +851,7 @@ impl<'a> BuildTool<'a> {
         // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:488 BuildTool.evaluateTargetPatterns
         if let Some(validator) = self.validator {
             let target_labels = result
-                .get_targets(
-                    self.reporter.clone(),
-                    self.skyframe_executor.get_package_manager(),
-                )
+                .get_targets(reporter, self.skyframe_executor.get_package_manager())
                 .map_err(|_| BuildToolError::Interrupted)?;
             validator
                 .validate_targets(&target_labels, request.keep_going)

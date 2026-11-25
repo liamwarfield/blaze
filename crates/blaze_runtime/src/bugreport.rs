@@ -11,13 +11,16 @@
 //! (for example `blaze: not ported yet: Class.method`), and the backtrace. The text of a stack
 //! trace cannot match Java's.
 //!
-//! A panic is caught where it reaches a command boundary, and, in the server, where it escapes
-//! a thread the server starts: `blaze_server::uncaught_exception` (the `grpc-command-N`,
-//! `grpc-timeout-and-memory` and `interrupt-watcher-N` threads) hands it to the handler that
-//! `BlazeRuntime` installs (Java's default uncaught exception handler), which halts with the
-//! crash ([`BugReport::handle_crash`] with [`CrashContext::halt`]). Rust has no process-wide
-//! counterpart for an exception that escapes any other thread nobody joins (Java halts there
-//! too); such a panic stays recorded and ends only its thread.
+//! A panic is caught where it reaches a command boundary, and where it escapes the body of a
+//! thread whose Java counterpart is a plain `Thread` (or a task `execute`d on an executor):
+//! those bodies run through `blaze_util::uncaught_exception::run_catching` (the server's
+//! `grpc-command-N`, `grpc-timeout-and-memory` and `interrupt-watcher-N` threads through
+//! `blaze_server::uncaught_exception`; the UI's `cli-update-thread`, the profiler's writer, the
+//! worker threads, the signal threads, ...), which hands it to the handler that `BlazeRuntime`
+//! installs (Java's default uncaught exception handler): it halts with the crash
+//! ([`BugReport::handle_crash`] with [`CrashContext::halt`]), in every mode. A thread whose Java
+//! counterpart keeps the exception in a future is joined and its panic re-raised by whoever
+//! waits for it.
 
 use std::any::Any;
 use std::backtrace::Backtrace;

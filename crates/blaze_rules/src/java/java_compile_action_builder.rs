@@ -41,7 +41,7 @@ pub fn is_java_compile_action(action: Option<&dyn Action>) -> bool {
 ///
 /// PORT: Blaze's `Action` has no `getExtraActionInfo` (extra actions are not ported); the data
 /// is kept for when it is.
-// Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:64 JavaCompileActionBuilder.JavaCompileExtraActionInfoSupplier
+// Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:66 JavaCompileActionBuilder.JavaCompileExtraActionInfoSupplier
 #[allow(dead_code)]
 pub struct JavaCompileExtraActionInfoSupplier {
     output_jar: Artifact,
@@ -64,7 +64,7 @@ pub struct JavaCompileExtraActionInfoSupplier {
 }
 
 impl JavaCompileExtraActionInfoSupplier {
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:110 JavaCompileActionBuilder.JavaCompileExtraActionInfoSupplier.extend
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:117 JavaCompileActionBuilder.JavaCompileExtraActionInfoSupplier.extend
     pub fn extend(&self) -> ! {
         // PORT: the `JavaCompileInfo` extension of `ExtraActionInfo` (extra_actions_base.proto)
         // is not ported; extra actions are not ported.
@@ -77,8 +77,8 @@ impl JavaCompileExtraActionInfoSupplier {
 
 /// `new JavaCompileProgressMessage(output, sourceFiles, sourceJars, plugins)`: a
 /// `ProgressMessage` with the prefix "Building".
-// Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:504 JavaCompileActionBuilder.JavaCompileProgressMessage.<init>
-// Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:513 JavaCompileActionBuilder.JavaCompileProgressMessage.prefix
+// Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:505 JavaCompileActionBuilder.JavaCompileProgressMessage.<init>
+// Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:514 JavaCompileActionBuilder.JavaCompileProgressMessage.prefix
 fn java_compile_progress_message(
     output: &Artifact,
     source_files: &IndexSet<Artifact>,
@@ -130,7 +130,7 @@ pub struct JavaCompileActionBuilder<'a, 'v> {
 }
 
 impl<'a, 'v> JavaCompileActionBuilder<'a, 'v> {
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:166 JavaCompileActionBuilder.<init>
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:168 JavaCompileActionBuilder.<init>
     pub fn new(
         rule_context: &'a RuleContext,
         toolchain: JavaToolchainProvider<'v>,
@@ -171,7 +171,7 @@ impl<'a, 'v> JavaCompileActionBuilder<'a, 'v> {
         }
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:173 JavaCompileActionBuilder.build
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:175 JavaCompileActionBuilder.build
     pub fn build(&mut self) -> starlark::Result<JavaCompileAction> {
         let utf8_environment = self
             .utf8_environment
@@ -300,7 +300,7 @@ impl<'a, 'v> JavaCompileActionBuilder<'a, 'v> {
         ))
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:267 JavaCompileActionBuilder.allOutputs
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:272 JavaCompileActionBuilder.allOutputs
     fn all_outputs(&self, outputs: &JavaCompileOutputs) -> Vec<Artifact> {
         let mut result: IndexSet<Artifact> = IndexSet::new();
         result.insert(outputs.output().clone());
@@ -319,7 +319,7 @@ impl<'a, 'v> JavaCompileActionBuilder<'a, 'v> {
         result.into_iter().collect()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:276 JavaCompileActionBuilder.buildParamFileContents
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:281 JavaCompileActionBuilder.buildParamFileContents
     fn build_param_file_contents(
         &self,
         outputs: &JavaCompileOutputs,
@@ -402,19 +402,19 @@ impl<'a, 'v> JavaCompileActionBuilder<'a, 'v> {
         Ok(result.build())
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:338 JavaCompileActionBuilder.setAdditionalOutputs
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:337 JavaCompileActionBuilder.setAdditionalOutputs
     pub fn set_additional_outputs(&mut self, outputs: IndexSet<Artifact>) -> &mut Self {
         self.additional_outputs = outputs;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:344 JavaCompileActionBuilder.setSourceFiles
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:343 JavaCompileActionBuilder.setSourceFiles
     pub fn set_source_files(&mut self, source_files: IndexSet<Artifact>) -> &mut Self {
         self.source_files = source_files;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:350 JavaCompileActionBuilder.setSourceJars
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:349 JavaCompileActionBuilder.setSourceJars
     pub fn set_source_jars(&mut self, source_jars: Vec<Artifact>) -> &mut Self {
         check_state!(self.source_jars.is_empty());
         self.source_jars = source_jars;
@@ -422,27 +422,27 @@ impl<'a, 'v> JavaCompileActionBuilder<'a, 'v> {
     }
 
     /// Sets the strictness of Java dependency checking, see `StrictDepsMode`.
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:358 JavaCompileActionBuilder.setStrictJavaDeps
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:357 JavaCompileActionBuilder.setStrictJavaDeps
     pub fn set_strict_java_deps(&mut self, strict_deps: StrictDepsMode) -> &mut Self {
         self.strict_java_deps = strict_deps;
         self
     }
 
     /// Sets the tool with which to fix dependency errors.
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:365 JavaCompileActionBuilder.setFixDepsTool
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:364 JavaCompileActionBuilder.setFixDepsTool
     pub fn set_fix_deps_tool(&mut self, deps_tool: String) -> &mut Self {
         self.fix_deps_tool = deps_tool;
         self
     }
 
     /// Accumulates the given jar artifacts as being provided by direct dependencies.
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:372 JavaCompileActionBuilder.setDirectJars
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:371 JavaCompileActionBuilder.setDirectJars
     pub fn set_direct_jars(&mut self, direct_jars: NestedSet<Artifact>) -> &mut Self {
         self.direct_jars = direct_jars;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:378 JavaCompileActionBuilder.setCompileTimeDependencyArtifacts
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:377 JavaCompileActionBuilder.setCompileTimeDependencyArtifacts
     pub fn set_compile_time_dependency_artifacts(
         &mut self,
         dependency_artifacts: NestedSet<Artifact>,
@@ -451,7 +451,7 @@ impl<'a, 'v> JavaCompileActionBuilder<'a, 'v> {
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:386 JavaCompileActionBuilder.setExtraCommandLineArgs
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:385 JavaCompileActionBuilder.setExtraCommandLineArgs
     pub fn set_extra_command_line_args(
         &mut self,
         extra_command_line_args: Vec<CommandLineRef>,
@@ -460,13 +460,13 @@ impl<'a, 'v> JavaCompileActionBuilder<'a, 'v> {
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:393 JavaCompileActionBuilder.setJavacOpts
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:392 JavaCompileActionBuilder.setJavacOpts
     pub fn set_javac_opts(&mut self, copts: Vec<String>) -> &mut Self {
         self.javac_opts = copts;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:399 JavaCompileActionBuilder.setUtf8Environment
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:398 JavaCompileActionBuilder.setUtf8Environment
     pub fn set_utf8_environment(
         &mut self,
         utf8_environment: IndexMap<String, String>,
@@ -475,7 +475,7 @@ impl<'a, 'v> JavaCompileActionBuilder<'a, 'v> {
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:405 JavaCompileActionBuilder.setJavacExecutionInfo
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:404 JavaCompileActionBuilder.setJavacExecutionInfo
     pub fn set_javac_execution_info(
         &mut self,
         execution_info: IndexMap<String, String>,
@@ -484,96 +484,96 @@ impl<'a, 'v> JavaCompileActionBuilder<'a, 'v> {
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:412 JavaCompileActionBuilder.setCompressJar
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:411 JavaCompileActionBuilder.setCompressJar
     pub fn set_compress_jar(&mut self, compress_jar: bool) -> &mut Self {
         self.compress_jar = compress_jar;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:418 JavaCompileActionBuilder.setClasspathEntries
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:417 JavaCompileActionBuilder.setClasspathEntries
     pub fn set_classpath_entries(&mut self, classpath_entries: NestedSet<Artifact>) -> &mut Self {
         self.classpath_entries = classpath_entries;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:424 JavaCompileActionBuilder.setBootClassPath
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:423 JavaCompileActionBuilder.setBootClassPath
     pub fn set_boot_class_path(&mut self, boot_class_path: BootClassPathInfo<'v>) -> &mut Self {
         self.boot_class_path = boot_class_path;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:430 JavaCompileActionBuilder.setSourcePathEntries
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:429 JavaCompileActionBuilder.setSourcePathEntries
     pub fn set_source_path_entries(&mut self, source_path_entries: Vec<Artifact>) -> &mut Self {
         self.source_path_entries = source_path_entries;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:436 JavaCompileActionBuilder.setPlugins
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:435 JavaCompileActionBuilder.setPlugins
     pub fn set_plugins(&mut self, plugins: JavaPluginData) -> &mut Self {
         check_state!(self.plugins.is_empty());
         self.plugins = plugins;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:443 JavaCompileActionBuilder.setExtraData
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:442 JavaCompileActionBuilder.setExtraData
     pub fn set_extra_data(&mut self, extra_data: NestedSet<Artifact>) {
         check_state!(self.extra_data.is_empty());
         self.extra_data = extra_data;
     }
 
     /// Sets the tools jars.
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:451 JavaCompileActionBuilder.setToolsJars
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:450 JavaCompileActionBuilder.setToolsJars
     pub fn set_tools_jars(&mut self, tools_jars: NestedSet<Artifact>) -> &mut Self {
         self.tools_jars = tools_jars;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:458 JavaCompileActionBuilder.setJavaBuilder
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:457 JavaCompileActionBuilder.setJavaBuilder
     pub fn set_java_builder(&mut self, java_builder: JavaToolchainTool) -> &mut Self {
         self.java_builder = Some(java_builder);
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:464 JavaCompileActionBuilder.setCoverageArtifact
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:463 JavaCompileActionBuilder.setCoverageArtifact
     pub fn set_coverage_artifact(&mut self, coverage_artifact: Option<Artifact>) -> &mut Self {
         self.coverage_artifact = coverage_artifact;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:470 JavaCompileActionBuilder.setTargetLabel
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:469 JavaCompileActionBuilder.setTargetLabel
     pub fn set_target_label(&mut self, target_label: Option<Label>) -> &mut Self {
         self.target_label = target_label;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:476 JavaCompileActionBuilder.setInjectingRuleKind
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:475 JavaCompileActionBuilder.setInjectingRuleKind
     pub fn set_injecting_rule_kind(&mut self, injecting_rule_kind: Option<String>) -> &mut Self {
         self.injecting_rule_kind = injecting_rule_kind;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:482 JavaCompileActionBuilder.setAdditionalInputs
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:481 JavaCompileActionBuilder.setAdditionalInputs
     pub fn set_additional_inputs(&mut self, additional_inputs: Vec<Artifact>) -> &mut Self {
         self.additional_inputs = additional_inputs;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:488 JavaCompileActionBuilder.setGenSourceOutput
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:487 JavaCompileActionBuilder.setGenSourceOutput
     pub fn set_gen_source_output(&mut self, gen_source_output: Option<Artifact>) {
         self.gen_source_output = gen_source_output;
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:492 JavaCompileActionBuilder.setOutputs
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:491 JavaCompileActionBuilder.setOutputs
     pub fn set_outputs(&mut self, outputs: JavaCompileOutputs) {
         self.outputs = Some(outputs);
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:496 JavaCompileActionBuilder.setClasspathMode
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:495 JavaCompileActionBuilder.setClasspathMode
     pub fn set_classpath_mode(&mut self, classpath_mode: JavaClasspathMode) {
         self.classpath_mode = classpath_mode;
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:500 JavaCompileActionBuilder.setManifestOutput
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:499 JavaCompileActionBuilder.setManifestOutput
     pub fn set_manifest_output(&mut self, manifest_output: Option<Artifact>) {
         self.manifest_output = manifest_output;
     }

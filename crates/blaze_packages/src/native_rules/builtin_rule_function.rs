@@ -59,6 +59,12 @@ impl fmt::Display for BuiltinRuleFunctionValue {
 
 #[starlark_value(type = "rule")]
 impl<'v> StarlarkValue<'v> for BuiltinRuleFunctionValue {
+    /// A traceback names the call's frame by `StarlarkCallable.getName` (`Error in genrule: ...`).
+    // Java: com/google/devtools/build/lib/packages/RuleFactory.java:337 RuleFactory.BuiltinRuleFunction.getName
+    fn name_for_call_stack(&self, _me: Value<'v>) -> String {
+        self.get_name().to_owned()
+    }
+
     // Java: com/google/devtools/build/lib/packages/RuleFactory.java:304 RuleFactory.BuiltinRuleFunction.call
     fn invoke(
         &self,

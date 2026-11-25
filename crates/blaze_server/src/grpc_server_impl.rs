@@ -855,12 +855,19 @@ impl command_server_server::CommandServer for CommandServerService {
     }
 }
 
-/// A unary call whose Java handler calls `onCompleted()` without `onNext()`: grpc-java then
-/// closes the call with status OK and no message.
+/// A unary call whose Java handler calls `onCompleted()` without `onNext()`. grpc-java 1.66.0 (the
+/// pin's `io.grpc:grpc-core`, read from the bytecode of the oracle's `A-server.jar`) does not
+/// close such a call with OK: `ServerCallImpl.closeInternal` sees a unary method that sent no
+/// message and calls `handleInternalError(Status.INTERNAL.withDescription("Completed without a
+/// response").asRuntimeException())`, which cancels the stream; `NettyServerStream.Sink.cancel`
+/// enqueues `CancelServerStreamCommand.withReset`, so the peer gets `RST_STREAM` with the HTTP/2
+/// error code `CANCEL`, which a gRPC client reports as status `CANCELLED`.
 ///
-/// PORT: tonic sends that as a trailers-only response with `grpc-status: 0`.
+/// PORT: tonic cannot reset the stream from a handler; it answers with a trailers-only response
+/// whose `grpc-status` is `CANCELLED` (1) and no message (a reset carries none).
+// Java: io/grpc/internal/ServerCallImpl.java ServerCallImpl.closeInternal
 fn completed_without_response() -> Status {
-    Status::new(tonic::Code::Ok, "")
+    Status::new(tonic::Code::Cancelled, "")
 }
 
 fn bind_and_start(address: SocketAddr, service: CommandServerService) -> std::io::Result<Server> {

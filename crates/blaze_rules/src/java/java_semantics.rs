@@ -12,24 +12,24 @@ use indexmap::IndexMap;
 use super::java_util;
 
 /// Transformed by Copybara on export.
-// Java: com/google/devtools/build/lib/rules/java/JavaSemantics.java:31 JavaSemantics.RULES_JAVA_PROVIDER_LABELS_PREFIX
+// Java: com/google/devtools/build/lib/rules/java/JavaSemantics.java:32 JavaSemantics.RULES_JAVA_PROVIDER_LABELS_PREFIX
 pub const RULES_JAVA_PROVIDER_LABELS_PREFIX: &str = "@@rules_java+//";
 
 /// Name of the output group used for transitive source jars.
-// Java: com/google/devtools/build/lib/rules/java/JavaSemantics.java:38 JavaSemantics.SOURCE_JARS_OUTPUT_GROUP
+// Java: com/google/devtools/build/lib/rules/java/JavaSemantics.java:39 JavaSemantics.SOURCE_JARS_OUTPUT_GROUP
 pub const SOURCE_JARS_OUTPUT_GROUP: &str = "_hidden_top_level_INTERNAL_source_jars";
 
 /// Name of the output group used for direct source jars.
-// Java: com/google/devtools/build/lib/rules/java/JavaSemantics.java:41 JavaSemantics.DIRECT_SOURCE_JARS_OUTPUT_GROUP
+// Java: com/google/devtools/build/lib/rules/java/JavaSemantics.java:42 JavaSemantics.DIRECT_SOURCE_JARS_OUTPUT_GROUP
 pub const DIRECT_SOURCE_JARS_OUTPUT_GROUP: &str = "_hidden_top_level_INTERNAL_direct_source_jars";
 
 /// Pluggable Java compilation semantics.
-// Java: com/google/devtools/build/lib/rules/java/JavaSemantics.java:28 JavaSemantics
+// Java: com/google/devtools/build/lib/rules/java/JavaSemantics.java:29 JavaSemantics
 pub trait JavaSemantics: Send + Sync {
-    // Java: com/google/devtools/build/lib/rules/java/JavaSemantics.java:44 JavaSemantics.getJavaToolchainType
+    // Java: com/google/devtools/build/lib/rules/java/JavaSemantics.java:45 JavaSemantics.getJavaToolchainType
     fn get_java_toolchain_type(&self) -> String;
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaSemantics.java:46 JavaSemantics.getJavaRuntimeToolchainType
+    // Java: com/google/devtools/build/lib/rules/java/JavaSemantics.java:47 JavaSemantics.getJavaRuntimeToolchainType
     fn get_java_runtime_toolchain_type(&self) -> Label;
 
     /// Takes the path of a Java resource and tries to determine the Java root relative path of
@@ -48,7 +48,7 @@ pub trait JavaSemantics: Send + Sync {
 }
 
 /// Semantics for Bazel Java rules.
-// Java: com/google/devtools/build/lib/bazel/rules/java/BazelJavaSemantics.java:28 BazelJavaSemantics
+// Java: com/google/devtools/build/lib/bazel/rules/java/BazelJavaSemantics.java:30 BazelJavaSemantics
 pub struct BazelJavaSemantics;
 
 // Java: com/google/devtools/build/lib/bazel/rules/java/BazelJavaSemantics.java:44 BazelJavaSemantics.INSTANCE
@@ -87,7 +87,7 @@ impl JavaSemantics for BazelJavaSemantics {
         java_path.unwrap_or_else(|| path.clone())
     }
 
-    // Java: com/google/devtools/build/lib/bazel/rules/java/BazelJavaSemantics.java:76 BazelJavaSemantics.utf8Environment
+    // Java: com/google/devtools/build/lib/bazel/rules/java/BazelJavaSemantics.java:77 BazelJavaSemantics.utf8Environment
     fn utf8_environment(
         &self,
         execution_platform: Option<&PlatformInfo>,

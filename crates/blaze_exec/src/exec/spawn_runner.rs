@@ -43,12 +43,12 @@ pub trait SpawnExecutionContext: Send + Sync {
     fn prefetch_inputs_and_wait(&self) -> Result<(), ExecException>;
     /// `getInputMetadataProvider()`.
     fn get_input_metadata_provider(&self) -> &dyn InputMetadataProvider;
-    /// `lockOutputFiles(exitCode, errorMessage, outErr)`.
+    /// `lockOutputFiles(exitCode, errorMessage, @Nullable outErr)`.
     fn lock_output_files(
         &self,
         exit_code: i32,
         error_message: &str,
-        out_err: &FileOutErr,
+        out_err: Option<&FileOutErr>,
     ) -> Result<(), ExecException>;
     /// `speculating()`.
     fn speculating(&self) -> bool;

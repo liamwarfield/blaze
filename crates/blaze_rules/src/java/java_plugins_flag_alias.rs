@@ -43,11 +43,11 @@ fn allowlisted_labels() -> [Label; 2] {
 
 /// Implementation of the 'java_plugins_flag_alias' rule. Provides plugins specified by the
 /// --plugin flag.
-// Java: com/google/devtools/build/lib/rules/java/JavaPluginsFlagAliasRule.java:74 JavaPluginsFlagAliasRule.JavaPluginsFlagAlias
+// Java: com/google/devtools/build/lib/rules/java/JavaPluginsFlagAliasRule.java:75 JavaPluginsFlagAliasRule.JavaPluginsFlagAlias
 pub struct JavaPluginsFlagAlias;
 
 impl RuleConfiguredTargetFactory for JavaPluginsFlagAlias {
-    // Java: com/google/devtools/build/lib/rules/java/JavaPluginsFlagAliasRule.java:76 JavaPluginsFlagAliasRule.JavaPluginsFlagAlias.create
+    // Java: com/google/devtools/build/lib/rules/java/JavaPluginsFlagAliasRule.java:78 JavaPluginsFlagAliasRule.JavaPluginsFlagAlias.create
     fn create(
         &self,
         rule_context: &mut RuleContext,
@@ -129,7 +129,7 @@ fn get_prerequisites(
 }
 
 /// A native `JavaPluginInfo` (Java's `AutoValue_JavaPluginInfo`), as Starlark sees it.
-// Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:45 JavaPluginInfo
+// Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:48 JavaPluginInfo
 #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative)]
 pub struct JavaPluginInfoValue(#[allocative(skip)] pub JavaPluginInfo);
 
@@ -144,15 +144,15 @@ impl fmt::Display for JavaPluginInfoValue {
 
 #[starlark_value(type = "JavaPluginInfo")]
 impl<'v> StarlarkValue<'v> for JavaPluginInfoValue {
-    // Java: com/google/devtools/build/lib/starlarkbuildapi/java/JavaPluginInfoApi.java:29 JavaPluginInfoApi.plugins
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/java/JavaPluginInfoApi.java:38 JavaPluginInfoApi.plugins
     fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         match attribute {
             "plugins" => Some(heap.alloc(JavaPluginDataValue(self.0.plugins().clone()))),
-            // Java: com/google/devtools/build/lib/starlarkbuildapi/java/JavaPluginInfoApi.java:40 JavaPluginInfoApi.apiGeneratingPlugins
+            // Java: com/google/devtools/build/lib/starlarkbuildapi/java/JavaPluginInfoApi.java:49 JavaPluginInfoApi.apiGeneratingPlugins
             "api_generating_plugins" => {
                 Some(heap.alloc(JavaPluginDataValue(self.0.api_generating_plugins().clone())))
             }
-            // Java: com/google/devtools/build/lib/starlarkbuildapi/java/JavaPluginInfoApi.java:80 JavaPluginInfoApi.getJavaOutputs
+            // Java: com/google/devtools/build/lib/starlarkbuildapi/java/JavaPluginInfoApi.java:84 JavaPluginInfoApi.getJavaOutputs
             "java_outputs" => {
                 if !self.0.get_java_outputs().is_empty() {
                     // Native JavaOutput values are not Starlark values in Blaze; the flag alias
@@ -193,7 +193,7 @@ impl<'v> StarlarkValue<'v> for JavaPluginInfoValue {
 }
 
 /// `JavaPluginInfo.JavaPluginData` as Starlark sees it (a `StructApi`).
-// Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:129 JavaPluginInfo.JavaPluginData
+// Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:141 JavaPluginInfo.JavaPluginData
 #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative)]
 pub struct JavaPluginDataValue(#[allocative(skip)] pub JavaPluginData);
 
@@ -209,15 +209,15 @@ impl fmt::Display for JavaPluginDataValue {
 impl<'v> StarlarkValue<'v> for JavaPluginDataValue {
     fn get_attr(&self, attribute: &str, _heap: Heap<'v>) -> Option<Value<'v>> {
         match attribute {
-            // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:188 JavaPluginInfo.JavaPluginData.getProcessorJarsForStarlark
+            // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:199 JavaPluginInfo.JavaPluginData.getProcessorJarsForStarlark
             "processor_jars" => Some(depset_value(&artifacts_to_depset(
                 self.0.processor_classpath(),
             ))),
-            // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:193 JavaPluginInfo.JavaPluginData.getProcessorClassesForStarlark
+            // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:204 JavaPluginInfo.JavaPluginData.getProcessorClassesForStarlark
             "processor_classes" => {
                 Some(depset_value(&strings_to_depset(self.0.processor_classes())))
             }
-            // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:198 JavaPluginInfo.JavaPluginData.getProcessorDataForStarlark
+            // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:209 JavaPluginInfo.JavaPluginData.getProcessorDataForStarlark
             "processor_data" => Some(depset_value(&artifacts_to_depset(self.0.data()))),
             _ => None,
         }

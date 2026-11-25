@@ -246,7 +246,7 @@ impl From<FetchFunctionError> for ComputeError {
 
 /// `P.get(env)` of a precomputed value that is always injected (Java unboxes it or calls
 /// `checkNotNull`).
-fn required<T: Send + Sync + 'static>(
+fn required<T: PartialEq + Send + Sync + 'static>(
     precomputed: &BzlmodPrecomputed<T>,
     env: &mut Environment<'_>,
 ) -> Result<Arc<T>, Interrupted> {

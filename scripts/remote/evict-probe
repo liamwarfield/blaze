@@ -69,7 +69,7 @@
 set -euo pipefail
 if [[ "${1:-help}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,68p' "$0"; exit 0; fi
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-W="$HOME/.cache/blaze/work/remote"
+W="${BLAZE_REMOTE_WORK:-$HOME/.cache/blaze/work/remote}"
 java="$HOME/.cache/blaze/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9/embedded_tools/jdk/bin/java"
 jar="$HOME/.cache/blaze/work/upstream-src/bazel-bin/src/tools/remote/worker_deploy.jar"
 
@@ -245,7 +245,7 @@ EOF
     start_worker "$name" "$port" "$validating"
     binopt="$bin"; fresh=(--fresh); [[ $again == 1 ]] && fresh=()
     for r in "${rmout[@]}"; do
-      for f in "$HOME/.cache/blaze/oracle-out/ur-remote/$name"/*/execroot/_main/bazel-out/k8-fastbuild/bin/"$r"; do
+      for f in "${BLAZE_REMOTE_UR:-$HOME/.cache/blaze/oracle-out/ur-remote}/$name"/*/execroot/_main/bazel-out/k8-fastbuild/bin/"$r"; do
         [[ -e $f ]] && { chmod u+w "$(dirname "$f")"; rm -f "$f"; echo "deleted output $f"; }
       done
     done
@@ -259,7 +259,7 @@ EOF
     echo "step: $step"
     echo "exit code: $code"
     grep -E "Found transient remote cache error|^ERROR|^INFO: [0-9]+ process|^FAILED|^Build completed|Lost inputs|lost inputs|not ported yet|panicked" "$step/stderr" || true
-    ob=$(ls -d "$HOME/.cache/blaze/oracle-out/ur-remote/$name"/*/ 2>/dev/null | grep -v install | head -1)
+    ob=$(ls -d "${BLAZE_REMOTE_UR:-$HOME/.cache/blaze/oracle-out/ur-remote}/$name"/*/ 2>/dev/null | grep -v install | head -1)
     for f in $(find "$ob" -path '*k8-fastbuild/bin/*.txt' 2>/dev/null | sort); do
       printf '%s: ' "${f##*/bin/}"; tr '\n' '|' < "$f" 2>/dev/null || printf '(unreadable)'; echo
     done

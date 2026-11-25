@@ -79,15 +79,47 @@ impl SynchronizedOutputStream {
         if content.is_empty() {
             return Vec::new();
         }
-        // maxChunkSizeSplitter.split(content): pieces of maxChunkSize chars, the last shorter.
-        // PORT: Java counts UTF-16 code units; a character outside the Basic Multilingual Plane
-        // counts once here, and a chunk boundary never splits it.
-        let chars: Vec<char> = content.chars().collect();
-        chars
-            .chunks(self.max_chunk_size)
-            .map(|chunk| chunk.iter().collect())
-            .collect()
+        // maxChunkSizeSplitter.split(content): pieces of maxChunkSize UTF-16 code units, the
+        // last shorter (Splitter.fixedLength counts Java chars).
+        split_fixed_length_utf16(&content, self.max_chunk_size)
     }
+}
+
+/// `Splitter.fixedLength(n).split(s)` on a Java string: pieces of `n` UTF-16 code units, the last
+/// one shorter. A boundary can fall between the two surrogates of a character outside the Basic
+/// Multilingual Plane; each half is then a lone surrogate, which the proto's UTF-8 encoder (Java's
+/// `String.getBytes(UTF_8)` fallback of `Utf8.encode`) writes as `?`. A Rust string cannot hold a
+/// lone surrogate, so the halves are the `?` they become on the wire.
+// Java: com/google/common/base/Splitter.java Splitter.fixedLength
+pub fn split_fixed_length_utf16(content: &str, n: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut units = 0usize;
+    for c in content.chars() {
+        let len = c.len_utf16();
+        if units + len <= n {
+            current.push(c);
+            units += len;
+        } else if units < n {
+            // The high surrogate ends this chunk, the low surrogate starts the next one.
+            current.push('?');
+            chunks.push(std::mem::take(&mut current));
+            current.push('?');
+            units = 1;
+        } else {
+            chunks.push(std::mem::take(&mut current));
+            current.push(c);
+            units = len;
+        }
+        if units == n {
+            chunks.push(std::mem::take(&mut current));
+            units = 0;
+        }
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
 }
 
 impl OutputStream for SynchronizedOutputStream {
@@ -213,5 +245,18 @@ mod tests {
         let result = under_test.read_and_reset();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].as_bytes(), &input);
+    }
+
+    /// Not a Java test: Splitter.fixedLength counts UTF-16 units (review 2026-11-25 S2-4).
+    /// "a😀b" is 4 units; a split after 2 units cuts the surrogate pair, whose halves the proto
+    /// encoder writes as `?`.
+    #[test]
+    fn split_counts_utf16_units() {
+        assert_eq!(split_fixed_length_utf16("abcd", 2), vec!["ab", "cd"]);
+        assert_eq!(split_fixed_length_utf16("a😀b", 2), vec!["a?", "?b"]);
+        assert_eq!(split_fixed_length_utf16("😀b", 2), vec!["😀", "b"]);
+        assert_eq!(split_fixed_length_utf16("😀", 1), vec!["?", "?"]);
+        assert_eq!(split_fixed_length_utf16("ab😀", 3), vec!["ab?", "?"]);
+        assert!(split_fixed_length_utf16("", 3).is_empty());
     }
 }

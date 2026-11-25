@@ -9,8 +9,10 @@
 //!
 //! PORT: Java subclasses `SpawnAction`; the Rust action wraps a `SpawnAction` and delegates every
 //! `Action` member to it except the ones Java overrides (`getExecutionInfo`,
-//! `getAdditionalArtifactsForPathMapping`, and `computeKey`, whose `SpawnAction` body reads the
-//! overridden execution info virtually).
+//! `getAdditionalArtifactsForPathMapping`). `computeKey` is copied here because the inherited
+//! `SpawnAction` body reads the overridden `getExecutionInfo()` virtually; it passes the literal
+//! empty set to `PathMappers.addToFingerprint`, not `getAdditionalArtifactsForPathMapping()`
+//! (SpawnAction.java:410-416).
 
 use std::any::Any;
 use std::collections::HashSet;
@@ -63,24 +65,24 @@ use super::java_compile_action_context::JavaCompileActionContext;
 use super::java_plugin_info::JavaPluginData;
 use super::java_toolchain_provider::JavaToolchainProvider;
 
-// Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:76 JavaHeaderCompileAction.DIRECT_CLASSPATH_MNEMONIC
+// Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:78 JavaHeaderCompileAction.DIRECT_CLASSPATH_MNEMONIC
 const DIRECT_CLASSPATH_MNEMONIC: &str = "Turbine";
-// Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:77 JavaHeaderCompileAction.PROGRESS_MESSAGE_PREFIX
+// Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:79 JavaHeaderCompileAction.PROGRESS_MESSAGE_PREFIX
 const PROGRESS_MESSAGE_PREFIX: &str = "Compiling Java headers";
 
 /// `SpawnAction.GUID` (the `computeKey` this class inherits).
-// Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:103 SpawnAction.GUID
+// Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:101 SpawnAction.GUID
 const SPAWN_ACTION_GUID: &str = "ebd6fce3-093e-45ee-adb6-bf513b602f0d";
 
 /// `JavaCompileActionBuilder.MNEMONIC`.
-// Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:58 JavaCompileActionBuilder.MNEMONIC
+// Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:57 JavaCompileActionBuilder.MNEMONIC
 const JAVAC_MNEMONIC: &str = "Javac";
 
 // Java: com/google/devtools/build/lib/actions/ExecutionRequirements.java:403 ExecutionRequirements.SUPPORTS_PATH_MAPPING
 const SUPPORTS_PATH_MAPPING: &str = "supports-path-mapping";
 
 /// Action for Java header compilation.
-// Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:74 JavaHeaderCompileAction
+// Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:76 JavaHeaderCompileAction
 pub struct JavaHeaderCompileAction {
     spawn: SpawnAction,
     insert_dependencies: bool,
@@ -95,7 +97,7 @@ impl std::fmt::Debug for JavaHeaderCompileAction {
 }
 
 impl JavaHeaderCompileAction {
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:83 JavaHeaderCompileAction.<init>
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:85 JavaHeaderCompileAction.<init>
     #[allow(clippy::too_many_arguments)]
     fn new(
         owner: ActionOwner,
@@ -138,7 +140,7 @@ impl JavaHeaderCompileAction {
         &self.spawn
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:162 JavaHeaderCompileAction.newBuilder
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:168 JavaHeaderCompileAction.newBuilder
     pub fn new_builder(rule_context: &RuleContext) -> JavaHeaderCompileActionBuilder<'_> {
         JavaHeaderCompileActionBuilder::new(rule_context)
     }
@@ -159,7 +161,7 @@ impl Action for JavaHeaderCompileAction {
 
     /// `SpawnAction.computeKey` with this class's `getExecutionInfo` and
     /// `getAdditionalArtifactsForPathMapping`.
-    // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:409 SpawnAction.computeKey
+    // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:396 SpawnAction.computeKey
     fn compute_key(
         &self,
         action_key_context: &ActionKeyContext,
@@ -184,7 +186,9 @@ impl Action for JavaHeaderCompileAction {
         path_mappers::add_to_fingerprint(
             &self.get_mnemonic(),
             &execution_info,
-            &self.get_additional_artifacts_for_path_mapping(),
+            // Java passes the literal empty set here, not the overridden
+            // `getAdditionalArtifactsForPathMapping()`.
+            &NestedSetBuilder::empty_set(Order::STABLE_ORDER),
             action_key_context,
             self.spawn.get_output_paths_mode(),
             fp,
@@ -212,7 +216,7 @@ impl Action for JavaHeaderCompileAction {
         self.spawn.get_raw_progress_message()
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:113 JavaHeaderCompileAction.getExecutionInfo
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:118 JavaHeaderCompileAction.getExecutionInfo
     fn get_execution_info(&self) -> IndexMap<String, String> {
         let result = self.spawn.get_execution_info();
         if !self.in_memory_jdeps {
@@ -228,7 +232,7 @@ impl Action for JavaHeaderCompileAction {
         merge_maps(result, inline)
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:127 JavaHeaderCompileAction.getAdditionalArtifactsForPathMapping
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:132 JavaHeaderCompileAction.getAdditionalArtifactsForPathMapping
     fn get_additional_artifacts_for_path_mapping(&self) -> NestedSet<Artifact> {
         self.additional_artifacts_for_path_mapping.clone()
     }
@@ -365,7 +369,7 @@ impl JavaHeaderCompileAction {
         ActionExecutionException::with_cause(message, &message, Some(self), false, Some(detail))
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:132 JavaHeaderCompileAction.afterExecute
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:137 JavaHeaderCompileAction.afterExecute
     fn after_execute(
         &self,
         context: &dyn ActionExecutionContext,
@@ -403,8 +407,8 @@ impl JavaHeaderCompileAction {
 
 /// `new JavaHeaderCompileProgressMessage(output, sourceFiles, sourceJars, plugins)`: a
 /// `ProgressMessage` with the prefix "Compiling Java headers".
-// Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:648 JavaHeaderCompileAction.Builder.JavaHeaderCompileProgressMessage.<init>
-// Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:657 JavaHeaderCompileAction.Builder.JavaHeaderCompileProgressMessage.prefix
+// Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:653 JavaHeaderCompileAction.Builder.JavaHeaderCompileProgressMessage.<init>
+// Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:662 JavaHeaderCompileAction.Builder.JavaHeaderCompileProgressMessage.prefix
 fn java_header_compile_progress_message(
     output: &Artifact,
     source_files: &IndexSet<Artifact>,
@@ -421,7 +425,7 @@ fn java_header_compile_progress_message(
 }
 
 /// Builder for `JavaHeaderCompileAction`.
-// Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:167 JavaHeaderCompileAction.Builder
+// Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:173 JavaHeaderCompileAction.Builder
 pub struct JavaHeaderCompileActionBuilder<'a> {
     rule_context: &'a RuleContext,
     output_jar: Option<Artifact>,
@@ -453,13 +457,13 @@ pub struct JavaHeaderCompileActionBuilder<'a> {
 }
 
 /// `ParamFileInfo.builder(UNQUOTED).build()`.
-// Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:170 JavaHeaderCompileAction.Builder.PARAM_FILE_INFO
+// Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:175 JavaHeaderCompileAction.Builder.PARAM_FILE_INFO
 fn param_file_info() -> ParamFileInfo {
     ParamFileInfo::builder(ParameterFileType::UNQUOTED).build()
 }
 
 impl<'a> JavaHeaderCompileActionBuilder<'a> {
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:208 JavaHeaderCompileAction.Builder.<init>
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:216 JavaHeaderCompileAction.Builder.<init>
     fn new(rule_context: &'a RuleContext) -> Self {
         JavaHeaderCompileActionBuilder {
             rule_context,
@@ -494,38 +498,38 @@ impl<'a> JavaHeaderCompileActionBuilder<'a> {
     }
 
     /// Sets the output jdeps file.
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:214 JavaHeaderCompileAction.Builder.setOutputDepsProto
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:222 JavaHeaderCompileAction.Builder.setOutputDepsProto
     pub fn set_output_deps_proto(&mut self, output_deps_proto: Artifact) -> &mut Self {
         self.output_deps_proto = Some(output_deps_proto);
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:220 JavaHeaderCompileAction.Builder.setManifestOutput
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:228 JavaHeaderCompileAction.Builder.setManifestOutput
     pub fn set_manifest_output(&mut self, manifest_output: Option<Artifact>) -> &mut Self {
         self.manifest_output = manifest_output;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:226 JavaHeaderCompileAction.Builder.setGensrcOutputJar
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:234 JavaHeaderCompileAction.Builder.setGensrcOutputJar
     pub fn set_gensrc_output_jar(&mut self, gensrc_output_jar: Option<Artifact>) -> &mut Self {
         self.gensrc_output_jar = gensrc_output_jar;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:232 JavaHeaderCompileAction.Builder.setResourceOutputJar
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:240 JavaHeaderCompileAction.Builder.setResourceOutputJar
     pub fn set_resource_output_jar(&mut self, resource_output_jar: Option<Artifact>) -> &mut Self {
         self.resource_output_jar = resource_output_jar;
         self
     }
 
     /// Sets the direct dependency artifacts.
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:239 JavaHeaderCompileAction.Builder.setDirectJars
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:247 JavaHeaderCompileAction.Builder.setDirectJars
     pub fn set_direct_jars(&mut self, direct_jars: NestedSet<Artifact>) -> &mut Self {
         self.direct_jars = direct_jars;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:246 JavaHeaderCompileAction.Builder.setHeaderCompilationDirectJars
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:254 JavaHeaderCompileAction.Builder.setHeaderCompilationDirectJars
     pub fn set_header_compilation_direct_jars(
         &mut self,
         header_compilation_direct_jars: NestedSet<Artifact>,
@@ -535,7 +539,7 @@ impl<'a> JavaHeaderCompileActionBuilder<'a> {
     }
 
     /// Sets the .jdeps artifacts for direct dependencies.
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:254 JavaHeaderCompileAction.Builder.setCompileTimeDependencyArtifacts
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:262 JavaHeaderCompileAction.Builder.setCompileTimeDependencyArtifacts
     pub fn set_compile_time_dependency_artifacts(
         &mut self,
         dependency_artifacts: NestedSet<Artifact>,
@@ -545,7 +549,7 @@ impl<'a> JavaHeaderCompileActionBuilder<'a> {
     }
 
     /// Sets Java compiler flags.
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:262 JavaHeaderCompileAction.Builder.setJavacOpts
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:270 JavaHeaderCompileAction.Builder.setJavacOpts
     pub fn set_javac_opts(&mut self, javac_opts: Vec<String>) -> &mut Self {
         self.javac_opts = javac_opts;
         self
@@ -553,20 +557,20 @@ impl<'a> JavaHeaderCompileActionBuilder<'a> {
 
     /// Adds `-Aexperimental_turbine_hjar` to Java compiler flags without creating an entirely
     /// new list.
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:272 JavaHeaderCompileAction.Builder.addTurbineHjarJavacOpt
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:280 JavaHeaderCompileAction.Builder.addTurbineHjarJavacOpt
     pub fn add_turbine_hjar_javac_opt(&mut self) -> &mut Self {
         self.add_turbine_hjar_javac_opt = true;
         self
     }
 
     /// Sets the output jar.
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:279 JavaHeaderCompileAction.Builder.setOutputJar
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:287 JavaHeaderCompileAction.Builder.setOutputJar
     pub fn set_output_jar(&mut self, output_jar: Artifact) -> &mut Self {
         self.output_jar = Some(output_jar);
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:286 JavaHeaderCompileAction.Builder.setHeaderCompilationOutputJar
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:294 JavaHeaderCompileAction.Builder.setHeaderCompilationOutputJar
     pub fn set_header_compilation_output_jar(
         &mut self,
         header_compilation_output_jar: Artifact,
@@ -575,35 +579,35 @@ impl<'a> JavaHeaderCompileActionBuilder<'a> {
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:294 JavaHeaderCompileAction.Builder.setAdditionalOutputs
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:301 JavaHeaderCompileAction.Builder.setAdditionalOutputs
     pub fn set_additional_outputs(&mut self, outputs: IndexSet<Artifact>) -> &mut Self {
         self.additional_outputs = outputs;
         self
     }
 
     /// Adds Java source files to compile.
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:302 JavaHeaderCompileAction.Builder.setSourceFiles
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:309 JavaHeaderCompileAction.Builder.setSourceFiles
     pub fn set_source_files(&mut self, source_files: IndexSet<Artifact>) -> &mut Self {
         self.source_files = source_files;
         self
     }
 
     /// Adds a jar archive of Java sources to compile.
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:310 JavaHeaderCompileAction.Builder.setSourceJars
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:317 JavaHeaderCompileAction.Builder.setSourceJars
     pub fn set_source_jars(&mut self, source_jars: Vec<Artifact>) -> &mut Self {
         self.source_jars = source_jars;
         self
     }
 
     /// Sets the compilation classpath entries.
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:318 JavaHeaderCompileAction.Builder.setClasspathEntries
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:325 JavaHeaderCompileAction.Builder.setClasspathEntries
     pub fn set_classpath_entries(&mut self, classpath_entries: NestedSet<Artifact>) -> &mut Self {
         self.classpath_entries = classpath_entries;
         self
     }
 
     /// Sets the compilation bootclasspath entries.
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:326 JavaHeaderCompileAction.Builder.setBootclasspathEntries
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:333 JavaHeaderCompileAction.Builder.setBootclasspathEntries
     pub fn set_bootclasspath_entries(
         &mut self,
         bootclasspath_entries: NestedSet<Artifact>,
@@ -613,7 +617,7 @@ impl<'a> JavaHeaderCompileActionBuilder<'a> {
     }
 
     /// Sets the annotation processors classpath entries.
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:334 JavaHeaderCompileAction.Builder.setPlugins
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:341 JavaHeaderCompileAction.Builder.setPlugins
     pub fn set_plugins(&mut self, plugins: JavaPluginData) -> &mut Self {
         blaze_util::check_state!(self.plugins.is_empty());
         self.plugins = plugins;
@@ -621,48 +625,48 @@ impl<'a> JavaHeaderCompileActionBuilder<'a> {
     }
 
     /// Sets the label of the target being compiled.
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:343 JavaHeaderCompileAction.Builder.setTargetLabel
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:350 JavaHeaderCompileAction.Builder.setTargetLabel
     pub fn set_target_label(&mut self, target_label: Option<Label>) -> &mut Self {
         self.target_label = target_label;
         self
     }
 
     /// Sets the injecting rule kind of the target being compiled.
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:350 JavaHeaderCompileAction.Builder.setInjectingRuleKind
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:357 JavaHeaderCompileAction.Builder.setInjectingRuleKind
     pub fn set_injecting_rule_kind(&mut self, injecting_rule_kind: Option<String>) -> &mut Self {
         self.injecting_rule_kind = injecting_rule_kind;
         self
     }
 
     /// Sets the Strict Java Deps mode.
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:357 JavaHeaderCompileAction.Builder.setStrictJavaDeps
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:364 JavaHeaderCompileAction.Builder.setStrictJavaDeps
     pub fn set_strict_java_deps(&mut self, strict_java_deps: StrictDepsMode) -> &mut Self {
         self.strict_java_deps = strict_java_deps;
         self
     }
 
     /// Sets additional inputs, e.g. for databinding support.
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:365 JavaHeaderCompileAction.Builder.setAdditionalInputs
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:372 JavaHeaderCompileAction.Builder.setAdditionalInputs
     pub fn set_additional_inputs(&mut self, additional_inputs: Vec<Artifact>) -> &mut Self {
         self.additional_inputs = additional_inputs;
         self
     }
 
     /// Sets the tools jars.
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:373 JavaHeaderCompileAction.Builder.setToolsJars
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:380 JavaHeaderCompileAction.Builder.setToolsJars
     pub fn set_tools_jars(&mut self, tools_jars: NestedSet<Artifact>) -> &mut Self {
         self.tools_jars = tools_jars;
         self
     }
 
     /// Sets the exec group used for selecting execution platform of `JavaHeaderCompileAction`.
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:381 JavaHeaderCompileAction.Builder.setExecGroup
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:388 JavaHeaderCompileAction.Builder.setExecGroup
     pub fn set_exec_group(&mut self, exec_group: String) -> &mut Self {
         self.exec_group = exec_group;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:388 JavaHeaderCompileAction.Builder.enableHeaderCompilerDirect
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:395 JavaHeaderCompileAction.Builder.enableHeaderCompilerDirect
     pub fn enable_header_compiler_direct(
         &mut self,
         enable_header_compiler_direct: bool,
@@ -671,13 +675,13 @@ impl<'a> JavaHeaderCompileActionBuilder<'a> {
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:394 JavaHeaderCompileAction.Builder.enableDirectClasspath
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:401 JavaHeaderCompileAction.Builder.enableDirectClasspath
     pub fn enable_direct_classpath(&mut self, enable_direct_classpath: bool) -> &mut Self {
         self.enable_direct_classpath = enable_direct_classpath;
         self
     }
 
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:400 JavaHeaderCompileAction.Builder.setUtf8Environment
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:407 JavaHeaderCompileAction.Builder.setUtf8Environment
     pub fn set_utf8_environment(
         &mut self,
         utf8_environment: IndexMap<String, String>,
@@ -687,7 +691,7 @@ impl<'a> JavaHeaderCompileActionBuilder<'a> {
     }
 
     /// Builds and registers the action for a header compilation.
-    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:407 JavaHeaderCompileAction.Builder.build
+    // Java: com/google/devtools/build/lib/rules/java/JavaHeaderCompileAction.java:414 JavaHeaderCompileAction.Builder.build
     pub fn build(
         &mut self,
         eval: &starlark::eval::Evaluator,

@@ -2363,3 +2363,158 @@ fn patch_0055_static_errors() {
         assert_eq!(parse_error(src), want, "{src:?}");
     }
 }
+
+/// Java Eval.execLoad (Eval.java:261): a symbol the loaded file does not bind globally (missing,
+/// or only bound by that file's own `load`) fails with "file 'M' does not contain symbol 'S'"
+/// and SpellChecker's suggestion over the file's globals, located one char after the start of
+/// the original name's string literal.
+#[test]
+fn patch_0057_load_missing_symbol() {
+    use starlark::environment::FrozenModule;
+    use starlark::eval::ReturnFileLoader;
+    std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(|| {
+            let globals = dialect::bazel_universe();
+            let run = |file: &str,
+                       src: &str,
+                       loads: &[(&str, &FrozenModule)]|
+             -> Result<FrozenModule, (String, String)> {
+                let ast = AstModule::parse(file, src.to_owned(), &dialect::bzl_dialect()).unwrap();
+                Module::with_temp_heap(|module| {
+                    let loader = ReturnFileLoader {
+                        modules: &loads.iter().copied().collect(),
+                    };
+                    let mut e = Evaluator::new(&module);
+                    e.set_loader(&loader);
+                    if let Err(err) = e.eval_module(ast, &globals) {
+                        let span = err.span().expect("error has a span");
+                        let p = span.resolve_span().begin;
+                        return Err((
+                            format!("{}:{}", p.line + 1, p.column + 1),
+                            bare_message(&err),
+                        ));
+                    }
+                    drop(e);
+                    Ok(module.freeze().unwrap())
+                })
+            };
+            let a = run("a.bzl", "foo = 1\n_bar = 2\n", &[]).unwrap();
+            assert_eq!(
+                run("b.bzl", "load('a.bzl', 'fooo')\n", &[("a.bzl", &a)]).unwrap_err(),
+                (
+                    "1:16".to_owned(),
+                    "file 'a.bzl' does not contain symbol 'fooo' (did you mean 'foo'?)".to_owned()
+                )
+            );
+            // Private globals are candidates (Module.getGlobals has them).
+            assert_eq!(
+                run("b.bzl", "load('a.bzl', x = 'bar')\n", &[("a.bzl", &a)]).unwrap_err(),
+                (
+                    "1:20".to_owned(),
+                    "file 'a.bzl' does not contain symbol 'bar' (did you mean '_bar'?)".to_owned()
+                )
+            );
+            assert_eq!(
+                run("b.bzl", "load('a.bzl', 'zzzzzz')\n", &[("a.bzl", &a)]).unwrap_err(),
+                (
+                    "1:16".to_owned(),
+                    "file 'a.bzl' does not contain symbol 'zzzzzz'".to_owned()
+                )
+            );
+            // A name the loaded file only binds by `load` is not one of its globals.
+            let b = run(
+                "b.bzl",
+                "load('a.bzl', 'foo')\nfood = 2\n",
+                &[("a.bzl", &a)],
+            )
+            .unwrap();
+            assert_eq!(
+                b.java_globals()
+                    .map(|n| n.as_str().to_owned())
+                    .collect::<Vec<_>>(),
+                ["food"]
+            );
+            assert_eq!(
+                run("c.bzl", "load('b.bzl', 'foo')\n", &[("b.bzl", &b)]).unwrap_err(),
+                (
+                    "1:16".to_owned(),
+                    "file 'b.bzl' does not contain symbol 'foo' (did you mean 'food'?)".to_owned()
+                )
+            );
+            assert_eq!(
+                run(
+                    "c.bzl",
+                    "load('b.bzl', 'food')\nx = food\n",
+                    &[("b.bzl", &b)]
+                )
+                .unwrap()
+                .java_globals()
+                .map(|n| n.as_str().to_owned())
+                .collect::<Vec<_>>(),
+                ["x"]
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// Java ParamDescriptor.getTypeErrorMessage from Bazel's annotations, by receiver: `list.index`
+/// declares `start` as `int`, `string.index` as `int or NoneType` (oracle probes p27, p28 of the
+/// loading-fix-1 report).
+#[test]
+fn patch_0058_java_param_types() {
+    assert_eq!(
+        eval("r = [1].index(1, 'a')"),
+        Err("in call to index(), parameter 'start' got value of type 'string', want 'int'".into())
+    );
+    assert_eq!(
+        eval("r = 'a'.index('a', 'x')"),
+        Err(
+            "in call to index(), parameter 'start' got value of type 'string', want 'int or NoneType'"
+                .into()
+        )
+    );
+}
+
+/// Bazel 9.3.2 indexes no builtin function: `list[int]` is "type 'builtin_function_or_method'
+/// has no operator [](builtin_function_or_method)" (oracle probe q89 of the loading-fix-1
+/// report).
+#[test]
+fn patch_0059_builtin_has_no_index() {
+    assert_eq!(
+        eval("r = list[int]"),
+        Err(
+            "type 'builtin_function_or_method' has no operator [](builtin_function_or_method)"
+                .into()
+        )
+    );
+    assert_eq!(
+        eval("r = set[1]"),
+        Err("type 'builtin_function_or_method' has no operator [](int)".into())
+    );
+}
+
+/// Java compares nested values without a depth limit: Bazel 9.3.2 evaluates `a == b` for two
+/// 5000-deep lists to True (oracle probe q87). Run on a 256 MiB stack, Blaze's evaluation
+/// stack (`blaze_starlark::eval::EVAL_STACK_SIZE`), in this (debug) build.
+#[test]
+fn patch_0060_deep_comparison() {
+    let r = std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(|| {
+            let globals = dialect::bazel_universe();
+            let src = "def f(n):\n    a = []\n    b = []\n    for i in range(n):\n        a = [a]\n        b = [b]\n    return a == b, a < [b]\nr = f(15000)\n";
+            let ast = AstModule::parse("t.bzl", src.to_owned(), &dialect::bzl_dialect()).unwrap();
+            Module::with_temp_heap(|module| {
+                let mut e = Evaluator::new(&module);
+                e.eval_module(ast, &globals).map_err(|e| bare_message(&e))?;
+                Ok::<_, String>(module.get("r").unwrap().to_repr())
+            })
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(r, Ok("(True, True)".to_owned()));
+}

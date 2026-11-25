@@ -141,22 +141,28 @@ impl InterruptSignalHandler {
         let watcher_handle = handle.clone();
         std::thread::Builder::new()
             .name("interrupt-signal-handler".to_owned())
+            // Java: the JVM's signal dispatch thread; an exception of the handler reaches the
+            // default uncaught exception handler.
             .spawn(move || {
-                loop {
-                    let mut byte: u8 = 0;
-                    // SAFETY: reads one byte into a valid buffer.
-                    let n =
-                        unsafe { libc::read(read_fd, (&raw mut byte).cast::<libc::c_void>(), 1) };
-                    if n < 0
-                        && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
-                    {
-                        continue;
+                blaze_util::uncaught_exception::run_catching(|| {
+                    loop {
+                        let mut byte: u8 = 0;
+                        // SAFETY: reads one byte into a valid buffer.
+                        let n = unsafe {
+                            libc::read(read_fd, (&raw mut byte).cast::<libc::c_void>(), 1)
+                        };
+                        if n < 0
+                            && std::io::Error::last_os_error().kind()
+                                == std::io::ErrorKind::Interrupted
+                        {
+                            continue;
+                        }
+                        if n <= 0 {
+                            return;
+                        }
+                        run(&watcher_handle);
                     }
-                    if n <= 0 {
-                        return;
-                    }
-                    run(&watcher_handle);
-                }
+                });
             })
             .unwrap_or_else(|e| panic!("OutOfMemoryError: unable to create native thread: {e}"));
 

@@ -12,8 +12,8 @@ import unitstatus
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE = os.path.expanduser("~/.cache/blaze")
 ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
-WORK = os.path.join(CACHE, "work", "remote")
-OUT_ROOT = os.path.join(CACHE, "oracle-out", "ur-remote")
+WORK = os.environ.get("BLAZE_REMOTE_WORK") or os.path.join(CACHE, "work", "remote")
+OUT_ROOT = os.environ.get("BLAZE_REMOTE_UR") or os.path.join(CACHE, "oracle-out", "ur-remote")
 REPO_CACHE = os.path.join(CACHE, "repo-cache")
 WORKER = os.path.join(HERE, "worker")
 

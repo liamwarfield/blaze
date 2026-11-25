@@ -145,16 +145,24 @@ fn java_resolver_errors(
     .collect()
 }
 
-/// A resolver module in which every name is predeclared: the resolver's errors that do not
-/// depend on the predeclared names.
+/// A resolver module in which every valid name is predeclared: the resolver's errors that do
+/// not depend on the predeclared names. The identifiers the parser's recovery makes (not valid
+/// identifiers) are undefined in every module, so Java reports them ("contains syntax errors",
+/// Resolver.java:946) whatever the names are.
 struct EveryNamePredeclared;
 
 impl crate::syntax::java::resolver::ResolverModule for EveryNamePredeclared {
     fn resolve(
         &self,
-        _name: &str,
+        name: &str,
     ) -> Result<crate::syntax::java::resolver::Scope, crate::syntax::java::resolver::Undefined>
     {
+        if !crate::syntax::java::ast::is_valid_identifier(name) {
+            return Err(crate::syntax::java::resolver::Undefined {
+                message: format!("name '{name}' is not defined"),
+                candidates: Some(Vec::new()),
+            });
+        }
         Ok(crate::syntax::java::resolver::Scope::Predeclared)
     }
 }
@@ -165,9 +173,10 @@ impl crate::syntax::java::resolver::ResolverModule for EveryNamePredeclared {
 /// The errors are Bazel's, from Java's front end (`crate::syntax::java`): every scanner and
 /// parser error of the file; for BUILD and the other `.bazel` files then
 /// `DotBazelFileSyntaxChecker`'s; then the resolver's errors that do not depend on the
-/// predeclared names. PORT: for a file with parse or resolver errors, Java's list also has the
-/// resolver's undefined-name errors (for a .bzl file, also after parse errors); they need the
-/// predeclared names, which [`compile_and_resolve`] takes. Callers that have them should use it.
+/// predeclared names (for a .bzl file also after its parse errors, on the recovered tree, as
+/// `compile_and_resolve`). PORT: Java's list also has the resolver's undefined-name errors; they
+/// need the predeclared names, which [`compile_and_resolve`] takes. Callers that have them
+/// should use it.
 // Java: com/google/devtools/build/lib/skyframe/BzlCompileFunction.java:216 compileInternal
 // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1366 compileBuildFile
 pub fn compile_with_options(
@@ -176,11 +185,18 @@ pub fn compile_with_options(
     file_name: &str,
     source: String,
 ) -> Result<CompiledFile, EvalError> {
-    let (parsed, errors) = java_static_errors(kind, options, file_name, &source);
-    if !errors.is_empty() {
+    let (parsed, mut errors) = java_static_errors(kind, options, file_name, &source);
+    // Java: as compile_and_resolve; a .bzl file's parse errors are followed by the resolver's
+    // errors on the recovered tree (BzlCompileFunction.java:234).
+    let parse_failed = !parsed.errors.is_empty();
+    if !errors.is_empty() && (kind.dot_bazel_checker_config().is_some() || !parse_failed) {
         return Err(EvalError::syntax(errors));
     }
-    let errors = java_resolver_errors(&parsed, &EveryNamePredeclared, options);
+    errors.extend(java_resolver_errors(
+        &parsed,
+        &EveryNamePredeclared,
+        options,
+    ));
     if !errors.is_empty() {
         return Err(EvalError::syntax(errors));
     }

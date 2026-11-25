@@ -18,6 +18,7 @@ sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import common as C  # noqa: E402
+cc = C.cc
 
 TOOL = "interop-client"
 ROOT = C.REPO
@@ -31,6 +32,7 @@ SIDES = ("A", "B")
 USAGE = """\
 usage: scripts/server/interop-client help
        scripts/server/interop-client list
+       scripts/server/interop-client selftest
        scripts/server/interop-client run [CASE...] [--mode jvm|daemon] [--scenarios a,b,...]
                                          [--reference cold|default] [--control] [--no-unit]
 
@@ -56,11 +58,16 @@ allowed if incrementality state is not being kept", exit 2; --nokeep_state_after
 still resets the graph at the end of every command). As in scripts/server/seq, both sides get
 the same command lines (B too: if Blaze rejects a flag, that is the finding).
 
-Expected, named deviations (reported as EXPECTED-DEVIATION with the reason, counted on their
-own, never as matches; the diff is still printed):
-  startup-crash, --mode daemon: `--host_jvm_args=-Xbogus` kills a JVM server at startup (the
-     oracle prints "Server crashed during startup" and exits 37); the Blaze server is not a JVM
-     and skips JVM flags (crates/blaze/src/main.rs server_args, PORT note).
+Expected, named deviations (audit 4r2, SV-6): one step of one case in one mode, with the text
+each side must show (EXPECTED_DEVIATIONS); that step is DECLARED-GAP only when both texts are
+there, any other difference stays DIFFERENT:
+  startup-crash, --mode daemon, `--host_jvm_args=-Xbogus info release`: the oracle exits 37
+     with the JVM's "Unrecognized option: -Xbogus" (a JVM server dies at startup); Blaze prints
+     exactly what `info release` prints on a fresh server (its server is not a JVM and skips
+     JVM flags: crates/blaze/src/main.rs server_args, PORT note).
+Declared failures (DECLARED, per case and step title: the termination the step is designed to
+produce, e.g. `build //:fail` exit 1, `help | head -1` signal SIGPIPE): equal on both sides is
+IDENTICAL; the oracle ending otherwise is ORACLE-UNEXPECTED.
 
 The tool runs itself inside `systemd-run --user --collect --wait --pipe -p MemoryMax=12G
 -p MemorySwapMax=0` under scripts/remote/unit-supervisor (its own status is recorded inside the
@@ -95,14 +102,18 @@ separate "timed out" note when the tool had to kill it (never a sentinel code).
 Cases also record facts as text steps (for example "server pid unchanged: True"), compared like
 the rest.
 
-Per step the result is IDENTICAL (equal, every exit 0), SAME-FAILURE (equal, but a side exited
-non-zero, died by a signal or timed out: an expected failure that both sides share; counted on
-its own, never as a match) or DIFFERENT (unified diff, A = oracle, B = blaze). A case is
-DIFFERENT if any step is; ERROR if the tool itself failed in it (both sides' partial
-transcripts are kept). The report starts with both binaries' sha256, the checkout's commit and
-dirty state, and ends with the denominator (cases selected, run, identical, different, errors;
-steps per class). Exit 0 only when no step is DIFFERENT, no case is ERROR and no step timed out;
-1 otherwise; 2 for a usage error, an empty selection or a refused binary.
+Per step (scripts/lib/compare_common.py classes through common.judge_step): IDENTICAL
+(termination and transcript equal; the oracle exited 0 or the step declares its failure),
+BOTH-FAILED (equal, undeclared failure: listed, never a match), DIFFERENT (unified diff, A =
+oracle, B = blaze), ORACLE-UNEXPECTED, DECLARED-GAP (the named deviation), SKIPPED (a case with
+no step, or a tool error in the case: its transcripts are kept). The client's termination
+includes an OOM kill in the tool's unit during the step (the unit has OOMPolicy=continue and
+the oom_kill counter is read before and after every step): `oom-kill` is never equal to a
+normal end. The report starts with both binaries' sha256, the checkout's commit and dirty state,
+and ends with compare_common's footer (every class with its count). Exit 0 only when every step
+is IDENTICAL or DECLARED-GAP, every selected case ran, nothing timed out and no case had a tool
+error; 1 otherwise; 2 for a usage error, an empty selection, the wrong oracle, or the oracle
+given as $BLAZE without --control. `selftest` drives this command line with fake binaries.
 
 Cases (`list` prints them):
 """
@@ -149,6 +160,7 @@ def blaze_install_key(blaze):
     os.makedirs(probe_root)
     ib = os.path.join(probe_root, "ib")
     env = {"HOME": HOME, "PATH": "/usr/bin:/bin", "BLAZE_SERVER_MODE": "inprocess"}
+    env.update(C.tripwire_env())
     p = subprocess.run([blaze, "--output_user_root=" + os.path.join(probe_root, "ur"),
                         "--install_base=" + ib, "--nohome_rc", "--nosystem_rc", "--batch",
                         "version"], cwd=probe_root, env=env, stdout=subprocess.PIPE,
@@ -192,13 +204,47 @@ REFERENCE = "default"
 REF_FLAGS = ["--notrack_incremental_state", "--nokeep_state_after_build"]
 REF_BOTH = {"build", "test", "run", "coverage", "query"}
 REF_NOKEEP_ONLY = {"cquery", "aquery"}
-EXPECTED = "EXPECTED-DEV"
-# (case, mode) -> the reason a difference in that case is an expected, named deviation.
+# (case, mode, step title) -> (reason, text side A must contain, text side B must contain): a
+# named deviation of one step (audit 4r2, SV-6). That step is DECLARED-GAP only when both texts
+# are present; any other difference of the step, or of another step, stays DIFFERENT.
 EXPECTED_DEVIATIONS = {
-    ("startup-crash", "daemon"): "the Blaze server is not a JVM and ignores JVM flags "
-                                 "(--host_jvm_args=-Xbogus starts it normally; a JVM server "
-                                 "dies at startup, exit 37)",
+    ("startup-crash", "daemon", "--host_jvm_args=-Xbogus info release"): (
+        "the Blaze server is not a JVM and ignores JVM flags (--host_jvm_args=-Xbogus starts it "
+        "normally; a JVM server dies at startup, exit 37)",
+        # The oracle: exit 37 and the JVM's refusal of the flag.
+        lambda a: a.startswith("exit 37\n") and "Unrecognized option: -Xbogus" in a,
+        # Blaze: exactly what a normal `info release` on a fresh server prints.
+        lambda b: b == ("exit 0\n--- stdout\nrelease 9.3.2\n--- stderr\nExtracting Bazel "
+                        "installation...\nStarting local Bazel server (9.3.2) and connecting to "
+                        "it...\n")),
 }
+# (case, step title) -> the oracle side's termination the step is designed to produce (audit
+# 4r2, SV-2): such a step is IDENTICAL when both sides end so with equal transcripts; the oracle
+# ending otherwise is ORACLE-UNEXPECTED. Every other failure is BOTH-FAILED when equal (listed,
+# never a match). Values: the case design, as the oracle showed it in every stored run
+# (~/.cache/blaze/work/server/s1/transcripts-*/<case>-A.txt, jvm and daemon modes).
+DECLARED = {
+    ("plain", "build //:fail"): "exit 1",
+    ("plain", "nosuchcommand"): "exit 2",
+    ("plain", "--bogus_startup_option info"): "exit 2",
+    ("exit-codes", "build //:fail (1)"): "exit 1",
+    ("exit-codes", "build --nosuchoption //:ok (2)"): "exit 2",
+    ("exit-codes", "test //:ok (4: no test targets)"): "exit 4",
+    ("exit-codes", "query //nosuchpkg:x (7)"): "exit 7",
+    ("exit-codes", "run //:hello_bin -- x (3 from the program)"): "exit 3",
+    ("command-log", "build --write_command_log //:fail"): "exit 1",
+    ("sigkill", "build //:sleep, server killed after 10s"): "exit 37",
+    ("sigint", "build //:sleep, one SIGINT after 10s"): "exit 8",
+    ("sigint", "build //:sleep, three SIGINTs 5ms apart after 10s"): "exit 1",
+    ("two-clients", "--noblock_for_lock info release (while a build runs)"): "exit 9",
+    ("run", "run //:hello_bin -- a b"): "exit 3",
+    ("run", "run //:hello_bin -- 'with space' \"q\""): "exit 3",
+    ("run", "run //:fail (build fails)"): "exit 2",
+    ("broken-pipe", "help | head -1"): "signal SIGPIPE",
+    ("broken-pipe", "help completion | head -1"): "signal SIGPIPE",
+    ("startup-crash", "--host_jvm_args=-Xbogus info release"): "exit 37",
+}
+OOM = None  # C.OomWatch, made in main inside the unit
 BINARIES = {}  # "A"/"B" -> the client binary that runs
 
 
@@ -208,7 +254,8 @@ class Side:
         self.binary = BINARIES[name]
         self.ur = os.path.join(WORK, "ur-" + name)
         self.env = {"HOME": HOME, "PATH": "/usr/bin:/bin", "BLAZE_SERVER_MODE": MODE}
-        self.steps = []  # (title, text, failed)
+        self.env.update(C.tripwire_env())
+        self.steps = []  # (title, text, failed, compare_common Termination or None for a fact)
         paths = [(INSTALL, "<INSTALL_BASE>")] if MODE == "jvm" else []
         self.norm = C.Norm(self.ur, paths)
         self.timed_out = False
@@ -284,9 +331,11 @@ class Side:
     def record_run(self, title, status, out, err):
         if status.timed_out:
             self.timed_out = True
+        oom = OOM.delta() if OOM else 0
+        term = C.termination(status, oom)
         self.steps.append((title, "%s\n--- stdout\n%s--- stderr\n%s"
-                           % (status, self.norm.text(out), self.norm.stderr(err)),
-                           not status.ok))
+                           % (C.status_line(status, oom), self.norm.text(out),
+                              self.norm.stderr(err)), not term.ok, term))
 
     def record_big(self, title, status, out, err):
         """Like record_run for large outputs: size and sha256 of the normalised bytes, then the
@@ -300,12 +349,14 @@ class Side:
                 len(lines), len(text), h, head, ("[...]\n" + tail) if tail else "")
         if status.timed_out:
             self.timed_out = True
+        oom = OOM.delta() if OOM else 0
+        term = C.termination(status, oom)
         self.steps.append((title, "%s\n--- stdout\n%s--- stderr\n%s"
-                           % (status, summary(self.norm.text(out)), summary(self.norm.stderr(err))),
-                           not status.ok))
+                           % (C.status_line(status, oom), summary(self.norm.text(out)),
+                              summary(self.norm.stderr(err))), not term.ok, term))
 
     def fact(self, title, value, failed=False):
-        self.steps.append((title, "%s\n" % value, failed))
+        self.steps.append((title, "%s\n" % value, failed, None))
 
 
 # --------------------------------------------------------------------------------------------
@@ -637,39 +688,38 @@ CASES = [
 
 # --------------------------------------------------------------------------------------------
 
-def counts_case_expected(a, b):
-    """True when some step of the case differs (it is then an expected deviation)."""
-    ta = [t for _, t, _ in a.steps]
-    tb = [t for _, t, _ in b.steps]
-    return ta != tb
-
-
-def compare(a, b, counts, expected=None):
-    """Prints the class of each step; returns True when no step is DIFFERENT. With `expected`
-    (the reason of a named deviation), a differing step is EXPECTED-DEVIATION, not DIFFERENT."""
-    titles = [t for t, _, _ in a.steps]
-    if titles != [t for t, _, _ in b.steps]:
+def compare(name, a, b, report):
+    """One row per step (compare_common classes through C.judge_step); prints the diff of each
+    step that is not IDENTICAL. Returns the case verdict."""
+    titles = [t[0] for t in a.steps]
+    if titles != [t[0] for t in b.steps]:
         print("  DIFFERENT step lists")
-        for l in difflib.unified_diff(titles, [t for t, _, _ in b.steps], "oracle", "blaze",
+        for l in difflib.unified_diff(titles, [t[0] for t in b.steps], "oracle", "blaze",
                                       lineterm=""):
             print("  " + l)
-        counts[C.DIFFERENT] += max(len(a.steps), len(b.steps))
-        return False
-    ok = True
-    for (title, ta, fa), (_, tb, fb) in zip(a.steps, b.steps):
-        cls = C.classify(ta, tb, fa, fb)
-        if cls == C.DIFFERENT and expected:
-            cls = EXPECTED
-            print("  %-12s %s (%s)" % (cls, title, expected))
-        else:
-            print("  %-12s %s" % (cls, title))
-        counts[cls] += 1
-        if cls in (C.DIFFERENT, EXPECTED):
-            if cls == C.DIFFERENT:
-                ok = False
+        report.add("%s: (step list)" % name, cc.DIFFERENT, "the two sides ran different steps")
+        return "DIFFERENT"
+    if not a.steps:
+        report.add("%s: (no step)" % name, cc.SKIPPED, "the case recorded no step")
+        return "EMPTY"
+    verdict = "IDENTICAL"
+    for sa, sb in zip(a.steps, b.steps):
+        title = sa[0]
+        dev = None if CONTROL else EXPECTED_DEVIATIONS.get((name, MODE, title))
+        cls, detail = C.judge_step(sa, sb, DECLARED.get((name, title)))
+        if dev and cls != cc.IDENTICAL:
+            if dev[1](sa[1]) and dev[2](sb[1]):
+                cls, detail = cc.DECLARED_GAP, "named deviation: %s" % dev[0]
+            else:
+                detail += "; not the named deviation (%s)" % dev[0]
+        report.add("%s: %s" % (name, title), cls, detail, group=name)
+        print("  %-17s %s%s" % (cls, title, " (%s)" % detail if detail else ""))
+        if cls not in (cc.IDENTICAL,):
             sys.stdout.writelines("    " + l + "\n" for l in difflib.unified_diff(
-                ta.splitlines(), tb.splitlines(), "oracle", "blaze", lineterm=""))
-    return ok
+                sa[1].splitlines(), sb[1].splitlines(), "oracle", "blaze", lineterm=""))
+        if cls not in cc.PASSING:
+            verdict = "DIFFERENT" if cls == cc.DIFFERENT or verdict == "DIFFERENT" else "NOT-IDENTICAL"
+    return verdict
 
 
 def parse(args):
@@ -713,7 +763,113 @@ def parse(args):
     return names, only, no_unit
 
 
+def selftest():
+    """The real command line (`run plain`, `run startup-crash`, --mode daemon) against fake
+    binaries under a fake HOME; the fakes trip when started outside the tool's unit."""
+    st = cc.Selftest(TOOL)
+    fh = cc.FakeHome("server-interop-client")
+    me = os.path.abspath(__file__)
+    fails = [("//:fail", 1), ("nosuchcommand", 2), ("--bogus_startup_option", 2)]
+    n = [0]
+
+    def fakes(ospec, bspec):
+        n[0] += 1
+        C.fake(fh.oracle, fh, "oracle", **ospec)
+        b = C.fake(os.path.join(fh.home, "bin", "blaze-%d" % n[0]), fh, "blaze-%d" % n[0],
+                   **bspec)
+        return b
+
+    def run(b, cases=("plain",), memory=None):
+        old = os.environ.get("BLAZE"), os.environ.get("COMPARE_COMMON_SELFTEST_MEMORY")
+        os.environ["BLAZE"] = b
+        if memory:
+            os.environ["COMPARE_COMMON_SELFTEST_MEMORY"] = memory
+        try:
+            return fh.run_tool(me, ["run"] + list(cases) + ["--mode", "daemon"])
+        finally:
+            for k, v in zip(("BLAZE", "COMPARE_COMMON_SELFTEST_MEMORY"), old):
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def classes(rep):
+        return [r["class"] for r in (rep or {}).get("cases", [])]
+
+    def show(rc, rep):
+        return "exit %s, %s" % (rc, sorted(set(classes(rep))))
+    try:
+        b = fakes(dict(out=b"x"), dict(out=b"x"))
+        subprocess.run([b, "build"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        st.check("tripwire trips on a direct launch", fh.tripped())
+        if fh.tripped():
+            os.remove(fh.tripfile)
+        same = dict(out=b"same\n", err=b"INFO: x\n", when=fails)
+        b = fakes(same, same)
+        rc, rep, log = run(b)
+        st.check("equal, declared failures: exit 0", rc == 0 and set(classes(rep)) ==
+                 {cc.IDENTICAL}, show(rc, rep))
+        b = fakes(same, dict(same, out=b"other\n"))
+        rc, rep, log = run(b)
+        st.check("stdout differs: DIFFERENT, exit 1", rc == 1 and cc.DIFFERENT in classes(rep),
+                 show(rc, rep))
+        b = fakes(same, dict(same, err=b"INFO: x\nINFO: extra\n"))
+        rc, rep, log = run(b)
+        st.check("an extra stderr line: DIFFERENT, exit 1",
+                 rc == 1 and cc.DIFFERENT in classes(rep), show(rc, rep))
+        b = fakes(dict(same, err=b"INFO: x\nINFO: y\n"), dict(same, err=b"INFO: y\nINFO: x\n"))
+        rc, rep, log = run(b)
+        st.check("stderr in another order: DIFFERENT (no multiset)",
+                 rc == 1 and cc.DIFFERENT in classes(rep), show(rc, rep))
+        b = fakes(dict(out=b"x\n", code=1), dict(out=b"x\n", code=1))
+        rc, rep, log = run(b)
+        st.check("equal undeclared failures: BOTH-FAILED, exit 1",
+                 rc == 1 and cc.BOTH_FAILED in classes(rep), show(rc, rep))
+        b = fakes(same, dict(same, sig="PIPE"))
+        rc, rep, log = run(b)
+        st.check("Blaze killed by SIGPIPE: DIFFERENT", rc == 1 and cc.DIFFERENT in classes(rep),
+                 show(rc, rep))
+        b = fakes(same, dict(same, alloc_mb=700))
+        rc, rep, log = run(b, memory="400M")
+        oom = [r for r in (rep or {}).get("cases", []) if "oom-kill" in r["detail"]]
+        st.check("an OOM kill in the unit during a step: never IDENTICAL",
+                 rc == 1 and oom and all(r["class"] == cc.DIFFERENT for r in oom),
+                 "%s; %d rows name oom-kill" % (show(rc, rep), len(oom)))
+        b = fakes(dict(err=b"Server crashed during startup.\nUnrecognized option: -Xbogus\n",
+                       code=37),
+                  dict(out=b"release 9.3.2\n", err=b"Extracting Bazel installation...\nStarting "
+                       b"local Bazel server (9.3.2) and connecting to it...\n"))
+        rc, rep, log = run(b, cases=("startup-crash",))
+        # Exit 1 all the same: a run whose only row is a declared gap compared nothing.
+        st.check("the named deviation with its texts: DECLARED-GAP",
+                 rc == 1 and classes(rep) == [cc.DECLARED_GAP], show(rc, rep))
+        b = fakes(dict(err=b"Server crashed during startup.\nUnrecognized option: -Xbogus\n",
+                       code=37), dict(out=b"release 9.3.2\n", err=b"something else\n"))
+        rc, rep, log = run(b, cases=("startup-crash",))
+        st.check("another difference of the same step stays DIFFERENT",
+                 rc == 1 and classes(rep) == [cc.DIFFERENT], show(rc, rep))
+        b = fakes(same, same)
+        rc, rep, log = run(fh.oracle)
+        st.check("the oracle as the binary under test refused (exit 2)", rc == 2, "exit %s" % rc)
+        rc, rep, log = fh.run_tool(me, ["run", "plain", "--mode", "daemon"], pin="0" * 64)
+        st.check("wrong oracle hash refused (exit 2)", rc == 2, "exit %s" % rc)
+        st.check("no process started outside the tool's unit", not fh.tripped(),
+                 open(fh.tripfile).read()[:200] if fh.tripped() else "")
+    except Exception as e:  # noqa: BLE001 - a crash of the selftest is a failure
+        import traceback
+        traceback.print_exc()
+        st.check("selftest ran to the end", False, "%s: %s" % (type(e).__name__, e))
+    finally:
+        if st.failures:
+            print("  (fake HOME kept for inspection: %s)" % fh.root)
+        else:
+            fh.remove()
+    return st.finish()
+
+
 def main(argv):
+    if len(argv) >= 2 and argv[1] == "selftest":
+        return selftest()
     if len(argv) < 2 or argv[1] in ("help", "--help", "-h"):
         sys.stdout.write(USAGE)
         for name, f in CASES:
@@ -744,6 +900,8 @@ def main(argv):
     blaze_src = C.blaze_binary()
     if not CONTROL and not os.path.exists(blaze_src):
         die("no Blaze binary at %s (set BLAZE)" % blaze_src)
+    if not CONTROL:
+        C.refuse_oracle_as_blaze(TOOL, blaze_src)
 
     if not no_unit:
         rc = C.in_unit(TOOL, [os.path.abspath(__file__)] + argv[1:] + ["--no-unit"],
@@ -751,6 +909,8 @@ def main(argv):
         if rc is not None:
             return rc
 
+    global OOM
+    OOM = C.OomWatch()
     os.makedirs(WORK, exist_ok=True)
     lock = open(os.path.join(WORK, "run.lock"), "w")
     try:
@@ -758,6 +918,15 @@ def main(argv):
     except OSError:
         die("another interop-client run holds %s" % os.path.join(WORK, "run.lock"))
     staged = None
+    report = cc.Report(TOOL, blaze={"path": oracle if CONTROL else blaze_src,
+                                    "sha256": C.sha256_file(oracle if CONTROL else blaze_src),
+                                    "role": "B"},
+                       oracle={"path": oracle, "sha256": C.sha256_file(oracle)},
+                       selection=" ".join(argv[1:]),
+                       tool_files=[os.path.abspath(__file__), os.path.join(HERE, "common.py")],
+                       compared="per step: the client's termination (an OOM kill in the unit "
+                                "during the step included) and the normalised transcript "
+                                "(stdout, every stderr line in order after Norm.RULES)")
     if CONTROL:
         BINARIES.update(A=oracle, B=oracle)
         print("\n".join(C.header(TOOL, [("A (oracle, pinned)", oracle, C.ORACLE_SHA256),
@@ -783,7 +952,6 @@ def main(argv):
 
     keys = prepare_install_base(staged) if MODE == "jvm" else None
     results = []
-    counts = {C.IDENTICAL: 0, C.SAME_FAILURE: 0, C.DIFFERENT: 0, C.NOT_RUN: 0, EXPECTED: 0}
     sides = {}
     tdir = os.path.join(WORK, "transcripts-%s%s%s" % (
         MODE, "-cold" if REFERENCE == "cold" else "", "-control" if CONTROL else ""))
@@ -813,19 +981,17 @@ def main(argv):
                     break
             for n in run:
                 with open(os.path.join(tdir, "%s-%s.txt" % (name, n)), "w", encoding="latin-1") as fh:
-                    for title, text, _ in run[n].steps:
+                    for title, text, _, _ in run[n].steps:
                         fh.write("=== %s\n%s" % (title, text))
             print("case %s:" % name)
             if error:
                 print("  ERROR %s (transcripts kept in %s)" % (error, tdir))
+                report.add("%s: (case)" % name, cc.SKIPPED, "tool error: %s" % error, group=name)
+                report.problem("case %s: tool error: %s" % (name, error))
                 results.append((name, "ERROR"))
             else:
-                expected = None if CONTROL else EXPECTED_DEVIATIONS.get((name, MODE))
-                ok = compare(run["A"], run["B"], counts, expected)
+                verdict = compare(name, run["A"], run["B"], report)
                 timed = [n for n in SIDES if run[n].timed_out]
-                verdict = "IDENTICAL" if ok else "DIFFERENT"
-                if expected and counts_case_expected(run["A"], run["B"]):
-                    verdict = "EXPECTED-DEVIATION"
                 if timed:
                     verdict += " (a step timed out on side %s)" % ",".join(timed)
                 results.append((name, verdict))
@@ -845,19 +1011,22 @@ def main(argv):
             rmtree(WS)
         if staged:
             C.unstage_binary(staged)
-    print("%s: denominator: %d cases selected, %d run; identical: %s; different: %s; "
-          "expected deviations: %s; errors: %s"
-          % (TOOL, len(selected), len(results),
-             ", ".join(n for n, v in results if v == "IDENTICAL") or "none",
-             ", ".join(n for n, v in results if v.startswith("DIFFERENT")) or "none",
-             ", ".join(n for n, v in results if v == "EXPECTED-DEVIATION") or "none",
-             ", ".join(n for n, v in results if v == "ERROR") or "none"))
-    print("%s: steps: %d identical, %d same-failure (identical non-zero exits; not matches), "
-          "%d different, %d expected deviations (named; not matches), %d not run"
-          % (TOOL, counts[C.IDENTICAL], counts[C.SAME_FAILURE], counts[C.DIFFERENT],
-             counts[EXPECTED], counts[C.NOT_RUN]))
-    bad = [n for n, v in results if v not in ("IDENTICAL", "EXPECTED-DEVIATION")]
-    return 0 if not bad and len(results) == len(selected) else 1
+    report.note("cases: %d selected, %d run; every step IDENTICAL or declared: %s; with a step "
+                "DIFFERENT: %s; with another non-passing step: %s; errors: %s"
+                % (len(selected), len(results),
+                   ", ".join(n for n, v in results if v == "IDENTICAL") or "none",
+                   ", ".join(n for n, v in results if v.startswith("DIFFERENT")) or "none",
+                   ", ".join(n for n, v in results if v.startswith("NOT-IDENTICAL")
+                             or v.startswith("EMPTY")) or "none",
+                   ", ".join(n for n, v in results if v == "ERROR") or "none"))
+    if len(results) != len(selected):
+        report.problem("%d of %d selected cases did not run" % (len(selected) - len(results),
+                                                                len(selected)))
+    timed = [n for n, v in results if "timed out" in v]
+    if timed:
+        report.problem("a step timed out in: %s" % ", ".join(timed))
+    report.print_footer()
+    return report.exit_code()
 
 
 if __name__ == "__main__":

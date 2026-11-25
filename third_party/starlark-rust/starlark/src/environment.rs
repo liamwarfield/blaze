@@ -38,8 +38,13 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 enum EnvironmentError {
     /// Cannot import private symbol, i.e. underscore prefixed
-    #[error("Cannot import private symbol `{0}`")]
+    // BLAZE PATCH 0057: Java's text (Resolver.java:610; the Java front end reports it first).
+    #[error("symbol '{0}' is private and cannot be imported")]
     CannotImportPrivateSymbol(String),
+    /// BLAZE PATCH 0057: Java `Eval.execLoad` (Eval.java:266): module name as written in the
+    /// `load` statement, the symbol, and `SpellChecker.didYouMean`'s suffix.
+    #[error("file '{0}' does not contain symbol '{1}'{2}")]
+    FileDoesNotContainSymbol(String, String, String),
     #[error("Module has no symbol `{0}`")]
     ModuleHasNoSymbol(String),
     #[error("Module has no symbol `{0}`, did you mean `{1}`?")]

@@ -206,9 +206,11 @@ mod incremental_in_memory_node_entry;
 mod invalidation;
 mod node_entry;
 mod non_incremental_in_memory_node_entry;
+pub mod precomputed;
 mod progress;
 mod reverse_deps_utility;
 mod simple_cycle_detector;
+pub mod testing;
 mod value_with_metadata;
 mod version;
 mod walkable_graph;
@@ -269,10 +271,11 @@ pub trait Key: fmt::Debug + Eq + Hash + Send + Sync + 'static {
     type Value: Send + Sync + 'static;
     /// Java: SkyKey.functionName()
     const FUNCTION: SkyFunctionName;
-    /// Java: `SkyFunctionName.getHermeticity()`. `None`: not declared yet (declared per key in
-    /// package I2); the "hermetic functions cannot be marked changed" check then does not apply.
+    /// Java: `SkyFunctionName.getHermeticity()`, given where Java creates the function name
+    /// (`SkyFunctionName.createHermetic`, `createSemiHermetic`, `createNonHermetic`). Keys that
+    /// share a function name declare the same hermeticity (Java interns one name).
     // Java: com/google/devtools/build/skyframe/SkyFunctionName.java:84 SkyFunctionName.getHermeticity
-    const HERMETICITY: Option<FunctionHermeticity> = None;
+    const HERMETICITY: FunctionHermeticity;
 
     /// Java: `SkyValue.equals` as used by `DirtyBuildingState.unchangedFromLastBuild` and
     /// `AbstractInMemoryMemoizingEvaluator.pruneInjectedValues`. The default is "not comparable"
@@ -292,7 +295,7 @@ pub trait Key: fmt::Debug + Eq + Hash + Send + Sync + 'static {
 pub trait DynKey: fmt::Debug + Send + Sync + 'static {
     fn function_name(&self) -> SkyFunctionName;
     /// [`Key::HERMETICITY`] of the key's type.
-    fn hermeticity(&self) -> Option<FunctionHermeticity>;
+    fn hermeticity(&self) -> FunctionHermeticity;
     fn as_any(&self) -> &dyn Any;
     fn dyn_eq(&self, other: &dyn DynKey) -> bool;
     fn dyn_hash(&self, state: &mut dyn Hasher);
@@ -305,7 +308,7 @@ impl<K: Key> DynKey for K {
     fn function_name(&self) -> SkyFunctionName {
         K::FUNCTION
     }
-    fn hermeticity(&self) -> Option<FunctionHermeticity> {
+    fn hermeticity(&self) -> FunctionHermeticity {
         K::HERMETICITY
     }
     fn as_any(&self) -> &dyn Any {
@@ -341,10 +344,9 @@ impl SkyKey {
     pub fn function_name(&self) -> SkyFunctionName {
         self.0.function_name()
     }
-    /// Java: `skyKey.functionName().getHermeticity()`; `None` while the key type has not
-    /// declared it ([`Key::HERMETICITY`]).
+    /// Java: `skyKey.functionName().getHermeticity()` ([`Key::HERMETICITY`]).
     // Java: com/google/devtools/build/skyframe/SkyFunctionName.java:84 SkyFunctionName.getHermeticity
-    pub fn hermeticity(&self) -> Option<FunctionHermeticity> {
+    pub fn hermeticity(&self) -> FunctionHermeticity {
         self.0.hermeticity()
     }
     pub fn downcast<K: Key>(&self) -> Option<&K> {

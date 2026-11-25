@@ -38,8 +38,12 @@ pub enum ImplicitOutputsFunction {
     Functions(Vec<ImplicitOutputsFunction>),
     /// A native safe function.
     Native(NativeImplicitOutputsFn),
-    /// Java `StarlarkImplicitOutputsFunctionWithCallback`: `outputs = <function>`.
-    StarlarkWithCallback { callback: StarlarkCallable },
+    /// Java `StarlarkImplicitOutputsFunctionWithCallback`: `outputs = <function>`, with the
+    /// semantics of the thread that defined it (Java `StarlarkCallbackHelper.starlarkSemantics`).
+    StarlarkWithCallback {
+        callback: StarlarkCallable,
+        semantics: Option<Arc<blaze_starlark::StarlarkSemantics>>,
+    },
     /// Java `StarlarkImplicitOutputsFunctionWithMap`: `outputs = {"key": "template"}`.
     StarlarkWithMap(Vec<(String, String)>),
 }
@@ -51,7 +55,7 @@ impl fmt::Debug for ImplicitOutputsFunction {
             ImplicitOutputsFunction::Templates(t) => f.debug_tuple("Templates").field(t).finish(),
             ImplicitOutputsFunction::Functions(v) => f.debug_tuple("Functions").field(v).finish(),
             ImplicitOutputsFunction::Native(_) => f.write_str("Native(..)"),
-            ImplicitOutputsFunction::StarlarkWithCallback { callback } => f
+            ImplicitOutputsFunction::StarlarkWithCallback { callback, .. } => f
                 .debug_struct("StarlarkWithCallback")
                 .field("callback", callback)
                 .finish(),
@@ -139,15 +143,10 @@ impl ImplicitOutputsFunction {
     ) -> Result<Vec<(String, String)>, EvalException> {
         match self {
             // Java: com/google/devtools/build/lib/packages/ImplicitOutputsFunction.java:88 ImplicitOutputsFunction.StarlarkImplicitOutputsFunctionWithCallback.calculateOutputs
-            ImplicitOutputsFunction::StarlarkWithCallback { .. } => {
-                // PORT: needs a Starlark thread for the callback (Java StarlarkCallbackHelper
-                // carries the defining module's semantics and context) and
-                // Attribute.valueToStarlark for the `attrs` struct.
-                let _ = event_handler;
-                blaze_util::unported!(
-                    "ImplicitOutputsFunction.StarlarkImplicitOutputsFunctionWithCallback.calculateOutputs"
-                )
-            }
+            ImplicitOutputsFunction::StarlarkWithCallback {
+                callback,
+                semantics,
+            } => starlark_callback_outputs(callback, semantics.as_ref(), event_handler, map),
             // Java: com/google/devtools/build/lib/packages/ImplicitOutputsFunction.java:142 ImplicitOutputsFunction.StarlarkImplicitOutputsFunctionWithMap.calculateOutputs
             ImplicitOutputsFunction::StarlarkWithMap(output_map) => {
                 let mut builder: Vec<(String, String)> = Vec::new();
@@ -474,4 +473,123 @@ impl ParsedTemplate {
             }
         }
     }
+}
+
+/// Java `StarlarkImplicitOutputsFunctionWithCallback.calculateOutputs`: calls the callback with
+/// the values of the rule's non-configurable attributes (by Starlark name), then expands each
+/// returned template.
+// Java: com/google/devtools/build/lib/packages/ImplicitOutputsFunction.java:87 ImplicitOutputsFunction.StarlarkImplicitOutputsFunctionWithCallback.calculateOutputs
+fn starlark_callback_outputs(
+    callback: &StarlarkCallable,
+    semantics: Option<&Arc<blaze_starlark::StarlarkSemantics>>,
+    event_handler: &dyn EventHandler,
+    map: &dyn AttributeMap,
+) -> Result<Vec<(String, String)>, EvalException> {
+    use crate::attribute::Attribute;
+    let Some(semantics) = semantics else {
+        blaze_util::unported!(
+            "StarlarkImplicitOutputsFunctionWithCallback without semantics (set by rule())"
+        )
+    };
+    // Java: HashMap<String, Object> attrValues; configurable attributes are left out (we don't
+    // know which value they might take since we don't yet have a build configuration).
+    let mut attr_values: Vec<(String, Option<AttrValue>)> = Vec::new();
+    for attr_name in map.get_attribute_names() {
+        let Some(attr_type) = map.get_attribute_type(&attr_name) else {
+            continue;
+        };
+        if !map.is_configurable(&attr_name) {
+            let value = map.get(&attr_name, attr_type);
+            attr_values.push((Attribute::get_starlark_name(&attr_name), value));
+        }
+    }
+    // Java: StarlarkCallbackHelper.buildArgumentList: one positional argument per parameter of
+    // the callback, looked up in the `attrs` struct; a missing one is the struct's unknown-field
+    // error (StarlarkInfoWithMessage.getErrorMessageForUnknownField: the message, then
+    // allAttributesSuffix), thrown as IllegalArgumentException and wrapped in EvalException.
+    let names = callback.get_parameter_names();
+    for name in &names {
+        if !attr_values.iter().any(|(k, _)| k == name) {
+            let mut sorted: Vec<&str> = attr_values.iter().map(|(k, _)| k.as_str()).collect();
+            sorted.sort();
+            return Err(EvalException::new(format!(
+                "Attribute '{name}' either doesn't exist or uses a select() (i.e. could have \
+                 multiple values)\nAvailable attributes: {}",
+                sorted.join(", ")
+            )));
+        }
+    }
+    let events = Arc::new(blaze_starlark::thread::CollectingEvents::default());
+    let ctx = blaze_starlark::ThreadContext::new(
+        blaze_starlark::Phase::Loading,
+        semantics.clone(),
+        events.clone(),
+    );
+    let result = blaze_starlark::eval::call_frozen(
+        &callback.to_owned_frozen_value(),
+        &ctx,
+        &blaze_starlark::eval::EvalOptions::default(),
+        |module| {
+            let heap = module.heap();
+            let positional = names
+                .iter()
+                .map(|n| {
+                    let v = attr_values
+                        .iter()
+                        .find(|(k, _)| k == n)
+                        .and_then(|(_, v)| v.as_ref());
+                    Attribute::value_to_starlark(v, heap)
+                })
+                .collect();
+            (positional, Vec::new())
+        },
+        |res, _module, _eval| {
+            // Java: Dict.cast(result, String.class, String.class, "implicit outputs function
+            // return value").
+            Ok(crate::starlark_defs::util::dict_cast_string_string(
+                res,
+                "implicit outputs function return value",
+            )
+            .map_err(|e| blaze_starlark::error::bare_message(&e)))
+        },
+    );
+    // Java: thread.setPrintHandler(Event.makeDebugPrintHandler(eventHandler))
+    for e in events.take() {
+        let location = e
+            .location
+            .as_ref()
+            .map(|l| blaze_events::Location::new(l.file.clone(), l.line as i32, l.column as i32));
+        let event = if e.kind == "DEBUG" {
+            blaze_events::Event::debug_at(location, e.message)
+        } else {
+            blaze_events::Event::warn_at(location, e.message)
+        };
+        event_handler.handle(&event);
+    }
+    let entries = match result {
+        Ok(Ok(entries)) => entries,
+        Ok(Err(message)) => return Err(EvalException::new(message)),
+        Err(e) => return Err(EvalException::new(e.message_with_stack())),
+    };
+    let mut builder: Vec<(String, String)> = Vec::new();
+    for (key, value) in entries {
+        // Returns empty string only in case of invalid templates
+        let substitutions = ImplicitOutputsFunction::from_templates(&[value.as_str()])
+            .get_implicit_outputs(event_handler, map)?;
+        if substitutions.is_empty() {
+            return Err(EvalException::new(format!(
+                "For attribute '{key}' in outputs: Invalid placeholder(s) in template"
+            )));
+        }
+        // Java: Iterables.getOnlyElement.
+        if substitutions.len() != 1 {
+            panic!(
+                "IllegalArgumentException: expected one element but was: <{}>",
+                substitutions.join(", ")
+            );
+        }
+        // Java: ImmutableMap.Builder.buildOrThrow; the keys are distinct dict keys.
+        builder.push((key, substitutions.into_iter().next().unwrap()));
+    }
+    Ok(builder)
 }

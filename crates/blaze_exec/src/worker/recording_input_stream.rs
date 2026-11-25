@@ -49,28 +49,33 @@ impl PipeInputStream {
         let pump = shared.clone();
         let spawned = std::thread::Builder::new()
             .name(name.to_string())
+            // PORT: a panic of the reader would leave the consumer waiting for data forever;
+            // it reaches the default uncaught exception handler instead (Java reads on the
+            // consumer's thread, where it would be the consumer's exception).
             .spawn(move || {
-                let mut chunk = vec![0u8; 8192];
-                loop {
-                    let r = source.read(&mut chunk);
-                    let mut st = pump.state.lock();
-                    match r {
-                        Ok(0) => {
-                            st.eof = true;
-                            pump.cv.notify_all();
-                            return;
+                blaze_util::uncaught_exception::run_catching(move || {
+                    let mut chunk = vec![0u8; 8192];
+                    loop {
+                        let r = source.read(&mut chunk);
+                        let mut st = pump.state.lock();
+                        match r {
+                            Ok(0) => {
+                                st.eof = true;
+                                pump.cv.notify_all();
+                                return;
+                            }
+                            Ok(n) => st.buf.extend(&chunk[..n]),
+                            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                            Err(e) => {
+                                st.error = Some((e.kind(), e.to_string()));
+                                st.eof = true;
+                                pump.cv.notify_all();
+                                return;
+                            }
                         }
-                        Ok(n) => st.buf.extend(&chunk[..n]),
-                        Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                        Err(e) => {
-                            st.error = Some((e.kind(), e.to_string()));
-                            st.eof = true;
-                            pump.cv.notify_all();
-                            return;
-                        }
+                        pump.cv.notify_all();
                     }
-                    pump.cv.notify_all();
-                }
+                });
             });
         if spawned.is_err() {
             let mut st = shared.state.lock();

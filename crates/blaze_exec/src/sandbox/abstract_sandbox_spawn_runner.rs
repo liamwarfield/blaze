@@ -196,7 +196,7 @@ impl AbstractSandboxSpawnRunner {
                     .failure_detail()
                     .map(|d| d.message.as_str())
                     .unwrap_or(""),
-                context.get_file_out_err(),
+                Some(context.get_file_out_err()),
             )?;
             // We copy the outputs even when the command failed.
             if let Err(e) = sandbox.copy_outputs(&self.exec_root) {

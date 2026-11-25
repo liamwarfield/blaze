@@ -507,6 +507,17 @@ impl<'a> Environment<'a> {
                     nodes.push(node);
                 }
                 None => {
+                    // A dep of the last build that the function requests again is already
+                    // declared and must be present. Java finds it missing when it commits the
+                    // node (the lookup gives null, the function returns null); here it fails
+                    // at the request, with the same text, before the missing dep is computed.
+                    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:1022 Evaluate.run
+                    check_state!(
+                        !self.st.old_deps.contains(k),
+                        "Missing already declared dep {:?} (parent={:?})",
+                        k,
+                        self.key
+                    );
                     undone.push(i);
                     entries.push(None);
                     nodes.push(self.run.ev.graph.create_if_absent(k));

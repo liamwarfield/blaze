@@ -350,7 +350,13 @@ impl WorkerMultiplexer {
             let sender_process = process.clone();
             std::thread::Builder::new()
                 .name(format!("multiplexer-request-sender-{id}"))
-                .spawn(move || while sender_process.is_alive() && sender.send_request() {})?;
+                .spawn(move || {
+                    // A plain Java thread: an exception reaches the default uncaught exception
+                    // handler.
+                    blaze_util::uncaught_exception::run_catching(|| {
+                        while sender_process.is_alive() && sender.send_request() {}
+                    });
+                })?;
             let receiver = self.this.upgrade().expect("multiplexer alive");
             let receiver_process = process.clone();
             let (tx, rx) = std::sync::mpsc::channel();
@@ -358,7 +364,9 @@ impl WorkerMultiplexer {
                 .name(format!("multiplexer-response-receiver-{id}"))
                 .spawn(move || {
                     let _ = tx.send(blaze_shell::ThreadInterrupt::current());
-                    while receiver_process.is_alive() && receiver.read_response() {}
+                    blaze_util::uncaught_exception::run_catching(|| {
+                        while receiver_process.is_alive() && receiver.read_response() {}
+                    });
                 })?;
             st.response_receiver = rx.recv().ok();
         } else if !st.process.as_ref().unwrap().is_alive() {
@@ -398,17 +406,23 @@ impl WorkerMultiplexer {
     /// blocked caller may hold (see `SingleplexShared::destroy_from_shutdown_hook`).
     fn destroy_from_shutdown_hook(&self) {
         // destroyProcess() without the thread-local interrupt state, which may be gone at exit.
-        let process = match self.state.try_lock_for(Duration::from_millis(100)) {
+        let (process, work_dir) = match self.state.try_lock_for(Duration::from_millis(100)) {
             Some(mut st) => {
                 st.shutdown_hook = None;
-                st.process.clone()
+                (st.process.clone(), st.work_dir.clone())
             }
-            None => None,
+            None => (None, None),
         };
         if let Some(p) = process {
             shutdown_hooks::destroy_and_wait_at_exit(&*p);
             self.pending_requests.interrupt();
         }
+        // The rest of destroyMultiplexer().
+        if let Some(work_dir) = work_dir {
+            // Failed to delete workDir (logged).
+            let _ = work_dir.delete_tree();
+        }
+        self.status.set_killed();
     }
 
     /// Destroys the worker subprocess. This might block forever if the subprocess refuses to die.
@@ -564,7 +578,7 @@ impl WorkerMultiplexer {
         let parsed_response = match parsed {
             Ok(r) => r,
             Err(e) => {
-                if e.kind() != io::ErrorKind::Interrupted {
+                if !JavaException::is_interrupted_io_exception(&e) {
                     self.report(&format!(
                         "Error while reading response from multiplexer process for {}: {}",
                         self.worker_key.get_mnemonic(),

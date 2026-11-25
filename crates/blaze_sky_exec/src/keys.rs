@@ -10,13 +10,33 @@ use std::hash::{Hash, Hasher};
 
 use blaze_actions::{ActionLookupData, ActionLookupKeyRef, Artifact};
 use blaze_collect::NestedSet;
-use blaze_skyframe::{Key, SkyFunctionName, SkyKey};
+use blaze_skyframe::{FunctionHermeticity, Key, SkyFunctionName, SkyKey};
+
+use blaze_exec::actions::FileArtifactValue;
 
 use crate::action_execution_value::ActionExecutionValue;
 use crate::artifact_function::ArtifactValue;
 use crate::build_driver_function::BuildDriverValue;
 use crate::completion_function::{AspectCompletionValue, TargetCompletionValue};
 use crate::test_completion_function::TestCompletionValue;
+
+/// `FileArtifactValue.equals` for change pruning: the enum's `==` (each Java subclass's
+/// `equals`), except that a value that is or wraps a remote file is never equal. PORT: Java's
+/// remote `equals` checks the class one way only (a value with materialization data equals a
+/// plain one, not the reverse); the merged variant compares symmetrically and could prune where
+/// Java does not, so it does not prune at all.
+// Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:756 RemoteFileArtifactValue.equals
+fn file_values_equal_for_pruning(old: &FileArtifactValue, new: &FileArtifactValue) -> bool {
+    fn is_remote(value: &FileArtifactValue) -> bool {
+        match value {
+            FileArtifactValue::RemoteFile { .. } => true,
+            FileArtifactValue::ResolvedSymlink { delegate, .. }
+            | FileArtifactValue::Proxy { delegate, .. } => is_remote(delegate),
+            _ => false,
+        }
+    }
+    !is_remote(old) && !is_remote(new) && old == new
+}
 
 /// `SkyFunctions.ACTION_EXECUTION`: an `ActionLookupData` as a key.
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -31,6 +51,29 @@ impl fmt::Debug for ActionExecutionKey {
 impl Key for ActionExecutionKey {
     type Value = ActionExecutionValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("ACTION_EXECUTION");
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:121 SkyFunctions.ACTION_EXECUTION (createSemiHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::SemiHermetic;
+    /// Java: the file values (a map, `FileArtifactValue.equals`), the tree artifact values
+    /// (`TreeArtifactValue.equals`), the rich artifact data (`RunfilesArtifactValue.equals`) and the
+    /// discovered modules (`shallowEquals`). PORT: `TreeArtifactValue` and
+    /// `RunfilesArtifactValue` have no Java-faithful equality yet, so a value with tree artifacts
+    /// or rich artifact data is never equal; discovered modules (C++ modules) are not ported and
+    /// are empty on both sides. Remote file values are never equal (see
+    /// [`file_values_equal_for_pruning`]). Rust prunes less than Java, never more.
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:232 ActionExecutionValue.equals
+    fn values_equal(old: &ActionExecutionValue, new: &ActionExecutionValue) -> bool {
+        let (old_files, new_files) = (old.get_all_file_values(), new.get_all_file_values());
+        old.get_all_tree_artifact_values().is_empty()
+            && new.get_all_tree_artifact_values().is_empty()
+            && old.get_rich_artifact_data().is_none()
+            && new.get_rich_artifact_data().is_none()
+            && old_files.len() == new_files.len()
+            && old_files.iter().all(|(artifact, value)| {
+                new_files
+                    .get(artifact)
+                    .is_some_and(|other| file_values_equal_for_pruning(value, other))
+            })
+    }
 }
 
 /// `SkyFunctions.ARTIFACT`: a source artifact or a tree artifact as a key.
@@ -46,6 +89,22 @@ impl fmt::Debug for ArtifactKey {
 impl Key for ArtifactKey {
     type Value = ArtifactValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("ARTIFACT");
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:159 Artifact.ARTIFACT (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: `ArtifactFunction` returns a `FileArtifactValue` (each subclass's `equals`), a
+    /// `TreeArtifactValue` (`TreeArtifactValue.equals`) or a `MissingArtifactValue` (no `equals`:
+    /// identity). PORT: tree values are never equal (no Java-faithful `TreeArtifactValue`
+    /// equality yet), nor are remote file values (see [`file_values_equal_for_pruning`]): Rust
+    /// prunes less than Java, never more.
+    // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:131 ArtifactFunction.compute
+    fn values_equal(old: &ArtifactValue, new: &ArtifactValue) -> bool {
+        match (old, new) {
+            (ArtifactValue::File(old), ArtifactValue::File(new)) => {
+                file_values_equal_for_pruning(old, new)
+            }
+            _ => false,
+        }
+    }
 }
 
 /// Returns the key for an artifact's value: the artifact itself for source and tree artifacts,
@@ -124,6 +183,12 @@ pub enum ArtifactNestedSetValue {
 impl Key for ArtifactNestedSetKey {
     type Value = ArtifactNestedSetValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("ARTIFACT_NESTED_SET");
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:123 SkyFunctions.ARTIFACT_NESTED_SET (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    // Default `values_equal` (never equal): Java's `ArtifactNestedSetValue` is a
+    // `NotComparableSkyValue` "to prohibit value-based change pruning". Its `PartialEq` must not
+    // be used for pruning.
+    // Java: com/google/devtools/build/lib/skyframe/ArtifactNestedSetValue.java:27 ArtifactNestedSetValue
 }
 
 /// `TargetCompletionKey`: a top-level configured target whose requested output groups must be
@@ -152,6 +217,13 @@ impl fmt::Debug for TargetCompletionKey {
 impl Key for TargetCompletionKey {
     type Value = TargetCompletionValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("TARGET_COMPLETION");
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:106 SkyFunctions.TARGET_COMPLETION (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: the function returns one singleton, equal to itself.
+    // Java: com/google/devtools/build/lib/skyframe/TargetCompletionValue.java:29 TargetCompletionValue.INSTANCE
+    fn values_equal(_old: &TargetCompletionValue, _new: &TargetCompletionValue) -> bool {
+        true
+    }
 }
 
 /// `AspectCompletionKey`: a top-level aspect whose requested output groups must be built.
@@ -191,6 +263,13 @@ impl fmt::Debug for AspectCompletionKey {
 impl Key for AspectCompletionKey {
     type Value = AspectCompletionValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("ASPECT_COMPLETION");
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:108 SkyFunctions.ASPECT_COMPLETION (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: the function returns one singleton, equal to itself.
+    // Java: com/google/devtools/build/lib/skyframe/AspectCompletionValue.java:31 AspectCompletionValue.INSTANCE
+    fn values_equal(_old: &AspectCompletionValue, _new: &AspectCompletionValue) -> bool {
+        true
+    }
 }
 
 /// `TestCompletionKey`: all runs and shards of a test target.
@@ -218,6 +297,13 @@ impl fmt::Debug for TestCompletionKey {
 impl Key for TestCompletionKey {
     type Value = TestCompletionValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("TEST_COMPLETION");
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:109 SkyFunctions.TEST_COMPLETION (createHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    /// Java: the function returns one singleton, equal to itself.
+    // Java: com/google/devtools/build/lib/skyframe/TestCompletionValue.java:32 TestCompletionValue.TEST_COMPLETION_MARKER
+    fn values_equal(_old: &TestCompletionValue, _new: &TestCompletionValue) -> bool {
+        true
+    }
 }
 
 /// `TestType` of a `BuildDriverKey`.
@@ -310,4 +396,8 @@ impl fmt::Debug for BuildDriverKey {
 impl Key for BuildDriverKey {
     type Value = BuildDriverValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("BUILD_DRIVER");
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:155 SkyFunctions.BUILD_DRIVER (createNonHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
+    // Default `values_equal` (never equal): Java's `BuildDriverValue` has no `equals`.
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverValue.java:19 BuildDriverValue
 }
