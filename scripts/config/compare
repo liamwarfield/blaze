@@ -25,22 +25,20 @@ user root (~/.cache/blaze/oracle-out/config-compare-<side>), a clean environment
 PATH=/usr/bin:/bin), --nohome_rc --nosystem_rc, the shared repository cache, --color=no
 --curses=no, under systemd-run --user --scope -p MemoryMax=12G -p MemorySwapMax=0. Both sides
 run the same cases in the same order from a fresh output root. The oracle keeps its server
-between cases; its "discarding analysis cache" warning has no counterpart in Blaze (one command
-per process) and is dropped before comparing.
+between cases (Blaze has none: audit round 3, B1).
 
-Compared per case (after normalising the workspace path, the output user root and the output
-base hash):
-  exit     the exit code
-  stdout   the command's standard output (cquery, aquery, config output)
-  summary  the stderr lines starting with ERROR:, WARNING:, DEBUG:, "INFO: Build completed",
-           "INFO: Build did NOT", "INFO: ToolchainResolution", "INFO: Target ", with the
-           continuation lines of multi-line ERROR/WARNING/DEBUG/toolchain-resolution events
+Compared per case: the termination, the whole stdout and the whole stderr, after the exclusion
+rules of scripts/lib/compare_common.py (VOLATILE_RULES; `paths`: each side's workspace copy,
+output user root and output base; B1_GAP_RULES: lines that depend on the oracle's warm server,
+among them its "discarding analysis cache" warning), listed in the report with the lines each
+changed or removed on each side.
 
 Guards (scripts/lib/compare_common.py): every command runs under a supervisor in the scope that
 records how it really ended (`exit N`, `signal NAME`, `oom-kill`, `timeout`), and `exit` compares
 those; --oracle must be the pinned oracle (sha256 in UPSTREAM.json); an empty selection is an
-error. Classes per case: IDENTICAL (all fields equal; the oracle exited 0, or DECLARED_EXIT
-declares the case's exit code as the failure under test), DIFFERENT, BOTH-FAILED (equal failures
+error. Classes per case: IDENTICAL (all of it equal after the volatile rules; the oracle exited
+0, or DECLARED_EXIT declares the case's exit code as the failure under test), KNOWN-GAP (equal
+except in B1 lines), DIFFERENT, BOTH-FAILED (equal failures
 not declared), NOT-PORTED, ORACLE-UNEXPECTED, SKIPPED.
 
 Output: a header (repository HEAD and dirty flag, both binaries with sha256), a table, the
@@ -48,10 +46,14 @@ denominator; raw and normalised outputs under
 ~/.cache/blaze/config-compare/<label>/<side>/<case>.{stdout,stderr,norm.json}, and
 results.json (with the provenance and denominator). Exit 0 only when at least one case was
 compared and every selected case is IDENTICAL; 1 otherwise; 2 on a usage error or a refusal.
---skip-oracle reuses the oracle outputs of an earlier run with the same --label only when
-<label>/oracle/oracle.key (oracle sha256, this tool's sha256, every argv and the environment,
-the digest of the probe workspace and of each case's files, the case sequence) equals this run's
-key; otherwise it refuses.
+The terminations of the `shutdown` commands are listed; one that died abnormally fails the run.
+--skip-oracle reuses the oracle outputs of an earlier run with the same --label (the raw files
+<label>/oracle/<case>.{stdout,stderr,json}) only when <label>/oracle/oracle.key, written after
+those files were complete, holds this run's key (oracle sha256, every argv and the environment,
+the digest of the probe workspace and of each case's files, the case sequence) and every file
+it anchors is unchanged; otherwise it refuses. The outputs are raw (normalised when compared),
+so this tool's sha256 is not in the key.
+selftest drives this command line with fake binaries (compare_common.selftest_tool).
 """
 
 HOME = os.path.expanduser("~")
@@ -67,6 +69,7 @@ TIMEOUT = 1800
 CQ = ["cquery", "//pkg:all"]
 LK = ["--output=label_kind"]
 JP = ["--output=jsonproto"]
+SCL = ["--experimental_enable_scl_dialect"]
 
 # (id, description, command args, files {relative path: content or None to delete})
 CASES = [
@@ -183,6 +186,52 @@ CASES = [
     ("tr-exec-config", "--experimental_exec_config outside @_builtins",
      ["cquery", "deps(//trans:exec_user)",
       "--experimental_exec_config=//trans:exec_config.bzl%my_exec"] + LK, {}),
+    # Project files and flagsets (Project.applySclConfig, FlagSetFunction; cases modelled on
+    # src/test/shell/integration/flagset_test.sh).
+    ("fs-default", "the project's default config applied",
+     ["build", "--nobuild", "//fs/strict:test"] + SCL, {}),
+    ("fs-scl-config", "--scl_config names a config with a Starlark flag",
+     ["build", "--nobuild", "//fs/strict:test", "--scl_config=other_config"] + SCL, {}),
+    ("fs-scl-missing", "--scl_config names a missing config",
+     ["build", "--nobuild", "//fs/strict:test", "--scl_config=nope"] + SCL, {}),
+    ("fs-strict-cmdline", "strict policy, output-affecting command-line flags",
+     ["build", "--nobuild", "//fs/strict:test", "--enforce_project_configs",
+      "--scl_config=test_config", "--//fs/strict:flag=yes", "--define=bar=baz"] + SCL, {}),
+    ("fs-strict-expanded", "strict policy, an expanded command-line flag",
+     ["build", "--nobuild", "//fs/strict:test", "--enforce_project_configs",
+      "--scl_config=test_config", "-c", "opt"] + SCL, {}),
+    ("fs-strict-not-enforced", "strict policy without --enforce_project_configs",
+     ["build", "--nobuild", "//fs/strict:test", "--define=bar=baz"] + SCL, {}),
+    ("fs-warn-spaces", "warn policy, space-delimited and negative boolean flags",
+     ["build", "--nobuild", "//fs/warn:test", "--enforce_project_configs",
+      "--define=x=y"] + SCL, {}),
+    ("fs-compat-same", "compatible policy, a command-line flag equal to the config's",
+     ["build", "--nobuild", "//fs/compat:test", "--enforce_project_configs",
+      "--compilation_mode=opt"] + SCL, {}),
+    ("fs-compat-conflict", "compatible policy, a command-line flag conflicting with the config",
+     ["build", "--nobuild", "//fs/compat:test", "--enforce_project_configs",
+      "--compilation_mode=dbg"] + SCL, {}),
+    ("fs-multi-inconsistent", "two projects with different default configs",
+     ["build", "--nobuild", "//fs/multi1:g", "//fs/multi2:g"] + SCL, {}),
+    ("fs-multi-consistent", "two projects with the same default config",
+     ["build", "--nobuild", "//fs/multi1:g", "//fs/multi3:g"] + SCL, {}),
+    ("fs-multi-scl", "two projects and --scl_config",
+     ["build", "--nobuild", "//fs/multi1:g", "//fs/multi3:g", "--scl_config=test_config"]
+     + SCL, {}),
+    ("fs-partial", "a target with a project and one without",
+     ["build", "--nobuild", "//fs/strict:test", "//fs/none:n"] + SCL, {}),
+    ("fs-magic-label", "PROJECT.scl loading //:project_proto.scl",
+     ["build", "--nobuild", "//fs/magic:g"], {}),
+    ("fs-legacy-default", "legacy dict schema, default config",
+     ["build", "--nobuild", "//fs/legacy:g"] + SCL, {}),
+    ("fs-legacy-scl", "legacy dict schema, --scl_config",
+     ["build", "--nobuild", "//fs/legacy:g", "--scl_config=slow"] + SCL, {}),
+    ("fs-prec-project", "a project's Starlark flag",
+     ["build", "--nobuild", "//fs/prec:flag"] + SCL, {}),
+    ("fs-prec-user", "a user's Starlark flag over the project's",
+     ["build", "--nobuild", "//fs/prec:flag", "--//fs/prec:flag=set_by_user"] + SCL, {}),
+    ("fs-prec-repeatable", "a repeatable Starlark flag set by the project and the user",
+     ["build", "--nobuild", "//fs/prec:multi", "--//fs/prec:multi=set_by_user"] + SCL, {}),
 ]
 
 
@@ -224,7 +273,7 @@ def case_argv(binary, root, args):
 
 def oracle_key(cases):
     root = os.path.join(CACHE, "oracle-out", "config-compare-oracle")
-    return cc.cache_key(cc.tool_sha256(os.path.abspath(__file__)), cc.pinned_sha256(),
+    return cc.cache_key(None, cc.pinned_sha256(),
                         [case_argv(cc.PINNED_ORACLE, root, c[2]) for c in cases], clean_env(),
                         cc.tree_digest(PROBE_DIR),
                         extra={"cases": [[c[0], c[3]] for c in cases]})
@@ -239,55 +288,35 @@ def make_writable_and_remove(path):
         subprocess.run(["rm", "-rf", path])
 
 
-SUMMARY_RE = re.compile(
-    r"^(ERROR:|WARNING:|DEBUG:|INFO: Build completed|INFO: Build did NOT|INFO: ToolchainResolution|"
-    r"INFO: Target |FAILED:|\s+ToolchainResolution:)")
+RULES = cc.VOLATILE_RULES + cc.B1_GAP_RULES
 
 
-def normaliser(ws, root):
-    output_base = os.path.join(root, hashlib.md5(ws.encode()).hexdigest())
-
-    def norm(text):
-        text = text.replace(output_base, "<OUTPUT_BASE>")
-        text = text.replace(root, "<OUTPUT_USER_ROOT>")
-        text = text.replace(ws, "<WORKSPACE>")
-        return text
-    return norm
+def side_dirs(side):
+    return (os.path.join(CACHE, "work", "config-compare", side),
+            os.path.join(CACHE, "oracle-out", "config-compare-" + side))
 
 
-CONTINUATION_STOP_RE = re.compile(
-    r"^(INFO:|ERROR:|WARNING:|DEBUG:|Loading|Analyzing|Computing|Starting|Extracting|FAILED:)")
+def path_pairs(side):
+    ws, root = side_dirs(side)
+    return [(os.path.join(root, hashlib.md5(ws.encode()).hexdigest()), "<OUTPUT_BASE>"),
+            (root, "<OUTPUT_USER_ROOT>"), (ws, "<WORKSPACE>")]
 
 
-def summary_lines(stderr):
-    """The summary lines, each with its continuation lines (the lines of a multi-line event up to
-    the next event or progress line)."""
-    out = []
-    in_event = False
-    for line in stderr.splitlines():
-        if SUMMARY_RE.match(line) and "discarding analysis cache" not in line:
-            out.append(line)
-            in_event = line.startswith(("ERROR:", "WARNING:", "DEBUG:", "INFO: ToolchainResolution"))
-        elif in_event and not CONTINUATION_STOP_RE.match(line):
-            out.append(line)
-        else:
-            in_event = False
-    return out
+def case_files(out_dir, cases):
+    return [os.path.join(out_dir, c[0] + ext) for c in cases
+            for ext in (".stdout", ".stderr", ".json")]
 
 
-def run_side(side, binary, cases, out_dir):
-    ws = os.path.join(CACHE, "work", "config-compare", side)
-    root = os.path.join(CACHE, "oracle-out", "config-compare-" + side)
-    subprocess.run([binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc",
-                    "shutdown"], cwd=HOME, env=clean_env(), stdout=subprocess.DEVNULL,
-                   stderr=subprocess.DEVNULL)
+def run_side(side, binary, cases, out_dir, report):
+    ws, root = side_dirs(side)
+    report.add_aux("%s shutdown before" % side, cc.run(
+        [binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc", "shutdown"],
+        HOME, timeout=600, mode="scope", tag="config-compare-shutdown").term)
     make_writable_and_remove(ws)
     make_writable_and_remove(os.path.join(root, hashlib.md5(ws.encode()).hexdigest()))
     os.makedirs(ws)
     subprocess.run(["rsync", "-a", "--delete", PROBE_DIR + "/", ws + "/"], check=True)
-    norm = normaliser(ws, root)
     os.makedirs(out_dir, exist_ok=True)
-    results = {}
     for (cid, _desc, args, files) in cases:
         saved = {}
         for rel, content in files.items():
@@ -301,8 +330,9 @@ def run_side(side, binary, cases, out_dir):
                     f.write(content)
         cmd = case_argv(binary, root, args)
         print("[config-compare] %s %s" % (side, cid), flush=True)
-        r = cc.run(cmd, ws, timeout=TIMEOUT, mode="scope", tag="config-compare")
-        rc, out, err, dur = r.rc, r.out, r.err, r.duration
+        r = cc.run(cmd, ws, timeout=TIMEOUT, mode="scope", tag="config-compare",
+                   stdout_path=os.path.join(out_dir, cid + ".stdout"),
+                   stderr_path=os.path.join(out_dir, cid + ".stderr"))
         for rel, content in saved.items():
             path = os.path.join(ws, rel)
             if content is None:
@@ -311,43 +341,40 @@ def run_side(side, binary, cases, out_dir):
             else:
                 with open(path, "wb") as f:
                     f.write(content)
-        with open(os.path.join(out_dir, cid + ".stdout"), "wb") as f:
-            f.write(out)
-        with open(os.path.join(out_dir, cid + ".stderr"), "wb") as f:
-            f.write(err)
-        rec = {
-            "argv": cmd, "duration_s": dur, "exit": rc, "termination": r.term.to_dict(),
-            "stdout": norm(out.decode("latin-1")),
-            "summary": summary_lines(norm(err.decode("latin-1"))),
-            "unported": cc.unported_message(err),
-        }
-        results[cid] = rec
-        with open(os.path.join(out_dir, cid + ".norm.json"), "w") as f:
-            json.dump(rec, f, indent=1)
-        print("[config-compare]   %s in %.1fs" % (r.term, dur), flush=True)
-    cc.run([binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc", "shutdown"],
-           ws, timeout=600, mode="scope", tag="config-compare-shutdown")
-    return results
+        with open(os.path.join(out_dir, cid + ".json"), "w") as f:
+            json.dump({"argv": cmd, "duration_s": r.duration,
+                       "termination": r.term.to_dict()}, f, indent=1)
+        print("[config-compare]   %s in %.1fs" % (r.term, r.duration), flush=True)
+    report.add_aux("%s shutdown" % side, cc.run(
+        [binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc", "shutdown"],
+        ws, timeout=600, mode="scope", tag="config-compare-shutdown").term)
 
 
-def compare_fields(o, b):
-    """MATCH/DIFF per field; `exit` compares the recorded terminations."""
-    row = {}
-    for f in ("exit", "stdout", "summary"):
-        if f == "exit":
-            ot = cc.Termination.from_dict(o.get("termination"))
-            bt = cc.Termination.from_dict(b.get("termination"))
-            row[f] = "MATCH" if ot is not None and ot == bt else "DIFF"
-        else:
-            row[f] = "MATCH" if o.get(f) == b.get(f) else "DIFF"
-    return row
+def load_case(out_dir, cid):
+    try:
+        with open(os.path.join(out_dir, cid + ".json")) as f:
+            rec = json.load(f)
+        with open(os.path.join(out_dir, cid + ".stdout"), "rb") as f:
+            rec["stdout"] = f.read()
+        with open(os.path.join(out_dir, cid + ".stderr"), "rb") as f:
+            rec["stderr"] = f.read()
+    except (OSError, ValueError):
+        return None
+    return rec
 
 
-def judge(cid, o, b, row):
+def judge(norm, cid, o, b):
+    differing, gaps = [], []
+    for stream in ("stdout", "stderr"):
+        eq, g = norm.compare(o[stream], b[stream], stream, path_pairs("oracle"),
+                             path_pairs("blaze"))
+        if not eq:
+            differing.append(stream)
+        gaps += g
     return cc.judge(cc.Termination.from_dict(o.get("termination")),
-                    cc.Termination.from_dict(b.get("termination")),
-                    [f for f, v in row.items() if v == "DIFF" and f != "exit"],
-                    declared_exit=DECLARED_EXIT.get(cid), blaze_unported=b.get("unported"))
+                    cc.Termination.from_dict(b.get("termination")), differing,
+                    declared_exit=DECLARED_EXIT.get(cid),
+                    blaze_unported=cc.unported_message(b["stderr"]), gaps=sorted(set(gaps)))
 
 
 def main(argv):
@@ -396,31 +423,36 @@ def main(argv):
     base = os.path.join(CACHE, "config-compare", label)
     report = cc.Report("config/compare", blaze=blaze,
                        oracle={"path": oracle, "sha256": oracle_sha},
-                       selection="label %s, %d cases%s" % (
-                           label, len(cases), " (--case %s)" % ",".join(only) if only else ""),
-                       tool_files=[os.path.abspath(__file__)])
+                       selection="label %s, %d cases%s%s" % (
+                           label, len(cases), " (--case %s)" % ",".join(only) if only else "",
+                           ", oracle outputs reused" if skip_oracle else ""),
+                       tool_files=[os.path.abspath(__file__)],
+                       compared="termination, the whole stdout and the whole stderr after the "
+                                "exclusion rules listed at the end")
+    norm = cc.Normaliser(RULES)
+    report.add_normaliser(norm)
     report.print_header()
-    key_path = os.path.join(base, "oracle", "oracle.key")
+    odir, bdir = os.path.join(base, "oracle"), os.path.join(base, "blaze")
+    key_path = os.path.join(odir, "oracle.key")
     if skip_oracle:
         try:
             cc.require_fresh(key_path, oracle_key(cases))
         except cc.Refusal as e:
             return cc.refuse("config/compare", e)
-        oracle_results = json.load(open(os.path.join(base, "results.json")))["oracle"]
     else:
-        oracle_results = run_side("oracle", oracle, cases, os.path.join(base, "oracle"))
-        cc.write_key(key_path, oracle_key(cases))
-    blaze_results = run_side("blaze", blaze["path"], cases, os.path.join(base, "blaze"))
-    table = {}
+        cc.invalidate_key(key_path)
+        run_side("oracle", oracle, cases, odir, report)
+        cc.write_key(key_path, oracle_key(cases), case_files(odir, cases))
+    run_side("blaze", blaze["path"], cases, bdir, report)
+    cc.write_capture(os.path.join(bdir, "capture.json"), blaze, case_files(bdir, cases))
     for (cid, _d, _a, _f) in cases:
-        o, b = oracle_results.get(cid, {}), blaze_results[cid]
-        row = compare_fields(o, b)
-        cls, detail = judge(cid, o, b, row)
+        o, b = load_case(odir, cid), load_case(bdir, cid)
+        if o is None or b is None:
+            report.add(cid, cc.SKIPPED, "no %s output" % ("oracle" if o is None else "blaze"))
+            continue
+        cls, detail = judge(norm, cid, o, b)
         report.add(cid, cls, detail)
-        table[cid] = dict(row, **{"class": cls})
-        print("%-22s %s  %s" % (cid, "  ".join("%s=%s" % kv for kv in row.items()), cls))
-    report.write_json(os.path.join(base, "results.json"),
-                      extra={"oracle": oracle_results, "blaze": blaze_results, "table": table})
+    report.write_json(os.path.join(base, "results.json"))
     print()
     report.print_rows()
     report.print_footer()
@@ -428,39 +460,15 @@ def main(argv):
 
 
 def selftest():
-    def run_pair(ofake, bfake, wd):
-        cc.require_oracle(ofake)
-        recs = {}
-        for side, fake in (("oracle", ofake), ("blaze", bfake)):
-            r = cc.run([fake, "cquery"], wd, mode="scope", tag="selftest")
-            norm = normaliser(wd, os.path.join(wd, "ur"))
-            recs[side] = {"exit": r.rc, "termination": r.term.to_dict(),
-                          "stdout": norm(r.out.decode("latin-1")),
-                          "summary": summary_lines(norm(r.err.decode("latin-1"))),
-                          "unported": cc.unported_message(r.err)}
-        row = compare_fields(recs["oracle"], recs["blaze"])
-        return judge("selftest", recs["oracle"], recs["blaze"], row)
+    def argv(blaze, label):
+        return ["--binary", blaze, "--case", CASES[0][0], "--label", label]
 
-    def empty_selection():
-        with open(os.devnull, "w") as null:
-            old = sys.stderr
-            sys.stderr = null
-            try:
-                return main(["--binary", "/bin/true", "--case", "no-such-case"])
-            finally:
-                sys.stderr = old
-
-    def extra(st):
-        legacy = {"exit": 0, "stdout": "", "summary": []}
-        st.check("a legacy record without termination never matches",
-                 compare_fields(legacy, dict(legacy))["exit"] == "DIFF")
-        kp = os.path.join(st.dir, "oracle.key")
-        cc.write_key(kp, oracle_key(CASES[:2]))
-        st.check("--skip-oracle refuses another case sequence",
-                 cc.check_key(kp, oracle_key(CASES[:3])) is not None)
-
-    return cc.selftest("config/compare", run_pair=run_pair, empty_selection=empty_selection,
-                       extra=extra, mode="scope")
+    return cc.selftest_tool(
+        "config/compare", os.path.abspath(__file__), argv,
+        empty=lambda b, l: ["--binary", b, "--case", "no-such-case", "--label", l],
+        reuse=lambda b, l: argv(b, l) + ["--skip-oracle"],
+        oracle_outputs=lambda home, l: [os.path.join(home, ".cache", "blaze", "config-compare",
+                                                     l, "oracle", CASES[0][0] + ".stdout")])
 
 
 if __name__ == "__main__":

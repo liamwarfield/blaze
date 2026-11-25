@@ -36,14 +36,18 @@ Cases:
            a cc_binary: aquery of both targets, build, run the binary, null build, change the
            generator's input, build.
 
-Compared per step (paths normalised: workspace, output base, install base):
-  exit       the exit code
-  processes  the "INFO: N processes: ..." line
+Compared per step (rule `paths`: workspace, output user root, output base):
+  exit       the termination (exit code, or signal, OOM kill, timeout)
+  stderr     in full, after the exclusion rules of scripts/lib/compare_common.py
+             (VOLATILE_RULES; both sides run every command on a fresh server, so no
+             server-state rule applies), listed in the report with the lines each changed or
+             removed on each side
   spawns     --execution_log_json_file, one entry per spawn: mnemonic, target label, argv,
              environment, inputs (path, digest), listed outputs, actual outputs (path, digest),
              sorted by the first listed output
   files      sha256 of the step's files of interest (outputs, the unused inputs list, objects)
-  stdout     program output (run steps), aquery text (aquery steps)
+  stdout     in full after the same rules: program output (run steps), aquery text (aquery
+             steps)
 
 Guards (scripts/lib/compare_common.py): every command runs under a supervisor in the scope that
 records how it really ended (`exit N`, `signal NAME`, `oom-kill`, `timeout`); `exit` compares
@@ -57,9 +61,12 @@ denominator; raw and normalised records under ~/.cache/blaze/exec2-compare/<labe
 and results.json (with provenance and denominator). Exit 0 only when at least one step was
 compared and every selected step is IDENTICAL; 1 otherwise; 2 on a usage error or a refusal.
 --skip-oracle reuses the oracle records of an earlier run with the same --label only when
-<label>/oracle/<case>/oracle.key (oracle sha256, this tool's sha256 (which covers the setup
-steps), every argv and the environment, the digests of the brotli checkout and the probe) equals
-this run's key; otherwise it refuses.
+<label>/oracle/<case>/oracle.key, written after the oracle's files were complete, holds this
+run's key (oracle sha256, this tool's sha256 (it holds the setup steps that edit the workspace
+between commands), every argv and the environment, the digests of the brotli checkout and the
+probe) and every file it anchors is unchanged; otherwise it refuses. The terminations of the
+`shutdown` commands are listed (an abnormal one fails the run).
+selftest drives this command line with fake binaries (compare_common.selftest_tool).
 """
 
 HOME = os.path.expanduser("~")
@@ -161,7 +168,11 @@ def sha256_of(path):
         return hashlib.sha256(f.read()).hexdigest()
 
 
+RULES = list(cc.VOLATILE_RULES)
+
+
 def normaliser(ws, root):
+    """Path replacement for the spawn records (the execution log)."""
     output_base_hash = hashlib.md5(ws.encode()).hexdigest()
 
     def norm(text):
@@ -171,6 +182,17 @@ def normaliser(ws, root):
         text = re.sub(r"<OUTPUT_USER_ROOT>/install/[0-9a-f]{32}", "<INSTALL_BASE>", text)
         return UUID_RE.sub("<UUID>", text)
     return norm
+
+
+def side_dirs(side):
+    return (os.path.join(CACHE, "work", "exec2-compare", "brotli"),
+            os.path.join(CACHE, "oracle-out", "exec2-" + side))
+
+
+def path_pairs(side):
+    ws, root = side_dirs(side)
+    return [(os.path.join(root, hashlib.md5(ws.encode()).hexdigest()), "<OUTPUT_BASE>"),
+            (root, "<OUTPUT_USER_ROOT>"), (ws, "<WORKSPACE>")]
 
 
 def read_json_stream(path):
@@ -231,19 +253,23 @@ def oracle_key(case, out_dir):
         extra={"case": case, "steps": [[s[0], s[4]] for s in CASES[case]]})
 
 
-def run_case(side, binary, case, out_dir):
+def case_files(out_dir, case):
+    return [os.path.join(out_dir, s[0] + ext) for s in CASES[case]
+            for ext in (".stdout", ".stderr", ".json", ".execlog.json")]
+
+
+def run_case(side, binary, case, out_dir, report):
     # Both sides use the same workspace path (one after the other): some action keys (source
     # manifests, runfiles trees) contain the absolute workspace path.
-    ws = os.path.join(CACHE, "work", "exec2-compare", "brotli")
-    root = os.path.join(CACHE, "oracle-out", "exec2-" + side)
+    ws, root = side_dirs(side)
     base = [binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc"]
-    cc.run(base + ["shutdown"], ws if os.path.isdir(ws) else HOME, timeout=600, mode="scope",
-           tag="exec2-shutdown")
+    report.add_aux("%s %s shutdown before" % (side, case), cc.run(
+        base + ["shutdown"], ws if os.path.isdir(ws) else HOME, timeout=600, mode="scope",
+        tag="exec2-shutdown").term)
     make_writable_and_remove(os.path.join(root, hashlib.md5(ws.encode()).hexdigest()))
     prepare_workspace(ws)
     norm = normaliser(ws, root)
     os.makedirs(out_dir, exist_ok=True)
-    results = {}
     for (sid, kind, args, setup, files) in CASES[case]:
         if setup is not None:
             setup(ws)
@@ -252,55 +278,51 @@ def run_case(side, binary, case, out_dir):
             os.remove(log)
         cmd = step_argv(base, kind, log, args)
         print("[exec2-compare] %s %s/%s" % (side, case, sid), flush=True)
-        r = cc.run(cmd, ws, timeout=TIMEOUT, mode="scope", tag="exec2-compare")
-        rc, out, err, dur = r.rc, r.out, r.err, r.duration
+        r = cc.run(cmd, ws, timeout=TIMEOUT, mode="scope", tag="exec2-compare",
+                   stdout_path=os.path.join(out_dir, sid + ".stdout"),
+                   stderr_path=os.path.join(out_dir, sid + ".stderr"))
         # Every command ends with a fresh server for the oracle (Blaze has none).
-        cc.run(base + ["shutdown"], ws, timeout=600, mode="scope", tag="exec2-shutdown")
-        with open(os.path.join(out_dir, sid + ".stdout"), "wb") as f:
-            f.write(out)
-        with open(os.path.join(out_dir, sid + ".stderr"), "wb") as f:
-            f.write(err)
-        err_s = norm(err.decode("latin-1"))
-        m = PROCESSES_RE.search(err_s)
+        report.add_aux("%s %s/%s shutdown" % (side, case, sid), cc.run(
+            base + ["shutdown"], ws, timeout=600, mode="scope", tag="exec2-shutdown").term)
+        if not os.path.exists(log):
+            open(log, "w").close()
         rec = {
-            "argv": cmd, "duration_s": dur, "exit": rc,
-            "termination": r.term.to_dict(), "unported": cc.unported_message(err),
-            "processes": m.group(0) if m else None,
+            "argv": cmd, "duration_s": r.duration, "termination": r.term.to_dict(),
             "spawns": spawn_summary(read_json_stream(log), norm) if kind != "aquery" else None,
             "files": {f: sha256_of(os.path.join(ws, f)) for f in files},
-            "stdout": norm(out.decode("latin-1")),
         }
-        results[sid] = rec
-        with open(os.path.join(out_dir, sid + ".norm.json"), "w") as f:
+        with open(os.path.join(out_dir, sid + ".json"), "w") as f:
             json.dump(rec, f, indent=1)
-        print("[exec2-compare]   %s in %.1fs; %s" % (r.term, dur, rec["processes"]), flush=True)
-    if side == "oracle":
-        cc.write_key(os.path.join(out_dir, "oracle.key"), oracle_key(case, out_dir))
-    return results
+        print("[exec2-compare]   %s in %.1fs" % (r.term, r.duration), flush=True)
 
 
-FIELDS = ["exit", "processes", "spawns", "files", "stdout"]
+def load_step(out_dir, sid):
+    try:
+        with open(os.path.join(out_dir, sid + ".json")) as f:
+            rec = json.load(f)
+        with open(os.path.join(out_dir, sid + ".stdout"), "rb") as f:
+            rec["stdout"] = f.read()
+        with open(os.path.join(out_dir, sid + ".stderr"), "rb") as f:
+            rec["stderr"] = f.read()
+    except (OSError, ValueError):
+        return None
+    return rec
 
 
-def compare(o, b):
-    # Both records as stored (JSON turns tuples into lists). `exit` compares the terminations.
-    o, b = json.loads(json.dumps(o)), json.loads(json.dumps(b))
-    out = {}
-    for f in FIELDS:
-        if f == "exit":
-            ot = cc.Termination.from_dict(o.get("termination"))
-            bt = cc.Termination.from_dict(b.get("termination"))
-            out[f] = "MATCH" if ot is not None and ot == bt else "DIFF"
-        else:
-            out[f] = "MATCH" if o.get(f) == b.get(f) else "DIFF"
-    return out
-
-
-def judge(step, o, b, c):
+def judge(norm, step, o, b):
+    differing = []
+    for stream in ("stdout", "stderr"):
+        eq, _ = norm.compare(o[stream], b[stream], stream, path_pairs("oracle"),
+                             path_pairs("blaze"))
+        if not eq:
+            differing.append(stream)
+    for f in ("spawns", "files"):
+        if json.dumps(o.get(f), sort_keys=True) != json.dumps(b.get(f), sort_keys=True):
+            differing.append(f)
     return cc.judge(cc.Termination.from_dict(o.get("termination")),
-                    cc.Termination.from_dict(b.get("termination")),
-                    [f for f in FIELDS if f != "exit" and c[f] == "DIFF"],
-                    declared_exit=DECLARED_EXIT.get(step), blaze_unported=b.get("unported"))
+                    cc.Termination.from_dict(b.get("termination")), differing,
+                    declared_exit=DECLARED_EXIT.get(step),
+                    blaze_unported=cc.unported_message(b["stderr"]))
 
 
 def main(argv):
@@ -343,39 +365,40 @@ def main(argv):
         return cc.refuse("exec2/compare", e)
     base = os.path.join(CACHE, "exec2-compare", label)
     report = cc.Report("exec2/compare", blaze=blaze, oracle={"path": oracle, "sha256": oracle_sha},
-                       selection="label %s, cases %s" % (label, ",".join(cases)),
-                       tool_files=[os.path.abspath(__file__)])
+                       selection="label %s, cases %s%s" % (
+                           label, ",".join(cases), ", oracle outputs reused" if skip_oracle
+                           else ""), tool_files=[os.path.abspath(__file__)],
+                       compared="per step: termination, the whole stdout and stderr after the "
+                                "exclusion rules listed at the end, the spawns of the execution "
+                                "log, the sha256 of the step's files")
+    norm = cc.Normaliser(RULES)
+    report.add_normaliser(norm)
     report.print_header()
-    table, all_results = [], {}
     for case in cases:
         odir = os.path.join(base, "oracle", case)
+        bdir = os.path.join(base, "blaze", case)
+        key_path = os.path.join(odir, "oracle.key")
         if skip_oracle:
             try:
-                cc.require_fresh(os.path.join(odir, "oracle.key"), oracle_key(case, odir))
+                cc.require_fresh(key_path, oracle_key(case, odir))
             except cc.Refusal as e:
                 return cc.refuse("exec2/compare", e)
-            ores = {s[0]: json.load(open(os.path.join(odir, s[0] + ".norm.json")))
-                    for s in CASES[case]}
         else:
-            ores = run_case("oracle", oracle, case, odir)
-        bres = run_case("blaze", blaze["path"], case, os.path.join(base, "blaze", case))
+            cc.invalidate_key(key_path)
+            run_case("oracle", oracle, case, odir, report)
+            cc.write_key(key_path, oracle_key(case, odir), case_files(odir, case))
+        run_case("blaze", blaze["path"], case, bdir, report)
+        cc.write_capture(os.path.join(bdir, "capture.json"), blaze, case_files(bdir, case))
         for (sid, *_rest) in CASES[case]:
-            c = compare(ores[sid], bres[sid])
-            cls, detail = judge("%s/%s" % (case, sid), ores[sid], bres[sid], c)
+            o, b = load_step(odir, sid), load_step(bdir, sid)
+            if o is None or b is None:
+                report.add("%s/%s" % (case, sid), cc.SKIPPED, "no %s output" % (
+                    "oracle" if o is None else "blaze"))
+                continue
+            cls, detail = judge(norm, "%s/%s" % (case, sid), o, b)
             report.add("%s/%s" % (case, sid), cls, detail)
-            table.append((case, sid, ores[sid], bres[sid], c, cls))
-            all_results["%s/%s" % (case, sid)] = {
-                "oracle": ores[sid], "blaze": bres[sid], "compare": c, "class": cls}
     os.makedirs(base, exist_ok=True)
-    report.write_json(os.path.join(base, "results.json"), extra={"results": all_results})
-    print()
-    print("| case | step | oracle | blaze | " + " | ".join(FIELDS) + " | class |")
-    print("| --- | --- | --- | --- | " + " | ".join("---" for _ in FIELDS) + " | --- |")
-    for case, sid, o, b, c, cls in table:
-        print("| %s | %s | %s | %s | %s | %s |" % (
-            case, sid, cc.Termination.from_dict(o.get("termination")),
-            cc.Termination.from_dict(b.get("termination")),
-            " | ".join(c[f] for f in FIELDS), cls))
+    report.write_json(os.path.join(base, "results.json"))
     print()
     report.print_rows()
     report.print_footer()
@@ -384,31 +407,18 @@ def main(argv):
 
 
 def selftest():
-    def run_pair(ofake, bfake, wd):
-        cc.require_oracle(ofake)
-        recs = {}
-        for side, fake in (("oracle", ofake), ("blaze", bfake)):
-            r = cc.run([fake, "build"], wd, mode="scope", tag="selftest")
-            norm = normaliser(wd, os.path.join(wd, "root"))
-            e = norm(r.err.decode("latin-1"))
-            m = PROCESSES_RE.search(e)
-            recs[side] = {"termination": r.term.to_dict(), "unported": cc.unported_message(r.err),
-                          "processes": m.group(0) if m else None, "spawns": None, "files": {},
-                          "stdout": norm(r.out.decode("latin-1"))}
-        c = compare(recs["oracle"], recs["blaze"])
-        return judge("selftest", recs["oracle"], recs["blaze"], c)
+    first = next(iter(CASES))
 
-    def empty_selection():
-        with open(os.devnull, "w") as null:
-            old = sys.stderr
-            sys.stderr = null
-            try:
-                return main(["--binary", "/bin/true", "--case", "no-such-case"])
-            finally:
-                sys.stderr = old
+    def argv(blaze, label):
+        return ["--binary", blaze, "--case", first, "--label", label]
 
-    return cc.selftest("exec2/compare", run_pair=run_pair, empty_selection=empty_selection,
-                       mode="scope")
+    return cc.selftest_tool(
+        "exec2/compare", os.path.abspath(__file__), argv,
+        empty=lambda b, l: ["--binary", b, "--case", "no-such-case", "--label", l],
+        reuse=lambda b, l: argv(b, l) + ["--skip-oracle"],
+        oracle_outputs=lambda home, l: [os.path.join(
+            home, ".cache", "blaze", "exec2-compare", l, "oracle", first,
+            CASES[first][0][0] + ".stdout")])
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@
 import json
 import os
 import re
+import subprocess
 import sys
 
 sys.dont_write_bytecode = True
@@ -14,8 +15,8 @@ import compare_common as cc  # noqa: E402
 DECLARED_EXIT = {"fail": 1}  # //fail:all is a failing genrule by design
 
 USAGE = """\
-usage: scripts/bytes/compare [--oracle <dir>] [--candidate <dir>] [--verbose]
-                             [--unverified-oracle] [--json <file>]
+usage: scripts/bytes/compare [--oracle <dir>] [--candidate <dir>] [--binary <blaze>]
+                             [--verbose] [--unverified-oracle] [--json <file>]
        scripts/bytes/compare selftest
        scripts/bytes/compare help
 
@@ -31,6 +32,11 @@ byte for byte, and prints `matching / total` plus every item that differs. Items
   stdout:<name>               query_build.txt, query_label_kind.txt, query_jsonproto.txt,
                               cquery_jsonproto.txt, aquery_text.txt, aquery_jsonproto.txt
   exit:<command>              one per line of exit_codes.txt
+  stderr:<file>               the whole of each *.stderr, after the exclusion rules of
+                              scripts/lib/compare_common.py (VOLATILE_RULES; `paths`: each
+                              recording's output user root; B1_GAP_RULES: the oracle runs all
+                              commands on one warm server), listed in the report with the lines
+                              each changed or removed
 
 An item missing on either side differs. --verbose prints both values of each differing item
 (repr of the bytes, cut at 400).
@@ -47,6 +53,10 @@ Guards (scripts/lib/compare_common.py):
     BOTH-FAILED unless DECLARED_EXIT names the command with that code; a termination that is not
     a normal exit (signal, oom-kill, timeout) is never identical.
   * an oracle recording with no items is an error.
+  * the candidate must have provenance.json, must not have been recorded by the oracle, and is
+    judged only when --binary names the binary that recorded it (its sha256 must match);
+    without --binary the report has a SKIPPED row and cannot pass. Both recordings' files must
+    still have the digests their provenance.json recorded.
 The report starts with both recordings' binaries (path, sha256), the repository HEAD and dirty
 flag, and ends with the denominator (items selected, compared, identical, different,
 both-failed). Exit status 0 only when every item is identical; 1 otherwise; 2 on a refusal or
@@ -135,7 +145,18 @@ def exit_term(value):
     return cc.Termination("abnormal", detail=text)
 
 
-def compare_dirs(oracle, candidate, verbose=False, unverified=False):
+RULES = cc.VOLATILE_RULES + cc.B1_GAP_RULES
+
+
+def changed_outputs(d, prov):
+    rec = (prov or {}).get("outputs")
+    if not rec:
+        return ["(no output digests recorded)"]
+    now = cc.outputs_digest([os.path.join(d, r) for r in rec])
+    return [r for r, v in rec.items() if now.get(os.path.join(d, r)) != v]
+
+
+def compare_dirs(oracle, candidate, verbose=False, unverified=False, binary=None):
     """The compare_common Report of two recordings (raises cc.Refusal)."""
     oprov, cprov = provenance(oracle), provenance(candidate)
     if oprov is None:
@@ -145,19 +166,36 @@ def compare_dirs(oracle, candidate, verbose=False, unverified=False):
     elif oprov["binary"]["sha256"] != cc.pinned_sha256():
         raise cc.Refusal(f"{oracle} was recorded by {oprov['binary']['path']} (sha256 "
                          f"{oprov['binary']['sha256']}), not the pinned oracle")
-    if oprov and cprov and oprov.get("key_digest") != cprov.get("key_digest"):
+    if cprov is None:
+        raise cc.Refusal(f"{candidate} has no provenance.json: the binary that recorded it is "
+                         "unknown")
+    if cprov["binary"]["sha256"] in (cc.pinned_sha256(), cc.PINNED_SHA256):
+        raise cc.Refusal(f"{candidate} was recorded by the oracle")
+    for d, prov in ((oracle, oprov), (candidate, cprov)):
+        if prov is not None and changed_outputs(d, prov):
+            raise cc.Refusal(f"{d}: files changed since they were recorded: "
+                             f"{changed_outputs(d, prov)[:3]}")
+    if oprov and oprov.get("key_digest") != cprov.get("key_digest"):
         old, new = oprov.get("key") or {}, cprov.get("key") or {}
         raise cc.Refusal("the two recordings were made with different inputs or commands "
                          f"(differ in: {[k for k in new if old.get(k) != new.get(k)]}); "
                          "record the oracle again")
+    named = cc.blaze_identity(binary) if binary else None
+    if named and named["sha256"] != cprov["binary"]["sha256"]:
+        raise cc.Refusal(f"{candidate} was recorded by sha256 {cprov['binary']['sha256']}, not "
+                         f"by the named {binary} ({named['sha256']})")
     rep = cc.Report("bytes/compare",
-                    blaze={"path": cprov["binary"]["path"], "sha256": cprov["binary"]["sha256"]}
-                    if cprov else {"path": candidate + " (no provenance.json)", "sha256": None},
+                    blaze={"path": cprov["binary"]["path"], "sha256": cprov["binary"]["sha256"]},
                     oracle={"path": oprov["binary"]["path"], "sha256": oprov["binary"]["sha256"]}
                     if oprov else {"path": oracle + " (UNVERIFIED: no provenance.json)",
                                    "sha256": None},
                     selection=f"items of {oracle} against {candidate}",
-                    tool_files=[os.path.abspath(__file__)])
+                    tool_files=[os.path.abspath(__file__)],
+                    compared="CASE/RCASE/LCASE/RAWPRINT lines, error lines, outputs, stdout "
+                             "files, exit codes, and every stderr file in full after the "
+                             "exclusion rules listed at the end")
+    norm = cc.Normaliser(RULES, path_reason="each recording's output user root")
+    rep.add_normaliser(norm)
     want, got = items(oracle), items(candidate)
     if not want:
         raise cc.Refusal(f"no oracle recording in {oracle} (run scripts/bytes/run first)")
@@ -180,9 +218,27 @@ def compare_dirs(oracle, candidate, verbose=False, unverified=False):
         else:
             cls, detail = cc.DIFFERENT, "DIFF"
         rep.add(k, cls, detail)
+    op = [((oprov or {}).get("output_user_root"), "<UR>")]
+    bp = [(cprov.get("output_user_root"), "<UR>")]
+    names = sorted({n for d in (oracle, candidate) for n in os.listdir(d)
+                    if n.endswith(".stderr")})
+    for n in names:
+        o, b = read(os.path.join(oracle, n)), read(os.path.join(candidate, n))
+        if o is None or b is None:
+            rep.add("stderr:" + n, cc.DIFFERENT, "only in the %s" % (
+                "candidate" if o is None else "oracle"))
+            continue
+        eq, gaps = norm.compare(o, b, "stderr", [x for x in op if x[0]],
+                                [x for x in bp if x[0]])
+        rep.add("stderr:" + n, cc.IDENTICAL if eq and not gaps else
+                cc.KNOWN_GAP if eq else cc.DIFFERENT,
+                "" if eq and not gaps else ("gap rules " + ", ".join(gaps) if eq else "DIFF"))
     if oprov is None:
         rep.add("oracle-provenance", cc.SKIPPED,
                 "the oracle recording has no provenance.json: its binary is not verified")
+    if named is None:
+        rep.add("candidate-binary", cc.SKIPPED,
+                "the binary that recorded the candidate was not named (--binary)")
     return rep, want, got
 
 
@@ -195,7 +251,7 @@ def main(argv):
     oracle = f"{HOME}/.cache/blaze/work/bytes-out"
     candidate = f"{HOME}/.cache/blaze/work/bytes-out-blaze"
     verbose = unverified = False
-    json_out = None
+    json_out = binary = None
     args = list(argv)
     while args:
         a = args.pop(0)
@@ -209,11 +265,13 @@ def main(argv):
             unverified = True
         elif a == "--json" and args:
             json_out = args.pop(0)
+        elif a == "--binary" and args:
+            binary = os.path.abspath(args.pop(0))
         else:
             print(USAGE)
             return 2
     try:
-        rep, want, got = compare_dirs(oracle, candidate, verbose, unverified)
+        rep, want, got = compare_dirs(oracle, candidate, verbose, unverified, binary)
     except cc.Refusal as e:
         return cc.refuse("bytes/compare", e)
     rep.print_header()
@@ -240,79 +298,63 @@ def main(argv):
 
 
 def selftest():
-    import shutil
-
-    def write(d, files, prov=None):
-        os.makedirs(d, exist_ok=True)
-        for n, data in files.items():
-            with open(os.path.join(d, n), "wb") as f:
-                f.write(data)
-        if prov is not None:
-            with open(os.path.join(d, "provenance.json"), "w") as f:
-                json.dump(prov, f)
-        return d
-
-    def prov(sha, key="k"):
-        return {"binary": {"path": "/fake", "sha256": sha}, "key": {"x": key}, "key_digest": key}
-
-    def run_pair(ofake, bfake, wd):
-        # Run the fakes as bytes/run does, write their recordings, judge with compare_dirs.
-        sha = cc.require_oracle(ofake)[1]
-        dirs = {}
-        for side, fake in (("oracle", ofake), ("blaze", bfake)):
-            p = cc.run([fake, "build"], wd, mode="scope", tag="selftest")
-            code = str(p.term.code) if p.term.normal else str(p.term)
-            line = b"DEBUG: CASE x " + p.out.strip()
-            if cc.unported_message(p.err):
-                return cc.NOT_PORTED, cc.unported_message(p.err)
-            dirs[side] = write(os.path.join(wd, "rec-" + side), {
-                "build.stderr": line + b"\n", "exit_codes.txt": f"build {code}\n".encode()},
-                prov(sha if side == "oracle" else "b" * 64))
-        rep, _, _ = compare_dirs(dirs["oracle"], dirs["blaze"])
-        bad = [r for r in rep.rows if r["class"] != cc.IDENTICAL]
-        if not bad:
-            return cc.IDENTICAL, ""
-        if any(r["class"] == cc.DIFFERENT for r in bad):
-            return cc.DIFFERENT, "; ".join("%s %s" % (r["case"], r["detail"]) for r in bad)
-        return bad[0]["class"], bad[0]["detail"]
-
-    def extra(st):
-        d = os.path.join(st.dir, "dirs")
-        line = {"build.stderr": b"DEBUG: CASE a 1\n", "exit_codes.txt": b"build 0\nfail 1\n"}
-        o = write(os.path.join(d, "o"), line, prov(cc.PINNED_SHA256))
-        b = write(os.path.join(d, "b"), line, prov("b" * 64))
-        rep, _, _ = compare_dirs(o, b)
-        st.check("declared `fail 1` on both sides is IDENTICAL", rep.exit_code() == 0,
-                 str(rep.denominator()))
-        o2 = write(os.path.join(d, "o2"), line, prov("c" * 64))
-        try:
-            compare_dirs(o2, b)
-            st.check("oracle recording by another binary refused", False)
-        except cc.Refusal:
-            st.check("oracle recording by another binary refused", True)
-        o3 = write(os.path.join(d, "o3"), line)
-        try:
-            compare_dirs(o3, b)
-            st.check("oracle recording without provenance refused", False)
-        except cc.Refusal:
-            st.check("oracle recording without provenance refused", True)
-        rep, _, _ = compare_dirs(o3, b, unverified=True)
-        st.check("--unverified-oracle never passes", rep.exit_code() != 0)
-        o4 = write(os.path.join(d, "o4"), line, prov(cc.PINNED_SHA256, key="other"))
-        try:
-            compare_dirs(o4, b)
-            st.check("stale oracle recording (other key) refused", False)
-        except cc.Refusal:
-            st.check("stale oracle recording (other key) refused", True)
-        o5 = write(os.path.join(d, "o5"), {}, prov(cc.PINNED_SHA256))
-        try:
-            compare_dirs(o5, b)
-            st.check("empty oracle recording refused", False)
-        except cc.Refusal:
-            st.check("empty oracle recording refused", True)
-        shutil.rmtree(d, ignore_errors=True)
-
-    return cc.selftest("bytes/compare", run_pair=run_pair, extra=extra, mode="scope")
+    """The real command lines: bytes/run records both fakes, bytes/compare judges them."""
+    st = cc.Selftest("bytes/compare")
+    fh = cc.FakeHome("bytes-compare")
+    run_tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run")
+    me = os.path.abspath(__file__)
+    o_dir = os.path.join(fh.cache, "work", "bytes-out")
+    b_dir = os.path.join(fh.cache, "work", "bytes-out-blaze")
+    base = ["--oracle", o_dir, "--candidate", b_dir]
+    try:
+        o, b = fh.fakes(dict(out=b"same\n"), dict(out=b"same\n"))
+        st.check("tripwire trips on a direct launch",
+                 subprocess.run([b, "build"], capture_output=True).returncode == 99
+                 and fh.tripped())
+        if fh.tripped():
+            os.remove(fh.tripfile)
+        for name, ospec, bspec, ok, what in cc.itemised():
+            # //fail:all is declared to exit 1 (DECLARED_EXIT): the fakes do so.
+            o, b = fh.fakes(ospec, bspec, when=[("//fail:all", 1)])
+            r1 = fh.run_tool(run_tool, [])[0]
+            r2 = fh.run_tool(run_tool, ["--binary", b])[0]
+            rc, rep, log = fh.run_tool(me, base + ["--binary", b])
+            classes = [r["class"] for r in (rep or {}).get("cases", [])]
+            st.check("scenario %s" % name, r1 == 0 and r2 == 0 and ok(rc, classes),
+                     "run %s/%s, compare exit %s; want %s (%s)" % (r1, r2, rc, what, log))
+            if name == "equal":
+                rc, rep, log = fh.run_tool(me, base)
+                st.check("candidate binary not named: no pass", rc == 1, "exit %s" % rc)
+                other = os.path.join(fh.home, "bin", "blaze-other")
+                cc.make_fake(other, token=fh.token, tripfile=fh.tripfile, role="other",
+                             out=b"same\n")
+                rc, rep, log = fh.run_tool(me, base + ["--binary", other])
+                st.check("candidate recorded by another binary refused", rc == 2,
+                         "exit %s" % rc)
+                with open(os.path.join(o_dir, "build.stderr"), "ab") as f:
+                    f.write(b"tampered\n")
+                rc, rep, log = fh.run_tool(me, base + ["--binary", b])
+                st.check("changed oracle file refused", rc == 2, "exit %s" % rc)
+        o, b = fh.fakes(dict(out=b"same\n"), dict(out=b"same\n"), when=[("//fail:all", 1)])
+        fh.run_tool(run_tool, [])
+        fh.run_tool(run_tool, ["--binary", b])
+        rc, rep, log = fh.run_tool(me, base + ["--binary", b], pin="0" * 64)
+        st.check("oracle recording by a binary that is not the pin refused", rc == 2,
+                 "exit %s" % rc)
+        fh.run_tool(run_tool, ["--binary", o, "--out", b_dir,
+                               "--output-user-root", os.path.join(fh.root, "ur-x")])
+        rc, rep, log = fh.run_tool(me, base)
+        st.check("candidate recorded by the oracle refused", rc == 2, "exit %s" % rc)
+        os.remove(os.path.join(b_dir, "provenance.json"))
+        rc, rep, log = fh.run_tool(me, base)
+        st.check("candidate without provenance refused", rc == 2, "exit %s" % rc)
+        st.check("no process started outside the launcher", not fh.tripped())
+    finally:
+        if not st.failures:
+            fh.remove()
+        else:
+            print("  (fake HOME kept: %s)" % fh.root)
+    return st.finish()
 
 
 if __name__ == "__main__":

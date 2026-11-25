@@ -30,29 +30,35 @@ N`, `signal NAME`, `oom-kill`, `timeout` after 3600 s). Both sides run the same 
 same order from a fresh output root. --oracle must be the pinned oracle (sha256 in
 UPSTREAM.json); another binary is refused.
 
-Compared per case (after normalising the workspace path, the output user root, the output base
-hash, UUIDs and googletest's "(N ms)" timings on each side):
-  exit     the termination (exit code, or signal, OOM kill, timeout)
-  stdout   the run program's standard output (Bazel writes nothing else to stdout)
-  summary  the stderr lines starting with ERROR:, WARNING:, FAIL, "INFO: Running command line",
-           "INFO: Runnable command line", "INFO: Build completed", "INFO: Build did NOT", and
-           with --subcommands the command description that follows "Running command line:"
-  script   (--script_path cases) the written script, then the output of running it
+Compared per case, in full, after the exclusion rules (scripts/lib/compare_common.py
+VOLATILE_RULES: progress lines, times, UUIDs, test timings, install md5, temp names; rule
+`paths`: each side's workspace, output user root and output base; B1_GAP_RULES: lines that
+depend on the oracle's warm server against Blaze's cold process, audit round 3 B1):
+  termination  exit code, or signal, OOM kill, timeout
+  stdout       the run program's standard output
+  stderr       the whole of stderr
+  script       (--script_path cases) the written script, then the termination, stdout and
+               stderr of running it
+The report lists every rule with its reason and the lines it changed or removed on each side.
 
-Classes (scripts/lib/compare_common.py): IDENTICAL (every field equal; the oracle exited 0 or
-the case declares its exit code in DECLARED_EXIT), DIFFERENT, BOTH-FAILED (equal failures not
-declared), NOT-PORTED, ORACLE-UNEXPECTED, SKIPPED.
+Classes (scripts/lib/compare_common.py): IDENTICAL (all of it equal after the volatile rules;
+the oracle exited 0 or the case declares its exit code in DECLARED_EXIT), KNOWN-GAP (equal
+except in B1 lines), DIFFERENT, BOTH-FAILED (equal failures not declared), NOT-PORTED,
+ORACLE-UNEXPECTED, SKIPPED. The terminations of the `shutdown` commands are listed; one that
+died abnormally fails the run.
 
-Output: a header (repository HEAD and dirty flag, both binaries' paths and sha256), a table, the
-denominator; raw and normalised outputs under
-~/.cache/blaze/run-compare/<label>/<side>/<project>/<case>.{stdout,stderr,norm.json}, and
-results.json (with the same provenance and denominator). Exit 0 only when at least one case was
-compared and every selected case is IDENTICAL; 1 otherwise (an empty selection included); 2 on
-a usage error or a refusal.
---skip-oracle reuses the oracle outputs of an earlier run with the same --label, only when
-<label>/oracle/<project>/oracle.key (oracle sha256, this tool's sha256, every case's argv and
-environment, the digest of the prepared workspace, the case sequence) equals the key of this
-run; otherwise it refuses.
+Output: a header (repository HEAD and dirty flag, tool and module sha256, both binaries' paths
+and sha256, what is compared), one row per case, the exclusions, the denominator; raw outputs
+under ~/.cache/blaze/run-compare/<label>/<side>/<project>/<case>.{stdout,stderr,json} and
+results.json (the same report). Exit 0 only when at least one case was compared and every
+selected case is IDENTICAL; 1 otherwise (an empty selection included); 2 on a usage error or a
+refusal (also when this tool or compare_common.py changed on disk during the run).
+--skip-oracle reuses the oracle outputs of an earlier run with the same --label only when
+<label>/oracle/<project>/oracle.key, written after those outputs were complete, holds this run's
+key (oracle sha256, every case's argv and environment, the digests of the corpus checkout and of
+the probe package, the case sequence) and every output it anchors is unchanged; otherwise it
+refuses. The outputs are raw (normalised when compared), so this tool's sha256 is not in it.
+selftest drives this command line with fake binaries (compare_common.selftest_tool).
 """
 
 HOME = os.path.expanduser("~")
@@ -123,30 +129,7 @@ DECLARED_EXIT = {
     "no-target": 2,
 }
 
-SUMMARY_RE = re.compile(
-    r"^(ERROR:|WARNING:|FAIL|INFO: Running command line|INFO: Runnable command line"
-    r"|INFO: Build completed|INFO: Build did NOT)")
-UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-
-
-def summary_lines(stderr):
-    """The summary lines of stderr, with the --subcommands command description (the lines after
-    "INFO: Running command line:" up to the one closing its subshell)."""
-    lines = stderr.splitlines()
-    out = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if SUMMARY_RE.match(line):
-            out.append(line)
-            if line in ("INFO: Running command line:", "INFO: Runnable command line:"):
-                while i + 1 < len(lines):
-                    i += 1
-                    out.append(lines[i])
-                    if lines[i].endswith(")"):
-                        break
-        i += 1
-    return out
+RULES = cc.VOLATILE_RULES + cc.B1_GAP_RULES
 
 
 def clean_env(extra):
@@ -217,21 +200,6 @@ def prepare_workspace(checkout, ws):
     shutil.copytree(PROBE_DIR, probe)
 
 
-def normaliser(ws, root):
-    output_base_hash = hashlib.md5(ws.encode()).hexdigest()
-
-    def norm(text):
-        text = text.replace(os.path.join(root, output_base_hash), "<OUTPUT_BASE>")
-        text = text.replace(root, "<OUTPUT_USER_ROOT>")
-        text = text.replace(ws, "<WORKSPACE>")
-        text = re.sub(r"<OUTPUT_USER_ROOT>/install/[0-9a-f]{32}", "<INSTALL_BASE>", text)
-        text = UUID_RE.sub("<UUID>", text)
-        # googletest's timings.
-        text = re.sub(r"\((\d+) ms( total)?\)", lambda m: "(<N> ms%s)" % (m.group(2) or ""), text)
-        return text
-    return norm
-
-
 def side_paths(side, project):
     ws = os.path.join(CACHE, "work", "run-compare", side, project)
     root = os.path.join(CACHE, "oracle-out", "run-compare-" + side)
@@ -239,13 +207,24 @@ def side_paths(side, project):
 
 
 def prepare_side(side, project):
-    """Fresh work copy and output base of one side; returns the work copy's tree digest."""
+    """Fresh work copy and output base of one side."""
     ws, root = side_paths(side, project)
     kill_servers(root)
     make_writable_and_remove(ws)
     make_writable_and_remove(os.path.join(root, hashlib.md5(ws.encode()).hexdigest()))
     prepare_workspace(os.path.join(CORPUS, project), ws)
-    return cc.tree_digest(ws)
+
+
+def path_pairs(side, project):
+    """The replacements of one side's own paths (rule `paths`)."""
+    ws, root = side_paths(side, project)
+    ob = os.path.join(root, hashlib.md5(ws.encode()).hexdigest())
+    return [(ob, "<OUTPUT_BASE>"), (root, "<OUTPUT_USER_ROOT>"), (ws, "<WORKSPACE>")]
+
+
+def inputs_digest(project):
+    return {"corpus": cc.tree_digest(os.path.join(CORPUS, project)),
+            "probe": cc.tree_digest(PROBE_DIR)}
 
 
 def case_argv(binary, root, startup, args):
@@ -253,89 +232,97 @@ def case_argv(binary, root, startup, args):
     return cmd + ["run", "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no"] + args
 
 
-def oracle_key(project, cases, inputs):
-    """Key of the oracle outputs of one project's case sequence (compare_common.cache_key)."""
+def oracle_key(project, cases):
+    """Key of the oracle outputs of one project's case sequence (raw outputs: no tool sha)."""
     _, root = side_paths("oracle", project)
-    oracle = cc.PINNED_ORACLE
     return cc.cache_key(
-        cc.tool_sha256(os.path.abspath(__file__)), cc.pinned_sha256(),
-        [case_argv(oracle, root, c[4], c[5]) for c in cases],
-        [cc.clean_env(c[6]) for c in cases], inputs,
+        None, cc.pinned_sha256(),
+        [case_argv(cc.PINNED_ORACLE, root, c[4], c[5]) for c in cases],
+        [cc.clean_env(c[6]) for c in cases], inputs_digest(project),
         extra={"project": project, "cases": [list(c[:4]) + [c[7]] for c in cases]})
 
 
-def run_side(side, binary, project, cases, out_dir):
+def case_files(out_dir, cases):
+    return [os.path.join(out_dir, c[0] + ext) for c in cases
+            for ext in (".stdout", ".stderr", ".json")]
+
+
+def run_side(side, binary, project, cases, out_dir, report):
+    """Runs the cases; writes <cid>.stdout, .stderr (raw) and .json (termination, script)."""
+    prepare_side(side, project)
     ws, root = side_paths(side, project)
-    norm = normaliser(ws, root)
     os.makedirs(out_dir, exist_ok=True)
-    results = {}
     for (cid, _proj, _desc, cwd, startup, args, extra_env, script) in cases:
         cmd = case_argv(binary, root, startup, args)
         print("[run-compare] %s %s/%s" % (side, project, cid), flush=True)
         r = cc.run(cmd, os.path.join(ws, cwd), env=extra_env, timeout=TIMEOUT, mode="scope",
-                   tag="run-compare")
-        out, err, dur = r.out, r.err, r.duration
-        with open(os.path.join(out_dir, cid + ".stdout"), "wb") as f:
-            f.write(out)
-        with open(os.path.join(out_dir, cid + ".stderr"), "wb") as f:
-            f.write(err)
-        out_s = norm(out.decode("latin-1"))
-        err_s = norm(err.decode("latin-1"))
-        rec = {
-            "argv": cmd, "cwd": cwd, "env": extra_env, "duration_s": dur,
-            "exit": r.rc,
-            "termination": r.term.to_dict(),
-            "stdout": out_s,
-            "summary": summary_lines(err_s),
-            "unported": cc.unported_message(err),
-        }
+                   tag="run-compare", stdout_path=os.path.join(out_dir, cid + ".stdout"),
+                   stderr_path=os.path.join(out_dir, cid + ".stderr"))
+        rec = {"argv": cmd, "cwd": cwd, "env": extra_env, "duration_s": r.duration,
+               "termination": r.term.to_dict()}
         if script is not None:
             path = os.path.join(ws, cwd, script)
             if os.path.isfile(path):
-                rec["script"] = norm(open(path, "rb").read().decode("latin-1"))
+                rec["script"] = open(path, "rb").read().decode("latin-1")
                 q = cc.run([path, "extra arg"], os.path.join(ws, cwd), timeout=TIMEOUT,
                            mode="scope", tag="run-compare-script")
-                rec["script_run"] = {"exit": str(q.term),
-                                     "output": norm((q.out + q.err).decode("latin-1"))}
+                rec["script_run"] = {"termination": q.term.to_dict(),
+                                     "stdout": q.out.decode("latin-1"),
+                                     "stderr": q.err.decode("latin-1")}
                 os.remove(path)
             else:
                 rec["script"] = None
-        results[cid] = rec
-        with open(os.path.join(out_dir, cid + ".norm.json"), "w") as f:
+        with open(os.path.join(out_dir, cid + ".json"), "w") as f:
             json.dump(rec, f, indent=1)
-        print("[run-compare]   %s in %.1fs" % (r.term, dur), flush=True)
+        print("[run-compare]   %s in %.1fs" % (r.term, r.duration), flush=True)
     # Shut the side's server down (the oracle's; Blaze has none) and keep the output root.
     t = cc.run([binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc",
                 "shutdown"], ws, mode="scope", timeout=600, tag="run-compare-shutdown").term
-    if not t.ok:
-        print("[run-compare] %s shutdown: %s" % (side, t), flush=True)
-    return results
+    report.add_aux("%s %s shutdown" % (side, project), t)
 
 
-def compare(oracle, blaze):
-    """MATCH/DIFF per field; `exit` compares the terminations."""
-    fields = ["exit", "stdout", "summary", "script", "script_run"]
-    out = {}
-    for f in fields:
-        if f == "exit":
-            ot = cc.Termination.from_dict(oracle.get("termination"))
-            bt = cc.Termination.from_dict(blaze.get("termination"))
-            out[f] = "MATCH" if ot is not None and ot == bt else "DIFF"
-            continue
-        if f not in oracle and f not in blaze:
-            continue
-        out[f] = "MATCH" if oracle.get(f) == blaze.get(f) else "DIFF"
-    return out
+def load_case(out_dir, cid):
+    try:
+        with open(os.path.join(out_dir, cid + ".json")) as f:
+            rec = json.load(f)
+        with open(os.path.join(out_dir, cid + ".stdout"), "rb") as f:
+            rec["stdout"] = f.read()
+        with open(os.path.join(out_dir, cid + ".stderr"), "rb") as f:
+            rec["stderr"] = f.read()
+    except (OSError, ValueError):
+        return None
+    return rec
 
 
-def judge(cid, orec, brec, cmp_):
-    """compare_common class of one case."""
-    ot = cc.Termination.from_dict(orec.get("termination"))
-    bt = cc.Termination.from_dict(brec.get("termination"))
-    differing = [f for f, v in cmp_.items() if v == "DIFF" and f != "exit"]
-    unported = brec.get("unported")
-    return cc.judge(ot, bt, differing, declared_exit=DECLARED_EXIT.get(cid),
-                    blaze_unported=unported)
+def judge_case(norm, project, cid, o, b):
+    """(class, detail) of one case: every field in full after the rules."""
+    op, bp = path_pairs("oracle", project), path_pairs("blaze", project)
+    differing, gaps = [], []
+    for stream in ("stdout", "stderr"):
+        eq, g = norm.compare(o[stream], b[stream], stream, op, bp)
+        if not eq:
+            differing.append(stream)
+        gaps += g
+    if "script" in o or "script" in b:
+        eq, g = norm.compare(o.get("script") or "", b.get("script") or "", "stdout", op, bp)
+        if not eq or (o.get("script") is None) != (b.get("script") is None):
+            differing.append("script")
+        osr, bsr = o.get("script_run") or {}, b.get("script_run") or {}
+        if (osr.get("termination") or {}).get("text") != (bsr.get("termination") or {}).get("text"):
+            differing.append("script termination")
+        for stream in ("stdout", "stderr"):
+            eq, g = norm.compare(osr.get(stream, ""), bsr.get(stream, ""), stream, op, bp)
+            if not eq:
+                differing.append("script " + stream)
+            gaps += g
+    return cc.judge(cc.Termination.from_dict(o.get("termination")),
+                    cc.Termination.from_dict(b.get("termination")), differing,
+                    declared_exit=DECLARED_EXIT.get(cid),
+                    blaze_unported=cc.unported_message(b["stderr"]), gaps=sorted(set(gaps)))
+
+
+COMPARED = ("termination, stdout and the whole stderr (and for --script_path the script, its "
+            "termination and output), in full after the exclusion rules listed at the end")
 
 
 def main(argv):
@@ -382,49 +369,44 @@ def main(argv):
         return cc.refuse("run/compare", e)
     base = os.path.join(CACHE, "run-compare", label)
     report = cc.Report("run/compare", blaze=blaze, oracle={"path": oracle, "sha256": oracle_sha},
-                       selection="label %s, projects %s, %d cases%s" % (
+                       selection="label %s, projects %s, %d cases%s%s" % (
                            label, ",".join(projects), sum(len(v) for v in selected.values()),
-                           " (--case %s)" % ",".join(only) if only else ""),
-                       tool_files=[os.path.abspath(__file__)])
+                           " (--case %s)" % ",".join(only) if only else "",
+                           ", oracle outputs reused" if skip_oracle else ""),
+                       tool_files=[os.path.abspath(__file__)], compared=COMPARED)
+    norm = cc.Normaliser(RULES)
+    report.add_normaliser(norm)
     report.print_header()
-    table = []
-    all_results = {}
     for proj in projects:
         cases = selected[proj]
         if not cases:
             continue
         odir = os.path.join(base, "oracle", proj)
-        bdigest = prepare_side("blaze", proj)
+        bdir = os.path.join(base, "blaze", proj)
+        key_path = os.path.join(odir, "oracle.key")
         if skip_oracle:
             try:
-                cc.require_fresh(os.path.join(odir, "oracle.key"),
-                                 oracle_key(proj, cases, bdigest))
+                cc.require_fresh(key_path, oracle_key(proj, cases))
             except cc.Refusal as e:
                 return cc.refuse("run/compare", e)
-            ores = {c[0]: json.load(open(os.path.join(odir, c[0] + ".norm.json"))) for c in cases}
         else:
-            odigest = prepare_side("oracle", proj)
-            ores = run_side("oracle", oracle, proj, cases, odir)
-            cc.write_key(os.path.join(odir, "oracle.key"), oracle_key(proj, cases, odigest))
-        bres = run_side("blaze", blaze["path"], proj, cases, os.path.join(base, "blaze", proj))
+            cc.invalidate_key(key_path)
+            run_side("oracle", oracle, proj, cases, odir, report)
+            cc.write_key(key_path, oracle_key(proj, cases), case_files(odir, cases))
+        run_side("blaze", blaze["path"], proj, cases, bdir, report)
+        cc.write_capture(os.path.join(bdir, "capture.json"), blaze, case_files(bdir, cases))
         for c in cases:
-            cmp_ = compare(ores[c[0]], bres[c[0]])
-            cls, detail = judge(c[0], ores[c[0]], bres[c[0]], cmp_)
-            report.add("%s/%s" % (proj, c[0]), cls, detail)
-            table.append((proj, c[0], ores[c[0]], bres[c[0]], cmp_, cls))
-            all_results["%s/%s" % (proj, c[0])] = {
-                "oracle": ores[c[0]], "blaze": bres[c[0]], "compare": cmp_, "class": cls,
-                "detail": detail}
-    report.write_json(os.path.join(base, "results.json"), extra={"results": all_results})
-    print()
-    print("| project | case | oracle | blaze | exit | stdout | summary | script | class |")
-    print("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
-    for proj, cid, orec, brec, cmp_, cls in table:
-        script = "/".join(cmp_[k] for k in ("script", "script_run") if k in cmp_) or "-"
-        print("| %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
-            proj, cid, cc.Termination.from_dict(orec["termination"]),
-            cc.Termination.from_dict(brec["termination"]), cmp_["exit"], cmp_["stdout"],
-            cmp_["summary"], script, cls))
+            o, b = load_case(odir, c[0]), load_case(bdir, c[0])
+            if o is None or b is None:
+                report.add("%s/%s" % (proj, c[0]), cc.SKIPPED, "no %s output" % (
+                    "oracle" if o is None else "blaze"))
+                continue
+            cls, detail = judge_case(norm, proj, c[0], o, b)
+            report.add("%s/%s" % (proj, c[0]), cls, detail,
+                       oracle=str(cc.Termination.from_dict(o["termination"])),
+                       blaze=str(cc.Termination.from_dict(b["termination"])))
+    os.makedirs(base, exist_ok=True)
+    report.write_json(os.path.join(base, "results.json"))
     print()
     report.print_rows()
     report.print_footer()
@@ -433,48 +415,15 @@ def main(argv):
 
 
 def selftest():
-    def run_pair(ofake, bfake, wd):
-        cc.require_oracle(ofake)
-        recs = {}
-        for side, fake in (("oracle", ofake), ("blaze", bfake)):
-            r = cc.run([fake, "run"], wd, mode="scope", tag="selftest")
-            norm = normaliser(wd, os.path.join(wd, "ur"))
-            recs[side] = {"exit": r.rc, "termination": r.term.to_dict(),
-                          "stdout": norm(r.out.decode("latin-1")),
-                          "summary": summary_lines(norm(r.err.decode("latin-1"))),
-                          "unported": cc.unported_message(r.err)}
-        cmp_ = compare(recs["oracle"], recs["blaze"])
-        return judge("selftest", recs["oracle"], recs["blaze"], cmp_)
+    def argv(blaze, label):
+        return ["--binary", blaze, "--project", "brotli", "--case", "args", "--label", label]
 
-    def empty_selection():
-        with open(os.devnull, "w") as null:
-            old = sys.stderr
-            sys.stderr = null
-            try:
-                return main(["--binary", "/bin/true", "--case", "no-such-case"])
-            finally:
-                sys.stderr = old
-
-    def extra(st):
-        ot = cc.Termination("exit", 2).to_dict()
-        rec = {"termination": ot, "stdout": "", "summary": ["ERROR: x"]}
-        st.check("declared failure (two-targets, exit 2) is IDENTICAL",
-                 judge("two-targets", rec, dict(rec), compare(rec, dict(rec)))[0] == cc.IDENTICAL)
-        st.check("undeclared equal failure is BOTH-FAILED",
-                 judge("args", rec, dict(rec), compare(rec, dict(rec)))[0] == cc.BOTH_FAILED)
-        legacy = {"exit": 0, "stdout": "", "summary": []}
-        st.check("a legacy record without termination never matches",
-                 compare(legacy, dict(legacy))["exit"] == "DIFF")
-        key = oracle_key("brotli", CASES[:2], "digest-a")
-        kp = os.path.join(st.dir, "oracle.key")
-        cc.write_key(kp, key)
-        st.check("--skip-oracle refuses another workspace digest",
-                 cc.check_key(kp, oracle_key("brotli", CASES[:2], "digest-b")) is not None)
-        st.check("--skip-oracle refuses another case sequence",
-                 cc.check_key(kp, oracle_key("brotli", CASES[:3], "digest-a")) is not None)
-
-    return cc.selftest("run/compare", run_pair=run_pair, empty_selection=empty_selection,
-                       extra=extra, mode="scope")
+    return cc.selftest_tool(
+        "run/compare", os.path.abspath(__file__), argv,
+        empty=lambda b, l: ["--binary", b, "--case", "no-such-case", "--label", l],
+        reuse=lambda b, l: argv(b, l) + ["--skip-oracle"],
+        oracle_outputs=lambda home, l: [os.path.join(home, ".cache", "blaze", "run-compare", l,
+                                                     "oracle", "brotli", "args.stdout")])
 
 
 if __name__ == "__main__":

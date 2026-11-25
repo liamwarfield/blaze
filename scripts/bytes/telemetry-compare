@@ -80,6 +80,10 @@ def tree(d):
     return out
 
 
+aux = []
+RULES = list(cc.VOLATILE_RULES)
+
+
 def run(who, binary, record, keep):
     if os.path.exists(WS):
         subprocess.run(["chmod", "-R", "u+w", WS], check=False)
@@ -104,8 +108,9 @@ def run(who, binary, record, keep):
     with open(f"{out}/query.stderr", "wb") as f:
         f.write(p.stderr)
     print(f"[{who}] query {p.term}: {p.stdout.decode('latin-1').split()}")
-    base = cc.run(startup + ["info", "output_base"], WS, mode="scope",
-                  tag="telemetry-info").out.decode().strip()
+    r = cc.run(startup + ["info", "output_base"], WS, mode="scope", tag="telemetry-info")
+    aux.append(("%s info output_base" % who, r.term))
+    base = r.out.decode().strip()
     ext = os.path.join(base, "external")
     if os.path.isdir(os.path.join(ext, REPO)):
         shutil.copytree(os.path.join(ext, REPO), f"{out}/repo", symlinks=True)
@@ -115,7 +120,8 @@ def run(who, binary, record, keep):
     lock = os.path.join(WS, "MODULE.bazel.lock")
     if os.path.exists(lock):
         shutil.copy(lock, f"{out}/MODULE.bazel.lock")
-    cc.run(startup + ["shutdown"], WS, mode="scope", tag="telemetry-shutdown")
+    aux.append(("%s shutdown" % who, cc.run(startup + ["shutdown"], WS, mode="scope",
+                                            tag="telemetry-shutdown").term))
     if not keep:
         subprocess.run(["chmod", "-R", "u+w", ur], check=False)
         shutil.rmtree(ur, ignore_errors=True)
@@ -155,7 +161,12 @@ def main(argv):
     report = cc.Report("bytes/telemetry-compare", blaze=blaze,
                        oracle={"path": oracle, "sha256": oracle_sha},
                        selection="workerd @@%s, one case" % REPO,
-                       tool_files=[os.path.abspath(__file__)])
+                       tool_files=[os.path.abspath(__file__)],
+                       compared="the query's termination, whole stdout and stderr after the "
+                                "exclusion rules listed at the end; the fetched repository "
+                                "tree, its marker, the lockfile, id_day against real SHA-1")
+    norm = cc.Normaliser(RULES, path_reason="each side's output user root")
+    report.add_normaliser(norm)
     report.print_header()
     record = load_record()
     codes = {"oracle": run("oracle", oracle, record, keep),
@@ -185,11 +196,23 @@ def main(argv):
         except Exception as e:  # noqa: BLE001 - report whatever is wrong with the file
             ids[who] = f"unreadable ({e})"
     print(f"id_day: oracle={ids['oracle']} blaze={ids['blaze']} sha1(README head; {today})={want}")
-    differing = [n for n, same in (("repository tree", same_tree), ("marker", same_marker),
+    for what, term in aux:
+        report.add_aux(what, term)
+    streams = []
+    for name, stream in (("query.stdout", "stdout"), ("query.stderr", "stderr")):
+        eq, _ = norm.compare(read(f"{o}/{name}") or b"", read(f"{b}/{name}") or b"", stream,
+                             [(f"{HOME}/.cache/blaze/oracle-out/ur-bytes-telemetry-oracle",
+                               "<UR>")],
+                             [(f"{HOME}/.cache/blaze/oracle-out/ur-bytes-telemetry-blaze",
+                               "<UR>")])
+        if not eq:
+            streams.append(stream)
+    differing = streams + [n for n, same in (("repository tree", same_tree), ("marker", same_marker),
                                    ("MODULE.bazel.lock", same_lock),
                                    ("id_day is not the real SHA-1", ids["blaze"] == want))
                  if not same]
-    cls, detail = cc.judge(codes["oracle"], codes["blaze"], differing)
+    cls, detail = cc.judge(codes["oracle"], codes["blaze"], differing,
+                           blaze_unported=cc.unported_message(read(f"{b}/query.stderr") or b""))
     if cls == cc.IDENTICAL and ids["oracle"] != want:
         cls, detail = cc.ORACLE_UNEXPECTED, "the oracle's id_day is not the real SHA-1"
     report.add("telemetry", cls, detail)
@@ -199,17 +222,31 @@ def main(argv):
 
 
 def selftest():
-    def run_pair(ofake, bfake, wd):
-        cc.require_oracle(ofake)
-        res = {}
-        for side, fake in (("oracle", ofake), ("blaze", bfake)):
-            r = cc.run([fake, "query"], wd, mode="scope", tag="selftest")
-            res[side] = r
-        o, b = res["oracle"], res["blaze"]
-        return cc.judge(o.term, b.term, [] if o.out == b.out else ["repository tree"],
-                        blaze_unported=cc.unported_message(b.err))
+    import datetime
+    import json
+    ob = []
 
-    return cc.selftest("bytes/telemetry-compare", run_pair=run_pair, mode="scope")
+    def setup(fh):
+        # A fake output base that `info output_base` names: the fetched repository with the
+        # real id_day, as a correct fetch would leave it.
+        base = os.path.join(fh.root, "fake-output-base")
+        repo = os.path.join(base, "external", REPO)
+        os.makedirs(repo)
+        head = b"\n".join(read(os.path.join(CHECKOUT.replace(HOME, fh.home), "README.md"))
+                          .split(b"\n")[:4])
+        today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+        want = hashlib.sha1((hashlib.sha1(head).hexdigest() + ";" + today).encode()).hexdigest()
+        with open(os.path.join(repo, "report.json"), "w") as f:
+            json.dump({"tools_telemetry": {"id_day": want}}, f)
+        with open(os.path.join(base, "external", "@" + REPO + ".marker"), "w") as f:
+            f.write("marker\n")
+        ob.append(base)
+
+    def argv(blaze, label):
+        return ["--binary", blaze]
+
+    return cc.selftest_tool("bytes/telemetry-compare", os.path.abspath(__file__), argv,
+                            setup=setup, fake_extra=lambda: {"info": ob[0].encode()})
 
 
 if __name__ == "__main__":

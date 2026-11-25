@@ -184,6 +184,7 @@ def main(argv):
         ["//:all", "--output=jsonproto", "--include_file_write_contents"],
         "aquery_jsonproto.txt")
     p = cc.run(startup + ["info", "output_base"], WS, mode="scope", tag="bytes-info")
+    info_term = str(p.term)
     output_base = p.out.decode().strip()
     for f in glob.glob(os.path.join(WS, "bazel-bin", "*.txt")):
         shutil.copy(f, os.path.join(out, "outputs", os.path.basename(f)))
@@ -196,34 +197,49 @@ def main(argv):
     with open(os.path.join(out, "exit_codes.txt"), "w") as f:
         f.write("\n".join(codes) + "\n")
     key = cc.cache_key(cc.tool_sha256(os.path.abspath(__file__)), None, argvs, env, digest)
+    files = []
+    for dirpath, _dirs, names in os.walk(out):
+        files += [os.path.join(dirpath, n) for n in names]
     with open(os.path.join(out, "provenance.json"), "w") as f:
         json.dump({"binary": {"path": binary, "sha256": binary_sha,
                               "is_pinned_oracle": is_oracle},
                    "repo": cc.repo_state(), "output_user_root": ur, "shutdown": shutdowns,
-                   "key": key, "key_digest": cc.key_digest(key)}, f, indent=1)
+                   "info": info_term, "key": key, "key_digest": cc.key_digest(key),
+                   "outputs": {os.path.relpath(k, out): v
+                               for k, v in cc.outputs_digest(files).items()},
+                   "compare_common_sha256": cc.MODULE_SHA256}, f, indent=1)
     print("\n".join(codes))
     return 0
 
 
 def selftest():
-    def run_pair(ofake, bfake, wd):
-        cc.require_oracle(ofake)
-        texts = {}
-        for side, fake in (("oracle", ofake), ("blaze", bfake)):
-            p = cc.run([fake, "build"], wd, mode="scope", tag="selftest")
-            texts[side] = (p.term, p.out, p.err)
-        (ot, oo, oe), (bt, bo, be) = texts["oracle"], texts["blaze"]
-        return cc.judge(ot, bt, [n for n, a, b in (("stdout", oo, bo), ("stderr", oe, be))
-                                 if a != b], blaze_unported=cc.unported_message(be))
-
-    def extra(st):
-        # exit_codes.txt keeps the plain number for a normal exit and never a number otherwise.
-        for t, want in ((cc.Termination("exit", 0), "0"),
-                        (cc.Termination("signal", 141, "SIGPIPE"), "signal SIGPIPE")):
-            got = str(t.code) if t.normal else str(t)
-            st.check("exit_codes.txt line for %s" % t, got == want, got)
-
-    return cc.selftest("bytes/run", run_pair=run_pair, extra=extra, mode="scope")
+    """The real command line with fake binaries: what exit_codes.txt and provenance.json say."""
+    st = cc.Selftest("bytes/run")
+    fh = cc.FakeHome("bytes-run")
+    try:
+        o, b = fh.fakes(dict(out=b"same\n"), dict(out=b"same\n", sig="PIPE"))
+        rc, _, log = fh.run_tool(os.path.abspath(__file__), [])
+        st.check("oracle recording (default binary) exits 0", rc == 0, "exit %s (%s)" % (rc, log))
+        rc, _, log = fh.run_tool(os.path.abspath(__file__), ["--binary", b])
+        st.check("Blaze recording exits 0", rc == 0, "exit %s (%s)" % (rc, log))
+        d = os.path.join(fh.cache, "work", "bytes-out-blaze")
+        codes = open(os.path.join(d, "exit_codes.txt")).read() if os.path.exists(
+            os.path.join(d, "exit_codes.txt")) else ""
+        st.check("a death by SIGPIPE is recorded as such", "build signal SIGPIPE" in codes,
+                 codes.splitlines()[0] if codes else "no exit_codes.txt")
+        prov = json.load(open(os.path.join(d, "provenance.json")))
+        st.check("provenance names the binary's sha256",
+                 prov["binary"]["sha256"] == cc.sha256_file(b))
+        rc, _, log = fh.run_tool(os.path.abspath(__file__), [], pin="0" * 64)
+        st.check("a default binary that is not the pinned oracle is refused", rc != 0,
+                 "exit %s" % rc)
+        st.check("no process started outside the launcher", not fh.tripped())
+    finally:
+        if not st.failures:
+            fh.remove()
+        else:
+            print("  (fake HOME kept: %s)" % fh.root)
+    return st.finish()
 
 
 if __name__ == "__main__":

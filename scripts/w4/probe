@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Scenario probes: run a scratch workspace's command list on the oracle or on Blaze. See `probe help`."""
 
+import datetime
 import difflib
+import fcntl
 import json
 import os
 import re
@@ -9,6 +11,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -75,14 +78,27 @@ after the binary ran), so that a count of identical steps says how many of them 
 Scenarios left out by --skip, and (recount) scenarios without a saved transcript, are named in the
 summary with their oracle step counts: they are not in the denominator.
 
-Every compare saves Blaze's transcript next to ORACLE.txt as BLAZE-<sha12>.txt, where <sha12>
-is the first 12 hex digits of the sha256 of the Blaze binary; the file starts with `#` lines
-naming the binary, its sha256, the git commit (and whether the tree was dirty) and the date, so
-the counts can be re-derived with `probe recount <sha12>` (a run with --only N saves
-BLAZE-<sha12>.only-N.txt, which recount ignores).
+Every compare saves Blaze's transcript as ~/.cache/blaze/work/w4-probe/<sha12>/<scenario>.txt
+(never into scripts/w4/scenarios, which is tracked and protected), where <sha12> is the first 12
+hex digits of the sha256 of the Blaze binary; the file starts with `#` lines naming the binary,
+its sha256, the git commit (and whether the tree was dirty) and the date, so the counts can be
+re-derived with `probe recount <sha12>`, which reads them from there (a run with --only N saves
+<scenario>.only-N.txt, which recount ignores). The oracle transcripts stay in ORACLE.txt.
+compare-all, compare and recount end their totals with the Blaze binary's path and sha256, the
+repository commit and dirty flag, and the denominator (scenarios counted, scenarios left out,
+steps).
 
-Each run copies ws/ to ~/.cache/blaze/work/probe-<scenario> (the same path for both binaries, so
-do not record and compare one scenario at the same time), uses the output user root
+One lock serialises every command that uses the shared work directories and output user roots
+(`oracle`, `blaze`, `record`, `compare`, `compare-all`): ~/.cache/blaze/work/w4-probe/lock
+(flock; the holder is described in lock.holder.json). A run that finds it held waits and prints
+who holds it. The lock costs no disk; private directories per run were not chosen because the
+workspace path is part of path-dependent outputs on both sides. Each lock-aware run registers its
+pid in ~/.cache/blaze/work/w4-probe/clients/; after taking the lock and again before printing
+its counts, a run looks for other scripts/w4/probe processes that are not registered (an older
+probe that does not take the lock) and refuses to score (exit 2) when it finds one.
+
+Each run copies ws/ to ~/.cache/blaze/work/probe-<scenario> (the same path for both binaries),
+uses the output user root
 ~/.cache/blaze/oracle-out/ur-probe-<scenario>-<oracle|blaze>, startup options --nohome_rc
 --nosystem_rc, command options --repository_cache=~/.cache/blaze/repo-cache --color=no --curses=no,
 env HOME and PATH=/usr/bin:/bin, each command in a systemd-run scope (MemoryMax=8G), then
@@ -147,6 +163,115 @@ MASKS = [
 def die(msg):
     sys.stderr.write("probe: %s\n" % msg)
     sys.exit(2)
+
+
+STATE = os.path.expanduser("~/.cache/blaze/work/w4-probe")
+LOCK = os.path.join(STATE, "lock")
+HOLDER = os.path.join(STATE, "lock.holder.json")
+CLIENTS = os.path.join(STATE, "clients")
+LOCKED_COMMANDS = ("oracle", "blaze", "record", "compare", "compare-all")
+
+
+def _holder():
+    try:
+        with open(HOLDER) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def take_lock(argv):
+    """Registers this run and takes the probe lock, waiting (and saying who holds it)."""
+    os.makedirs(CLIENTS, exist_ok=True)
+    with open(os.path.join(CLIENTS, str(os.getpid())), "w") as f:
+        f.write(" ".join(argv) + "\n")
+    fd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o644)
+    shown, t0 = None, time.time()
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            h = _holder()
+            if json.dumps(h, sort_keys=True) != shown:
+                shown = json.dumps(h, sort_keys=True)
+                sys.stderr.write("probe: waiting for the lock, held by %s\n" % (
+                    "pid %s since %s: %s" % (h.get("pid"), h.get("start"), h.get("argv"))
+                    if h else "an unknown process"))
+                sys.stderr.flush()
+            time.sleep(5)
+    if shown is not None:
+        sys.stderr.write("probe: got the lock after %.0fs\n" % (time.time() - t0))
+    tmp = HOLDER + ".%d.tmp" % os.getpid()
+    with open(tmp, "w") as f:
+        json.dump({"pid": os.getpid(), "argv": " ".join(argv),
+                   "start": datetime.datetime.now().isoformat(timespec="seconds")}, f)
+    os.replace(tmp, HOLDER)
+    return fd
+
+
+def release(fd):
+    try:
+        if (_holder() or {}).get("pid") == os.getpid():
+            os.remove(HOLDER)
+        os.remove(os.path.join(CLIENTS, str(os.getpid())))
+    except OSError:
+        pass
+    fcntl.flock(fd, fcntl.LOCK_UN)
+    os.close(fd)
+
+
+def unlocked_probes():
+    """Other scripts/w4/probe processes that did not register (they do not take the lock) and
+    run a command that uses the shared directories."""
+    me, ancestors = os.getpid(), set()
+    p = me
+    while p and p > 1:
+        ancestors.add(p)
+        try:
+            p = int(open("/proc/%d/stat" % p).read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+    registered = set(os.listdir(CLIENTS)) if os.path.isdir(CLIENTS) else set()
+    found = []
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit() or int(pid) in ancestors or pid in registered:
+            continue
+        try:
+            args = [a.decode(errors="replace") for a in
+                    open("/proc/%s/cmdline" % pid, "rb").read().split(b"\0") if a]
+        except OSError:
+            continue
+        if not args:
+            continue
+        i = 0 if args[0].endswith("w4/probe") else 1 if (
+            len(args) > 1 and os.path.basename(args[0]).startswith("python")
+            and args[1].endswith("w4/probe")) else None
+        if i is None:
+            continue
+        rest = args[i + 1:]
+        if rest and rest[0] in LOCKED_COMMANDS:
+            found.append("pid %s: %s" % (pid, " ".join(args)[:200]))
+    return found
+
+
+def refuse_if_unlocked(when):
+    found = unlocked_probes()
+    if found:
+        sys.stderr.write("probe: refused to score (%s): another probe process uses the shared "
+                         "work directories without the lock:\n  %s\n" % (when, "\n  ".join(found)))
+        sys.exit(2)
+
+
+def provenance_lines(binary, steps, scenarios, left_out):
+    sha = binary_id(binary)[0] if binary and os.path.exists(binary) else "(binary not found)"
+    git = lambda *a: subprocess.run(["git", "-C", ROOT] + list(a), stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL).stdout.decode().strip()
+    dirty = "dirty" if git("status", "--porcelain") else "clean"
+    return ["probe: blaze %s sha256 %s" % (binary, sha),
+            "probe: repository %s (%s)" % (git("rev-parse", "HEAD"), dirty),
+            "probe: denominator: %d scenarios counted, %d left out, %d oracle steps" % (
+                scenarios, left_out, steps)]
 
 
 class Run:
@@ -363,8 +488,9 @@ def save_transcript(scenario, binary, text, only):
               "# sha256 %s" % sha,
               "# tree %s (%s)" % (git("rev-parse", "HEAD"), dirty),
               "# date %s" % datetime.datetime.now().isoformat(timespec="seconds")]
-    name = "BLAZE-%s%s.txt" % (sha12, "" if only is None else ".only-%d" % only)
-    path = os.path.join(SCENARIOS, scenario, name)
+    name = "%s%s.txt" % (scenario, "" if only is None else ".only-%d" % only)
+    os.makedirs(os.path.join(STATE, sha12), exist_ok=True)
+    path = os.path.join(STATE, sha12, name)
     with open(path, "w") as f:
         f.write("\n".join(header) + "\n" + text)
     return path
@@ -422,7 +548,7 @@ def compare(scenario, only=None, view="full", quiet=False):
     print("probe %s: %d of %d steps match%s (masked %d, messages %d; of them running the binary: %d of %d; "
           "saved %s)"
           % (scenario, counts[view], len(want), "" if view == "full" else " (%s view)" % view,
-             counts["masked"], counts["messages"], b[view], b["steps"], os.path.relpath(saved, ROOT)))
+             counts["masked"], counts["messages"], b[view], b["steps"], saved))
     return counts, len(want)
 
 
@@ -487,31 +613,51 @@ def main(argv):
             print("%s\n  line:   %s\n  becomes: %s\n  why:    %s"
                   % (name, pattern.pattern, "(dropped)" if placeholder is None else placeholder, reason))
         return 0
-    if cmd == "compare-all":
-        rows = []
-        for name in recorded_scenarios(skip):
-            counts, n = compare(name, view=view, quiet=True)
-            rows.append((name, counts, n))
-        tot, total_n = print_table(rows, skipped_scenarios(skip))
-        return 0 if tot[view] == total_n else 1
+    if cmd in LOCKED_COMMANDS:
+        lock = take_lock(argv)
+        try:
+            refuse_if_unlocked("at the start")
+            return locked_main(argv, cmd, view, skip)
+        finally:
+            release(lock)
     if cmd == "recount":
         if len(argv) < 3:
             die("missing <sha12>; see `probe help`")
         sha12 = argv[2]
         rows = []
         left_out = skipped_scenarios(skip)
+        binary = None
         for name in recorded_scenarios(skip):
-            path = os.path.join(SCENARIOS, name, "BLAZE-%s.txt" % sha12)
+            path = os.path.join(STATE, sha12, name + ".txt")
             if not os.path.exists(path):
-                print("%s: no BLAZE-%s.txt" % (name, sha12))
+                print("%s: no %s" % (name, path))
                 left_out.append((name, "no saved transcript", len(read_oracle(name))))
                 continue
             with open(path) as f:
-                got = split_steps(f.read())
+                text = f.read()
+            m = re.search(r"^# binary (.*)$", text, re.M)
+            binary = binary or (m.group(1) if m else None)
+            got = split_steps(text)
             want = read_oracle(name)
             rows.append((name, count(want, got), len(want)))
-        print_table(rows, left_out)
+        tot, total_n = print_table(rows, left_out)
+        print("\n".join(provenance_lines(binary, total_n, len(rows), len(left_out))))
         return 0
+    die("unknown command %r; see `probe help`" % cmd)
+
+
+def locked_main(argv, cmd, view, skip):
+    if cmd == "compare-all":
+        rows = []
+        for name in recorded_scenarios(skip):
+            counts, n = compare(name, view=view, quiet=True)
+            rows.append((name, counts, n))
+        refuse_if_unlocked("before scoring")
+        left = skipped_scenarios(skip)
+        tot, total_n = print_table(rows, left)
+        print("\n".join(provenance_lines(Run("blaze", rows[0][0]).binary if rows else None,
+                                         total_n, len(rows), len(left))))
+        return 0 if rows and tot[view] == total_n else 1
     if len(argv) < 3:
         die("missing scenario; see `probe help`")
     scenario = argv[2]
@@ -530,6 +676,8 @@ def main(argv):
         return 0
     if cmd == "compare":
         counts, n = compare(scenario, only, view)
+        refuse_if_unlocked("before scoring")
+        print("\n".join(provenance_lines(Run("blaze", scenario).binary, n, 1, 0)))
         return 0 if counts[view] == n else 1
     die("unknown command %r; see `probe help`" % cmd)
 

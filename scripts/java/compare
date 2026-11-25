@@ -25,19 +25,22 @@ cache, --color=no --curses=no, and runs under systemd-run --user --scope -p Memo
 -p MemorySwapMax=0. Both sides start from a fresh output user root and run the same steps in the
 same order; the server is shut down at the end.
 
-Compared per step (after replacing the workspace copy, output base, execroot, output user root,
-install base and $HOME by placeholders, scripts/oracle/normalise.py):
-  exit       the exit code of every step
-  cquery     `cquery --output=label_kind //:all`: stdout, line by line
+Compared per step: the termination, the whole stderr and stdout. stderr is compared in full
+after the exclusion rules of scripts/lib/compare_common.py (VOLATILE_RULES; `paths`: the
+workspace copy, output base, execroot, output user root, install base and $HOME of each side;
+B1_GAP_RULES: lines that depend on the oracle's warm server, audit round 3 B1), listed in the
+report with the lines each changed or removed. stdout per kind:
+  cquery     `cquery --output=label_kind //:all`: stdout in full (paths replaced,
+             scripts/oracle/normalise.py)
   aquery     `aquery --output=jsonproto 'deps(//:all)'`: every action (mnemonic, argv, inputs,
              outputs, environment, execution info, action key, owner, configuration) and the
              order of every list, as the referee's extractor (scripts/oracle/surfaces.py
-             aquery_summary/aquery_order) resolves them; the action key of runfiles manifest
-             actions is allow-listed as in scripts/oracle/allow.json, nothing else
+             aquery_summary/aquery_order) resolves them; a runfiles manifest action whose only
+             difference is its action key (allowed in scripts/oracle/allow.json) makes the step
+             IDENTICAL-REDUCED, never IDENTICAL
   build      `build //:all //:hello_deploy.jar //:app_deploy.jar` with
              --spawn_strategy=linux-sandbox (Blaze has no persistent workers; the oracle would
-             run Javac in a worker otherwise): the "INFO: N processes: ..." line and the
-             "Build completed" line
+             run Javac in a worker otherwise): stdout in full
   outputs    sha256 of every *.jar and of the launcher scripts under bazel-bin after build
   aquery-X, build-X
              the same for deps(//:app) / //:app under one flag: lang17
@@ -47,30 +50,29 @@ install base and $HOME by placeholders, scripts/oracle/normalise.py):
              (--experimental_turbine_annotation_processing) on deps(//:uses_api) / //:uses_api
   aquery-proto
              `aquery 'deps(//proto:uses_proto)'` (java_proto_library; protoc is not built)
-  test       `test //:greeter_test`: exit code, the processes line and the per-target result
-             lines (timings removed)
-  run, run-app
-             `run //:hello -- probe` and `run //:app`: the processes line and the program's
-             stdout
-             test and run start from a fresh server on both sides (Blaze's server does not keep
-             the graph between commands yet, docs/decisions.md D2), so both report the on-disk
-             action cache hits
+  test       `test //:greeter_test`, run, run-app (`run //:hello -- probe`, `run //:app`):
+             stdout in full; test and run start from a fresh server on both sides (Blaze's
+             server does not keep the graph between commands yet, docs/decisions.md D2)
 
 Guards (scripts/lib/compare_common.py): every command runs under a supervisor in the scope that
-records how it really ended (`exit N`, `signal NAME`, `oom-kill`, `timeout`); `exit` compares
-those. --oracle must be the pinned oracle (UPSTREAM.json). Each step (and `outputs`) is one case:
-IDENTICAL (termination and every compared aspect equal; the oracle exited 0, or DECLARED_EXIT
-names the step with that exit code), DIFFERENT, BOTH-FAILED (equal failures not declared),
-NOT-PORTED, ORACLE-UNEXPECTED, SKIPPED (a selected step missing on one side). An empty
-selection is an error.
+records how it really ended (`exit N`, `signal NAME`, `oom-kill`, `timeout`); the terminations of
+`shutdown` and `info` are listed too (an abnormal one fails the run). --oracle must be the pinned
+oracle (UPSTREAM.json). Each step (and `outputs`) is one case: IDENTICAL (termination, stdout and
+stderr equal; the oracle exited 0, or DECLARED_EXIT names the step with that exit code),
+KNOWN-GAP (equal except in B1 lines), IDENTICAL-REDUCED (see aquery), DIFFERENT, BOTH-FAILED
+(equal failures not declared), NOT-PORTED, ORACLE-UNEXPECTED, SKIPPED (a selected step missing
+on one side). An empty selection is an error.
 
 Output: a header (repository HEAD and dirty flag, both binaries' paths and sha256), a table, the
 per-step classes and the denominator; raw outputs under ~/.cache/blaze/java-compare/<label>/<side>/
 and results.json there (with provenance and denominator). Exit 0 only when at least one step was
 compared and every selected step is IDENTICAL; 1 otherwise; 2 on a usage error or a refusal.
 --skip-oracle reuses the oracle outputs of an earlier run with the same --label only when
-<label>/oracle/oracle.key (oracle sha256, this tool's sha256, every argv and the environment, the
-digest of the probe, the selected steps) equals this run's key; otherwise it refuses.
+<label>/oracle/oracle.key, written after those outputs were complete, holds this run's key
+(oracle sha256, every argv and the environment, the digest of the probe, the selected steps) and
+every output it anchors is unchanged; otherwise it refuses. The outputs are raw (normalised
+when compared), so this tool's sha256 is not in the key.
+selftest drives this command line with fake binaries (compare_common.selftest_tool).
 --step limits the run to the named steps (the build step is implied by outputs).
 """
 
@@ -123,8 +125,7 @@ STEPS = [
 ]
 LAUNCHERS = ("hello", "greeter_test", "app", "hello_imported")
 RUNFILES_MANIFEST_RE = re.compile(r"\.runfiles(_manifest|/MANIFEST)$")
-SUMMARY_RE = re.compile(r"^(INFO: \d+ process(es)?:.*|INFO: Build completed.*|INFO: Build did NOT.*"
-                        r"|//\S+\s+(PASSED|FAILED|NO STATUS|TIMEOUT|FLAKY).*|Executed .*)$")
+RULES = cc.VOLATILE_RULES + cc.B1_GAP_RULES
 
 
 def make_writable_and_remove(path):
@@ -149,8 +150,10 @@ def run_cmd(binary, ws, our, args):
     return r.term, r.out, r.err
 
 
-def info(binary, ws, our, key):
+def info(binary, ws, our, key, report=None, side=""):
     term, out, _ = run_cmd(binary, ws, our, ["info", key])
+    if report is not None:
+        report.add_aux("%s info %s" % (side, key), term)
     return out.decode("latin-1").strip() if term.ok else ""
 
 
@@ -169,10 +172,12 @@ def oracle_key(label, steps):
                         extra={"workspace": ws, "steps": sorted(steps)})
 
 
-def side_run(side, binary, label, steps):
+def side_run(side, binary, label, steps, report):
     ws = os.path.join(CACHE, "work", "java-compare", label, side)
     our = os.path.join(CACHE, "oracle-out", "java-compare-" + side)
     outdir = os.path.join(CACHE, "java-compare", label, side)
+    if side == "oracle":
+        cc.invalidate_key(os.path.join(outdir, "oracle.key"))
     make_writable_and_remove(ws)
     make_writable_and_remove(our)
     make_writable_and_remove(outdir)
@@ -186,7 +191,8 @@ def side_run(side, binary, label, steps):
         if sid.split("-")[0] in ("test", "run"):
             # Both sides start these from a fresh server with the on-disk action cache: Blaze's
             # server does not keep the graph between commands yet (decisions D2), Bazel's does.
-            run_cmd(binary, ws, our, ["shutdown"])
+            report.add_aux("%s shutdown before %s" % (side, sid),
+                           run_cmd(binary, ws, our, ["shutdown"])[0])
         term, out, err = run_cmd(binary, ws, our, args)
         open(os.path.join(outdir, sid + ".stdout"), "wb").write(out)
         open(os.path.join(outdir, sid + ".stderr"), "wb").write(err)
@@ -206,17 +212,21 @@ def side_run(side, binary, label, steps):
     paths = {
         "workspace": ws,
         "output_user_root": our,
-        "output_base": info(binary, ws, our, "output_base"),
-        "execroot": info(binary, ws, our, "execution_root"),
-        "install_base": info(binary, ws, our, "install_base"),
+        "output_base": info(binary, ws, our, "output_base", report, side),
+        "execroot": info(binary, ws, our, "execution_root", report, side),
+        "install_base": info(binary, ws, our, "install_base", report, side),
         "home": HOME,
     }
     results["paths"] = paths
-    run_cmd(binary, ws, our, ["shutdown"])
+    report.add_aux("%s shutdown" % side, run_cmd(binary, ws, our, ["shutdown"])[0])
     with open(os.path.join(outdir, "results.json"), "w") as f:
         json.dump(results, f, indent=1, sort_keys=True)
+    files = [os.path.join(outdir, n) for n in sorted(os.listdir(outdir)) if n != "oracle.key"]
     if side == "oracle":
-        cc.write_key(os.path.join(outdir, "oracle.key"), oracle_key(label, steps))
+        cc.write_key(os.path.join(outdir, "oracle.key"), oracle_key(label, steps), files)
+    else:
+        cc.write_capture(os.path.join(outdir, "capture.json"),
+                         {"path": binary, "sha256": cc.sha256_file(binary)}, files)
     return results
 
 
@@ -231,14 +241,6 @@ def read(outdir, name):
     return open(p, "rb").read().decode("latin-1") if os.path.exists(p) else ""
 
 
-TEST_TIME_RE = re.compile(r" in \d+\.\d+s$")
-
-
-def summary_lines(ctx, text):
-    return [TEST_TIME_RE.sub(" in <T>s", ctx.text(l)) for l in text.splitlines()
-            if SUMMARY_RE.match(l)]
-
-
 def aquery_items(ctx, text):
     try:
         doc = ctx.deep(json.loads(text))
@@ -248,13 +250,15 @@ def aquery_items(ctx, text):
     return {**summary, **surfaces.aquery_order(doc, list(summary))}
 
 
-def compare(label, steps, report=None):
+def compare(label, steps, report, norm):
     o, odir = load("oracle", label)
     b, bdir = load("blaze", label)
     octx = normalise.Context(o["paths"])
     bctx = normalise.Context(b["paths"])
     rows = []
     step_of_row = {}
+    reduced = {}
+    gaps = {}
 
     def row(name, ok, detail=""):
         rows.append((name, "MATCH" if ok else "DIFF", detail))
@@ -271,6 +275,11 @@ def compare(label, steps, report=None):
         ot = cc.Termination.from_dict(o["steps"][sid].get("termination"))
         bt = cc.Termination.from_dict(b["steps"][sid].get("termination"))
         row(sid + " exit", ot is not None and ot == bt, "oracle %s, blaze %s" % (ot, bt))
+        eq, g = norm.compare(read(odir, sid + ".stderr"), read(bdir, sid + ".stderr"), "stderr",
+                             octx._pairs, bctx._pairs)
+        row(sid + " stderr", eq, "whole stderr after the exclusion rules")
+        if g:
+            gaps[sid] = g
         kind = sid.split("-")[0]
         if kind == "cquery":
             ol = octx.text(read(odir, sid + ".stdout")).splitlines()
@@ -307,14 +316,15 @@ def compare(label, steps, report=None):
             row(sid + " items", diff == missing == extra == 0,
                 "%d items: %d same, %d allowed, %d diff, %d missing, %d extra" % (
                     len(oi), same, allowed, diff, missing, extra))
-        elif kind in ("build", "test", "run"):
-            ol = summary_lines(octx, read(odir, sid + ".stderr") + read(odir, sid + ".stdout"))
-            bl = summary_lines(bctx, read(bdir, sid + ".stderr") + read(bdir, sid + ".stdout"))
-            row(sid + " summary", ol == bl, " | ".join(bl) if ol != bl else " | ".join(ol))
-            if kind == "run":
-                os_ = read(odir, sid + ".stdout")
-                bs = read(bdir, sid + ".stdout")
-                row(sid + " stdout", os_ == bs, repr(bs[:60]))
+            if allowed:
+                reduced[sid] = "aquery: %d runfiles-manifest action keys allowed to differ" % (
+                    allowed)
+        else:
+            eq, g = norm.compare(read(odir, sid + ".stdout"), read(bdir, sid + ".stdout"),
+                                 "stdout", octx._pairs, bctx._pairs)
+            row(sid + " stdout", eq, "whole stdout after the exclusion rules")
+            if g:
+                gaps.setdefault(sid, []).extend(g)
     cur[0] = "outputs"
     if "outputs" in o and "outputs" in b:
         oh, bh = o["outputs"], b["outputs"]
@@ -322,20 +332,19 @@ def compare(label, steps, report=None):
             row("sha256 " + k, oh.get(k) == bh.get(k),
                 "" if oh.get(k) == bh.get(k) else "oracle %s, blaze %s" % (
                     (oh.get(k) or "-")[:12], (bh.get(k) or "-")[:12]))
-    elif (not steps or "outputs" in steps or "build" in steps) and report is not None:
+    elif not steps or "outputs" in steps or "build" in steps:
         report.add("outputs", cc.SKIPPED, "no build outputs recorded on the %s side" % (
             "oracle" if "outputs" not in o else "blaze"))
     w = max(len(r[0]) for r in rows) if rows else 10
     for name, status, detail in rows:
         print("%-*s  %-5s  %s" % (w, name, status, detail))
-    if report is not None:
-        judge_steps(o, b, rows, step_of_row, report)
-        report.write_json(os.path.join(CACHE, "java-compare", label, "results.json"),
-                          extra={"rows": rows})
+    judge_steps(o, b, rows, step_of_row, report, gaps, reduced)
+    report.write_json(os.path.join(CACHE, "java-compare", label, "results.json"),
+                      extra={"rows": rows})
     return rows
 
 
-def judge_steps(o, b, rows, step_of_row, report):
+def judge_steps(o, b, rows, step_of_row, report, gaps, reduced):
     """One compare_common class per step (and `outputs`) from the aspect rows."""
     order = []
     for i in range(len(rows)):
@@ -353,7 +362,8 @@ def judge_steps(o, b, rows, step_of_row, report):
             bt = cc.Termination.from_dict(b["steps"][sid].get("termination"))
             unported = b["steps"][sid].get("unported")
         cls, detail = cc.judge(ot, bt, differing, declared_exit=DECLARED_EXIT.get(sid),
-                               blaze_unported=unported)
+                               blaze_unported=unported, gaps=sorted(set(gaps.get(sid, []))),
+                               reduced=reduced.get(sid))
         report.add(sid, cls, detail)
 
 
@@ -399,8 +409,15 @@ def main(argv):
     except cc.Refusal as e:
         return cc.refuse("java/compare", e)
     report = cc.Report("java/compare", blaze=blaze, oracle={"path": oracle, "sha256": oracle_sha},
-                       selection="label %s, steps %s" % (label, ",".join(steps) or "all"),
-                       tool_files=[os.path.abspath(__file__)])
+                       selection="label %s, steps %s%s" % (
+                           label, ",".join(steps) or "all",
+                           ", oracle outputs reused" if skip_oracle else ""),
+                       tool_files=[os.path.abspath(__file__)],
+                       compared="per step: termination, the whole stderr after the exclusion "
+                                "rules, stdout (in full; aquery through the referee's "
+                                "extractor); jar and launcher sha256 after build")
+    norm = cc.Normaliser(RULES)
+    report.add_normaliser(norm)
     report.print_header()
     if skip_oracle:
         try:
@@ -409,9 +426,9 @@ def main(argv):
         except cc.Refusal as e:
             return cc.refuse("java/compare", e)
     else:
-        side_run("oracle", oracle, label, steps)
-    side_run("blaze", blaze["path"], label, steps)
-    compare(label, steps, report)
+        side_run("oracle", oracle, label, steps, report)
+    side_run("blaze", blaze["path"], label, steps, report)
+    compare(label, steps, report, norm)
     print()
     report.print_rows()
     report.print_footer()
@@ -419,34 +436,15 @@ def main(argv):
 
 
 def selftest():
-    def run_pair(ofake, bfake, wd):
-        cc.require_oracle(ofake)
-        sides = {}
-        for side, fake in (("oracle", ofake), ("blaze", bfake)):
-            term, out, err = run_cmd(fake, wd, os.path.join(wd, "our"), ["cquery"])
-            sides[side] = ({"steps": {"cquery": {"termination": term.to_dict(),
-                                                 "unported": cc.unported_message(err)}}},
-                           out.decode("latin-1"))
-        (o, oo), (b, bo) = sides["oracle"], sides["blaze"]
-        rows = [("cquery exit", "MATCH" if cc.Termination.from_dict(
-                    o["steps"]["cquery"]["termination"]) == cc.Termination.from_dict(
-                    b["steps"]["cquery"]["termination"]) else "DIFF", ""),
-                ("cquery stdout", "MATCH" if oo == bo else "DIFF", "")]
-        rep = cc.Report("selftest")
-        judge_steps(o, b, rows, {0: "cquery", 1: "cquery"}, rep)
-        return rep.rows[0]["class"], rep.rows[0]["detail"]
+    def argv(blaze, label):
+        return ["--binary", blaze, "--step", "cquery", "--label", label]
 
-    def empty_selection():
-        with open(os.devnull, "w") as null:
-            old = sys.stderr
-            sys.stderr = null
-            try:
-                return main(["--binary", "/bin/true", "--step", "no-such-step"])
-            finally:
-                sys.stderr = old
-
-    return cc.selftest("java/compare", run_pair=run_pair, empty_selection=empty_selection,
-                       mode="scope")
+    return cc.selftest_tool(
+        "java/compare", os.path.abspath(__file__), argv,
+        empty=lambda b, l: ["--binary", b, "--step", "no-such-step", "--label", l],
+        reuse=lambda b, l: argv(b, l) + ["--skip-oracle"],
+        oracle_outputs=lambda home, l: [os.path.join(home, ".cache", "blaze", "java-compare", l,
+                                                     "oracle", "cquery.stdout")])
 
 
 if __name__ == "__main__":

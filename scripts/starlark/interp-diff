@@ -134,7 +134,8 @@ CONTINUATION = re.compile(r"^(\t|Traceback |Error |Error:|Error in )")
 
 
 def summarize(err, packages):
-    """Per package: (rejected, sorted DEBUG lines, error message blocks in order)."""
+    """Per package: (rejected, DEBUG lines in order, error message blocks in order). One package
+    is evaluated by one thread, so its print order is deterministic (audit round 4, R4)."""
     rejected = set()
     debug = {p: [] for p in packages}
     errors = {p: [] for p in packages}
@@ -155,18 +156,29 @@ def summarize(err, packages):
             if named:
                 block = (named[0], [line])
                 errors[named[0]].append(block[1])
-    return {p: (p in rejected, sorted(debug[p]), ["\n".join(b) for b in errors[p]])
+    return {p: (p in rejected, debug[p], ["\n".join(b) for b in errors[p]])
             for p in packages}
 
 
-def judge_packages(packages, oracle_term, oracle_err, blaze_term, blaze_err, report):
-    """Adds the query-termination row and one row per package; prints OUTCOME/TEXT lines."""
+RULES = list(cc.VOLATILE_RULES)
+
+
+def judge_packages(packages, oracle_term, oracle_err, blaze_term, blaze_err, report,
+                   oracle_out=b"", blaze_out=b"", norm=None):
+    """Adds the query-termination, query-stdout and query-stderr rows and one row per
+    package; prints OUTCOME/TEXT lines."""
     want = summarize(oracle_err, packages)
     got = summarize(blaze_err, packages)
     rejected = sum(1 for p in packages if want[p][0])
     cls, detail = cc.judge(oracle_term, blaze_term, [], declared_exit=3 if rejected else None)
     report.add("query-termination", cls, detail or "oracle %s, blaze %s" % (
         oracle_term, blaze_term))
+    norm = norm or cc.Normaliser(RULES)
+    for name, stream, o, b in (("query-stdout", "stdout", oracle_out, blaze_out),
+                               ("query-stderr", "stderr", oracle_err, blaze_err)):
+        eq, _ = norm.compare(o, b, stream)
+        report.add(name, cc.IDENTICAL if eq else cc.DIFFERENT,
+                   "the whole %s after the exclusion rules" % stream)
     outcome = text = 0
     for p in packages:
         if want[p][:2] != got[p][:2]:
@@ -197,14 +209,25 @@ def binary(casedir, blaze, only, json_out=None):
                        oracle={"path": oracle, "sha256": oracle_sha},
                        selection="%d cases of %s%s" % (len(names), casedir,
                                                        " (--only %s)" % only if only else ""),
-                       tool_files=[os.path.abspath(__file__)])
+                       tool_files=[os.path.abspath(__file__)],
+                       compared="the query's termination, its whole stdout and stderr (paths "
+                                "of the workspace as <WS>) after the exclusion rules listed at "
+                                "the end, and per package: accepted or rejected, the DEBUG "
+                                "lines in order, the error texts in order")
+    norm = cc.Normaliser(RULES, path_reason="the scratch workspace (one for both sides) is "
+                         "written as <WS> before the rules")
+    report.add_normaliser(norm)
     report.print_header()
     ws = make_workspace(casedir, names)
     packages = ["b_" + n for n in names] + ["z_" + n for n in names]
     oracle_term, oracle_err = run(oracle, ws, "oracle")
     blaze_term, blaze_err = run(bid["path"], ws, "blaze")
+    outs = {}
+    for tag in ("oracle", "blaze"):
+        with open(os.path.join(BASE, tag + ".stdout.txt"), "rb") as f:
+            outs[tag] = f.read()
     want, outcome, text = judge_packages(packages, oracle_term, oracle_err, blaze_term,
-                                         blaze_err, report)
+                                         blaze_err, report, outs["oracle"], outs["blaze"], norm)
     accepted = sum(1 for p in packages if not want[p][0])
     print("%d cases, %d packages (oracle: %d accepted, %d rejected); oracle %s, blaze %s; "
           "%d packages differ in outcome, %d more in error text only; %d identical"
@@ -217,37 +240,15 @@ def binary(casedir, blaze, only, json_out=None):
 
 
 def selftest():
-    def run_pair(ofake, bfake, wd):
-        cc.require_oracle(ofake)
-        res = {}
-        for side, fake in (("oracle", ofake), ("blaze", bfake)):
-            term, err = run(fake, wd, side, base=wd)
-            out = open(os.path.join(wd, side + ".stdout.txt"), "rb").read().decode("latin-1")
-            # A fake's stdout stands for a package's print output.
-            res[side] = (term, err + "DEBUG: <WS>/b_x/BUILD:1:1: " + out.strip() + "\n")
-        rep = cc.Report("selftest")
-        with open(os.devnull, "w") as null:
-            old = sys.stdout
-            sys.stdout = null
-            try:
-                judge_packages(["b_x"], res["oracle"][0], res["oracle"][1], res["blaze"][0],
-                               res["blaze"][1], rep)
-            finally:
-                sys.stdout = old
-        bad = [r for r in rep.rows if r["class"] != cc.IDENTICAL]
-        return (bad[0]["class"], bad[0]["detail"]) if bad else (cc.IDENTICAL, "")
+    first = cases_in(DEFAULT_CASES)[0]
 
-    def empty_selection():
-        with open(os.devnull, "w") as null:
-            old = sys.stderr
-            sys.stderr = null
-            try:
-                return binary(DEFAULT_CASES, "/bin/true", "^no case has this name$")
-            finally:
-                sys.stderr = old
+    def argv(blaze, label):
+        return ["binary", "--blaze", blaze, "--only", "^%s$" % re.escape(first)]
 
-    return cc.selftest("starlark/interp-diff", run_pair=run_pair,
-                       empty_selection=empty_selection, mode="scope")
+    return cc.selftest_tool(
+        "starlark/interp-diff", os.path.abspath(__file__), argv,
+        empty=lambda b, l: ["binary", "--blaze", b, "--only", "^no case has this name$"],
+        scenarios=cc.itemised())
 
 
 def main():

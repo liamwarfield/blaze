@@ -32,7 +32,9 @@
 # (the number after a normal exit; otherwise `signal SIGPIPE`, `oom-kill (...)`, `timeout`),
 # termination (compare_common's text), binary.txt (path and sha256 of the binary).
 # This tool records; it compares nothing. What the Rust tests compare: scripts/proxy/classify.
-# selftest: a fake binary killed by SIGPIPE through the same launcher must not record exit 0.
+# A BLAZE-BINARY that is the oracle (sha256) is refused (exit 2).
+# selftest: the real command line against fake binaries (compare_common FakeHome): exit codes,
+# a SIGPIPE death, the refusals, and that nothing starts outside the launcher.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 cc="$here/../lib/compare_common.py"
@@ -54,27 +56,52 @@ launch() {
 }
 
 if [[ ${1:-} == selftest ]]; then
-  d=$(mktemp -d "$HOME/.cache/blaze/work/compare-common/selftest-proxy-XXXXXX")
-  printf '#!/bin/bash\necho hello\nkill -PIPE $$\n' > "$d/fake"; chmod +x "$d/fake"
-  printf '#!/bin/bash\necho hello\nexit 3\n' > "$d/fake3"; chmod +x "$d/fake3"
-  fail=0
-  got=$(launch "$d" "$d" "$d/fake" query); echo "  SIGPIPE recorded as: $got"
-  [[ $got == "signal SIGPIPE" ]] || fail=1
-  got=$(launch "$d" "$d" "$d/fake3" query); echo "  exit 3 recorded as: $got"
-  [[ $got == 3 ]] || fail=1
-  if /usr/bin/python3 -I "$cc" check-oracle "$d/fake" 2>/dev/null; then
-    echo "  wrong oracle accepted"; fail=1
-  else echo "  wrong oracle refused"; fi
-  rm -r "$d"
-  if [[ $fail == 0 ]]; then echo "proxy/run selftest: PASS"; else echo "proxy/run selftest: FAIL"; fi
-  exit $fail
+  # The real command line of this script against fake binaries under a fake HOME
+  # (scripts/lib/compare_common.py FakeHome; the fakes refuse to run outside the launcher).
+  exec /usr/bin/python3 - "$0" "$here/../lib" <<'PYEOF'
+import os, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[2])
+import compare_common as cc
+me = os.path.abspath(sys.argv[1])
+st = cc.Selftest("proxy/run")
+fh = cc.FakeHome("proxy-run")
+try:
+    o, b = fh.fakes(dict(out=b"hello\n"), dict(out=b"hello\n", sig="PIPE"))
+    out = os.path.join(fh.root, "out")
+    args = ["https://origin.example/f", "HTTPS_PROXY=http://127.0.0.1:PORT", "ok"]
+    rc, _, log = fh.run_tool(me, ["oracle", out] + args)
+    code = open(os.path.join(out, "exit-code")).read().strip() if os.path.exists(
+        os.path.join(out, "exit-code")) else None
+    st.check("oracle run records exit 0", rc == 0 and code == "0", "exit %s, exit-code %s" % (
+        rc, code))
+    st.check("binary.txt names the oracle's sha256",
+             cc.sha256_file(o) in open(os.path.join(out, "binary.txt")).read())
+    rc, _, log = fh.run_tool(me, [b, out] + args)
+    code = open(os.path.join(out, "exit-code")).read().strip()
+    st.check("a Blaze killed by SIGPIPE is recorded as such", code == "signal SIGPIPE", code)
+    rc, _, log = fh.run_tool(me, [o, out] + args)
+    st.check("the oracle given as the Blaze binary is refused", rc == 2, "exit %s" % rc)
+    rc, _, log = fh.run_tool(me, ["oracle", out] + args, pin="0" * 64)
+    st.check("an oracle that is not the pin is refused", rc == 2, "exit %s" % rc)
+    st.check("no process started outside the launcher", not fh.tripped())
+finally:
+    if not st.failures:
+        fh.remove()
+    else:
+        print("  (fake HOME kept: %s)" % fh.root)
+sys.exit(st.finish())
+PYEOF
 fi
-if [[ $# -lt 5 || $1 == help ]]; then sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi
+if [[ $# -lt 5 || $1 == help ]]; then sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; exit 0; fi
 bin=$1; out=$2; url=$3; pvar=${4%%=*}; purl=${4#*=}; responses=$5
 shift 5; extra=("$@")
 if [[ $bin == oracle ]]; then
   bin=~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64
   /usr/bin/python3 -I "$cc" check-oracle "$bin" >/dev/null || exit 2
+else
+  # A Blaze binary: refused when it is the oracle (or missing).
+  /usr/bin/python3 -I "$cc" check-blaze "$bin" >/dev/null || exit 2
 fi
 ws=~/.cache/blaze/work/proxy/ws
 ur=~/.cache/blaze/oracle-out/proxy-ur

@@ -72,17 +72,25 @@ Fetch cases pass --output_base=~/.cache/blaze/work/cmds/<side>/ob-<project> and
 --repository_cache=~/.cache/blaze/repo-cache; a case marked "fresh" deletes that output base
 first.
 
-Normalisations (both sides): the side's output user root, workspace copy, output base and
-install md5 become <UR>, <WS>, <OB>, <INSTALL_MD5>; the JVM's own "OpenJDK 64-Bit Server VM warning: ..." stderr lines are
-removed (Blaze has no JVM); "Elapsed time: N.NNNs" and "Critical Path: N.NNs" become <T>;
-UI progress lines (printed on a timer) are removed; random download temp directory names
-(/temp<digits>/) become /temp<N>/. The rules and their reasons: NORMALIZATION_RULES.
+stdout and the whole stderr are compared after these exclusion rules (RULES; the report lists
+each with its reason and the lines it changed or removed on each side): `paths` (the side's
+output user root, workspace copy and output base become <UR>, <WS>, <OB>), `install_md5`,
+`jvm_warning` (the JVM's own "OpenJDK 64-Bit Server VM warning: ..." lines; Blaze has no JVM),
+`elapsed` and `critical_path` (wall-clock times), `progress` (UI lines printed on a timer),
+`download_temp` (random /temp<digits>/ names). Both sides start a fresh server for every
+invocation, so no server-state rule applies.
 
 Results: ~/.cache/blaze/work/cmds/results/<side>/<case>.{out,err,rc,term,cmd} (`term`: the
-termination; `rc` only for reading). Each oracle result has <case>.key: the oracle's sha256,
-this tool's sha256, the exact argv and environment, the digest of the workspace copy and the
-cases run before it on the same side; `--side blaze` refuses a stored oracle result whose key
-differs from the one this run would use (or that has none).
+termination; `rc` only for reading). Each oracle result has <case>.key, written after its files
+and holding their digests with the key: the oracle's sha256, the exact argv and environment, the
+digest of the read-only corpus checkout the workspace copy is made from, and the cases run before
+it on the same side (the files are raw and normalised when loaded, so this tool's sha256 is not
+in it). `--side blaze` refuses a stored oracle result whose key or files differ. Each Blaze
+result has <case>.capture.json (the binary's sha256 and the files' digests): `--side oracle`
+judges a stored Blaze result only when --blaze names the binary that made it (otherwise the case
+is SKIPPED). The termination of the warm-up `version` is listed (an abnormal one fails the run).
+MEASURES_WRONG_THING lists cases whose oracle result measures something other than their name
+(a download failure of this machine); the report says so on their rows.
 
 Per case (scripts/lib/compare_common.py classes): IDENTICAL (same termination, stdout and stderr;
 the oracle exited 0, or the case declares its exit code in DECLARED_EXIT as the failure under
@@ -102,7 +110,8 @@ Options:
   --json PATH     write machine-readable results
   --list          print the case list and exit
 
-selftest proves these guards with fake binaries, no real build.
+selftest drives this command line with fake binaries (compare_common.selftest_tool), no real
+build.
 
 Exit status: 0 iff at least one case was selected and every selected case is IDENTICAL; 1
 otherwise (an empty selection included); 2 on usage errors and refusals (an oracle whose sha256
@@ -464,43 +473,27 @@ def invocation_policy_cases():
     return cases
 
 
-NORMALIZATION_RULES = [
-    {"name": "paths", "why": "Each side has its own output user root, workspace copy and output "
-                             "base; they are inputs of the run, not behaviour."},
-    {"name": "install_md5", "pattern": r"/install/[0-9a-f]{32}/", "repl": "/install/<INSTALL_MD5>/",
-     "streams": ("out", "err"),
-     "why": "The install md5 (name of <UR>/install/<md5>) is a checksum of the binary's embedded "
-            "files; Blaze's archive differs by design (as in scripts/w1/compare-info)."},
-    {"name": "jvm_warning", "pattern": r"(?m)^OpenJDK 64-Bit Server VM warning: [^\n]*\n",
-     "repl": "", "streams": ("err",),
-     "why": "Printed by the JVM itself, not by Bazel code; Blaze has no JVM."},
-    {"name": "elapsed", "pattern": r"Elapsed time: \d+\.\d+s", "repl": "Elapsed time: <T>s",
-     "streams": ("out", "err"), "why": "Wall-clock time."},
-    {"name": "critical_path", "pattern": r"Critical Path: \d+\.\d+s", "repl": "Critical Path: <T>s",
-     "streams": ("out", "err"), "why": "Wall-clock time."},
-    {"name": "progress", "pattern":
-     r"(?m)^(Computing main repo mapping: |Loading: |    currently loading: |Analyzing: |Fetching "
-     r"|\[[\d,]+ / [\d,]+\] )[^\n]*\n",
-     "repl": "", "streams": ("err",),
-     "why": "UI progress lines, printed on a timer (--show_progress_rate_limit), so their number "
-            "depends on wall-clock time (\"    currently loading: \" is the second line of a "
-            "\"Loading: \" progress message)."},
-    {"name": "download_temp", "pattern": r"/temp\d+/", "repl": "/temp<N>/",
-     "streams": ("out", "err"),
-     "why": "Temporary download directories get a random number (Files.createTempDirectory)."},
-]
+RULES = [r for r in cc.VOLATILE_RULES if r.name in ("progress", "elapsed", "critical_path",
+                                                    "jvm_warning", "download_temp")] + [
+    cc.Rule("install_md5", r"/install/[0-9a-f]{32}/", "the install md5 (name of "
+            "<UR>/install/<md5>) is a checksum of the binary's embedded files; Blaze's archive "
+            "differs by design (as in scripts/w1/compare-info)", repl="/install/<INSTALL_MD5>/",
+            streams=("stdout", "stderr"))]
+
+# Cases whose oracle result measures something other than what the case names (audit round 4,
+# C4). The case list's owner repairs them; until then the report says so on their rows.
+MEASURES_WRONG_THING = {
+    "fetch re2 empty output base": "the oracle fails on `Unknown host: "
+                                   "netcologne.dl.sourceforge.net` (libpfm download)",
+    "fetch re2 warm": "the oracle fails on `Unknown host: netcologne.dl.sourceforge.net`",
+    "fetch re2 --all": "the oracle fails on `Unknown host: netcologne.dl.sourceforge.net`",
+    "fetch brotli --force --repo": "`No repository visible as '@platforms'`: it measures the "
+                                   "@nosuch error again, not --force",
+}
 
 
-def normalize(data, stream, ctx):
-    text = data.decode("latin-1")
-    for key in ("ob", "ws", "ur"):
-        value = ctx.get(key)
-        if value:
-            text = text.replace(value, "<%s>" % key.upper())
-    for rule in NORMALIZATION_RULES:
-        if "pattern" in rule and stream in rule["streams"]:
-            text = re.sub(rule["pattern"], rule["repl"], text)
-    return text
+def path_pairs(ctx):
+    return [(ctx.get(k), "<%s>" % k.upper()) for k in ("ob", "ws", "ur") if ctx.get(k)]
 
 
 ENV = {"USER": USER}  # on top of HOME and PATH=/usr/bin:/bin (compare_common.clean_env)
@@ -569,15 +562,17 @@ def side_workspaces(side, cases, prepare):
     return out
 
 
-def run_side(side, binary, cases):
+RESULT_EXTS = ("out", "err", "rc", "term", "cmd")
+
+
+def run_side(side, binary, cases, report, blaze=None):
     root = ROOTS[side]
     os.makedirs(OUTSIDE, exist_ok=True)
     sd = os.path.join(RESULTS, side)
     os.makedirs(sd, exist_ok=True)
     # Warm-up: extracts the install base so that no compared case prints "Extracting...".
     _, _, term, _ = invoke(wrap(binary, root, OUTSIDE, [], ["version"]), OUTSIDE)
-    if not term.ok:
-        print("[cmds] %s: warm-up `version` ended with %s" % (side, term), flush=True)
+    report.add_aux("%s warm-up version" % side, term)
     wsd = side_workspaces(side, cases, prepare=True)
     workspaces = {p: v[0] for p, v in wsd.items()}
     install_dir = os.path.join(root, "install")
@@ -589,8 +584,10 @@ def run_side(side, binary, cases):
         ctx["install_md5"] = install_md5
         if case.fresh_output_base and "ob" in ctx and os.path.lexists(ctx["ob"]):
             record.make_writable_and_remove(ctx["ob"])
-        out, err, term, dur = invoke(cmd, cwd)
         base = os.path.join(sd, case.slug)
+        meta = base + (".key" if side == "oracle" else ".capture.json")
+        cc.invalidate_key(meta)
+        out, err, term, dur = invoke(cmd, cwd)
         for ext, data in (("out", out), ("err", err)):
             with open(base + "." + ext, "wb") as f:
                 f.write(data)
@@ -601,11 +598,14 @@ def run_side(side, binary, cases):
         with open(base + ".cmd", "w") as f:
             f.write(json.dumps({"cwd": cwd, "argv": cmd, "env": cc.clean_env(ENV),
                                 "ctx": ctx}) + "\n")
+        files = [base + "." + ext for ext in RESULT_EXTS]
         if side == "oracle":
             inputs = wsd[case.cwd][1] if case.cwd in wsd else "outside (empty directory)"
-            cc.write_key(base + ".key", oracle_key(case, cwd, cmd, inputs, list(before)))
-        elif os.path.lexists(base + ".key"):
-            os.remove(base + ".key")
+            cc.write_key(meta, oracle_key(case, cwd, cmd, inputs, list(before)), files)
+        else:
+            if os.path.lexists(base + ".key"):
+                os.remove(base + ".key")
+            cc.write_capture(meta, blaze, files, extra={"case": case.name})
         before.append(case.slug)
         print("[cmds] %s: %-55s %-16s %6.1fs" % (side, case.name[:55], term, dur), flush=True)
 
@@ -629,8 +629,7 @@ def load(side, case):
         return None
     if term is None:
         return None
-    return {"out": normalize(out, "out", ctx), "err": normalize(err, "err", ctx), "term": term,
-            "raw_err": err}
+    return {"out": out, "err": err, "term": term, "paths": path_pairs(ctx)}
 
 
 def check_oracle_keys(cases):
@@ -650,35 +649,51 @@ def check_oracle_keys(cases):
     return stale
 
 
-def judge_case(case, o, b):
+def judge_case(norm, case, o, b):
     """(class, detail, differing streams) of one case from the loaded results."""
-    differing = [s for s in ("out", "err") if o[s] != b[s]]
-    m = re.search(r"blaze: not ported yet: ([^\n]*)", b["err"])
+    differing = []
+    for s, stream in (("out", "stdout"), ("err", "stderr")):
+        eq, _ = norm.compare(o[s], b[s], stream, o["paths"], b["paths"])
+        if not eq:
+            differing.append(s)
+    berr = b["err"].decode("latin-1") if isinstance(b["err"], bytes) else b["err"]
+    m = re.search(r"blaze: not ported yet: ([^\n]*)", berr)
     cls, detail = cc.judge(o["term"], b["term"], ["std" + s for s in differing],
                            declared_exit=case.expect_exit,
                            blaze_unported=m.group(1)[:100] if m else None)
     return cls, detail, differing
 
 
-def compare(cases, diff_lines, report, stale=None):
+def compare(norm, cases, diff_lines, report, stale=None, blaze=None, check_blaze=False):
     stale = stale or {}
     for case in cases:
         if case.name in stale:
             report.add(case.name, cc.SKIPPED, "stale oracle result: " + stale[case.name])
             continue
+        if check_blaze:
+            why = cc.check_capture(os.path.join(RESULTS, "blaze", case.slug + ".capture.json"),
+                                   blaze)
+            if why:
+                report.add(case.name, cc.SKIPPED, "stored Blaze result: " + why)
+                continue
         o = load("oracle", case)
         b = load("blaze", case)
         if o is None or b is None:
             report.add(case.name, cc.SKIPPED, "no %s result with a recorded termination" % (
                 "oracle" if o is None else "blaze"))
             continue
-        cls, detail, differing = judge_case(case, o, b)
+        cls, detail, differing = judge_case(norm, case, o, b)
+        if case.name in MEASURES_WRONG_THING:
+            detail += "; measures the wrong thing: " + MEASURES_WRONG_THING[case.name]
         report.add(case.name, cls, detail)
         if cls == cc.DIFFERENT and diff_lines:
             for s in ("out", "err"):
                 if s in differing:
+                    stream = "stdout" if s == "out" else "stderr"
+                    ot = norm.apply(o[s], "oracle", stream, o["paths"]).text
+                    bt = norm.apply(b[s], "blaze", stream, b["paths"]).text
                     d = list(difflib.unified_diff(
-                        o[s].splitlines(), b[s].splitlines(), "oracle." + s, "blaze." + s,
+                        ot.splitlines(), bt.splitlines(), "oracle." + s, "blaze." + s,
                         lineterm="", n=1))
                     print("--- %s: %s" % (case.name, s))
                     for line in d[:diff_lines]:
@@ -717,18 +732,25 @@ def main(argv):
         oc.die("systemd-run not found")
     try:
         oracle_path, oracle_sha = cc.require_oracle(ORACLE_BIN)
-        blaze = cc.blaze_identity(os.path.realpath(args.blaze)) \
-            if args.side in ("blaze", "both") else None
+        blaze = cc.blaze_identity(os.path.realpath(args.blaze))
     except cc.Refusal as e:
         return cc.refuse("cmds/compare", e)
     report = cc.Report("cmds/compare", blaze=blaze,
                        oracle={"path": oracle_path, "sha256": oracle_sha},
                        selection="%d cases%s, side %s" % (
                            len(cases), " matching %r" % args.case if args.case else "",
-                           args.side), tool_files=[os.path.abspath(__file__)])
+                           args.side), tool_files=[os.path.abspath(__file__)],
+                       compared="termination, the whole stdout and the whole stderr after the "
+                                "exclusion rules listed at the end")
+    norm = cc.Normaliser(RULES, path_reason="each side's output user root, workspace copy and "
+                         "output base")
+    report.add_normaliser(norm)
+    for name, why in MEASURES_WRONG_THING.items():
+        if any(c.name == name for c in cases):
+            report.note("%s measures the wrong thing: %s" % (name, why))
     report.print_header()
     if args.side in ("oracle", "both"):
-        run_side("oracle", ORACLE_BIN, cases)
+        run_side("oracle", ORACLE_BIN, cases, report)
     stale = check_oracle_keys(cases)
     if args.side in ("blaze", "both"):
         if stale and args.side == "blaze":
@@ -736,8 +758,9 @@ def main(argv):
                 print("refused: %s: %s" % (name, reason), file=sys.stderr)
             return cc.refuse("cmds/compare", "%d stored oracle results are stale or unkeyed; "
                              "run with --side both" % len(stale))
-        run_side("blaze", blaze["realpath"], cases)
-    compare(cases, args.diff_lines, report, stale)
+        run_side("blaze", blaze["realpath"], cases, report, blaze)
+    compare(norm, cases, args.diff_lines, report, stale, blaze,
+            check_blaze=args.side == "oracle")
     print()
     report.print_header()
     report.print_rows()
@@ -749,42 +772,16 @@ def main(argv):
 
 
 def selftest():
-    def run_pair(ofake, bfake, wd):
-        cc.require_oracle(ofake)
-        res = {}
-        for side, fake in (("oracle", ofake), ("blaze", bfake)):
-            out, err, term, _ = invoke(wrap(fake, os.path.join(wd, "ur-" + side), wd, [],
-                                            ["help"]), wd)
-            ctx = {"ur": os.path.join(wd, "ur-" + side)}
-            res[side] = {"out": normalize(out, "out", ctx), "err": normalize(err, "err", ctx),
-                         "term": term}
-        cls, detail, _ = judge_case(Case("selftest", ["help"]), res["oracle"], res["blaze"])
-        return cls, detail
+    def argv(blaze, label):
+        return ["--case", "^help$", "--blaze", blaze, "--diff-lines", "0"]
 
-    def empty_selection():
-        with open(os.devnull, "w") as null:
-            old = sys.stderr
-            sys.stderr = null
-            try:
-                return main(["--case", "^no case has this name$", "--side", "blaze"])
-            finally:
-                sys.stderr = old
-
-    def extra(st):
-        # A declared failure is IDENTICAL only with the declared code.
-        c = Case("help nosuchcommand", ["help", "nosuchcommand"])
-        two = {"out": "", "err": "x", "term": cc.Termination("exit", 2)}
-        st.check("declared exit 2 on both sides is IDENTICAL",
-                 judge_case(c, two, dict(two))[0] == cc.IDENTICAL)
-        three = {"out": "", "err": "x", "term": cc.Termination("exit", 3)}
-        st.check("declared exit 2, oracle exit 3: ORACLE-UNEXPECTED",
-                 judge_case(c, three, dict(three))[0] == cc.ORACLE_UNEXPECTED)
-        # A stored oracle result without a key is stale.
-        st.check("a legacy stored result (no .term) is not loaded",
-                 load("oracle", Case("no such stored case", ["help"])) is None)
-
-    return cc.selftest("cmds/compare", run_pair=run_pair, empty_selection=empty_selection,
-                       extra=extra, mode="service")
+    return cc.selftest_tool(
+        "cmds/compare", os.path.abspath(__file__), argv,
+        empty=lambda b, l: ["--case", "^no case has this name$", "--blaze", b],
+        reuse=lambda b, l: argv(b, l) + ["--side", "blaze"],
+        oracle_outputs=lambda home, l: [os.path.join(home, ".cache", "blaze", "work", "cmds",
+                                                     "results", "oracle", "help.out")],
+        stored=lambda b, l: argv(b, l) + ["--side", "oracle"])
 
 
 if __name__ == "__main__":
