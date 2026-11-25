@@ -350,3 +350,22 @@ Each entry: date, decision, why, who decided.
   (evaluator I1, server, commands, loading and Starlark front end, Java rules and
   configuration, execution, reporting), all on Fable 5.2, read-only, with no bazel or blaze
   process while the suite run is active. Implementers start when the suite run ends. Root.
+- 2026-11-25. First-round reviews at e8b79c0 (docs/reviews/2026-11-25-*.md): evaluator I1 PASS;
+  server, commands, loading/Starlark, Java rules/configuration, execution, reporting STOP, each
+  on one to three blocking findings. One Opus fixer per area, each with the next port of its
+  area in the same brief (so an area keeps one owner): server soak; `config`/`dump`/
+  `print_action`; error texts; Java probes and stubs; dynamic execution; Build Event Service
+  client. Package I2 started after the I1 PASS. Root.
+- 2026-11-25. Audit 4 round 2: comparison-tool batch STOP (B1-B5), `scripts/server` STOP
+  (SV-1..6), harness lock fix PASS. As the auditor allows, the sixteen working-tree files were
+  committed as an interim state with the sha256 values of the report (74662dd); this repairs
+  process finding P5 (checkpoints 28 and 29 had committed tools that called uncommitted module
+  functions; root's error: a tool and the module it imports are committed together or not at
+  all). README now quotes comparison numbers only in the auditor's wording. Root.
+- 2026-11-25. Reporting review S1-1 shows a referee blind spot: `scripts/oracle/surfaces.py`
+  drops the `buildMetrics` sub-messages, so an empty `artifactMetrics` scored as identical. To
+  go into the next audited referee batch with the `--install_md5` mask: compare the
+  deterministic fields of `buildMetrics` (artifact and action counts) and check presence of the
+  timing fields. Root.
+- 2026-11-25. Pushes go over HTTPS with the `gh` credential while the SSH agent holds no key
+  (reboot); same repository, same account. Root.
