@@ -8,7 +8,13 @@
 > least 11 failures caused by the harness (cause family 28, "files vanish from the shared repo
 > contents cache", is the harness, not Blaze). Targets: 62 of 211. The cause ranking below is
 > still a usable work list; no total from it may be quoted. A fresh full run of the same binary
-> under the fixed harness is recorded under the label `blaze-v0.1.0-r2`.
+> under the fixed harness replaces it:
+>
+> **v0.1.0, label `blaze-v0.1.0-r3`** (2026-11-19 17:24, quiet machine, suite mode, 237 of 237
+> targets ran, 2,358 s; binary sha256 `291d6df9…`): **63 of 211 targets and 1,401 of 2,878
+> functions** that pass on Bazel pass on Blaze (lost 148 targets and 1,415 functions; 62
+> functions absent; flaky-in-base names excluded). Raw: targets 77 pass, 158 fail, 1 build
+> failure, 1 timeout. The label `blaze-v0.1.0-r2` was lost to a tool timeout and has no result.
 
 
 First full run of Bazel's own shell and Python integration tests (237 targets) against Blaze,

@@ -341,3 +341,12 @@ Each entry: date, decision, why, who decided.
   steps; no new agents, reviews or measurements are started. The detached full-suite run
   (`root-suite-v010-r3`) uses no model usage and is left queued. Resumption list:
   `docs/STATUS.md`. Root.
+- 2026-11-25. Resumed: the user set the goal again ("complete the rust port"). Result of the
+  queued run `blaze-v0.1.0-r3` (suite mode, 237 of 237 targets, quiet machine): 63 of 211
+  targets and 1,401 of 2,878 functions that pass on Bazel pass on the v0.1.0 binary. This is
+  the first full-run total under the fixed harness and replaces the withdrawn one. Started: a
+  full-suite run of HEAD (binary sha256 7455128a…, label `blaze-e8b79c0`), the auditor's
+  re-check of audit 4, and seven first-round reviews of the areas ported since the baseline
+  (evaluator I1, server, commands, loading and Starlark front end, Java rules and
+  configuration, execution, reporting), all on Fable 5.2, read-only, with no bazel or blaze
+  process while the suite run is active. Implementers start when the suite run ends. Root.
