@@ -15,6 +15,20 @@
 > functions** that pass on Bazel pass on Blaze (lost 148 targets and 1,415 functions; 62
 > functions absent; flaky-in-base names excluded). Raw: targets 77 pass, 158 fail, 1 build
 > failure, 1 timeout. The label `blaze-v0.1.0-r2` was lost to a tool timeout and has no result.
+>
+> **Code of `e8b79c0`, label `blaze-e8b79c0`** (2026-11-25 09:55, suite mode, 237 of 237 targets
+> ran, 2,607 s; binary sha256 `7455128a…`, debug build of the working tree, whose `crates/` are
+> those of the commit): **120 of 211 targets and 2,220 of 2,878 functions** (lost 91 targets and
+> 585 functions; 73 functions absent). Raw: targets 135 pass, 102 fail. Against the v0.1.0 run:
+> 825 functions gained, 3 lost (`aspect_test#test_aspect_in_non_existent_overridden_repo`, a
+> panic; two `bazel_worker_with_cgroups_test` functions, which now reach an unported cgroups
+> path because workers are on), 6 absent (`bazel_proto_library_test`, whose shard stopped after
+> an output overflow). Seven read-only reviewers were reading sources during the run; nothing
+> else was building. Largest failure families (`scripts/ut-analysis/families blaze-e8b79c0`;
+> first cause only): coverage 122, workers with the hardened sandbox or cgroups about 110,
+> functions not measured after a shard's output overflow 65, remote repo contents cache 38, no
+> persistent server 35, cquery formatters and config fragments 38, JVM-only `info` keys 23,
+> SkyQuery 20, vendor mode 19.
 
 
 First full run of Bazel's own shell and Python integration tests (237 targets) against Blaze,

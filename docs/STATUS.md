@@ -11,7 +11,9 @@ Numbers cite their evidence; history is in `git log` and `docs/decisions.md`.
 - **Accepted baseline is still `ef66f55`.** Nothing after it has been through acceptance.
 - **Outer measure, tag v0.1.0** (label `blaze-v0.1.0-r3`, full suite, fixed harness, quiet
   machine): 63 of 211 targets and 1,401 of 2,878 functions that pass on Bazel pass on Blaze.
-  The run for `e8b79c0` (label `blaze-e8b79c0`, binary sha256 7455128a…) is in progress.
+  **At `e8b79c0`** (label `blaze-e8b79c0`, binary sha256 7455128a…): 120 of 211 targets and
+  2,220 of 2,878 functions; 3 functions lost against v0.1.0 (named in `docs/upstream-tests.md`).
+  Failures by family: `~/.cache/blaze/work/root-runs/e8b79c0-failures/by-family.tsv`.
 - **Coverage map at `e8b79c0`** (`docs/coverage/README.md`; counts port markers, a planning
   tool): about 106k ± 15k lines of needed Java not ported, 13k of them out of scope.
 
@@ -32,8 +34,10 @@ Numbers cite their evidence; history is in `git log` and `docs/decisions.md`.
 
 ## Next, in this order
 
-1. Read `blaze-e8b79c0` with `scripts/upstream-tests/compare` and rank its failures
-   (`scripts/ut-analysis/classify`, `families`); the ranking decides the next implementers.
+1. Failure families of `blaze-e8b79c0` without an owner yet, to hand out as agents free up:
+   cquery `starlark`/`transitions` formatters and `--show_config_fragments` (38), SkyQuery (20),
+   vendor mode (19), path mapping (14), native aspects (11), `aquery --skyframe_state` (9),
+   `genquery` (8), extra actions, shadowed actions, include scanning.
 2. As each fixer reports: checkpoint (tree compiles, protected paths staged out), referee guard,
    then the same reviewer role re-checks its area.
 3. Not started, to hand out as agents free up: native aspects, `genquery` and SkyQuery, cquery
@@ -62,7 +66,8 @@ Numbers cite their evidence; history is in `git log` and `docs/decisions.md`.
 ## Outer measure
 
 Bazel's own integration suite (`docs/upstream-tests.md`); the oracle passes 211 targets and
-2,878 functions. Tag v0.1.0: 63 targets, 1,401 functions (label `blaze-v0.1.0-r3`). The first
+2,878 functions. Tag v0.1.0: 63 targets, 1,401 functions (label `blaze-v0.1.0-r3`). Code of
+`e8b79c0`: 120 targets, 2,220 functions (label `blaze-e8b79c0`). The first
 run's total is withdrawn (`docs/reviews/2026-11-19-audit-3.md`).
 
 ## Reviews (docs/reviews/, Fable 5.2, read-only)

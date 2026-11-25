@@ -121,7 +121,7 @@ Windows and macOS; JVM-only features (heap `info` keys, thread dumps); remote an
 
 - **Bazel's own integration suite** (`docs/upstream-tests.md`): at tag v0.1.0, 63 of 211 targets
   and 1,401 of 2,878 test functions that pass on Bazel pass on Blaze (label `blaze-v0.1.0-r3`).
-  The run for the present code is being recorded.
+  At `e8b79c0`: 120 of 211 targets and 2,220 of 2,878 functions (label `blaze-e8b79c0`).
 - **Error and UI transcripts** (`scripts/w4/probe`): of 664 probe steps that run the binary, 40
   give the same exit code, stdout and stderr as the recorded Bazel transcripts (most are error
   cases; equal failures count; the Bazel transcripts name no binary).
