@@ -537,3 +537,10 @@ Each entry: date, decision, why, who decided.
   failed shutdown must fail in daemon mode; A2: the strict rules must follow the observed
   server state; A3: an empty `only_fields_in_daemon_mode` list must excuse nothing). A
   candidate recorded with the older extractor needs `record --renormalise` first. Root.
+- 2026-11-26. D16, the lenient cases pinned by fixtures after remote round 6: for a
+  certificate the user supplies as its own trust file and the server presents byte for byte,
+  Blaze accepts `direct_time_second_60`, `direct_alg_mismatch` and `direct_empty_issuer`, which
+  the JDK's parser refuses (Bazel then runs without the cache or refuses to start). Declared
+  gap: `remote_repo_contents_cache_test.testMemoryPressureRestartDuringCachedFetch` needs JVM
+  garbage-collection events. A regression seen in the shared tree at about 16:00 (the daemon
+  discards its kept graph after every command) is with the incremental implementer. Root.
