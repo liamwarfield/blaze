@@ -1,55 +1,60 @@
 # Status
 
-Updated 2026-11-25, 10:20 (root). Work resumed on 2026-11-25 (the user set the goal again).
-Numbers cite their evidence; history is in `git log` and `docs/decisions.md`.
+Updated 2026-11-26, 12:10 (root). Numbers cite their evidence; history is in `git log` and
+`docs/decisions.md`.
 
 ## State
 
-- **Code is at `cc6c29a`** (commits after it are documents and comparison tools). It builds from
-  a clean checkout. Referee guard at that code (label `pause-cc6c29a3ede8`): 39 rows, gained 2,
-  regressed 0 against the accepted score.
+- **Checkpoint 35 is `5f68157`** (code commit `db8c652`); it builds from a clean checkout.
+  Commits after it are documents and the audited comparison tools.
 - **Accepted baseline is still `ef66f55`.** Nothing after it has been through acceptance.
-- **Outer measure, tag v0.1.0** (label `blaze-v0.1.0-r3`, full suite, fixed harness, quiet
-  machine): 63 of 211 targets and 1,401 of 2,878 functions that pass on Bazel pass on Blaze.
-  **At `e8b79c0`** (label `blaze-e8b79c0`, binary sha256 7455128a…): 120 of 211 targets and
-  2,220 of 2,878 functions; 3 functions lost against v0.1.0 (named in `docs/upstream-tests.md`).
-  Failures by family: `~/.cache/blaze/work/root-runs/e8b79c0-failures/by-family.tsv`.
-- **Coverage map at `e8b79c0`** (`docs/coverage/README.md`; counts port markers, a planning
-  tool): about 106k ± 15k lines of needed Java not ported, 13k of them out of scope.
+- **Outer measure** (Bazel's own integration suite; the oracle passes 211 targets and 2,878
+  functions; `docs/upstream-tests.md`):
 
-## Running (ten agents, the limit)
+  | Code | Label | Targets | Functions |
+  | --- | --- | ---: | ---: |
+  | tag v0.1.0 | `blaze-v0.1.0-r3` | 63 | 1,401 |
+  | `e8b79c0` | `blaze-e8b79c0` | 120 | 2,220 |
+  | `5f68157` | `blaze-5f68157` | 140 | 2,411 |
 
-| Task | Model | After |
+  Failures of the last run by family: `~/.cache/blaze/work/root-runs/5f68157-failures/by-family.tsv`.
+- **Referee guard** at checkpoint 33 (label `ckpt33-e593d87d59e0`, dirty tree): gained 2,
+  regressed 0. Owed for checkpoint 35.
+- **Coverage map at `e8b79c0`** (`docs/coverage/README.md`): about 106k ± 15k lines of needed
+  Java not ported, 13k of them out of scope. To be regenerated at the next checkpoint.
+
+## Running (Opus implementers; no reviewer at the moment)
+
+| Task | First items (review findings) | Then |
 | --- | --- | --- |
-| Server: review fixes (stale per-command state, event bus, uncaught panics), soak | Opus | re-review, then the default switch |
-| Incremental builds, package I2 (84 keys) | Opus | review, then I3 |
-| Commands: review fixes; `config`, `dump`, `print_action` | Opus | re-review |
-| Loading and Starlark: review fixes; remaining error texts | Opus | re-review |
-| Java rules and configuration: review fixes; 14 probes; 59 stubbed tests | Opus | re-review; Bazel's Java suites |
-| Execution: review fixes; worker tests; dynamic execution | Opus | re-review |
-| Reporting: review fixes; Build Event Service client; profiler sites | Opus | re-review |
-| `coverage` command and instrumentation | Opus | review |
-| Comparison tools: audit round 2 fixes and reruns on `e8b79c0` | Opus | auditor round 3 |
-| Remote: round-3 evidence on `e8b79c0` | Opus | re-review by the remote reviewer |
+| Query | | cquery `starlark`/`transitions`, config fragments, `genquery`, SkyQuery, aquery skyframe state |
+| Incremental builds, I3 | I2 review S2-1: functions that read files outside the graph; TimestampGranularityMonitor | invalidation, diff awareness, kept graph in daemon mode, randomized incremental-against-clean test |
+| Server | review round 2 leftovers (evidence on the commit's binary, loud handles) | `info` items (D15), idle tasks, default-switch preparation |
+| Workers | execution round 2 (E2-9, E2-11), cgroups (C1) | hardened worker sandbox, 81 unit tests, dynamic execution |
+| Remote | round 4 (Q1: certificate verifier) | repo contents cache, other commands, HTTP cache, credential helpers |
+| Extra actions, metrics | reporting round 2 (R2-1) | extra actions and `print_action`, artifact metrics, status lines, Build Event Service client |
+| Commands | round 2 (R1: `Analyzed 0 targets`) | vendor mode |
+| Loading | round 2 leftovers (regex lazy counts, parameter-type table, load-bound names) | traceback locations |
+| Path mapping | Java/config round 2 R1; coverage V3 | execution under `strip`, `testing.analysis_test`, native aspects |
 
 ## Next, in this order
 
-1. Failure families of `blaze-e8b79c0` without an owner yet, to hand out as agents free up:
-   cquery `starlark`/`transitions` formatters and `--show_config_fragments` (38), SkyQuery (20),
-   vendor mode (19), path mapping (14), native aspects (11), `aquery --skyframe_state` (9),
-   `genquery` (8), extra actions, shadowed actions, include scanning.
-2. As each fixer reports: checkpoint (tree compiles, protected paths staged out), referee guard,
-   then the same reviewer role re-checks its area.
-3. Not started, to hand out as agents free up: native aspects, `genquery` and SkyQuery, cquery
-   `starlark`/`transitions`, extra actions, include scanning, Docker sandbox and cgroups, action
-   rewinding, vendor mode, `testing.analysis_test`, remote HTTP cache and credential helpers,
-   the remaining files of the clusters in `docs/coverage/README.md`.
-4. New accepted commit when every area has a PASS: clean-checkout score including workerd, test
-   gate with name maps, auditor approval, baseline move.
-5. Process rules: at most ten agents; Fable for reviewers, auditors and leads, Opus for
-   implementers; nothing but small notes under `/tmp`; delete only what you created; agents do
-   not run `scripts/upstream-tests/run`; a number from a comparison tool enters README or this
-   file only in the auditor's wording.
+1. As each implementer reports: checkpoint (tree compiles, protected paths staged out, clean
+   checkout build), referee guard, full-suite run when the machine is free, then the area's
+   re-review. Reviews go two areas to one Fable agent, at most three at once, medium effort.
+2. Probe owed by root: `build --noexperimental_merged_skyframe_analysis_execution` on the next
+   checkpoint binary (finding V1, fixed by root in `commands/build.rs`).
+3. Not started: include scanning, action rewinding, Docker sandbox, `mobile-install`, Apple and
+   Android rules, the remaining files of the clusters in `docs/coverage/README.md`.
+4. Server as the default: after I3 passes review, the soak on the commit's binary, and the
+   audited referee change for cold and warm sequences.
+5. New accepted commit when every area has a PASS: clean-checkout score including workerd, test
+   gate with name maps, auditor approval, baseline move. Referee batch owed with it: mask
+   `--install_md5`, compare the deterministic fields of `buildMetrics`.
+6. Process rules: at most three Fable agents (the usage limit was hit on 2026-11-25); builders
+   as the machine allows (nine today); nothing but small notes under `/tmp`; delete only what
+   you created; agents do not run `scripts/upstream-tests/run`; a number from a comparison tool
+   enters README or this file only in the auditor's wording.
 
 ## Waiting on the user
 
@@ -63,13 +68,6 @@ Numbers cite their evidence; history is in `git log` and `docs/decisions.md`.
 - How identical to Bazel the console and error text must be (unruled; everything is ported to
   match).
 
-## Outer measure
-
-Bazel's own integration suite (`docs/upstream-tests.md`); the oracle passes 211 targets and
-2,878 functions. Tag v0.1.0: 63 targets, 1,401 functions (label `blaze-v0.1.0-r3`). Code of
-`e8b79c0`: 120 targets, 2,220 functions (label `blaze-e8b79c0`). The first
-run's total is withdrawn (`docs/reviews/2026-11-19-audit-3.md`).
-
 ## Reviews (docs/reviews/, Fable 5.2, read-only)
 
 | Area | Last round | Verdict |
@@ -82,16 +80,19 @@ run's total is withdrawn (`docs/reviews/2026-11-19-audit-3.md`).
 | Bzlmod, repositories, downloader, client | 4 | PASS |
 | Analysis, configuration, cquery/aquery | 3 | PASS |
 | Execution, sandbox, build driver | 4 (at ef66f55) | PASS |
-| Remote cache and execution | 3 (at e370bf9) | STOP: P1 (SIGPIPE); fixed, evidence being completed, re-review owed |
-| Comparison tools | audit 4 round 2 (2026-11-25) | STOP: B1-B5, and SV-1..6 in `scripts/server`; interim files committed (74662dd); harness lock fix PASS |
+| Remote cache and execution | 4 (at 5f68157) | STOP: Q1 (certificate verifier); round-3 items met |
+| Comparison tools | audit round 3 (2026-11-26) | PASS; committed c99a912 |
 | Byte strings | 2 (at 780fceb) | PASS |
 | Incremental evaluator, package I1 | 1 (at e8b79c0) | PASS |
-| Server and client | 1 (at e8b79c0) | STOP: F1, F2 |
-| Commands and options | 1 (at e8b79c0) | STOP: F1 |
-| Loading, macros, Starlark front end | 1 (at e8b79c0) | STOP: F1 |
-| Java rules and configuration | 1 (at e8b79c0) | STOP: S1-1 |
-| Execution: workers, tests, templates | 1 (at e8b79c0) | STOP: E2-1, E2-2, E2-3 |
-| Reporting, build events, query outputs | 1 (at e8b79c0) | STOP: S1-1, S1-2 |
+| Incremental builds, package I2 | 1 (at 5f68157) | PASS; S2-1 must be closed inside I3 |
+| Server and client | 2 (at 5f68157) | PASS; items owed before the default switch |
+| Loading, macros, Starlark front end | 2 (at 5f68157) | PASS; three S2 open |
+| Java rules and configuration | 2 (at 5f68157) | PASS; one S2 open |
+| Commands and options | 2 (at f71e692) | STOP: R1 |
+| Execution: workers, tests, templates | 2 (at f71e692) | STOP: E2-9, E2-11 |
+| Reporting, build events, query outputs | 2 (at 5f68157) | STOP: R2-1 |
+| Coverage | 1 (at 5f68157) | STOP: V1 (fixed by root, probe owed) |
+| Cgroups | 1 (at 5f68157) | STOP: C1 |
 
 Open items the reviewers left as non-blocking are listed at the end of each report.
 

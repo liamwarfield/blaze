@@ -29,6 +29,17 @@
 > functions not measured after a shard's output overflow 65, remote repo contents cache 38, no
 > persistent server 35, cquery formatters and config fragments 38, JVM-only `info` keys 23,
 > SkyQuery 20, vendor mode 19.
+>
+> **Commit `5f68157` (checkpoint 35), label `blaze-5f68157`** (2026-11-26 11:17, suite mode, 237
+> of 237 targets ran, 2,827 s; binary sha256 `3d7356b8…`, debug build, `crates/` clean at the
+> commit; three read-only reviewers were reading sources): **140 of 211 targets and 2,411 of
+> 2,878 functions** (lost 71 targets and 411 functions; 56 absent). Against the `e8b79c0` run:
+> 196 functions gained, 4 lost, all four the same defect (a coverage hook that stopped every
+> build without merged analysis and execution; review finding V1, fixed after this run).
+> Largest remaining families: functions not measured after a shard's output overflow 52 (the
+> first failure of `build_event_stream_test` needs extra actions), remote repo contents cache
+> 38, no persistent server 35, hardened worker sandbox 25, cquery formatters and config
+> fragments 38, JVM-only items 44, SkyQuery 20, vendor mode 19, path mapping 14.
 
 
 First full run of Bazel's own shell and Python integration tests (237 targets) against Blaze,
