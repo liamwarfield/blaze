@@ -555,3 +555,11 @@ Each entry: date, decision, why, who decided.
   for some minutes (its tests kept starting daemons, memory rose to 23 GiB used); root stopped
   that unit too. To stop a suite run, stop the `run-*.service` unit whose command names
   `upstream-tests` as well. The server stays opt-in. Root.
+- 2026-11-26, 17:15. Two agent starts failed with a startup timeout. Cause: during the
+  daemon-mode suite run the agents' slice sat at its memory limit (the slice's counters show 9
+  out-of-memory kills inside it and heavy throttling; the 15-minute load average reached 131),
+  so nothing outside the slice was harmed, as intended, but work inside it stalled. Rule for
+  root: a full-suite run and more than four building agents do not go together; before a suite
+  run, check that the slice's memory use is below 10 GiB, and never run the daemon-mode suite
+  while a test server can grow to several GiB (the incremental implementer has that finding).
+  Root.
