@@ -498,3 +498,11 @@ Each entry: date, decision, why, who decided.
   empty issuer, which the JDK's parser refuses (Bazel then refuses to start). Declared
   deviation: no certificate from anyone else can take that route, and adding content parsers
   back is what D16 removed. Root.
+- 2026-11-26. Root's error: the document commit 7ef5c861 was made with `git add <paths>; git
+  commit`, which commits the whole index, and so took in a rename an agent had staged with
+  `git mv`; that commit does not build on its own (the checkpoints around it do: 63f2099 and
+  374c631 were verified from clean checkouts). From now on root's document commits name their
+  paths (`git commit <paths>`), and agents are told not to touch the index. Also ruled: the
+  WebAssembly engine for `repository_ctx.execute_wasm` is the `wasmi` crate (Bazel uses
+  Chicory, an interpreter in pure Java). The referee guard at checkpoint 38 (label
+  `guard-374c631`, exact binary, dirty tree): rows 39, gained 2, regressed 0. Root.
