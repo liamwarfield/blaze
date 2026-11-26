@@ -100,7 +100,7 @@ impl Worker for WorkerProxy {
     }
 
     // Java: com/google/devtools/build/lib/worker/WorkerProxy.java:49 WorkerProxy.getCgroup
-    fn get_cgroup(&self) -> Option<()> {
+    fn get_cgroup(&self) -> Option<Arc<dyn crate::sandbox::cgroups::Cgroup>> {
         // WorkerProxy does not have a cgroup at the momemnt. Consider adding it to the
         // multiplexer and returning it here?
         None

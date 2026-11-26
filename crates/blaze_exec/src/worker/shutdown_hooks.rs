@@ -82,7 +82,14 @@ pub fn remove_shutdown_hook(id: ShutdownHookId) -> bool {
 /// particular order).
 pub fn run_shutdown_hooks() {
     SHUTTING_DOWN.store(true, Ordering::SeqCst);
-    let hooks: Vec<Hook> = std::mem::take(&mut *HOOKS.lock()).into_values().collect();
+    // PORT: the JVM starts all hooks at once, in no order. Here they run one after the other,
+    // latest first, so that a worker's hook (registered when its process starts) ends the worker
+    // before the hook of `VirtualCgroup.deleteInstance` (registered when the server's cgroup is
+    // made) removes the cgroup the worker was in; a cgroup with a process cannot be removed.
+    let hooks: Vec<Hook> = std::mem::take(&mut *HOOKS.lock())
+        .into_values()
+        .rev()
+        .collect();
     for hook in hooks {
         hook();
     }

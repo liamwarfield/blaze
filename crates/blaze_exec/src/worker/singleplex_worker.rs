@@ -26,6 +26,7 @@ use super::worker_protocol::{
 };
 use crate::actions::execution_requirements::WorkerProtocolFormat;
 use crate::exec::tree_deleter::TreeDeleter;
+use crate::sandbox::cgroups::VirtualCgroupFactory;
 use crate::sandbox::sandbox_helpers::{self, SandboxInputs, SandboxOutputs};
 
 /// Options specific to hardened sandbox (`--experimental_worker_sandbox_hardening`).
@@ -91,6 +92,9 @@ pub struct SingleplexWorker {
     /// For tests: the factory `createProcess` starts the process with (Java's tests override
     /// `createProcess` in a subclass, `WorkerTestUtils.TestWorker`).
     subprocess_factory: Mutex<Option<Arc<dyn SubprocessFactory>>>,
+    /// `cgroupFactory`: null unless `--incompatible_use_new_cgroup_implementation` (set by the
+    /// `WorkerFactory`).
+    cgroup_factory: Option<Arc<VirtualCgroupFactory>>,
 }
 
 impl SingleplexWorker {
@@ -122,7 +126,17 @@ impl SingleplexWorker {
             }),
             sandboxed: None,
             subprocess_factory: Mutex::new(None),
+            cgroup_factory: None,
         }
+    }
+
+    /// The `cgroupFactory` constructor argument.
+    pub fn with_cgroup_factory(
+        mut self,
+        cgroup_factory: Option<Arc<VirtualCgroupFactory>>,
+    ) -> Self {
+        self.cgroup_factory = cgroup_factory;
+        self
     }
 
     /// For tests: starts the worker's process with `factory` (see `subprocess_factory`).
@@ -178,20 +192,32 @@ impl SingleplexWorker {
         let args = self.make_exec_path_absolute(self.base.worker_key.get_args());
         if self.sandboxed.is_some() {
             // We put the sandbox inside a unique subdirectory using the worker's ID.
-            if self.options.use_cgroups_on_linux {
+            if let Some(factory) = &self.cgroup_factory {
+                let cgroup = factory.create(self.base.worker_id, &IndexMap::new())?;
+                *self.base.cgroup.lock() = Some(cgroup);
+            } else if self.options.use_cgroups_on_linux {
                 // In the event that the memory limit is 0, we defer to using Blaze's
                 // WorkerLifecycleManager to kill workers rather than cgroup's OOM killer.
+                // (The old implementation, --noincompatible_use_new_cgroup_implementation.)
                 blaze_util::unported!("CgroupsInfo.getBlazeSpawnsCgroup");
             }
-            let process = self.create_process_builder(args, client_env).start()?;
-            return Ok(Arc::from(process));
+            let process: Arc<dyn Subprocess> =
+                Arc::from(self.create_process_builder(args, client_env).start()?);
+            self.add_process_to_cgroup(&*process)?;
+            return Ok(process);
         }
-        let process = self.create_process_builder(args, client_env).start()?;
-        if self.options.use_cgroups_on_linux {
-            // PORT: CgroupsInfo.isSupported() and the worker's cgroup are not ported.
-            blaze_util::unported!("CgroupsInfo.getBlazeSpawnsCgroup");
+        let process: Arc<dyn Subprocess> =
+            Arc::from(self.create_process_builder(args, client_env).start()?);
+        if let Some(factory) = &self.cgroup_factory {
+            let cgroup = factory.create(self.base.worker_id, &IndexMap::new())?;
+            *self.base.cgroup.lock() = Some(cgroup);
+        } else if self.options.use_cgroups_on_linux {
+            // CgroupsInfo.isSupported() of the old implementation
+            // (--noincompatible_use_new_cgroup_implementation).
+            blaze_util::unported!("CgroupsInfo.isSupported");
         }
-        Ok(Arc::from(process))
+        self.add_process_to_cgroup(&*process)?;
+        Ok(process)
     }
 
     // Java: com/google/devtools/build/lib/worker/SingleplexWorker.java:114 SingleplexWorker.createProcessBuilder
@@ -211,15 +237,31 @@ impl SingleplexWorker {
         process_builder
     }
 
+    /// `if (cgroup != null && cgroup.exists()) cgroup.addProcess(process.getProcessId())`.
+    fn add_process_to_cgroup(&self, process: &dyn Subprocess) -> io::Result<()> {
+        let cgroup = self.base.cgroup.lock().clone();
+        if let Some(cgroup) = cgroup
+            && cgroup.exists()
+        {
+            cgroup.add_process(process.get_process_id())?;
+        }
+        Ok(())
+    }
+
     // Java: com/google/devtools/build/lib/worker/SingleplexWorker.java:163 SingleplexWorker.addShutdownHook
     fn add_shutdown_hook(&self, state: &mut SingleplexState) {
         let shared = Arc::downgrade(&self.shared);
         let status = self.base.status.clone();
         // `this.destroy()` is virtual: a SandboxedWorker's also deletes its workDir.
         let sandboxed_work_dir = self.sandboxed.as_ref().map(|_| self.work_dir.clone());
+        let cgroup_factory = self.cgroup_factory.clone();
+        let worker_id = self.base.worker_id;
         state.shutdown_hook = Some(shutdown_hooks::add_shutdown_hook(Arc::new(move || {
             if let Some(shared) = shared.upgrade() {
                 shared.destroy_from_shutdown_hook();
+                if let Some(factory) = &cgroup_factory {
+                    factory.remove(worker_id);
+                }
                 status.set_killed();
                 if let Some(work_dir) = &sandboxed_work_dir {
                     // Java: com/google/devtools/build/lib/worker/SandboxedWorker.java:225 SandboxedWorker.destroy
@@ -408,6 +450,14 @@ impl Worker for SingleplexWorker {
     ) -> Result<(), WorkerError> {
         self.base.status.maybe_update_status(Status::Alive);
         if let Some(sandboxed) = &self.sandboxed {
+            // Java: com/google/devtools/build/lib/worker/SandboxedWorker.java:213 SandboxedWorker.finishExecution
+            let cgroup = self.base.cgroup.lock().clone();
+            if let Some(cgroup) = cgroup
+                && cgroup.exists()
+            {
+                // This is only to not leave too much behind in the cgroups tree, can ignore errors.
+                cgroup.destroy();
+            }
             sandboxed
                 .worker_exec_root
                 .lock()
@@ -440,8 +490,19 @@ impl Worker for SingleplexWorker {
         if let Some(process) = process {
             process.destroy_and_wait();
         }
+        if let Some(factory) = &self.cgroup_factory {
+            factory.remove(self.base.worker_id);
+        }
         self.base.status.set_killed();
         if self.sandboxed.is_some() {
+            // SandboxedWorker.destroy: the cgroup, then the work dir.
+            let cgroup = self.base.cgroup.lock().clone();
+            if let Some(cgroup) = cgroup
+                && cgroup.exists()
+            {
+                // This is only to not leave too much behind in the cgroups tree, can ignore errors.
+                cgroup.destroy();
+            }
             // Caught IOException while deleting workdir (logged).
             let _ = self.work_dir.delete_tree();
         }

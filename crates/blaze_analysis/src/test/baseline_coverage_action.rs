@@ -128,3 +128,44 @@ impl AbstractFileWriteAction for BaselineCoverageAction {
         })))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blaze_actions::analysis::workspace_status_action::{BUILD_INFO_KEY, system_action_owner};
+    use blaze_actions::{ActionLookupKeyRef, ArtifactRoot, RootType};
+    use blaze_vfs::{DigestHashFunction, Path, UnixFileSystem};
+
+    fn create_artifact(root_relative_path: &str) -> Artifact {
+        let fs = UnixFileSystem::create(DigestHashFunction::Sha256);
+        let exec_root = Path::create(PathFragment::create("/output_base/exec"), &fs);
+        let root = ArtifactRoot::as_derived_root(&exec_root, RootType::OUTPUT, &["out"]);
+        let exec_path = root.get_exec_path().get_relative_str(root_relative_path);
+        Artifact::create_derived_artifact(root, exec_path, ActionLookupKeyRef::new(BUILD_INFO_KEY))
+    }
+
+    /// The writer of `BaselineCoverageAction.newDeterministicWriter`: `SF:<exec path>` and
+    /// `end_of_record` per file (the oracle wrote the same lines for the probe's `//:lib`, with
+    /// source exec paths).
+    #[test]
+    fn writes_one_record_per_instrumented_file() {
+        let mut files = NestedSetBuilder::stable_order();
+        files.add(create_artifact("lib.cc"));
+        files.add(create_artifact("lib.h"));
+        let action = BaselineCoverageAction::new(
+            system_action_owner(),
+            files.build(),
+            create_artifact("testlogs/lib/baseline_coverage.dat"),
+        );
+        assert_eq!(action.get_mnemonic(), "BaselineCoverage");
+        let bytes = action
+            .new_deterministic_writer()
+            .unwrap()
+            .get_bytes()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(bytes).unwrap(),
+            "SF:out/lib.cc\nend_of_record\nSF:out/lib.h\nend_of_record\n"
+        );
+    }
+}

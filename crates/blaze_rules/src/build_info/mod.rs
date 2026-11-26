@@ -40,6 +40,8 @@ pub struct BuildInfoFileWriteActionSpec {
     is_volatile: bool,
     /// `BazelModuleContext.of(translationCallback.getModule()).bzlTransitiveDigest()`.
     bzl_transitive_digest: Vec<u8>,
+    /// `thread.getSemantics()`.
+    semantics: Arc<blaze_starlark::StarlarkSemantics>,
 }
 
 impl BuildInfoFileWriteActionSpec {
@@ -61,6 +63,7 @@ impl BuildInfoFileWriteActionSpec {
             self.template,
             self.is_volatile,
             self.bzl_transitive_digest,
+            self.semantics,
         ))
     }
 }
@@ -131,6 +134,8 @@ pub fn transform_build_info_file<'v>(
         template: template_file,
         is_volatile,
         bzl_transitive_digest,
+        // Java: thread.getSemantics() (the rule's analysis thread).
+        semantics: rule_context.get_starlark_semantics().clone(),
     };
     (build_info_file, spec)
 }

@@ -90,7 +90,9 @@ java_binary(
     let output = t
         .get_target_configuration()
         .get_bin_fragment(&MAIN)
-        .get_relative(&blaze_vfs::PathFragment::create("java/com/google/test/a.jar"))
+        .get_relative(&blaze_vfs::PathFragment::create(
+            "java/com/google/test/a.jar",
+        ))
         .get_path_string()
         .to_string();
     assert_contains_sublist(&command, &["--output", &output]);

@@ -122,7 +122,16 @@ pub fn parse_values(file: &Path) -> io::Result<HashMap<String, String>> {
 /// The parsing part of [`parse_values`], on the file's bytes.
 // Java: com/google/devtools/build/lib/analysis/WorkspaceStatusAction.java:120 WorkspaceStatusAction.parseValues
 pub fn parse_values_content(bytes: &[u8]) -> HashMap<String, String> {
-    let mut result = HashMap::new();
+    parse_values_in_insertion_order(bytes).into_iter().collect()
+}
+
+/// The entries `parseValues` puts into its `HashMap`, in the order their keys were first put
+/// (a repeated key keeps its first position and takes the last value, as `HashMap.put`).
+/// Callers that need the Java iteration order derive it from this order.
+// Java: com/google/devtools/build/lib/analysis/WorkspaceStatusAction.java:120 WorkspaceStatusAction.parseValues
+pub fn parse_values_in_insertion_order(bytes: &[u8]) -> Vec<(String, String)> {
+    let mut result: Vec<(String, String)> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
     // Java: `new String(FileSystemUtils.readContentAsLatin1(file))`.
     let content = blaze_util::string_encoding::latin1_decode(bytes);
     // Splitter.on('\n') and Splitter.on(' ').limit(2).
@@ -131,7 +140,13 @@ pub fn parse_values_content(bytes: &[u8]) -> HashMap<String, String> {
         if items.len() != 2 {
             continue;
         }
-        result.insert(items[0].to_string(), items[1].to_string());
+        match index.get(items[0]) {
+            Some(&i) => result[i].1 = items[1].to_string(),
+            None => {
+                index.insert(items[0].to_string(), result.len());
+                result.push((items[0].to_string(), items[1].to_string()));
+            }
+        }
     }
     result
 }

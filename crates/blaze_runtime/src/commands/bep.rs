@@ -1862,7 +1862,12 @@ impl BepCommandSupport {
         let elapsed_seconds = build_result.get_elapsed_seconds();
         build_result
             .get_build_tool_log_collection()
-            .add_direct_value("elapsed time", format!("{elapsed_seconds:.6}").as_bytes());
+            // String.format("%f", ...): six digits, Java's half-up rounding of the shortest
+            // decimal representation.
+            .add_direct_value(
+                "elapsed time",
+                blaze_events::java_format::java_format_fixed(elapsed_seconds, 6).as_bytes(),
+            );
         // criticalPath.toString(), when executorInit registered a CriticalPathComputer.
         if let Some(critical_path) = collector.critical_path_tool_log() {
             build_result

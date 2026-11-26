@@ -93,7 +93,8 @@ impl blaze_skyframe::Key for CoverageReportKey {
     type Value = CoverageReportValue;
     const FUNCTION: blaze_skyframe::SkyFunctionName =
         blaze_skyframe::SkyFunctionName(COVERAGE_REPORT_FUNCTION_NAME);
-    const HERMETICITY: blaze_skyframe::FunctionHermeticity = blaze_skyframe::FunctionHermeticity::Hermetic;
+    const HERMETICITY: blaze_skyframe::FunctionHermeticity =
+        blaze_skyframe::FunctionHermeticity::Hermetic;
 }
 
 /// The coverage report actions injected before the evaluation of the coverage artifacts

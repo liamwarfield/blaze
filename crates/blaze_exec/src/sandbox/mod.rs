@@ -8,6 +8,7 @@
 pub mod abstract_containerizing_sandboxed_spawn;
 pub mod abstract_sandbox_spawn_runner;
 pub mod asynchronous_tree_deleter;
+pub mod cgroups;
 mod fs_utils;
 pub mod hardlinked_sandboxed_spawn;
 pub mod linux_sandbox_command_line_builder;

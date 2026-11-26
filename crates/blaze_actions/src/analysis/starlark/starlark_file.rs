@@ -34,15 +34,44 @@ fn eval_err(e: impl fmt::Display) -> starlark::Error {
     starlark::Error::new_other(anyhow::anyhow!("{e}"))
 }
 
-/// Java `PathMapper.loadFrom(semantics)`.
-// Java: com/google/devtools/build/lib/actions/PathMapper.java:79 PathMapper.loadFrom
-// PORT: Java stores a path mapper in the thread's StarlarkSemantics only while a `map_each`
-// callback runs with a non-trivial path mapper (`PathMapper.storeIn`); everywhere else it is
-// `PathMapper.NOOP`. Blaze does not support path mapping inside `map_each` yet
-// (`StarlarkCustomCommandLine::apply_map_each` calls `unported!` for a non-noop mapper), so the
-// File getters always see NOOP.
-fn load_path_mapper() -> &'static dyn PathMapper {
-    &NOOP
+// PORT: Java stores a path mapper in the thread's StarlarkSemantics (`PathMapper.storeIn`) while
+// a `map_each` callback of a custom command line runs with a non-trivial path mapper; everywhere
+// else it is `PathMapper.NOOP`. Starlark semantics here carry no such entry, so the mapper is
+// kept in a thread-local for the duration of the callback ([`with_stored_path_mapper`]); the
+// callback is evaluated on the calling thread.
+thread_local! {
+    static STORED_PATH_MAPPER: std::cell::Cell<Option<*const dyn PathMapper>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Runs `f` with `path_mapper` as the mapper the `File` getters apply
+/// (`StarlarkThread.createTransient(mu, pathMapper.storeIn(starlarkSemantics))`).
+// Java: com/google/devtools/build/lib/actions/PathMapper.java:65 PathMapper.storeIn
+pub fn with_stored_path_mapper<R>(path_mapper: &dyn PathMapper, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<*const dyn PathMapper>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            STORED_PATH_MAPPER.with(|c| c.set(self.0));
+        }
+    }
+    // SAFETY (of the stored pointer's later use): `with_loaded_path_mapper` dereferences it only while
+    // this call runs; `Restore` resets the thread-local before `path_mapper`'s borrow ends, even
+    // when `f` panics.
+    let ptr: *const (dyn PathMapper + '_) = path_mapper;
+    // Only the lifetime bound of the trait object changes.
+    let ptr: *const dyn PathMapper = unsafe { std::mem::transmute(ptr) };
+    let _restore = Restore(STORED_PATH_MAPPER.with(|c| c.replace(Some(ptr))));
+    f()
+}
+
+/// `PathMapper.loadFrom(semantics)`: the mapper stored for the running callback, else NOOP.
+// Java: com/google/devtools/build/lib/actions/PathMapper.java:47 PathMapper.loadFrom
+fn with_loaded_path_mapper<R>(f: impl FnOnce(&dyn PathMapper) -> R) -> R {
+    match STORED_PATH_MAPPER.with(|c| c.get()) {
+        // SAFETY: see `with_stored_path_mapper`.
+        Some(ptr) => f(unsafe { &*ptr }),
+        None => f(&NOOP),
+    }
 }
 
 /// A `File` (an [`Artifact`]) as a Starlark value.
@@ -128,19 +157,19 @@ fn get_dirname(exec_path: &blaze_vfs::PathFragment) -> String {
 /// `Artifact.getDirnameForStarlark`.
 // Java: com/google/devtools/build/lib/actions/Artifact.java:394 Artifact.getDirnameForStarlark
 pub fn get_dirname_for_starlark(artifact: &Artifact) -> String {
-    get_dirname(&load_path_mapper().map(artifact.get_exec_path()))
+    with_loaded_path_mapper(|m| get_dirname(&m.map(artifact.get_exec_path())))
 }
 
 /// `Artifact.getExecPathStringForStarlark`.
 // Java: com/google/devtools/build/lib/actions/Artifact.java:470 Artifact.getExecPathStringForStarlark
 pub fn get_exec_path_string_for_starlark(artifact: &Artifact) -> String {
-    load_path_mapper().get_mapped_exec_path_string(artifact)
+    with_loaded_path_mapper(|m| m.get_mapped_exec_path_string(artifact))
 }
 
 /// `Artifact.getRootForStarlark`.
 // Java: com/google/devtools/build/lib/actions/Artifact.java:460 Artifact.getRootForStarlark
 pub fn get_root_for_starlark(artifact: &Artifact) -> FileRoot {
-    load_path_mapper().map_root(artifact)
+    with_loaded_path_mapper(|m| m.map_root(artifact))
 }
 
 #[starlark_module]

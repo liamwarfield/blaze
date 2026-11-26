@@ -138,7 +138,9 @@ impl Controller for LegacyMemory {
 impl MemoryController for LegacyMemory {
     // Java: com/google/devtools/build/lib/sandbox/cgroups/controller/v1/LegacyMemory.java:38 LegacyMemory.child
     fn child(&self, name: &str) -> io::Result<Arc<dyn MemoryController>> {
-        Ok(Arc::new(LegacyMemory::new(legacy_get_child(&self.path, name))))
+        Ok(Arc::new(LegacyMemory::new(legacy_get_child(
+            &self.path, name,
+        ))))
     }
     // Java: com/google/devtools/build/lib/sandbox/cgroups/controller/v1/LegacyMemory.java:43 LegacyMemory.setMaxBytes
     fn set_max_bytes(&self, bytes: i64) -> io::Result<()> {
@@ -223,7 +225,9 @@ impl Controller for UnifiedMemory {
 impl MemoryController for UnifiedMemory {
     // Java: com/google/devtools/build/lib/sandbox/cgroups/controller/v2/UnifiedMemory.java:37 UnifiedMemory.child
     fn child(&self, name: &str) -> io::Result<Arc<dyn MemoryController>> {
-        Ok(Arc::new(UnifiedMemory::new(unified_get_child(&self.path, name)?)))
+        Ok(Arc::new(UnifiedMemory::new(unified_get_child(
+            &self.path, name,
+        )?)))
     }
     // Java: com/google/devtools/build/lib/sandbox/cgroups/controller/v2/UnifiedMemory.java:42 UnifiedMemory.setMaxBytes
     fn set_max_bytes(&self, bytes: i64) -> io::Result<()> {
@@ -266,7 +270,9 @@ impl Controller for UnifiedCpu {
 impl CpuController for UnifiedCpu {
     // Java: com/google/devtools/build/lib/sandbox/cgroups/controller/v2/UnifiedCpu.java:33 UnifiedCpu.child
     fn child(&self, name: &str) -> io::Result<Arc<dyn CpuController>> {
-        Ok(Arc::new(UnifiedCpu::new(unified_get_child(&self.path, name)?)))
+        Ok(Arc::new(UnifiedCpu::new(unified_get_child(
+            &self.path, name,
+        )?)))
     }
 
     /// `cpu.max` is `"<quota> <period>"`: the period is the second token.

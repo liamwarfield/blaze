@@ -62,7 +62,7 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
-W="$HOME/.cache/blaze/work/remote"
+W="${BLAZE_REMOTE_WORK:-$HOME/.cache/blaze/work/remote}"
 src="$W/r1-sp-src"
 if [[ ! -f "$src/many/BUILD.bazel" ]]; then
   mkdir -p "$src/many"

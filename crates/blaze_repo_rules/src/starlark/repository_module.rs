@@ -324,12 +324,22 @@ fn get_repo_rule(
         // The .bzl defining the rule was loaded already (the rule value exists).
         Err(e) => panic!("internal error: reloading {}: {e}", data.bzl_file_label),
     };
-    // SAFETY-free: the implementation lives in the defining module's frozen heap (or one it
-    // references), which BZL_LOAD keeps alive; anchor it to that module's heap.
-    let impl_ = defining_bzl.get_module().frozen_heap().clone();
+    // The defining module was loaded above, so its heap is in the build arena's keep-alive.
+    let _ = defining_bzl;
+    // PORT: keep-alive. The handle does not own the defining module's heap: the `RepoRule` is
+    // cached in `data`, which the exported `repository_rule` value on that same heap holds, so an
+    // owning handle would make the heap own itself and it would never be freed (with the
+    // persistent server's release of the build arena, every module defining a repository rule
+    // and everything it references stayed alive after every command). The heap is kept by
+    // BZL_LOAD in the build arena (`blaze_util::build_arena`, decision D7), which outlives every
+    // holder of the `RepoRule`: the repository functions' values in the command's evaluators
+    // (each holds a lease) and the exported value itself.
     // SAFETY: `implementation` is reachable from the defining module's frozen heap (it is a
-    // field of the exported `repository_rule` value, frozen with that module).
-    let impl_ = unsafe { OwnedFrozenValue::new(impl_, implementation) };
+    // field of the exported `repository_rule` value, frozen with that module), which the build
+    // arena keeps alive for as long as the `RepoRule` can be reached (see above).
+    let impl_ = unsafe {
+        OwnedFrozenValue::new(starlark::values::FrozenHeapRef::default(), implementation)
+    };
     let repo_rule = Arc::new(RepoRule {
         id: RepoRuleId::new(data.bzl_file_label.clone(), rule_name),
         transitive_bzl_digest: data.transitive_bzl_digest.clone(),

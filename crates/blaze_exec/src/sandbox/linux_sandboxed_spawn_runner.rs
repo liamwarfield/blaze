@@ -1,5 +1,6 @@
 //! Port of `lib/sandbox/LinuxSandboxedSpawnRunner.java`.
 
+use crate::sandbox::cgroups::{Cgroup, VirtualCgroup, VirtualCgroupFactory};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::sync::Arc;
@@ -49,7 +50,8 @@ pub struct LinuxSandboxedSpawnRunner {
     slash_tmp: Path,
     known_paths_to_mount_under_hermetic_tmp: IndexSet<Path>,
     /// `cgroupFactory`: `Some(defaultLimits)` when it exists.
-    cgroup_factory_default_limits: Option<Vec<(String, f64)>>,
+    /// `cgroupFactory`: null with `--noincompatible_use_new_cgroup_implementation`.
+    cgroup_factory: Option<Arc<VirtualCgroupFactory>>,
 }
 
 impl LinuxSandboxedSpawnRunner {
@@ -90,14 +92,15 @@ impl LinuxSandboxedSpawnRunner {
     ) -> LinuxSandboxedSpawnRunner {
         let base = AbstractSandboxSpawnRunner::new(cmd_env);
         let sandbox_options = &cmd_env.sandbox_options;
-        // Java: new VirtualCgroupFactory("sandbox_", VirtualCgroup.getInstance(),
-        // getSandboxOptions().getLimits(), /* alwaysCreate= */ false).
-        // PORT: VirtualCgroup.getInstance() (which creates the per-server
-        // blaze_<pid>_spawns.slice cgroup) is not ported; the factory only records its default
-        // limits. As long as no limit applies, VirtualCgroupFactory.create returns
-        // VirtualCgroup.NULL (no -C flag), which is what the port does; any limit is unported!.
-        let cgroup_factory_default_limits = if sandbox_options.use_new_cgroup_implementation {
-            Some(sandbox_options.get_limits())
+        // Java: com/google/devtools/build/lib/sandbox/LinuxSandboxedSpawnRunner.java:159 LinuxSandboxedSpawnRunner.<init>
+        // VirtualCgroup.getInstance() creates the server's blaze_<pid>_spawns.slice cgroup.
+        let cgroup_factory = if sandbox_options.use_new_cgroup_implementation {
+            Some(Arc::new(VirtualCgroupFactory::new(
+                "sandbox_",
+                VirtualCgroup::get_instance(),
+                sandbox_options.get_limits().into_iter().collect(),
+                /* always_create= */ false,
+            )))
         } else {
             None
         };
@@ -118,7 +121,7 @@ impl LinuxSandboxedSpawnRunner {
             tree_deleter,
             slash_tmp,
             known_paths_to_mount_under_hermetic_tmp: IndexSet::new(),
-            cgroup_factory_default_limits,
+            cgroup_factory,
         };
         runner.known_paths_to_mount_under_hermetic_tmp =
             runner.collect_paths_to_mount_under_hermetic_tmp(cmd_env);
@@ -320,9 +323,9 @@ impl LinuxSandboxedSpawnRunner {
             sandbox_debug_path = Some(p);
         }
 
-        if let Some(default_limits) = &self.cgroup_factory_default_limits {
+        if let Some(cgroup_factory) = &self.cgroup_factory {
             // Java: com/google/devtools/build/lib/sandbox/LinuxSandboxedSpawnRunner.java:322 LinuxSandboxedSpawnRunner.prepareSpawn
-            let spawn_resource_limits: Vec<(String, f64)> = if sandbox_options
+            let spawn_resource_limits: IndexMap<String, f64> = if sandbox_options
                 .enforce_resources
                 .matches(&spawn.get_mnemonic())
             {
@@ -334,25 +337,16 @@ impl LinuxSandboxedSpawnRunner {
                     .map(|(k, v)| (k.clone(), *v))
                     .collect()
             } else {
-                Vec::new()
+                IndexMap::new()
             };
-            // Java: com/google/devtools/build/lib/sandbox/cgroups/VirtualCgroupFactory.java:57 VirtualCgroupFactory.create
-            let get = |m: &[(String, f64)], k: &str| m.iter().find(|(n, _)| n == k).map(|e| e.1);
-            let no_limits = default_limits.is_empty() && spawn_resource_limits.is_empty();
-            let cpu_limit = get(&spawn_resource_limits, "cpu")
-                .unwrap_or_else(|| get(default_limits, "cpu").unwrap_or(0.0));
-            let memory_limit = (get(&spawn_resource_limits, "memory")
-                .unwrap_or_else(|| get(default_limits, "memory").unwrap_or(0.0))
-                * 1024.0
-                * 1024.0) as i64;
-            if !(no_limits || (cpu_limit == 0.0 && memory_limit == 0)) {
-                blaze_util::unported!(
-                    "VirtualCgroupFactory.create",
-                    "a sandbox cgroup limit applies to {}",
-                    spawn.get_mnemonic()
-                );
-            }
-            // VirtualCgroup.NULL: no cgroup directories.
+            let cgroup = cgroup_factory.create(context.get_id(), &spawn_resource_limits)?;
+            command_line_builder.set_cgroups_dirs(
+                cgroup
+                    .paths()
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect(),
+            );
         } else if sandbox_options.memory_limit_mb > 0 {
             // We put the sandbox inside a unique subdirectory using the context's ID. This ID is
             // unique per spawn run by this spawn runner.
@@ -660,7 +654,10 @@ impl SandboxSpawnRunnerHooks for LinuxSandboxedSpawnRunner {
         }
         // We cannot leave the cgroups around and delete them only when we delete the sandboxes
         // because linux has a hard limit of 65535 memory controllers.
-        // PORT: the cgroupFactory is never created (VirtualCgroupFactory is unported! in `new`).
+        // Java: com/google/devtools/build/lib/sandbox/LinuxSandboxedSpawnRunner.java:473 LinuxSandboxedSpawnRunner.verifyPostCondition
+        if let Some(cgroup_factory) = &self.cgroup_factory {
+            cgroup_factory.remove(context.get_id());
+        }
         Ok(())
     }
 }
@@ -693,9 +690,9 @@ impl SpawnRunner for LinuxSandboxedSpawnRunner {
         sandbox_base: &Path,
         tree_deleter: &dyn TreeDeleter,
     ) -> io::Result<()> {
-        // PORT: `cgroupsDir` is never assigned in Java (always null). VirtualCgroup.deleteInstance()
-        // is skipped: VirtualCgroup is not ported, and here it would only create and destroy the
-        // empty per-server cgroup.
+        // PORT: `cgroupsDir` is never assigned in Java (always null).
+        // Java: com/google/devtools/build/lib/sandbox/LinuxSandboxedSpawnRunner.java:528 LinuxSandboxedSpawnRunner.cleanupSandboxBase
+        crate::sandbox::cgroups::VirtualCgroup::delete_instance();
         // Delete the inaccessible files synchronously, bypassing the treeDeleter. They are only a
         // couple of files that can be deleted fast, and ensuring they are gone at the end of every
         // build avoids annoying permission denied errors if the user happens to run "rm -rf" on

@@ -317,8 +317,12 @@ impl JavaHeaderCompileAction {
         &self,
         ctx: &dyn ActionExecutionContext,
     ) -> Result<SimpleSpawn, ActionExecutionException> {
-        let path_mapper =
-            path_mappers::create_for_execution(self, self.spawn.get_output_paths_mode(), false, None);
+        let path_mapper = path_mappers::create_for_execution(
+            self,
+            self.spawn.get_output_paths_mode(),
+            false,
+            None,
+        );
         let limits = CommandLineLimits::new(
             self.get_owner()
                 .get_build_configuration_info()

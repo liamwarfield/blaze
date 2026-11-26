@@ -225,6 +225,25 @@ pub struct ResourceSnapshot {
     pub collection_time_millis: i64,
 }
 
+/// `CgroupsInfoCollector.instance().collectResourceUsage(pidToCgroups, clock)`: the memory of
+/// each existing cgroup.
+// Java: com/google/devtools/build/lib/metrics/CgroupsInfoCollector.java:36 CgroupsInfoCollector.collectResourceUsage
+fn cgroups_info_collector_collect_resource_usage(
+    pid_to_cgroups: &BTreeMap<i64, Arc<dyn crate::sandbox::cgroups::Cgroup>>,
+    clock: &dyn Clock,
+) -> ResourceSnapshot {
+    let mut pid_to_memory_in_kb = HashMap::new();
+    for (pid, cgroup) in pid_to_cgroups {
+        if cgroup.exists() {
+            pid_to_memory_in_kb.insert(*pid, cgroup.get_memory_usage_in_kb());
+        }
+    }
+    ResourceSnapshot {
+        pid_to_memory_in_kb,
+        collection_time_millis: clock.current_time_millis(),
+    }
+}
+
 impl ResourceSnapshot {
     // Java: com/google/devtools/build/lib/metrics/ResourceSnapshot.java:40 ResourceSnapshot.createEmpty
     pub fn create_empty(collection_time_millis: i64) -> ResourceSnapshot {
@@ -438,6 +457,8 @@ pub struct WorkerProcessMetricsCollector {
     /// reaches the build event stream by worker id anyway.
     pid_to_worker_process_metrics: Mutex<BTreeMap<i64, Arc<WorkerProcessMetrics>>>,
     use_cgroups_on_linux: Mutex<bool>,
+    /// `pidToCgroups`: the cgroup of each worker process that has one.
+    pid_to_cgroups: Mutex<BTreeMap<i64, Arc<dyn crate::sandbox::cgroups::Cgroup>>>,
     /// For tests: the memory snapshot to report instead of asking `ps`.
     fake_resource_usage: Mutex<Option<Arc<dyn Fn(&[i64]) -> ResourceSnapshot + Send + Sync>>>,
 }
@@ -457,6 +478,7 @@ impl WorkerProcessMetricsCollector {
             clock: Mutex::new(Arc::new(JavaClock)),
             pid_to_worker_process_metrics: Mutex::new(BTreeMap::new()),
             use_cgroups_on_linux: Mutex::new(false),
+            pid_to_cgroups: Mutex::new(BTreeMap::new()),
             fake_resource_usage: Mutex::new(None),
         }
     }
@@ -507,7 +529,9 @@ impl WorkerProcessMetricsCollector {
         // OS.LINUX
         if *self.use_cgroups_on_linux.lock() {
             // Remove the killed pids so that we only collect from the cgroups that are alive.
-            blaze_util::unported!("CgroupsInfoCollector.collectResourceUsage");
+            let mut pid_to_cgroups = self.pid_to_cgroups.lock();
+            pid_to_cgroups.retain(|pid, _| alive_pids.contains(pid));
+            return cgroups_info_collector_collect_resource_usage(&pid_to_cgroups, &*clock);
         }
         // Default to using ps if cgroups is not enabled.
         PsInfoCollector::instance().collect_resource_usage(alive_pids, &*clock)
@@ -626,7 +650,7 @@ impl WorkerProcessMetricsCollector {
         is_multiplex: bool,
         is_sandboxed: bool,
         worker_key_hash: i32,
-        cgroup: Option<()>,
+        cgroup: Option<Arc<dyn crate::sandbox::cgroups::Cgroup>>,
     ) {
         let worker_metric = {
             let mut map = self.pid_to_worker_process_metrics.lock();
@@ -644,8 +668,11 @@ impl WorkerProcessMetricsCollector {
                 })
                 .clone()
         };
-        if cgroup.is_some() {
-            blaze_util::unported!("WorkerProcessMetricsCollector.registerWorker(cgroup)");
+        if let Some(cgroup) = cgroup {
+            self.pid_to_cgroups
+                .lock()
+                .entry(process_id)
+                .or_insert(cgroup);
         }
         worker_metric.set_last_call_time(self.clock.lock().current_time_millis());
         worker_metric.maybe_add_worker_id(worker_id, status);

@@ -1511,7 +1511,6 @@ duplicate_aspect_applying_rule(
 
 // Java: AspectTest.instrumentedFilesInfoFromBaseRuleAndAspectUsesAspect
 #[test]
-#[ignore = "BLAZE GAP: unported BaselineCoverageAction.create (blaze_analysis test/instrumented_files_info.rs:338, coverage_common.instrumented_files_info under --collect_code_coverage)"]
 fn instrumented_files_info_from_base_rule_and_aspect_uses_aspect() {
     let mut t = new_test();
     t.scratch.file(

@@ -373,6 +373,12 @@ impl ActionExecutionContext for DerivedActionExecutionContext<'_> {
     fn get_output_metadata(&self, output: &dyn ActionInput) -> io::Result<FileArtifactValue> {
         self.inner.get_output_metadata(output)
     }
+    fn get_tree_artifact_value(
+        &self,
+        tree_artifact: &ActionInputRef,
+    ) -> io::Result<crate::actions::TreeArtifactValue> {
+        self.inner.get_tree_artifact_value(tree_artifact)
+    }
 }
 
 /// Runs TestRunnerAction actions.
@@ -719,15 +725,89 @@ impl StandaloneTestStrategy {
                 )
                 .into());
             }
-            blaze_util::unported!(
-                "StandaloneTestStrategy.runTestAttempt (split coverage post-processing: \
-                 OutputMetadataStore.getTreeArtifactValue)"
+            let coverage_directory = artifact_input(
+                test_action
+                    .get_coverage_directory_tree_artifact()
+                    .expect("checked above"),
             );
+            // var unused = getOutputMetadataStore().getOutputMetadata(coverageDirectory)
+            let _ = action_execution_context.get_output_metadata(&*coverage_directory.0)?;
+
+            let expanded_coverage_dir: Vec<ActionInputRef> = action_execution_context
+                .get_tree_artifact_value(&coverage_directory)?
+                .get_children();
+            let mut coverage_spawn_metadata: Vec<ActionInputRef> = expanded_coverage_dir.clone();
+            coverage_spawn_metadata.push(coverage_directory.clone());
+
+            let coverage_post_processing_spawn = create_coverage_post_processing_spawn(
+                action_execution_context,
+                test_action,
+                &expanded_coverage_dir,
+                &self.tmp_dir_root,
+            );
+
+            let test_root = action_execution_context
+                .get_input_path(test_action.get_test_log())
+                .get_parent_directory()
+                .unwrap();
+
+            let out = test_root.get_child("coverage.log");
+            let err = test_root.get_child("coverage.err");
+            let coverage_out_err = FileOutErr::new(out, err);
+            let coverage_action_execution_context =
+                DerivedActionExecutionContext::with_file_out_err_and_outputs_as_inputs(
+                    action_execution_context,
+                    coverage_out_err.clone(),
+                    &coverage_spawn_metadata,
+                )?;
+
+            match resolver.exec(
+                &coverage_post_processing_spawn,
+                &coverage_action_execution_context,
+            ) {
+                Ok(_) => {}
+                Err(ExecException::Spawn(e)) => {
+                    if e.catastrophe {
+                        return Err(ExecException::Spawn(e).into());
+                    }
+                    if !e.get_spawn_result().setup_success() {
+                        // Rethrow as the test could not be run and thus there's no point in
+                        // retrying.
+                        return Err(ExecException::Spawn(e).into());
+                    }
+                    test_result_data_builder.cachable =
+                        Some(e.get_spawn_result().status().is_considered_user_error());
+                    test_result_data_builder.test_passed = Some(false);
+                    test_result_data_builder.set_status(if e.has_timed_out() {
+                        BlazeTestStatus::Timeout
+                    } else {
+                        BlazeTestStatus::Failed
+                    });
+                }
+                Err(e) => return Err(e.into()),
+            }
+
+            // Append all output from the coverage spawn to the test log.
+            // coverageOutErr.close()
+            write_out_file(
+                coverage_out_err.get_error_path(),
+                coverage_out_err.get_output_path(),
+            )?;
+            append_coverage_log(&coverage_out_err, &file_out_err)?;
         }
 
         if test_action.is_coverage_mode() && test_action.get_split_coverage_post_processing() {
-            // Verify.verify(... coverage data exists): unreachable until the branch above is
-            // ported.
+            // Verify.verify(...): the post-processing spawn wrote the coverage data.
+            assert!(
+                action_execution_context
+                    .get_input_path(
+                        test_action
+                            .get_coverage_data()
+                            .expect("NullPointerException: getCoverageData()")
+                    )
+                    .exists(),
+                "VerifyException"
+            );
         }
 
         let finish = (|| -> io::Result<()> {
@@ -921,7 +1001,6 @@ fn setup_environment(
 }
 
 // Java: com/google/devtools/build/lib/exec/StandaloneTestStrategy.java:338 StandaloneTestStrategy.appendCoverageLog
-#[allow(dead_code)]
 fn append_coverage_log(coverage_out_err: &FileOutErr, out_err: &FileOutErr) -> io::Result<()> {
     write_out_file(coverage_out_err.get_error_path(), out_err.get_output_path())?;
     write_out_file(
@@ -1072,6 +1151,71 @@ pub fn create_xml_generating_spawn(
         // the test process, not this script. Letting them override the default would make a
         // log-to-XML conversion book the whole test's CPU/memory/custom resources and queue
         // behind unrelated actions.
+        Arc::new(IgnoringOverrides(spawn_action_default_resource_set())),
+        PathMapper::NOOP,
+    )
+}
+
+// Java: com/google/devtools/build/lib/exec/StandaloneTestStrategy.java:490 StandaloneTestStrategy.createCoveragePostProcessingSpawn
+fn create_coverage_post_processing_spawn(
+    action_execution_context: &dyn ActionExecutionContext,
+    action: &TestRunnerAction,
+    expanded_coverage_dir: &[ActionInputRef],
+    tmp_dir_root: &Path,
+) -> SimpleSpawn {
+    let args = vec![
+        action
+            .get_collect_coverage_script()
+            .expect("NullPointerException: getCollectCoverageScript()")
+            .get_exec_path_string()
+            .to_string(),
+    ];
+
+    let mut test_environment = create_environment(action_execution_context, action, tmp_dir_root);
+
+    test_environment.insert(
+        "TEST_SHARD_INDEX".to_string(),
+        action.get_shard_num().to_string(),
+    );
+    test_environment.insert(
+        "TEST_TOTAL_SHARDS".to_string(),
+        action
+            .get_execution_settings()
+            .get_total_shards()
+            .to_string(),
+    );
+    test_environment.insert(TEST_NAME_ENV.to_string(), action.get_test_name());
+    test_environment.insert("IS_COVERAGE_SPAWN".to_string(), "1".to_string());
+    // Let the coverage script locate its own runfiles tree, which is separate from the test
+    // runfiles.
+    test_environment.shift_remove("RUNFILES_DIR");
+    test_environment.shift_remove("JAVA_RUNFILES");
+    test_environment.shift_remove("PYTHON_RUNFILES");
+
+    let mut inputs: NestedSetBuilder<ActionInputRef> = NestedSetBuilder::compile_order();
+    inputs.add_transitive(&to_action_inputs(&action.get_inputs()));
+    inputs.add_all(expanded_coverage_dir.iter().cloned());
+    inputs.add(artifact_input(
+        action
+            .get_coverage_manifest()
+            .expect("NullPointerException: getCoverageManifest()"),
+    ));
+    SimpleSpawn::new(
+        ActionMetadataSnapshot::of(action),
+        args,
+        test_environment,
+        action.get_execution_info(),
+        /* inputs= */ inputs.build(),
+        /* tools= */ NestedSetBuilder::empty_set(Order::STABLE_ORDER),
+        /* outputs= */
+        vec![artifact_input(
+            action
+                .get_coverage_data()
+                .expect("NullPointerException: getCoverageData()"),
+        )],
+        /* mandatory_outputs= */ None,
+        // As in createXmlGeneratingSpawn: the test target's `resources:` entries describe the
+        // test process, not this post-processing step.
         Arc::new(IgnoringOverrides(spawn_action_default_resource_set())),
         PathMapper::NOOP,
     )

@@ -230,6 +230,20 @@ pub trait ActionExecutionContext: ActionContextRegistry {
         crate::actions::FileArtifactValue::create_from_stat(&path, &stat)
     }
 
+    /// `getOutputMetadataStore().getTreeArtifactValue(treeArtifact)` for a tree artifact output
+    /// of this action (`StandaloneTestStrategy`'s split coverage post-processing reads the
+    /// children of the coverage directory).
+    // Java: com/google/devtools/build/lib/actions/cache/OutputMetadataStore.java:72 OutputMetadataStore.getTreeArtifactValue
+    fn get_tree_artifact_value(
+        &self,
+        _tree_artifact: &ActionInputRef,
+    ) -> io::Result<crate::actions::TreeArtifactValue> {
+        blaze_util::unported!(
+            "ActionExecutionContext.getOutputMetadataStore",
+            "this execution context has no output metadata store"
+        )
+    }
+
     /// `getOutputMetadataStore().resetOutputs(outputs)`: forgets the metadata recorded for
     /// `outputs` (an action that re-runs its spawn, e.g. `JavaCompileAction`'s reduced-classpath
     /// fallback).

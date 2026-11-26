@@ -6,6 +6,8 @@
 //! shutdown hooks, see [`shutdown_hooks`](super::shutdown_hooks)); with a server the same code
 //! keeps them between commands, as Java does.
 
+use crate::sandbox::cgroups::{VirtualCgroup, VirtualCgroupFactory};
+use indexmap::IndexMap;
 use std::sync::{Arc, LazyLock};
 
 use blaze_events::{Event, EventHandler};
@@ -154,26 +156,31 @@ impl WorkerModule {
                 );
             }
         }
-        // VirtualCgroupFactory("worker_", VirtualCgroup.getInstance(), sandboxHardening ? limits :
-        // {}, useCgroupsOnLinux) on Linux with --incompatible_use_new_cgroup_implementation (the
-        // default).
-        // PORT: as in LinuxSandboxedSpawnRunner, VirtualCgroup.getInstance() (the per-server
-        // `blaze_<pid>_spawns.slice`) is not created. Without hardening and without
-        // --experimental_worker_use_cgroups_on_linux (both fail loudly here) the factory has no
-        // limits and alwaysCreate is false, so VirtualCgroupFactory.create returns
-        // VirtualCgroup.NULL for every worker: no cgroup is made, NULL.exists() is false, and the
-        // metrics collector reads cgroups only with useCgroupsOnLinux. A null factory behaves the
-        // same.
-        let _ = event
+        // Java: com/google/devtools/build/lib/worker/WorkerModule.java:126 WorkerModule.buildStarting
+        let use_new_cgroup_implementation = event
             .sandbox_options
-            .map(|o| o.use_new_cgroup_implementation);
+            .is_some_and(|o| o.use_new_cgroup_implementation);
+        let cgroup_factory = if !use_new_cgroup_implementation {
+            None
+        } else {
+            // sandboxHardening ? sandboxOptions.getLimits() : {}: hardening fails loudly above.
+            Some(Arc::new(VirtualCgroupFactory::new(
+                "worker_",
+                VirtualCgroup::get_instance(),
+                IndexMap::new(),
+                options.use_cgroups_on_linux,
+            )))
+        };
 
-        let new_worker_factory = Arc::new(WorkerFactory::with_options(
-            worker_dir.clone(),
-            options.clone(),
-            worker_sandbox_options,
-            st.tree_deleter.clone(),
-        ));
+        let new_worker_factory = Arc::new(
+            WorkerFactory::with_options(
+                worker_dir.clone(),
+                options.clone(),
+                worker_sandbox_options,
+                st.tree_deleter.clone(),
+            )
+            .with_cgroup_factory(cgroup_factory),
+        );
         let factory_changed = match &st.worker_factory {
             None => true,
             Some(f) => **f != *new_worker_factory,
@@ -244,13 +251,17 @@ impl WorkerModule {
 
         // Override the flag value if we can't actually use cgroups so that we at least fallback
         // to ps.
-        if options.use_cgroups_on_linux {
-            // CgroupsInfo.isSupported() / VirtualCgroup.getInstance().memory().
-            blaze_util::unported!(
-                "CgroupsInfo.isSupported (--experimental_worker_use_cgroups_on_linux)"
-            );
-        }
-        WorkerProcessMetricsCollector::instance().set_use_cgroups_on_linux(false);
+        // Java: com/google/devtools/build/lib/worker/WorkerModule.java:194 WorkerModule.buildStarting
+        let use_cgroups_on_linux = options.use_cgroups_on_linux
+            && if use_new_cgroup_implementation {
+                VirtualCgroup::get_instance().memory().is_some()
+            } else {
+                // The old implementation (--noincompatible_use_new_cgroup_implementation).
+                blaze_util::unported!(
+                    "CgroupsInfo.isSupported (--experimental_worker_use_cgroups_on_linux)"
+                )
+            };
+        WorkerProcessMetricsCollector::instance().set_use_cgroups_on_linux(use_cgroups_on_linux);
 
         // Start collecting after a pool is defined
         let manager = Arc::new(WorkerLifecycleManager::new(

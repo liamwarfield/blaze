@@ -19,6 +19,7 @@ mod gen_rule_command_substitution_test;
 mod gen_rule_configured_target_test;
 mod gen_rule_windows_configured_target_test;
 mod instrumentation_filter_support_test;
+mod instrumentation_filter_test;
 mod java_compile_action_builder_test;
 mod java_runtime_test;
 mod java_starlark_api_test;

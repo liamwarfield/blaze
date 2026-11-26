@@ -53,6 +53,8 @@ pub struct WorkerBase {
     /// The path of the log file for this worker.
     pub log_file: Path,
     pub status: Arc<WorkerProcessStatus>,
+    /// `cgroup`: the worker's cgroup, set when its process is created.
+    pub cgroup: parking_lot::Mutex<Option<Arc<dyn crate::sandbox::cgroups::Cgroup>>>,
 }
 
 impl WorkerBase {
@@ -68,6 +70,7 @@ impl WorkerBase {
             worker_id,
             log_file,
             status,
+            cgroup: parking_lot::Mutex::new(None),
         }
     }
 }
@@ -106,11 +109,10 @@ pub trait Worker: Send + Sync + fmt::Display {
         &self.base().status
     }
 
-    /// `getCgroup()`. PORT: cgroups are not ported (creating one fails loudly), so a worker
-    /// never has one.
+    /// `getCgroup()`.
     // Java: com/google/devtools/build/lib/worker/Worker.java:81 Worker.getCgroup
-    fn get_cgroup(&self) -> Option<()> {
-        None
+    fn get_cgroup(&self) -> Option<Arc<dyn crate::sandbox::cgroups::Cgroup>> {
+        self.base().cgroup.lock().clone()
     }
 
     // Java: com/google/devtools/build/lib/worker/Worker.java:85 Worker.getWorkerFilesCombinedHash

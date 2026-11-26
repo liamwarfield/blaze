@@ -17,8 +17,21 @@
 //! a `.bzl` file owns). The contents are released only
 //!
 //! 1. when no lease is held, and
-//! 2. on an explicit [`release_if_unused`], which only the server makes, once a command has
-//!    completely ended (after `afterCommand`, the graph dropped, the command's threads joined).
+//! 2. on an explicit [`release_if_unused`], which only the persistent server makes, once a
+//!    command has completely ended (after `afterCommand`, the graph dropped, the command's
+//!    threads joined), while it still holds the command lock (blaze_runtime
+//!    `BlazeCommandDispatcher::release_build_arena_after_commands`; not after a crash or a
+//!    `shutdown`).
+//!
+//! Per-command state does not depend on a release: counters are reset where Java resets them
+//! (for example the package progress at `syncPackageLoading`); only state that points into the
+//! heaps (memo tables keyed by frozen values, caches of values that hold frozen values without
+//! owning their heap) lives here.
+//!
+//! Nothing in a slot's heaps may own (through a `FrozenHeapRef` or an owning `OwnedFrozenValue`)
+//! a heap that holds it, or the heap owns itself and a release never frees it (the leak of
+//! `repository_rule` modules found by the review of 2026-11-25); values cached inside a heap hold
+//! its frozen values without owning the heap, as this arena keeps it.
 //!
 //! Batch mode, the in-process mode and test binaries never call [`release_if_unused`]: there
 //! everything still lives until the process ends, as before. Concurrent executors in one process

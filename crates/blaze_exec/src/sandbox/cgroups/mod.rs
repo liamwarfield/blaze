@@ -21,7 +21,7 @@ use controller::{
 
 /// An interface for interacting with a cgroup.
 // Java: com/google/devtools/build/lib/sandbox/Cgroup.java:20 Cgroup
-pub trait Cgroup: Send + Sync {
+pub trait Cgroup: Send + Sync + std::fmt::Debug {
     fn get_memory_usage_in_kb(&self) -> i32;
     fn exists(&self) -> bool;
     fn add_process(&self, pid: i64) -> io::Result<()>;
@@ -56,7 +56,10 @@ fn read_lines(file: &Path) -> io::Result<Vec<String>> {
     let bytes = std::fs::read(file)?;
     let text = String::from_utf8_lossy(&bytes);
     // BufferedReader.readLine: \n, \r or \r\n end a line; a final empty line is not returned.
-    let mut lines: Vec<String> = text.split('\n').map(|l| l.trim_end_matches('\r').to_string()).collect();
+    let mut lines: Vec<String> = text
+        .split('\n')
+        .map(|l| l.trim_end_matches('\r').to_string())
+        .collect();
     if lines.last().is_some_and(String::is_empty) {
         lines.pop();
     }
@@ -151,7 +154,8 @@ impl Hierarchy {
         let mut hierarchies = Vec::new();
         for line in read_lines(proc_cgroup)? {
             let mut parts = line.splitn(3, ':');
-            let (Some(id), Some(controllers), Some(file)) = (parts.next(), parts.next(), parts.next())
+            let (Some(id), Some(controllers), Some(file)) =
+                (parts.next(), parts.next(), parts.next())
             else {
                 continue;
             };
@@ -189,6 +193,24 @@ pub struct VirtualCgroup {
     paths: IndexSet<PathBuf>,
     cgroups_info: Option<CgroupsInfo>,
     children: Mutex<Vec<Arc<VirtualCgroup>>>,
+}
+
+impl std::fmt::Debug for VirtualCgroup {
+    // AutoValue's toString lists the properties.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VirtualCgroup")
+            .field(
+                "cpu",
+                &self.cpu.as_ref().map(|c| c.get_path().to_path_buf()),
+            )
+            .field(
+                "memory",
+                &self.memory.as_ref().map(|m| m.get_path().to_path_buf()),
+            )
+            .field("paths", &self.paths)
+            .field("cgroupsInfo", &self.cgroups_info)
+            .finish()
+    }
 }
 
 /// `VirtualCgroup.getInstance()`, memoized.
@@ -267,15 +289,24 @@ impl VirtualCgroup {
     }
 
     // Java: com/google/devtools/build/lib/sandbox/cgroups/VirtualCgroup.java:104 VirtualCgroup.createRoot
-    pub fn create_root_from_files(proc_mounts: &Path, proc_cgroup: &Path) -> io::Result<VirtualCgroup> {
-        VirtualCgroup::create_root_from(&Mount::parse(proc_mounts)?, &Hierarchy::parse(proc_cgroup)?)
+    pub fn create_root_from_files(
+        proc_mounts: &Path,
+        proc_cgroup: &Path,
+    ) -> io::Result<VirtualCgroup> {
+        VirtualCgroup::create_root_from(
+            &Mount::parse(proc_mounts)?,
+            &Hierarchy::parse(proc_cgroup)?,
+        )
     }
 
     /// The root from the mounts and the hierarchies (`ImmutableMap` of controller name to
     /// hierarchy: a controller listed twice is an `IllegalArgumentException`).
     // Java: com/google/devtools/build/lib/sandbox/cgroups/VirtualCgroup.java:109 VirtualCgroup.createRoot
     // Java: com/google/devtools/build/lib/sandbox/cgroups/VirtualCgroup.java:118 VirtualCgroup.createRoot
-    pub fn create_root_from(mounts: &[Mount], hierarchies: &[Hierarchy]) -> io::Result<VirtualCgroup> {
+    pub fn create_root_from(
+        mounts: &[Mount],
+        hierarchies: &[Hierarchy],
+    ) -> io::Result<VirtualCgroup> {
         let mut by_controller: IndexMap<&str, &Hierarchy> = IndexMap::new();
         for h in hierarchies {
             for c in &h.controllers {
@@ -366,7 +397,12 @@ impl VirtualCgroup {
                 }
             }
         }
-        Ok(VirtualCgroup::create(cpu, memory, paths, Some(cgroups_info)))
+        Ok(VirtualCgroup::create(
+            cpu,
+            memory,
+            paths,
+            Some(cgroups_info),
+        ))
     }
 
     // Java: com/google/devtools/build/lib/sandbox/cgroups/VirtualCgroup.java:248 VirtualCgroup.createChild
@@ -489,7 +525,11 @@ impl VirtualCgroupFactory {
     /// The cgroup for spawn or worker `id` with `limits` (`cpu` in cpus, `memory` in MB); NULL
     /// when nothing would be limited and the factory does not always create one.
     // Java: com/google/devtools/build/lib/sandbox/cgroups/VirtualCgroupFactory.java:57 VirtualCgroupFactory.create
-    pub fn create(&self, id: i32, limits: &IndexMap<String, f64>) -> io::Result<Arc<VirtualCgroup>> {
+    pub fn create(
+        &self,
+        id: i32,
+        limits: &IndexMap<String, f64>,
+    ) -> io::Result<Arc<VirtualCgroup>> {
         if !self.always_create && self.default_limits.is_empty() && limits.is_empty() {
             return Ok(VirtualCgroup::null());
         }

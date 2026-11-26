@@ -883,7 +883,9 @@ fn map_option_value(
         let mut map: Vec<(String, Option<Label>)> = Vec::with_capacity(entries.len());
         for (k, v) in entries {
             match (k, v) {
-                (JavaObject::Str(k), JavaObject::Label(l)) => map.push((k.clone(), Some(l.clone()))),
+                (JavaObject::Str(k), JavaObject::Label(l)) => {
+                    map.push((k.clone(), Some(l.clone())))
+                }
                 _ => blaze_util::unported!(
                     "FunctionTransitionUtil.applyTransition",
                     "a dict entry that is not String=Label for a Map<String, Label> option \

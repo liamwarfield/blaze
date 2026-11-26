@@ -1525,11 +1525,6 @@ fn apply_map_each(
     path_mapper: &dyn PathMapper,
     starlark_semantics: &Arc<StarlarkSemantics>,
 ) -> Result<(), CommandLineError> {
-    if !path_mapper.is_noop() {
-        // Java stores the path mapper in the thread's semantics (`pathMapper.storeIn`) so that
-        // File.path etc. return mapped paths inside the callback.
-        unported!("PathMapper.storeIn (path mapping inside map_each)");
-    }
     // This computation produces only a String list, which doesn't require reference semantics,
     // so a transient thread is safe.
     let ctx = ThreadContext::new(
@@ -1542,48 +1537,55 @@ fn apply_map_each(
     // `with_evaluator` call below, which is dropped before this function returns.
     let provider: Option<&'static dyn InputMetadataProvider> =
         input_metadata_provider.map(|p| unsafe { extend_provider_lifetime(p) });
-    let outcome = with_evaluator(&ctx, None, &EvalOptions::default(), |module, eval| {
-        let f = frozen_into(module, map_fn);
-        // We create a list that we reuse for the args to map_each
-        let mut args: Vec<Value> = Vec::with_capacity(2);
-        args.push(Value::new_none()); // This will be overwritten each iteration.
-        // map_each can accept either each object, or each object + a directory expander.
-        if wants_expander {
-            let expander = DirectoryExpander { provider };
-            args.push(eval.heap().alloc(expander)); // This will remain constant each iteration
-        }
-        for value in original_values {
-            args[0] = value.to_starlark(module, eval.heap());
-            let ret = eval
-                .eval_function(f, &args, &[])
-                .map_err(|e| EvalError::from_starlark(&e))?;
-            if let Some(string) = ret.unpack_str() {
-                consumer(string.to_owned());
-            } else if is_sequence(ret) {
-                let items = ret
-                    .iterate(eval.heap())
-                    .map_err(|e| EvalError::from_starlark(&e))?;
-                for val in items {
-                    match val.unpack_str() {
-                        Some(s) => consumer(s.to_owned()),
-                        None => {
-                            return Ok(Err(CommandLineExpansionException::new(format!(
-                                "Expected map_each to return string, None, or list of strings, \
+    // Java: StarlarkThread.createTransient(mu, pathMapper.storeIn(starlarkSemantics)): File.path
+    // etc. return mapped paths inside the callback.
+    let outcome = crate::analysis::starlark::starlark_file::with_stored_path_mapper(
+        path_mapper,
+        || {
+            with_evaluator(&ctx, None, &EvalOptions::default(), |module, eval| {
+                let f = frozen_into(module, map_fn);
+                // We create a list that we reuse for the args to map_each
+                let mut args: Vec<Value> = Vec::with_capacity(2);
+                args.push(Value::new_none()); // This will be overwritten each iteration.
+                // map_each can accept either each object, or each object + a directory expander.
+                if wants_expander {
+                    let expander = DirectoryExpander { provider };
+                    args.push(eval.heap().alloc(expander)); // This will remain constant each iteration
+                }
+                for value in original_values {
+                    args[0] = value.to_starlark(module, eval.heap());
+                    let ret = eval
+                        .eval_function(f, &args, &[])
+                        .map_err(|e| EvalError::from_starlark(&e))?;
+                    if let Some(string) = ret.unpack_str() {
+                        consumer(string.to_owned());
+                    } else if is_sequence(ret) {
+                        let items = ret
+                            .iterate(eval.heap())
+                            .map_err(|e| EvalError::from_starlark(&e))?;
+                        for val in items {
+                            match val.unpack_str() {
+                                Some(s) => consumer(s.to_owned()),
+                                None => {
+                                    return Ok(Err(CommandLineExpansionException::new(format!(
+                                        "Expected map_each to return string, None, or list of strings, \
                                  found list containing {}",
-                                val.get_type()
-                            ))));
+                                        val.get_type()
+                                    ))));
+                                }
+                            }
                         }
+                    } else if !ret.is_none() {
+                        return Ok(Err(CommandLineExpansionException::new(format!(
+                            "Expected map_each to return string, None, or list of strings, found {}",
+                            ret.get_type()
+                        ))));
                     }
                 }
-            } else if !ret.is_none() {
-                return Ok(Err(CommandLineExpansionException::new(format!(
-                    "Expected map_each to return string, None, or list of strings, found {}",
-                    ret.get_type()
-                ))));
-            }
-        }
-        Ok(Ok(()))
-    });
+                Ok(Ok(()))
+            })
+        },
+    );
     match outcome {
         Ok(Ok(())) => Ok(()),
         Ok(Err(e)) => Err(MapFnError::CommandLineExpansion(e)),

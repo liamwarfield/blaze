@@ -28,7 +28,8 @@ pub struct RepoRule {
     /// Java `ImmutableTable<RepositoryName, String, RepositoryName>` cells
     /// `(fromRepo, apparentName, canonicalName)`, in the table's cell order.
     pub recorded_repo_mapping_entries: Vec<(RepositoryName, String, RepositoryName)>,
-    /// The implementation function. PORT: keep-alive (the frozen heap of the defining .bzl).
+    /// The implementation function. PORT: keep-alive: the handle does not own the frozen heap of
+    /// the defining .bzl, which the build arena keeps (see `repository_module::get_repo_rule`).
     pub impl_: OwnedFrozenValue,
     pub doc: Option<String>,
     pub attributes: Vec<Attribute>,

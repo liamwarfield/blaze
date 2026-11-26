@@ -225,6 +225,7 @@ fn action_inputs_vary_check_compute_key_results() {
                 flip[2],
                 // bzlTransitiveDigest of the test module.
                 Vec::new(),
+                std::sync::Arc::new(blaze_starlark::StarlarkSemantics::default()),
             ))
         },
         &ctx,
@@ -270,6 +271,7 @@ fn wrong_artifact_owner_on_input_source_file_exception_thrown() {
         get_source_artifact("template.txt", ArtifactOwner::NullOwner),
         false,
         Vec::new(),
+        std::sync::Arc::new(blaze_starlark::StarlarkSemantics::default()),
     );
 }
 
@@ -285,6 +287,7 @@ fn mnemonic_progress_message_and_volatility() {
             get_source_artifact("template.txt", ArtifactOwner::NullOwner),
             is_volatile,
             Vec::new(),
+            std::sync::Arc::new(blaze_starlark::StarlarkSemantics::default()),
         )
     };
     let stable = make(false);

@@ -157,3 +157,80 @@ impl AbstractFileWriteAction for InstrumentedFileManifestAction {
         })))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blaze_actions::analysis::workspace_status_action::{BUILD_INFO_KEY, system_action_owner};
+    use blaze_actions::{ActionLookupKeyRef, ArtifactRoot, RootType};
+    use blaze_vfs::{DigestHashFunction, Path, UnixFileSystem};
+
+    /// `createArtifact(rootRelativePath)`: an artifact under `<outputBase>/exec/out`.
+    fn create_artifact(root_relative_path: &str) -> Artifact {
+        let fs = UnixFileSystem::create(DigestHashFunction::Sha256);
+        let exec_root = Path::create(PathFragment::create("/output_base/exec"), &fs);
+        let root = ArtifactRoot::as_derived_root(&exec_root, RootType::OUTPUT, &["out"]);
+        let exec_path = root.get_exec_path().get_relative_str(root_relative_path);
+        Artifact::create_derived_artifact(root, exec_path, ActionLookupKeyRef::new(BUILD_INFO_KEY))
+    }
+
+    fn manifest_action(file_a: bool, file_b: bool) -> InstrumentedFileManifestAction {
+        let mut files = NestedSetBuilder::stable_order();
+        if file_a {
+            files.add(create_artifact("foo/a"));
+        }
+        if file_b {
+            files.add(create_artifact("foo/b"));
+        }
+        InstrumentedFileManifestAction::new(
+            system_action_owner(),
+            files.build(),
+            create_artifact("foo/manifest"),
+        )
+    }
+
+    /// Regression test for b/28261106 (`ActionTester.runTest` over FILE_A, FILE_B: equal for the
+    /// same attributes, different for different ones).
+    // Java: src/test/java/com/google/devtools/build/lib/analysis/test/InstrumentedFileManifestActionTest.java:80 InstrumentedFileManifestActionTest.testCacheKey
+    #[test]
+    fn test_cache_key() {
+        let ctx = ActionKeyContext::new();
+        let combos = [(false, false), (true, false), (false, true), (true, true)];
+        let keys: Vec<String> = combos
+            .iter()
+            .map(|(a, b)| manifest_action(*a, *b).get_key(&ctx, None).unwrap())
+            .collect();
+        for (i, (a, b)) in combos.iter().enumerate() {
+            assert_eq!(
+                keys[i],
+                manifest_action(*a, *b).get_key(&ctx, None).unwrap()
+            );
+            for j in i + 1..keys.len() {
+                assert_ne!(keys[i], keys[j], "{i} and {j}");
+            }
+        }
+    }
+
+    // Java: src/test/java/com/google/devtools/build/lib/analysis/test/InstrumentedFileManifestActionTest.java:47 InstrumentedFileManifestActionTest.testInstrumentedFileManifestConflicts
+    #[test]
+    #[ignore = "needs AnalysisTestCase.update with java_library under --collect_code_coverage"]
+    fn test_instrumented_file_manifest_conflicts() {}
+
+    #[test]
+    fn writes_sorted_exec_paths() {
+        let mut files = NestedSetBuilder::stable_order();
+        files.add(create_artifact("foo/b"));
+        files.add(create_artifact("foo/a"));
+        let action = InstrumentedFileManifestAction::new(
+            system_action_owner(),
+            files.build(),
+            create_artifact("foo/manifest"),
+        );
+        let bytes = action
+            .new_deterministic_writer()
+            .unwrap()
+            .get_bytes()
+            .unwrap();
+        assert_eq!(bytes, b"out/foo/a\nout/foo/b\n");
+    }
+}

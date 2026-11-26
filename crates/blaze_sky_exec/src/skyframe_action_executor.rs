@@ -3927,6 +3927,22 @@ impl ActionExecutionContext for ActionExecutionContextImpl<'_> {
         }
     }
     // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:358 ActionExecutionContext.getOutputMetadataStore
+    fn get_tree_artifact_value(
+        &self,
+        tree_artifact: &ActionInputRef,
+    ) -> std::io::Result<TreeArtifactValue> {
+        let Some(store) = &self.output_metadata_store else {
+            panic!("NullPointerException: no OutputMetadataStore during input discovery");
+        };
+        match store.get_tree_artifact_value(tree_artifact) {
+            Ok(v) => Ok(v),
+            Err(IoOrInterruptedException::Io(e)) => Err(e),
+            Err(IoOrInterruptedException::Interrupted(_)) => {
+                Err(std::io::Error::other("interrupted"))
+            }
+        }
+    }
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:358 ActionExecutionContext.getOutputMetadataStore
     fn reset_outputs(&self, outputs: &[ActionInputRef]) {
         let Some(store) = &self.output_metadata_store else {
             panic!("NullPointerException: no OutputMetadataStore during input discovery");

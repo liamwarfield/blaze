@@ -55,8 +55,7 @@ fn with_java_runtime_info<R>(
         .unpack_frozen()
         .expect("a frozen value");
     Heap::temp(|heap| {
-        let info =
-            JavaRuntimeInfo::wrap(value.to_value(), heap).unwrap_or_else(|e| panic!("{e}"));
+        let info = JavaRuntimeInfo::wrap(value.to_value(), heap).unwrap_or_else(|e| panic!("{e}"));
         f(info)
     })
 }

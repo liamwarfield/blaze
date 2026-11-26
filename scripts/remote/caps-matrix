@@ -46,7 +46,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-src="$HOME/.cache/blaze/work/remote/ry-src"
+src="${BLAZE_REMOTE_WORK:-$HOME/.cache/blaze/work/remote}/ry-src"
 
 if [[ $# -lt 1 || "$1" == help || "$1" == --help || "$1" == -h ]]; then
   sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
@@ -90,18 +90,18 @@ trap cleanup EXIT
 [[ $need_caps == 1 ]] && "$here/worker" start ry-caps 9401 >/dev/null
 [[ $need_auth == 1 ]] && "$here/worker" start ry-auth 9402 --expected_authorization_token=ry-token >/dev/null
 if [[ $need_http == 1 ]]; then
-  mkdir -p "$HOME/.cache/blaze/work/remote/ry-http"
-  (cd "$HOME/.cache/blaze/work/remote/ry-http" && exec python3 -I -m http.server 9403 --bind ::) \
+  mkdir -p "${BLAZE_REMOTE_WORK:-$HOME/.cache/blaze/work/remote}/ry-http"
+  (cd "${BLAZE_REMOTE_WORK:-$HOME/.cache/blaze/work/remote}/ry-http" && exec python3 -I -m http.server 9403 --bind ::) \
     >/dev/null 2>&1 &
   http_pid=$!
   sleep 1
 fi
 if [[ $need_fake == 1 ]]; then
   # A private copy, so that a rebuild of the checkout during the run does not matter.
-  fake_copy="$HOME/.cache/blaze/work/remote/caps-matrix-fake-caps-$tag"
+  fake_copy="${BLAZE_REMOTE_WORK:-$HOME/.cache/blaze/work/remote}/caps-matrix-fake-caps-$tag"
   cp "$fake_caps" "$fake_copy.tmp" && mv -f "$fake_copy.tmp" "$fake_copy"
   "$fake_copy" --port 9620 --code NOT_FOUND --message "instance not found" \
-    >"$HOME/.cache/blaze/work/remote/caps-matrix-fake-caps-$tag.log" 2>&1 &
+    >"${BLAZE_REMOTE_WORK:-$HOME/.cache/blaze/work/remote}/caps-matrix-fake-caps-$tag.log" 2>&1 &
   fake_pid=$!
   sleep 1
 fi
@@ -133,7 +133,7 @@ for s in "${scenarios[@]}"; do
     closed-cache)
       opts=(--remote_cache=grpc://localhost:9623)
       "$fake_copy" --port 9623 --code OK --exit-after-capabilities \
-        >>"$HOME/.cache/blaze/work/remote/caps-matrix-fake-caps-$tag.log" 2>&1 &
+        >>"${BLAZE_REMOTE_WORK:-$HOME/.cache/blaze/work/remote}/caps-matrix-fake-caps-$tag.log" 2>&1 &
       sleep 1
       ;;
     *) echo "unknown scenario: $s" >&2; exit 2 ;;

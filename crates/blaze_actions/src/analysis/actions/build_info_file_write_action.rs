@@ -2,6 +2,14 @@
 
 use std::any::Any;
 use std::fmt;
+use std::sync::Arc;
+
+use blaze_starlark::StarlarkSemantics;
+use blaze_starlark::error::EvalErrorKind;
+use blaze_starlark::eval::{EvalOptions, frozen_into, with_evaluator};
+use blaze_starlark::thread::{Phase, StarlarkEvents, ThreadContext};
+use blaze_starlark::{EvalError, Location};
+use starlark::values::dict::{AllocDict, DictRef};
 
 use blaze_collect::{NestedSetBuilder, Order};
 use blaze_util::{Fingerprint, check_argument};
@@ -34,6 +42,19 @@ pub struct BuildInfoFileWriteAction {
     is_volatile: bool,
     /// `BazelModuleContext.of(translationCallback.getModule()).bzlTransitiveDigest()`.
     bzl_transitive_digest: Vec<u8>,
+    /// The semantics of the thread that created the action (the callback's thread uses them).
+    semantics: Arc<StarlarkSemantics>,
+}
+
+/// Why `execute` could not translate the status values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TranslateError {
+    /// The callback failed: `EvalException.toString()` (its message with the call stack).
+    Callback(String),
+    /// The callback's value is not a dict of strings to strings: the `Dict.cast` message.
+    NotStringDict(String),
+    /// The thread was cancelled.
+    Interrupted,
 }
 
 impl BuildInfoFileWriteAction {
@@ -51,6 +72,7 @@ impl BuildInfoFileWriteAction {
         template: Artifact,
         is_volatile: bool,
         bzl_transitive_digest: Vec<u8>,
+        semantics: Arc<StarlarkSemantics>,
     ) -> BuildInfoFileWriteAction {
         let base = AbstractAction::new(
             owner,
@@ -73,6 +95,7 @@ impl BuildInfoFileWriteAction {
             template,
             is_volatile,
             bzl_transitive_digest,
+            semantics,
         }
     }
 
@@ -86,10 +109,80 @@ impl BuildInfoFileWriteAction {
         &self.translation_callback
     }
 
-    /// Runs the translation callback and expands the template.
+    /// The part of `execute` that calls the Starlark callback: `values` (in the iteration order
+    /// of Java's `HashMap`) become the dict passed positionally to the translation callback on a
+    /// new thread with the action's semantics; the result is cast to a dict of strings to strings
+    /// and returned in its iteration order.
     // Java: com/google/devtools/build/lib/analysis/actions/BuildInfoFileWriteAction.java:97 BuildInfoFileWriteAction.execute
-    pub fn execute(&self) -> ! {
-        blaze_util::unported!("BuildInfoFileWriteAction.execute (execution, wave W6)")
+    pub fn call_translation_callback(
+        &self,
+        values: &[(String, String)],
+    ) -> Result<Vec<(String, String)>, TranslateError> {
+        // Since the result of this thread is a String to String Dict, it should not result in
+        // any reference-equals objects.
+        // PORT: Java names the thread "transform_version_file callback" /
+        // "transform_info_file callback"; the name appears nowhere in its output.
+        let ctx = ThreadContext::new(Phase::Other, self.semantics.clone(), Arc::new(StderrPrint));
+        let outcome = with_evaluator(&ctx, None, &EvalOptions::default(), |module, eval| {
+            let f = frozen_into(module, &self.translation_callback);
+            // Dict.immutableCopyOf(values)
+            let dict = eval.heap().alloc(AllocDict(
+                values.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+            ));
+            let ret = eval
+                .eval_function(f, &[dict], &[])
+                .map_err(|e| EvalError::from_starlark(&e))?;
+            // Dict.cast(substitutionDictObject, String.class, String.class, "substitution_dict")
+            let Some(d) = DictRef::from_value(ret) else {
+                return Ok(Err(format!(
+                    "got {} for 'substitution_dict', want dict",
+                    ret.get_type()
+                )));
+            };
+            let mut out = Vec::with_capacity(d.len());
+            for (k, v) in d.iter() {
+                match (k.unpack_str(), v.unpack_str()) {
+                    (Some(k), Some(v)) => out.push((k.to_string(), v.to_string())),
+                    _ => {
+                        return Ok(Err(format!(
+                            "got dict<{}, {}> for 'substitution_dict', want dict<string, string>",
+                            k.get_type(),
+                            v.get_type()
+                        )));
+                    }
+                }
+            }
+            Ok(Ok(out))
+        });
+        match outcome {
+            Ok(Ok(out)) => Ok(out),
+            Ok(Err(message)) => Err(TranslateError::NotStringDict(message)),
+            Err(e) if e.kind == EvalErrorKind::Cancelled => Err(TranslateError::Interrupted),
+            Err(e) => Err(TranslateError::Callback(e.message_with_stack())),
+        }
+    }
+
+    /// Whether this action translates the volatile status file.
+    pub fn is_volatile_status(&self) -> bool {
+        self.is_volatile
+    }
+}
+
+/// The default print handler of a `StarlarkThread` (`StarlarkThread.create` sets none): `print`
+/// writes `<caller location>: <message>` to the server's standard error.
+// Java: net/starlark/java/eval/StarlarkThread.java:366 StarlarkThread.defaultPrintHandler
+struct StderrPrint;
+
+impl StarlarkEvents for StderrPrint {
+    fn debug(&self, location: Option<&Location>, message: &str) {
+        match location {
+            Some(location) => eprintln!("{location}: {message}"),
+            None => eprintln!("<builtin>: {message}"),
+        }
+    }
+
+    fn warn(&self, location: Option<&Location>, message: &str) {
+        self.debug(location, message);
     }
 }
 
@@ -99,7 +192,7 @@ impl fmt::Debug for BuildInfoFileWriteAction {
             .field("base", &self.base)
             .field("template", &self.template)
             .field("is_volatile", &self.is_volatile)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

@@ -18,6 +18,7 @@ use super::worker_process_status::{Status, worker_code_name};
 use super::worker_proxy::WorkerProxy;
 use crate::exec::tree_deleter::TreeDeleter;
 use crate::sandbox::asynchronous_tree_deleter::AsynchronousTreeDeleter;
+use crate::sandbox::cgroups::VirtualCgroupFactory;
 
 // It's fine to use an AtomicInteger here (which is 32-bit), because it is only incremented when
 // spawning a new worker, thus even under worst-case circumstances and buggy workers quitting
@@ -90,6 +91,8 @@ pub struct WorkerFactory {
     /// Options specific to hardened sandbox. Null if `--experimental_worker_sandbox_hardening` is
     /// not set.
     hardened_sandbox_options: Option<WorkerSandboxOptions>,
+    /// `cgroupFactory`: the factory of the workers' cgroups, or null.
+    cgroup_factory: Option<Arc<VirtualCgroupFactory>>,
 }
 
 impl WorkerFactory {
@@ -99,8 +102,7 @@ impl WorkerFactory {
     }
 
     /// `new WorkerFactory(workerBaseDir, workerOptions, hardenedSandboxOptions, treeDeleter,
-    /// cgroupFactory)`. PORT: the `VirtualCgroupFactory` is not ported (`WorkerModule` fails
-    /// loudly when one would be made), so it is always null.
+    /// null)`; the cgroup factory is given with [`WorkerFactory::with_cgroup_factory`].
     // Java: com/google/devtools/build/lib/worker/WorkerFactory.java:63 WorkerFactory.<init>
     pub fn with_options(
         worker_base_dir: Path,
@@ -114,7 +116,17 @@ impl WorkerFactory {
             tree_deleter,
             reporter: Mutex::new(None),
             hardened_sandbox_options,
+            cgroup_factory: None,
         }
+    }
+
+    /// The `cgroupFactory` constructor argument (not part of `equals`, as in Java).
+    pub fn with_cgroup_factory(
+        mut self,
+        cgroup_factory: Option<Arc<VirtualCgroupFactory>>,
+    ) -> Self {
+        self.cgroup_factory = cgroup_factory;
+        self
     }
 
     // Java: com/google/devtools/build/lib/worker/WorkerFactory.java:76 WorkerFactory.setReporter
@@ -167,16 +179,19 @@ impl WorkerFactory {
                 Arc::new(proxy)
             } else {
                 let work_dir = self.get_sandboxed_worker_path(key, worker_id);
-                Arc::new(SingleplexWorker::new_sandboxed(
-                    key.clone(),
-                    worker_id,
-                    work_dir,
-                    log_file,
-                    self.worker_options.clone(),
-                    self.hardened_sandbox_options.as_ref(),
-                    self.tree_deleter(),
-                    key.use_in_memory_tracking(),
-                ))
+                Arc::new(
+                    SingleplexWorker::new_sandboxed(
+                        key.clone(),
+                        worker_id,
+                        work_dir,
+                        log_file,
+                        self.worker_options.clone(),
+                        self.hardened_sandbox_options.as_ref(),
+                        self.tree_deleter(),
+                        key.use_in_memory_tracking(),
+                    )
+                    .with_cgroup_factory(self.cgroup_factory.clone()),
+                )
             }
         } else if key.is_multiplex() {
             let worker_multiplexer = WorkerMultiplexerManager::get_instance(key, &log_file);
@@ -188,13 +203,16 @@ impl WorkerFactory {
                 key.get_exec_root().clone(),
             ))
         } else {
-            Arc::new(SingleplexWorker::new(
-                key.clone(),
-                worker_id,
-                key.get_exec_root().clone(),
-                log_file,
-                self.worker_options.clone(),
-            ))
+            Arc::new(
+                SingleplexWorker::new(
+                    key.clone(),
+                    worker_id,
+                    key.get_exec_root().clone(),
+                    log_file,
+                    self.worker_options.clone(),
+                )
+                .with_cgroup_factory(self.cgroup_factory.clone()),
+            )
         };
 
         let msg = format!(

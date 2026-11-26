@@ -126,7 +126,12 @@ pub fn create_for_execution(
     is_starlark_action: bool,
     input_metadata_provider: Option<&dyn InputMetadataProvider>,
 ) -> Arc<dyn PathMapper> {
-    let mapper = create(action, output_paths_mode, is_starlark_action, input_metadata_provider);
+    let mapper = create(
+        action,
+        output_paths_mode,
+        is_starlark_action,
+        input_metadata_provider,
+    );
     if !mapper.is_noop() {
         blaze_util::unported!(
             "Spawn.getPathMapper",

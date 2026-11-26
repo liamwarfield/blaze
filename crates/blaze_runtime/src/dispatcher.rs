@@ -1170,9 +1170,7 @@ fn set_shutdown_reason(reason: &Mutex<Option<String>>, shutdown_reason: String) 
 /// run). If a lease is still held (an executor outlived its command) nothing is released and
 /// the next command shares this arena, as in a process that never releases it.
 fn release_build_arena() {
-    let leases = blaze_util::build_arena::active_leases();
-    let released = blaze_util::build_arena::release_if_unused();
-    eprintln!("TEMPDIAG release_build_arena leases={leases} released={released} generation={}", blaze_util::build_arena::generation());
+    blaze_util::build_arena::release_if_unused();
 }
 
 /// The `systemOutErrPatcher.close()` of execExclusively's `finally`: run when the command's

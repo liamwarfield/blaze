@@ -1535,7 +1535,6 @@ my_rule(name = "foo")
 
 // Java: StarlarkSubruleTest.testSubruleAttrs_lateBoundDefaultsAreResolved
 #[test]
-#[ignore = "BLAZE GAP: unported!(\"BaselineCoverageAction.create\") (blaze_analysis test/instrumented_files_info.rs)"]
 fn test_subrule_attrs_late_bound_defaults_are_resolved() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(

@@ -84,8 +84,10 @@ impl StrippingPathMapper {
             || mnemonic == "Turbine"
             || mnemonic == "JavaResourceJar";
         let output_artifact_root = primary_output.get_root().clone();
-        let stripped_output_artifact_root =
-            MappedArtifactRoot::new(map_output_path(output_artifact_root.get_exec_path(), &output_root));
+        let stripped_output_artifact_root = MappedArtifactRoot::new(map_output_path(
+            output_artifact_root.get_exec_path(),
+            &output_root,
+        ));
         StrippingPathMapper {
             output_root,
             mnemonic: mnemonic.to_string(),
@@ -116,7 +118,13 @@ impl StrippingPathMapper {
                 .cloned(),
         );
         if action.discovers_inputs() {
-            inputs.extend(action.get_allowed_derived_inputs().to_list().iter().cloned());
+            inputs.extend(
+                action
+                    .get_allowed_derived_inputs()
+                    .to_list()
+                    .iter()
+                    .cloned(),
+            );
         }
         inputs.extend(action.get_outputs());
         if is_path_strippable(&inputs, &output_root, input_metadata_provider) {
@@ -150,7 +158,9 @@ impl PathMapper for StrippingPathMapper {
     // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:141 StrippingPathMapper.getMappedExecPathString
     fn get_mapped_exec_path_string(&self, artifact: &Artifact) -> String {
         if self.is_supported(artifact) {
-            strip(artifact.get_exec_path()).get_path_string().to_string()
+            strip(artifact.get_exec_path())
+                .get_path_string()
+                .to_string()
         } else {
             artifact.get_exec_path_string().to_string()
         }
@@ -171,7 +181,10 @@ impl PathMapper for StrippingPathMapper {
     }
 
     // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:164 StrippingPathMapper.mapCustomStarlarkArgs
-    fn map_custom_starlark_args<'a>(&self, chunk: Box<dyn ArgChunk + 'a>) -> Box<dyn ArgChunk + 'a> {
+    fn map_custom_starlark_args<'a>(
+        &self,
+        chunk: Box<dyn ArgChunk + 'a>,
+    ) -> Box<dyn ArgChunk + 'a> {
         if !self.is_starlark_action {
             return chunk;
         }
@@ -331,7 +344,9 @@ pub fn is_path_strippable(
             continue;
         }
         // For "bazel-out/k8-fastbuild/bin/foo/bar", get "bin/foo/bar".
-        let key = input.get_exec_path().sub_fragment(2, input.get_exec_path().segment_count());
+        let key = input
+            .get_exec_path()
+            .sub_fragment(2, input.get_exec_path().segment_count());
         let previous = *root_relative_paths.entry(key).or_insert(input);
         if previous != input && !have_same_digest(previous, input, input_metadata_provider) {
             return false;
@@ -377,12 +392,20 @@ mod tests {
     fn string_stripper_strips_output_paths() {
         let s = StringStripper::new("bazel-out");
         assert_eq!(
-            s.strip("/path/to/compiler bazel-out/x86-fastbuild/foo src/my.src -Dbazel-out/arm-opt/bar"),
+            s.strip(
+                "/path/to/compiler bazel-out/x86-fastbuild/foo src/my.src -Dbazel-out/arm-opt/bar"
+            ),
             "/path/to/compiler bazel-out/cfg/foo src/my.src -Dbazel-out/cfg/bar"
         );
-        assert_eq!(s.strip("bazel-out/x86-fastbuild"), "bazel-out/x86-fastbuild");
+        assert_eq!(
+            s.strip("bazel-out/x86-fastbuild"),
+            "bazel-out/x86-fastbuild"
+        );
         assert_eq!(s.strip("bazel-out;foo"), "bazel-out;foo");
-        assert_eq!(s.strip("/path/to/compiler bazel-out"), "/path/to/compiler bazel-out");
+        assert_eq!(
+            s.strip("/path/to/compiler bazel-out"),
+            "/path/to/compiler bazel-out"
+        );
     }
 
     #[test]

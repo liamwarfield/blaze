@@ -156,7 +156,12 @@ impl Limited<'_> {
                 self.read_bytes(4)?;
                 Ok(true)
             }
-            _ => Err(invalid_protocol_buffer(INVALID_WIRE_TYPE)),
+            // InvalidProtocolBufferException.invalidWireType() throws the subclass.
+            _ => Err(JavaException::new(
+                "com.google.protobuf.InvalidProtocolBufferException$InvalidWireTypeException",
+                INVALID_WIRE_TYPE,
+            )
+            .into_io_error()),
         }
     }
 
@@ -475,6 +480,22 @@ mod tests {
             Some(response)
         );
         assert_eq!(parse_delimited_work_response(&mut input).unwrap(), None);
+    }
+
+    // From the oracle: a worker that prints text to stdout ("I'm a poisoned worker ...": a
+    // length byte 'I', then the tag 0x27, wire type 7) gives the subclass.
+    #[test]
+    fn parse_delimited_invalid_wire_type_is_the_subclass() {
+        let mut input = ByteArrayInputStream::new(
+            b"I'm a poisoned worker and this is not a protobuf.\n".to_vec(),
+        );
+        let e = parse_delimited_work_response(&mut input).unwrap_err();
+        let java = JavaException::from_io_error(&e);
+        assert_eq!(
+            java.to_string(),
+            "com.google.protobuf.InvalidProtocolBufferException$InvalidWireTypeException: \
+             Protocol message tag had invalid wire type."
+        );
     }
 
     #[test]
