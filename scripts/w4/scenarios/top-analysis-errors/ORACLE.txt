@@ -1009,19 +1009,19 @@ ERROR: Build did NOT complete successfully
 exit 1
 --- stdout
 --- stderr
-ERROR: <WS>/ok/BUILD.bazel: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel
-ERROR: <WS>/BUILD.bazel:13:2: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel and referenced by '//:dep_missing_target'
 ERROR: <WS>/BUILD.bazel:43:6: in fails rule //:impl_fails:
 Traceback (most recent call last):
 	File "<WS>/defs.bzl", line 14, column 9, in _fails_impl
 		fail("boom from " + ctx.label.name)
 Error in fail: boom from impl_fails
+ERROR: <WS>/ok/BUILD.bazel: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel
+ERROR: <WS>/BUILD.bazel:13:2: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel and referenced by '//:dep_missing_target'
 ERROR: <WS>/BUILD.bazel:25:2: in w rule //:dep_not_visible: Visibility error:
 target '//vis:private' is not visible from
 target '//:dep_not_visible'
 Recommendation: modify the visibility declaration if you think the dependency is legitimate. For more info see https://bazel.build/concepts/visibility
-ERROR: <WS>/BUILD.bazel:43:6: Analysis of target '//:impl_fails' (config: a7a71fd) failed
 ERROR: <WS>/BUILD.bazel:25:2: Analysis of target '//:dep_not_visible' (config: a7a71fd) failed
+ERROR: <WS>/BUILD.bazel:43:6: Analysis of target '//:impl_fails' (config: a7a71fd) failed
 WARNING: errors encountered while analyzing target '//:dep_not_visible', it will not be built.
 WARNING: errors encountered while analyzing target '//:dep_missing_target', it will not be built.
 Analysis failed
@@ -1085,29 +1085,29 @@ exit 1
 --- stderr
 ERROR: <WS>/BUILD.bazel:58:11: in src attribute of needs_file rule //:attr_error: source file '//:wrong.bin' is misplaced here (expected .txt)
 ERROR: <WS>/BUILD.bazel:58:11: in src attribute of needs_file rule //:attr_error: '//:wrong.bin' does not produce any needs_file src files (expected .txt)
-ERROR: <WS>/ok/BUILD.bazel: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel
-ERROR: Traceback (most recent call last):
-	File "<WS>/badpkg/BUILD.bazel", line 5, column 5, in <toplevel>
-		fail("badpkg does not load")
-Error in fail: badpkg does not load
-ERROR: <WS>/BUILD.bazel:43:6: in fails rule //:impl_fails:
-Traceback (most recent call last):
-	File "<WS>/defs.bzl", line 14, column 9, in _fails_impl
-		fail("boom from " + ctx.label.name)
-Error in fail: boom from impl_fails
-ERROR: <WS>/BUILD.bazel:13:2: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel and referenced by '//:dep_missing_target'
-ERROR: <WS>/BUILD.bazel:7:2: Target '//badpkg:x' contains an error and its package is in error and referenced by '//:dep_bad_package'
 ERROR: <WS>/BUILD.bazel:58:11: Analysis of target '//:attr_error' (config: a7a71fd) failed
 ERROR: <WS>/BUILD.bazel:25:2: in w rule //:dep_not_visible: Visibility error:
 target '//vis:private' is not visible from
 target '//:dep_not_visible'
 Recommendation: modify the visibility declaration if you think the dependency is legitimate. For more info see https://bazel.build/concepts/visibility
-ERROR: <WS>/BUILD.bazel:43:6: Analysis of target '//:impl_fails' (config: a7a71fd) failed
 ERROR: no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
  - nosuchpkg
+ERROR: <WS>/ok/BUILD.bazel: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel
+ERROR: <WS>/BUILD.bazel:43:6: in fails rule //:impl_fails:
+Traceback (most recent call last):
+	File "<WS>/defs.bzl", line 14, column 9, in _fails_impl
+		fail("boom from " + ctx.label.name)
+Error in fail: boom from impl_fails
+ERROR: Traceback (most recent call last):
+	File "<WS>/badpkg/BUILD.bazel", line 5, column 5, in <toplevel>
+		fail("badpkg does not load")
+Error in fail: badpkg does not load
+ERROR: <WS>/BUILD.bazel:7:2: Target '//badpkg:x' contains an error and its package is in error and referenced by '//:dep_bad_package'
+ERROR: <WS>/BUILD.bazel:25:2: Analysis of target '//:dep_not_visible' (config: a7a71fd) failed
 ERROR: <WS>/BUILD.bazel:19:2: no such package 'nosuchpkg': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.
  - nosuchpkg and referenced by '//:dep_missing_package'
-ERROR: <WS>/BUILD.bazel:25:2: Analysis of target '//:dep_not_visible' (config: a7a71fd) failed
+ERROR: <WS>/BUILD.bazel:13:2: no such target '//ok:nosuchtarget': target 'nosuchtarget' not declared in package 'ok' defined by <WS>/ok/BUILD.bazel and referenced by '//:dep_missing_target'
+ERROR: <WS>/BUILD.bazel:43:6: Analysis of target '//:impl_fails' (config: a7a71fd) failed
 WARNING: errors encountered while analyzing target '//:dep_dep_impl_fails', it will not be built.
 Analysis failed
 WARNING: errors encountered while analyzing target '//:dep_missing_target', it will not be built.

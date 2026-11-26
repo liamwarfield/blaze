@@ -45,7 +45,11 @@ binary       differential run on the real binaries. One scratch workspace
              really ended (`exit N`, `signal NAME`, `oom-kill`, `timeout` after 3600 s). The
              terminations are compared as one more row, `query-termination`: the expected exit
              is 3 when the oracle rejects at least one package (--keep_going), else 0; equal
-             failures otherwise are BOTH-FAILED. The oracle must be the pinned one
+             failures otherwise are BOTH-FAILED. When either query did not end with exit 0 or
+             3 (a signal, an OOM kill, a timeout, another exit code), every other row (stdout,
+             stderr, each package) is SKIPPED: a package row is read from stderr alone, and the
+             stderr of a query that stopped early says nothing about the packages it never
+             evaluated (audit 4r2, B5). The oracle must be the pinned one
              (UPSTREAM.json); an --only that matches no case is an error. Each package is one
              row: IDENTICAL, or DIFFERENT (OUTCOME or TEXT). The report starts with the
              repository HEAD and dirty flag and both binaries' paths and sha256 and ends with
@@ -173,6 +177,21 @@ def judge_packages(packages, oracle_term, oracle_err, blaze_term, blaze_err, rep
     cls, detail = cc.judge(oracle_term, blaze_term, [], declared_exit=3 if rejected else None)
     report.add("query-termination", cls, detail or "oracle %s, blaze %s" % (
         oracle_term, blaze_term))
+    # Audit 4r2, B5: a package row is derived from stderr alone, and a query that did not run
+    # to its end (a signal, an OOM kill, a timeout, an exit other than 0 or 3) leaves a stderr
+    # that says nothing about the packages it never evaluated. Then no other row is judged.
+    unfinished = [(side, t) for side, t in (("oracle", oracle_term), ("blaze", blaze_term))
+                  if not (t is not None and t.kind == "exit" and t.code in (0, 3))]
+    if unfinished:
+        why = "not judged: the query did not run to its end on the %s (%s), so its output " \
+              "is not a complete evaluation" % (" and the ".join(s for s, _ in unfinished),
+                                                 "; ".join(str(t) for _, t in unfinished))
+        for name in ("query-stdout", "query-stderr"):
+            report.add(name, cc.SKIPPED, why)
+        for p in packages:
+            report.add(p, cc.SKIPPED, why)
+        print("packages not judged: %s" % why)
+        return want, None, None
     norm = norm or cc.Normaliser(RULES)
     for name, stream, o, b in (("query-stdout", "stdout", oracle_out, blaze_out),
                                ("query-stderr", "stderr", oracle_err, blaze_err)):
@@ -229,10 +248,14 @@ def binary(casedir, blaze, only, json_out=None):
     want, outcome, text = judge_packages(packages, oracle_term, oracle_err, blaze_term,
                                          blaze_err, report, outs["oracle"], outs["blaze"], norm)
     accepted = sum(1 for p in packages if not want[p][0])
-    print("%d cases, %d packages (oracle: %d accepted, %d rejected); oracle %s, blaze %s; "
-          "%d packages differ in outcome, %d more in error text only; %d identical"
-          % (len(names), len(packages), accepted, len(packages) - accepted, oracle_term,
-             blaze_term, outcome, text, len(packages) - outcome - text))
+    if outcome is None:
+        print("%d cases, %d packages; oracle %s, blaze %s; packages not judged (a query did not "
+              "run to its end)" % (len(names), len(packages), oracle_term, blaze_term))
+    else:
+        print("%d cases, %d packages (oracle: %d accepted, %d rejected); oracle %s, blaze %s; "
+              "%d packages differ in outcome, %d more in error text only; %d identical"
+              % (len(names), len(packages), accepted, len(packages) - accepted, oracle_term,
+                 blaze_term, outcome, text, len(packages) - outcome - text))
     report.print_footer()
     if json_out:
         report.write_json(json_out)
@@ -245,10 +268,26 @@ def selftest():
     def argv(blaze, label):
         return ["binary", "--blaze", blaze, "--only", "^%s$" % re.escape(first)]
 
+    def extra(st, fh, run):
+        # B5: a killed query leaves no package row IDENTICAL, even when the oracle's stderr
+        # names no package and Blaze's says nothing either.
+        for name, ospec, bspec in (
+                ("both-sigpipe", dict(out=b"same\n", sig="PIPE"), dict(out=b"same\n", sig="PIPE")),
+                ("blaze-sigterm", dict(out=b"same\n"), dict(out=b"same\n", sig="TERM")),
+                ("blaze-exit-2", dict(out=b"same\n"), dict(out=b"same\n", code=2))):
+            o, b = fh.fakes(ospec, bspec)
+            rc, rep, log = run(argv(b, "selftest-b5-" + name))
+            rows = (rep or {}).get("cases", [])
+            pkg = [r for r in rows if r["case"].startswith(("b_", "z_"))]
+            st.check("B5 %s: every package row SKIPPED" % name,
+                     rc == 1 and pkg and all(r["class"] == cc.SKIPPED for r in pkg),
+                     "exit %s, %s" % (rc, sorted(set(r["class"] for r in pkg))))
+
+    # The strict scenarios (audit 4r2, B5): no itemised() relaxation.
     return cc.selftest_tool(
         "starlark/interp-diff", os.path.abspath(__file__), argv,
         empty=lambda b, l: ["binary", "--blaze", b, "--only", "^no case has this name$"],
-        scenarios=cc.itemised())
+        extra=extra)
 
 
 def main():

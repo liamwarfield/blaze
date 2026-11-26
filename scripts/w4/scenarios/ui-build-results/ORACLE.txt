@@ -150,12 +150,12 @@ exit 0
 --- stderr
 INFO: Analyzed 2 targets (0 packages loaded, 0 targets configured).
 INFO: Found 2 targets...
+Target //:one up-to-date:
+  bazel-bin/one.txt
 Target //:several up-to-date:
   bazel-bin/several_b.txt
   bazel-bin/several_a.txt
   bazel-bin/dir/several_c.txt
-Target //:one up-to-date:
-  bazel-bin/one.txt
 INFO: Elapsed time: <DUR>, Critical Path: <DUR>
 INFO: 1 process: 1 internal.
 INFO: Build completed successfully, 1 total action
@@ -165,12 +165,12 @@ exit 0
 --- stderr
 INFO: Analyzed 3 targets (0 packages loaded, 1 target configured).
 INFO: Found 3 targets...
+Target //:one up-to-date:
+  bazel-bin/one.txt
 Target //:several up-to-date:
   bazel-bin/several_b.txt
   bazel-bin/several_a.txt
   bazel-bin/dir/several_c.txt
-Target //:one up-to-date:
-  bazel-bin/one.txt
 INFO: Elapsed time: <DUR>, Critical Path: <DUR>
 INFO: 1 process: 1 internal.
 INFO: Build completed successfully, 1 total action
@@ -290,8 +290,8 @@ ERROR: <WS>/BUILD.bazel:43:8: Action fails2.out failed: (Exit 1): bash failed: e
 Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
 failing action of fails2
 INFO: Found 2 targets...
-Target //:fails2 failed to build
 Target //:fails failed to build
+Target //:fails2 failed to build
 Use --verbose_failures to see the command lines of failed build steps.
 INFO: Elapsed time: <DUR>, Critical Path: <DUR>
 INFO: 3 processes: 3 internal.
@@ -366,10 +366,10 @@ exit 0
 --- stderr
 INFO: Analyzed 2 targets (0 packages loaded, 0 targets configured).
 INFO: Found 2 targets...
-Target //pkg:sub up-to-date:
-  bazel-bin/pkg/sub.txt
 Target //:one up-to-date:
   bazel-bin/one.txt
+Target //pkg:sub up-to-date:
+  bazel-bin/pkg/sub.txt
 INFO: Elapsed time: <DUR>, Critical Path: <DUR>
 INFO: 1 process: 1 internal.
 INFO: Build completed successfully, 1 total action

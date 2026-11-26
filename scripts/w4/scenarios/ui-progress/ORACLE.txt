@@ -176,11 +176,10 @@ There were tests whose specified size is too big. Use the --test_verbose_timeout
 --- stderr
 INFO: Analyzed 3 targets (0 packages loaded, 2 targets configured).
     Testing //:timeout_test; <DUR> linux-sandbox
-    Testing //:fail_test; <DUR> linux-sandbox
+    Testing //:pass_test; <DUR> linux-sandbox
 FAIL: //:fail_test (Exit 1) (see <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs/fail_test/test.log)
     Testing //:timeout_test; <DUR> linux-sandbox
     Testing //:fail_test; <DUR> linux-sandbox
-    Testing //:pass_test; <DUR> linux-sandbox
     Testing //:timeout_test; <DUR> linux-sandbox
     Testing //:timeout_test; <DUR> linux-sandbox
 TIMEOUT: //:timeout_test (Summary)

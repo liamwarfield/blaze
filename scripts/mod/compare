@@ -501,6 +501,12 @@ def selftest():
             f.write(b"tampered")
         rc4, rep4, log4 = run(argv(b, "x") + ["--side", "blaze"])
         st.check("--side blaze refuses a changed oracle capture", rc4 == 2, "exit %s" % rc4)
+        # M7: the tidy fixture and its MODULE.bazel comparison through the real command line.
+        o, b = fh.fakes(dict(out=b"same\n"), dict(out=b"same\n"))
+        rc5, rep5, log5 = run(["--blaze", b, "--project", "brotli-tidy", "--case", "tidy"])
+        cl = [r["class"] for r in (rep5 or {}).get("cases", [])]
+        st.check("M7: mod tidy runs through the launcher", rc5 == 0 and cl
+                 and set(cl) == {cc.IDENTICAL}, "exit %s, %s" % (rc5, cl))
 
     return cc.selftest_tool(
         "mod/compare", os.path.abspath(__file__), argv,

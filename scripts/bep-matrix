@@ -52,8 +52,12 @@ Compared per scenario:
   payloads     every event's payload after the referee's BEP normaliser plus these volatile
                masks: --install_md5 and --restart_reason in the command lines (each binary's own
                install key; whether the client started a server), progress stdout/stderr
-               (terminal interleaving), buildMetrics except the action and target counts,
-               action start and end times, the number of an action's stdout/stderr file under
+               (terminal interleaving), in buildMetrics only the counters the referee's allow
+               list names as varying between identical oracle runs (buildGraphMetrics
+               evaluated/built/changed/cleaned/dirtiedValues and postInvocationSkyframeNodeCount,
+               actionCacheStatistics.sizeInBytes; scripts/oracle/allow.json
+               "build-metrics-volatile-counters"; every other field the referee's normaliser
+               keeps is compared), action start and end times, the number of an action's stdout/stderr file under
                bazel-out/_tmp/actions (a counter in the order actions start), test timings and
                log digests, base64 execRequest fields decoded (Latin-1) for the path normaliser.
   gap          buildToolLogs without `command.profile.gz` (the profiler is not ported; ruled in
@@ -77,6 +81,7 @@ import base64
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -427,15 +432,29 @@ def payloads(ctx, events):
             if isinstance(p.get(t), dict):
                 for f in ("startTime", "endTime"):
                     p[t].pop(f, None)
-        if "buildMetrics" in p:
-            keep = {}
-            for f in ("actionSummary", "targetMetrics"):
-                if f in p["buildMetrics"]:
-                    keep[f] = {kk: vv for kk, vv in p["buildMetrics"][f].items()
-                               if kk in ("actionsCreated", "actionsExecuted", "targetsConfigured",
-                                         "targetsLoaded")}
-            p["buildMetrics"] = keep
+        if isinstance(p.get("buildMetrics"), dict):
+            mask_build_metrics(p["buildMetrics"])
     return items
+
+
+# buildMetrics: the referee's normaliser already drops the machine measurements
+# (surfaces.BEP_METRICS_DROP) and wall-clock keys; of the rest, only the counters the referee's
+# allow list names as varying between identical oracle runs (scripts/oracle/allow.json,
+# "build-metrics-volatile-counters") are masked here. Every other field is compared (audit 4r2,
+# B4: the earlier mask kept four counters and dropped everything else).
+VOLATILE_GRAPH_COUNTERS = ("evaluatedValues", "builtValues", "changedValues", "cleanedValues",
+                           "dirtiedValues", "postInvocationSkyframeNodeCount")
+
+
+def mask_build_metrics(m):
+    g = m.get("buildGraphMetrics")
+    if isinstance(g, dict):
+        for k in VOLATILE_GRAPH_COUNTERS:
+            if k in g:
+                g[k] = "<volatile>"
+    acs = (m.get("actionSummary") or {}).get("actionCacheStatistics")
+    if isinstance(acs, dict) and "sizeInBytes" in acs:
+        acs["sizeInBytes"] = "<volatile>"
 
 
 def tool_logs_gap(rp, cp):
@@ -715,7 +734,7 @@ def bep_fake(path, fh, events, code=0, err=b"", role="fake"):
     lines = text.split("\n")
     payload = "".join(json.dumps(e) + "\n" for e in events)
     write = ('for a in "$@"; do case "$a" in --build_event_json_file=*) printf %%s %s > '
-             '"${a#*=}";; esac; done' % cc.shlex.quote(payload))
+             '"${a#*=}";; esac; done' % shlex.quote(payload))
     at = next(i for i, line in enumerate(lines) if line.startswith("printf"))
     lines.insert(at, write)
     with open(path, "w") as f:
@@ -750,6 +769,14 @@ def _stream(order=("a", "b"), extra=None):
     return evs
 
 
+def _metrics(packages_loaded, evaluated):
+    return {"actionSummary": {"actionsCreated": 2, "actionsExecuted": 1},
+            "packageMetrics": {"packagesLoaded": packages_loaded},
+            "targetMetrics": {"targetsConfigured": 2},
+            "buildGraphMetrics": {"actionCount": 2, "evaluatedValues": [
+                {"skyfunctionName": "X", "count": evaluated}]}}
+
+
 def selftest():
     def argv(blaze, label):
         return ["--binary", blaze, "--only", "help", "--label", label]
@@ -768,6 +795,14 @@ def selftest():
             ("bep-missing", same, None, 0, b"", lambda rc, cl: rc == 1 and cl == ["DIFFERENT"]),
             ("bep-unported", same, same, 37, b"blaze: not ported yet: Foo.bar\n",
              lambda rc, cl: rc == 1 and cl == ["NOT-PORTED"]),
+            # B4: buildMetrics are compared beyond the four counters of the old mask; only the
+            # referee's volatile counters are masked.
+            ("bep-metrics-package-count", _stream(extra=_ev("buildMetrics", {}, buildMetrics=_metrics(3, 7))),
+             _stream(extra=_ev("buildMetrics", {}, buildMetrics=_metrics(4, 7))), 0, b"",
+             lambda rc, cl: rc == 1 and cl == ["DIFFERENT"]),
+            ("bep-metrics-volatile-only", _stream(extra=_ev("buildMetrics", {}, buildMetrics=_metrics(3, 7))),
+             _stream(extra=_ev("buildMetrics", {}, buildMetrics=_metrics(3, 9))), 0, b"",
+             lambda rc, cl: rc == 0 and cl == ["IDENTICAL"]),
         ]
         for name, oev, bev, bcode, berr, ok in cases:
             fh.n += 1
@@ -806,11 +841,11 @@ def selftest():
         rc, rep, log = run(["--binary", b, "--only", "build_ok,nope", "--label", "selftest-x"])
         st.check("an unknown scenario name fails the run", rc not in (0, None), "exit %s" % rc)
 
-    scenarios = [s for s in cc.SCENARIOS if s[0] not in ("timing-only", "stderr-extra-line")]
+    # Every generic scenario, timing-only and stderr-extra-line included (audit 4r2, T8).
     return cc.selftest_tool(
         TOOL, os.path.abspath(__file__), argv,
         empty=lambda b, l: ["--binary", b, "--only", "no-such-scenario", "--label", l],
-        scenarios=scenarios, extra=extra)
+        extra=extra)
 
 
 if __name__ == "__main__":

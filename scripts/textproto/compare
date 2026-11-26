@@ -27,9 +27,18 @@ run      Runs binary B (the oracle or a Blaze binary) on a fresh copy of the cor
          Every command runs through scripts/lib/compare_common.py (a --scope unit with a
          supervisor), so exit_codes.json holds how each step really ended (`exit N`, `signal
          NAME`, `oom-kill`, `timeout`); provenance.json names the binary, its sha256, whether
-         it is the pinned oracle, the repository HEAD and dirty flag.
+         it is the pinned oracle, the repository HEAD and dirty flag, the terminations of
+         `mod graph`, `info` and `shutdown`, and the sha256 of every file of DIR. Before the
+         first step, run removes provenance.json, exit_codes.json, binary.txt and every other
+         file it writes from DIR; provenance.json is written last.
 check    `files` on every pair DIR holds (bep, cquery, aquery), and checks that the text BEP
-         parsed back (blaze-textproto bep-text-to-json) equals DIR/bep.json event by event.
+         parsed back (blaze-textproto bep-text-to-json) equals DIR/bep.json event by event, in
+         order. A pair whose records (or events) are equal only when sorted is
+         IDENTICAL-REDUCED with the number of positions that differ, never IDENTICAL; so is a
+         pair whose exit codes are legacy numbers (how the step ended is not fully known). A
+         file whose digest differs from provenance.json refuses the check (exit 2); a DIR
+         whose provenance holds no digests gets a SKIPPED `files-anchored` row (the check
+         fails).
          Every step that produced a pair must have ended with exit 0 (exit_codes.json): a
          pair whose step failed, crashed or is missing is SKIPPED with the reason and makes the
          check fail, unless EXPECTED_GAPS (in this script) names the pair. DIR must have been
@@ -43,8 +52,9 @@ bep-e2e  Compares the --build_event_text_file of two runs: each is parsed back t
          also reported as a multiset, since the order of announcements varies between runs and
          even between two transports of one oracle run).
 
-bep-e2e  refuses a reference DIR not recorded by the pinned oracle, and judges the build
-         step's termination on both sides (compare_common.judge).
+bep-e2e  refuses a reference DIR not recorded by the pinned oracle, and either DIR whose files are
+         not all anchored by its provenance.json digests; judges the build step's termination
+         on both sides (compare_common.judge).
 selftest proves the guards with fake binaries (no real build): a crashed step, an empty
          pair, a non-oracle directory, signal deaths, the wrong oracle.
 
@@ -58,6 +68,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import shlex
 import socket
 import subprocess
 import sys
@@ -133,8 +144,11 @@ def split_records(framing, data):
 
 def compare_files(framing, msg_type, binary, text, label=None):
     """Prints and round-trips; returns True when identical. Sets compare_files.waived when the
-    printer's bytes were not compared (aquery: two invocations number records differently)."""
+    printer's bytes were not compared (aquery: two invocations number records differently), and
+    compare_files.reordered to the number of positions at which the records differ when they
+    are equal only as a sorted list (record order ignored: a reduced comparison)."""
     compare_files.waived = False
+    compare_files.reordered = 0
     label = label or os.path.basename(text)
     p = subprocess.run([tool(), "print", framing, msg_type, binary], stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE)
@@ -151,10 +165,10 @@ def compare_files(framing, msg_type, binary, text, label=None):
             sorted(split_records(framing, expected)) == sorted(split_records(framing, got)):
         n = len(split_records(framing, expected))
         moved = sum(1 for x, y in zip(split_records(framing, expected), split_records(framing, got)) if x != y)
-        print("%s: printer IDENTICAL per record (%d records, %d bytes); record order differs at %d "
-              "positions (the binary and text outputs order records differently)" % (
-                  label, n, len(expected), moved))
+        print("%s: printer equal per record only (%d records, %d bytes); record order differs at "
+              "%d positions (order ignored: IDENTICAL-REDUCED)" % (label, n, len(expected), moved))
         ok = True
+        compare_files.reordered = max(moved, 1)
     else:
         i = next((k for k in range(min(len(got), len(expected))) if got[k] != expected[k]),
                  min(len(got), len(expected)))
@@ -202,6 +216,10 @@ def run_logged(argv, cwd, out_path, err_path):
                   tag="textproto").term
 
 
+LEGACY_NOTE = "legacy exit code (recorded before 2026-11-19): how the step ended beyond its " \
+    "exit code (OOM kill, signal through a wrapper) was not recorded"
+
+
 def step_term(value):
     """A step's termination from exit_codes.json: a Termination dict (this script), or a plain
     number (recorded before 2026-11-19 by an earlier version: a negative number is a signal; an
@@ -216,6 +234,39 @@ def step_term(value):
     return None
 
 
+# The files `run` writes into DIR (every one is removed before the first step, so a rewrite never
+# leaves an earlier run's file under the new provenance; audit 4r2, B2).
+RUN_FILES = ["bep.txt", "bep.pb", "bep.json", "cquery.pb", "cquery.txt", "aquery.pb",
+             "aquery.txt", "info.txt", "context.json", "exit_codes.json", "binary.txt",
+             "provenance.json"] + ["%s.%s" % (k, x) for k in (
+                 "mod_graph", "build", "cquery_proto", "cquery_textproto", "aquery_proto",
+                 "aquery_textproto", "info", "shutdown") for x in ("stdout", "stderr")]
+
+
+def dir_files(d):
+    """The digests of DIR's files that provenance.json anchors: every regular file but itself."""
+    return {n: cc.sha256_file(os.path.join(d, n)) for n in sorted(os.listdir(d))
+            if n != "provenance.json" and os.path.isfile(os.path.join(d, n))}
+
+
+def anchored(d):
+    """None when provenance.json of d holds the digest of every file it names and none changed;
+    otherwise the reason (no digests: an older run; a file changed, is missing or was added)."""
+    try:
+        with open(os.path.join(d, "provenance.json")) as f:
+            files = json.load(f).get("files")
+    except (OSError, ValueError):
+        return "no provenance.json"
+    if not files:
+        return "provenance.json holds no file digests (recorded before audit 4r2, B2)"
+    now = dir_files(d)
+    changed = sorted(n for n in set(files) | set(now) if files.get(n) != now.get(n))
+    if changed:
+        return "files changed, missing or added since the run wrote provenance.json: %s" % (
+            ", ".join(changed[:5]))
+    return None
+
+
 def read_provenance(d):
     """{"binary", "sha256", "oracle"} of the binary that recorded d (provenance.json, else the
     older binary.txt), or None."""
@@ -224,7 +275,8 @@ def read_provenance(d):
         with open(pj) as f:
             p = json.load(f)
         return {"binary": p["binary"]["path"], "sha256": p["binary"]["sha256"],
-                "oracle": p["binary"]["sha256"] == cc.pinned_sha256()}
+                "oracle": p["binary"]["sha256"] == cc.pinned_sha256(),
+                "auxiliary": p.get("auxiliary") or {}}
     bt = os.path.join(d, "binary.txt")
     if os.path.exists(bt):
         words = open(bt).read().split()
@@ -247,6 +299,11 @@ def cmd_run(argv):
         json.load(open(os.path.join(ROOT, "corpus", "projects.json")))["projects"][a.project]
     out = os.path.abspath(a.out)
     os.makedirs(out, exist_ok=True)
+    # B2 (audit 4r2): the provenance and the exit codes go first, then every file an earlier
+    # run wrote here, so an interrupted rewrite leaves no file under an older provenance.
+    for n in ["provenance.json", "exit_codes.json", "binary.txt"] + RUN_FILES:
+        if os.path.lexists(os.path.join(out, n)):
+            os.remove(os.path.join(out, n))
     name = os.path.basename(out.rstrip("/"))
     binary = os.path.abspath(oc.expand(a.binary))
     if not os.path.isfile(binary):
@@ -312,12 +369,19 @@ def cmd_run(argv):
         json.dump(codes, f, indent=1)
     with open(os.path.join(out, "binary.txt"), "w") as f:
         f.write("%s %s\n" % (binary, binary_sha))
-    with open(os.path.join(out, "provenance.json"), "w") as f:
+    tmp = os.path.join(out, "provenance.json.tmp")
+    with open(tmp, "w") as f:
         json.dump({"binary": {"path": binary, "sha256": binary_sha,
                               "is_pinned_oracle": binary_sha == cc.pinned_sha256()},
                    "repo": cc.repo_state(), "project": a.project, "steps": sorted(steps),
                    "tool_sha256": cc.tool_sha256(os.path.abspath(__file__)),
-                   "date": time.strftime("%Y-%m-%dT%H:%M:%S%z")}, f, indent=1)
+                   "compare_common_sha256": cc.MODULE_SHA256,
+                   "auxiliary": {k: codes[k] for k in ("mod_graph", "info", "shutdown")
+                                 if k in codes},
+                   "date": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                   "files": {n: h for n, h in dir_files(out).items()
+                             if n != "provenance.json.tmp"}}, f, indent=1)
+    os.replace(tmp, os.path.join(out, "provenance.json"))
     bad = [k for k, v in codes.items() if not step_term(v).ok]
     if bad:
         print("[textproto] steps that did not exit 0: %s" % ", ".join(
@@ -355,12 +419,24 @@ def cmd_check(argv, report_out=None):
         print("  NOTE: %s was not recorded by the pinned oracle (%s): the check compares that "
               "binary's own text with Blaze's printer; it is not oracle evidence and never "
               "passes" % (d, prov["sha256"] if prov else "no provenance"))
+    why = anchored(d)
+    if why is not None and why.startswith("files changed"):
+        return cc.refuse("textproto check", "%s: %s" % (d, why))
+    if why is not None:
+        rep.add("files-anchored", cc.SKIPPED, why + ": the files cannot be tied to the binary "
+                "the provenance names")
+    for k, v in sorted((prov or {}).get("auxiliary", {}).items()):
+        t = step_term(v)
+        if t is not None:
+            rep.add_aux(k, t)
     try:
         with open(os.path.join(d, "exit_codes.json")) as f:
             codes = json.load(f)
     except (OSError, ValueError):
         codes = None
     for name, framing, msg_type, binary, text in PAIRS:
+        legacy = codes is not None and any(isinstance(codes.get(k), int)
+                                           for k in PAIR_STEPS[name])
         b, t = os.path.join(d, binary), os.path.join(d, text)
         if codes is None:
             reason = "no exit_codes.json: the steps' terminations are unknown"
@@ -381,6 +457,8 @@ def cmd_check(argv, report_out=None):
         if reason is None and os.path.getsize(b) == 0 and os.path.getsize(t) == 0:
             reason = "both files empty"
         if reason is not None:
+            if legacy:
+                reason += "; " + LEGACY_NOTE
             if name in EXPECTED_GAPS:
                 rep.add(name, cc.DECLARED_GAP, "%s (declared: %s)" % (reason, EXPECTED_GAPS[name]))
             else:
@@ -389,10 +467,16 @@ def cmd_check(argv, report_out=None):
             continue
         same = compare_files(framing, msg_type, b, t,
                              label="%s/%s" % (os.path.basename(d.rstrip("/")), name))
+        note = "; " + LEGACY_NOTE if legacy else ""
         if same and compare_files.waived:
             rep.add(name, cc.REDUCED, "printer bytes not compared (the binary and text outputs "
                     "are two aquery invocations that number records differently); reprint of "
-                    "the text and round trip of the binary only")
+                    "the text and round trip of the binary only" + note)
+        elif same and compare_files.reordered:
+            rep.add(name, cc.REDUCED, "printer equal per record, record order ignored (differs "
+                    "at %d positions); reprint, round trip%s" % (compare_files.reordered, note))
+        elif same and legacy:
+            rep.add(name, cc.REDUCED, "printer, reprint, round trip" + note)
         else:
             rep.add(name, cc.IDENTICAL if same else cc.DIFFERENT,
                     "printer, reprint, round trip")
@@ -406,9 +490,10 @@ def cmd_check(argv, report_out=None):
         ct = [oc.canonical(x) for x in from_text]
         cj = [oc.canonical(x) for x in from_json]
         same = sorted(ct) == sorted(cj)
-        moved = sum(1 for x, y in zip(ct, cj) if x != y)
+        moved = sum(1 for x, y in zip(ct, cj) if x != y) + abs(len(ct) - len(cj))
         print("bep: text parsed back == bep.json: %s (%d / %d events%s)" % (
-            "IDENTICAL" if same else "DIFFERS", len(from_text), len(from_json),
+            ("IDENTICAL" if not moved else "equal only as a multiset (IDENTICAL-REDUCED)")
+            if same else "DIFFERS", len(from_text), len(from_json),
             "; order differs at %d positions" % moved if same and moved else ""))
         if not same:
             missing = sorted(set(cj) - set(ct))
@@ -417,8 +502,13 @@ def cmd_check(argv, report_out=None):
                 print("  only in json: %s" % x[:600])
             for x in extra[:3]:
                 print("  only in text: %s" % x[:600])
-        rep.add("bep-text-vs-json", cc.IDENTICAL if same else cc.DIFFERENT,
-                "%d / %d events" % (len(from_text), len(from_json)))
+        if same and moved:
+            rep.add("bep-text-vs-json", cc.REDUCED, "%d / %d events equal as a multiset; event "
+                    "order ignored (differs at %d positions)" % (len(from_text), len(from_json),
+                                                                 moved))
+        else:
+            rep.add("bep-text-vs-json", cc.IDENTICAL if same else cc.DIFFERENT,
+                    "%d / %d events in order" % (len(from_text), len(from_json)))
     else:
         rep.add("bep-text-vs-json", cc.SKIPPED, "bep pair skipped or bep.json/bep.txt missing")
     if self_only:
@@ -466,6 +556,10 @@ def cmd_bep_e2e(argv):
     if cand_prov["oracle"] or cand_prov["sha256"] == cc.PINNED_SHA256:
         return cc.refuse("textproto bep-e2e", "candidate %s was recorded by the oracle" %
                          a.candidate)
+    for role, d in (("reference", a.reference), ("candidate", a.candidate)):
+        why = anchored(d)
+        if why is not None:
+            return cc.refuse("textproto bep-e2e", "%s %s: %s" % (role, d, why))
     named = None
     if a.binary:
         try:
@@ -488,6 +582,11 @@ def cmd_bep_e2e(argv):
     if named is None:
         rep.add("candidate-binary", cc.SKIPPED, "the binary that recorded the candidate was not "
                 "named (--binary)")
+    for role, prov in (("oracle", ref_prov), ("blaze", cand_prov)):
+        for k, v in sorted(prov.get("auxiliary", {}).items()):
+            t = step_term(v)
+            if t is not None:
+                rep.add_aux("%s %s" % (role, k), t)
     rep.print_header()
 
     def build_term(d):
@@ -582,6 +681,109 @@ def main(argv):
     return 2
 
 
+def _fake_with(path, fh, line, role):
+    """A compare_common fake with one more shell line run before it prints anything."""
+    lines = cc.fake_script(out=b"", token=fh.token, tripfile=fh.tripfile, role=role).split("\n")
+    at = next(i for i, x in enumerate(lines) if x.startswith("cmd="))
+    lines.insert(at, line)
+    with open(path, "w") as f:
+        f.write("\n".join(lines))
+    os.chmod(path, 0o755)
+    return path
+
+
+def selftest_b2(st, fh, me):
+    """B2 (audit 4r2): a rewrite removes the old provenance first; digests anchor the files."""
+    d = os.path.join(fh.root, "rec-rewrite")
+    o, _ = fh.fakes(dict(out=b"x"), dict(out=b"x"))
+    fh.run_tool(me, ["run", "brotli", "--binary", o, "--out", d, "--steps", "cquery"])
+    st.check("B2: provenance.json holds the files' digests",
+             "cquery.pb" in json.load(open(os.path.join(d, "provenance.json"))).get("files", {}))
+    marker = os.path.join(fh.root, "stale-provenance")
+    b = _fake_with(os.path.join(fh.home, "bin", "blaze-rewrite"), fh,
+                   # During the first step (mod graph), before any output of this run.
+                   'case " $* " in *" mod "*) for f in provenance.json exit_codes.json '
+                   'binary.txt cquery.pb cquery.txt; do [ -e %s/$f ] && echo $f >> %s; done;; '
+                   'esac' % (shlex.quote(d), shlex.quote(marker)),
+                   "blaze-rewrite")
+    fh.run_tool(me, ["run", "brotli", "--binary", b, "--out", d, "--steps", "cquery"])
+    st.check("B2: no earlier provenance, exit code or output is present while a rewrite runs",
+             not os.path.exists(marker),
+             open(marker).read().replace("\n", " ") if os.path.exists(marker) else "")
+    # A changed file refuses check and bep-e2e; a directory without digests cannot pass.
+    o, _ = fh.fakes(dict(out=b"x"), dict(out=b"x"))
+    t = os.path.join(fh.root, "rec-tamper")
+    fh.run_tool(me, ["run", "brotli", "--binary", o, "--out", t, "--steps", "build"])
+    with open(os.path.join(t, "build.stderr"), "ab") as f:
+        f.write(b"tampered\n")
+    rc, _, log = fh.run_tool(me, ["check", t])
+    st.check("B2: check refuses a directory whose files changed (exit 2)", rc == 2,
+             "exit %s" % rc)
+    cand = os.path.join(fh.root, "rec-cand")
+    rc, _, log = fh.run_tool(me, ["bep-e2e", "brotli", t, cand])
+    st.check("B2: bep-e2e refuses a reference whose files changed (exit 2)", rc == 2,
+             "exit %s" % rc)
+    pj = os.path.join(t, "provenance.json")
+    prov = json.load(open(pj))
+    prov.pop("files")
+    with open(pj, "w") as f:
+        json.dump(prov, f)
+    rc, rep, log = fh.run_tool(me, ["check", t])
+    rows = {r["case"]: r for r in (rep or {}).get("cases", [])}
+    st.check("B2: a directory without digests gets a SKIPPED files-anchored row",
+             rc == 1 and rows.get("files-anchored", {}).get("class") == cc.SKIPPED,
+             "exit %s, %s" % (rc, rows.get("files-anchored")))
+
+
+def selftest_b4(st, fh, me):
+    """B4 and T6 (audit 4r2): order-free equality is IDENTICAL-REDUCED; legacy codes say so."""
+    d = os.path.join(fh.root, "rec-order")
+    os.makedirs(d)
+    text = b"event {\n  a: 1\n}\n\nevent {\n  b: 2\n}\n\n"
+    swapped = b"event {\n  b: 2\n}\n\nevent {\n  a: 1\n}\n\n"
+    files = {"bep.txt": text, "bep.pb": b"pb", "printed.bin": swapped,
+             "bep.json": b'{"a": 1}\n{"b": 2}\n', "parsed.json": b'{"b": 2}\n{"a": 1}\n'}
+    for n, data in files.items():
+        with open(os.path.join(d, n), "wb") as f:
+            f.write(data)
+    tp = os.path.join(fh.root, "fake-textproto")
+    with open(tp, "w") as f:
+        f.write("#!/bin/bash\ncase \"$1\" in\n print) cat %s/printed.bin;;\n reprint) cat \"$4\";;\n"
+                " roundtrip) echo 2 records;;\n bep-text-to-json) cat %s/parsed.json;;\nesac\n"
+                % (d, d))
+    os.chmod(tp, 0o755)
+
+    def provenance(codes):
+        with open(os.path.join(d, "exit_codes.json"), "w") as f:
+            json.dump(codes, f)
+        with open(os.path.join(d, "provenance.json"), "w") as f:
+            json.dump({"binary": {"path": fh.oracle, "sha256": cc.sha256_file(fh.oracle)},
+                       "files": dir_files(d)}, f)
+    old = os.environ.get("BLAZE_TEXTPROTO")
+    os.environ["BLAZE_TEXTPROTO"] = tp
+    try:
+        fh.fakes(dict(out=b"x"), dict(out=b"x"))
+        provenance({"build": {"kind": "exit", "code": 0}})
+        rc, rep, log = fh.run_tool(me, ["check", d])
+        rows = {r["case"]: r for r in (rep or {}).get("cases", [])}
+        st.check("B4: bep records equal only when sorted are IDENTICAL-REDUCED",
+                 rows.get("bep", {}).get("class") == cc.REDUCED, str(rows.get("bep")))
+        st.check("B4: bep events equal only as a multiset are IDENTICAL-REDUCED",
+                 rows.get("bep-text-vs-json", {}).get("class") == cc.REDUCED and rc == 1,
+                 "exit %s, %s" % (rc, rows.get("bep-text-vs-json")))
+        provenance({"build": 0})
+        rc, rep, log = fh.run_tool(me, ["check", d])
+        rows = {r["case"]: r for r in (rep or {}).get("cases", [])}
+        st.check("T6: a legacy exit code is named on the row",
+                 "legacy exit code" in rows.get("bep", {}).get("detail", ""),
+                 str(rows.get("bep")))
+    finally:
+        if old is None:
+            os.environ.pop("BLAZE_TEXTPROTO", None)
+        else:
+            os.environ["BLAZE_TEXTPROTO"] = old
+
+
 def selftest():
     """The real command lines (`run`, `check`, `bep-e2e`) against fake binaries."""
     st = cc.Selftest("textproto/compare")
@@ -638,6 +840,8 @@ def selftest():
         st.check("bep-e2e: a candidate of another binary is refused", rc == 2, "exit %s" % rc)
         rc, _, _ = fh.run_tool(me, ["bep-e2e", "brotli", refd, cand], pin="0" * 64)
         st.check("bep-e2e: wrong pin refuses the reference", rc == 2, "exit %s" % rc)
+        selftest_b2(st, fh, me)
+        selftest_b4(st, fh, me)
         st.check("no process started outside the launcher", not fh.tripped(),
                  open(fh.tripfile).read()[:200] if fh.tripped() else "")
     except Exception as e:  # noqa: BLE001

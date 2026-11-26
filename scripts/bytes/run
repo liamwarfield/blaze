@@ -190,10 +190,11 @@ def main(argv):
         shutil.copy(f, os.path.join(out, "outputs", os.path.basename(f)))
     for f in glob.glob(os.path.join(output_base, "external", "+bytes_repo+bytes_repo", "*.txt")):
         shutil.copy(f, os.path.join(out, "outputs", "repo_" + os.path.basename(f)))
-    shutdowns = {}
+    shutdowns, shutdown_terms = {}, {}
     for ws in (WS, WS_FLAGOFF, WS_RC):
-        shutdowns[ws] = str(cc.run(startup + ["shutdown"], ws, mode="scope",
-                                   tag="bytes-shutdown").term)
+        t = cc.run(startup + ["shutdown"], ws, mode="scope", tag="bytes-shutdown").term
+        shutdowns[ws] = str(t)
+        shutdown_terms[ws] = t.to_dict()
     with open(os.path.join(out, "exit_codes.txt"), "w") as f:
         f.write("\n".join(codes) + "\n")
     key = cc.cache_key(cc.tool_sha256(os.path.abspath(__file__)), None, argvs, env, digest)
@@ -205,6 +206,8 @@ def main(argv):
                               "is_pinned_oracle": is_oracle},
                    "repo": cc.repo_state(), "output_user_root": ur, "shutdown": shutdowns,
                    "info": info_term, "key": key, "key_digest": cc.key_digest(key),
+                   "auxiliary": {"info": p.term.to_dict(), **{
+                       "shutdown " + os.path.basename(w): t for w, t in shutdown_terms.items()}},
                    "outputs": {os.path.relpath(k, out): v
                                for k, v in cc.outputs_digest(files).items()},
                    "compare_common_sha256": cc.MODULE_SHA256}, f, indent=1)

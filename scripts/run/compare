@@ -5,11 +5,10 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
-import signal
 import subprocess
 import sys
-import time
 
 USAGE = """\
 usage: scripts/run/compare --binary <blaze> [--oracle <bazel>] [--project brotli|re2|all]
@@ -148,24 +147,10 @@ def make_writable_and_remove(path):
 
 
 def kill_servers(root):
-    if not os.path.isdir(root):
-        return
-    for name in os.listdir(root):
-        pidfile = os.path.join(root, name, "server", "server.pid.txt")
-        try:
-            pid = int(open(pidfile).read().strip())
-        except (OSError, ValueError):
-            continue
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            continue
-        for _ in range(100):
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                break
-            time.sleep(0.1)
+    """Ends the servers of output user root `root`: only a pid whose command line names the
+    root is signalled (compare_common.kill_root_servers; audit 4r2, T4)."""
+    for pid, what in cc.kill_root_servers(root):
+        print("[cleanup] server %d of %s: %s" % (pid, root, what), file=sys.stderr)
 
 
 def prepare_workspace(checkout, ws):
@@ -418,8 +403,34 @@ def selftest():
     def argv(blaze, label):
         return ["--binary", blaze, "--project", "brotli", "--case", "args", "--label", label]
 
+    def script_fake(path, fh, role, text):
+        """A fake that also writes `text` as the --script_path script."""
+        lines = cc.fake_script(out=b"x\n", token=fh.token, tripfile=fh.tripfile,
+                               role=role).split("\n")
+        at = next(i for i, x in enumerate(lines) if x.startswith("printf"))
+        lines.insert(at, 'for a in "$@"; do case "$a" in --script_path=*) printf %%s %s > '
+                         '"${a#*=}"; chmod +x "${a#*=}";; esac; done' % shlex.quote(text))
+        with open(path, "w") as f:
+            f.write("\n".join(lines))
+        os.chmod(path, 0o755)
+        return path
+
+    def extra(st, fh, run):
+        # M7: the --script_path branch (the written script, then running it under the launcher).
+        for name, btext, want in (("same", "#!/bin/sh\necho from-script\n", [cc.IDENTICAL]),
+                                  ("other", "#!/bin/sh\necho other\n", [cc.DIFFERENT])):
+            fh.n += 1
+            script_fake(fh.oracle, fh, "oracle", "#!/bin/sh\necho from-script\n")
+            b = script_fake(os.path.join(fh.home, "bin", "blaze-%d" % fh.n), fh,
+                            "blaze-%d" % fh.n, btext)
+            rc, rep, log = run(["--binary", b, "--project", "brotli", "--case", "script-path",
+                                "--label", "selftest-script-" + name])
+            cl = [r["class"] for r in (rep or {}).get("cases", [])]
+            st.check("M7: --script_path, script %s" % name, cl == want and rc == (
+                0 if want == [cc.IDENTICAL] else 1), "exit %s, %s" % (rc, cl))
+
     return cc.selftest_tool(
-        "run/compare", os.path.abspath(__file__), argv,
+        "run/compare", os.path.abspath(__file__), argv, extra=extra,
         empty=lambda b, l: ["--binary", b, "--case", "no-such-case", "--label", l],
         reuse=lambda b, l: argv(b, l) + ["--skip-oracle"],
         oracle_outputs=lambda home, l: [os.path.join(home, ".cache", "blaze", "run-compare", l,

@@ -15,28 +15,34 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
+THIS = os.path.abspath(__file__)
 SCENARIOS = os.path.join(HERE, "scenarios")
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "oracle"))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "lib"))
+import compare_common as cc  # noqa: E402
+
+TOOL = "w4/probe"
 
 USAGE = """\
-usage: scripts/w4/probe list
-       scripts/w4/probe <oracle|blaze> <scenario> [--only N]   transcript on stdout
-       scripts/w4/probe record <scenario>                      oracle transcript -> ORACLE.txt
-       scripts/w4/probe compare <scenario> [--only N] [--messages|--masked]
-                                                               runs Blaze, compares with ORACLE.txt,
-                                                               saves Blaze's transcript (see below)
-       scripts/w4/probe compare-all [--messages|--masked] [--skip a,b]
-                                                               compare for every recorded scenario
-       scripts/w4/probe recount <sha12> [--skip a,b]           the three counts from saved transcripts
-                                                               (no run)
-       scripts/w4/probe masks                                  prints the masked line classes
+usage: scripts/w4/probe [--scenarios DIR] list
+       scripts/w4/probe [--scenarios DIR] oracle <scenario> [--only N]    transcript on stdout
+       scripts/w4/probe [--scenarios DIR] blaze <scenario> [--binary B] [--only N]
+       scripts/w4/probe [--scenarios DIR] record <scenario>             ORACLE.txt + ORACLE.key.json
+       scripts/w4/probe [--scenarios DIR] record-all [--skip a,b]       record for every scenario
+       scripts/w4/probe [--scenarios DIR] compare <scenario> [--binary B] [--only N]
+                                                         [--messages|--masked] [--json FILE]
+       scripts/w4/probe [--scenarios DIR] compare-all [--binary B] [--skip a,b]
+                                                         [--messages|--masked] [--json FILE]
+       scripts/w4/probe [--scenarios DIR] recount <sha12> --binary B [--skip a,b] [--json FILE]
+       scripts/w4/probe masks
+       scripts/w4/probe selftest
        scripts/w4/probe help
 
-A scenario is a directory scripts/w4/scenarios/<name>/ with
+A scenario is a directory scripts/w4/scenarios/<name>/ (or DIR/<name>/ with --scenarios) with
   ws/         the workspace (MODULE.bazel, BUILD.bazel files, .bzl files, sources)
   COMMANDS    one step per line (# comments, blank lines ignored), shell-quoted:
-                run <command> [args...]   exit code, full stdout, full stderr
+                run <command> [args...]   termination, full stdout, full stderr
                 aquery [args...]          `aquery --output=jsonproto --include_param_files
                                           --include_file_write_contents`; one JSON line per action
                                           in output order (ids resolved, scripts/oracle summary),
@@ -44,69 +50,91 @@ A scenario is a directory scripts/w4/scenarios/<name>/ with
                 cat <path>                file content, path relative to the workspace
                 stat <path>               type and octal mode
   ORACLE.txt  the transcript of the oracle (Bazel 9.3.2), written by `record`; the expected output.
+  ORACLE.key.json  its key (scripts/lib/compare_common.py write_key), written by `record` after
+              ORACLE.txt is complete: the oracle's sha256 (the pinned one; `record` refuses any
+              other binary), this tool's sha256 (the normaliser lives here), the startup and
+              command options, the clean environment, the digest of ws/ and of COMMANDS, the
+              workspace copy's path, and the digest of ORACLE.txt itself. `compare`,
+              `compare-all` and `recount` refuse (exit 2) a scenario whose key is missing or
+              differs, or whose ORACLE.txt changed since; `record` removes the key first.
 
 Transcript of a run step:
   === N: <step>
-  exit <code>
+  exit <code> | signal <NAME> | oom-kill | timeout | unrecorded
   --- stdout
   <stdout, normalised>
   --- stderr
   <every stderr line, in order, normalised>
+
+Every command runs through scripts/lib/compare_common.py run(): a memory-capped systemd scope
+(MemoryMax=8G, MemorySwapMax=0) whose supervisor records how it really ended (`exit N`, `signal
+NAME`, an OOM kill in the scope, including one of the server a previous command of the scenario
+started, or a timeout after %d s, when the whole scope is SIGKILLed), with the environment
+exactly HOME and PATH=/usr/bin:/bin. The terminations of the `shutdown` commands (before and
+after each scenario) are listed; an abnormal one fails the run.
 
 Normalisation (run-specific values only): paths (<WS>, <OUTPUT_BASE>, <OUTPUT_USER_ROOT>, <HOME>),
 sandbox numbers, durations (<DUR>), UUIDs, ANSI escapes and carriage-return redraws; dropped
 stderr lines are only the rate-limited progress lines whose number and content depend on timing
 ("Computing main repo mapping:", "Loading:", "Analyzing:", "Fetching ...", "[n / m] ...",
 "Building:", "Testing:", blank lines). Action keys of SourceSymlinkManifest and SymlinkTree actions
-(they fingerprint absolute paths) are printed as <path-dependent>. Nothing else is dropped, so
-a step matches only when exit code, stdout and stderr are identical.
+(they fingerprint absolute paths) are printed as <path-dependent>.
 
-compare prints one line per step (MATCH or DIFF, with a unified diff for each DIFF), then
-`probe <scenario>: M of N steps match` and exits 1 when any step differs. Three views are
-counted for every step:
-  full      the whole normalised transcript of the step.
-  masked    the full view with the line classes Blaze cannot match by design replaced on both
-            sides (each class is listed by `probe masks`, with the reason; nothing else changes,
-            order is kept).
-  messages  exit code, stdout, and the complete text (every line, not only the first) of each
-            ERROR/WARNING/DEBUG/INFO/FAILED message and build-result line, as a sorted list.
---masked / --messages make compare print the diff of that view (and decide the exit status).
-compare-all and recount print, per scenario, the three counts and the totals; compare-all exits 1
-on any difference in the chosen view (full by default). The totals are split by step kind: steps
-that run the binary (`run`, `aquery`) and file checks (`cat`, `stat`, which read the workspace
-after the binary ran), so that a count of identical steps says how many of them ran the binary.
-Scenarios left out by --skip, and (recount) scenarios without a saved transcript, are named in the
-summary with their oracle step counts: they are not in the denominator.
+Classes (one row per oracle step; scripts/lib/compare_common.py judge):
+  IDENTICAL          the full view equal: termination, stdout and every kept stderr line in
+                     order; the oracle exited 0 (or, for a file check, the content or mode is
+                     equal)
+  KNOWN-GAP          equal only in the masked view: the line classes Blaze cannot match by
+                     design (`probe masks`) replaced on both sides; the detail names the classes
+  IDENTICAL-REDUCED  equal only in the messages view: exit code, stdout, and the sorted list of
+                     the complete ERROR/WARNING/DEBUG/INFO/FAILED messages and build-result lines
+  BOTH-FAILED        equal (in one of the views), but the oracle's step did not exit 0: equal
+                     failures, listed, never matches (no step declares its failure)
+  DIFFERENT          the termination differs, or no view is equal, or the step is missing
+  NOT-PORTED         Blaze stopped at unported!(...)
+  SKIPPED            not judged (recount: a transcript not anchored to the named binary)
+The footer counts the classes over all steps, then separately for the steps that run the binary
+(`run`, `aquery`) and the file checks (`cat`, `stat`). The three-view table of earlier versions
+(full, masked, messages per scenario) is still printed. Exit status: 0 only when every selected
+step is IDENTICAL and every auxiliary command ended normally; 1 otherwise; 2 for a refusal (wrong
+oracle, the oracle given as the Blaze binary, a stale or missing ORACLE.key.json, a probe process
+that does not hold the lock). `recount` re-judges saved transcripts and never exits 0.
+--masked / --messages only choose which view's diff `compare` prints for a differing step.
 
 Every compare saves Blaze's transcript as ~/.cache/blaze/work/w4-probe/<sha12>/<scenario>.txt
-(never into scripts/w4/scenarios, which is tracked and protected), where <sha12> is the first 12
-hex digits of the sha256 of the Blaze binary; the file starts with `#` lines naming the binary,
-its sha256, the git commit (and whether the tree was dirty) and the date, so the counts can be
-re-derived with `probe recount <sha12>`, which reads them from there (a run with --only N saves
-<scenario>.only-N.txt, which recount ignores). The oracle transcripts stay in ORACLE.txt.
-compare-all, compare and recount end their totals with the Blaze binary's path and sha256, the
-repository commit and dirty flag, and the denominator (scenarios counted, scenarios left out,
-steps).
+(never into scripts/w4/scenarios), where <sha12> is the first 12 hex digits of the binary's
+sha256, beside <scenario>.txt.capture.json (compare_common write_capture: the binary's path and
+sha256 and the transcript's digest, the tool and module sha256, the digest of the ORACLE.key.json
+it was judged against, the repository HEAD and dirty flag at that time). `recount <sha12>
+--binary B` re-judges those transcripts: only transcripts whose capture names B's sha256 and
+whose digest is unchanged are judged; the others are SKIPPED. Its report names, per transcript,
+the tree and date the capture recorded, not the present checkout. A run with --only N saves
+<scenario>.only-N.txt, which recount ignores.
 
 One lock serialises every command that uses the shared work directories and output user roots
-(`oracle`, `blaze`, `record`, `compare`, `compare-all`): ~/.cache/blaze/work/w4-probe/lock
-(flock; the holder is described in lock.holder.json). A run that finds it held waits and prints
-who holds it. The lock costs no disk; private directories per run were not chosen because the
-workspace path is part of path-dependent outputs on both sides. Each lock-aware run registers its
-pid in ~/.cache/blaze/work/w4-probe/clients/; after taking the lock and again before printing
-its counts, a run looks for other scripts/w4/probe processes that are not registered (an older
-probe that does not take the lock) and refuses to score (exit 2) when it finds one.
+(`oracle`, `blaze`, `record`, `record-all`, `compare`, `compare-all`):
+~/.cache/blaze/work/w4-probe/lock (flock; the holder is described in lock.holder.json). A run that
+finds it held waits and prints who holds it. Each lock-aware run registers its pid and start time
+in ~/.cache/blaze/work/w4-probe/clients/; after taking the lock and again before printing its
+classes, a run looks for other scripts/w4/probe processes that are not registered (an older probe
+that does not take the lock) and refuses to score (exit 2) when it finds one.
 
 Each run copies ws/ to ~/.cache/blaze/work/probe-<scenario> (the same path for both binaries),
-uses the output user root
-~/.cache/blaze/oracle-out/ur-probe-<scenario>-<oracle|blaze>, startup options --nohome_rc
---nosystem_rc, command options --repository_cache=~/.cache/blaze/repo-cache --color=no --curses=no,
-env HOME and PATH=/usr/bin:/bin, each command in a systemd-run scope (MemoryMax=8G), then
-`shutdown`. Both the workspace copy and the output user root are deleted first, so every run
-starts cold. Environment: BLAZE (binary, default target/debug/blaze).
-"""
+uses the output user root ~/.cache/blaze/oracle-out/ur-probe-<scenario>-<oracle|blaze>, startup
+options --nohome_rc --nosystem_rc, command options --repository_cache=~/.cache/blaze/repo-cache
+--color=no --curses=no, then `shutdown`. Both the workspace copy and the output user root are
+deleted first, so every run starts cold. The Blaze binary: --binary B, else $BLAZE, else
+target/debug/blaze; it is refused when it is the oracle.
 
-ORACLE = os.path.expanduser("~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64")
+`selftest` drives this command line (record, compare, compare-all, recount) against fake binaries
+under a fake HOME and a temporary scenarios directory, with a tripwire that fails when a fake is
+started outside compare_common.run.
+""" % 0  # the timeout is filled in below
+
+STEP_TIMEOUT = 3600
+MEMORY_MAX = "8G"
+USAGE = USAGE.replace("timeout after 0 s", "timeout after %d s" % STEP_TIMEOUT)
+
 # Rate-limited progress output: present or absent depending on timing.
 PROGRESS = re.compile(
     r"^(Computing main repo mapping:|Loading:|Analyzing:|Fetching |Building:|Testing:|"
@@ -128,6 +156,7 @@ PATH_DEPENDENT_KEYS = {"SourceSymlinkManifest", "SymlinkTree"}
 # The masked view (analysis review R3-2): line classes Blaze cannot match by design, each with
 # the reason. A stderr line that matches a class completely is replaced by the class's
 # placeholder (or dropped when the placeholder is None) in both transcripts; nothing else changes.
+# A step equal only in this view is KNOWN-GAP.
 MASKS = [
     ("server start",
      re.compile(r"(Extracting Bazel installation\.\.\.|"
@@ -165,11 +194,12 @@ def die(msg):
     sys.exit(2)
 
 
-STATE = os.path.expanduser("~/.cache/blaze/work/w4-probe")
+HOME = os.path.expanduser("~")
+STATE = os.path.join(HOME, ".cache", "blaze", "work", "w4-probe")
 LOCK = os.path.join(STATE, "lock")
 HOLDER = os.path.join(STATE, "lock.holder.json")
 CLIENTS = os.path.join(STATE, "clients")
-LOCKED_COMMANDS = ("oracle", "blaze", "record", "compare", "compare-all")
+LOCKED_COMMANDS = ("oracle", "blaze", "record", "record-all", "compare", "compare-all")
 
 
 def _holder():
@@ -184,7 +214,7 @@ def take_lock(argv):
     """Registers this run and takes the probe lock, waiting (and saying who holds it)."""
     os.makedirs(CLIENTS, exist_ok=True)
     with open(os.path.join(CLIENTS, str(os.getpid())), "w") as f:
-        f.write(" ".join(argv) + "\n")
+        f.write("%s %s\n" % (cc._proc_start(os.getpid()), " ".join(argv)))
     fd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o644)
     shown, t0 = None, time.time()
     while True:
@@ -199,7 +229,7 @@ def take_lock(argv):
                     "pid %s since %s: %s" % (h.get("pid"), h.get("start"), h.get("argv"))
                     if h else "an unknown process"))
                 sys.stderr.flush()
-            time.sleep(5)
+            time.sleep(1)
     if shown is not None:
         sys.stderr.write("probe: got the lock after %.0fs\n" % (time.time() - t0))
     tmp = HOLDER + ".%d.tmp" % os.getpid()
@@ -221,6 +251,39 @@ def release(fd):
     os.close(fd)
 
 
+def _registered():
+    """{pid} of the registered runs whose recorded start time still matches the process (a
+    file left by a killed run does not hide an unrelated process that reuses its pid)."""
+    out = set()
+    if not os.path.isdir(CLIENTS):
+        return out
+    for name in os.listdir(CLIENTS):
+        if not name.isdigit():
+            continue
+        try:
+            start = open(os.path.join(CLIENTS, name)).read().split(" ", 1)[0]
+        except OSError:
+            continue
+        if cc._proc_start(int(name)) == start:
+            out.add(int(name))
+    return out
+
+
+def _probe_args(args):
+    """The arguments after the probe script in a command line, or None when the command line
+    does not run scripts/w4/probe (directly, or as a Python interpreter's script argument after
+    any interpreter options)."""
+    if args and args[0].endswith("w4/probe"):
+        return args[1:]
+    if len(args) > 1 and os.path.basename(args[0]).startswith("python"):
+        i = 1
+        while i < len(args) and args[i].startswith("-"):
+            i += 2 if args[i] in ("-W", "-X", "-c", "-m") else 1
+        if i < len(args) and args[i].endswith("w4/probe"):
+            return args[i + 1:]
+    return None
+
+
 def unlocked_probes():
     """Other scripts/w4/probe processes that did not register (they do not take the lock) and
     run a command that uses the shared directories."""
@@ -232,65 +295,82 @@ def unlocked_probes():
             p = int(open("/proc/%d/stat" % p).read().rsplit(")", 1)[1].split()[1])
         except (OSError, ValueError, IndexError):
             break
-    registered = set(os.listdir(CLIENTS)) if os.path.isdir(CLIENTS) else set()
+    registered = _registered()
     found = []
     for pid in os.listdir("/proc"):
-        if not pid.isdigit() or int(pid) in ancestors or pid in registered:
+        if not pid.isdigit() or int(pid) in ancestors or int(pid) in registered:
             continue
         try:
             args = [a.decode(errors="replace") for a in
                     open("/proc/%s/cmdline" % pid, "rb").read().split(b"\0") if a]
         except OSError:
             continue
-        if not args:
+        rest = _probe_args(args)
+        if rest is None:
             continue
-        i = 0 if args[0].endswith("w4/probe") else 1 if (
-            len(args) > 1 and os.path.basename(args[0]).startswith("python")
-            and args[1].endswith("w4/probe")) else None
-        if i is None:
-            continue
-        rest = args[i + 1:]
+        while rest and rest[0] == "--scenarios":
+            rest = rest[2:]
         if rest and rest[0] in LOCKED_COMMANDS:
             found.append("pid %s: %s" % (pid, " ".join(args)[:200]))
     return found
 
 
+class Unlocked(Exception):
+    pass
+
+
 def refuse_if_unlocked(when):
     found = unlocked_probes()
     if found:
-        sys.stderr.write("probe: refused to score (%s): another probe process uses the shared "
-                         "work directories without the lock:\n  %s\n" % (when, "\n  ".join(found)))
-        sys.exit(2)
+        raise Unlocked("refused to score (%s): another probe process uses the shared work "
+                       "directories without the lock:\n  %s" % (when, "\n  ".join(found)))
 
 
-def provenance_lines(binary, steps, scenarios, left_out):
-    sha = binary_id(binary)[0] if binary and os.path.exists(binary) else "(binary not found)"
-    git = lambda *a: subprocess.run(["git", "-C", ROOT] + list(a), stdout=subprocess.PIPE,
-                                    stderr=subprocess.DEVNULL).stdout.decode().strip()
-    dirty = "dirty" if git("status", "--porcelain") else "clean"
-    return ["probe: blaze %s sha256 %s" % (binary, sha),
-            "probe: repository %s (%s)" % (git("rev-parse", "HEAD"), dirty),
-            "probe: denominator: %d scenarios counted, %d left out, %d oracle steps" % (
-                scenarios, left_out, steps)]
+# ---------------------------------------------------------------------------------------------
+# Running a scenario.
+
+def term_text(term):
+    """The transcript line of a termination (without the free-text detail, which goes to
+    stderr): `exit N`, `signal NAME`, `oom-kill`, `timeout`, `unrecorded`."""
+    if term.kind == "exit":
+        return "exit %d" % term.code
+    if term.kind == "signal":
+        return "signal %s" % term.sig
+    return term.kind
+
+
+def parse_term(line):
+    """A Termination from a transcript's termination line, or None."""
+    m = re.match(r"^exit (-?\d+)$", line or "")
+    if m:
+        return cc.Termination("exit", int(m.group(1)))
+    m = re.match(r"^signal (\S+)$", line or "")
+    if m:
+        return cc.Termination("signal", None, m.group(1))
+    if line in ("oom-kill", "timeout", "unrecorded"):
+        return cc.Termination(line)
+    return None
 
 
 class Run:
-    def __init__(self, who, scenario):
+    def __init__(self, who, scenario, binary):
         self.who = who
         self.dir = os.path.join(SCENARIOS, scenario)
         if not os.path.isdir(os.path.join(self.dir, "ws")):
             die("no scenario %r (see `probe list`)" % scenario)
-        self.binary = ORACLE if who == "oracle" else os.environ.get("BLAZE", os.path.join(ROOT, "target/debug/blaze"))
-        self.ws = os.path.expanduser("~/.cache/blaze/work/probe-%s" % scenario)
-        self.ur = os.path.expanduser("~/.cache/blaze/oracle-out/ur-probe-%s-%s" % (scenario, who))
-        self.home = os.path.expanduser("~")
+        self.binary = binary
+        self.ws = os.path.join(HOME, ".cache/blaze/work/probe-%s" % scenario)
+        self.ur = os.path.join(HOME, ".cache/blaze/oracle-out/ur-probe-%s-%s" % (scenario, who))
+        self.home = HOME
+        self.aux = []  # (what, Termination) of shutdown commands
 
     def prepare(self):
         # A fresh workspace copy and a fresh output user root: action counts and cache hits in the
         # transcript must not depend on earlier runs. (chmod -R does not follow the symlinks it
         # meets while walking, so the convenience symlinks and the execroot are safe.)
-        if os.path.isdir(self.ur):
-            self.exec("shutdown", [], common=False)
+        if os.path.isdir(self.ur) and os.path.isdir(self.ws):
+            term = self.exec("shutdown", [], common=False)[0]
+            self.aux.append(("shutdown before", term))
         for path in (self.ws, self.ur):
             if os.path.lexists(path):
                 subprocess.run(["chmod", "-R", "u+w", path], check=False)
@@ -298,14 +378,17 @@ class Run:
         shutil.copytree(os.path.join(self.dir, "ws"), self.ws, symlinks=True)
 
     def exec(self, command, args, common=True):
-        argv = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "-p", "MemoryMax=8G",
-                "-p", "MemorySwapMax=0", "env", "-i", "HOME=" + self.home, "PATH=/usr/bin:/bin",
-                self.binary, "--output_user_root=" + self.ur, "--nohome_rc", "--nosystem_rc", command]
+        argv = [self.binary, "--output_user_root=" + self.ur, "--nohome_rc", "--nosystem_rc",
+                command]
         if common:
-            argv += ["--repository_cache=" + self.home + "/.cache/blaze/repo-cache", "--color=no", "--curses=no"]
+            argv += ["--repository_cache=" + self.home + "/.cache/blaze/repo-cache", "--color=no",
+                     "--curses=no"]
         argv += args
-        p = subprocess.run(argv, cwd=self.ws, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        return p.returncode, p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace")
+        r = cc.run(argv, self.ws, timeout=STEP_TIMEOUT, mode="scope", memory_max=MEMORY_MAX,
+                   tag="probe-" + self.who)
+        if not r.term.normal:
+            sys.stderr.write("probe: %s %s: %s\n" % (self.who, command, r.term))
+        return r.term, r.out.decode("utf-8", "replace"), r.err.decode("utf-8", "replace")
 
     def norm(self, text):
         text = re.sub(re.escape(self.ur) + r"/[0-9a-f]{32}", "<OUTPUT_BASE>", text)
@@ -345,8 +428,8 @@ class Run:
 
     def step(self, kind, args, out):
         if kind == "run":
-            code, stdout, stderr = self.exec(args[0], args[1:])
-            out.append("exit %d" % code)
+            term, stdout, stderr = self.exec(args[0], args[1:])
+            out.append(term_text(term))
             out.append("--- stdout")
             stdout = self.norm(self.raw_aquery(stdout))
             if stdout:
@@ -355,9 +438,9 @@ class Run:
             out.extend(self.stderr_lines(stderr))
         elif kind == "aquery":
             import surfaces  # scripts/oracle
-            code, stdout, stderr = self.exec("aquery", ["--output=jsonproto", "--include_param_files",
+            term, stdout, stderr = self.exec("aquery", ["--output=jsonproto", "--include_param_files",
                                                         "--include_file_write_contents"] + args)
-            out.append("exit %d" % code)
+            out.append(term_text(term))
             out.append("--- stdout")
             try:
                 doc = json.loads(stdout)
@@ -405,9 +488,13 @@ class Run:
                 out.append("=== %d: %s" % (n, line))
                 parts = shlex.split(line)
                 self.step(parts[0], parts[1:], out)
-        self.exec("shutdown", [], common=False)
+        term = self.exec("shutdown", [], common=False)[0]
+        self.aux.append(("shutdown after", term))
         return "\n".join(out) + "\n"
 
+
+# ---------------------------------------------------------------------------------------------
+# Transcripts, views and the three-view counts.
 
 def split_steps(text):
     """Transcript -> ordered {header: body lines}."""
@@ -438,16 +525,19 @@ def messages_view(body):
     return head + sorted(kept)
 
 
-def masked_view(body):
-    """The masked view: the stderr lines of a MASKS class replaced (or dropped)."""
+def masked_view(body, fired=None):
+    """The masked view: the stderr lines of a MASKS class replaced (or dropped). fired: a set
+    that receives the names of the classes that matched a line."""
     if "--- stderr" not in body:
         return body
     i = body.index("--- stderr")
     out = body[:i + 1]
     for line in body[i + 1:]:
-        for _, pattern, placeholder, _ in MASKS:
+        for name, pattern, placeholder, _ in MASKS:
             m = pattern.fullmatch(line)
             if m:
+                if fired is not None:
+                    fired.add(name)
                 if placeholder is not None:
                     out.append(m.expand(placeholder))
                 break
@@ -467,38 +557,9 @@ def step_class(header):
     return STEP_CLASSES.get(m.group(1) if m else "", "binary")
 
 
-def binary_id(path):
-    """(sha256 hex, first 12 hex digits) of the binary."""
-    import hashlib
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest(), h.hexdigest()[:12]
-
-
-def save_transcript(scenario, binary, text, only):
-    sha, sha12 = binary_id(binary)
-    git = lambda *a: subprocess.run(["git", "-C", ROOT] + list(a), stdout=subprocess.PIPE,
-                                    stderr=subprocess.DEVNULL).stdout.decode().strip()
-    dirty = "dirty" if git("status", "--porcelain", "--untracked-files=no") else "clean"
-    import datetime
-    header = ["# probe transcript of Blaze (scripts/w4/probe compare)",
-              "# binary %s" % binary,
-              "# sha256 %s" % sha,
-              "# tree %s (%s)" % (git("rev-parse", "HEAD"), dirty),
-              "# date %s" % datetime.datetime.now().isoformat(timespec="seconds")]
-    name = "%s%s.txt" % (scenario, "" if only is None else ".only-%d" % only)
-    os.makedirs(os.path.join(STATE, sha12), exist_ok=True)
-    path = os.path.join(STATE, sha12, name)
-    with open(path, "w") as f:
-        f.write("\n".join(header) + "\n" + text)
-    return path
-
-
 def count(want, got, view_shown=None, quiet=True):
     """Per view, the steps of `want` whose body equals `got`'s; prints MATCH/DIFF lines (and
-    the diff of `view_shown` unless quiet)."""
+    the diff of `view_shown` unless quiet). The three-view table; the classes are judge_step's."""
     counts = {v: 0 for v in VIEWS}
     # Per step class: {"steps": oracle steps, <view>: matching steps}.
     counts["classes"] = {c: dict({"steps": 0}, **{v: 0 for v in VIEWS}) for c in CLASS_TEXT}
@@ -527,29 +588,6 @@ def count(want, got, view_shown=None, quiet=True):
         if header not in want:
             print("%s  DIFF (step not in ORACLE.txt)" % header)
     return counts
-
-
-def read_oracle(scenario, only=None):
-    with open(os.path.join(SCENARIOS, scenario, "ORACLE.txt")) as f:
-        want = split_steps(f.read())
-    if only is not None:
-        want = {h: b for h, b in want.items() if h.startswith("=== %d: " % only)}
-    return want
-
-
-def compare(scenario, only=None, view="full", quiet=False):
-    """Runs Blaze, saves its transcript; returns ({view: matching steps}, total steps)."""
-    want = read_oracle(scenario, only)
-    run = Run("blaze", scenario)
-    text = run.transcript(only)
-    saved = save_transcript(scenario, run.binary, text, only)
-    counts = count(want, split_steps(text), view, quiet)
-    b = counts["classes"]["binary"]
-    print("probe %s: %d of %d steps match%s (masked %d, messages %d; of them running the binary: %d of %d; "
-          "saved %s)"
-          % (scenario, counts[view], len(want), "" if view == "full" else " (%s view)" % view,
-             counts["masked"], counts["messages"], b[view], b["steps"], saved))
-    return counts, len(want)
 
 
 def print_table(rows, left_out=()):
@@ -582,9 +620,191 @@ def print_table(rows, left_out=()):
     return tot, total_n
 
 
+def judge_step(header, want_body, got_body):
+    """(class, detail) of one step (see `help`)."""
+    if got_body is None:
+        return cc.DIFFERENT, "step missing from Blaze's transcript"
+    if step_class(header) == "file":
+        if want_body == got_body:
+            return cc.IDENTICAL, "file check"
+        return cc.DIFFERENT, "file check differs"
+    ot = parse_term(want_body[0] if want_body else None)
+    bt = parse_term(got_body[0] if got_body else None)
+    if ot is None:
+        return cc.SKIPPED, "no termination line in ORACLE.txt for this step"
+    if bt is None:
+        return cc.DIFFERENT, "no termination line in Blaze's transcript"
+    err = got_body[got_body.index("--- stderr") + 1:] if "--- stderr" in got_body else []
+    unported = cc.unported_message("\n".join(err))
+    differing, gaps, reduced = [], [], None
+    if want_body[1:] == got_body[1:]:
+        pass
+    else:
+        fired = set()
+        if masked_view(want_body, fired)[1:] == masked_view(got_body, fired)[1:]:
+            gaps = ["mask: " + n for n in sorted(fired)]
+        elif messages_view(want_body)[1:] == messages_view(got_body)[1:]:
+            reduced = "equal only in the messages view (exit code, stdout, the sorted list of " \
+                      "messages; other stderr lines and the order not compared)"
+        else:
+            def section(body, name):
+                if "--- stderr" not in body:
+                    return body[1:]
+                i = body.index("--- stderr")
+                return body[1:i] if name == "stdout" else body[i + 1:]
+            differing = [n for n in ("stdout", "stderr")
+                         if section(want_body, n) != section(got_body, n)] or ["body"]
+    return cc.judge(ot, bt, differing, blaze_unported=unported, gaps=gaps, reduced=reduced)
+
+
+# ---------------------------------------------------------------------------------------------
+# The anchored oracle record.
+
+def scenario_dir(scenario):
+    return os.path.join(SCENARIOS, scenario)
+
+
+def oracle_paths(scenario):
+    d = scenario_dir(scenario)
+    return os.path.join(d, "ORACLE.txt"), os.path.join(d, "ORACLE.key.json")
+
+
+def oracle_key(scenario, oracle_sha):
+    """The key of a scenario's ORACLE.txt (see `help`)."""
+    d = scenario_dir(scenario)
+    ws = os.path.join(HOME, ".cache/blaze/work/probe-%s" % scenario)
+    ur = os.path.join(HOME, ".cache/blaze/oracle-out/ur-probe-%s-oracle" % scenario)
+    argv = ["<oracle>", "--output_user_root=" + ur, "--nohome_rc", "--nosystem_rc", "<command>",
+            "--repository_cache=" + HOME + "/.cache/blaze/repo-cache", "--color=no", "--curses=no"]
+    return cc.cache_key(cc.tool_sha256(THIS), oracle_sha, argv, cc.clean_env(),
+                        {"ws": cc.tree_digest(os.path.join(d, "ws"), skip_top=()),
+                         "COMMANDS": cc.sha256_file(os.path.join(d, "COMMANDS"))},
+                        extra={"scenario": scenario, "workspace_copy": ws,
+                               "memory_max": MEMORY_MAX, "timeout": STEP_TIMEOUT})
+
+
+def check_oracle_record(scenario, oracle_sha):
+    """None when the scenario's ORACLE.txt is anchored by a fresh key; else the reason."""
+    txt, key = oracle_paths(scenario)
+    if not os.path.exists(txt):
+        return "no ORACLE.txt for %s" % scenario
+    return cc.check_key(key, oracle_key(scenario, oracle_sha))
+
+
+def read_oracle(scenario, only=None):
+    with open(oracle_paths(scenario)[0]) as f:
+        want = split_steps(f.read())
+    if only is not None:
+        want = {h: b for h, b in want.items() if h.startswith("=== %d: " % only)}
+    return want
+
+
+def record(scenario, oracle, oracle_sha, report):
+    txt, key = oracle_paths(scenario)
+    cc.invalidate_key(key)
+    run = Run("oracle", scenario, oracle)
+    text = run.transcript()
+    tmp = txt + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.replace(tmp, txt)
+    bad = [(w, t) for w, t in run.aux if not t.normal]
+    for w, t in run.aux:
+        report.add_aux("%s %s" % (scenario, w), t)
+    if bad:
+        print("probe: %s: ORACLE.txt written but NOT anchored (an auxiliary command ended "
+              "abnormally: %s)" % (scenario, "; ".join("%s %s" % (w, t) for w, t in bad)))
+        return False
+    cc.write_key(key, oracle_key(scenario, oracle_sha), [txt])
+    print("wrote %s (%d lines) and its key %s" % (txt, text.count("\n"), key))
+    return True
+
+
+# ---------------------------------------------------------------------------------------------
+# Blaze transcripts and their captures.
+
+def save_transcript(scenario, blaze, text, only, oracle_sha):
+    sha12 = blaze["sha256"][:12]
+    repo = cc.repo_state()
+    header = ["# probe transcript of Blaze (scripts/w4/probe compare)",
+              "# binary %s" % blaze["path"],
+              "# sha256 %s" % blaze["sha256"],
+              "# tree %s (%s)" % (repo["commit"], {True: "dirty", False: "clean"}.get(
+                  repo["dirty"], "?")),
+              "# date %s" % datetime.datetime.now().isoformat(timespec="seconds")]
+    name = "%s%s.txt" % (scenario, "" if only is None else ".only-%d" % only)
+    os.makedirs(os.path.join(STATE, sha12), exist_ok=True)
+    path = os.path.join(STATE, sha12, name)
+    cap = path + ".capture.json"
+    cc.invalidate_key(cap)
+    with open(path, "w") as f:
+        f.write("\n".join(header) + "\n" + text)
+    try:
+        with open(oracle_paths(scenario)[1]) as f:
+            okey = json.load(f).get("digest")
+    except (OSError, ValueError):
+        okey = None
+    cc.write_capture(cap, blaze, [path], extra={
+        "scenario": scenario, "only": only, "repo": repo, "tool_sha256": cc.tool_sha256(THIS),
+        "compare_common_sha256": cc.MODULE_SHA256, "oracle_sha256": oracle_sha,
+        "oracle_key_digest": okey})
+    return path
+
+
+def judge_scenario(scenario, want, got, report, view, quiet):
+    """Adds one row per oracle step; returns the three-view counts."""
+    counts = count(want, got, view, quiet)
+    for header, want_body in want.items():
+        cls, detail = judge_step(header, want_body, got.get(header))
+        report.add("%s %s" % (scenario, header[4:]), cls, detail, scenario=scenario,
+                   step_kind=step_class(header))
+    for header in got:
+        if header not in want:
+            report.add("%s %s" % (scenario, header[4:]), cc.DIFFERENT, "step not in ORACLE.txt",
+                       scenario=scenario, step_kind=step_class(header))
+    return counts
+
+
+def compare(scenario, blaze, oracle_sha, report, only=None, view="full", quiet=False):
+    """Runs Blaze, saves its transcript, judges every step; returns (three-view counts, steps)."""
+    want = read_oracle(scenario, only)
+    run = Run("blaze", scenario, blaze["path"])
+    text = run.transcript(only)
+    for w, t in run.aux:
+        report.add_aux("%s %s" % (scenario, w), t)
+    saved = save_transcript(scenario, blaze, text, only, oracle_sha)
+    counts = judge_scenario(scenario, want, split_steps(text), report, view, quiet)
+    b = counts["classes"]["binary"]
+    print("probe %s: full view %d of %d steps (masked %d, messages %d; of them running the "
+          "binary: %d of %d; saved %s)" % (scenario, counts["full"], len(want), counts["masked"],
+                                           counts["messages"], b["full"], b["steps"], saved))
+    return counts, len(want)
+
+
+def kind_footer(report):
+    """The class counts split by step kind (steps that run the binary, file checks)."""
+    lines = []
+    for kind, text in CLASS_TEXT.items():
+        rows = [r for r in report.rows if r.get("step_kind") == kind]
+        c = {}
+        for r in rows:
+            c[r["class"]] = c.get(r["class"], 0) + 1
+        lines.append("%s: %d steps; %s" % (text, len(rows), ", ".join(
+            "%s %d" % (k.lower(), c[k]) for k in cc.CLASSES if c.get(k)) or "none"))
+    return lines
+
+
+# ---------------------------------------------------------------------------------------------
+# Command line.
+
 def recorded_scenarios(skip):
     return [name for name in sorted(os.listdir(SCENARIOS))
             if name not in skip and os.path.exists(os.path.join(SCENARIOS, name, "ORACLE.txt"))]
+
+
+def all_scenarios(skip):
+    return [name for name in sorted(os.listdir(SCENARIOS))
+            if name not in skip and os.path.isfile(os.path.join(SCENARIOS, name, "COMMANDS"))]
 
 
 def skipped_scenarios(skip):
@@ -593,20 +813,55 @@ def skipped_scenarios(skip):
             if os.path.exists(os.path.join(SCENARIOS, name, "ORACLE.txt"))]
 
 
+def blaze_binary(opts):
+    return opts.get("binary") or os.environ.get("BLAZE") or os.path.join(ROOT, "target/debug/blaze")
+
+
+def parse(argv):
+    """(command, positional, options) of argv (without the program name)."""
+    opts, pos = {"view": "full", "skip": set()}, []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--scenarios", "--binary", "--only", "--skip", "--json"):
+            if i + 1 >= len(argv):
+                die("%s needs a value" % a)
+            v = argv[i + 1]
+            if a == "--only":
+                opts["only"] = int(v)
+            elif a == "--skip":
+                opts["skip"] = set(x for x in v.split(",") if x)
+            else:
+                opts[a[2:]] = v
+            i += 2
+            continue
+        if a in ("--messages", "--masked"):
+            opts["view"] = a[2:]
+        elif a.startswith("-") and a not in ("-h",):
+            die("unknown option %r; see `probe help`" % a)
+        else:
+            pos.append(a)
+        i += 1
+    return (pos[0] if pos else "help"), pos[1:], opts
+
+
 def main(argv):
-    if len(argv) < 2 or argv[1] in ("help", "--help", "-h"):
+    global SCENARIOS
+    cmd, pos, opts = parse(argv[1:])
+    if cmd in ("help", "--help", "-h"):
         sys.stdout.write(USAGE)
         return 0
-    cmd = argv[1]
-    view = "messages" if "--messages" in argv else "masked" if "--masked" in argv else "full"
-    skip = set()
-    if "--skip" in argv:
-        skip = set(argv[argv.index("--skip") + 1].split(","))
+    if opts.get("scenarios"):
+        SCENARIOS = os.path.abspath(opts["scenarios"])
+    if cmd == "selftest":
+        return selftest()
     if cmd == "list":
         for name in sorted(os.listdir(SCENARIOS)):
             if os.path.isdir(os.path.join(SCENARIOS, name, "ws")):
                 recorded = os.path.exists(os.path.join(SCENARIOS, name, "ORACLE.txt"))
-                print("%s%s" % (name, "" if recorded else "  (no ORACLE.txt)"))
+                keyed = os.path.exists(oracle_paths(name)[1])
+                print("%s%s" % (name, "" if recorded and keyed else "  (no ORACLE.txt)"
+                                if not recorded else "  (ORACLE.txt without a key)"))
         return 0
     if cmd == "masks":
         for name, pattern, placeholder, reason in MASKS:
@@ -617,69 +872,312 @@ def main(argv):
         lock = take_lock(argv)
         try:
             refuse_if_unlocked("at the start")
-            return locked_main(argv, cmd, view, skip)
+            return locked_main(cmd, pos, opts)
+        except Unlocked as e:
+            return cc.refuse(TOOL, e)
+        except cc.Refusal as e:
+            return cc.refuse(TOOL, e)
         finally:
             release(lock)
     if cmd == "recount":
-        if len(argv) < 3:
-            die("missing <sha12>; see `probe help`")
-        sha12 = argv[2]
-        rows = []
-        left_out = skipped_scenarios(skip)
-        binary = None
-        for name in recorded_scenarios(skip):
-            path = os.path.join(STATE, sha12, name + ".txt")
-            if not os.path.exists(path):
-                print("%s: no %s" % (name, path))
-                left_out.append((name, "no saved transcript", len(read_oracle(name))))
-                continue
-            with open(path) as f:
-                text = f.read()
-            m = re.search(r"^# binary (.*)$", text, re.M)
-            binary = binary or (m.group(1) if m else None)
-            got = split_steps(text)
-            want = read_oracle(name)
-            rows.append((name, count(want, got), len(want)))
-        tot, total_n = print_table(rows, left_out)
-        print("\n".join(provenance_lines(binary, total_n, len(rows), len(left_out))))
-        return 0
+        try:
+            return recount(pos, opts)
+        except cc.Refusal as e:
+            return cc.refuse(TOOL, e)
     die("unknown command %r; see `probe help`" % cmd)
 
 
-def locked_main(argv, cmd, view, skip):
-    if cmd == "compare-all":
-        rows = []
-        for name in recorded_scenarios(skip):
-            counts, n = compare(name, view=view, quiet=True)
-            rows.append((name, counts, n))
-        refuse_if_unlocked("before scoring")
-        left = skipped_scenarios(skip)
-        tot, total_n = print_table(rows, left)
-        print("\n".join(provenance_lines(Run("blaze", rows[0][0]).binary if rows else None,
-                                         total_n, len(rows), len(left))))
-        return 0 if rows and tot[view] == total_n else 1
-    if len(argv) < 3:
-        die("missing scenario; see `probe help`")
-    scenario = argv[2]
-    only = None
-    if "--only" in argv:
-        only = int(argv[argv.index("--only") + 1])
-    expected = os.path.join(SCENARIOS, scenario, "ORACLE.txt")
+def new_report(blaze, oracle, oracle_sha, selection, compared):
+    rep = cc.Report(TOOL, blaze=blaze, oracle={"path": oracle, "sha256": oracle_sha},
+                    selection=selection, tool_files=[THIS], compared=compared)
+    rep.print_header()
+    return rep
+
+
+COMPARED = ("per oracle step: the termination, stdout and every kept stderr line in order (full "
+            "view); KNOWN-GAP when equal only with the mask classes of `probe masks`, "
+            "IDENTICAL-REDUCED when equal only in the messages view")
+
+
+def finish(report, opts):
+    for line in kind_footer(report):
+        report.note(line)
+    report.print_rows()
+    report.print_footer()
+    if opts.get("json"):
+        report.write_json(opts["json"])
+    return report.exit_code()
+
+
+def locked_main(cmd, pos, opts):
+    oracle, oracle_sha = cc.require_oracle()
+    if cmd in ("record", "record-all"):
+        names = all_scenarios(opts["skip"]) if cmd == "record-all" else pos[:1]
+        if not names:
+            return cc.empty_selection_error(TOOL, "scenarios")
+        rep = cc.Report(TOOL, oracle={"path": oracle, "sha256": oracle_sha},
+                        selection="record " + ",".join(names), tool_files=[THIS],
+                        compared="nothing (recording the oracle)")
+        rep.print_header()
+        ok = True
+        for name in names:
+            ok = record(name, oracle, oracle_sha, rep) and ok
+        bad = [a for a in rep.aux if a["abnormal"]]
+        for a in bad:
+            print("probe: auxiliary %s: %s" % (a["what"], a["termination"]))
+        if rep.changed_files():
+            print("probe: changed on disk during the run: %s" % ", ".join(rep.changed_files()))
+            return 2
+        print("probe: recorded %d scenario(s)%s" % (len(names), "" if ok else
+                                                     "; some NOT anchored (see above)"))
+        return 0 if ok else 1
     if cmd in ("oracle", "blaze"):
-        sys.stdout.write(Run(cmd, scenario).transcript(only))
-        return 0
-    if cmd == "record":
-        text = Run("oracle", scenario).transcript()
-        with open(expected, "w") as f:
-            f.write(text)
-        print("wrote %s (%d lines)" % (expected, text.count("\n")))
-        return 0
+        if not pos:
+            die("missing scenario; see `probe help`")
+        if cmd == "oracle":
+            binary = oracle
+        else:
+            binary = cc.blaze_identity(blaze_binary(opts))["path"]
+        run = Run(cmd, pos[0], binary)
+        sys.stdout.write(run.transcript(opts.get("only")))
+        for w, t in run.aux:
+            print("# %s: %s" % (w, t), file=sys.stderr)
+        return 0 if all(t.normal for _, t in run.aux) else 1
+    blaze = cc.blaze_identity(blaze_binary(opts))
     if cmd == "compare":
-        counts, n = compare(scenario, only, view)
-        refuse_if_unlocked("before scoring")
-        print("\n".join(provenance_lines(Run("blaze", scenario).binary, n, 1, 0)))
-        return 0 if counts[view] == n else 1
-    die("unknown command %r; see `probe help`" % cmd)
+        if not pos:
+            die("missing scenario; see `probe help`")
+        names = pos[:1]
+    else:
+        names = recorded_scenarios(opts["skip"])
+        if not names:
+            return cc.empty_selection_error(TOOL, "recorded scenarios")
+    stale = [(n, why) for n in names for why in [check_oracle_record(n, oracle_sha)] if why]
+    if stale:
+        raise cc.Refusal("ORACLE.txt not anchored for %d scenario(s); run `probe record <name>` "
+                         "first:\n  %s" % (len(stale), "\n  ".join("%s: %s" % s for s in stale)))
+    left = skipped_scenarios(opts["skip"]) if cmd == "compare-all" else []
+    rep = new_report(blaze, oracle, oracle_sha, "%s %s%s%s" % (
+        cmd, ",".join(names) if cmd == "compare" else "%d recorded scenarios" % len(names),
+        " --only %d" % opts["only"] if opts.get("only") else "",
+        " (left out: %s)" % ", ".join(n for n, _, _ in left) if left else ""), COMPARED)
+    rows = []
+    for name in names:
+        counts, n = compare(name, blaze, oracle_sha, rep, opts.get("only") if cmd == "compare"
+                            else None, opts["view"], quiet=(cmd == "compare-all"))
+        rows.append((name, counts, n))
+    refuse_if_unlocked("before scoring")
+    print_table(rows, left)
+    for name, why, n in left:
+        rep.note("not counted: %s (%s; %d oracle steps)" % (name, why, n))
+    return finish(rep, opts)
+
+
+def recount(pos, opts):
+    """Re-judges saved transcripts of the binary named with --binary (see `help`)."""
+    if not pos:
+        die("missing <sha12>; see `probe help`")
+    sha12 = pos[0]
+    if not opts.get("binary"):
+        die("recount needs --binary B, the binary whose saved transcripts are judged")
+    oracle, oracle_sha = cc.require_oracle()
+    blaze = cc.blaze_identity(opts["binary"])
+    if blaze["sha256"][:12] != sha12:
+        raise cc.Refusal("--binary %s has sha256 %s, not %s..." % (blaze["path"], blaze["sha256"],
+                                                                   sha12))
+    names = recorded_scenarios(opts["skip"])
+    if not names:
+        return cc.empty_selection_error(TOOL, "recorded scenarios")
+    rep = new_report(blaze, oracle, oracle_sha, "recount %s, %d recorded scenarios" % (
+        sha12, len(names)), COMPARED + "; re-judged from saved transcripts")
+    rep.reclassify_only = True
+    rows, left, trees = [], list(skipped_scenarios(opts["skip"])), {}
+    for name in names:
+        path = os.path.join(STATE, sha12, name + ".txt")
+        want = read_oracle(name)
+        why = check_oracle_record(name, oracle_sha)
+        if why is None:
+            if not os.path.exists(path):
+                why = "no saved transcript %s" % path
+            else:
+                why = cc.check_capture(path + ".capture.json", blaze)
+        if why is None:
+            cap = json.load(open(path + ".capture.json"))
+            with open(oracle_paths(name)[1]) as f:
+                okey = json.load(f).get("digest")
+            if (cap.get("extra") or {}).get("oracle_key_digest") != okey:
+                rep.note("%s: the transcript was judged against another ORACLE.txt record than "
+                         "the present one" % name)
+            r = (cap.get("extra") or {}).get("repo") or {}
+            trees.setdefault("%s (%s)" % (r.get("commit"), {True: "dirty", False: "clean"}.get(
+                r.get("dirty"), "?")), []).append(name)
+        if why is not None:
+            for header in want:
+                rep.add("%s %s" % (name, header[4:]), cc.SKIPPED, why, scenario=name,
+                        step_kind=step_class(header))
+            left.append((name, why[:80], len(want)))
+            continue
+        with open(path) as f:
+            got = split_steps(f.read())
+        rows.append((name, judge_scenario(name, want, got, rep, None, True), len(want)))
+    print_table(rows, left)
+    rep.note("the repository line of the header names the checkout at recount time; the "
+             "transcripts were recorded at: %s" % ("; ".join(
+                 "%s: %d scenario(s)" % (t, len(n)) for t, n in sorted(trees.items())) or "none"))
+    return finish(rep, opts)
+
+
+# ---------------------------------------------------------------------------------------------
+# Selftest.
+
+def selftest():
+    """The real command line against fake binaries, a fake HOME and a temporary scenarios
+    directory."""
+    st = cc.Selftest(TOOL)
+    fh = cc.FakeHome("w4-probe")
+    me = THIS
+    sdir = os.path.join(fh.root, "scenarios")
+    os.makedirs(os.path.join(sdir, "s1", "ws"))
+    with open(os.path.join(sdir, "s1", "ws", "MODULE.bazel"), "w") as f:
+        f.write("")
+    with open(os.path.join(sdir, "s1", "COMMANDS"), "w") as f:
+        f.write("# selftest scenario\nrun build //:x\naquery //:x\ncat MODULE.bazel\n"
+                "stat MODULE.bazel\n")
+
+    def run(args, pin=None):
+        return fh.run_tool(me, ["--scenarios", sdir] + args, pin=pin)
+
+    def classes(rep, kind="binary"):
+        return [r["class"] for r in (rep or {}).get("cases", []) if r.get("step_kind") == kind]
+
+    def show(rc, rep):
+        return "exit %s, %s" % (rc, ", ".join("%s %d" % kv for kv in
+                                              (rep or {}).get("denominator", {}).items() if kv[1]))
+    try:
+        o, b = fh.fakes(dict(out=b"x"), dict(out=b"x"))
+        subprocess.run([b, "build"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        st.check("tripwire trips on a direct launch", fh.tripped())
+        if fh.tripped():
+            os.remove(fh.tripfile)
+        for name, ospec, bspec, ok, what in cc.SCENARIOS:
+            o, b = fh.fakes(ospec, bspec)
+            rc0, _, log0 = run(["record", "s1"])
+            rc, rep, log = run(["compare", "s1", "--binary", b])
+            st.check("scenario %s" % name, rc0 == 0 and ok(rc, classes(rep)),
+                     "record exit %s; %s; want %s" % (rc0, show(rc, rep), what))
+        # The masked view is KNOWN-GAP, the messages view IDENTICAL-REDUCED.
+        err = b"INFO: Analyzed target //:x (6 packages loaded, 12 targets configured).\n"
+        o, b = fh.fakes(dict(out=b"o\n", err=err),
+                        dict(out=b"o\n", err=b"Starting local Bazel server (9.3.2) and "
+                             b"connecting to it...\nINFO: Analyzed target //:x (1 package "
+                             b"loaded, 2 targets configured).\n"))
+        run(["record", "s1"])
+        rc, rep, log = run(["compare", "s1", "--binary", b])
+        st.check("masked view: a step equal only with the masks is KNOWN-GAP",
+                 rc == 1 and set(classes(rep)) == {cc.KNOWN_GAP}, show(rc, rep))
+        o, b = fh.fakes(dict(out=b"o\n", err=b"INFO: a\nINFO: b\n"),
+                        dict(out=b"o\n", err=b"INFO: b\nINFO: a\n"))
+        run(["record", "s1"])
+        rc, rep, log = run(["compare", "s1", "--binary", b])
+        st.check("messages view: equal only as sorted messages is IDENTICAL-REDUCED",
+                 rc == 1 and set(classes(rep)) == {cc.REDUCED}, show(rc, rep))
+        # Anchors: the record and its key.
+        o, b = fh.fakes(dict(out=b"same\n"), dict(out=b"same\n"))
+        rc, _, _ = run(["record", "s1"], pin="0" * 64)
+        st.check("record refuses a wrong oracle (exit 2)", rc == 2, "exit %s" % rc)
+        rc, _, _ = run(["record", "s1"])
+        rc, rep, _ = run(["compare", "s1", "--binary", b])
+        st.check("compare after record passes", rc == 0, show(rc, rep))
+        rc, rep, _ = run(["compare", "s1", "--binary", o])
+        st.check("the oracle as the binary under test refused (exit 2)", rc == 2, "exit %s" % rc)
+        rc, rep, _ = run(["compare", "s1", "--binary", b], pin="0" * 64)
+        st.check("compare refuses a wrong oracle (exit 2)", rc == 2, "exit %s" % rc)
+        txt, key = os.path.join(sdir, "s1", "ORACLE.txt"), os.path.join(sdir, "s1",
+                                                                         "ORACLE.key.json")
+        with open(txt, "a") as f:
+            f.write("tampered\n")
+        rc, _, _ = run(["compare", "s1", "--binary", b])
+        st.check("a changed ORACLE.txt is refused (exit 2)", rc == 2, "exit %s" % rc)
+        run(["record", "s1"])
+        with open(os.path.join(sdir, "s1", "ws", "BUILD"), "w") as f:
+            f.write("# changed after the record\n")
+        rc, _, _ = run(["compare", "s1", "--binary", b])
+        st.check("a changed ws/ refuses the old record (exit 2)", rc == 2, "exit %s" % rc)
+        os.remove(os.path.join(sdir, "s1", "ws", "BUILD"))
+        run(["record", "s1"])
+        os.remove(key)
+        rc, _, _ = run(["compare-all", "--binary", b])
+        st.check("an ORACLE.txt without a key is refused (exit 2)", rc == 2, "exit %s" % rc)
+        # compare-all and recount.
+        run(["record", "s1"])
+        rc, rep, _ = run(["compare-all", "--binary", b])
+        st.check("compare-all passes on equal fakes", rc == 0, show(rc, rep))
+        sha12 = cc.sha256_file(b)[:12]
+        rc, rep, _ = run(["recount", sha12, "--binary", b])
+        st.check("recount never exits 0", rc == 1 and rep and rep["reclassify_only"],
+                 show(rc, rep))
+        notes = " ".join((rep or {}).get("notes", []))
+        st.check("recount names the transcripts' trees, not only the present HEAD",
+                 "transcripts were recorded at" in notes, notes[:200])
+        other = cc.make_fake(os.path.join(fh.home, "bin", "other"), token=fh.token,
+                             tripfile=fh.tripfile, out=b"same\n", role="other")
+        rc, rep, _ = run(["recount", cc.sha256_file(other)[:12], "--binary", other])
+        st.check("recount: transcripts of another binary are SKIPPED",
+                 rc == 1 and set(r["class"] for r in (rep or {}).get("cases", [])) == {cc.SKIPPED},
+                 show(rc, rep))
+        transcript = os.path.join(fh.cache, "work", "w4-probe", sha12, "s1.txt")
+        with open(transcript, "a") as f:
+            f.write("tampered\n")
+        rc, rep, _ = run(["recount", sha12, "--binary", b])
+        st.check("recount: a changed transcript is SKIPPED",
+                 set(r["class"] for r in (rep or {}).get("cases", [])) == {cc.SKIPPED},
+                 show(rc, rep))
+        # The lock: a second run waits while it is held.
+        os.makedirs(os.path.join(fh.cache, "work", "w4-probe"), exist_ok=True)
+        lockfd = os.open(os.path.join(fh.cache, "work", "w4-probe", "lock"),
+                         os.O_RDWR | os.O_CREAT, 0o644)
+        fcntl.flock(lockfd, fcntl.LOCK_EX)
+        env = dict(os.environ, HOME=fh.home, COMPARE_COMMON_SELFTEST=fh.token,
+                   COMPARE_COMMON_SELFTEST_PIN=cc.sha256_file(fh.oracle))
+        env.pop("COMPARE_COMMON_TRIPWIRE", None)
+        p = subprocess.Popen([me, "--scenarios", sdir, "compare", "s1", "--binary", b],
+                             cwd=fh.root, env=env, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT)
+        time.sleep(4)
+        waiting = p.poll() is None
+        fcntl.flock(lockfd, fcntl.LOCK_UN)
+        os.close(lockfd)
+        out = p.communicate(timeout=300)[0].decode("latin-1")
+        st.check("lock: a run waits while the lock is held, then runs",
+                 waiting and "waiting for the lock" in out and p.returncode == 0,
+                 "waited %s, exit %s" % (waiting, p.returncode))
+        # A probe process that does not hold the lock makes a run refuse to score.
+        fake_dir = os.path.join(fh.root, "old", "w4")
+        os.makedirs(fake_dir)
+        with open(os.path.join(fake_dir, "probe"), "w") as f:
+            f.write("import time\ntime.sleep(60)\n")
+        old = subprocess.Popen(["/usr/bin/python3", "-B", os.path.join(fake_dir, "probe"),
+                                "compare", "x"])
+        try:
+            time.sleep(0.5)
+            rc, _, _ = run(["compare", "s1", "--binary", b])
+            st.check("an unlocked probe process (python3 -B <probe>) makes a run refuse",
+                     rc == 2, "exit %s" % rc)
+        finally:
+            old.kill()
+            old.wait()
+        st.check("no process started outside the launcher", not fh.tripped(),
+                 open(fh.tripfile).read()[:200] if fh.tripped() else "")
+    except Exception as e:  # noqa: BLE001 - a crash of the selftest is a failure
+        import traceback
+        traceback.print_exc()
+        st.check("selftest ran to the end", False, "%s: %s" % (type(e).__name__, e))
+    finally:
+        if st.failures:
+            print("  (fake HOME kept for inspection: %s)" % fh.root)
+        else:
+            fh.remove()
+    return st.finish()
 
 
 if __name__ == "__main__":

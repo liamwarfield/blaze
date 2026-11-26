@@ -156,6 +156,30 @@ def changed_outputs(d, prov):
     return [r for r, v in rec.items() if now.get(os.path.join(d, r)) != v]
 
 
+def text_term(text):
+    """A Termination from its text (`exit N`, `signal NAME`, `oom-kill (...)`, ...)."""
+    words = (text or "").split()
+    if words[:1] == ["exit"] and len(words) > 1 and words[1].lstrip("-").isdigit():
+        return cc.Termination("exit", int(words[1]))
+    if words[:1] == ["signal"] and len(words) > 1:
+        return cc.Termination("signal", None, words[1])
+    return cc.Termination(words[0] if words else "unrecorded", detail=text)
+
+
+def aux_terms(prov):
+    """[(what, Termination)] of the auxiliary commands a recording's provenance names."""
+    if not prov:
+        return []
+    if isinstance(prov.get("auxiliary"), dict):
+        return [(k, cc.Termination.from_dict(v)) for k, v in sorted(prov["auxiliary"].items())]
+    out = []
+    if prov.get("info"):
+        out.append(("info", text_term(prov["info"])))
+    for ws, t in sorted((prov.get("shutdown") or {}).items()):
+        out.append(("shutdown " + os.path.basename(ws), text_term(t)))
+    return out
+
+
 def compare_dirs(oracle, candidate, verbose=False, unverified=False, binary=None):
     """The compare_common Report of two recordings (raises cc.Refusal)."""
     oprov, cprov = provenance(oracle), provenance(candidate)
@@ -196,6 +220,11 @@ def compare_dirs(oracle, candidate, verbose=False, unverified=False, binary=None
                              "exclusion rules listed at the end")
     norm = cc.Normaliser(RULES, path_reason="each recording's output user root")
     rep.add_normaliser(norm)
+    # Audit 4r2, T5: the terminations of `info` and `shutdown` that bytes/run recorded are
+    # listed; an abnormal one fails the comparison.
+    for role, prov in (("oracle", oprov), ("candidate", cprov)):
+        for what, term in aux_terms(prov):
+            rep.add_aux("%s %s" % (role, what), term)
     want, got = items(oracle), items(candidate)
     if not want:
         raise cc.Refusal(f"no oracle recording in {oracle} (run scripts/bytes/run first)")
@@ -335,6 +364,19 @@ def selftest():
                     f.write(b"tampered\n")
                 rc, rep, log = fh.run_tool(me, base + ["--binary", b])
                 st.check("changed oracle file refused", rc == 2, "exit %s" % rc)
+                pj = os.path.join(b_dir, "provenance.json")
+                prov = json.load(open(pj))
+                st.check("T5: provenance holds the info and shutdown terminations",
+                         "info" in prov.get("auxiliary", {})
+                         and any(k.startswith("shutdown") for k in prov["auxiliary"]))
+                prov["auxiliary"]["info"] = cc.Termination("signal", 137, "SIGKILL").to_dict()
+                with open(pj, "w") as f:
+                    json.dump(prov, f)
+                fh.run_tool(run_tool, [])
+                rc, rep, log = fh.run_tool(me, base + ["--binary", b])
+                st.check("T5: an abnormal recorded info or shutdown fails the comparison",
+                         rc == 1 and any(a["abnormal"] for a in (rep or {}).get("auxiliary", [])),
+                         "exit %s" % rc)
         o, b = fh.fakes(dict(out=b"same\n"), dict(out=b"same\n"), when=[("//fail:all", 1)])
         fh.run_tool(run_tool, [])
         fh.run_tool(run_tool, ["--binary", b])

@@ -87,7 +87,6 @@ P = "//" + PKG
 TIMEOUT = 3600
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-PROCESSES_RE = re.compile(r"^INFO: \d+ process(es)?\b.*$", re.M)
 
 
 def write(ws, rel, text):
@@ -412,8 +411,17 @@ def selftest():
     def argv(blaze, label):
         return ["--binary", blaze, "--case", first, "--label", label]
 
+    def extra(st, fh, run):
+        # M7: every case of the list (tree-cc included) through the real command line.
+        for case in [c for c in CASES if c != first]:
+            o, b = fh.fakes(dict(out=b"same\n"), dict(out=b"same\n"))
+            rc, rep, log = run(["--binary", b, "--case", case, "--label", "selftest-" + case])
+            cl = sorted(set(r["class"] for r in (rep or {}).get("cases", [])))
+            st.check("M7: case %s runs through the launcher" % case, rc == 0
+                     and cl == [cc.IDENTICAL], "exit %s, %s" % (rc, cl))
+
     return cc.selftest_tool(
-        "exec2/compare", os.path.abspath(__file__), argv,
+        "exec2/compare", os.path.abspath(__file__), argv, extra=extra,
         empty=lambda b, l: ["--binary", b, "--case", "no-such-case", "--label", l],
         reuse=lambda b, l: argv(b, l) + ["--skip-oracle"],
         oracle_outputs=lambda home, l: [os.path.join(

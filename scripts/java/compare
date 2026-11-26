@@ -326,7 +326,12 @@ def compare(label, steps, report, norm):
             if g:
                 gaps.setdefault(sid, []).extend(g)
     cur[0] = "outputs"
-    if "outputs" in o and "outputs" in b:
+    if "outputs" in o and "outputs" in b and not o["outputs"] and not b["outputs"]:
+        # Audit 4r2, T3: the row is never absent; with no jar on either side it says why.
+        report.add("outputs", cc.SKIPPED, "neither build wrote a jar or launcher (build: oracle "
+                   "%s, blaze %s)" % (cc.Termination.from_dict(o["steps"]["build"]["termination"]),
+                                      cc.Termination.from_dict(b["steps"]["build"]["termination"])))
+    elif "outputs" in o and "outputs" in b:
         oh, bh = o["outputs"], b["outputs"]
         for k in sorted(set(oh) | set(bh)):
             row("sha256 " + k, oh.get(k) == bh.get(k),
@@ -439,8 +444,19 @@ def selftest():
     def argv(blaze, label):
         return ["--binary", blaze, "--step", "cquery", "--label", label]
 
+    def extra(st, fh, run):
+        # M7: the build step and the outputs row through the real command line; T3: with no jar
+        # on either side the outputs row is SKIPPED, not absent.
+        o, b = fh.fakes(dict(out=b""), dict(out=b""))
+        rc, rep, log = run(["--binary", b, "--step", "outputs", "--label", "selftest-build"])
+        rows = {r["case"]: r for r in (rep or {}).get("cases", [])}
+        st.check("T3/M7: build runs; outputs row SKIPPED without jars",
+                 rc == 1 and rows.get("build", {}).get("class") == cc.IDENTICAL
+                 and rows.get("outputs", {}).get("class") == cc.SKIPPED,
+                 "exit %s, %s" % (rc, {k: v["class"] for k, v in rows.items()}))
+
     return cc.selftest_tool(
-        "java/compare", os.path.abspath(__file__), argv,
+        "java/compare", os.path.abspath(__file__), argv, extra=extra,
         empty=lambda b, l: ["--binary", b, "--step", "no-such-step", "--label", l],
         reuse=lambda b, l: argv(b, l) + ["--skip-oracle"],
         oracle_outputs=lambda home, l: [os.path.join(home, ".cache", "blaze", "java-compare", l,

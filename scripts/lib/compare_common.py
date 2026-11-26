@@ -74,6 +74,7 @@ Command line:
   compare_common.py help
 """
 
+import atexit
 import datetime
 import hashlib
 import json
@@ -88,9 +89,45 @@ import tempfile
 import time
 import uuid
 
-def supervise(status_file, cmd):
+def _proc_start(pid):
+    """The start time (clock ticks since boot) of process pid, or None: with the pid it names
+    one process, whatever reuses the number later."""
+    try:
+        with open("/proc/%d/stat" % pid) as f:
+            return f.read().rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
+def _keep_scope(cg, tool, release):
+    """Forks a keeper that stays in the scope's cgroup after the supervisor exits, while a process
+    the command left behind (a daemonized server) lives there, so the scope and its oom_kill
+    counter outlive an OOM kill of that server until the tool has read them (audit round 4, M1).
+    It exits when `release` exists or the tool process (`tool`: "PID:STARTTIME") is gone."""
+    tool_pid, tool_start = tool.split(":", 1)
+    tool_pid = int(tool_pid)
+    try:
+        with open("/sys/fs/cgroup" + cg + "/cgroup.procs") as f:
+            others = [int(x) for x in f.read().split() if int(x) != os.getpid()]
+    except (OSError, ValueError):
+        return
+    if not others or os.fork() != 0:
+        return
+    os.setsid()
+    devnull = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(devnull, fd)
+    for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+        signal.signal(s, signal.SIG_DFL)
+    while not os.path.exists(release) and _proc_start(tool_pid) == tool_start:
+        time.sleep(0.5)
+    os._exit(0)
+
+
+def supervise(status_file, cmd, keep=None):
     """The unit's main process: runs cmd, writes `exit N` or `signal N NAME`, then
-    `oom_kill K` (the unit cgroup's counter), to status_file."""
+    `oom_kill K` (the unit cgroup's counter), to status_file. keep (scope mode): (tool pid,
+    release file) for _keep_scope."""
     child = []
     pending = []
 
@@ -132,6 +169,7 @@ def supervise(status_file, cmd):
         code = os.WEXITSTATUS(st)
         line = "exit %d" % code
     oom = 0
+    cg = None
     try:
         cg = open("/proc/self/cgroup").read().strip().split("::", 1)[1]
         for ln in open("/sys/fs/cgroup" + cg + "/memory.events"):
@@ -141,12 +179,16 @@ def supervise(status_file, cmd):
     except (OSError, IndexError, ValueError):
         pass
     with open(status_file, "w") as f:
-        f.write("%s\noom_kill %d\n" % (line, oom))
+        f.write("%s\noom_kill %d\ncgroup %s\n" % (line, oom, cg or "-"))
+    if keep and cg:
+        _keep_scope(cg, keep[0], keep[1])
     return code
 
 
 # The unit's main process runs a private copy of this file: it needs nothing below.
 if __name__ == "__main__" and len(sys.argv) > 2 and sys.argv[1] == "supervise":
+    if sys.argv[3:4] == ["--keep"]:
+        sys.exit(supervise(sys.argv[2], sys.argv[6:], keep=(sys.argv[4], sys.argv[5])))
     sys.exit(supervise(sys.argv[2], sys.argv[3:]))
 
 HOME = os.path.expanduser("~")
@@ -363,8 +405,10 @@ def unit_argv(argv, status_path, unit, mode="scope", cwd=None, env=None, memory_
     full_env = clean_env(env)
     if selftest_active():
         full_env["COMPARE_COMMON_TRIPWIRE"] = os.environ["COMPARE_COMMON_SELFTEST"]
+    keep = (["--keep", "%d:%s" % (os.getpid(), _proc_start(os.getpid())),
+             status_path + ".release"] if mode == "scope" else [])
     cmd += ["-p", "MemoryMax=" + memory_max, "-p", "MemorySwapMax=0", "-p", "OOMPolicy=continue",
-            "--", "/usr/bin/python3", "-I", _supervisor_copy(), "supervise", status_path,
+            "--", "/usr/bin/python3", "-I", _supervisor_copy(), "supervise", status_path] + keep + [
             "env", "-i"] + ["%s=%s" % kv for kv in full_env.items()] + list(argv)
     return cmd
 
@@ -381,6 +425,9 @@ def _parse_status(path):
     if "oom_kill" in words:
         i = words.index("oom_kill")
         oom = int(words[i + 1])
+    if "cgroup" in words:
+        i = words.index("cgroup")
+        _parse_status.cgroup = words[i + 1] if words[i + 1] != "-" else None
     if words[0] == "exit":
         base = Termination("exit", int(words[1]))
     elif words[0] == "signal":
@@ -399,11 +446,94 @@ def _kill_unit(unit, mode):
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+# Scope units of earlier commands of this process that still hold a process (a server the
+# command daemonized stays in the scope of the command that started it): unit -> the oom_kill
+# count last read. An OOM kill in one of them while a later command runs belongs to that later
+# command (audit round 4, M1).
+_LIVE_SCOPES = {}
+
+
+def _scope_state(cg):
+    """(oom_kill count, number of processes) of the scope cgroup `cg`, or None when it is gone."""
+    try:
+        with open("/sys/fs/cgroup" + cg + "/memory.events") as f:
+            oom = 0
+            for ln in f:
+                k, v = ln.split()
+                if k == "oom_kill":
+                    oom = int(v)
+        with open("/sys/fs/cgroup" + cg + "/cgroup.procs") as f:
+            procs = len(f.read().split())
+    except (OSError, ValueError):
+        return None
+    return oom, procs
+
+
+def _release_scope(unit):
+    """Lets the scope's keeper exit (it polls for the release file every 0.5 s; the file is
+    removed by the next run() of this process or at exit, after the keeper had time to see it)."""
+    info = _LIVE_SCOPES.pop(unit, None)
+    if info:
+        try:
+            open(info["release"], "w").close()
+            _RELEASED.append(info["release"])
+        except OSError:
+            pass
+
+
+_RELEASED = []
+
+
+def _at_exit():
+    """At exit the keepers see this process gone and exit by themselves; the release files
+    written so far are removed."""
+    _remove_released(min_age=0)
+
+
+atexit.register(_at_exit)
+
+
+def _remove_released(min_age=2.0):
+    now = time.time()
+    for path in list(_RELEASED):
+        try:
+            if now - os.stat(path).st_mtime >= min_age:
+                os.remove(path)
+                _RELEASED.remove(path)
+        except OSError:
+            _RELEASED.remove(path)
+
+
+def release_scopes():
+    """Lets the keepers of every scope this process still tracks exit (run at exit)."""
+    for unit in list(_LIVE_SCOPES):
+        _release_scope(unit)
+
+
+def _live_scope_ooms():
+    """{unit: oom_kill count} of the earlier scopes still tracked. A scope in which only its
+    keeper is left (the server ended) is released after this reading."""
+    now = {}
+    for unit, info in list(_LIVE_SCOPES.items()):
+        st = _scope_state(info["cg"])
+        if st is None:
+            _LIVE_SCOPES.pop(unit, None)
+            continue
+        now[unit] = st[0]
+        if st[1] <= 1:
+            _release_scope(unit)
+    return now
+
+
 def run(argv, cwd, env=None, timeout=None, mode="scope", memory_max="12G", stdin=None,
         stdout_path=None, stderr_path=None, tag="cmp"):
     """Runs argv in a unit (see the module doc). Returns a RunResult whose out/err are the bytes
-    (also written to stdout_path/stderr_path when given)."""
+    (also written to stdout_path/stderr_path when given). An OOM kill during the command in the
+    scope of an earlier command of this process (a server it daemonized) makes the termination
+    `oom-kill` too."""
     os.makedirs(STATUS_DIR, exist_ok=True)
+    _remove_released()
+    before = _live_scope_ooms()
     unit = "blaze-%s-%d-%s" % ("".join(c if c.isalnum() else "-" for c in tag)[:24], os.getpid(),
                                uuid.uuid4().hex[:8])
     status = os.path.join(STATUS_DIR, unit + ".status")
@@ -429,6 +559,18 @@ def run(argv, cwd, env=None, timeout=None, mode="scope", memory_max="12G", stdin
             term = recorded or Termination(
                 "unrecorded", detail="no status written inside the unit; systemd-run returned %d"
                 % wrapper_rc)
+        after = _live_scope_ooms()
+        extra = sum(max(0, after.get(u, n) - n) for u, n in before.items())
+        if extra and term.kind not in ("oom-kill", "timeout"):
+            term = Termination("oom-kill", detail="%d OOM kill(s) during this command in the "
+                               "scope of an earlier command (a server it started); the command "
+                               "then ended with %s" % (extra, term))
+        cg = getattr(_parse_status, "cgroup", None)
+        _parse_status.cgroup = None
+        if mode == "scope" and cg and term.kind != "timeout":
+            st = _scope_state(cg)
+            if st is not None and st[1] >= 1:
+                _LIVE_SCOPES[unit] = {"cg": cg, "release": status + ".release"}
         out_f.seek(0)
         out = out_f.read()
         err_f.seek(0)
@@ -440,6 +582,52 @@ def run(argv, cwd, env=None, timeout=None, mode="scope", memory_max="12G", stdin
             os.remove(status)
     return RunResult(term, out, err, round(time.monotonic() - t0, 1), argv, unit)
 
+
+def server_owned_by_root(pid, root):
+    """pid is alive (not a zombie) and its command line names the output user root `root`: a
+    server of that root, not an unrelated process that reused the pid (as
+    scripts/server/common.py owned_by_root)."""
+    try:
+        with open("/proc/%d/stat" % pid) as f:
+            if f.read().rsplit(")", 1)[1].split()[0] == "Z":
+                return False
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            cmdline = f.read()
+    except (OSError, IndexError):
+        return False
+    return os.fsencode(os.path.realpath(root)) in cmdline or os.fsencode(root) in cmdline
+
+
+def kill_root_servers(root, wait=10.0):
+    """SIGTERMs (then, after `wait` seconds, SIGKILLs) every server named by
+    <root>/*/server/server.pid.txt whose process is a server of `root`; returns the list of
+    (pid, what happened). A pid whose command line does not name the root is left alone."""
+    done = []
+    if not os.path.isdir(root):
+        return done
+    for name in sorted(os.listdir(root)):
+        pidfile = os.path.join(root, name, "server", "server.pid.txt")
+        try:
+            pid = int(open(pidfile).read().strip())
+        except (OSError, ValueError):
+            continue
+        if not server_owned_by_root(pid, root):
+            done.append((pid, "not a server of %s; left alone" % root))
+            continue
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                break
+            t0 = time.monotonic()
+            while time.monotonic() - t0 < wait and server_owned_by_root(pid, root):
+                time.sleep(0.1)
+            if not server_owned_by_root(pid, root):
+                done.append((pid, "ended after %s" % signal.Signals(sig).name))
+                break
+        else:
+            done.append((pid, "STILL ALIVE after SIGKILL"))
+    return done
 
 # ---------------------------------------------------------------------------------------------
 # Normalisation: named exclusion rules with counts.
@@ -505,8 +693,11 @@ B1_GAP_RULES = [
     Rule("b1_processes", r"^INFO: \d+ process(es)?\b.*$",
          "B1: action cache hits against in-memory results depend on the server's state",
          repl="INFO: <B1 processes>", kind="gap"),
-    Rule("b1_found", r"^INFO: Found \d+ (targets?|test targets?)\b.*$",
-         "B1: the warm server reports Found at another point of the command", kind="gap"),
+    # No rule for `INFO: Found N targets...` (audit 4r2, B3): with merged analysis and execution
+    # Bazel prints it after runAnalysisAndExecutionPhase returns
+    # (buildtool/AnalysisAndExecutionPhaseRunner.java:123-141), and that call throws
+    # BuildFailedException when an action fails (:170), so a failed build prints no Found line
+    # whatever the server holds. The line is compared in place, position included.
     Rule("b1_discarding", r"discarding analysis cache",
          "B1: only a warm server discards an earlier analysis cache", kind="gap"),
 ]
@@ -712,6 +903,8 @@ def check_capture(path, blaze):
             stored = json.load(f)
     except (OSError, ValueError):
         return "stored Blaze capture has no provenance (%s)" % path
+    if not stored.get("outputs"):
+        return "stored Blaze capture at %s anchors no outputs" % path
     sha = (stored.get("binary") or {}).get("sha256")
     if sha != blaze["sha256"]:
         return "stored Blaze capture was made by sha256 %s, not by the named %s" % (
@@ -738,8 +931,9 @@ CLASSES = [IDENTICAL, KNOWN_GAP, REDUCED, DIFFERENT, BOTH_FAILED, NOT_PORTED, OR
            SKIPPED, DECLARED_GAP]
 PASSING = {IDENTICAL, DECLARED_GAP}
 CLASS_HELP = {
-    IDENTICAL: "termination, stdout and the full stderr equal after the volatile rules; the "
-               "oracle exited 0, or the case declares its exit code as the failure under test",
+    IDENTICAL: "termination, stdout and the full stderr equal after the volatile rules (listed "
+               "with their counts; among them `blank`: blank stderr lines are never compared); "
+               "the oracle exited 0, or the case declares its exit code as the failure under test",
     KNOWN_GAP: "equal except in lines a gap rule removed (named in the detail); not identical",
     REDUCED: "equal in what was compared, but the comparison of some field was reduced (named "
              "in the detail); not identical",
@@ -802,6 +996,7 @@ class Report:
         self.rows = []
         self.aux = []
         self.notes = []
+        self.problems = []
         self.normalisers = []
         self.reclassify_only = False
         self.tool_files = [os.path.abspath(p) for p in tool_files]
@@ -835,6 +1030,11 @@ class Report:
 
     def note(self, text):
         self.notes.append(text)
+
+    def problem(self, text):
+        """Something outside the rows that makes the run fail (a side runner that died, a
+        server left alive, a tool error inside a case)."""
+        self.problems.append(text)
 
     def add_normaliser(self, norm):
         if norm not in self.normalisers:
@@ -911,6 +1111,10 @@ class Report:
                 lines.append("  %s: %s" % (a["what"], a["termination"]))
         for n in self.notes:
             lines.append("note: %s" % n)
+        blank = sum(e["oracle"] + e["blaze"] for e in ex if e["name"] == "blank")
+        if blank:
+            lines.append("note: %d blank stderr lines were removed on the two sides (volatile rule "
+                         "`blank`): no class here says anything about blank lines" % blank)
         lines.append("denominator: %d selected, %d compared, %d skipped, %d declared gaps, "
                      "%d identical, %d known gap, %d identical-reduced, %d both failed, "
                      "%d different, %d not ported, %d oracle unexpected" % (
@@ -924,6 +1128,8 @@ class Report:
             lines.append("error: nothing was compared")
         if abnormal:
             lines.append("error: an auxiliary command died abnormally")
+        for p in self.problems:
+            lines.append("error: %s" % p)
         if self.reclassify_only:
             lines.append("error: re-classification of stored outputs only; nothing new was "
                          "judged, so this run cannot pass")
@@ -952,7 +1158,7 @@ class Report:
         d = self.denominator()
         if not self.rows or d["compared"] == 0 or self.reclassify_only:
             return 1
-        if any(a["abnormal"] for a in self.aux):
+        if any(a["abnormal"] for a in self.aux) or self.problems:
             return 1
         return 0 if all(r["class"] in PASSING for r in self.rows) else 1
 
@@ -960,7 +1166,8 @@ class Report:
         return {"provenance": self.prov, "denominator": self.denominator(),
                 "exit_code": self.exit_code(), "classes": CLASS_HELP, "cases": self.rows,
                 "exclusions": self.exclusion_rows(), "auxiliary": self.aux,
-                "notes": self.notes, "reclassify_only": self.reclassify_only,
+                "notes": self.notes, "problems": self.problems,
+                "reclassify_only": self.reclassify_only,
                 "footer": self.footer_lines()}
 
     def write_json(self, path, extra=None):
@@ -1156,8 +1363,10 @@ def _classes(rep):
 
 
 def itemised(scenarios=None):
-    """The scenarios for a tool whose rows are items of one run (equal content items stay
-    IDENTICAL when both runs fail): failure scenarios require exit 1 and a BOTH-FAILED row."""
+    """The scenarios for bytes/compare only, whose rows are files both runs wrote (equal content
+    items stay IDENTICAL when both runs fail): failure scenarios require exit 1 and a BOTH-FAILED
+    row. Not for a tool whose rows are derived from a stream a killed command may have cut short
+    (audit 4r2, B5: interp-diff uses the strict SCENARIOS)."""
     out = []
     for name, o, b, ok, what in scenarios or SCENARIOS:
         if name in ("equal-failures", "both-sigpipe"):
@@ -1320,6 +1529,16 @@ def selftest_module():
             "b1_processes", "b1_server_start"], str(gaps))
         st.check("rule counts per side", n.counts["elapsed"] == {"oracle": 1, "blaze": 1},
                  str(n.counts.get("elapsed")))
+        # B3 (audit 4r2): the Found line is compared in place, by no gap rule.
+        found = "INFO: Found 1 target...\n"
+        eq, gaps = n.compare("INFO: Analyzed 1 target.\nERROR: build failed\n",
+                             "INFO: Analyzed 1 target.\n" + found + "ERROR: build failed\n",
+                             "stderr")
+        st.check("B3: a Found line only Blaze prints differs (no gap)", not eq and not gaps,
+                 "equal %s, gaps %s" % (eq, gaps))
+        eq, gaps = n.compare("INFO: Analyzed 1 target.\n" + found + "x\n",
+                             found + "INFO: Analyzed 1 target.\nx\n", "stderr")
+        st.check("B3: a Found line at another position differs", not eq, "equal %s" % eq)
         # Keys.
         out1 = os.path.join(d, "out1")
         with open(out1, "w") as f:
@@ -1343,6 +1562,45 @@ def selftest_module():
         st.check("capture: another binary refused",
                  check_capture(cp, {"sha256": "2" * 64}) is not None)
         st.check("capture: no binary named refused", check_capture(cp, None) is not None)
+        write_capture(cp, {"path": "/b", "sha256": "1" * 64}, [])
+        st.check("M5: a capture anchoring no outputs refused",
+                 check_capture(cp, {"sha256": "1" * 64}) is not None)
+        # M1: an OOM kill of a server left in an earlier command's scope, during a later
+        # command, is that later command's termination.
+        f = os.path.join(d, "daemonize")
+        with open(f, "w") as fh:
+            fh.write("#!/bin/bash\n( sleep 3; /usr/bin/python3 -c 'x = bytearray(256 * 1024 * "
+                     "1024); x[::4096] = b\"1\" * len(x[::4096])' ) </dev/null >/dev/null "
+                     "2>&1 &\nexit 0\n")
+        os.chmod(f, 0o755)
+        r1 = run([f], d, mode="scope", memory_max="64M", tag="selftest")
+        g = os.path.join(d, "later")
+        with open(g, "w") as fh:
+            fh.write("#!/bin/bash\nsleep 8\nexit 0\n")
+        os.chmod(g, 0o755)
+        r2 = run([g], d, mode="scope", tag="selftest")
+        st.check("M1: the first command itself ended normally", r1.term == Termination("exit", 0),
+                 str(r1.term))
+        st.check("M1: an OOM kill in an earlier command's scope is the later command's",
+                 r2.term.kind == "oom-kill", str(r2.term))
+        # T4: a pid file naming a process that is not a server of the root is left alone.
+        root = os.path.join(d, "ur")
+        os.makedirs(os.path.join(root, "ob", "server"))
+        sleeper = subprocess.Popen(["sleep", "30"])
+        with open(os.path.join(root, "ob", "server", "server.pid.txt"), "w") as fh:
+            fh.write("%d\n" % sleeper.pid)
+        res = kill_root_servers(root, wait=1)
+        st.check("T4: a pid that is not a server of the root is not signalled",
+                 sleeper.poll() is None and "left alone" in str(res), str(res))
+        sleeper.kill()
+        sleeper.wait()
+        owned = subprocess.Popen(["/bin/bash", "-c", "exec -a server-of-%s sleep 30" % root])
+        time.sleep(0.3)
+        with open(os.path.join(root, "ob", "server", "server.pid.txt"), "w") as fh:
+            fh.write("%d\n" % owned.pid)
+        res = kill_root_servers(root, wait=2)
+        owned.wait()
+        st.check("T4: a server of the root is ended", "ended after" in str(res), str(res))
         # Classes and exit rule.
         st.check("empty report fails", Report("selftest").exit_code() != 0)
         for cls in CLASSES:
@@ -1351,6 +1609,10 @@ def selftest_module():
             rep.add("b", cls)
             st.check("report with one %s %s" % (cls, "passes" if cls in PASSING else "fails"),
                      (rep.exit_code() == 0) == (cls in PASSING))
+        rep = Report("selftest")
+        rep.add("a", IDENTICAL)
+        rep.problem("a side runner died")
+        st.check("a problem outside the rows fails the run", rep.exit_code() == 1)
         rep = Report("selftest")
         rep.add("a", IDENTICAL)
         rep.reclassify_only = True

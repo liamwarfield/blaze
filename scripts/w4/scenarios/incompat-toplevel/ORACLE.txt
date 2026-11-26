@@ -369,7 +369,7 @@ ERROR: Analysis of target '//pkg:bad_test' failed; build aborted: Target //pkg:b
 Dependency chain:
     //pkg:bad_test (e722a2)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible
 INFO: Elapsed time: <DUR>, Critical Path: <DUR>
-INFO: 1 process: 1 internal.
+INFO: 0 processes.
 ERROR: Build did NOT complete successfully
 ERROR: No test targets were found, yet testing was requested
 === 28: run test //pkg:test_on_bad

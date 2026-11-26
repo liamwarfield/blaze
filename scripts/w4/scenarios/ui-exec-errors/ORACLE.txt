@@ -46,8 +46,8 @@ exit 1
 --- stdout
 --- stderr
 ERROR: <WS>/BUILD.bazel:47:7: Action kg_uses_missing.cat failed: missing input file '//:kg_missing.txt'
-ERROR: <WS>/BUILD.bazel:47:7: Action kg_uses_missing.cat failed: 1 input file(s) do not exist
 INFO: Analyzed 3 targets (0 packages loaded, 4 targets configured).
+ERROR: <WS>/BUILD.bazel:47:7: Action kg_uses_missing.cat failed: 1 input file(s) do not exist
 ERROR: <WS>/BUILD.bazel:45:8: Action kg_fails.out failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:kg_fails) /bin/bash -c 'echo failing action of kg_fails >&2; exit 1'
 Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
 failing action of kg_fails
@@ -67,10 +67,10 @@ Traceback (most recent call last):
 		fail("analysis error of " + ctx.label.name)
 Error in fail: analysis error of bad_analysis
 ERROR: <WS>/BUILD.bazel:52:15: Analysis of target '//:bad_analysis' (config: a7a71fd) failed
+INFO: Analyzed 3 targets (0 packages loaded, 2 targets configured).
 ERROR: <WS>/BUILD.bazel:54:8: Action mixed_fails.out failed: (Exit 1): bash failed: error executing Action command (from failing rule target //:mixed_fails) /bin/bash -c 'echo failing action of mixed_fails >&2; exit 1'
 Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
 failing action of mixed_fails
-INFO: Analyzed 3 targets (0 packages loaded, 2 targets configured).
 WARNING: errors encountered while analyzing target '//:bad_analysis', it will not be built.
 INFO: Build succeeded for only 1 of 3 top-level targets
 INFO: Found 2 targets...

@@ -649,18 +649,46 @@ def check_oracle_keys(cases):
     return stale
 
 
+# Cases whose declared failure is a crash: everything after the line below is the crash's stack
+# trace, Java frames on the oracle's side and a Rust panic with its backtrace on Blaze's, which no
+# port can print alike (audit round 4, C2). The trace is a gap: compared separately, a difference
+# there makes the case KNOWN-GAP, never IDENTICAL; the lines up to and including the FATAL line
+# are compared as usual.
+CRASH_TRACE = "FATAL: bazel crashed due to an internal error. Printing stack trace:"
+CRASH_TRACE_GAP = {
+    "canonicalize-flags outside workspace": "the oracle prints the JVM's NullPointerException "
+                                            "trace (SkyframeExecutor.preparePackageLoading), "
+                                            "Blaze a Rust panic and backtrace",
+}
+
+
+def split_trace(err):
+    """(stderr up to and including the crash line, the trace after it)."""
+    text = err.decode("latin-1") if isinstance(err, bytes) else err
+    i = text.find(CRASH_TRACE)
+    if i < 0:
+        return text, ""
+    j = i + len(CRASH_TRACE) + 1
+    return text[:j], text[j:]
+
+
 def judge_case(norm, case, o, b):
     """(class, detail, differing streams) of one case from the loaded results."""
-    differing = []
+    differing, gaps = [], []
     for s, stream in (("out", "stdout"), ("err", "stderr")):
-        eq, _ = norm.compare(o[s], b[s], stream, o["paths"], b["paths"])
+        ot, bt = o[s], b[s]
+        if s == "err" and case.name in CRASH_TRACE_GAP:
+            (ot, otrace), (bt, btrace) = split_trace(ot), split_trace(bt)
+            if otrace != btrace:
+                gaps.append("crash_trace (%s)" % CRASH_TRACE_GAP[case.name])
+        eq, _ = norm.compare(ot, bt, stream, o["paths"], b["paths"])
         if not eq:
             differing.append(s)
     berr = b["err"].decode("latin-1") if isinstance(b["err"], bytes) else b["err"]
     m = re.search(r"blaze: not ported yet: ([^\n]*)", berr)
     cls, detail = cc.judge(o["term"], b["term"], ["std" + s for s in differing],
                            declared_exit=case.expect_exit,
-                           blaze_unported=m.group(1)[:100] if m else None)
+                           blaze_unported=m.group(1)[:100] if m else None, gaps=gaps)
     return cls, detail, differing
 
 
@@ -775,8 +803,34 @@ def selftest():
     def argv(blaze, label):
         return ["--case", "^help$", "--blaze", blaze, "--diff-lines", "0"]
 
+    def extra(st, fh, run):
+        # C2: the crash case differs only in its stack trace: KNOWN-GAP, not DIFFERENT.
+        fatal = CRASH_TRACE.encode() + b"\n"
+        o, b = fh.fakes(dict(err=fatal + b"java.lang.NullPointerException\n\tat a.B(B.java:1)\n",
+                             code=37),
+                        dict(err=fatal + b"thread 'main' panicked at x.rs:1:1\n", code=37))
+        rc, rep, log = run(["--case", "^canonicalize-flags outside workspace$", "--blaze", b,
+                            "--diff-lines", "0"])
+        cl = [r["class"] for r in (rep or {}).get("cases", [])]
+        st.check("C2: a crash differing only in its trace is KNOWN-GAP", rc == 1
+                 and cl == [cc.KNOWN_GAP], "exit %s, %s" % (rc, cl))
+        o, b = fh.fakes(dict(err=fatal + b"trace\n", code=37),
+                        dict(err=b"ERROR: other\n" + fatal + b"trace\n", code=37))
+        rc, rep, log = run(["--case", "^canonicalize-flags outside workspace$", "--blaze", b,
+                            "--diff-lines", "0"])
+        cl = [r["class"] for r in (rep or {}).get("cases", [])]
+        st.check("C2: a difference before the crash line stays DIFFERENT", cl == [cc.DIFFERENT],
+                 "exit %s, %s" % (rc, cl))
+        # M7: the fetch cases (warm and empty output base) through the real command line.
+        o, b = fh.fakes(dict(out=b"x\n"), dict(out=b"x\n"))
+        rc, rep, log = run(["--case", "^fetch brotli (warm|empty output base)$", "--blaze", b,
+                            "--diff-lines", "0"])
+        cl = [r["class"] for r in (rep or {}).get("cases", [])]
+        st.check("M7: fetch cases run through the launcher", rc == 0 and cl == [cc.IDENTICAL] * 2,
+                 "exit %s, %s" % (rc, cl))
+
     return cc.selftest_tool(
-        "cmds/compare", os.path.abspath(__file__), argv,
+        "cmds/compare", os.path.abspath(__file__), argv, extra=extra,
         empty=lambda b, l: ["--case", "^no case has this name$", "--blaze", b],
         reuse=lambda b, l: argv(b, l) + ["--side", "blaze"],
         oracle_outputs=lambda home, l: [os.path.join(home, ".cache", "blaze", "work", "cmds",
