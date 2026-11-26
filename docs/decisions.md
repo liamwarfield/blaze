@@ -485,3 +485,9 @@ Each entry: date, decision, why, who decided.
   CQUERY_TRANSITION_RESOLVER, which runs the dependency resolver for `cquery
   --output=transitions` where Java walks the analysed graph; its nodes must be removed when the
   command ends. Root.
+- 2026-11-26. Reviews at 374c631: vendor mode PASS (first round); extra actions and metrics
+  STOP (E-1 action templates printed as actions, E-2 inputs of Starlark actions for extra
+  actions); back with its implementer, then the Build Event Service client. Declared deviation:
+  `buildMetrics.evaluatedValues` is Blaze's own count (its evaluator computes a node once where
+  Bazel counts every restart); comparison tools exclude the field by name. Eight builders run
+  under the CPU, memory and Cargo-slot limits. Root.
