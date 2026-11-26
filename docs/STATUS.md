@@ -40,10 +40,11 @@ threads. The list below is what a resumption after any later pause needs.
   | tag v0.1.0 | `blaze-v0.1.0-r3` | 63 | 1,401 |
   | `e8b79c0` | `blaze-e8b79c0` | 120 | 2,220 |
   | `5f68157` | `blaze-5f68157` | 140 | 2,411 |
+  | `374c631` | `blaze-374c631` | 159 | 2,619 |
 
-  Failures of the last run by family: `~/.cache/blaze/work/root-runs/5f68157-failures/by-family.tsv`.
-- **Referee guard** at checkpoint 33 (label `ckpt33-e593d87d59e0`, dirty tree): gained 2,
-  regressed 0. Owed for checkpoint 35.
+  Failures of the last run by family: `~/.cache/blaze/work/root-runs/374c631-failures/by-family.tsv`.
+- **Referee guard** at checkpoint 38 (label `guard-374c631`, the commit's own binary): rows 39,
+  gained 2, regressed 0.
 - **Coverage map at `e8b79c0`** (`docs/coverage/README.md`): about 106k ± 15k lines of needed
   Java not ported, 13k of them out of scope. To be regenerated at the next checkpoint.
 

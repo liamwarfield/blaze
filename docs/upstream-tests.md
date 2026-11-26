@@ -40,6 +40,20 @@
 > first failure of `build_event_stream_test` needs extra actions), remote repo contents cache
 > 38, no persistent server 35, hardened worker sandbox 25, cquery formatters and config
 > fragments 38, JVM-only items 44, SkyQuery 20, vendor mode 19, path mapping 14.
+>
+> **Commit `374c631` (checkpoint 38), label `blaze-374c631`** (2026-11-26 14:33, suite mode, 237
+> of 237 targets ran, 3,026 s; binary sha256 `a96a5ec8…`, debug build from a clean checkout of
+> the commit; the machine was under the 14-core and 25 GiB limits and other agents were not
+> fully idle, so a timeout in this run is weaker evidence than in the earlier ones): **159 of
+> 211 targets and 2,619 of 2,878 functions** (lost 52 targets and 223 functions; 36 absent).
+> Against the `5f68157` run: 218 functions gained, 5 lost, 1 absent: two TLS functions that
+> need a chain of X.509 v1 certificates (declared gap, ruling D16), and three
+> `build_without_the_bytes_test` functions that used to retry the build after a lost remote
+> input and now stop with "Lost inputs no longer available remotely" (a regression, assigned).
+> Largest remaining families: tests that need the persistent server as the default (35, plus
+> about 28 worker functions that need a worker kept between commands), functions not measured
+> after a shard's output overflow 32, JVM-only items 21, SkyQuery 20, the HTTP cache 13, the
+> remote repo contents cache about 20.
 
 
 First full run of Bazel's own shell and Python integration tests (237 targets) against Blaze,
