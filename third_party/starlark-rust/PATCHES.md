@@ -70,6 +70,8 @@ by adding.
 | 0058 | applied | the "want" part of builtin parameter type errors from Bazel's `@Param` annotations (`values/java_param_types.tsv`, generated from the oracle's server jar), by receiver, method and parameter |
 | 0059 | applied | a builtin function has no `[]` (`list[int]` is Java's "type 'builtin_function_or_method' has no operator [](...)") |
 | 0060 | applied | the nesting guard of comparisons is 20000 levels in debug and release builds (Java has none) |
+| 0061 | applied | Java's call-site error locations: an argument-binding error of a call with named or `*`/`**` arguments at the enclosing statement's location (`=`, `for`, `:`); `*x`/`**x` errors and calls of a non-callable value in the caller, without the callee's frame |
+| 0062 | applied | a builtin's argument checks in Java's order: parameter types as the arguments are bound (positional, then named in call order) before the arity |
 
 Conformance (Bazel ScriptTest, `starlark_conformance run`; strict = Java ScriptTest semantics,
 resilient = aborted chunks re-run statement by statement):
@@ -1053,4 +1055,74 @@ and users read them).
   stack (`blaze_starlark::eval::EVAL_STACK_SIZE`). PORT: the depth where Java gives up depends on
   the JVM's stack; Blaze answers some comparisons Bazel crashes on.
 - Test: `patch_0060_deep_comparison` (15000 levels, `==` and `<`, on a 256 MiB stack).
+
+### 0058, round 2 (review loading-2 round 2, R2)
+
+- The table is printed by calling Bazel's code: `ParamTypes.java` reaches the package-private
+  `MethodDescriptor.of` and `ParamDescriptor.getTypeErrorMessage` / `getAllowedClasses` by
+  reflection, for every class of the server jar with Starlark methods found as
+  `CallUtils.buildStarlarkClassDescriptor` finds them (`Class.getMethods()`, so a method a
+  builtin class inherits from an unannotated base, as `repository_ctx` and `module_ctx` from
+  `StarlarkBaseExternalContext`, is listed under that class). 1,328 rows (the 1,213 of round 1,
+  unchanged, plus 115 inherited ones).
+- A function call (no receiver) takes the row of receiver `""` (Java's global functions) before
+  the "all rows agree" rule: `configure_features(requested_features=)` is `list`.
+- Test: `blaze_sky_top` `tests::java_param_types_test` walks every builtin Blaze registers in its
+  BUILD, .bzl, MODULE.bazel, builtins and .scl environments (with namespaces and methods
+  reachable from them) and requires each typed parameter to have its row or a reasoned
+  exception.
+
+### 0060, round 2
+
+- The guard also stops while less than 1 MiB of the current thread's stack is left (glibc
+  `pthread_getattr_np`, declared directly; Blaze runs on Linux x86-64 only): Blaze's
+  execution-phase evaluator threads have 16 MiB and its gRPC command threads 8 MiB or more, and
+  comparison and hashing run there too. Hashing a value is guarded as comparison is (a nested
+  tuple's hash recurses).
+- Test: `patch_0060_guard_follows_the_thread_stack`.
+
+## 0061 — call-site error locations
+
+- Gap (review loading-2, findings N1 and the three traceback items): Java's `Eval.evalCall`
+  looks the callee up before evaluating any argument and fails "'T' object is not callable" in
+  the caller; it binds the arguments of a call with named or `*`/`**` arguments with
+  `ArgumentProcessor.addPositionalArg` / `addNamedArg`, whose errors leave `evalCall` without a
+  location, so the innermost enclosing node that sets one gives it (an assignment's operator, a
+  `for` statement's or comprehension clause's `for`, a dict comprehension value's `:`; the `.`
+  of `x.f op= y`), else the frame keeps the `(`; `*x` and `**x` fail in the caller at the
+  `*`/`**`. starlark-rust located all of these at the `(` with the callee's frame
+  (`Error in 1:`, `Error in len:` for `len(*1)`).
+- Fix: `eval/runtime/java_call.rs` (new): `JavaCallSpans` (handler, `*`, `**`, positional-only)
+  attached to each call expression's `FrameSpan` by the compiler (`Compiler::java_handler`, set
+  around assignment right-hand sides, `for` bodies, comprehension clauses and dict values, reset
+  in function bodies); `Evaluator::with_call_stack` relocates an error the first time the call
+  stack is captured: a binding error (`FunctionError::JavaBinding` from 0052's replay,
+  `BazelParamTypeError`, `RepeatedKwarg`, or a host builtin's
+  `starlark::values::bazel_argument_binding_error`) gets the handler as the callee's call site,
+  a `*`/`**` error (`FunctionError::JavaStar`/`JavaStarStar`) or a non-callable callee
+  (`JavaNotCallable`, the default `StarlarkValue::invoke`) loses the callee's frame and is
+  located at the `*`/`**`/handler. `starlark_syntax` `Error::call_stack_mut`, `replace_span`.
+- Limitations: without a handler Java keeps the frame's last location, which is the `(` of the
+  last call evaluated before the error; Blaze uses this call's `(`. Equal for a binding error
+  whose arguments contain no call (the call sets its own `(` first); different for a
+  non-callable callee in an expression statement (Java shows the previous call's `(`, oracle
+  probe t08). Java checks callability
+  before evaluating the arguments; Blaze evaluates them first (only an argument that itself
+  fails tells the difference).
+- Test: oracle probes t01-t26 of the loading-fix-2 report; `traceback_locations_test`.
+
+## 0062 — argument checks in Java's order
+
+- Gap (review loading-2, finding N2): `len(1, 2)` reported the arity; Java checks the bound
+  argument's type first (`fastcall`/`addPositionalArg` before `call`), and checks named arguments
+  in the order of the call, where starlark-rust unpacks in the order of declaration.
+- Fix: `values/types/function.rs` `java_argument_order`: when a native function or method failed
+  with an arity/missing-argument error (`FunctionError::Bazel` of 0052's `call`) or a parameter
+  type error, the first argument, in Java's order (positional, then named as written), whose
+  value is none of the parameter's allowed classes (`values/unpack.rs` `java_param_accepts`, from
+  0058's table; the documented derived type where the table has no row) gives Java's type error
+  (`NativeFunction::invoke`, frozen native calls, bound methods, known methods).
+- Limitation: an unexpected or repeated keyword raised by binding is not reordered against the
+  type checks of earlier arguments.
+- Test: oracle probes t12-t15 of the loading-fix-2 report.
 

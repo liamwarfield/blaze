@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Prints Java's "want '...'" text of every parameter of every @StarlarkMethod in the oracle's
-# server jar (ParamDescriptor.getTypeErrorMessage over Starlark.classType, run by Bazel's own
-# classes with the system JDK). Output: receiver<TAB>method<TAB>param<TAB>want, sorted.
+# Prints Java's "want '...'" text of every parameter of every Starlark method in the oracle's
+# server jar, per receiver class: calls Bazel's own MethodDescriptor.of and
+# ParamDescriptor.getTypeErrorMessage by reflection (ParamTypes.java), on the system JDK.
+# Output: receiver<TAB>method<TAB>param<TAB>want, sorted; a summary on stderr.
 # Usage: scripts/java-param-types/run [JAR]   (default: the oracle install base's A-server.jar)
 #        scripts/java-param-types/run help
 # Regenerate the table Blaze reads with

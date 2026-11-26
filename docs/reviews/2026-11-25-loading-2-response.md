@@ -160,3 +160,98 @@ q87 equal; at 5000 `<` crashes Bazel, q88, Blaze answers).
 
 F1 is fixed and oracle-checked; F2-F6 and the S3 items are fixed or answered above. Please
 re-check.
+
+## Round 2
+
+Answers `2026-11-26-loading-2-round2.md` (PASS at 5f68157; open: R1, R2, R3 (S2), the guard's
+stack assumption, N1, N2, the three traceback items, `ctx.super(x=1)`). Task `loading-fix-2`.
+Tree: HEAD `d212972` plus uncommitted changes (this task's and other agents'). Evidence:
+`~/.cache/blaze/work/loading-fix-2/` (`ws/` 128 one-package cases, `ws3/`, `ws4/` for R3,
+`run-probes.sh`, `run-r3.sh`, `cmp.sh`; outputs `oracle/`, `blaze/`, `oracle-r3/`, `blaze-r3/`).
+
+| item | state | where | evidence |
+|---|---|---|---|
+| R1 lazy counted repetitions | LOUD, as asked; generator extended | `java_regex.rs` `find_span_issue`; `JavaRegexNullableRows.java` | 42,640 JDK 25 rows: 23,335 exact, 13,585 loud `find()`, 5,720 loud at compile, 0 silent |
+| R2 table coverage | test added; generator now calls Bazel's code; function calls take the `""` row | `java_param_types_test.rs`, `ParamTypes.java`, `unpack.rs` | 189 builtins, 571 parameters reached; all 163 typed parameters have a row |
+| R3 load-bound names in host lookups | fixed | `aspect_function.rs`, `repo_definition_function.rs`, `runnable_extension.rs` | 3 oracle cases equal |
+| comparison guard and thread stacks | guard follows the real stack left | patch 0060 round 2 | `patch_0060_guard_follows_the_thread_stack` |
+| N1, the three traceback items | fixed (one Java quirk left) | patch 0061 | 126 of 128 probes equal |
+| N2 | fixed for type checks; keyword errors not reordered | patch 0062 | t12-t15, q95 equal |
+| `ctx.super(x=1)` | Java's texts | `starlark_rule_context.rs` | derived from BuiltinFunction.java:331/420 (not oracle-checked: needs an extended rule) |
+
+**R1.** A lazy repetition with a finite maximum of 2 or more now gets the same rule as a greedy
+one (body can match empty before a non-empty string and can consume). The generator gained 6
+bodies (`|ab|a`, `a|ab|`, `|a|ab`, `ab||a`, `a??b?`, `(?:|ab|a)c?`), 6 lazy quantifiers
+(`{1,2}?`, `{2}?`, `{0,2}?`, `{0,3}?`, `{2,}?`, `??`), the suffix `(?:b|c)` and the inputs
+`ababc`, `abac`, `bac`; the reviewer's row `(?:|ab|a){1,2}?(?:b|c)` on `ababc` (Java (0,5)) is
+among them and loud. `docs/java-regex.md` states both exceptions. The rule stays conservative:
+13,216 of the 13,585 loud `find()` rows would have agreed.
+
+**R2.** `ParamTypes.java` now calls Bazel's package-private `MethodDescriptor.of`,
+`ParamDescriptor.getTypeErrorMessage` and `getAllowedClasses` by reflection (the round-1 wording
+"by Bazel's own classes" described a copy; it is now a call), for every class, with inherited
+methods as `CallUtils` finds them: 1,328 rows, a superset of the 1,213 (115 inherited
+`repository_ctx`/`module_ctx` rows). A function call takes the `""` row first
+(`configure_features(requested_features=)` gives `list`). `blaze_sky_top`
+`tests::java_param_types_test` walks the BUILD, .bzl, MODULE.bazel, builtins and .scl
+environments the server builds (namespaces and methods reachable by attribute access), and fails
+for a typed parameter without a row (or one whose rows disagree without the receiver's); its
+allow list is empty. Not covered: values created only during analysis or fetching (`ctx`,
+`repository_ctx`), and parameters Blaze takes as `Value` and checks by hand (408 of the 571); for
+those the hand-written texts are what the probes compare (p20-p50 equal).
+
+**R3.** The three host lookups use `FrozenModule::java_get_global`; `runnable_extension.rs`'s
+suggestion list uses `java_globals` (Java `getGlobals()`, private names included). Oracle, a `.bzl`
+that only re-exports by `load`: `use_repo_rule` → "//rr:b.bzl does not export a repository_rule
+called my_rule, yet its use is requested at MODULE.bazel:2:3" (exit 48), `--aspects` → "my_aspect
+is not exported from //asp:b.bzl" (exit 1), `use_extension` → "//ext:b.bzl does not export a
+module extension called my_ext ..." (exit 48): all three equal (stderr ERROR lines and exit
+code). Before, Blaze used the re-exported value.
+
+**Guard and stacks.** Threads that can compare or hash Starlark values: Skyframe evaluator
+threads (256 MiB), evaluation threads (`run_on_evaluation_thread`, 256 MiB), execution-phase
+evaluator threads (16 MiB; their Starlark callbacks hop to 256 MiB through
+`on_evaluation_stack`), gRPC command threads (8 MiB or more), the main thread. Rather than
+assume, the guard now also stops while less than 1 MiB of the current thread's stack is left
+(glibc `pthread_getattr_np`), on top of the 20,000-level cap, and hashing is guarded too. On
+256 MiB threads Bazel's 5,000-deep comparisons pass (q87, t16 equal); on a 2 MiB thread a
+15,000-deep comparison fails with "Too many recursion levels" instead of aborting the process
+(a JVM overflow crashes Bazel).
+
+**N1 and the traceback items (patch 0061).** The compiler attaches Java's call-site spans to
+every call (the innermost enclosing error location: assignment operator, the `.` of `x.f op=`,
+a `for` statement's or comprehension clause's `for`, a dict comprehension value's `:`; the `*`
+and `**`; positional-only or not); `with_call_stack` moves an argument-binding error of a
+non-positional-only call to that location, and drops the callee's frame for `*x`, `**x` and a
+non-callable callee. Blaze's own parameter checks in `blaze_packages` and `depset` raise
+`starlark::values::bazel_argument_binding_error` (the depset `transitive` text, "sequence of
+depsets or NoneType", was not Java's; it is "sequence or NoneType" now). The former 16 location
+differences, q83-q86 and the new t01-t26 cases (assignment, `for` body, list and dict
+comprehensions, comprehension `if`, augmented assignment, `def` body, binary operator,
+nested call, `*`/`**`, `def` binding errors) are equal, and
+`traceback_locations_test::KNOWN_DEVIATIONS` is empty. Left: a non-callable callee in an
+expression statement (t08): Java shows the frame's last location, the `(` of the previous
+statement's call; Blaze the statement's call. Java also checks callability before evaluating the
+arguments; Blaze evaluates them first.
+
+**N2 (patch 0062).** When a builtin fails with an arity or missing-argument error, or a
+parameter type error, the first argument in Java's order (positional, then named as written)
+that is none of the parameter's allowed classes (the table, else the documented type) gives the
+error: `len(1, 2)` → "want 'iterable or string'" (q95, t12), `sorted([1], key = 1, reverse = 1)`
+→ `key` (t15), `"a".index(1, "x")` → `sub` (t13). Not reordered: an unexpected or repeated
+keyword against earlier arguments' types.
+
+**`ctx.super(x=1)`.** "super() got unexpected keyword argument 'x'" (a binding error) and
+"super() got unexpected positional argument", Java's texts for a builtin without parameters.
+
+**Oracle, all 128 one-package cases** (the 102 of round 1 and 26 new): 126 equal, 2 different:
+q88 (`<` on 5,000-deep lists: Bazel crashes with a JVM StackOverflowError, exit 37; Blaze
+answers) and t08 (above). Compared: exit code and every `ERROR`, `Traceback`, traceback and
+`Error` line of stderr, workspace path normalised. Round 1's 102: 102 equal except q88.
+
+**For root.** Five cases of `crates/starlark_conformance/tests/data/interp/KNOWN_DIFFERENCES`
+(a protected path this task does not name) now match Bazel, so `java_recorded_interp` fails
+until they are removed: `err_ev_kwargs_key_not_str`, `err_ev_kwargs_not_dict`,
+`err_ev_star_builtin_not_iterable`, `err_ev_star_not_iterable`, `err_misc_dict_kwargs_key`; the
+patch is `~/.cache/blaze/work/loading-fix-2/known-differences.patch`. N1's and N2's residues and
+t08 belong among the known deviations in `docs/STATUS.md`.

@@ -1,30 +1,48 @@
-// Prints, for every @StarlarkMethod of Bazel's server jar, Java's parameter type error text
-// (net/starlark/java/eval/ParamDescriptor.java:123 getTypeErrorMessage, with the class names of
-// net/starlark/java/eval/Starlark.java:337 classType), computed by Bazel's own classes.
+// Prints, for every Starlark method of every class in Bazel's server jar, Java's parameter type
+// error text, by calling Bazel's own code: net/starlark/java/eval/MethodDescriptor.java
+// MethodDescriptor.of (which builds each ParamDescriptor with ParamDescriptor.of) and
+// ParamDescriptor.getTypeErrorMessage / getAllowedClasses, reached by reflection (they are
+// package-private). Methods are found as CallUtils.buildStarlarkClassDescriptor finds them:
+// Class.getMethods() (inherited ones included), non-synthetic, with
+// StarlarkAnnotations.getStarlarkMethod.
 //
-// Output (TSV, sorted): receiver<TAB>method<TAB>param<TAB>want
-//   receiver: StarlarkAnnotations.getStarlarkBuiltin(declaring class).name(), or "" (global
-//             methods, @GlobalMethods classes)
-//   want:     the text after "want '" in "in call to M(), parameter 'P' got value of type 'T',
-//             want '...'"; "-" when the parameter accepts Object (no check).
+// Output (TSV, sorted, distinct): receiver<TAB>method<TAB>param<TAB>want
+//   receiver: StarlarkAnnotations.getStarlarkBuiltin(class).name() of the class the method is
+//             called on (so a method inherited by a builtin class is listed under that class),
+//             or "" for a class without one (global functions: MethodLibrary, @GlobalMethods
+//             classes, abstract bases)
+//   want:     ParamDescriptor.getTypeErrorMessage(); "-" when getAllowedClasses() is null (the
+//             parameter accepts Object: no check)
 import java.lang.reflect.Method;
-import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.TreeSet;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
-import net.starlark.java.annot.Param;
-import net.starlark.java.annot.ParamType;
 import net.starlark.java.annot.StarlarkAnnotations;
 import net.starlark.java.annot.StarlarkBuiltin;
 import net.starlark.java.annot.StarlarkMethod;
-import net.starlark.java.eval.Starlark;
 
 public class ParamTypes {
   public static void main(String[] args) throws Exception {
-    TreeSet<String> out = new TreeSet<>();
     ClassLoader loader = ParamTypes.class.getClassLoader();
+    Class<?> methodDescriptor = Class.forName("net.starlark.java.eval.MethodDescriptor");
+    Method of = methodDescriptor.getDeclaredMethod("of", Method.class, StarlarkMethod.class);
+    of.setAccessible(true);
+    Method getParameters = methodDescriptor.getDeclaredMethod("getParameters");
+    getParameters.setAccessible(true);
+    Class<?> paramDescriptor = Class.forName("net.starlark.java.eval.ParamDescriptor");
+    Method getName = paramDescriptor.getDeclaredMethod("getName");
+    getName.setAccessible(true);
+    Method getAllowedClasses = paramDescriptor.getDeclaredMethod("getAllowedClasses");
+    getAllowedClasses.setAccessible(true);
+    Method getTypeErrorMessage = paramDescriptor.getDeclaredMethod("getTypeErrorMessage");
+    getTypeErrorMessage.setAccessible(true);
+
+    TreeSet<String> out = new TreeSet<>();
+    int failures = 0;
     try (JarFile jar = new JarFile(args[0])) {
       Enumeration<JarEntry> e = jar.entries();
       while (e.hasMoreElements()) {
@@ -38,53 +56,43 @@ public class ParamTypes {
         Method[] methods;
         try {
           c = Class.forName(cn, false, loader);
-          methods = c.getDeclaredMethods();
+          methods = c.getMethods();
         } catch (Throwable t) {
           continue;
         }
+        Arrays.sort(methods, Comparator.comparing(Method::getName));
+        StarlarkBuiltin b;
+        try {
+          b = StarlarkAnnotations.getStarlarkBuiltin(c);
+        } catch (Throwable t) {
+          continue;
+        }
+        String receiver = b == null ? "" : b.name();
         for (Method m : methods) {
-          StarlarkMethod sm = m.getAnnotation(StarlarkMethod.class);
+          if (m.isSynthetic()) {
+            continue;
+          }
+          StarlarkMethod sm;
+          try {
+            sm = StarlarkAnnotations.getStarlarkMethod(m);
+          } catch (Throwable t) {
+            continue;
+          }
           if (sm == null) {
             continue;
           }
-          StarlarkBuiltin b = StarlarkAnnotations.getStarlarkBuiltin(c);
-          String receiver = b == null ? "" : b.name();
-          Class<?>[] pts = m.getParameterTypes();
-          Param[] params = sm.parameters();
-          for (int i = 0; i < params.length; i++) {
-            Param p = params[i];
-            List<Class<?>> allowed = new ArrayList<>();
-            if (p.allowedTypes().length > 0) {
-              for (ParamType pt : p.allowedTypes()) {
-                allowed.add(pt.type());
-              }
-            } else if (i < pts.length) {
-              Class<?> pc = pts[i];
-              allowed.add(pc == Boolean.TYPE ? Boolean.class : pc);
-            } else {
-              continue;
-            }
-            String want;
-            if (allowed.contains(Object.class)) {
-              want = "-";
-            } else {
-              List<String> names = new ArrayList<>();
-              for (Class<?> a : allowed) {
-                String t = Starlark.classType(a);
-                if (!t.equals("NativeComputedDefault")) {
-                  names.add(t);
-                }
-              }
-              StringBuilder buf = new StringBuilder();
-              for (int j = 0, k = names.size(); j < k; j++) {
-                if (j > 0) {
-                  buf.append(k == 2 ? " or " : j < k - 1 ? ", " : ", or ");
-                }
-                buf.append(names.get(j));
-              }
-              want = buf.toString();
-            }
-            out.add(receiver + "\t" + sm.name() + "\t" + p.name() + "\t" + want);
+          Object[] params;
+          try {
+            params = (Object[]) getParameters.invoke(of.invoke(null, m, sm));
+          } catch (Throwable t) {
+            failures++;
+            System.err.println("MethodDescriptor.of failed: " + cn + "." + m.getName() + ": " + t);
+            continue;
+          }
+          for (Object p : params) {
+            String want =
+                getAllowedClasses.invoke(p) == null ? "-" : (String) getTypeErrorMessage.invoke(p);
+            out.add(receiver + "\t" + sm.name() + "\t" + getName.invoke(p) + "\t" + want);
           }
         }
       }
@@ -92,5 +100,6 @@ public class ParamTypes {
     for (String s : out) {
       System.out.println(s);
     }
+    System.err.println("rows: " + out.size() + ", failures: " + failures);
   }
 }

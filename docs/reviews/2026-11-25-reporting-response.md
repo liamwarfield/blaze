@@ -196,3 +196,77 @@ is not yet in the stream (open item 3).
    before the command runs.
 6. Profiler instrumentation sites (Part C): all remaining sites of `docs/profiler-sites.md` are
    in other owners' crates.
+
+## Round 2
+
+Answers `2026-11-26-reporting-round2.md` (STOP at 5f68157; blocking R2-1). Written by the
+implementer of task `extra-actions`. Tree: working tree on HEAD d212972 (uncommitted; root
+commits). Binary for the probes: `~/.cache/blaze/work/extra-actions/bin/blaze-a2` (built from
+that tree; sha256 of the first build `blaze-a1` 18a546a4…, R2-1 code identical in both). Oracle:
+the pinned `bazel-9.3.2-linux-x86_64`. Probes in `~/.cache/blaze/work/extra-actions/ws-*`, each
+binary with its own `--output_user_root`, `--jobs=4`, the shared repository cache,
+`--color=no --curses=no`. Recordings: `~/.cache/blaze/work/extra-actions/runs/`.
+
+| finding | state | where |
+|---|---|---|
+| R2-1 (S1) root cause in an unseen configuration | fixed | `blaze_analysis/src/rule/rule_error_consumer.rs` (event), the five post sites, `blaze_runtime/src/commands/bep.rs` |
+| R2-2 (S2) `cumulativeMetrics` without a BEP transport | not fixed, see below | |
+| R2-3 (S2) absent `buildMetrics` groups not listed | fixed (and `artifactMetrics` now produced) | `docs/missing-features.md` ("Build event stream") |
+| S4 empty `if`, doubled marker | fixed | `bep.rs` `force_shutdown_build_event_streamer`, `bep_module.rs` |
+
+**R2-1.** `AnalysisRootCauseEvent` now carries Java's tri-state: `configuration:
+Option<Option<Arc<BuildConfigurationValue>>>` (`Some(Some(c))` a configuration value,
+`Some(None)` the null configuration, `None` unavailable) and `configuration_id` (the checksum of
+the id, `None` for the null configuration's id), built only through Java's two factories
+`with_configuration_value` and `with_unavailable_configuration`. The post sites:
+`EventHandlingErrorReporter.reportError` (`rule_error_consumer.rs`), `DependencyResolver
+.handleDependencyRootCauseError`, `DependencyProducer.ExecGroupErrorEmitter`
+(`dependency_map_producer.rs`) and `MissingEdgeError` (`producers/errors.rs`) pass the
+configuration value; `ConfiguredTargetFunction` (`configured_target_function.rs`) is the
+unavailable form with `configurationIdMessage(configuredTargetKey.getConfigurationKey())`. The
+subscriber maps the two forms one to one to `AnalysisRootCauseBuildEvent` (the configuration's
+`toBuildEvent()` for a value, `NullConfiguration` for the null configuration, none for
+unavailable); the checksum map `configuration_events` is deleted.
+
+Probes (oracle and Blaze, `--build_event_json_file`, exit 1 on both):
+
+| case | compared | result |
+|---|---|---|
+| `//pkg:g`, a genrule whose `tools` holds a rule calling `fail("x")` | event ids and aborted reasons, in order; full payload of `configuration`, `configuredLabel`, `targetConfigured` events | equal: the exec configuration's `configuration` event precedes the aborted `configuredLabel` of `//pkg:bad` |
+| `//pkg:t`, the failing rule behind a Starlark transition (`compilation_mode=dbg`) | same | equal |
+
+Stderr of both cases: equal except the elapsed time and three `Computing main repo mapping:`
+progress lines the oracle prints and Blaze does not (not this area, present before this change).
+
+**R2-2.** Not fixed in this round. Blaze's build driver feeds the `MetricsCollector` through
+the BEP support's hooks (`analysis_complete`, `build_complete`), so a collector without a BEP
+transport would need the driver to call a metrics object of its own; that restructuring is
+outside this task's files. The PORT note at `module_before_command` stays, and
+`docs/missing-features.md` names the gap. Masked while the server default is off.
+
+**R2-3.** `docs/missing-features.md` ("Build event stream") lists the absent groups: the Skyframe
+graph statistics of `buildGraphMetrics` and `memoryMetrics`, and the `cumulativeMetrics` gap.
+`artifactMetrics` is no longer absent: its four `FilesMetricConsumer`s
+(`blaze_sky_exec/src/metadata_consumer_for_metrics.rs`) are fed by `ArtifactFunction
+.createSourceValue`, `SkyframeActionExecutor.addOutputToMetrics` (from `checkOutputs`, with the
+action-cache-hit flag) and the completion functions (`ActionInputMapHelper.addToMap`'s
+accumulation), and posted from `ExecutionTool.unconditionalExecutionPhaseFinalizations`.
+Brotli `build //...` after `clean`, last `buildMetrics`, oracle against Blaze:
+`artifactMetrics` counts equal (source 115, output 89, top level 165), source bytes equal
+(2,328,125); output and top-level bytes differ by 4 and 2 bytes, which is
+`brotli.runfiles_manifest` (328 against 326 bytes): it holds two absolute paths under the output
+user root, and `out-blaze` is one character shorter than `out-oracle`. The other leaf fields of
+`actionSummary`, `targetMetrics`, `packageMetrics`, `cumulativeMetrics` and the counts of
+`buildGraphMetrics` are equal; `builtValues`, `evaluatedValues` and
+`postInvocationSkyframeNodeCount` are absent (open item below).
+
+**Open items of this area after round 2.**
+
+1. Skyframe graph statistics. Java posts `SkyframeGraphStatsEvent` from
+   `SkyframeExecutor.notifyCommandComplete` in `BlazeRuntime.afterCommand`, which runs after
+   `precompleteCommand` (where `BuildMetricsEvent` is built), yet the oracle's `buildMetrics` of
+   a build holds that build's `evaluatedValues`. I could not find from the source how the
+   statistics reach the message before it is built, so nothing is posted (no guessed timing).
+2. R2-2.
+3. The previous open items 3 and 4 (AnalysisRootCause configuration: now closed by R2-1;
+   client cancel on SIGPIPE: unchanged).
