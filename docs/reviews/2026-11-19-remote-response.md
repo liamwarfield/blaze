@@ -1844,3 +1844,148 @@ handshake failure), none can accept what the JDK refuses.
   a stored oracle extraction of a different `platforms` release; unrelated).
 - `scripts/cargo-capped check --workspace --all-targets`: passes. clippy: clean for the changed
   files.
+
+# Round 5
+
+Response to the round-5 review (STOP at `e476a59`: T1-T5) under root's ruling D16 (Blaze does
+not validate chains of X.509 v1/v2 certificates; the JDK's direct trust is the one extra rule).
+Code: the shared working tree on HEAD `7ef5c861` (uncommitted). Binary for the end-to-end runs:
+`~/.cache/blaze/work/remote-5/blaze-2` (sha256 `62c9c1e599498e29…`, release build of that tree;
+the verifier's error-text change below came after it, see "Text").
+
+## The verifier after D16
+
+`crates/blaze_remote/src/authandtls/jdk_server_cert_verifier.rs` (868 lines, of which the tests
+are the last 260) was rewritten. What is left beside rustls' webpki verifier:
+
+| Step | Where |
+|---|---|
+| Direct trust: the end entity's whole DER equals a certificate of the `--tls_certificate` file (`trustedCerts.contains(cert)`, `PKIXValidator.java:234` at `jdk-25.0.2-ga`); no chain, no validity check, any version. The built-in roots give no direct trust. | `is_directly_trusted` :152, called first in `verify_server_cert` :220 |
+| Host name after direct trust: v3 through rustls' `verify_server_name` (webpki's subjectAltName check); v1/v2 through `match_dns` :598 (SNI host name rules, IP literals refused, first CN of the last RDN that has one :527, wildcard refused); the host as the channel wrote it (trailing dot) | `check_host_name` :160 |
+| Any other v1/v2 certificate: refused with Blaze's text `PRE_V3_CHAIN_NOT_SUPPORTED` :47 | :237 |
+| Everything else: webpki (`None` when the trust file has no certificate webpki takes as an anchor: then only direct trust can succeed) | :127, :237-250 |
+| Handshake signature of a directly trusted v1/v2 certificate: its key, read by `pre_v3_parts` :350 / `read_pre_v3_fields` :378 (well-formed DER up to the key or nothing) | `verify_pre_v3_signature` :190, `verify_tls13_signature` :273 |
+| Signature algorithms (T4) | `oracle_signature_verification_algorithms` :82 |
+
+Removed: the v1/v2 chain validation (signature by an issuer, validity, issuer matching), unique
+identifiers, the OID and time parsers, AlgorithmIdentifier equality. T2 and T3 disappear with
+them. The CN reader and the structure walk are kept; neither panics
+(`malformed_inputs_never_panic`: every truncation, three bit flips per byte and an extension of
+both Bazel test certificates through every reader and verifier entry point).
+
+## T1 (S1). FIXED
+
+Direct trust compares the whole certificate. Unit test `direct_trust_compares_the_whole_certificate`
+(one signature bit flipped); fixture `direct_twin` (the reviewer's: same subject and key, other
+bytes): JDK REJECT, Blaze refuses. End to end with the reviewer's listener and certificate
+(`~/.cache/blaze/work/remote-5/probes/tls-certs/direct-twin.server.log`): `blaze-2` aborts the
+handshake (the reviewer's log shows the oracle aborting it too).
+
+## T2, T3. Gone with the code (D16)
+
+`v2_uid_pad_nodata` and `subject_big_oid` are v1/v2 certificates issued by a CA: refused as
+chains. They are not kept as fixtures: the decision point they tested no longer exists.
+
+## T4. FIXED (provider subset)
+
+Source of the oracle's list: `io/netty/handler/ssl/ExtendedOpenSslSession.class` in the oracle's
+`A-server.jar` (netty-handler 4.1.119.Final, from its `pom.properties`), static initializer of
+`LOCAL_SUPPORTED_SIGNATURE_ALGORITHMS` (read with `javap -c`): SHA512withRSA, SHA512withECDSA,
+SHA384withRSA, SHA384withECDSA, SHA256withRSA, SHA256withECDSA, SHA224withRSA,
+SHA224withECDSA, SHA1withRSA, SHA1withECDSA, RSASSA-PSS. ring's set (RSA PKCS#1 and RSA-PSS with
+SHA-256/384/512, ECDSA P-256/P-384 with SHA-256/384, Ed25519) minus Ed25519 lies inside it. The
+verifier builds its webpki verifier with that subset and advertises only its schemes
+(`supported_verify_schemes`), so Ed25519 is refused for certificate signatures and handshake
+signatures alike (`ed25519_is_not_offered`). Stricter than the oracle: SHA-1 and SHA-224
+signatures (not in ring). End to end, a v3 chain from an Ed25519 root (fixture `v3_ed25519_ca`):
+the oracle and `blaze-2` both abort the handshake (listener log `v3-ed25519-ca.server.log`: 3
+failed handshakes, no success). The reviewer's `sig_ed25519` is a v1 chain and now refused by D16
+first.
+
+## T5. FIXED
+
+`v3_self_ca_san` (self-signed, `CA:TRUE`, SAN, used as the trust file): fixture accepted by both;
+end to end, `blaze-2` completes the handshake (`v3-self-ca-san.server.log`). `v3_self_expired`
+and `v3_self_noca_san` are accepted too. Stricter and declared: `v3_self_ca_cn_only` and
+`v3_self_noca_cn_only` (no SAN: webpki's name check has no CN fallback; the JDK matches the CN).
+
+## T6. FIXED
+
+`crates/blaze_remote/tests/jdk_server_cert_fixtures_test.rs` now runs, per fixture, a full TLS
+handshake (TLS 1.3, then TLS 1.2, which must agree) between a rustls client with the verifier and
+a rustls server presenting the fixture and signing with `keys/ee.key`, over an in-memory duplex;
+so the end entity's key decides too. 44 fixtures (`scripts/jdk-certs/generate.py`, verdicts from
+the oracle's JDK 25.0.2 by `scripts/jdk-certs/run`): direct trust identical (v1, v2, explicit
+version, expired, upper-case host), host checks (wrong host, IP, trailing dot, underscore,
+wildcard, the CN cases), the reviewer's cases that still have a decision point (`direct_twin`,
+`cn_utf8`, `cn_t61`, `cn_ia5`, `cn_first_ava_other_type`, `rdn_unsorted`, the four `subject_*`,
+`ee_key_alg_bad_null`, `ee_key_unknown_alg`, `ee_key_garbage_rsa`, the five `v3_self_*`), a v1
+chain (`chain_v1`), webpki's route (`v3_issued_san`, `v3_issued_wrong_host`, `v3_p256_ca`,
+`v3_ed25519_ca`). Result: 44 of 44 consistent, 6 declared stricter (`direct_wildcard`,
+`ee_key_unknown_alg`, `chain_v1`, the two CN-only v3, `v3_ed25519_ca`). Not taken over from the
+reviewer's 30: the v1/v2 chain cases (`v2_uid_*`, `subject_big_oid`, validity and time cases,
+`sig_ecdsa_p256`, `ca_rsa_1024`, `sig_ed25519`, `ee_rsa_512`, `ee_rsa_1024`): their decision
+point was the removed chain validation. `JdkCertProbe` itself is unchanged (no TLS engine): its
+verdict on `v3_ed25519_ca` is ACCEPT, which is why that case is listed as stricter, with the end
+to end run above showing the oracle refusing it.
+
+## Declared gap
+
+Bazel's TLS tests present `src/test/testdata/test_tls_certificate/server.crt` (v1, issued by
+`ca.crt`) with `--tls_certificate=ca.crt`: a v1 chain. These now fail on Blaze with Blaze's text
+(as they already did before round 3): `remote_execution_tls_test` `test_remote_grpcs_cache` and
+`test_remote_grpc_cache`; `remote_execution_mtls_test` `test_remote_grpcs_cache` and
+`test_remote_grpc_cache`. The other two functions of each target expect a failure and pass.
+End to end with the same chain (fixture `chain_v1`, listener `cv1.log`): the oracle completes the
+handshake; Blaze prints `Failed to query remote execution capabilities: ... X.509 v1/v2 server
+certificate chains are not supported by Blaze: a v1/v2 server certificate is trusted only if it
+is identical to a certificate in --tls_certificate` and exits 34.
+
+Text: `blaze-2` wrapped that text in rustls' debug form of `CertificateError::Other`
+(`invalid peer certificate: Other(OtherError(Custom { ... }))`); the tree now returns
+`Error::Other`, printed `other error: X.509 v1/v2 ...` (unit and fixture tests; not rerun end to
+end).
+
+## C1. FIXED
+
+The response reader keeps repeated member names (`blaze_bzlmod_model::gson::
+parse_lenient_keeping_repeated_names`, a mode of the shared reader: an object keeps every member,
+as the token stream shows them to a type adapter); `GetCredentialsResponse` puts the headers of
+every `"headers"` member into one builder and fails as `ImmutableMap.Builder.build()` does
+(`IllegalArgumentException`, Guava's text, the later entry first). As in Java the exception is
+not a `JsonSyntaxException`: it leaves `CredentialHelper.getCredentials` unchanged
+(`IoExceptionKind::IllegalArgumentException`, the tunnel for this one unchecked exception), is not
+caught by the header function (which catches `IOException` only), and `HttpConnector.connect`
+turns it into `UnrecoverableHttpException(e.getMessage())` (`HttpConnector.java:245`; the header
+function now returns `Result`). On the gRPC path it fails the call as any credentials error does.
+Compared with the oracle (a helper answering
+`{"headers": {"Authorization": ["Bearer TOKEN"], "Authorization": ["Bearer OTHER"]}}`, a module
+with an `http_archive` behind Bazel's `testing_server.py`): both exit 32 with
+`ERROR: Error computing the main repository mapping: Error accessing registry
+https://bcr.bazel.build/: Failed to fetch registry file <url>: Multiple entries with same key:
+Authorization=[Bearer OTHER] and Authorization=[Bearer TOKEN]`, preceded by the same
+`Error retrieving auth headers, continuing without: ... process was interrupted` warnings; the
+registry file named differs (the oracle `protobuf/33.4`, Blaze `zlib/1.3.1.bcr.5`: the parallel
+fetches race on both binaries). Test `repeated_header_name_is_illegal_argument`.
+
+## C2. FIXED
+
+`crates/blaze_repo_fetch/tests/command_line_path_factory_test.rs`: the 11 tests of
+`CommandLinePathFactoryTest` (Java names in snake case), on the real file system under a
+temporary directory. 11 pass.
+
+## S4
+
+The verifier's module comment now states the D16 design and its declared deviations.
+
+## Tests (shared tree on HEAD `7ef5c861`)
+
+- `scripts/cargo-capped test -p blaze_remote --no-fail-fast`: 652 passed, 0 failed, 60 ignored
+  (`disk_cache_gc_policy_fails_loudly` is replaced by the port of the Java tests
+  `diskCacheGarbageCollectionIdleTask_disabled/_enabled`, now that the server agent ported the
+  idle task).
+- `-p blaze_repo_fetch`: 488 passed, 1 failed, 14 ignored (the failure is
+  `oracle_extraction_test`, which compares with a stored extraction of a different `platforms`
+  release; not mine).
+- clippy: clean for the changed files. `check --workspace --all-targets`: one error, in another
+  agent's `blaze_exec/tests/analysis_actions_execute_test.rs:963`.
