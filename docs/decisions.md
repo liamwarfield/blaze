@@ -491,3 +491,10 @@ Each entry: date, decision, why, who decided.
   `buildMetrics.evaluatedValues` is Blaze's own count (its evaluator computes a node once where
   Bazel counts every restart); comparison tools exclude the field by name. Eight builders run
   under the CPU, memory and Cargo-slot limits. Root.
+- 2026-11-26. Remote round 6: STOP at 374c631 on T7 only (no attacker reach); T1-T6, C1, C2
+  accepted. D16 addendum: for a certificate that the user supplies as its own trust file and
+  that the server presents byte for byte, Blaze checks structure after the key (the fix for
+  T7) but does not re-validate the validity contents, the outer algorithm identifier or an
+  empty issuer, which the JDK's parser refuses (Bazel then refuses to start). Declared
+  deviation: no certificate from anyone else can take that route, and adding content parsers
+  back is what D16 removed. Root.
