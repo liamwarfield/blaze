@@ -202,8 +202,10 @@ impl ExternalFilesHelper {
     // Java: com/google/devtools/build/lib/skyframe/ExternalFilesHelper.java:242 ExternalFilesHelper.setExternalFilesKnowledge
     pub fn set_external_files_knowledge(&self, external_files_knowledge: ExternalFilesKnowledge) {
         let k = &self.knowledge;
-        k.any_output_files_seen
-            .store(external_files_knowledge.any_output_files_seen, Ordering::SeqCst);
+        k.any_output_files_seen.store(
+            external_files_knowledge.any_output_files_seen,
+            Ordering::SeqCst,
+        );
         *k.external_other_files_seen.lock() = external_files_knowledge.external_other_files_seen;
         k.any_files_in_external_repos_seen.store(
             external_files_knowledge.any_files_in_external_repos_seen,

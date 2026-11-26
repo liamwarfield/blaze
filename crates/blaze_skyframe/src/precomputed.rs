@@ -71,7 +71,6 @@ impl EnvironmentVariableValue {
     }
 }
 
-
 type AnyValue = dyn Any + Send + Sync;
 
 /// A variable's value. Java: `PrecomputedValue` (the `Object value` it wraps).

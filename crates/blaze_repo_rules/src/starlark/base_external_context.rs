@@ -1563,8 +1563,17 @@ impl ExternalContext {
             Some(p) => p,
             None => return Err(self.needs_restart()),
         };
-        // PORT: Java materializes the repo when the output base is a
-        // RemoteExternalOverlayFileSystem (remote repo contents cache); Blaze has none.
+        if !label.get_repository().is_main()
+            && let Some(remote_fs) = crate::repository::remote_helpers::remote_repo_materializer()
+            && let Err(e) = remote_fs
+                .ensure_materialized(label.get_repository(), self.base.env.get().listener())
+        {
+            return Err(eval_error(&format!(
+                "Failed to materialize remote repo {}: {}",
+                label.get_repository(),
+                e
+            )));
+        }
         let starlark_path = StarlarkPath::new(rooted_path.as_path());
         let should_watch = if self
             .base

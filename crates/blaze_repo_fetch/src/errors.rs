@@ -43,6 +43,10 @@ pub enum IoExceptionKind {
     CredentialHelperException,
     /// `CommandLinePathFactory.CommandLinePathFactoryException`
     CommandLinePathFactoryException,
+    /// `java.lang.IllegalArgumentException`: an unchecked exception that Java lets travel
+    /// through code whose Rust port only has an `IoException` channel (a credential helper's
+    /// response with a repeated header name); the callers that catch it in Java match this kind.
+    IllegalArgumentException,
 }
 
 impl IoExceptionKind {
@@ -74,6 +78,7 @@ impl IoExceptionKind {
             IoExceptionKind::CredentialHelperException => {
                 "com.google.devtools.build.lib.authandtls.credentialhelper.CredentialHelperException"
             }
+            IoExceptionKind::IllegalArgumentException => "java.lang.IllegalArgumentException",
             IoExceptionKind::CommandLinePathFactoryException => {
                 "com.google.devtools.build.lib.runtime.CommandLinePathFactory$CommandLinePathFactoryException"
             }

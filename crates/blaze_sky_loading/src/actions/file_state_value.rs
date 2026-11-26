@@ -1,15 +1,14 @@
 //! Port of `FileStateValue`, `FileStateType` and `FileContentsProxy`.
 //!
 //! Java: com/google/devtools/build/lib/actions/{FileStateValue,FileStateType,
-//! FileContentsProxy}.java. Not ported: `RegularFileStateValueWithMetadata` (needs
-//! `FileArtifactValue`, only produced by `FileStatusWithMetadata` file systems such as remote
-//! output services).
+//! FileContentsProxy}.java.
 
 use std::fmt;
+use std::sync::Arc;
 
 use blaze_util::fingerprint::Fingerprint;
 use blaze_util::io::timestamp_granularity_monitor::TimestampGranularityMonitor;
-use blaze_vfs::{FileStatus, PathFragment, RootedPath, Symlinks};
+use blaze_vfs::{FileStatus, PathFragment, RootedPath, StatMetadata, Symlinks};
 
 use crate::io::IOException;
 
@@ -183,6 +182,10 @@ pub enum FileStateValue {
         size: i64,
         contents_proxy: FileContentsProxy,
     },
+    /// Regular files when its metadata is backed by a `FileArtifactValue` (the metadata of a
+    /// `FileStatusWithMetadata`).
+    // Java: com/google/devtools/build/lib/actions/FileStateValue.java:448 FileStateValue.RegularFileStateValueWithMetadata
+    RegularFileWithMetadata(FileStateMetadata),
     /// Special files that exist.
     // Java: com/google/devtools/build/lib/actions/FileStateValue.java:517 FileStateValue.SpecialFileStateValue
     SpecialFile { contents_proxy: FileContentsProxy },
@@ -195,6 +198,51 @@ pub enum FileStateValue {
     /// Nonexistent files.
     // Java: com/google/devtools/build/lib/actions/FileStateValue.java:675 FileStateValue.NonexistentFileStateValue
     Nonexistent,
+}
+
+/// The `FileArtifactValue` held by [`FileStateValue::RegularFileWithMetadata`], with the values
+/// read from it once (Java reads them from the metadata on each call).
+#[derive(Clone, Debug)]
+pub struct FileStateMetadata {
+    metadata: Arc<dyn StatMetadata>,
+    size: i64,
+    digest: Option<Vec<u8>>,
+    contents_proxy: Option<FileContentsProxy>,
+}
+
+impl FileStateMetadata {
+    // Java: com/google/devtools/build/lib/actions/FileStateValue.java:452 RegularFileStateValueWithMetadata.<init>
+    pub fn new(metadata: Arc<dyn StatMetadata>) -> FileStateMetadata {
+        FileStateMetadata {
+            size: metadata.get_size(),
+            digest: metadata.get_digest(),
+            contents_proxy: metadata
+                .get_contents_proxy()
+                .map(|(ctime, mtime, node_id)| FileContentsProxy::new(ctime, mtime, node_id)),
+            metadata,
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/actions/FileStateValue.java:477 RegularFileStateValueWithMetadata.getMetadata
+    pub fn get_metadata(&self) -> &Arc<dyn StatMetadata> {
+        &self.metadata
+    }
+}
+
+// Java: com/google/devtools/build/lib/actions/FileStateValue.java:481 RegularFileStateValueWithMetadata.equals
+impl PartialEq for FileStateMetadata {
+    fn eq(&self, other: &FileStateMetadata) -> bool {
+        Arc::ptr_eq(&self.metadata, &other.metadata) || other.metadata.eq_dyn(&*self.metadata)
+    }
+}
+
+impl Eq for FileStateMetadata {}
+
+// Java: com/google/devtools/build/lib/actions/FileStateValue.java:492 RegularFileStateValueWithMetadata.hashCode
+impl std::hash::Hash for FileStateMetadata {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.metadata.hash_dyn(state);
+    }
 }
 
 impl FileStateValue {
@@ -302,8 +350,16 @@ impl FileStateValue {
         tsgm: Option<&TimestampGranularityMonitor>,
     ) -> Result<FileStateValue, IOException> {
         blaze_util::check_state!(stat.is_file(), "{}", path);
-        // PORT: `FileStatusWithMetadata` (RegularFileStateValueWithMetadata) is never produced by
-        // Blaze's file systems.
+        // Java: `stat instanceof FileStatusWithMetadata`. PORT: the metadata is asked of the file
+        // system separately (see `blaze_vfs::StatMetadata`).
+        if let Some(metadata) = path
+            .stat_metadata(Symlinks::Nofollow)
+            .map_err(|e| IOException::from_io(&e))?
+        {
+            return Ok(FileStateValue::RegularFileWithMetadata(
+                FileStateMetadata::new(metadata),
+            ));
+        }
         match Self::try_get_digest(path) {
             Ok(None) => {
                 // Note that TimestampGranularityMonitor#notifyDependenceOnFileTime is a
@@ -397,7 +453,8 @@ impl FileStateValue {
     pub fn get_type(&self) -> FileStateType {
         match self {
             FileStateValue::RegularFileWithDigest { .. }
-            | FileStateValue::RegularFileWithContentsProxy { .. } => FileStateType::RegularFile,
+            | FileStateValue::RegularFileWithContentsProxy { .. }
+            | FileStateValue::RegularFileWithMetadata(_) => FileStateType::RegularFile,
             FileStateValue::SpecialFile { .. } => FileStateType::SpecialFile,
             FileStateValue::Directory => FileStateType::Directory,
             FileStateValue::Symlink { .. } => FileStateType::Symlink,
@@ -419,6 +476,7 @@ impl FileStateValue {
         match self {
             FileStateValue::RegularFileWithDigest { size, .. }
             | FileStateValue::RegularFileWithContentsProxy { size, .. } => *size,
+            FileStateValue::RegularFileWithMetadata(m) => m.size,
             FileStateValue::SpecialFile { .. } => 0,
             _ => panic!("IllegalStateException"),
         }
@@ -428,6 +486,7 @@ impl FileStateValue {
     pub fn get_digest(&self) -> Option<&[u8]> {
         match self {
             FileStateValue::RegularFileWithDigest { digest, .. } => Some(digest),
+            FileStateValue::RegularFileWithMetadata(m) => m.digest.as_deref(),
             FileStateValue::RegularFileWithContentsProxy { .. }
             | FileStateValue::SpecialFile { .. } => None,
             _ => panic!("IllegalStateException"),
@@ -440,6 +499,7 @@ impl FileStateValue {
             FileStateValue::RegularFileWithDigest { .. } | FileStateValue::Symlink { .. } => None,
             FileStateValue::RegularFileWithContentsProxy { contents_proxy, .. }
             | FileStateValue::SpecialFile { contents_proxy } => Some(contents_proxy),
+            FileStateValue::RegularFileWithMetadata(m) => m.contents_proxy.as_ref(),
             FileStateValue::Directory | FileStateValue::Nonexistent => {
                 panic!("UnsupportedOperationException")
             }
@@ -465,6 +525,14 @@ impl FileStateValue {
                 let mut fp = Fingerprint::new();
                 fp.add_long(*size);
                 contents_proxy.add_to_fingerprint(&mut fp);
+                fp.digest_and_reset()
+            }
+            // Java: com/google/devtools/build/lib/actions/FileStateValue.java:497 RegularFileStateValueWithMetadata.getValueFingerprint
+            FileStateValue::RegularFileWithMetadata(m) => {
+                let mut fp = Fingerprint::new();
+                fp.add_long(m.size);
+                // Java: Fingerprint.addBytes(null) throws; a remote file always has a digest.
+                fp.add_bytes(m.digest.as_deref().expect("NullPointerException"));
                 fp.digest_and_reset()
             }
             // Java: com/google/devtools/build/lib/actions/FileStateValue.java:573 SpecialFileStateValue.getValueFingerprint
@@ -507,6 +575,11 @@ impl FileStateValue {
                 size,
                 contents_proxy.pretty_print()
             ),
+            // Java: com/google/devtools/build/lib/actions/FileStateValue.java:509 RegularFileStateValueWithMetadata.prettyPrint
+            // PORT: Java prints the FileArtifactValue's toString; Blaze prints its Debug form.
+            FileStateValue::RegularFileWithMetadata(m) => {
+                format!("regular file with size of {} and {:?}", m.size, m.metadata)
+            }
             FileStateValue::SpecialFile { contents_proxy } => {
                 format!("special file with {}", contents_proxy.pretty_print())
             }
@@ -537,6 +610,12 @@ impl fmt::Display for FileStateValue {
                 f,
                 "RegularFileStateValueWithContentsProxy{{size={}, contentsProxy={}}}",
                 size, contents_proxy
+            ),
+            // Java: com/google/devtools/build/lib/actions/FileStateValue.java:504 RegularFileStateValueWithMetadata.toString
+            FileStateValue::RegularFileWithMetadata(m) => write!(
+                f,
+                "RegularFileStateValueWithMetadata{{metadata={:?}}}",
+                m.metadata
             ),
             _ => f.write_str(&self.pretty_print()),
         }

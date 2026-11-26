@@ -28,7 +28,7 @@ use blaze_actions::analysis::actions::file_write_action::FileWriteAction;
 use blaze_actions::analysis::actions::parameter_file_write_action::ParameterFileWriteAction;
 use blaze_actions::analysis::actions::spawn_action::{ResourceSet, SpawnActionBuilder};
 use blaze_actions::analysis::actions::starlark_action::{
-    set_unused_inputs_list, starlark_action_builder,
+    set_shadowed_action, set_unused_inputs_list, starlark_action_builder,
 };
 use blaze_actions::analysis::actions::substitution::Substitution;
 use blaze_actions::analysis::actions::symlink_action::SymlinkAction;
@@ -66,6 +66,7 @@ use starlark::values::{
     Trace, Tracer, Value, starlark_value,
 };
 
+use super::starlark_action::StarlarkAction;
 use super::starlark_configuration::allow_unresolved_symlinks;
 use super::starlark_toolchain_context::is_valid_group_name;
 use super::thread_payload::{
@@ -1058,8 +1059,12 @@ fn register_starlark_action<'v>(
     builder.set_exec_group(exec_group);
 
     if !shadowed_action_unchecked.is_none() {
-        // Java: builder.setShadowedAction(Optional.of((Action) shadowedActionUnchecked))
-        blaze_util::unported!("StarlarkActionFactory.registerStarlarkAction(shadowed_action)");
+        let shadowed_action = shadowed_action_unchecked
+            .downcast_ref::<StarlarkAction>()
+            .unwrap_or_else(|| panic!("ClassCastException: shadowed_action is not an Action"))
+            .action()
+            .clone();
+        set_shadowed_action(&mut builder, Some(shadowed_action));
     }
 
     let mut resource_set_callback = None;
@@ -1235,6 +1240,7 @@ fn check_trailing_spawn_params<'v>(
     env: Value<'v>,
     execution_requirements: Value<'v>,
     input_manifests: Value<'v>,
+    shadowed_action: Value<'v>,
     resource_set: Value<'v>,
     toolchain: Option<Value<'v>>,
 ) -> starlark::Result<(bool, Option<Value<'v>>)> {
@@ -1262,6 +1268,17 @@ fn check_trailing_spawn_params<'v>(
             "input_manifests",
             input_manifests,
             "sequence or NoneType",
+        ));
+    }
+    // Java: @ParamType(type = ActionApi.class) with defaultValue "None".
+    // PORT: the default None and an explicit None are the same value here; Java rejects an
+    // explicit None (want 'Action').
+    if !(shadowed_action.is_none() || shadowed_action.downcast_ref::<StarlarkAction>().is_some()) {
+        return Err(param_type_error(
+            method_name,
+            "shadowed_action",
+            shadowed_action,
+            "Action",
         ));
     }
     if !(is_dict_or_none(resource_set) || is_starlark_callable(resource_set)) {
@@ -1437,11 +1454,37 @@ fn actions_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] mnemonic: &str,
         #[starlark(require = named, default = starlark::values::list::AllocList::EMPTY)]
         inputs: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<starlark::values::none::NoneType> {
-        let _f = factory(this, "actions.do_nothing")?;
-        let _ = (mnemonic, inputs);
-        // Java: new PseudoAction<>(...) with a SpawnInfo extra action info.
-        blaze_util::unported!("StarlarkActionFactory.doNothing")
+        let f = factory(this, "actions.do_nothing")?;
+        let input_set: blaze_collect::NestedSet<Artifact> = if Depset::from_value(inputs).is_some()
+        {
+            depset_cast_artifacts(inputs, "inputs")?
+        } else {
+            let mut builder = NestedSetBuilder::compile_order();
+            builder.add_all(sequence_cast_artifacts(inputs, "inputs", eval)?);
+            builder.build()
+        };
+        let action = {
+            let rule_context = f.context.handle.borrow();
+            Arc::new(crate::extra::pseudo_action::PseudoAction::with_uuid_bits(
+                // UUID.nameUUIDFromBytes(String.format("empty action %s", ruleContext.getLabel())
+                //     .getBytes(UTF_8))
+                crate::extra::pseudo_action::name_uuid_from_bytes(
+                    format!("empty action {}", rule_context.get_label()).as_bytes(),
+                ),
+                rule_context.get_action_owner(),
+                input_set,
+                vec![crate::extra::pseudo_action::PseudoAction::get_dummy_output(
+                    &rule_context,
+                )],
+                mnemonic.to_owned(),
+                // SPAWN_INFO, SpawnInfo.newBuilder().build()
+                crate::extra::pseudo_action::PseudoActionInfo::Spawn(Default::default()),
+            ))
+        };
+        register_action(f, PendingAction::Built(action), eval)?;
+        Ok(starlark::values::none::NoneType)
     }
 
     /// Creates an action that writes a symlink in the file system.
@@ -1693,6 +1736,7 @@ fn actions_methods(builder: &mut MethodsBuilder) {
             env,
             execution_requirements,
             input_manifests,
+            shadowed_action,
             resource_set,
             toolchain,
         )?;
@@ -1814,6 +1858,7 @@ fn actions_methods(builder: &mut MethodsBuilder) {
             env,
             execution_requirements,
             input_manifests,
+            shadowed_action,
             resource_set,
             toolchain,
         )?;
@@ -2473,7 +2518,7 @@ mod tests {
         let list = starlark::values::FrozenValue::new_empty_list().to_value();
         // use_default_shell_env comes first.
         assert_eq!(
-            check_trailing_spawn_params("run_shell", none, list, none, none, none, None)
+            check_trailing_spawn_params("run_shell", none, list, none, none, none, none, None)
                 .unwrap_err()
                 .to_string(),
             "in call to run_shell(), parameter 'use_default_shell_env' got value of type \
@@ -2487,6 +2532,7 @@ mod tests {
                 none,
                 none,
                 none,
+                none,
                 None
             )
             .unwrap_err()
@@ -2496,6 +2542,7 @@ mod tests {
         let (use_default_shell_env, toolchain) = check_trailing_spawn_params(
             "run",
             Value::new_bool(true),
+            none,
             none,
             none,
             none,

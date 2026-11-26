@@ -32,7 +32,7 @@ pub struct ExecutionInfoModifierExpression {
 }
 
 impl ExecutionInfoModifierExpression {
-    fn pattern(&self) -> &JavaPattern {
+    pub fn pattern(&self) -> &JavaPattern {
         &self.pattern
     }
     pub fn regex(&self) -> &str {

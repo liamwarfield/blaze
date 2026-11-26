@@ -67,6 +67,12 @@ pub struct PostAnalysisCommandEnvironment<'a> {
     /// The build event stream's posting points in `BuildTool` (`None` without a build event
     /// stream; blaze_runtime commands/bep.rs).
     pub build_event_hooks: Option<&'a dyn blaze_sky_top::build_tool::BuildEventHooks>,
+    /// What `BuildTool.processRequest(request, validator, options)` gives the request beyond its
+    /// targets and options: the project file's flag definitions and the applier that parses a
+    /// project file's flags into the command's options parser (BuildTool.buildTargets). The
+    /// command crate (blaze_runtime) owns the applier.
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:343 BuildTool.buildTargets
+    pub configure_request: &'a dyn Fn(&mut blaze_sky_top::build_tool::BuildRequest),
 }
 
 /// Java's `BuildTool.buildTargetsWithoutMergedAnalysisExecution` constructs the

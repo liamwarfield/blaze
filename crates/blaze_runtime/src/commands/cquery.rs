@@ -71,6 +71,37 @@ impl BlazeCommand for CqueryCommand {
                 .as_deref()
                 .map(|b| b as &dyn blaze_sky_top::build_tool::BuildEventHooks),
         };
+        // BuildTool.buildTargets: the project file's options go through the command's parser
+        // (as for `build`, crate::commands::build).
+        let config_flag_definitions = env.get_config_flag_definitions().clone();
+        let project_options_applier: std::sync::Arc<
+            dyn blaze_sky_top::build_tool::ProjectOptionsApplier,
+        > = {
+            let mut applier = crate::project_options::BuildProjectOptionsApplier::new(
+                std::sync::Arc::new(options.clone()),
+                env.get_relative_working_directory().clone(),
+                reporter(env),
+            );
+            if let Some(bep) = env.get_bep() {
+                let bep = bep.clone();
+                let product_name = env.get_runtime().get_product_name().to_string();
+                let startup_options = env.get_runtime().get_startup_options_provider_arc();
+                applier = applier.with_canonical_command_line_poster(Box::new(move |parser| {
+                    bep.post_project_canonical_command_line(
+                        &product_name,
+                        startup_options.clone(),
+                        "cquery",
+                        parser,
+                    )
+                }));
+            }
+            std::sync::Arc::new(applier)
+        };
+        let configure_request = move |request: &mut blaze_sky_top::build_tool::BuildRequest| {
+            request.project_options_context.config_flag_definitions =
+                config_flag_definitions.clone();
+            request.project_options_applier = Some(project_options_applier.clone());
+        };
         let command_env = PostAnalysisCommandEnvironment {
             skyframe_executor: &skyframe_executor,
             reporter: reporter(env),
@@ -90,6 +121,7 @@ impl BlazeCommand for CqueryCommand {
             options,
             execution_tool: &execution_tool,
             build_event_hooks: Some(&build_event_hooks),
+            configure_request: &configure_request,
         };
         let detailed_exit_code = blaze_cquery::commands::cquery_command::exec(&command_env);
         BlazeCommandResult::detailed_exit_code(to_runtime_detailed_exit_code(detailed_exit_code))

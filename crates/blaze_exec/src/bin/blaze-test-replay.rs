@@ -591,6 +591,7 @@ fn main() -> ExitCode {
         package_path_entries: vec![],
         repo_contents_cache_path: None,
         test_arguments: Vec::new(),
+        jobs: None,
     };
     blaze_exec::actions::resource_manager::configure_resource_manager(
         &env.resource_manager,

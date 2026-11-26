@@ -51,4 +51,7 @@ pub struct ExecCommandEnvironment {
     /// `getOptions(TestConfiguration.TestOptions.class).testArguments` (empty for non-test
     /// commands).
     pub test_arguments: Vec<String>,
+    /// `getOptions().getOptions(BuildRequestOptions.class).jobs` (read by the dynamic strategy;
+    /// `None` for tools that never register it).
+    pub jobs: Option<i32>,
 }

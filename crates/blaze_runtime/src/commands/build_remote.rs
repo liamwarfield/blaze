@@ -62,7 +62,7 @@ pub(crate) struct RemoteSupport {
 
 /// `env.addIdleTask(gcIdleTask)` of `RemoteModule.beforeCommand`, for the task the module
 /// created.
-// Java: com/google/devtools/build/lib/remote/RemoteModule.java:511 RemoteModule.beforeCommand
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:403 RemoteModule.beforeCommand
 fn add_disk_cache_gc_idle_task(env: &CommandEnvironment, module: &mut RemoteModule) {
     if let Some(gc_idle_task) = module.take_disk_cache_gc_idle_task() {
         env.add_idle_task(Arc::new(crate::idle_tasks::DiskCacheGcIdleTask(
@@ -73,7 +73,7 @@ fn add_disk_cache_gc_idle_task(env: &CommandEnvironment, module: &mut RemoteModu
 
 /// Whether any remote functionality is requested: `RemoteModule.setup` returns early (the
 /// placeholder provider, which `blaze_exec::exec::executor_setup` ports) otherwise.
-// Java: com/google/devtools/build/lib/remote/RemoteModule.java:526 RemoteModule.setup
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:416 RemoteModule.setup
 fn remote_requested(remote_options: &RemoteOptions) -> bool {
     let set = |value: &Option<String>| value.as_ref().is_some_and(|v| !v.is_empty());
     set(&remote_options.remote_executor)
@@ -114,7 +114,7 @@ pub(crate) fn before_command(
     }
     // RemoteModule.executorInit: with a combined cache and without --rewind_lost_inputs, a
     // LeaseService (with a RemoteLeaseExtension for --experimental_remote_cache_lease_extension).
-    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1259 RemoteModule.executorInit
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1241 RemoteModule.executorInit
     let rewind_lost_inputs = build_request_options
         .as_ref()
         .is_some_and(|o| o.rewind_lost_inputs);
@@ -148,7 +148,7 @@ pub(crate) fn before_command(
 /// actions append to), which is what the next command loads; without it a rerun would trust the
 /// same stale remote metadata again (review 2026-11-19 N5). The executor runs this while no
 /// action writes the cache and drops every write after it. `None`: `--nouse_action_cache`.
-// Java: com/google/devtools/build/lib/remote/LeaseService.java:79 LeaseService.handleMissingInputs
+// Java: com/google/devtools/build/lib/remote/LeaseService.java:66 LeaseService.handleMissingInputs
 fn purge_action_cache(
     action_cache: Option<&dyn blaze_exec::actions::cache::ActionCache>,
     reporter: &dyn ExtendedEventHandler,
@@ -178,14 +178,16 @@ fn set_up_module(
 ) -> Result<Option<RemoteModule>, AbruptExitException> {
     let Some(remote_options) = options.get_options::<RemoteOptions>() else {
         // Quit if no supported command is being used.
+        notify_no_cache_available(env);
         return Ok(None);
     };
     if !remote_requested(&remote_options) {
+        notify_no_cache_available(env);
         // `setup` still runs `tempPathGenerator = getTempPathGenerator(env)` before it returns
         // with the placeholder provider ("Found stale downloads from previous build,
         // deleting..."); `afterCommand` deletes the directory again (see
         // `placeholder_after_command`).
-        // Java: com/google/devtools/build/lib/remote/RemoteModule.java:524 RemoteModule.setup
+        // Java: com/google/devtools/build/lib/remote/RemoteModule.java:416 RemoteModule.setup
         let exec_root = env.get_exec_root();
         blaze_remote::remote_module::get_temp_path_generator(
             &env.get_directories().get_action_temps_directory(&exec_root),
@@ -217,6 +219,11 @@ fn set_up_module(
     let exec_root = env.get_exec_root();
     let directories = env.get_directories();
     let build_request_id = build_request_id(options);
+    let build_request_id_for_repo_helpers = build_request_id.clone();
+    let accept_cached = remote_options.remote_accept_cached;
+    let upload_local_results = remote_options.remote_upload_local_results;
+    let remote_cache_ttl = remote_options.remote_cache_ttl;
+    let verbose_failures = execution_options.verbose_failures;
     let reporter: Arc<dyn ExtendedEventHandler> = env.get_reporter().clone();
     let mut module = RemoteModule::before_command(RemoteModuleEnvironment {
         command_name: env.get_command_name().to_owned(),
@@ -258,29 +265,114 @@ fn set_up_module(
             .is_some()
             .then(|| Arc::new(ActionOutputDirectoryHelper::new())),
     );
-    // RemoteModule.setup ends both cache paths with initRepoHelpersAndOverlayFs: with a combined
-    // cache it installs RepositoryRemoteHelpersFactoryImpl, whose RemoteRepoContentsCacheImpl
-    // serves and stores repositories when the output base is on the RemoteExternalOverlayFileSystem
-    // that the startup option --experimental_remote_repo_contents_cache selects
-    // (RemoteModule.getFileSystemForBuildArtifacts). Neither is ported.
-    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:358 RemoteModule.initRepoHelpersAndOverlayFs
-    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:219 RemoteModule.getFileSystemForBuildArtifacts
-    let use_remote_repo_contents_cache = env
-        .get_runtime()
-        .get_startup_options_provider()
-        .get_options::<blaze_optdefs::misc::remote_startup_options::RemoteStartupOptions>()
-        .is_some_and(|o| o.use_remote_repo_contents_cache);
-    if use_remote_repo_contents_cache
-        && module
-            .get_action_context_provider()
-            .and_then(|provider| provider.get_combined_cache())
-            .is_some()
-    {
-        blaze_util::unported!(
-            "RemoteRepoContentsCacheImpl (--experimental_remote_repo_contents_cache with a remote or disk cache)"
-        );
+    // RemoteModule.setup ends both cache paths with initRepoHelpersAndOverlayFs.
+    init_repo_helpers_and_overlay_fs(
+        env,
+        &module,
+        &build_request_id_for_repo_helpers,
+        accept_cached,
+        upload_local_results,
+        verbose_failures,
+        remote_cache_ttl,
+    );
+    // beforeCommand: `if (!cacheAvailable) remoteFs.notifyNoCacheAvailable(evaluator)`.
+    if !module.cache_available() {
+        notify_no_cache_available(env);
     }
     Ok(Some(module))
+}
+
+/// The output base's file system as Java's `instanceof RemoteExternalOverlayFileSystem` sees it.
+fn remote_external_overlay_file_system(
+    env: &CommandEnvironment,
+) -> Option<Arc<blaze_remote::remote_external_overlay_file_system::RemoteExternalOverlayFileSystem>>
+{
+    blaze_remote::remote_external_overlay_file_system::RemoteExternalOverlayFileSystem::of(
+        env.get_output_base().get_file_system(),
+    )
+}
+
+/// `evaluator.delete(REPOSITORY_DIRECTORY nodes)` for the overlay file system.
+///
+/// PORT: Blaze's Skyframe evaluator does not outlive the command that created it, so there is
+/// nothing to invalidate after the command.
+fn invalidate_repo_directories() -> Arc<dyn Fn(&std::collections::HashSet<String>) + Send + Sync> {
+    Arc::new(|_repo_names| {})
+}
+
+/// `remoteFs.notifyNoCacheAvailable(env.getSkyframeExecutor().getEvaluator())` when the output
+/// base is on the overlay file system.
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:403 RemoteModule.beforeCommand
+fn notify_no_cache_available(env: &CommandEnvironment) {
+    if let Some(remote_fs) = remote_external_overlay_file_system(env) {
+        remote_fs.notify_no_cache_available(&*invalidate_repo_directories());
+    }
+}
+
+/// Initializes the repository remote helpers factory and primes the
+/// `RemoteExternalOverlayFileSystem` (when one is in use) with the per-build state it needs.
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:358 RemoteModule.initRepoHelpersAndOverlayFs
+fn init_repo_helpers_and_overlay_fs(
+    env: &CommandEnvironment,
+    module: &RemoteModule,
+    build_request_id: &str,
+    accept_cached: bool,
+    upload_local_results: bool,
+    verbose_failures: bool,
+    remote_cache_ttl: std::time::Duration,
+) {
+    let Some(action_context_provider) = module.get_action_context_provider() else {
+        return;
+    };
+    let Some(combined_cache) = action_context_provider.get_combined_cache() else {
+        return;
+    };
+    let directories = env.get_directories();
+    let invocation_id = env.get_command_id().to_owned();
+    blaze_repo_rules::repository::remote_helpers::init_repository_remote_helpers_factory(Arc::new(
+        blaze_remote::repository_remote_helpers_factory_impl::RepositoryRemoteHelpersFactoryImpl::new(
+            blaze_sky_loading::directories::LoadingDirectories {
+                workspace: env
+                    .get_workspace()
+                    .cloned()
+                    .unwrap_or_else(|| env.get_working_directory().clone()),
+                output_base: env.get_output_base().clone(),
+                install_base: directories.get_install_base().clone(),
+            },
+            combined_cache.clone(),
+            build_request_id.to_owned(),
+            invocation_id.clone(),
+            accept_cached,
+            upload_local_results,
+            verbose_failures,
+        ),
+    ));
+    if let Some(remote_fs) = remote_external_overlay_file_system(env) {
+        remote_fs.before_command(
+            blaze_remote::remote_external_overlay_file_system::CommandState {
+                cache: combined_cache.clone(),
+                input_prefetcher: module
+                    .get_action_input_fetcher()
+                    .cloned()
+                    .expect("RemoteModule.setup created the action input fetcher"),
+                reporter: env.get_reporter().clone(),
+                build_request_id: build_request_id.to_owned(),
+                command_id: invocation_id,
+                invalidate_repo_directories: invalidate_repo_directories(),
+                remote_cache_ttl,
+            },
+        );
+    }
+}
+
+/// The part of `RemoteModule.afterCommand` that every command runs:
+/// `repositoryRemoteHelpersFactoryDelegate.reset()` and `remoteFs.afterCommand()`.
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1098 RemoteModule.afterCommand
+pub(crate) fn reset_repo_helpers_and_overlay_fs(env: &CommandEnvironment) {
+    blaze_repo_rules::repository::remote_helpers::reset_repository_remote_helpers_factory();
+    if let Some(remote_fs) = remote_external_overlay_file_system(env) {
+        remote_fs.after_command();
+    }
 }
 
 /// `CommandEnvironment.buildRequestId`: `--build_request_id`, else the dispatcher's
@@ -292,7 +384,7 @@ fn set_up_module(
 /// the remote module), so it is computed here and the override travels through
 /// [`BUILD_REQUEST_ID_OVERRIDE`] / [`LAST_BUILD_REQUEST_ID`] instead of `initCommand`'s
 /// parameter.
-// Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:335 CommandEnvironment.<init>
+// Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:226 CommandEnvironment.<init>
 fn build_request_id(options: &OptionsParsingResult) -> String {
     build_request_id_for(
         options
@@ -314,7 +406,7 @@ fn build_request_id_for(explicit: Option<String>) -> String {
 /// the build request id of the attempt that failed with a remote cache eviction ("Use a fixed
 /// build request ID across cache eviction retries to tie together the individual invocations,
 /// which all have different invocation IDs").
-// Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:292 BlazeCommandDispatcher.exec
+// Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:162 BlazeCommandDispatcher.exec
 static BUILD_REQUEST_ID_OVERRIDE: Mutex<Option<String>> = Mutex::new(None);
 
 /// The build request id of the last attempt that set the remote module up (`env.getBuildRequestId()`
@@ -322,14 +414,14 @@ static BUILD_REQUEST_ID_OVERRIDE: Mutex<Option<String>> = Mutex::new(None);
 static LAST_BUILD_REQUEST_ID: Mutex<Option<String>> = Mutex::new(None);
 
 /// `buildRequestIdOverride = null` at the start of `BlazeCommandDispatcher.exec`.
-// Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:292 BlazeCommandDispatcher.exec
+// Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:162 BlazeCommandDispatcher.exec
 pub(crate) fn reset_build_request_id_override() {
     *BUILD_REQUEST_ID_OVERRIDE.lock() = None;
     *LAST_BUILD_REQUEST_ID.lock() = None;
 }
 
 /// `catch (RemoteCacheTransientErrorException e) { buildRequestIdOverride = e.getBuildRequestId(); }`.
-// Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:319 BlazeCommandDispatcher.exec
+// Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:162 BlazeCommandDispatcher.exec
 pub(crate) fn retry_with_build_request_id_of_last_attempt() {
     let last = LAST_BUILD_REQUEST_ID.lock().clone();
     *BUILD_REQUEST_ID_OVERRIDE.lock() = last;
@@ -376,7 +468,7 @@ static DISPATCHER_MODULE: Mutex<Option<RemoteModule>> = Mutex::new(None);
 /// for the commands that execute actions other than build/test). `Err` is its
 /// `AbruptExitException`.
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:403 RemoteModule.beforeCommand
-// Java: com/google/devtools/build/lib/remote/RemoteModule.java:524 RemoteModule.setup
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:416 RemoteModule.setup
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1341 RemoteModule.getCommonCommandOptions
 pub(crate) fn dispatcher_before_command(
     env: &CommandEnvironment,
@@ -420,8 +512,8 @@ pub(crate) fn dispatcher_before_command(
 /// `afterCommand` (its `AbruptExitException`, which the dispatcher reports as it reports the
 /// other modules'), or, with the placeholder provider, `afterCommandTask`'s deletion of the
 /// `tempPathGenerator` directory, ignoring failures.
-// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1097 RemoteModule.afterCommand
-// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1139 RemoteModule.afterCommandTask
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1098 RemoteModule.afterCommand
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1113 RemoteModule.afterCommandTask
 pub(crate) fn dispatcher_after_command() -> Option<crate::module::AbruptExitException> {
     if let Some(mut module) = DISPATCHER_MODULE.lock().take() {
         return module.after_command().err().map(|e| {
@@ -464,13 +556,13 @@ pub(crate) fn build_event_artifact_uploader_factory_map(
 }
 
 /// `RemoteModule.BuildEventArtifactUploaderFactoryDelegate`.
-// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1344 RemoteModule.BuildEventArtifactUploaderFactoryDelegate
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1345 RemoteModule.BuildEventArtifactUploaderFactoryDelegate
 struct BuildEventArtifactUploaderFactoryDelegate {
     remote: Option<Arc<RemoteSupport>>,
 }
 
 impl BuildEventArtifactUploaderFactory for BuildEventArtifactUploaderFactoryDelegate {
-    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1361 BuildEventArtifactUploaderFactoryDelegate.create
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1360 BuildEventArtifactUploaderFactoryDelegate.create
     fn create(&self) -> Arc<dyn BuildEventArtifactUploader> {
         match &self.remote {
             None => Arc::new(LocalFilesArtifactUploader),
@@ -499,9 +591,9 @@ static KNOWN_MISSING_CAS_DIGESTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// properties), for every command that has `RemoteOptions`. Only a command without
 /// `RemoteOptions` (`remoteOptions == null`, `actionContextProvider == null`) keeps the
 /// executor's empty salt.
-// Java: com/google/devtools/build/lib/remote/RemoteModule.java:526 RemoteModule.setup
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:416 RemoteModule.setup
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1241 RemoteModule.executorInit
-// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1308 RemoteModule.executorInit
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1241 RemoteModule.executorInit
 pub(crate) fn placeholder_contributions(
     remote_options: Option<&RemoteOptions>,
 ) -> RemoteModuleContributions {
@@ -545,7 +637,7 @@ impl RemoteSupport {
             )),
             // RemoteModule.setup created a RemoteOutputService (no --experimental_remote_output_
             // service: that one is unported) and executorInit gave it the RemoteOutputChecker.
-            // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1296 RemoteModule.executorInit
+            // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1241 RemoteModule.executorInit
             output_checker: module
                 .get_remote_output_checker()
                 .map(|c| c.clone() as Arc<dyn blaze_exec::actions::OutputChecker>),
@@ -555,7 +647,7 @@ impl RemoteSupport {
             // SkyframeActionExecutor.prepareForExecution: rewindingEnabled and
             // invocationRetriesEnabled; LostInputsEvent goes to RemoteExecutionService
             // .onLostInputs (and to the attempts the dispatcher retries).
-            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:355 SkyframeActionExecutor.prepareForExecution
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:331 SkyframeActionExecutor.prepareForExecution
             // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:2105 RemoteExecutionService.onLostInputs
             lost_inputs_policy: Some({
                 let service = provider.get_remote_execution_service();
@@ -614,6 +706,9 @@ impl RemoteSupport {
         analysis_result: &AnalysisResult,
         output_groups: &[String],
         merged: bool,
+        // `analysisResult.getArtifactsToBuild()` as read here: the coverage report artifacts
+        // `BuildView.update` added (the other artifacts to build are not coverage outputs).
+        coverage_artifacts_to_build: &[Artifact],
     ) {
         let module = self.module.lock();
         let Some(checker) = module.get_remote_output_checker() else {
@@ -646,10 +741,8 @@ impl RemoteSupport {
                     })
                     .collect()
             });
-        // PORT: top-level aspects are not ported (AnalysisResult.getAspectsMap is empty) and
-        // coverage (`--collect_code_coverage`) fails before the build; `CoverageReportValue
-        // .COVERAGE_REPORT_KEY` owns no artifact.
-        let is_owned_by_coverage_report = |_: &ActionInputRef| false;
+        // PORT: top-level aspects are not ported (AnalysisResult.getAspectsMap is empty).
+        let is_owned_by_coverage_report = is_owned_by_coverage_report;
         if merged {
             for (rule_class, view) in &targets {
                 checker.after_top_level_target_analysis(rule_class.as_deref(), view);
@@ -661,7 +754,10 @@ impl RemoteSupport {
             }
             return;
         }
-        let artifacts_to_build: Vec<ActionInputRef> = Vec::new();
+        let artifacts_to_build: Vec<ActionInputRef> = coverage_artifacts_to_build
+            .iter()
+            .map(artifact_input)
+            .collect();
         checker.after_analysis(
             &AnalysisResultView {
                 targets_to_build: targets
@@ -679,8 +775,20 @@ impl RemoteSupport {
         );
     }
 
+    /// `RemoteModule.coverageArtifactsKnown(coverageArtifacts)` (the `CoverageArtifactsKnownEvent`
+    /// of the merged analysis and execution path).
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1062 RemoteModule.coverageArtifactsKnown
+    pub(crate) fn coverage_artifacts_known(&self, coverage_artifacts: &[Artifact]) {
+        let module = self.module.lock();
+        let Some(checker) = module.get_remote_output_checker() else {
+            return;
+        };
+        let inputs: Vec<ActionInputRef> = coverage_artifacts.iter().map(artifact_input).collect();
+        checker.coverage_artifacts_known(&inputs, &is_owned_by_coverage_report);
+    }
+
     /// `RemoteExecutionService.onBuildInterrupted(BuildInterruptedEvent)`.
-    // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:2090 RemoteExecutionService.onBuildInterrupted
+    // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:2091 RemoteExecutionService.onBuildInterrupted
     pub(crate) fn build_interrupted(&self) {
         if let Some(provider) = self.module.lock().get_action_context_provider() {
             provider
@@ -694,7 +802,7 @@ impl RemoteSupport {
     /// `RemoteOutputService.onExecutionPhaseCompleteEvent`: `leaseService.finalizeExecution()`
     /// (see `LeaseService::finalize_execution` for why it runs before the action cache is
     /// saved).
-    // Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:162 RemoteOutputService.onExecutionPhaseCompleteEvent
+    // Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:163 RemoteOutputService.onExecutionPhaseCompleteEvent
     pub(crate) fn finalize_execution(
         &self,
         action_cache: Option<&dyn blaze_exec::actions::cache::ActionCache>,
@@ -719,8 +827,8 @@ impl RemoteSupport {
     /// `RemoteModule.afterCommand()` (waits for the background uploads, closes
     /// `--remote_grpc_log`, deletes the downloaded inputs). An error is reported as Java's
     /// `BlazeRuntime.afterCommand` does: `ERROR: <message>`, and returned.
-    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1097 RemoteModule.afterCommand
-    // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:775 BlazeRuntime.afterCommand
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1098 RemoteModule.afterCommand
+    // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:750 BlazeRuntime.afterCommand
     pub(crate) fn after_command(&self, reporter: &dyn EventHandler) -> Option<AbruptExitException> {
         match self.module.lock().after_command() {
             Ok(()) => None,
@@ -829,7 +937,7 @@ mod tests {
     /// Review 2026-11-19 R6: an attempt retried after a remote cache eviction keeps the build
     /// request id of the attempt it retries; `--build_request_id` wins; a new command starts
     /// without the override.
-    // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:316 BlazeCommandDispatcher.exec
+    // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:162 BlazeCommandDispatcher.exec
     #[test]
     fn retried_attempt_keeps_the_build_request_id() {
         reset_build_request_id_override();
@@ -845,4 +953,16 @@ mod tests {
         reset_build_request_id_override();
         assert_ne!(build_request_id_for(None), first);
     }
+}
+
+/// `artifact.getArtifactOwner().equals(CoverageReportValue.COVERAGE_REPORT_KEY)`.
+// Java: com/google/devtools/build/lib/remote/RemoteOutputChecker.java:141 RemoteOutputChecker.maybeAddCoverageArtifacts
+fn is_owned_by_coverage_report(input: &ActionInputRef) -> bool {
+    blaze_exec::actions::action_adapters::as_blaze_artifact(input).is_some_and(|artifact| {
+        matches!(
+            artifact.get_artifact_owner(),
+            blaze_actions::actions::action_lookup::ArtifactOwner::ActionLookupKey(key)
+                if key == blaze_analysis::coverage_report_value::CoverageReportKey::action_lookup_key()
+        )
+    })
 }

@@ -2,16 +2,14 @@
 //! `repository/RequestRepositoryInformationEvent.java` and the subscriber half of
 //! `bazel/repository/starlark/StarlarkRepositoryDebugModule.java`.
 //!
-//! PORT: the two reporters belong to the `skyframe` package (`blaze_sky_top`, next to
-//! `TargetCycleReporter`); they name key types of `blaze_bzlmod`, `blaze_repo_rules` and
-//! `blaze_sky_loading` that `blaze_sky_top` does not all depend on, so they are kept here, with
-//! their only Blaze user (`mod`, `crate::commands::mod_command`). `SkyframeExecutor`'s own cycles
-//! reporter does not register them (blaze_sky_top's `CyclesReporter` fails loudly on their
-//! cycles).
+//! `SkyframeExecutor::new` registers the two reporters, and `mod` builds its own
+//! `CyclesReporter` with them. The subscriber is installed by blaze_runtime's
+//! `StarlarkRepositoryDebugModule`; it is kept here, next to the event it answers.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use crate::cycles_reporter::{SingleCycleReporter, print_cycle};
 use blaze_bzlmod::skyframe::keys::{ModuleFileKey, SingleExtensionEvalKey, SingleExtensionKey};
 use blaze_events::{Event, EventHandler as _, ExtendedEventHandler, Postable};
 use blaze_repo_rules::repository::repository_fetch_function::StarlarkRepositoryDefinitionLocationEvent;
@@ -22,7 +20,6 @@ use blaze_sky_loading::package_function::PackageKey;
 use blaze_sky_loading::package_lookup::PackageLookupKey;
 use blaze_sky_loading::repos::{RepositoryDirectoryKey, RepositoryMappingKey};
 use blaze_sky_loading::starlark_builtins::StarlarkBuiltinsKey;
-use blaze_sky_top::cycles_reporter::{SingleCycleReporter, print_cycle};
 use blaze_skyframe::{CycleInfo, SkyKey};
 use parking_lot::Mutex;
 

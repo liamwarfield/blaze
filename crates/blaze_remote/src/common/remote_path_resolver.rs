@@ -8,13 +8,13 @@ use blaze_vfs::{Path, PathFragment};
 
 /// A `RemotePathResolver` is used to resolve input/output paths for remote execution from Bazel's
 /// internal path, or vice versa.
-// Java: com/google/devtools/build/lib/remote/common/RemotePathResolver.java:36 RemotePathResolver
+// Java: com/google/devtools/build/lib/remote/common/RemotePathResolver.java:31 RemotePathResolver
 pub trait RemotePathResolver: Send + Sync {
     /// Returns the `workingDirectory` for a remote action.
     fn get_working_directory(&self) -> PathFragment;
 
     /// Returns a `SortedMap` which maps from input paths for remote action to `ActionInput`.
-    // Java: com/google/devtools/build/lib/remote/common/RemotePathResolver.java:45 RemotePathResolver.getInputMapping
+    // Java: com/google/devtools/build/lib/remote/common/RemotePathResolver.java:43 RemotePathResolver.getInputMapping
     fn get_input_mapping(
         &self,
         context: &dyn SpawnExecutionContext,
@@ -31,7 +31,7 @@ pub trait RemotePathResolver: Send + Sync {
     fn local_exec_path_to_output_path(&self, exec_path: &PathFragment) -> String;
 
     /// Resolves the output path relative to input root for the `ActionInput`.
-    // Java: com/google/devtools/build/lib/remote/common/RemotePathResolver.java:64 RemotePathResolver.localPathToOutputPath
+    // Java: com/google/devtools/build/lib/remote/common/RemotePathResolver.java:49 RemotePathResolver.localPathToOutputPath
     fn local_action_input_to_output_path(&self, action_input: &dyn ActionInput) -> String {
         self.local_exec_path_to_output_path(action_input.get_exec_path())
     }
@@ -44,14 +44,14 @@ pub trait RemotePathResolver: Send + Sync {
 }
 
 /// Creates the default `RemotePathResolver`.
-// Java: com/google/devtools/build/lib/remote/common/RemotePathResolver.java:79 RemotePathResolver.createDefault
+// Java: com/google/devtools/build/lib/remote/common/RemotePathResolver.java:74 RemotePathResolver.createDefault
 pub fn create_default(exec_root: Path) -> Arc<dyn RemotePathResolver> {
     Arc::new(DefaultRemotePathResolver::new(exec_root))
 }
 
 /// The default `RemotePathResolver` which use `execRoot` as input root and do NOT set
 /// `workingDirectory` for remote actions.
-// Java: com/google/devtools/build/lib/remote/common/RemotePathResolver.java:87 RemotePathResolver.DefaultRemotePathResolver
+// Java: com/google/devtools/build/lib/remote/common/RemotePathResolver.java:82 RemotePathResolver.DefaultRemotePathResolver
 #[derive(Debug, Clone)]
 pub struct DefaultRemotePathResolver {
     exec_root: Path,
@@ -103,7 +103,7 @@ pub struct SiblingRepositoryLayoutResolver {
 
 impl SiblingRepositoryLayoutResolver {
     /// `new SiblingRepositoryLayoutResolver(execRoot)`.
-    // Java: com/google/devtools/build/lib/remote/common/RemotePathResolver.java:133 SiblingRepositoryLayoutResolver.<init>
+    // Java: com/google/devtools/build/lib/remote/common/RemotePathResolver.java:128 SiblingRepositoryLayoutResolver.<init>
     pub fn new(exec_root: Path) -> SiblingRepositoryLayoutResolver {
         // The "root directory" of the action from the point of view of RBE is the parent
         // directory of the execroot locally. This is so that paths of artifacts in external
@@ -146,7 +146,7 @@ impl RemotePathResolver for SiblingRepositoryLayoutResolver {
 
 /// Adapts a given base `RemotePathResolver` to also apply a `PathMapper` to map (and inverse map)
 /// paths.
-// Java: com/google/devtools/build/lib/remote/common/RemotePathResolver.java:169 RemotePathResolver.createMapped
+// Java: com/google/devtools/build/lib/remote/common/RemotePathResolver.java:170 RemotePathResolver.createMapped
 pub fn create_mapped(
     base: Arc<dyn RemotePathResolver>,
     exec_root: &Path,
@@ -164,7 +164,7 @@ pub fn create_mapped(
 }
 
 /// The anonymous resolver of `createMapped`.
-// Java: com/google/devtools/build/lib/remote/common/RemotePathResolver.java:174 RemotePathResolver.createMapped
+// Java: com/google/devtools/build/lib/remote/common/RemotePathResolver.java:170 RemotePathResolver.createMapped
 struct MappedRemotePathResolver {
     base: Arc<dyn RemotePathResolver>,
     exec_root: Path,
@@ -175,11 +175,16 @@ struct MappedRemotePathResolver {
 impl MappedRemotePathResolver {
     fn map(&self, path: &PathFragment) -> PathFragment {
         let mapped_path = self.path_mapper.map(path);
-        let previous_path = self.inverse.lock().insert(mapped_path.clone(), path.clone());
+        let previous_path = self
+            .inverse
+            .lock()
+            .insert(mapped_path.clone(), path.clone());
         blaze_util::check_state!(
             previous_path.as_ref().is_none_or(|p| p == path),
             "Two different paths {} and {} map to the same path {}",
-            previous_path.map(|p| p.to_string()).unwrap_or_else(|| "null".to_owned()),
+            previous_path
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "null".to_owned()),
             path,
             mapped_path
         );
@@ -189,9 +194,9 @@ impl MappedRemotePathResolver {
     fn inverse_map(&self, path: &PathFragment) -> PathFragment {
         match self.inverse.lock().get(path) {
             Some(p) => p.clone(),
-            None => panic!(
-                "NullPointerException: Failed to find original path for mapped path {path}"
-            ),
+            None => {
+                panic!("NullPointerException: Failed to find original path for mapped path {path}")
+            }
         }
     }
 }
@@ -214,16 +219,19 @@ impl RemotePathResolver for MappedRemotePathResolver {
     }
 
     fn local_exec_path_to_output_path(&self, exec_path: &PathFragment) -> String {
-        self.base.local_exec_path_to_output_path(&self.map(exec_path))
+        self.base
+            .local_exec_path_to_output_path(&self.map(exec_path))
     }
 
     fn output_path_to_local_path(&self, output_path: &str) -> Path {
-        self.exec_root.get_relative(&self.inverse_map(
-            &self
-                .base
-                .output_path_to_local_path(output_path)
-                .relative_to(&self.exec_root),
-        ))
+        self.exec_root.get_relative(
+            &self.inverse_map(
+                &self
+                    .base
+                    .output_path_to_local_path(output_path)
+                    .relative_to(&self.exec_root),
+            ),
+        )
     }
 
     fn local_path_to_exec_path(&self, local_path: &PathFragment) -> PathFragment {

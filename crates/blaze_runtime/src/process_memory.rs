@@ -7,13 +7,15 @@
 //!
 //! | Java | Blaze |
 //! | --- | --- |
-//! | `MemoryUsage.getUsed()` | the allocator's in-use bytes (glibc `mallinfo2`: `uordblks + hblkhd`); resident memory where the allocator does not say |
+//! | `MemoryUsage.getUsed()` | resident memory (`VmRSS`); after `System.gc()`, resident memory after the allocator returned its free memory (`malloc_trim`) |
 //! | `MemoryUsage.getCommitted()`, `Runtime.totalMemory()` | resident memory (`VmRSS`) |
 //! | `MemoryUsage.getMax()` | physical memory |
 //! | peak heap after a full GC | peak resident memory (`VmHWM`) |
 //! | GC count and time | 0 |
 //!
 //! The values differ from Bazel's by nature; comparison tools treat these keys as volatile.
+//! Every heap figure derives from resident memory (D15 as amended on 2026-11-26), so its unit is
+//! MB as on a JVM.
 
 /// `java.lang.management.MemoryUsage`: the heap figures `InfoItemUtils.getMemoryUsage` returns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,7 +43,7 @@ impl MemoryUsage {
 pub fn get_heap_memory_usage() -> MemoryUsage {
     let committed = resident_bytes();
     MemoryUsage {
-        used: allocator_in_use_bytes().unwrap_or(committed),
+        used: committed,
         committed,
         max: physical_memory_bytes(),
     }
@@ -55,21 +57,6 @@ pub fn total_memory() -> i64 {
 /// The peak heap use of the process (D15: peak resident memory, `VmHWM`).
 pub fn peak_resident_bytes() -> Option<i64> {
     proc_self_status_kb("VmHWM:").map(|kb| kb * 1024)
-}
-
-/// The bytes the allocator has handed out and not taken back, or `None` where the allocator does
-/// not tell.
-pub fn allocator_in_use_bytes() -> Option<i64> {
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    {
-        // SAFETY: mallinfo2 only reads the allocator's statistics.
-        let info = unsafe { libc::mallinfo2() };
-        Some((info.uordblks as i64).wrapping_add(info.hblkhd as i64))
-    }
-    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
-    {
-        None
-    }
 }
 
 /// Returns freed memory of the allocator to the system (`malloc_trim(0)`). D15 allows it after

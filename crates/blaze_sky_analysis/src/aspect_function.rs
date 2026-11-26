@@ -225,7 +225,9 @@ impl AspectFunction {
     ) -> Result<Option<Arc<AspectValue>>, ComputeError> {
         // PORT: remote analysis caching is not ported (`isRetrievalEnabled()` is false).
         let mut state = DependencyResolverState::new(self.store_transitive_packages);
-        let Some(initial_values) = get_initial_values(&mut state, key, env, &self.services.rule_class_provider)? else {
+        let Some(initial_values) =
+            get_initial_values(&mut state, key, env, &self.services.rule_class_provider)?
+        else {
             return Ok(None);
         };
         let InitialValues {

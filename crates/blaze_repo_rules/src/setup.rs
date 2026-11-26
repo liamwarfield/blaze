@@ -679,6 +679,9 @@ pub fn prepare_repository_functions_with(
         process_wrapper_kill_delay,
         process_wrapper_graceful_sigterm,
         repo_contents_cache: Arc::new(repo_contents_cache),
+        // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:654 BazelRepositoryModule.beforeCommand
+        remote_repo_contents_cache:
+            crate::repository::remote_helpers::create_remote_repo_contents_cache(),
     });
 
     // Java: moduleFileFunction / repoSpecFunction / yankedVersionsFunction

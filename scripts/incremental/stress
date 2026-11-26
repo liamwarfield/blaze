@@ -34,6 +34,8 @@ compares: exit code, the ERROR and WARNING lines (as sets), and every file under
 (A must have the same path with the same sha256 and exec bit; A may keep stale outputs of
 deleted targets, as Bazel does). Mismatches are printed and counted; exit 1 if any.
 
+Servers: startup option --max_idle_secs=60 (probe) or 900 (random, whose two servers carry a
+`.keep-server` file while it runs); builds use --jobs=4; every server is shut down at the end.
 Heavy: run under `systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0`.
 Servers are shut down at the end (and killed through their pid files if needed). Output user
 roots and workspaces are deleted at the end unless --keep.
@@ -198,7 +200,8 @@ def read(path):
 
 
 class Side:
-    def __init__(self, name, binary, out_root, ws, extra_env=None, daemon=True):
+    def __init__(self, name, binary, out_root, ws, extra_env=None, daemon=True, max_idle_secs=60):
+        self.max_idle_secs = max_idle_secs
         self.name = name
         self.binary = binary
         self.out_root = out_root
@@ -216,6 +219,7 @@ class Side:
         cmd = [
             self.binary,
             "--output_user_root=" + self.out_root,
+            "--max_idle_secs=%d" % self.max_idle_secs,
             "--nohome_rc",
             "--nosystem_rc",
         ] + args
@@ -264,6 +268,7 @@ def kill_root_servers(out_root):
 
 COMMON = [
     "--symlink_prefix=/",
+    "--jobs=4",
     "--color=no",
     "--curses=no",
     "--repository_cache=" + REPO_CACHE,
@@ -678,8 +683,13 @@ def cmd_random(a):
         if os.path.exists(d):
             subprocess.run(["chmod", "-R", "u+w", d])
             shutil.rmtree(d)
-    side_a = Side("incremental", a.blaze, ur_a, ws, {})
-    side_b = Side("clean", a.blaze, ur_b, ws, {"BLAZE_INCREMENTAL": "none"})
+    # Both servers stay up for the whole run on purpose (A keeps its graph): `.keep-server` tells
+    # root's reaper to leave them (memory rule of 2026-11-26), idle limit 15 minutes.
+    side_a = Side("incremental", a.blaze, ur_a, ws, {}, max_idle_secs=900)
+    side_b = Side("clean", a.blaze, ur_b, ws, {"BLAZE_INCREMENTAL": "none"}, max_idle_secs=900)
+    for d in (ur_a, ur_b):
+        os.makedirs(d, exist_ok=True)
+        write(os.path.join(d, ".keep-server"), "scripts/incremental/stress random\n")
     editor = Editor(ws, ext, rng)
     mismatches = 0
     rounds = 0
@@ -740,6 +750,11 @@ def cmd_random(a):
     finally:
         side_a.shutdown()
         side_b.shutdown()
+        for d in (ur_a, ur_b):
+            try:
+                os.remove(os.path.join(d, ".keep-server"))
+            except OSError:
+                pass
         log.close()
     print("rounds %d mismatches %d (seed %d)" % (rounds, mismatches, a.seed))
     if not a.keep:

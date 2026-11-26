@@ -127,13 +127,11 @@ impl LoadingSignature {
                     .collect()
             })
             .unwrap_or_default();
-        let has_overrides = options
-            .get_options::<RepositoryOptions>()
-            .is_some_and(|o| {
-                !o.module_overrides.is_empty()
-                    || !o.repository_overrides.is_empty()
-                    || !o.repository_injections.is_empty()
-            });
+        let has_overrides = options.get_options::<RepositoryOptions>().is_some_and(|o| {
+            !o.module_overrides.is_empty()
+                || !o.repository_overrides.is_empty()
+                || !o.repository_injections.is_empty()
+        });
         LoadingSignature {
             starlark_semantics: starlark_semantics.clone(),
             repository_options,
@@ -220,6 +218,8 @@ pub struct SyncInputs<'a> {
     pub reporter: Arc<dyn ExtendedEventHandler>,
     /// The executor executes actions (`detectModifiedOutputFiles` applies).
     pub executes: bool,
+    /// The output service's `OutputChecker` (Java `outputService.getOutputChecker()`).
+    pub output_checker: Option<Arc<dyn blaze_exec::actions::action_cache_checker::OutputChecker>>,
     /// The executor analyzes, with these top-level options.
     pub top_level_build_options: Option<BuildOptions>,
 }
@@ -443,8 +443,14 @@ impl SkyframeIncrementalState {
             return (builder.build(), handle);
         };
 
-        let previous = match Self::sync(state, &mut inner, command, previous, &inputs, first_in_command)
-        {
+        let previous = match Self::sync(
+            state,
+            &mut inner,
+            command,
+            previous,
+            &inputs,
+            first_in_command,
+        ) {
             Some(previous) => previous,
             None => {
                 Self::note_new_graph(&mut inner, &inputs, command);
@@ -542,8 +548,7 @@ impl SkyframeIncrementalState {
             }
 
             // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3774 SkyframeExecutor.handleDiffs
-            let evaluator =
-                Self::handle_diffs(state, inner, command, evaluator, inputs)?;
+            let evaluator = Self::handle_diffs(state, inner, command, evaluator, inputs)?;
 
             // handleClientEnvironmentChanges, handleRepositoryEnvironmentChanges.
             inner.previous_client_environment = inject_environment_values(
@@ -582,8 +587,7 @@ impl SkyframeIncrementalState {
         if inputs.top_level_build_options.is_some() {
             inner.last_top_level_build_options = inputs.top_level_build_options.clone();
         }
-        if inputs.executes
-            && inner.outputs_checked_command.as_deref() != Some(&command.command_id)
+        if inputs.executes && inner.outputs_checked_command.as_deref() != Some(&command.command_id)
         {
             inner.outputs_checked_command = Some(command.command_id.clone());
             Self::detect_modified_output_files(&evaluator, command, inputs);
@@ -624,6 +628,10 @@ impl SkyframeIncrementalState {
         let dirty = blaze_sky_exec::output_checker::get_dirty_action_values(
             &evaluator.get_values(),
             &modified_output_files,
+            inputs
+                .output_checker
+                .as_deref()
+                .unwrap_or(&blaze_exec::actions::action_cache_checker::TrustLocalOnly),
             &Receiver,
             Some(&command.tsgm),
             fsvc_threads(inputs.options),
@@ -688,7 +696,8 @@ impl SkyframeIncrementalState {
             return None;
         }
 
-        let fsvc = FilesystemValueChecker::new(Some(command.tsgm.clone()), fsvc_threads(inputs.options));
+        let fsvc =
+            FilesystemValueChecker::new(Some(command.tsgm.clone()), fsvc_threads(inputs.options));
         let diff_package_roots_under_which_to_check: HashSet<Root> = inputs
             .pkg_locator
             .read()
@@ -709,7 +718,9 @@ impl SkyframeIncrementalState {
         let external_files_knowledge = external_files_helper.get_external_files_knowledge();
         if check_external_other_files
             && (external_files_knowledge.too_many_external_other_files_seen
-                || !external_files_knowledge.external_other_files_seen.is_empty())
+                || !external_files_knowledge
+                    .external_other_files_seen
+                    .is_empty())
         {
             file_types_to_check.push(FileType::ExternalOther);
         }
@@ -809,16 +820,17 @@ impl SkyframeIncrementalState {
             true
         } else {
             let diff = describe_configuration_difference(
-                inner.original_configuration_options.as_ref().expect("configuration set"),
+                inner
+                    .original_configuration_options
+                    .as_ref()
+                    .expect("configuration set"),
                 new_options,
                 max_differences_to_show,
             );
             match diff {
                 Some(diff) => {
                     if !allow_analysis_cache_discards {
-                        return Err(format!(
-                            "{diff}, analysis cache would have been discarded."
-                        ));
+                        return Err(format!("{diff}, analysis cache would have been discarded."));
                     }
                     event_handler.handle(&Event::warn(format!(
                         "{diff}, discarding analysis cache (this can be expensive, see \
@@ -1054,7 +1066,11 @@ fn describe_configuration_difference(
     let mut relevant_differences: Vec<String> = changed_starlark_options
         .iter()
         .map(|l| l.get_canonical_form())
-        .chain(native_cache_invalidating_differences.iter().map(|s| (*s).to_owned()))
+        .chain(
+            native_cache_invalidating_differences
+                .iter()
+                .map(|s| (*s).to_owned()),
+        )
         .map(|s| format!("--{s}"))
         .collect();
     // Sorting the list to ensure that (if truncated through maxDifferencesToShow) the options in
@@ -1067,11 +1083,18 @@ fn describe_configuration_difference(
         Some(format!(
             "Build options {}{} and {} more have changed",
             relevant_differences[..shown].join(", "),
-            if max_differences_to_show == 1 { "" } else { "," },
+            if max_differences_to_show == 1 {
+                ""
+            } else {
+                ","
+            },
             n - shown
         ))
     } else if n == 1 {
-        Some(format!("Build option {} has changed", relevant_differences[0]))
+        Some(format!(
+            "Build option {} has changed",
+            relevant_differences[0]
+        ))
     } else if n == 2 {
         Some(format!(
             "Build options {} have changed",

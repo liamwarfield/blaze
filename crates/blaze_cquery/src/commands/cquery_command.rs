@@ -159,6 +159,7 @@ pub fn exec(env: &PostAnalysisCommandEnvironment<'_>) -> DetailedExitCode {
         /* report_incompatible_targets= */ false,
     );
     request.targets_for_project_resolution = targets_for_project_resolution;
+    (env.configure_request)(&mut request);
     // PORT: skipped, incremental: QueryCommandUtils.resetDeserializedKeysFromRemoteAnalysisCache
     // deletes the values a previous command of the server deserialized from the remote analysis
     // cache.

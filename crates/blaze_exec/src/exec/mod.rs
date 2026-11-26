@@ -6,6 +6,7 @@ pub mod bin_tools;
 pub mod compact_spawn_log_context;
 pub mod evaluation_stack;
 pub mod exec_command_environment;
+pub mod execution_policy;
 pub mod executor_setup;
 pub mod expanded_spawn_log_context;
 pub mod io;

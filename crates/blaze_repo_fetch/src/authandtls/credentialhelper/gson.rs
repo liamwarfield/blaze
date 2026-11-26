@@ -6,9 +6,9 @@
 //!
 //! PORT: Gson's type adapters here read the token stream while parsing; walking a parsed tree
 //! instead differs only in which `JsonSyntaxException` is thrown first for a document that is
-//! both malformed and of the wrong shape (every caller reports any of them with one message),
-//! and in a repeated object member name, which the tree keeps once (the last value, at the first
-//! position; see `GetCredentialsResponse::from_json`).
+//! both malformed and of the wrong shape (every caller reports any of them with one message). The
+//! tree keeps every member of an object, a repeated name included, in document order, as the
+//! token stream shows them to the adapter.
 
 use std::fmt;
 
@@ -31,7 +31,7 @@ impl std::error::Error for JsonSyntaxException {}
 /// wrapper turns into `null` too).
 // Java: com/google/gson/Gson.java Gson.fromJson
 pub(crate) fn from_json(json: &str) -> Result<Option<JsonValue>, JsonSyntaxException> {
-    match blaze_bzlmod_model::gson::parse_lenient(json) {
+    match blaze_bzlmod_model::gson::parse_lenient_keeping_repeated_names(json) {
         // MalformedJsonException (an IOException) is wrapped: `new JsonSyntaxException(e)`.
         Err(e) => Err(JsonSyntaxException(format!(
             "com.google.gson.stream.MalformedJsonException: {}",

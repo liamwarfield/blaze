@@ -505,14 +505,30 @@ impl ExecutableAction for SpawnAction {
         // If the Starlark action shadows another action and the shadowed action discovers its
         // inputs, we get the shadowed action's discovered inputs and append it to the Starlark
         // action inputs.
-        if d.shadowed_action
-            .as_ref()
-            .is_some_and(|s| s.discovers_inputs())
+        if let Some(shadowed_action_obj) =
+            d.shadowed_action.as_ref().filter(|s| s.discovers_inputs())
         {
-            blaze_util::unported!(
-                "EnhancedStarlarkAction.discoverInputs",
-                "shadowed action that discovers inputs (Action.getInputFilesForExtraAction)"
-            );
+            let old_inputs = self.get_inputs();
+            let Some(input_files_for_extra_action) =
+                shadowed_action_obj.get_input_files_for_extra_action()
+            else {
+                return Ok(None);
+            };
+            // StarlarkAction.createInputs(shadowed inputs, extra-action inputs, all inputs).
+            let mut inputs = NestedSetBuilder::new_builder(Order::STABLE_ORDER);
+            inputs.add_transitive(&shadowed_action_obj.get_inputs());
+            inputs.add_transitive(&input_files_for_extra_action);
+            inputs.add_transitive(&d.all_starlark_action_inputs);
+            self.update_inputs(inputs.build());
+            // Sets.difference(getInputs().toSet(), oldInputs.toSet()), in the first set's order.
+            let old_inputs = old_inputs.to_set();
+            return Ok(Some(NestedSetBuilder::wrap(
+                Order::STABLE_ORDER,
+                self.get_inputs()
+                    .to_set()
+                    .into_iter()
+                    .filter(|a| !old_inputs.contains(a)),
+            )));
         }
         // Otherwise, we need to "re-discover" all the original inputs: the unused ones that were
         // removed might now be needed.

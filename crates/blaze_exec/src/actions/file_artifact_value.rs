@@ -443,9 +443,11 @@ impl FileArtifactValue {
         }
         let digest = match digest {
             Some(digest) => digest,
-            None => crate::actions::cache::digest_utils::DigestUtils::get_digest_with_manual_fallback(
-                path,
-            )?,
+            None => {
+                crate::actions::cache::digest_utils::DigestUtils::get_digest_with_manual_fallback(
+                    path,
+                )?
+            }
         };
         Ok(FileArtifactValue::create_for_normal_file(
             Some(digest),
@@ -652,5 +654,35 @@ impl FileArtifactValue {
 impl fmt::Display for FileArtifactValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self, f)
+    }
+}
+
+/// The metadata a `FileStatusWithMetadata` carries (Java: `FileStatusWithMetadata.getMetadata`
+/// returns a `FileArtifactValue`).
+// Java: com/google/devtools/build/lib/actions/FileStatusWithMetadata.java:25 FileStatusWithMetadata
+impl blaze_vfs::StatMetadata for FileArtifactValue {
+    fn get_size(&self) -> i64 {
+        FileArtifactValue::get_size(self)
+    }
+    fn get_digest(&self) -> Option<Vec<u8>> {
+        FileArtifactValue::get_digest(self).map(<[u8]>::to_vec)
+    }
+    fn get_contents_proxy(&self) -> Option<(i64, i64, i64)> {
+        FileArtifactValue::get_contents_proxy(self)
+            .map(|p| (p.get_ctime(), p.get_mtime(), p.get_node_id()))
+    }
+    fn eq_dyn(&self, other: &dyn blaze_vfs::StatMetadata) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<FileArtifactValue>()
+            .is_some_and(|other| self == other)
+    }
+    fn hash_dyn(&self, mut state: &mut dyn std::hash::Hasher) {
+        // Consistent with `==`: equal values have equal digests and sizes.
+        use std::hash::Hash;
+        FileArtifactValue::get_digest(self).hash(&mut state);
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }

@@ -23,13 +23,13 @@ use crate::actions::artifact_root::ArtifactRoot;
 use crate::actions::command_line::ArgChunk;
 use crate::actions::path_mapper::{FileRoot, MappedArtifactRoot, PathMapper};
 
-// Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:73 StrippingPathMapper.GUID
+// Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:88 StrippingPathMapper.GUID
 pub const GUID: &str = "8eb2ad5a-85d4-435b-858f-5c192e91997d";
 
-// Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:75 StrippingPathMapper.FIXED_CONFIG_SEGMENT
+// Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:90 StrippingPathMapper.FIXED_CONFIG_SEGMENT
 const FIXED_CONFIG_SEGMENT: &str = "cfg";
 
-// Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:72 StrippingPathMapper
+// Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:87 StrippingPathMapper
 #[derive(Debug)]
 pub struct StrippingPathMapper {
     output_root: PathFragment,
@@ -48,7 +48,7 @@ pub struct StrippingPathMapper {
 /// unmapped exec path, as Java's `expandToCommandLine`); for a string value
 /// `custom_command_line` recognises this map fn and calls the path mapper's `map_heuristically`,
 /// which is Java's `argStripper.strip`.
-// Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:92 StrippingPathMapper.<init>
+// Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:101 StrippingPathMapper.<init>
 pub struct StructuredArgStripper;
 
 /// The [`StructuredArgStripper`] instance.
@@ -69,7 +69,7 @@ impl MapFn<Artifact> for StructuredArgStripper {
 impl ExceptionlessMapFn<Artifact> for StructuredArgStripper {}
 
 impl StrippingPathMapper {
-    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:84 StrippingPathMapper.<init>
+    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:101 StrippingPathMapper.<init>
     fn new(primary_output: &Artifact, mnemonic: &str, is_starlark_action: bool) -> Self {
         // This is expected to always be "(bazel|blaze)-out".
         let output_root = primary_output.get_exec_path().sub_fragment(0, 1);
@@ -101,7 +101,7 @@ impl StrippingPathMapper {
 
     /// Creates a new `PathMapper` that strips config prefixes if the particular action instance
     /// supports it; `None` if it does not.
-    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:120 StrippingPathMapper.tryCreate
+    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:137 StrippingPathMapper.tryCreate
     pub fn try_create(
         action: &dyn Action,
         is_starlark_action: bool,
@@ -137,7 +137,7 @@ impl StrippingPathMapper {
         None
     }
 
-    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:212 StrippingPathMapper.isSupported
+    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:229 StrippingPathMapper.isSupported
     fn is_supported(&self, artifact: &Artifact) -> bool {
         // PORT: every action input reaching a Rust path mapper is an Artifact; a
         // `BasicActionInput` or `VirtualActionInput` (checked with isOutputPath in Java) does not.
@@ -146,7 +146,7 @@ impl StrippingPathMapper {
 }
 
 impl PathMapper for StrippingPathMapper {
-    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:150 StrippingPathMapper.map
+    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:169 StrippingPathMapper.map
     fn map(&self, exec_path: &PathFragment) -> PathFragment {
         if is_output_path(exec_path, &self.output_root) {
             strip(exec_path)
@@ -155,7 +155,7 @@ impl PathMapper for StrippingPathMapper {
         }
     }
 
-    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:141 StrippingPathMapper.getMappedExecPathString
+    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:160 StrippingPathMapper.getMappedExecPathString
     fn get_mapped_exec_path_string(&self, artifact: &Artifact) -> String {
         if self.is_supported(artifact) {
             strip(artifact.get_exec_path())
@@ -166,7 +166,7 @@ impl PathMapper for StrippingPathMapper {
         }
     }
 
-    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:155 StrippingPathMapper.computeExecPathLengthDiff
+    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:174 StrippingPathMapper.computeExecPathLengthDiff
     fn compute_exec_path_length_diff(&self, artifact: &Artifact) -> i32 {
         let unmapped_path = artifact.get_exec_path_string();
         // bazel-out/k8-fastbuild/... is mapped to bazel-out/${FIXED_CONFIG_SEGMENT}/...
@@ -180,7 +180,7 @@ impl PathMapper for StrippingPathMapper {
         (second_slash - first_slash as i64) as i32 - FIXED_CONFIG_SEGMENT.len() as i32
     }
 
-    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:164 StrippingPathMapper.mapCustomStarlarkArgs
+    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:183 StrippingPathMapper.mapCustomStarlarkArgs
     fn map_custom_starlark_args<'a>(
         &self,
         chunk: Box<dyn ArgChunk + 'a>,
@@ -205,7 +205,7 @@ impl PathMapper for StrippingPathMapper {
         )
     }
 
-    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:186 StrippingPathMapper.getMapFn
+    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:204 StrippingPathMapper.getMapFn
     fn get_map_fn(&self, previous_flag: Option<&str>) -> &'static dyn ExceptionlessMapFn<Artifact> {
         if self.is_java_action
             && (previous_flag == Some("--javacopts") || previous_flag == Some("--resources"))
@@ -215,12 +215,12 @@ impl PathMapper for StrippingPathMapper {
         &blaze_collect::command_line_item::DEFAULT
     }
 
-    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:197 StrippingPathMapper.mapHeuristically
+    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:215 StrippingPathMapper.mapHeuristically
     fn map_heuristically(&self, arg: &str) -> String {
         self.arg_stripper.strip(arg)
     }
 
-    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:202 StrippingPathMapper.mapRoot
+    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:220 StrippingPathMapper.mapRoot
     fn map_root(&self, artifact: &Artifact) -> FileRoot {
         if artifact.get_root() == &self.output_artifact_root {
             // The mapped root's path does not depend on the artifact, so we can share an
@@ -260,14 +260,14 @@ fn map_output_path(exec_path: &PathFragment, output_root: &PathFragment) -> Path
 }
 
 /// Utility class to strip output path configuration prefixes from arbitrary strings.
-// Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:271 StrippingPathMapper.StringStripper
+// Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:281 StrippingPathMapper.StringStripper
 #[derive(Debug)]
 struct StringStripper {
     output_root: String,
 }
 
 impl StringStripper {
-    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:275 StrippingPathMapper.StringStripper.<init>
+    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:285 StrippingPathMapper.StringStripper.<init>
     fn new(output_root: &str) -> Self {
         StringStripper {
             output_root: output_root.to_string(),
@@ -281,8 +281,8 @@ impl StringStripper {
     /// Supports strings with multiple output paths in arbitrary places. Doesn't strip paths that
     /// would be non-existent without config prefixes (e.g. "bazel-out/x86-fastbuild",
     /// "bazel-out;foo", "/path/to/compiler bazel-out").
-    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:292 StrippingPathMapper.StringStripper.stripPathsPattern
-    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:300 StrippingPathMapper.StringStripper.strip
+    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:287 StrippingPathMapper.StringStripper.stripPathsPattern
+    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:170 StrippingPathMapper.StringStripper.strip
     // PORT: the output root is "bazel-out" or "blaze-out"; its regex metacharacters ('-') are
     // literal outside a character class, so the root is matched literally.
     fn strip(&self, s: &str) -> String {
@@ -323,7 +323,7 @@ impl StringStripper {
 }
 
 /// Is this a strippable path?
-// Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:322 StrippingPathMapper.isOutputPath
+// Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:327 StrippingPathMapper.isOutputPath
 fn is_output_path(path_fragment: &PathFragment, output_root: &PathFragment) -> bool {
     path_fragment.starts_with(output_root)
 }
@@ -332,7 +332,7 @@ fn is_output_path(path_fragment: &PathFragment, output_root: &PathFragment) -> b
 /// to the same path with different content.) Collisions between inputs from different
 /// configurations that map to the same root-relative path are allowed if they have the same file
 /// digest.
-// Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:340 StrippingPathMapper.isPathStrippable
+// Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:345 StrippingPathMapper.isPathStrippable
 pub fn is_path_strippable(
     action_inputs: &[Artifact],
     output_root: &PathFragment,
@@ -356,7 +356,7 @@ pub fn is_path_strippable(
 }
 
 /// Returns true if the two inputs have the same file digest.
-// Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:358 StrippingPathMapper.haveSameDigest
+// Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:365 StrippingPathMapper.haveSameDigest
 fn have_same_digest(
     a: &Artifact,
     b: &Artifact,
@@ -374,7 +374,7 @@ fn have_same_digest(
 
 /// Keep the config segment, but replace it with a fixed string to improve cacheability while
 /// still preserving the general segment structure of the exec path.
-// Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:380 StrippingPathMapper.strip
+// Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:170 StrippingPathMapper.strip
 fn strip(exec_path: &PathFragment) -> PathFragment {
     exec_path
         .sub_fragment(0, 1)

@@ -307,7 +307,11 @@ pub fn user_agent_value() -> String {
 }
 
 /// Headers to send for a URL (Java `Function<URI, ImmutableMap<String, List<String>>>`).
-pub type HeaderFunction = Arc<dyn Fn(&JavaUri) -> Headers + Send + Sync>;
+///
+/// PORT: `Err` is the unchecked `IllegalArgumentException` the Java function can throw
+/// (`IoExceptionKind::IllegalArgumentException`: `ImmutableMap.Builder.buildOrThrow` on a
+/// repeated header name), which `connect` turns into an `UnrecoverableHttpException`.
+pub type HeaderFunction = Arc<dyn Fn(&JavaUri) -> Result<Headers, IoException> + Send + Sync>;
 
 /// Class for establishing connections to HTTP servers for downloading files.
 // Java: com/google/devtools/build/lib/bazel/repository/downloader/HttpConnector.java:47 HttpConnector
@@ -412,7 +416,12 @@ impl HttpConnector {
                     .contains(&http_utils::get_extension(&url_path).as_str())
                     || COMPRESSED_EXTENSIONS
                         .contains(&http_utils::get_extension(&original_path).as_str());
-                for (key, values) in request_headers(&url) {
+                // catch (IllegalArgumentException e) { throw new
+                // UnrecoverableHttpException(e.getMessage()); }
+                let headers = request_headers(&url).map_err(|e| {
+                    IoException::of(IoExceptionKind::UnrecoverableHttpException, e.get_message())
+                })?;
+                for (key, values) in headers {
                     if is_already_compressed && key.eq_ignore_ascii_case("Accept-Encoding") {
                         // We're not going to ask for compression if we're downloading a file
                         // that already appears to be compressed.

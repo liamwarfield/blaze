@@ -248,6 +248,26 @@ impl EventBus for BepSubscriber {
                 .action_result_received(&e.action.get_mnemonic(), &e.action_result);
             return;
         }
+        if let Some(e) = downcast_event::<
+            blaze_exec::dynamic::dynamic_spawn_strategy::DynamicExecutionFinishedEvent,
+        >(&event)
+        {
+            // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:277 MetricsCollector.onDynamicExecutionFinishedEvent
+            shared.metrics.on_dynamic_execution_finished_event(
+                &e.mnemonic,
+                &e.local_branch_name,
+                &e.remote_branch_name,
+                match e.winner_branch_type {
+                    blaze_exec::exec::spawn_strategy_registry::DynamicMode::Local => {
+                        blaze_bep::metrics::metrics_collector::DynamicMode::Local
+                    }
+                    blaze_exec::exec::spawn_strategy_registry::DynamicMode::Remote => {
+                        blaze_bep::metrics::metrics_collector::DynamicMode::Remote
+                    }
+                },
+            );
+            return;
+        }
         if let Some(e) = downcast_event::<PostableActionCacheStats>(&event) {
             // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:326 MetricsCollector.logActionCacheStatistics
             shared.metrics.log_action_cache_statistics(e);
@@ -1258,10 +1278,8 @@ impl BepCommandSupport {
         });
 
         // MetricsModule.beforeCommand: MetricsCollector.installInEnv(env, numAnalyses,
-        // numBuilds), with the module's counters (they live as long as the server).
-        // PORT: the collector is installed for the commands that stream build events; Java
-        // installs it for every command, so a command without a BEP transport also counts its
-        // analysis and build in the server's cumulative metrics, and here it does not.
+        // numBuilds), with the module's counters (they live as long as the server). A command
+        // without a BEP transport gets its collector from `MetricsOnlyCommandSupport`.
         // Java: com/google/devtools/build/lib/metrics/MetricsModule.java:78 MetricsModule.beforeCommand
         let clock: Arc<dyn Clock> = Arc::new(JavaClock);
         let metrics_options: Option<MetricsModuleOptions> = parsing_result.get_options();
@@ -2513,5 +2531,125 @@ mod tests {
             Some(PackagesTestSize::Enormous)
         );
         assert_eq!(packages_test_size(None), None);
+    }
+}
+
+impl BepCommandSupport {
+    /// `SkyframeGraphStatsEvent` as the command's `MetricsCollector` receives it
+    /// (`onSkyframeGraphStats`). Java posts it from `SkyframeExecutor.notifyCommandComplete` in
+    /// `BlazeRuntime.afterCommand`, right before `buildtool.CommandPrecompleteEvent`, the event
+    /// whose subscriber builds the `BuildMetricsEvent`; the build driver hands it here before
+    /// [`BepCommandSupport::command_precomplete`].
+    // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:299 MetricsCollector.onSkyframeGraphStats
+    pub fn skyframe_graph_stats(
+        &self,
+        event: &blaze_skyframe::evaluation_stats::SkyframeGraphStatsEvent,
+    ) {
+        self.shared
+            .metrics
+            .on_skyframe_graph_stats(&skyframe_graph_stats_info(event));
+    }
+}
+
+/// The event's statistics in Java's order: `ImmutableMap.toImmutableMap` over the entries of a
+/// `ConcurrentHashMultiset` whose backing map is `new ConcurrentHashMap<>(availableProcessors(),
+/// 0.75f)` (`InMemoryMemoizingEvaluator.ProgressReceiver.createMultiset`), keyed by
+/// `SkyFunctionName` (`hashCode()` is its name's).
+///
+/// PORT: java-hash-order. The map's iteration order is replayed with the function names inserted
+/// in first-occurrence order (Java's concurrent insertion order is not deterministic; it only
+/// matters within one bin).
+// Java: com/google/devtools/build/skyframe/InMemoryMemoizingEvaluator.java:76 InMemoryMemoizingEvaluator.ProgressReceiver.fromMultiset
+fn skyframe_graph_stats_info(
+    event: &blaze_skyframe::evaluation_stats::SkyframeGraphStatsEvent,
+) -> blaze_bep::metrics::metrics_collector::SkyframeGraphStatsInfo {
+    use blaze_query_engine::java_concurrent_hash_map::JavaConcurrentHashMap;
+    // Runtime.getRuntime().availableProcessors()
+    let available_processors = std::thread::available_parallelism()
+        .map(|n| n.get() as i32)
+        .unwrap_or(1);
+    let ordered = |entries: &[(&'static str, i32)]| -> Vec<(String, i32)> {
+        let mut map: JavaConcurrentHashMap<String, i32> =
+            JavaConcurrentHashMap::with_capacity(available_processors, 0.75, 1);
+        for (name, count) in entries {
+            map.put((*name).to_owned(), *count);
+        }
+        map.entries().map(|(k, v)| (k.clone(), *v)).collect()
+    };
+    let stats = &event.evaluation_stats;
+    blaze_bep::metrics::metrics_collector::SkyframeGraphStatsInfo {
+        dirtied: ordered(&stats.dirtied),
+        changed: ordered(&stats.changed),
+        built: ordered(&stats.built),
+        cleaned: ordered(&stats.cleaned),
+        evaluated: ordered(&stats.evaluated),
+        graph_size: event.graph_size,
+    }
+}
+
+/// `MetricsModule.beforeCommand` for a command that has no build event transport: Java installs
+/// the `MetricsCollector` for every command (`MetricsCollector.installInEnv`), so the command
+/// still counts its analysis and build in the server's cumulative metrics, although no
+/// `BuildMetricsEvent` reaches a stream.
+///
+/// PORT: with a transport the collector is part of [`BepCommandSupport`]; without one this holds
+/// it, and the build driver gives it the analysis hook ([`BuildEventHooks::analysis_complete`],
+/// where Blaze delivers `AnalysisPhaseStartedEvent`) while its subscriber receives the bus
+/// events that change the counters.
+// Java: com/google/devtools/build/lib/metrics/MetricsModule.java:78 MetricsModule.beforeCommand
+pub struct MetricsOnlyCommandSupport {
+    metrics: Arc<MetricsCollector>,
+}
+
+impl MetricsOnlyCommandSupport {
+    // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:139 MetricsCollector.installInEnv
+    pub fn before_command(env: &CommandEnvironment) -> Arc<MetricsOnlyCommandSupport> {
+        let clock: Arc<dyn Clock> = Arc::new(JavaClock);
+        let metrics_options: Option<MetricsModuleOptions> = env.get_options().get_options();
+        let (num_analyses, num_builds) = crate::bazel_modules::MetricsModule::counters();
+        let metrics = Arc::new(MetricsCollector::install_in_env(
+            metrics_options.as_ref(),
+            clock.clone(),
+            num_analyses,
+            num_builds,
+        ));
+        // MetricsCollector.<init>: WorkerProcessMetricsCollector.instance().setClock(env.getClock()).
+        // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:133 MetricsCollector.<init>
+        blaze_exec::worker::worker_process_metrics::WorkerProcessMetricsCollector::instance()
+            .set_clock(clock);
+        // env.getEventBus().register(this)
+        env.get_event_bus()
+            .register(Arc::new(MetricsOnlySubscriber {
+                metrics: metrics.clone(),
+            }));
+        Arc::new(MetricsOnlyCommandSupport { metrics })
+    }
+}
+
+impl BuildEventHooks for MetricsOnlyCommandSupport {
+    // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:145 MetricsCollector.logAnalysisStartingEvent
+    fn analysis_complete(
+        &self,
+        _request: &BuildRequest,
+        _skyframe_executor: &SkyframeExecutor,
+        _target_pattern_phase_value: &TargetPatternPhaseValue,
+        _analysis_result: &AnalysisResult,
+    ) {
+        self.metrics.log_analysis_starting_event();
+    }
+}
+
+/// The `MetricsCollector`'s subscriptions that change the cumulative counters (the others only
+/// feed the `BuildMetricsEvent`, which no transport receives).
+struct MetricsOnlySubscriber {
+    metrics: Arc<MetricsCollector>,
+}
+
+impl EventBus for MetricsOnlySubscriber {
+    fn post(&self, event: Arc<dyn Postable>) {
+        if downcast_event::<TopLevelTargetPendingExecutionEvent>(&event).is_some() {
+            // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:213 MetricsCollector.handleExecutionPhaseStart
+            self.metrics.handle_execution_phase_start();
+        }
     }
 }

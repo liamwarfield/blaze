@@ -13,6 +13,29 @@ const S_IFIFO: u32 = 0o010000;
 // Java: com/google/devtools/build/lib/unix/UnixFileStatus.java:156 UnixFileStatus.S_IRWXA
 const S_IRWXA: u32 = 0o0777;
 
+/// The metadata a stat carries: Java's `FileStatusWithMetadata.getMetadata()`, a
+/// `FileArtifactValue` (`blaze_exec`'s type, which this crate cannot name; `blaze_exec`
+/// implements this trait for it).
+///
+/// PORT: Java's stat object is itself the `FileStatusWithMetadata`; here a [`FileStatus`] is a
+/// plain value and the metadata is asked for separately
+/// (`crate::FileSystem::stat_metadata`).
+// Java: com/google/devtools/build/lib/actions/FileStatusWithMetadata.java:25 FileStatusWithMetadata
+pub trait StatMetadata: std::any::Any + Send + Sync + std::fmt::Debug {
+    /// `getMetadata().getSize()`.
+    fn get_size(&self) -> i64;
+    /// `getMetadata().getDigest()`.
+    fn get_digest(&self) -> Option<Vec<u8>>;
+    /// `getMetadata().getContentsProxy()` as (ctime, mtime, nodeId), `None` when it has none.
+    fn get_contents_proxy(&self) -> Option<(i64, i64, i64)>;
+    /// `getMetadata().equals(other)`.
+    fn eq_dyn(&self, other: &dyn StatMetadata) -> bool;
+    /// `getMetadata().hashCode()`, into `state`.
+    fn hash_dyn(&self, state: &mut dyn std::hash::Hasher);
+    /// The metadata itself, for a downcast to its type.
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
 /// The status of a file (Java `FileStatus`, data as in `UnixFileStatus`).
 // Java: com/google/devtools/build/lib/vfs/FileStatus.java:37 FileStatus
 // Java: com/google/devtools/build/lib/unix/UnixFileStatus.java:20 UnixFileStatus

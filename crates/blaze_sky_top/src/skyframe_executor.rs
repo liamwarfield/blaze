@@ -649,6 +649,9 @@ impl SkyframeExecutor {
                             repo_env: &inputs.repo_env,
                             reporter: inputs.reporter.clone(),
                             executes,
+                            output_checker: execution
+                                .as_ref()
+                                .map(|state| state.prepared.executor.get_output_checker()),
                             top_level_build_options: top_level_build_options_for_sync,
                         },
                     );
@@ -695,14 +698,24 @@ impl SkyframeExecutor {
             },
         ));
         // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3092 SkyframeExecutor.createCyclesReporter
-        // PORT: of the seven reporters TargetCycleReporter, RegisteredToolchainsCycleReporter and
-        // RegisteredExecutionPlatformsCycleReporter are ported (ActionArtifact, TestExpansion,
-        // BzlLoad and BzlmodRepo are not); CyclesReporter fails loudly for a cycle none of them
-        // reports (see cycles_reporter.rs). The order is Java's.
+        // PORT: of the seven reporters TargetCycleReporter, ActionArtifactCycleReporter,
+        // RegisteredToolchainsCycleReporter and RegisteredExecutionPlatformsCycleReporter are
+        // registered, then BzlLoadCycleReporter and BzlmodRepoCycleReporter (TestExpansion is
+        // not ported); CyclesReporter fails loudly for a cycle none of them reports (see
+        // cycles_reporter.rs). The order is Java's.
         let cycle_reporters: Vec<Box<dyn SingleCycleReporter>> = vec![
             Box::new(TargetCycleReporter::new(package_manager.clone())),
+            Box::new(
+                crate::action_artifact_cycle_reporter::ActionArtifactCycleReporter::new(
+                    package_manager.clone(),
+                ),
+            ),
             Box::new(crate::toolchain_cycle_reporters::RegisteredToolchainsCycleReporter),
             Box::new(crate::toolchain_cycle_reporters::RegisteredExecutionPlatformsCycleReporter),
+            // TODO(ulfjack): The BzlLoadCycleReporter swallows previously reported cycles
+            //  unconditionally! Is that intentional?
+            Box::new(crate::bzlmod_cycle_reporters::BzlLoadCycleReporter),
+            Box::new(crate::bzlmod_cycle_reporters::BzlmodRepoCycleReporter),
         ];
         let cycles_reporter = CyclesReporter::new(cycle_reporters);
         Ok(SkyframeExecutor {
@@ -947,6 +960,31 @@ impl SkyframeExecutor {
     ) -> Result<EvaluationResult, Interrupted> {
         self.package_manager
             .evaluate(roots, keep_going, num_threads, event_handler)
+    }
+
+    /// Returns the build-info.txt and build-changelist.txt artifacts: evaluates the workspace
+    /// status value (`WorkspaceStatusValue.BUILD_INFO_KEY`), which should already be present,
+    /// unless the user didn't request any targets for analysis.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1604 SkyframeExecutor.getWorkspaceStatusArtifacts
+    pub fn get_workspace_status_artifacts(
+        &self,
+        event_handler: Arc<dyn ExtendedEventHandler>,
+    ) -> Result<Vec<blaze_actions::Artifact>, Interrupted> {
+        // PORT: skipped, profiling ("SkyframeExecutor.getWorkspaceStatusArtifact").
+        let key = blaze_analysis::analysis_services::WorkspaceStatusKey;
+        let result = self.evaluate(
+            &[SkyKey::new(key)],
+            /* keep_going= */ true,
+            /* num_threads= */ 1,
+            event_handler,
+        )?;
+        let value = result
+            .get(&key)
+            .unwrap_or_else(|| panic!("NullPointerException: WorkspaceStatusValue.BUILD_INFO_KEY"));
+        Ok(vec![
+            value.stable_artifact.clone(),
+            value.volatile_artifact.clone(),
+        ])
     }
 
     /// Returns the main repository's mapping, evaluating it if needed.

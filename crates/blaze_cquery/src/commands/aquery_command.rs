@@ -152,13 +152,14 @@ pub fn exec(env: &PostAnalysisCommandEnvironment<'_>) -> DetailedExitCode {
         }
     };
 
-    let request = BuildRequest::new(
+    let mut request = BuildRequest::new(
         "aquery",
         env.options,
         top_level_targets,
         /* check_for_action_conflicts= */ true,
         /* report_incompatible_targets= */ true,
     );
+    (env.configure_request)(&mut request);
 
     let expr_string = expr
         .as_ref()

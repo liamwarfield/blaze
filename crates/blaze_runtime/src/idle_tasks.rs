@@ -430,6 +430,20 @@ impl IdleTask for RepoContentsCacheGcIdleTask {
     }
 
     fn run(&self) -> Result<(), IdleTaskError> {
+        // PORT: Java's server releases its shared lock on the cache in
+        // BazelRepositoryModule.afterCommand, before the idle period. Blaze's repository
+        // functions hold it, and a server that keeps its graph between commands keeps them;
+        // the exclusive request below would then overlap this process's own lock (Java's
+        // OverlappingFileLockException). The lock is held, so the collection is skipped, as
+        // "If we can't grab the lock, abort GC" does for another holder.
+        let lock_path = self
+            .cache
+            .get_path()
+            .expect("checkState(path != null)")
+            .get_relative_str(blaze_repo_fetch::cache::local_repo_contents_cache::LOCK_PATH);
+        if FileSystemLock::held_by_this_process(&lock_path) {
+            return Ok(());
+        }
         self.cache
             .run_gc_idle_task(self.max_age)
             .map_err(|e| IdleTaskError::IdleTask(IdleTaskException::new(e.into_io_error())))

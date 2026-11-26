@@ -207,7 +207,7 @@ impl SpawnResult {
     }
 
     /// `getDetailMessage(message, catastrophe, forciblyRunRemotely)`: e.g. `"(Exit 1): <msg>"`.
-    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:446 SimpleSpawnResult.getDetailMessage
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:268 SimpleSpawnResult.getDetailMessage
     pub fn get_detail_message(
         &self,
         message: &str,
@@ -430,7 +430,7 @@ impl SpawnResultBuilder {
     }
 
     /// `setResourceUsageFromProto(Path statisticsPath)`.
-    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:793 SpawnResult.Builder.setResourceUsageFromProto
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:796 SpawnResult.Builder.setResourceUsageFromProto
     pub fn set_resource_usage_from_proto(
         &mut self,
         statistics_path: &Path,

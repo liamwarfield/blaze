@@ -17,6 +17,7 @@
 
 pub mod actions;
 pub mod analysis;
+pub mod dynamic;
 pub mod exec;
 pub mod rules;
 pub mod runtime;

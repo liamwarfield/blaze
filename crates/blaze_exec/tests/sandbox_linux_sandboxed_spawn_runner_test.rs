@@ -198,6 +198,7 @@ fn create_command_environment(sandbox_flags: &[&str]) -> Option<Fixture> {
         package_path_entries: Vec::new(),
         repo_contents_cache_path: None,
         test_arguments: Vec::new(),
+        jobs: None,
     };
     Some(Fixture {
         _tmp: tmp,

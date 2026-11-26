@@ -294,12 +294,16 @@ pub fn should_invalidate_for_option_diff(
         )
     {
         // options outside of TestOptions always prompt invalidation, except for --run_under.
-        if std::ptr::eq(affected_options_class, &crate::fragment_options_class::CORE_OPTIONS)
-            && changed_option.get_option_name() == "run_under"
+        if std::ptr::eq(
+            affected_options_class,
+            &crate::fragment_options_class::CORE_OPTIONS,
+        ) && changed_option.get_option_name() == "run_under"
         {
             use blaze_optdefs::fragment::run_under::RunUnder;
-            let as_run_under =
-                |v: &Option<blaze_options::Value>| v.as_ref().and_then(|v| v.downcast_ref::<RunUnder>().cloned());
+            let as_run_under = |v: &Option<blaze_options::Value>| {
+                v.as_ref()
+                    .and_then(|v| v.downcast_ref::<RunUnder>().cloned())
+            };
             return RunUnder::trim_for_non_test_configuration(as_run_under(old_value).as_ref())
                 != RunUnder::trim_for_non_test_configuration(as_run_under(new_value).as_ref());
         }

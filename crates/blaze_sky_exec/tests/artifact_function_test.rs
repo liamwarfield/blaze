@@ -74,14 +74,15 @@ impl Fixture {
         }));
         // Java's ArtifactFunctionTestCase registers FILE_STATE and FILE with ARTIFACT, which
         // requests the FILE value of a source artifact. The package root is the test's root.
-        let config = blaze_sky_loading::skyframe_executor::LoadingFunctionsConfig::for_bazel_default(
-            blaze_sky_loading::directories::LoadingDirectories {
-                workspace: self.root.clone(),
-                output_base: self.root.get_child("output_base"),
-                install_base: self.root.get_child("install_base"),
-            },
-            Arc::new(NoRepos),
-        );
+        let config =
+            blaze_sky_loading::skyframe_executor::LoadingFunctionsConfig::for_bazel_default(
+                blaze_sky_loading::directories::LoadingDirectories {
+                    workspace: self.root.clone(),
+                    output_base: self.root.get_child("output_base"),
+                    install_base: self.root.get_child("install_base"),
+                },
+                Arc::new(NoRepos),
+            );
         let mut builder = blaze_sky_loading::skyframe_executor::register_loading_functions(
             EvaluatorBuilder::new(),
             &config,

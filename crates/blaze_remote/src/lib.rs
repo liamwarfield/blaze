@@ -32,13 +32,16 @@ pub mod remote_execution_service;
 // Java still reads and writes the deprecated REAPI fields (output_files, platform, ...).
 #[allow(deprecated)]
 pub mod remote_execution_service_download;
+pub mod remote_external_overlay_file_system;
 pub mod remote_grpc_service_config;
 pub mod remote_module;
 pub mod remote_output_checker;
+pub mod remote_repo_contents_cache_impl;
 // Java still writes the deprecated `Command.platform`.
 #[allow(deprecated)]
 pub mod remote_repository_remote_executor;
 pub mod remote_retrier;
+pub mod repository_remote_helpers_factory_impl;
 pub mod remote_retrier_utils;
 pub mod remote_server_capabilities;
 pub mod remote_spawn_cache;

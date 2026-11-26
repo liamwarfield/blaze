@@ -559,6 +559,20 @@ pub fn update_with_aspects_parameters(
         }
     }
 
+    // BuildView.createResult (and SkyframeBuildView.analyzeAndExecuteTargets): build-info and
+    // build-changelist, evaluated during the analysis, before AnalysisPhaseRunner reads the
+    // counters below (the workspace status value is an ActionLookupValue they count).
+    // Java: com/google/devtools/build/lib/analysis/BuildView.java:649 BuildView.createResult
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:655 SkyframeBuildView.analyzeAndExecuteTargets
+    let build_info_artifacts = skyframe_executor
+        .get_workspace_status_artifacts(event_handler.clone())
+        .map_err(|_| BuildViewError::Interrupted)?;
+    blaze_util::check_state!(
+        build_info_artifacts.len() == 2,
+        "{:?}",
+        build_info_artifacts
+    );
+
     // The counters of AnalysisPhaseRunner's AnalysisPhaseCompleteEvent.
     // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:431 AnalysisPhaseRunner.runAnalysisPhase
     let analysis_phase_complete_stats =

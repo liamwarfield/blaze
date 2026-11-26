@@ -9,6 +9,7 @@ pub mod repo_definition;
 pub mod repo_definition_function;
 pub mod repo_environment_function;
 pub mod repo_recorded_input;
+pub mod remote_helpers;
 pub mod repo_rule;
 pub mod repository_fetch_function;
 pub mod repository_resolved_event;

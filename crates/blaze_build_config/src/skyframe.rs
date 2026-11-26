@@ -307,12 +307,9 @@ impl FileValueLookup for DirectStatFileValueLookup {
                 is_directory: stat.is_some_and(|s| s.is_directory()),
                 real_path: path,
             })),
-            Err(e) => blaze_util::unported!(
-                "FileFunction.compute",
-                "stat of {}: {}",
-                rooted_path,
-                e
-            ),
+            Err(e) => {
+                blaze_util::unported!("FileFunction.compute", "stat of {}: {}", rooted_path, e)
+            }
         }
     }
 }
@@ -1493,10 +1490,9 @@ impl ConfigurationSkyframe {
         };
         let client = Arc::new(client);
         let mut builder = register_configuration_functions(EvaluatorBuilder::new());
+        builder = BASELINE_CONFIGURATION.set(builder, client.baseline_configuration.get());
         builder =
-            BASELINE_CONFIGURATION.set(builder, client.baseline_configuration.get());
-        builder = BASELINE_EXEC_CONFIGURATION
-            .set(builder, client.baseline_exec_configuration.get());
+            BASELINE_EXEC_CONFIGURATION.set(builder, client.baseline_exec_configuration.get());
         let evaluator = builder.client(client.clone()).build();
         Ok(ConfigurationSkyframe {
             evaluator,

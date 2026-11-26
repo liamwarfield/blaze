@@ -1893,6 +1893,18 @@ impl FileSystem for RemoteInMemoryFileSystem {
     fn get_digest_function(&self) -> DigestHashFunction {
         self.digest_function
     }
+    /// A regular file's stat here is a `RemoteInMemoryFileInfo`, a `FileStatusWithMetadata`.
+    // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:956 RemoteInMemoryFileInfo
+    fn stat_metadata(
+        &self,
+        path: &PathFragment,
+        follow_symlinks: bool,
+    ) -> io::Result<Option<std::sync::Arc<dyn blaze_vfs::StatMetadata>>> {
+        Ok(self
+            .stat_if_found_with_metadata(path, follow_symlinks)?
+            .and_then(|(_, metadata)| metadata)
+            .map(|m| std::sync::Arc::new(m) as std::sync::Arc<dyn blaze_vfs::StatMetadata>))
+    }
     // Java: com/google/devtools/build/lib/vfs/inmemoryfs/InMemoryFileSystem.java:454 InMemoryFileSystem.supportsModifications
     fn supports_modifications(&self, _path: &PathFragment) -> bool {
         true

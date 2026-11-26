@@ -6,11 +6,12 @@ use blaze_shell::{JavaFile, Subprocess, SubprocessBuilder};
 use blaze_util::string_encoding::java_new_string_utf8;
 use blaze_vfs::Path;
 
+use super::get_credentials_response::ResponseParseError;
 use super::{
     CredentialHelperEnvironment, GetCredentialsRequest, GetCredentialsResponse,
     credential_helper_exception,
 };
-use crate::errors::IoException;
+use crate::errors::{IoException, IoExceptionKind};
 use crate::uri::JavaUri;
 
 /// Wraps an external tool used to obtain credentials.
@@ -97,7 +98,13 @@ impl CredentialHelper {
                 path,
                 read_all_utf8(stderr)
             ))),
-            Err(_) => Err(credential_helper_exception(format!(
+            // Gson does not catch the IllegalArgumentException of `build()`: it leaves
+            // getCredentials as it is.
+            Err(ResponseParseError::IllegalArgument(message)) => Err(IoException::of(
+                IoExceptionKind::IllegalArgumentException,
+                message,
+            )),
+            Err(ResponseParseError::JsonSyntax(_)) => Err(credential_helper_exception(format!(
                 "Failed to get credentials for '{}' from helper '{}': error parsing output. stderr: {}",
                 uri,
                 path,

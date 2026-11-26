@@ -420,7 +420,10 @@ impl DirtyAndInflightTrackingProgressReceiver {
     /// graph of one command's evaluator to the next command's evaluator, whose functions (and
     /// the receiver they report to) are the next command's
     /// ([`crate::EvaluatorBuilder::build_reusing`]). The sets belong to the graph.
-    pub(crate) fn with_receiver(self, progress_receiver: Arc<dyn EvaluationProgressReceiver>) -> Self {
+    pub(crate) fn with_receiver(
+        self,
+        progress_receiver: Arc<dyn EvaluationProgressReceiver>,
+    ) -> Self {
         DirtyAndInflightTrackingProgressReceiver {
             progress_receiver,
             dirty_keys: self.dirty_keys,

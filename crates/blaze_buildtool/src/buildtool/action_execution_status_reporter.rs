@@ -32,9 +32,8 @@ fn action_id(action: &ActionRef) -> usize {
 /// TODO(bazel-team): (2010) It would be nice if "duplicated" actions (e.g. test shards and
 /// multiple test runs) were merged into the single line.
 ///
-/// PORT: its users, `ActionExecutionInactivityWatchdog` and the action executor's
-/// `statusReporter.remove(action)` (`setActionExecutionProgressReportingObjects`), are not
-/// ported, so no build creates one yet.
+/// Its users: the action executor (`blaze_sky_exec::skyframe_action_executor::ActionStatusReporter`)
+/// and `crate::buildtool::action_execution_inactivity_watchdog`.
 // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:49 ActionExecutionStatusReporter
 pub struct ActionExecutionStatusReporter {
     event_handler: Arc<dyn EventHandler>,
@@ -234,5 +233,20 @@ impl EventBus for ActionExecutionStatusReporter {
             // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:147 ActionExecutionStatusReporter.updateStatus
             self.remove(&e.action);
         }
+    }
+}
+
+/// The action runner's calls (`statusReporter.updateStatus(event)`, `statusReporter.remove(action)`).
+impl blaze_sky_exec::skyframe_action_executor::ActionStatusReporter
+    for ActionExecutionStatusReporter
+{
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:119 ActionExecutionStatusReporter.updateStatus
+    fn update_status(&self, event: &ActionStartedEvent) {
+        self.set_status(&event.action, PREPARING_MESSAGE.to_owned());
+    }
+
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:109 ActionExecutionStatusReporter.remove
+    fn remove(&self, action: &ActionRef) {
+        ActionExecutionStatusReporter::remove(self, action);
     }
 }

@@ -18,18 +18,13 @@ use std::sync::Arc;
 
 use blaze_optdefs::misc::remote_options::RemoteOptions;
 use blaze_protos::failure_details::{
-    self, FailureDetail, execution_options::Code as ExecutionOptionsCode, failure_detail,
-    sandbox::Code as SandboxCode,
+    self, FailureDetail, failure_detail, sandbox::Code as SandboxCode,
 };
-use indexmap::IndexMap;
 
 use crate::actions::spawn_strategy::SpawnStrategy;
 use crate::actions::{ExecException, Spawn, SpawnResult};
 use crate::exec::abstract_spawn_strategy::AbstractSpawnStrategy;
-use crate::exec::action_execution_context::{
-    ActionContextRegistry, ActionExecutionContext, ActionInputPrefetcher, RemoteOutputTree,
-    SpawnCache,
-};
+use crate::exec::action_execution_context::{ActionInputPrefetcher, RemoteOutputTree, SpawnCache};
 use crate::exec::exec_command_environment::ExecCommandEnvironment;
 use crate::exec::spawn_runner::{SpawnExecutionContext, SpawnRunner};
 use crate::exec::spawn_strategy_registry::{
@@ -344,125 +339,34 @@ fn dynamic_execution_module_register_spawn_strategies(
     env: &ExecCommandEnvironment,
 ) -> Result<(), AbruptExitException> {
     let options = &env.dynamic_execution_options;
-    // Java: com/google/devtools/build/lib/dynamic/DynamicExecutionModule.java:161 DynamicExecutionModule.registerSpawnStrategies
     if !options.internal_spawn_scheduler {
         return Ok(());
     }
-
-    // PORT: the DynamicSpawnStrategy itself is not ported; it is registered so that strategy
-    // resolution and its errors match Bazel, and fails loudly if a spawn ever reaches it.
-    registry_builder.register_strategy(
-        Arc::new(DynamicSpawnStrategy),
-        &["dynamic", "dynamic_worker"],
-    );
-    let sandboxing_supported = registry_builder.is_strategy_registered("sandboxed");
-    let local_strategies = get_local_strategies(env, sandboxing_supported)?;
-    registry_builder.add_dynamic_local_strategies(&local_strategies);
-    let remote_strategies = get_remote_strategies(env)?;
-    registry_builder.add_dynamic_remote_strategies(&remote_strategies);
-    Ok(())
-}
-
-// Java: com/google/devtools/build/lib/dynamic/DynamicExecutionModule.java:105 DynamicExecutionModule.getLocalStrategies
-fn get_local_strategies(
-    env: &ExecCommandEnvironment,
-    sandboxing_supported: bool,
-) -> Result<IndexMap<String, Vec<String>>, AbruptExitException> {
-    // Options that set "allowMultiple" to true ignore the default value, so we replicate that
-    // functionality here.
-    // ImmutableMap.Builder + buildKeepingLast: first position, last value.
-    let mut local_and_worker_strategies: IndexMap<String, Vec<String>> = IndexMap::new();
-    let mut default_local_strategies = vec!["worker".to_string()];
-    if sandboxing_supported {
-        default_local_strategies.push("sandboxed".to_string());
+    // execOptions.getLocalResources().get(ResourceSet.CPU).intValue()
+    let mut num_cpus =
+        blaze_optdefs::common::local_host_capacity::get_local_host_capacity().cpu_usage;
+    for (resource, value) in &env.execution_options.local_resources {
+        if resource == "cpu" {
+            num_cpus = *value;
+        }
     }
-    if env.local_execution_options.local_lockfree_output {
-        // Without local lock free, having standalone execution risks very bad performance.
-        default_local_strategies.push("standalone".to_string());
-    }
-    local_and_worker_strategies.insert(String::new(), default_local_strategies);
-
-    for (mnemonic, strategies) in &env.dynamic_execution_options.dynamic_local_strategy {
-        local_and_worker_strategies.insert(mnemonic.clone(), strategies.clone());
-        throw_if_contains_dynamic(strategies, "--dynamic_local_strategy")?;
-    }
-    Ok(local_and_worker_strategies)
-}
-
-// Java: com/google/devtools/build/lib/dynamic/DynamicExecutionModule.java:128 DynamicExecutionModule.getRemoteStrategies
-fn get_remote_strategies(
-    env: &ExecCommandEnvironment,
-) -> Result<IndexMap<String, Vec<String>>, AbruptExitException> {
-    let options = &env.dynamic_execution_options;
-    // Needed to dedup. (Java's HashMap order does not survive: the builder copies the entries
-    // into its own HashMap.)
-    let mut strategies: IndexMap<String, Vec<String>> = IndexMap::new();
-    for (mnemonic, values) in &options.dynamic_remote_strategy {
-        throw_if_contains_dynamic(values, "--dynamic_remote_strategy")?;
-        strategies.insert(mnemonic.clone(), values.clone());
-    }
-    if options.dynamic_remote_strategy.is_empty() {
-        // Java: com/google/devtools/build/lib/dynamic/DynamicExecutionModule.java:141 DynamicExecutionModule.remoteStrategyName
-        let mut m = IndexMap::new();
-        m.insert(String::new(), vec!["remote".to_string()]);
-        return Ok(m);
-    }
-    Ok(strategies)
-}
-
-// Java: com/google/devtools/build/lib/dynamic/DynamicExecutionModule.java:186 DynamicExecutionModule.throwIfContainsDynamic
-fn throw_if_contains_dynamic(
-    strategies: &[String],
-    flag_name: &str,
-) -> Result<(), AbruptExitException> {
-    let identifiers = ["dynamic", "dynamic_worker"];
-    if strategies.iter().any(|s| identifiers.contains(&s.as_str())) {
-        let message = format!(
-            "Cannot use strategy [dynamic, dynamic_worker] in flag {flag_name} as it would create a cycle during execution"
-        );
-        return Err(AbruptExitException::new(FailureDetail {
-            message,
-            category: Some(failure_detail::Category::ExecutionOptions(
-                failure_details::ExecutionOptions {
-                    code: ExecutionOptionsCode::InvalidCyclicDynamicStrategy as i32,
-                },
-            )),
-        }));
-    }
-    Ok(())
-}
-
-/// `DynamicSpawnStrategy`: registered as "dynamic" / "dynamic_worker"; not ported.
-// Java: com/google/devtools/build/lib/dynamic/DynamicSpawnStrategy.java:78 DynamicSpawnStrategy
-struct DynamicSpawnStrategy;
-
-impl fmt::Display for DynamicSpawnStrategy {
-    // Java: com/google/devtools/build/lib/dynamic/DynamicSpawnStrategy.java:745 DynamicSpawnStrategy.toString
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("dynamic")
-    }
-}
-
-impl SpawnStrategy for DynamicSpawnStrategy {
-    fn exec(
-        &self,
-        _spawn: &dyn Spawn,
-        _action_execution_context: &dyn ActionExecutionContext,
-    ) -> Result<Vec<SpawnResult>, ExecException> {
-        blaze_util::unported!("DynamicSpawnStrategy.exec")
-    }
-
-    fn can_exec(
-        &self,
-        _spawn: &dyn Spawn,
-        _action_context_registry: &dyn ActionContextRegistry,
-    ) -> bool {
-        blaze_util::unported!("DynamicSpawnStrategy.canExec")
-    }
-
-    fn get_simple_class_name(&self) -> String {
-        "DynamicSpawnStrategy".to_string()
-    }
+    let jobs = env
+        .jobs
+        .expect("getOptions(BuildRequestOptions.class).jobs of the command");
+    // DynamicExecutionModule.beforeCommand: ignoreLocalSignals, verboseFailures, reporter.
+    let ignore_failure_check = crate::dynamic::dynamic_execution_module::ModuleIgnoreFailureCheck {
+        ignore_local_signals: options.ignore_local_signals.clone().unwrap_or_default(),
+        verbose_failures: env.execution_options.verbose_failures,
+        reporter: env.reporter.clone(),
+    };
+    crate::dynamic::dynamic_execution_module::register_spawn_strategies(
+        registry_builder,
+        options,
+        Some(&env.local_execution_options),
+        num_cpus as i32,
+        jobs,
+        Arc::new(ignore_failure_check),
+    )
 }
 
 /// `BazelStrategyModule.registerSpawnStrategies`.

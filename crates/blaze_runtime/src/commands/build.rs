@@ -21,6 +21,8 @@ use blaze_bep::events::buildtool_events::BuildInterruptedEvent;
 use blaze_build_config::bazel_rule_class_provider::BazelRuleClassProvider;
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_build_config::top_level::create_build_options;
+use blaze_buildtool::buildtool::action_execution_inactivity_watchdog::ActionExecutionInactivityWatchdog;
+use blaze_buildtool::buildtool::action_execution_status_reporter::ActionExecutionStatusReporter;
 use blaze_buildtool::buildtool::build_result::{BuildResult, ConfiguredTargetRef};
 use blaze_buildtool::buildtool::build_result_printer::{
     BuildRequestView, BuildResultPrinter, OutputFileGeneratingRule, TopLevelArtifactContext,
@@ -240,7 +242,21 @@ pub(crate) fn run_build(
             remote.as_ref(),
         ));
     }
-    let result = run_build_with_bep(env, options, run_tests, bep.as_ref(), remote.as_ref(), run);
+    // MetricsModule.beforeCommand: the MetricsCollector exists for every command; with a BEP
+    // transport it is the BEP support's, otherwise this one's.
+    // Java: com/google/devtools/build/lib/metrics/MetricsModule.java:78 MetricsModule.beforeCommand
+    let metrics_only = bep
+        .is_none()
+        .then(|| crate::commands::bep::MetricsOnlyCommandSupport::before_command(env));
+    let result = run_build_with_bep(
+        env,
+        options,
+        run_tests,
+        bep.as_ref(),
+        metrics_only.as_deref(),
+        remote.as_ref(),
+        run,
+    );
     // BlazeRuntime.afterCommand: CommandPrecompleteEvent, then each module's afterCommand in
     // module order; each AbruptExitException is reported as `ERROR: <message>` and the more
     // important exit code (the first on a tie) replaces the result unless that is an
@@ -321,6 +337,7 @@ fn run_build_with_bep(
     options: &OptionsParsingResult,
     run_tests: bool,
     bep: Option<&Arc<BepCommandSupport>>,
+    metrics_only: Option<&crate::commands::bep::MetricsOnlyCommandSupport>,
     remote: Option<&Arc<build_remote::RemoteSupport>>,
     run: Option<RunBuild<'_>>,
 ) -> BlazeCommandResult {
@@ -341,19 +358,6 @@ fn run_build_with_bep(
         .map(|o| o.keep_going)
         .unwrap_or(false);
 
-    // Flags whose implementation is not ported: fail before anything runs.
-    if build_request_options
-        .aquery_dump_after_build_format
-        .is_some()
-        || build_request_options
-            .aquery_dump_after_build_output_file
-            .is_some()
-    {
-        blaze_util::unported!(
-            "BuildTool.dumpSkyframeStateAfterBuild",
-            "--experimental_aquery_dump_after_build_format / _output_file"
-        );
-    }
     // Java: com/google/devtools/build/lib/runtime/commands/TestCommand.java:161 TestCommand.doTest
     // (builder.setNeedsInstrumentationFilter(true), on the request below).
     let needs_instrumentation_filter = run_tests
@@ -477,7 +481,15 @@ fn run_build_with_bep(
         keep_going,
         verbose_failures: execution_options.verbose_failures,
         jobs,
-        execution_options: Some(execution_options.clone()),
+        // The modules' registerSpawnStrategies read `env.getOptions()`: the options of the
+        // first round of parsing, which the CommandEnvironment keeps (the dispatcher re-parses
+        // into a new parser with the main repo mapping, which only the command sees). Its labels
+        // were converted without a repo context (`Label.parseCanonical`), so
+        // `--allowed_strategies_by_exec_platform=@platforms//host` is `@@platforms//host:host`
+        // there; the other fields are the same in both rounds.
+        // Java: com/google/devtools/build/lib/bazel/rules/BazelStrategyModule.java:64 BazelStrategyModule.registerSpawnStrategies
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:706 BlazeCommandDispatcher.execExclusively
+        execution_options: Some(options_or_default::<ExecutionOptions>(env.get_options())),
         sandbox_options: Some(options_or_default::<SandboxOptions>(options)),
         local_execution_options: Some(options_or_default::<LocalExecutionOptions>(options)),
         remote_options: options
@@ -661,35 +673,72 @@ fn run_build_with_bep(
     // SomeExecutionStartedEvent.
     // PORT: registered for every build that executes (see ExecutionProgressReceiverSetup).
     // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:343 ExecutionTool.prepareForExecution
+    // The inactivity watchdog of the execution (SkyframeExecutor.watchdog) and
+    // SkyframeExecutor.isBuildingExclusiveArtifacts.
+    let watchdog: Arc<parking_lot::Mutex<Option<Arc<ActionExecutionInactivityWatchdog>>>> =
+        Arc::new(parking_lot::Mutex::new(None));
+    let is_building_exclusive_artifacts = Arc::new(std::sync::atomic::AtomicBool::new(false));
     if skyframe_executor.get_execution().is_some() {
         let skyframe_progress_receiver = skyframe_executor.get_progress_receiver().clone();
         let skyframe_action_executor = skyframe_executor
             .get_execution()
             .map(|execution| execution.prepared.executor.clone());
+        let status_event_bus = env.get_event_bus().clone();
+        let status_event_handler: Arc<dyn blaze_events::EventHandler> = reporter.clone();
+        let progress_report_interval = build_request_options.progress_report_interval;
+        let watchdog = watchdog.clone();
+        let is_building_exclusive_artifacts = is_building_exclusive_artifacts.clone();
         env.get_event_bus().register(Arc::new(
             blaze_buildtool::buildtool::execution_progress_receiver::ExecutionProgressReceiverSetup::new(
                 env.get_event_bus().clone(),
                 Box::new(move |execution_progress_receiver| {
+                    // ActionExecutionStatusReporter.create(env.getReporter(),
+                    //     skyframeExecutor.getEventBus()): registered on the event bus.
+                    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:1059 ExecutionTool.ExecutionProgressReceiverSetup.setupExecutionProgressReceiver
+                    let status_reporter = ActionExecutionStatusReporter::create(
+                        status_event_handler.clone(),
+                        None,
+                    );
+                    status_event_bus.register(status_reporter.clone());
                     // skyframeExecutor.setActionExecutionProgressReportingObjects(
                     //     executionProgressReceiver, executionProgressReceiver, statusReporter)
-                    // PORT: the statusReporter argument is not passed (ActionExecutionStatusReporter
-                    // is subscribed to the event bus elsewhere in Blaze).
                     // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:1061 ExecutionTool.ExecutionProgressReceiverSetup.setupExecutionProgressReceiver
                     if let Some(executor) = &skyframe_action_executor {
                         executor.set_action_execution_progress_reporting_objects(
                             Some(execution_progress_receiver.clone()),
                             Some(execution_progress_receiver.clone()),
                         );
+                        executor.set_action_execution_status_reporter(Some(status_reporter.clone()));
                     }
                     // skyframeExecutor.setExecutionProgressReceiver(executionProgressReceiver)
                     skyframe_progress_receiver
-                        .set_execution_progress_receiver(Some(execution_progress_receiver));
+                        .set_execution_progress_receiver(Some(execution_progress_receiver.clone()));
+                    // skyframeExecutor.setAndStartWatchdog(new ActionExecutionInactivityWatchdog(
+                    //     executionProgressReceiver.createInactivityMonitor(statusReporter),
+                    //     executionProgressReceiver.createInactivityReporter(statusReporter,
+                    //         skyframeExecutor.getIsBuildingExclusiveArtifacts()),
+                    //     progressReportInterval))
+                    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:1065 ExecutionTool.ExecutionProgressReceiverSetup.setupExecutionProgressReceiver
+                    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3483 SkyframeExecutor.setAndStartWatchdog
+                    let new_watchdog = Arc::new(ActionExecutionInactivityWatchdog::new(
+                        execution_progress_receiver.create_inactivity_monitor(status_reporter.clone()),
+                        execution_progress_receiver.create_inactivity_reporter(
+                            status_reporter,
+                            is_building_exclusive_artifacts.clone(),
+                            status_event_bus.clone(),
+                        ),
+                        progress_report_interval,
+                    ));
+                    *watchdog.lock() = Some(new_watchdog.clone());
+                    new_watchdog.start();
                 }),
             ),
         ));
     }
 
     let execution_phase = RuntimeExecutionPhase {
+        watchdog: watchdog.clone(),
+        is_building_exclusive_artifacts: is_building_exclusive_artifacts.clone(),
         expand_filesets: options
             .get_options::<blaze_optdefs::misc::build_event_protocol_options::BuildEventProtocolOptions>()
             .map(|o| o.expand_filesets)
@@ -746,6 +795,7 @@ fn run_build_with_bep(
                     blaze_optdefs::misc::bazel_coverage_report_module::BazelCoverageReportModuleOptions,
                 >(),
             ),
+        non_merged_coverage_artifacts: std::cell::RefCell::new(None),
     };
     let post_processor = ExecutionToolConstruction {
         execution_phase: &execution_phase,
@@ -757,15 +807,28 @@ fn run_build_with_bep(
         &post_processor,
     )
     .with_execution_phase(&execution_phase);
+    // BuildTool.dumpSkyframeStateAfterBuild (--experimental_aquery_dump_after_build_format).
+    let aquery_dump_after_build =
+        blaze_cquery::buildtool::aquery_processor::DumpSkyframeStateAfterBuild {
+            reporter: reporter.clone(),
+            output_base: env.get_output_base().clone(),
+            streaming_log_file_uploads: options_or_default::<
+                blaze_optdefs::misc::build_event_protocol_options::BuildEventProtocolOptions,
+            >(options)
+            .streaming_log_file_uploads,
+        };
+    let build_tool = build_tool.with_aquery_dump_after_build(&aquery_dump_after_build);
     // BuildTool.processRequest(request, validator, ...): RunCommand's TargetValidator.
     let build_tool = match &run {
         Some((validator, _)) => build_tool.with_target_validator(*validator),
         None => build_tool,
     };
     // The build event stream's loading and analysis posting points.
-    let build_tool = match bep {
-        Some(bep) => build_tool.with_build_event_hooks(bep.as_ref()),
-        None => build_tool,
+    let build_tool = match (bep, metrics_only) {
+        (Some(bep), _) => build_tool.with_build_event_hooks(bep.as_ref()),
+        // Without a transport, the MetricsCollector's analysis hook.
+        (None, Some(metrics_only)) => build_tool.with_build_event_hooks(metrics_only),
+        (None, None) => build_tool,
     };
     // BuildTool.buildTargets: BuildStartingEvent. Its subscriber OutputFilteringModule sets the
     // reporter's output filter.
@@ -993,6 +1056,18 @@ fn run_build_with_bep(
             updated_options,
         })
     });
+    // BlazeRuntime.afterCommand: SkyframeExecutor.notifyCommandComplete posts the evaluator's
+    // SkyframeGraphStatsEvent (resetting its statistics) for every command, before the
+    // buildtool.CommandPrecompleteEvent whose MetricsCollector subscriber builds the
+    // BuildMetricsEvent.
+    // PORT: taken here, where the command's executor ends (the build's last evaluation is done);
+    // the precomplete follows in `run_build`.
+    // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:759 BlazeRuntime.afterCommand
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1196 SkyframeExecutor.notifyCommandComplete
+    let graph_stats = skyframe_executor.get_evaluator().post_logging_stats();
+    if let Some(bep) = bep {
+        bep.skyframe_graph_stats(&graph_stats);
+    }
     // SandboxModule.afterCommand.
     if let Some(execution) = skyframe_executor.get_execution() {
         execution.after_command();
@@ -1153,6 +1228,14 @@ impl AnalysisPostProcessor for ExecutionToolConstruction<'_> {
         // once the analysis returned, before the post-processing and the execution (which
         // replaces them); with it, ExecutionTool's finalizations set them.
         // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:540 BuildTool.buildTargetsWithoutMergedAnalysisExecution
+        if !request.with_merged_analysis_and_execution_source_of_truth() {
+            // BuildView.update → createResult: `artifactsToBuild.addAll(
+            // memoizedGetCoverageArtifactsHelper(configuredTargets, allTargetsToTest, ...))`.
+            // A build that collects no coverage gets no wrapper and no artifacts.
+            // Java: com/google/devtools/build/lib/analysis/BuildView.java:657 BuildView.createResult
+            self.execution_phase
+                .memoized_non_merged_coverage_artifacts(skyframe_executor, analysis_result);
+        }
         if !request.with_merged_analysis_and_execution_source_of_truth() {
             let mut build_result = self.execution_phase.build_result.borrow_mut();
             build_result.set_build_configuration(analysis_result.get_configuration().clone());
@@ -1541,6 +1624,10 @@ impl BlazeDirectoriesView for BlazeDirectories {
 }
 
 struct RuntimeExecutionPhase {
+    /// `SkyframeExecutor.watchdog` (set when the execution progress receiver is set up).
+    watchdog: Arc<parking_lot::Mutex<Option<Arc<ActionExecutionInactivityWatchdog>>>>,
+    /// `SkyframeExecutor.isBuildingExclusiveArtifacts`.
+    is_building_exclusive_artifacts: Arc<std::sync::atomic::AtomicBool>,
     reporter: Arc<dyn ExtendedEventHandler>,
     directories: BlazeDirectories,
     workspace: Path,
@@ -1585,6 +1672,44 @@ struct RuntimeExecutionPhase {
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:283 BlazeRuntime.getCoverageReportActionFactory
     coverage_report_action_factory:
         blaze_analysis::bazel::coverage::bazel_coverage_report_module::BazelCoverageReportActionFactory,
+    /// `BuildView.memoizedCoverageArtifacts` of the path without merged analysis and execution:
+    /// computed when the analysis returned (`BuildView.update` adds them to `artifactsToBuild`).
+    // Java: com/google/devtools/build/lib/analysis/BuildView.java:941 BuildView.memoizedGetCoverageArtifactsHelper
+    non_merged_coverage_artifacts: std::cell::RefCell<Option<Vec<blaze_actions::Artifact>>>,
+}
+
+impl RuntimeExecutionPhase {
+    /// `BuildView.memoizedGetCoverageArtifactsHelper(configuredTargets, allTargetsToTest,
+    /// eventHandler, eventBus)` of `BuildView.update` (no merged analysis and execution): the
+    /// coverage report actions are created (and their errors reported) when the analysis
+    /// returns; `BazelCoverageReportModule`'s factory registers the `CoverageReportCollector`.
+    // Java: com/google/devtools/build/lib/analysis/BuildView.java:941 BuildView.memoizedGetCoverageArtifactsHelper
+    // Java: com/google/devtools/build/lib/analysis/BuildView.java:953 BuildView.constructCoverageArtifacts
+    fn memoized_non_merged_coverage_artifacts(
+        &self,
+        skyframe_executor: &SkyframeExecutor,
+        analysis_result: &AnalysisResult,
+    ) {
+        if self.non_merged_coverage_artifacts.borrow().is_some() {
+            return;
+        }
+        let (coverage_report_artifacts, actions_wrapper) =
+            blaze_sky_top::build_view::construct_coverage_artifacts(
+                skyframe_executor,
+                Some(&self.coverage_report_action_factory),
+                analysis_result.get_targets_to_build(),
+                analysis_result.get_targets_to_test().unwrap_or(&[]),
+                self.reporter.as_ref(),
+            );
+        // eventBus.register(new CoverageReportCollector(wrapper))
+        // Java: com/google/devtools/build/lib/bazel/coverage/BazelCoverageReportModule.java:114 BazelCoverageReportModule.getCoverageReportFactory
+        if let (Some(bep), Some(wrapper)) = (&self.bep, &actions_wrapper) {
+            bep.register_coverage_report_collector(
+                blaze_analysis::bazel::coverage::bazel_coverage_report_module::coverage_report_build_tool_log_files(wrapper),
+            );
+        }
+        *self.non_merged_coverage_artifacts.borrow_mut() = Some(coverage_report_artifacts);
+    }
 }
 
 /// What the exclusive-test phase leaves to the error processing of the build.
@@ -1609,9 +1734,8 @@ impl RuntimeExecutionPhase {
     /// `Sets.union` ExecutionTool passes) without the skipped targets, after the main evaluation's
     /// errors were processed (which throws without `--keep_going`).
     ///
-    /// PORT: `isBuildingExclusiveArtifacts` only silences the inactivity watchdog
-    /// (`ExecutionProgressReceiver.createInactivityReporter`), which is not ported. The coverage
-    /// report artifacts that Java evaluates after the exclusive tests are `execute_build`'s.
+    /// The coverage report artifacts that Java evaluates after the exclusive tests are
+    /// `execute_build`'s.
     // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:758 SkyframeBuildView.analyzeAndExecuteTargets
     // Java: com/google/devtools/build/lib/buildtool/SkyframeBuilder.java:203 SkyframeBuilder.buildArtifacts
     #[allow(clippy::too_many_arguments)]
@@ -1735,6 +1859,13 @@ impl RuntimeExecutionPhase {
         if !continue_with_exclusive_tests || exclusive_tests_to_run.is_empty() {
             return Ok(outcome);
         }
+        // SkyframeBuilder.buildArtifacts: isBuildingExclusiveArtifacts.set(true) (the path without
+        // merged analysis and execution only).
+        // Java: com/google/devtools/build/lib/buildtool/SkyframeBuilder.java:205 SkyframeBuilder.buildArtifacts
+        if !merged {
+            self.is_building_exclusive_artifacts
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         // Run exclusive tests sequentially.
         // TestCompletionValue.keys(exclusiveTestsToRun, topLevelArtifactContext,
         // /* exclusiveTesting= */ true)
@@ -1761,7 +1892,12 @@ impl RuntimeExecutionPhase {
                 );
             }
             if test_run_result.has_error() {
-                match process_execution_errors(&test_run_result, keep_going) {
+                match process_execution_errors(
+                    &test_run_result,
+                    keep_going,
+                    skyframe_executor.get_cycles_reporter(),
+                    &reporter,
+                ) {
                     Ok(code) => outcome.detailed_exit_codes.push(code),
                     Err(rethrown) => {
                         outcome.rethrown = Some(rethrown);
@@ -2076,6 +2212,12 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                 analysis_result,
                 &output_groups,
                 request.with_merged_analysis_and_execution_source_of_truth(),
+                // analysisResult.getArtifactsToBuild(): read only for coverage.
+                &self
+                    .non_merged_coverage_artifacts
+                    .borrow()
+                    .clone()
+                    .unwrap_or_default(),
             );
         }
         let keys = build_driver_keys(
@@ -2262,38 +2404,42 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         if !interrupted
             && ((!evaluation.has_error() && !has_exclusive_tests_error) || request.keep_going)
         {
-            let (coverage_report_artifacts, actions_wrapper) =
-                blaze_sky_top::build_view::construct_coverage_artifacts(
-                    skyframe_executor,
-                    Some(&self.coverage_report_action_factory),
-                    &self.build_result_listener.get_analyzed_targets(),
-                    analysis_result.get_targets_to_test().unwrap_or(&[]),
-                    reporter.as_ref(),
-                );
-            if !request.with_merged_analysis_and_execution_source_of_truth()
-                && (actions_wrapper.is_some() || !coverage_report_artifacts.is_empty())
+            let coverage_report_artifacts: Vec<blaze_actions::Artifact> = if request
+                .with_merged_analysis_and_execution_source_of_truth()
             {
-                // The other path builds the coverage artifacts with the targets
-                // (BuildView.update adds them to artifactsToBuild). Only a build that collects
-                // coverage has any; every other build has nothing to do here (review
-                // 2026-11-26-coverage, V1).
-                // Java: com/google/devtools/build/lib/analysis/BuildView.java:440 BuildView.update
-                blaze_util::unported!(
-                    "BuildView.update",
-                    "coverage report artifacts without merged analysis and execution"
-                );
-            }
-            // eventBus.register(new CoverageReportCollector(wrapper))
-            if let (Some(bep), Some(wrapper)) = (&self.bep, &actions_wrapper) {
-                bep.register_coverage_report_collector(
-                    blaze_analysis::bazel::coverage::bazel_coverage_report_module::coverage_report_build_tool_log_files(wrapper),
-                );
-            }
-            // eventBus.post(CoverageArtifactsKnownEvent.create(coverageReportArtifacts)): its
-            // only subscriber is RemoteModule.coverageArtifactsKnown.
-            if self.remote.is_some() && !coverage_report_artifacts.is_empty() {
-                blaze_util::unported!("RemoteModule.coverageArtifactsKnown");
-            }
+                let (coverage_report_artifacts, actions_wrapper) =
+                    blaze_sky_top::build_view::construct_coverage_artifacts(
+                        skyframe_executor,
+                        Some(&self.coverage_report_action_factory),
+                        &self.build_result_listener.get_analyzed_targets(),
+                        analysis_result.get_targets_to_test().unwrap_or(&[]),
+                        reporter.as_ref(),
+                    );
+                // eventBus.register(new CoverageReportCollector(wrapper))
+                if let (Some(bep), Some(wrapper)) = (&self.bep, &actions_wrapper) {
+                    bep.register_coverage_report_collector(
+                            blaze_analysis::bazel::coverage::bazel_coverage_report_module::coverage_report_build_tool_log_files(wrapper),
+                        );
+                }
+                // eventBus.post(CoverageArtifactsKnownEvent.create(coverageReportArtifacts)):
+                // its only subscriber is RemoteModule.coverageArtifactsKnown.
+                // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1062 RemoteModule.coverageArtifactsKnown
+                if let Some(remote) = &self.remote {
+                    remote.coverage_artifacts_known(&coverage_report_artifacts);
+                }
+                coverage_report_artifacts
+            } else {
+                // Without merged analysis and execution, BuildView.update computed them
+                // (with the collector) when the analysis returned, and they are built with
+                // the targets.
+                // PORT: Java builds them in the same evaluation as the top-level targets
+                // (ExecutionTool.executeBuild, artifactsToBuild); they are evaluated here,
+                // after the tests, as on the merged path.
+                self.non_merged_coverage_artifacts
+                    .borrow()
+                    .clone()
+                    .unwrap_or_default()
+            };
             match blaze_buildtool::buildtool::execution_tool::evaluate_artifacts(
                 skyframe_executor.get_evaluator(),
                 &coverage_report_artifacts,
@@ -2306,11 +2452,21 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                         coverage_report_errors = Some(process_execution_errors(
                             &additional_artifacts_result,
                             request.keep_going,
+                            skyframe_executor.get_cycles_reporter(),
+                            &reporter,
                         ));
                     }
                 }
                 Err(blaze_skyframe::Interrupted) => interrupted = true,
             }
+        }
+
+        // finally: SkyframeExecutor.clearExecutionStatesSkymeld: no more action execution beyond
+        // this point; the watchdog stops.
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:822 SkyframeBuildView.analyzeAndExecuteTargets
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2525 SkyframeExecutor.clearExecutionStatesSkymeld
+        if let Some(watchdog) = self.watchdog.lock().take() {
+            watchdog.stop();
         }
 
         // ExecutionTool.nonCatastrophicFinalizations: `if (buildCompleted)
@@ -2345,7 +2501,13 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                 (Some(rethrown), _) => Err(rethrown),
                 (None, Some(Err(rethrown))) => Err(rethrown),
                 (None, coverage_report_errors) => {
-                    process_execution_errors(&evaluation, request.keep_going).map(|main| {
+                    process_execution_errors(
+                        &evaluation,
+                        request.keep_going,
+                        skyframe_executor.get_cycles_reporter(),
+                        &reporter,
+                    )
+                    .map(|main| {
                         let mut codes = exclusive_tests.detailed_exit_codes;
                         // The coverage report's executionDetailedExitCode() follows the exclusive
                         // tests' (SkyframeBuildView.analyzeAndExecuteTargets).
@@ -2657,9 +2819,15 @@ fn create_unknown_execution_detailed_exit_code(
 fn process_execution_errors(
     result: &blaze_skyframe::EvaluationResult,
     keep_going: bool,
+    cycles_reporter: &blaze_sky_top::cycles_reporter::CyclesReporter,
+    event_handler: &Arc<dyn ExtendedEventHandler>,
 ) -> Result<Option<blaze_util::DetailedExitCode>, RethrownException> {
     let mut execution_detailed_exit_code: Option<blaze_util::DetailedExitCode> = None;
     for (error_key, error_info) in result.error_map() {
+        // The cycle reporter requires that the path to the cycle starts at the top level key
+        // (requested via SkyframeExecutor), hence we need to provide the original top level key
+        // here.
+        cycles_reporter.report_cycles(error_info.get_cycle_info(), error_key, event_handler);
         let nullable_cause = error_info.get_exception();
         blaze_util::check_state!(
             nullable_cause.is_some() || !error_info.get_cycle_info().is_empty(),
@@ -2667,12 +2835,52 @@ fn process_execution_errors(
             error_info
         );
         let Some(cause) = nullable_cause else {
-            // cyclesReporter.reportCycles and CYCLE_CODE ("cycle found during execution").
-            blaze_util::unported!(
-                "SkyframeErrorProcessor.processErrors",
-                "cycle found during execution at {:?}",
-                error_key
-            );
+            // processIndividualError: a cycle (the cause is null). Analysis cycles were
+            // processed before execution (module comment).
+            if !blaze_sky_top::skyframe_error_processor::is_execution_cycle(
+                error_info.get_cycle_info(),
+            ) {
+                blaze_util::unported!(
+                    "SkyframeErrorProcessor.processErrors",
+                    "analysis cycle at {:?} during execution",
+                    error_key
+                );
+            }
+            // If we have a cycle, cause would be null, so it's guaranteed that this
+            // executionDetailedExitCode is final.
+            let cycle_code = blaze_sky_top::skyframe_error_processor::cycle_code();
+            if keep_going {
+                execution_detailed_exit_code =
+                    blaze_util::DetailedExitCode::choose_more_important_with_first_if_tie(
+                        execution_detailed_exit_code.take(),
+                        Some(cycle_code),
+                    );
+                // logOrPrintWarningsKeepGoing: a cycle is not an execution exception (the cause
+                // is null).
+                // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:665 SkyframeErrorProcessor.logOrPrintWarningsKeepGoing
+                let label = effective_error_key_label(error_key)
+                    .map_or_else(|| "null".to_string(), |l| l.to_string());
+                event_handler.handle(&Event::warn(format!(
+                    "errors encountered while analyzing target '{}', it will not be built.",
+                    label
+                )));
+                continue;
+            }
+            // If a --nokeep_going build found a cycle, that means there were no other errors
+            // thrown during evaluation (otherwise, it wouldn't have bothered to find a cycle). So
+            // the best we can do is throw a generic build failure exception, since we've already
+            // reported the cycles above.
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:490 SkyframeErrorProcessor.throwOrReturnAspectAnalysisException
+            return Err(RethrownException::build_failed(
+                BuildToolError::BuildFailed {
+                    // new BuildFailedException(null, CYCLE_CODE): no message (already shown).
+                    message: String::new(),
+                    failure_detail: cycle_code
+                        .get_failure_detail()
+                        .cloned()
+                        .expect("CYCLE_CODE has a failure detail"),
+                },
+            ));
         };
         let Some(execution_exception) = ExecutionExceptionCause::of(cause) else {
             blaze_util::unported!(
@@ -2696,6 +2904,25 @@ fn process_execution_errors(
         }
     }
     Ok(execution_detailed_exit_code)
+}
+
+/// `getLabel(getEffectiveErrorKey(errorEntry))`: the label of the action lookup key a build
+/// driver, test completion, target completion or aspect completion key stands for.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:698 SkyframeErrorProcessor.getEffectiveErrorKey
+// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:717 SkyframeErrorProcessor.getLabel
+fn effective_error_key_label(error_key: &blaze_skyframe::SkyKey) -> Option<blaze_cmdline::Label> {
+    if let Some(key) = error_key.downcast::<BuildDriverKey>() {
+        key.action_lookup_key.get_label()
+    } else if let Some(key) = error_key.downcast::<TestCompletionKey>() {
+        key.configured_target_key.get_label()
+    } else if let Some(key) = error_key.downcast::<TargetCompletionKey>() {
+        key.action_lookup_key.get_label()
+    } else if let Some(key) = error_key.downcast::<AspectCompletionKey>() {
+        key.action_lookup_key.get_label()
+    } else {
+        // errorKey instanceof ActionLookupKey: the other keys of these evaluations are not.
+        None
+    }
 }
 
 /// What [`rethrow`] throws.
@@ -2862,6 +3089,21 @@ mod tests {
 
     use super::*;
 
+    /// `process_execution_errors` of an evaluation without cycles.
+    fn process_execution_errors_without_cycles(
+        result: &blaze_skyframe::EvaluationResult,
+        keep_going: bool,
+    ) -> Result<Option<blaze_util::DetailedExitCode>, RethrownException> {
+        let event_handler: Arc<dyn ExtendedEventHandler> =
+            Arc::new(blaze_events::StoredEventHandler::new());
+        process_execution_errors(
+            result,
+            keep_going,
+            &blaze_sky_top::cycles_reporter::CyclesReporter::new(Vec::new()),
+            &event_handler,
+        )
+    }
+
     // There is no JUnit test of SkyframeErrorProcessor.rethrow or of the execution half of
     // processErrors at the pin; the expected values are the oracle's (Bazel 9.3.2) transcripts
     // scripts/w4/scenarios/exec-source-errors/ORACLE.txt and ui-build-results/ORACLE.txt.
@@ -2925,7 +3167,7 @@ mod tests {
                     failure_detail,
                 },
             catastrophic: false,
-        }) = process_execution_errors(&result, /* keep_going= */ false)
+        }) = process_execution_errors_without_cycles(&result, /* keep_going= */ false)
         else {
             panic!("expected a BuildFailedException");
         };
@@ -2953,7 +3195,7 @@ mod tests {
         let Err(RethrownException::BuildFailed {
             error: BuildToolError::BuildFailed { message, .. },
             ..
-        }) = process_execution_errors(&result, /* keep_going= */ false)
+        }) = process_execution_errors_without_cycles(&result, /* keep_going= */ false)
         else {
             panic!("expected a BuildFailedException");
         };
@@ -2989,7 +3231,7 @@ mod tests {
     fn rethrow_of_a_test_exec_exception_throws_it() {
         let result = result_with_error(test_failed_aborting());
         let Err(RethrownException::TestExec(message)) =
-            process_execution_errors(&result, /* keep_going= */ false)
+            process_execution_errors_without_cycles(&result, /* keep_going= */ false)
         else {
             panic!("expected a TestExecException");
         };
@@ -3009,7 +3251,7 @@ mod tests {
             Some(source_input_missing()),
         );
         let Err(RethrownException::BuildFailed { catastrophic, .. }) =
-            process_execution_errors(&result_with_error(catastrophic), false)
+            process_execution_errors_without_cycles(&result_with_error(catastrophic), false)
         else {
             panic!("expected a BuildFailedException");
         };
@@ -3022,7 +3264,7 @@ mod tests {
     #[test]
     fn keep_going_returns_the_execution_exit_code() {
         let result = result_with_error(missing_input_exception());
-        let code = process_execution_errors(&result, /* keep_going= */ true)
+        let code = process_execution_errors_without_cycles(&result, /* keep_going= */ true)
             .unwrap_or_else(|_| panic!("--keep_going does not throw"))
             .expect("an execution exit code");
         assert_eq!(code.get_failure_detail(), Some(&source_input_missing()));
@@ -3036,8 +3278,14 @@ mod tests {
             errors: Vec::new(),
             catastrophe: None,
         };
-        assert!(matches!(process_execution_errors(&result, true), Ok(None)));
-        assert!(matches!(process_execution_errors(&result, false), Ok(None)));
+        assert!(matches!(
+            process_execution_errors_without_cycles(&result, true),
+            Ok(None)
+        ));
+        assert!(matches!(
+            process_execution_errors_without_cycles(&result, false),
+            Ok(None)
+        ));
     }
 }
 

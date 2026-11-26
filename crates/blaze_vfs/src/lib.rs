@@ -22,7 +22,7 @@ pub mod unix_file_system;
 
 pub use digest_hash_function::DigestHashFunction;
 pub use dirent::{Dirent, DirentType};
-pub use file_status::FileStatus;
+pub use file_status::{FileStatus, StatMetadata};
 pub use modified_file_set::ModifiedFileSet;
 pub use file_system::{
     FileSymlinkLoopException, FileSystem, FileSystemExt, FileSystemRef, MAX_SYMLINKS,

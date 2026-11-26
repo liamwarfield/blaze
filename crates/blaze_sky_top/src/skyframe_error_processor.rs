@@ -885,7 +885,7 @@ pub(crate) fn detailed_exception_failure_detail_of(
 
 /// `CYCLE_CODE`.
 // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:1038 SkyframeErrorProcessor.CYCLE_CODE
-fn cycle_code() -> blaze_util::DetailedExitCode {
+pub fn cycle_code() -> blaze_util::DetailedExitCode {
     blaze_util::DetailedExitCode::of(FailureDetail {
         message: "cycle found during execution".to_owned(),
         category: Some(Category::Execution(failure_details::Execution {
@@ -894,27 +894,13 @@ fn cycle_code() -> blaze_util::DetailedExitCode {
     })
 }
 
-// Java: com/google/devtools/build/lib/skyframe/ActionArtifactCycleReporter.java:32 ActionArtifactCycleReporter.ACTION_OR_ARTIFACT_OR_TRANSITIVE_RDEP
-fn action_or_artifact_or_transitive_rdep(key: &SkyKey) -> bool {
-    matches!(
-        key.function_name().0,
-        "ARTIFACT"
-            | "ARTIFACT_NESTED_SET"
-            | "ACTION_EXECUTION"
-            | "TARGET_COMPLETION"
-            | "ASPECT_COMPLETION"
-            | "TEST_COMPLETION"
-            | "BUILD_DRIVER"
-    )
-}
-
 // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:1060 SkyframeErrorProcessor.isExecutionCycle
-fn is_execution_cycle(cycle_info_collection: &[CycleInfo]) -> bool {
+pub fn is_execution_cycle(cycle_info_collection: &[CycleInfo]) -> bool {
     for cycle_info in cycle_info_collection {
         if cycle_info
             .get_cycle()
             .iter()
-            .all(action_or_artifact_or_transitive_rdep)
+            .all(crate::action_artifact_cycle_reporter::action_or_artifact_or_transitive_rdep)
         {
             // All these cycle info belong to the same top level key. If one of them is
             // execution-related, we consider the error to be execution-related.

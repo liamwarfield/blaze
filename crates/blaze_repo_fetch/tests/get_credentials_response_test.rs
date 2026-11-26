@@ -136,3 +136,29 @@ fn round_trip() {
 
     assert_same_response(&parse(&expected_response.to_json()), &expected_response);
 }
+
+// Not a Java test: `ImmutableMap.Builder.build()` on a repeated header name. The text is the one
+// the oracle printed for a helper that repeated `Authorization` (scripts: remote-5 probes, see
+// docs/reviews/2026-11-19-remote-response.md, Round 5, C1).
+#[test]
+fn repeated_header_name_is_illegal_argument() {
+    use blaze_repo_fetch::authandtls::credentialhelper::get_credentials_response::ResponseParseError;
+    assert_eq!(
+        GetCredentialsResponse::parse(
+            r#"{"headers": {"Authorization": ["Bearer TOKEN"], "Authorization": ["Bearer OTHER"]}}"#
+        ),
+        Err(ResponseParseError::IllegalArgument(
+            "Multiple entries with same key: Authorization=[Bearer OTHER] and Authorization=[Bearer TOKEN]"
+                .to_string()
+        ))
+    );
+    // Two "headers" members go into one builder.
+    assert_eq!(
+        GetCredentialsResponse::parse(r#"{"headers": {"a": ["1", "2"]}, "headers": {"a": []}}"#),
+        Err(ResponseParseError::IllegalArgument(
+            "Multiple entries with same key: a=[] and a=[1, 2]".to_string()
+        ))
+    );
+    let response = parse(r#"{"headers": {"a": ["1"]}, "headers": {"b": ["2"]}}"#);
+    assert_eq!(response.headers().len(), 2);
+}

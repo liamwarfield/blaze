@@ -982,6 +982,9 @@ impl BlazeCommandDispatcher {
         if let Some(bep) = env.get_bep() {
             bep.command_precomplete();
         }
+        // RemoteModule.afterCommand, for every command: the repository helpers and the overlay
+        // file system of the remote repo contents cache.
+        crate::commands::build::build_remote::reset_repo_helpers_and_overlay_fs(&env);
         // RemoteModule.afterCommand of a command set up by env_before_command
         // (crate::commands::build::build_remote::dispatcher_after_command).
         if let Some(e) = crate::commands::build::build_remote::dispatcher_after_command() {

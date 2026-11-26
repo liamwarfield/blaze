@@ -1,55 +1,65 @@
-//! The server certificate check of Bazel's gRPC channels for certificates that webpki cannot
-//! parse.
+//! The server certificate check of Bazel's gRPC channels.
 //!
 //! Java: `GoogleAuthUtils.createSSLContext` builds Netty's client context with
-//! `GrpcSslContexts.forClient().trustManager(rootCert)`: the JDK's PKIX trust manager
-//! (`TrustManagerFactory` over the given roots) and grpc-netty's endpoint identification
-//! (`SSLParameters.setEndpointIdentificationAlgorithm("HTTPS")`, `sun.security.util.HostnameChecker`).
-//! The JDK accepts an X.509 v1 end-entity certificate (Bazel's own test certificates
-//! `src/test/testdata/test_tls_certificate/server.crt` and `client.crt` are v1); webpki rejects
-//! every certificate that is not v3 (`UnsupportedCertVersion`).
+//! `GrpcSslContexts.forClient().trustManager(rootCert)`: the JDK's PKIX trust manager over the
+//! given roots and grpc-netty's endpoint identification (`HostnameChecker`, type TLS).
 //!
-//! PORT: rustls has no JDK trust manager. Every certificate whose version field is not 1 or 2
-//! goes to rustls' `WebPkiServerVerifier`, unchanged. A v1 or v2 end-entity certificate is
-//! checked here, as `X509TrustManagerImpl.checkTrusted` checks it: parsed as
-//! `X509CertImpl`/`X509CertInfo` parse it, validated as `PKIXValidator` validates a
-//! one-certificate chain, and its name matched as `HostnameChecker.matchDNS` matches it.
+//! PORT (ruling D16, docs/decisions.md): Blaze uses rustls' webpki verifier, with exactly one
+//! more trust rule, the JDK's direct trust: an end-entity certificate that is byte-identical (the
+//! whole DER) to a certificate of the configured trust file (`--tls_certificate`) is trusted
+//! without building a chain, whatever its version (`PKIXValidator.engineValidate` returns
+//! `chain[0]` when `trustedCerts.contains(cert)`, which compares encodings). The host name is then
+//! checked: through webpki's subjectAltName check for a v3 certificate, and for a v1/v2
+//! certificate against the first commonName of the last RDN that has one (`HostnameChecker`
+//! without subjectAltName). The handshake signature is verified with that certificate's key.
 //!
-//! The rule of this file: accept nothing the JDK rejects. Where an exact port would need more
-//! than this verifier has (the JDK's BER leniency, the public suffix list, path building through
-//! intermediates, `X500Principal` canonical name comparison), the check here is stricter, and
-//! each such place says so (`PORT: stricter`). The JDK's decisions on the fixtures of
-//! `tests/data/jdk_cert_fixtures` (recorded with the oracle's embedded JDK 25.0.2 by
-//! `scripts/jdk-certs/run`) are the expected values of `tests/jdk_server_cert_fixtures_test.rs`.
+//! Declared deviations (stricter than Bazel, fail closed):
+//! - Blaze does not validate chains of X.509 v1/v2 certificates. A v1/v2 server certificate that
+//!   is not byte-identical to a trusted one is refused ([`PRE_V3_CHAIN_NOT_SUPPORTED`]); the JDK
+//!   validates it against the roots.
+//! - A directly trusted v3 certificate without a subjectAltName dNSName is refused (webpki has
+//!   no commonName fallback; the JDK matches the CN).
+//! - Every v3 chain is webpki's: webpki refuses some end entities the JDK accepts under a
+//!   private CA (CN only, `CA:TRUE`).
+//! - Signature algorithms: the subset of the provider's that the oracle's TLS stack accepts
+//!   ([`oracle_signature_verification_algorithms`]).
 //!
-//! Java line numbers below are JDK 11's `sun.security` sources (the JDK 25 sources are not on
-//! this machine); every check was confirmed on JDK 25.0.2 by a fixture, named next to it.
-//!
-//! Nothing in this file panics on certificate bytes: every parser returns `None` on malformed
-//! input (`tests::malformed_inputs_never_panic`).
+//! Nothing in this file panics on certificate bytes; a v1/v2 certificate this file cannot fully
+//! read is refused.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-use tokio_rustls::rustls::client::WebPkiServerVerifier;
 use tokio_rustls::rustls::client::danger::{
     HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
 };
+use tokio_rustls::rustls::client::{WebPkiServerVerifier, verify_server_name};
 use tokio_rustls::rustls::crypto::{CryptoProvider, WebPkiSupportedAlgorithms};
 use tokio_rustls::rustls::pki_types::{
     CertificateDer, ServerName, SignatureVerificationAlgorithm, SubjectPublicKeyInfoDer, UnixTime,
+    alg_id,
 };
+use tokio_rustls::rustls::server::ParsedCertificate;
 use tokio_rustls::rustls::{
-    CertificateError, DigitallySignedStruct, Error, RootCertStore, SignatureScheme,
+    CertificateError, DigitallySignedStruct, Error, OtherError, RootCertStore, SignatureScheme,
 };
+
+/// Blaze's error text for a v1/v2 server certificate that is not trusted directly (ruling D16).
+pub const PRE_V3_CHAIN_NOT_SUPPORTED: &str = "X.509 v1/v2 server certificate chains are not \
+     supported by Blaze: a v1/v2 server certificate is trusted only if it is identical to a \
+     certificate in --tls_certificate";
 
 /// See the module documentation.
 #[derive(Debug)]
 pub struct JdkServerCertVerifier {
-    webpki: Arc<WebPkiServerVerifier>,
-    roots: Arc<RootCertStore>,
+    /// `None` when the trust file holds no certificate webpki takes as an anchor (only v1/v2
+    /// ones): then only direct trust can succeed.
+    webpki: Option<Arc<WebPkiServerVerifier>>,
+    /// The certificates of the configured trust file, for the direct trust rule; empty for the
+    /// built-in roots.
+    trusted_certificates: Vec<CertificateDer<'static>>,
     supported: WebPkiSupportedAlgorithms,
     /// The host name as the channel was given it. rustls' `ServerName` drops a trailing dot,
-    /// which the JDK's `SNIHostName` refuses (`trailing_dot_host`).
+    /// which the JDK's `SNIHostName` refuses.
     requested_host: Option<String>,
 }
 
@@ -57,18 +67,75 @@ fn bad(e: CertificateError) -> Error {
     Error::InvalidCertificate(e)
 }
 
+/// The signature algorithms of the oracle's TLS client, as far as the provider has them.
+///
+/// The oracle (Bazel 9.3.2) runs grpc-netty over netty-tcnative (BoringSSL); its session
+/// advertises and its JDK trust manager accepts the signature algorithms of
+/// `ExtendedOpenSslSession.LOCAL_SUPPORTED_SIGNATURE_ALGORITHMS` (Netty 4.1.119.Final, in
+/// `A-server.jar`): SHA512withRSA, SHA512withECDSA, SHA384withRSA, SHA384withECDSA,
+/// SHA256withRSA, SHA256withECDSA, SHA224withRSA, SHA224withECDSA, SHA1withRSA, SHA1withECDSA,
+/// RSASSA-PSS. The provider's set (ring: RSA PKCS#1 and RSA-PSS with SHA-256/384/512, ECDSA P-256
+/// and P-384 with SHA-256/384, Ed25519) minus Ed25519 lies inside that list; Ed25519 is removed.
+/// PORT: stricter: SHA-1 and SHA-224 signatures, which the oracle accepts, are not in the
+/// provider.
+// Java: io/netty/handler/ssl/ExtendedOpenSslSession.java ExtendedOpenSslSession.LOCAL_SUPPORTED_SIGNATURE_ALGORITHMS
+pub fn oracle_signature_verification_algorithms(
+    provider: &WebPkiSupportedAlgorithms,
+) -> WebPkiSupportedAlgorithms {
+    static FILTERED: OnceLock<WebPkiSupportedAlgorithms> = OnceLock::new();
+    *FILTERED.get_or_init(|| {
+        let keep = |alg: &&'static dyn SignatureVerificationAlgorithm| {
+            alg.public_key_alg_id() != alg_id::ED25519
+        };
+        let all: Vec<&'static dyn SignatureVerificationAlgorithm> =
+            provider.all.iter().copied().filter(keep).collect();
+        let mapping: Vec<(
+            SignatureScheme,
+            &'static [&'static dyn SignatureVerificationAlgorithm],
+        )> = provider
+            .mapping
+            .iter()
+            .filter(|(scheme, _)| *scheme != SignatureScheme::ED25519)
+            .map(|(scheme, algs)| {
+                let algs: Vec<&'static dyn SignatureVerificationAlgorithm> =
+                    algs.iter().copied().filter(keep).collect();
+                (*scheme, &*Box::leak(algs.into_boxed_slice()))
+            })
+            .filter(|(_, algs)| !algs.is_empty())
+            .collect();
+        WebPkiSupportedAlgorithms {
+            all: Box::leak(all.into_boxed_slice()),
+            mapping: Box::leak(mapping.into_boxed_slice()),
+        }
+    })
+}
+
 impl JdkServerCertVerifier {
+    /// `roots` are the trust anchors (the trust file's certificates, or the built-in roots);
+    /// `trusted_certificates` the certificates of the trust file, for direct trust.
     pub fn new(
         roots: Arc<RootCertStore>,
+        trusted_certificates: Vec<CertificateDer<'static>>,
         provider: Arc<CryptoProvider>,
     ) -> Result<JdkServerCertVerifier, Error> {
-        let supported = provider.signature_verification_algorithms;
-        let webpki = WebPkiServerVerifier::builder_with_provider(roots.clone(), provider)
-            .build()
-            .map_err(|e| Error::General(e.to_string()))?;
+        let supported =
+            oracle_signature_verification_algorithms(&provider.signature_verification_algorithms);
+        let provider = Arc::new(CryptoProvider {
+            signature_verification_algorithms: supported,
+            ..(*provider).clone()
+        });
+        let webpki = if roots.is_empty() {
+            None
+        } else {
+            Some(
+                WebPkiServerVerifier::builder_with_provider(roots, provider)
+                    .build()
+                    .map_err(|e| Error::General(e.to_string()))?,
+            )
+        };
         Ok(JdkServerCertVerifier {
             webpki,
-            roots,
+            trusted_certificates,
             supported,
             requested_host: None,
         })
@@ -80,94 +147,50 @@ impl JdkServerCertVerifier {
         self
     }
 
-    /// `PKIXValidator.engineValidate` for a chain whose first certificate is the pre-v3 `cert`,
-    /// then `HostnameChecker.match` (see the module documentation).
-    fn verify_pre_v3(
+    /// `trustedCerts.contains(chain[0])`: byte equality of the whole certificate.
+    // Java: sun/security/validator/PKIXValidator.java:234 PKIXValidator.engineValidate
+    fn is_directly_trusted(&self, end_entity: &CertificateDer<'_>) -> bool {
+        self.trusted_certificates
+            .iter()
+            .any(|trusted| trusted.as_ref() == end_entity.as_ref())
+    }
+
+    /// `HostnameChecker.match` for a directly trusted certificate.
+    // Java: sun/security/util/HostnameChecker.java HostnameChecker.match
+    fn check_host_name(
         &self,
-        cert: &Certificate<'_>,
-        intermediates: &[CertificateDer<'_>],
+        end_entity: &CertificateDer<'_>,
         server_name: &ServerName<'_>,
-        now: UnixTime,
     ) -> Result<(), Error> {
-        // Java (JDK 11): sun/security/validator/PKIXValidator.java:256 engineValidate: "Check if
-        // chain[i] is already trusted": trustedCerts.contains(cert), or a trusted certificate
-        // with the same subject and public key. For chain[0] the chain is returned as it is: no
-        // signature or validity check (fixtures `direct`, `direct_expired`, `self_signed_expired`).
-        // PORT: stricter: the subject is compared by its encoding, where Java compares
-        // X500Principals (canonical form); the key by the contents of the subjectPublicKeyInfo,
-        // where Java compares PublicKey.equals (re-encoded forms).
-        let directly_trusted = self.roots.roots.iter().any(|anchor| {
-            anchor.subject.as_ref() == cert.subject
-                && anchor.subject_public_key_info.as_ref() == cert.spki.contents
-        });
-
-        if !directly_trusted {
-            // PORT: stricter: a chain of more than one certificate whose first certificate is not
-            // trusted itself goes to Java's ordering loop, partial validation or the certificate
-            // path builder (PKIXValidator.java:243-306), which are not ported; it is rejected.
-            if !intermediates.is_empty() {
-                return Err(bad(CertificateError::UnknownIssuer));
+        match pre_v3_parts(end_entity.as_ref()) {
+            Route::PreV3(Some(parts)) => match server_name {
+                ServerName::DnsName(name) => match_dns(
+                    self.requested_host.as_deref().unwrap_or(name.as_ref()),
+                    parts.subject,
+                ),
+                // HostnameChecker.matchIP needs an iPAddress subjectAltName.
+                _ => Err(bad(CertificateError::NotValidForName)),
+            },
+            Route::PreV3(None) => Err(bad(CertificateError::BadEncoding)),
+            Route::Other => {
+                // The requested host must be a valid SNI host name (`SNIHostName`), which rustls'
+                // `ServerName` no longer shows for a trailing dot.
+                if let (ServerName::DnsName(_), Some(host)) = (server_name, &self.requested_host)
+                    && !is_sni_host_name(host)
+                {
+                    return Err(bad(CertificateError::NotValidForName));
+                }
+                let parsed = ParsedCertificate::try_from(end_entity)?;
+                verify_server_name(&parsed, server_name)
             }
-            // Java (JDK 11): PKIXValidator.java:269-275 "apparently issued by trust anchor?":
-            // trustedSubjects.containsKey(issuer) && isSignatureValid(keys, last), then
-            // doValidate: the PKIX CertPathValidator's BasicChecker checks the signature with the
-            // anchor's key (`bad_signature`), the validity (`expired`) and the name chaining.
-            // AlgorithmChecker: ring's algorithms (SHA-256 and up, RSA >= 2048 bits, P-256,
-            // P-384, Ed25519) are all allowed by jdk.certpath.disabledAlgorithms. KeyChecker,
-            // ConstraintsChecker and PolicyChecker have nothing to check on a pre-v3 end entity
-            // (no extensions; the anchor carries no name constraints), and revocation is off
-            // (PKIXValidator sets setRevocationEnabled(false)). Otherwise Java builds a path
-            // (doBuild), which for one certificate finds the same anchors.
-            // PORT: stricter: the issuer is compared with the anchor's subject by encoding.
-            let issued_by_anchor = self.roots.roots.iter().any(|anchor| {
-                anchor.subject.as_ref() == cert.issuer
-                    && parse_spki_contents(anchor.subject_public_key_info.as_ref()).is_some_and(
-                        |anchor_spki| {
-                            verify_with(
-                                self.supported.all,
-                                &anchor_spki,
-                                cert.signature_algorithm,
-                                cert.tbs,
-                                cert.signature,
-                            )
-                        },
-                    )
-            });
-            if !issued_by_anchor {
-                return Err(bad(CertificateError::UnknownIssuer));
-            }
-            // Java (JDK 11): sun/security/x509/CertificateValidity.java:271-275 valid(Date):
-            // notBefore.after(now) is "not yet valid", notAfter.before(now) "expired", in
-            // milliseconds.
-            // PORT: stricter: rustls' time has whole seconds, so the second of notAfter itself
-            // counts as expired (Java accepts it until its last millisecond).
-            let now = now.as_secs() as i64;
-            if now < cert.not_before {
-                return Err(bad(CertificateError::NotValidYet));
-            }
-            if now >= cert.not_after {
-                return Err(bad(CertificateError::Expired));
-            }
-        }
-
-        // Java (JDK 11): sun/security/ssl/X509TrustManagerImpl.java:229 checkIdentity, with the
-        // "HTTPS" algorithm grpc-netty sets: HostnameChecker.getInstance(TYPE_TLS).match.
-        match server_name {
-            ServerName::DnsName(name) => match_dns(
-                self.requested_host.as_deref().unwrap_or(name.as_ref()),
-                cert.subject,
-            ),
-            // Java (JDK 11): sun/security/util/HostnameChecker.java:100, 143 matchIP needs an
-            // iPAddress subjectAltName, which a pre-v3 certificate cannot have (`ip_host`).
-            _ => Err(bad(CertificateError::NotValidForName)),
         }
     }
 
-    /// A handshake signature made with the key of a pre-v3 end-entity certificate.
+    /// A handshake signature made with the key of a v1/v2 certificate (webpki cannot read one).
     fn verify_pre_v3_signature(
         &self,
         message: &[u8],
-        cert: &Certificate<'_>,
+        parts: &PreV3Parts<'_>,
         scheme: SignatureScheme,
         signature: &[u8],
     ) -> Result<HandshakeSignatureValid, Error> {
@@ -180,35 +203,16 @@ impl JdkServerCertVerifier {
             .ok_or(Error::PeerMisbehaved(
                 tokio_rustls::rustls::PeerMisbehaved::SignedHandshakeWithUnadvertisedSigScheme,
             ))?;
-        let spki =
-            parse_spki_contents(cert.spki.contents).ok_or(bad(CertificateError::BadEncoding))?;
         for alg in algs {
-            if alg.public_key_alg_id().as_ref() == spki.algorithm
+            if alg.public_key_alg_id().as_ref() == parts.spki_algorithm
                 && alg
-                    .verify_signature(spki.public_key, message, signature)
+                    .verify_signature(parts.public_key, message, signature)
                     .is_ok()
             {
                 return Ok(HandshakeSignatureValid::assertion());
             }
         }
         Err(bad(CertificateError::BadSignature))
-    }
-}
-
-/// Which verifier a certificate goes to.
-enum Route<'a> {
-    /// The version field is absent, 0 or 1: parsed here; `None` if Java's parse fails.
-    PreV3(Option<Certificate<'a>>),
-    /// Anything else (v3, other versions, unreadable): webpki.
-    Webpki,
-}
-
-fn route(der: &[u8]) -> Route<'_> {
-    match certificate_version(der) {
-        Some(0 | 1) => Route::PreV3(parse_pre_v3_certificate(der)),
-        // PORT: stricter: Java parses a version field above 2 as a v2 certificate (`version_5`);
-        // webpki rejects it.
-        _ => Route::Webpki,
     }
 }
 
@@ -221,20 +225,28 @@ impl ServerCertVerifier for JdkServerCertVerifier {
         ocsp_response: &[u8],
         now: UnixTime,
     ) -> Result<ServerCertVerified, Error> {
-        match route(end_entity.as_ref()) {
-            Route::PreV3(Some(cert)) => {
-                self.verify_pre_v3(&cert, intermediates, server_name, now)?;
-                Ok(ServerCertVerified::assertion())
-            }
-            // CertificateFactory.generateCertificate fails: the handshake fails.
-            Route::PreV3(None) => Err(bad(CertificateError::BadEncoding)),
-            Route::Webpki => self.webpki.verify_server_cert(
-                end_entity,
-                intermediates,
-                server_name,
-                ocsp_response,
-                now,
-            ),
+        // Direct trust: no chain, no validity check (Java returns chain[0] unchecked).
+        if self.is_directly_trusted(end_entity) {
+            self.check_host_name(end_entity, server_name)?;
+            return Ok(ServerCertVerified::assertion());
+        }
+        match pre_v3_parts(end_entity.as_ref()) {
+            // PORT: ruling D16: no chain validation for v1/v2 certificates.
+            // (rustls prints `CertificateError::Other` in debug form; `Error::Other` prints the
+            // message: "other error: <message>".)
+            Route::PreV3(_) => Err(Error::Other(OtherError(Arc::new(std::io::Error::other(
+                PRE_V3_CHAIN_NOT_SUPPORTED,
+            ))))),
+            Route::Other => match &self.webpki {
+                Some(webpki) => webpki.verify_server_cert(
+                    end_entity,
+                    intermediates,
+                    server_name,
+                    ocsp_response,
+                    now,
+                ),
+                None => Err(bad(CertificateError::UnknownIssuer)),
+            },
         }
     }
 
@@ -244,12 +256,17 @@ impl ServerCertVerifier for JdkServerCertVerifier {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, Error> {
-        match route(cert.as_ref()) {
-            Route::PreV3(Some(parsed)) => {
-                self.verify_pre_v3_signature(message, &parsed, dss.scheme, dss.signature())
+        match pre_v3_parts(cert.as_ref()) {
+            Route::PreV3(Some(parts)) => {
+                self.verify_pre_v3_signature(message, &parts, dss.scheme, dss.signature())
             }
             Route::PreV3(None) => Err(bad(CertificateError::BadEncoding)),
-            Route::Webpki => self.webpki.verify_tls12_signature(message, cert, dss),
+            Route::Other => tokio_rustls::rustls::crypto::verify_tls12_signature(
+                message,
+                cert,
+                dss,
+                &self.supported,
+            ),
         }
     }
 
@@ -259,41 +276,28 @@ impl ServerCertVerifier for JdkServerCertVerifier {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, Error> {
-        match route(cert.as_ref()) {
-            Route::PreV3(Some(parsed)) => {
+        match pre_v3_parts(cert.as_ref()) {
+            Route::PreV3(Some(parts)) => {
                 tokio_rustls::rustls::crypto::verify_tls13_signature_with_raw_key(
                     message,
-                    &SubjectPublicKeyInfoDer::from(parsed.spki.raw),
+                    &SubjectPublicKeyInfoDer::from(parts.spki_raw),
                     dss,
                     &self.supported,
                 )
             }
             Route::PreV3(None) => Err(bad(CertificateError::BadEncoding)),
-            Route::Webpki => self.webpki.verify_tls13_signature(message, cert, dss),
+            Route::Other => tokio_rustls::rustls::crypto::verify_tls13_signature(
+                message,
+                cert,
+                dss,
+                &self.supported,
+            ),
         }
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.webpki.supported_verify_schemes()
+        self.supported.supported_schemes()
     }
-}
-
-/// Verifies `signature` over `message` with the key of `spki`, by the signature algorithm whose
-/// AlgorithmIdentifier contents are `signature_algorithm`.
-fn verify_with(
-    algs: &[&dyn SignatureVerificationAlgorithm],
-    spki: &Spki<'_>,
-    signature_algorithm: &[u8],
-    message: &[u8],
-    signature: &[u8],
-) -> bool {
-    algs.iter().any(|alg| {
-        alg.signature_alg_id().as_ref() == signature_algorithm
-            && alg.public_key_alg_id().as_ref() == spki.algorithm
-            && alg
-                .verify_signature(spki.public_key, message, signature)
-                .is_ok()
-    })
 }
 
 /// A DER element: its full encoding and its contents.
@@ -302,6 +306,134 @@ struct Tlv<'a> {
     tag: u8,
     raw: &'a [u8],
     contents: &'a [u8],
+}
+
+fn expect(input: &[u8], tag: u8) -> Option<(Tlv<'_>, &[u8])> {
+    let (tlv, rest) = read_tlv(input)?;
+    (tlv.tag == tag).then_some((tlv, rest))
+}
+
+const SEQUENCE: u8 = 0x30;
+const SET: u8 = 0x31;
+const INTEGER: u8 = 0x02;
+const BIT_STRING: u8 = 0x03;
+const OID: u8 = 0x06;
+/// `[0] EXPLICIT` (constructed, context-specific 0): the version.
+const VERSION_TAG: u8 = 0xa0;
+
+/// What this file reads of a v1/v2 certificate.
+struct PreV3Parts<'a> {
+    /// The contents of `subject` (Name, without the SEQUENCE header).
+    subject: &'a [u8],
+    /// The full `subjectPublicKeyInfo`.
+    spki_raw: &'a [u8],
+    /// The contents of its AlgorithmIdentifier.
+    spki_algorithm: &'a [u8],
+    /// The key bits.
+    public_key: &'a [u8],
+}
+
+/// Which way a certificate goes.
+enum Route<'a> {
+    /// The version field is absent, 0 or 1: the parts this file reads, or `None` if it cannot
+    /// read them.
+    PreV3(Option<PreV3Parts<'a>>),
+    /// Anything else (v3, other versions, unreadable): webpki.
+    Other,
+}
+
+/// The version of a certificate, then for v1/v2 the subject and the key.
+///
+/// Only the structure up to the key is read: trust comes from byte equality with a trusted
+/// certificate, not from this parse. Every element read must be well-formed DER; anything else
+/// is `PreV3(None)`.
+fn pre_v3_parts(der: &[u8]) -> Route<'_> {
+    let Some((certificate, after)) = expect(der, SEQUENCE) else {
+        return Route::Other;
+    };
+    let Some((tbs, _)) = expect(certificate.contents, SEQUENCE) else {
+        return Route::Other;
+    };
+    let mut fields = tbs.contents;
+    if fields.first() == Some(&VERSION_TAG) {
+        let Some((explicit, rest)) = read_tlv(fields) else {
+            return Route::Other;
+        };
+        let version = match expect(explicit.contents, INTEGER) {
+            Some((v, [])) => small_integer(v.contents),
+            _ => None,
+        };
+        if !matches!(version, Some(0 | 1)) {
+            return Route::Other;
+        }
+        fields = rest;
+    }
+    if !after.is_empty() {
+        return Route::PreV3(None);
+    }
+    Route::PreV3(read_pre_v3_fields(fields))
+}
+
+/// serialNumber, signature, issuer, validity, subject, subjectPublicKeyInfo.
+fn read_pre_v3_fields(fields: &[u8]) -> Option<PreV3Parts<'_>> {
+    let (serial, fields) = expect(fields, INTEGER)?;
+    if !minimal_integer(serial.contents) {
+        return None;
+    }
+    let (_signature, fields) = algorithm_identifier(fields)?;
+    let (_issuer, fields) = name(fields)?;
+    let (_validity, fields) = expect(fields, SEQUENCE)?;
+    let (subject, fields) = name(fields)?;
+    let (spki, _) = expect(fields, SEQUENCE)?;
+    let (algorithm, rest) = algorithm_identifier(spki.contents)?;
+    let (key, rest) = expect(rest, BIT_STRING)?;
+    if !rest.is_empty() {
+        return None;
+    }
+    Some(PreV3Parts {
+        subject: subject.contents,
+        spki_raw: spki.raw,
+        spki_algorithm: algorithm.contents,
+        public_key: bit_string_bits(key.contents)?,
+    })
+}
+
+/// An AlgorithmIdentifier: `SEQUENCE { OID, parameters OPTIONAL }` and nothing else.
+fn algorithm_identifier(input: &[u8]) -> Option<(Tlv<'_>, &[u8])> {
+    let (alg, rest) = expect(input, SEQUENCE)?;
+    let (_oid, params) = expect(alg.contents, OID)?;
+    if !params.is_empty() {
+        let (_, extra) = read_tlv(params)?;
+        if !extra.is_empty() {
+            return None;
+        }
+    }
+    Some((alg, rest))
+}
+
+/// A Name: `SEQUENCE OF SET OF SEQUENCE { OID, value }`, every element well-formed DER, no
+/// empty RDN.
+fn name(input: &[u8]) -> Option<(Tlv<'_>, &[u8])> {
+    let (name, rest) = expect(input, SEQUENCE)?;
+    let mut rdns = name.contents;
+    while !rdns.is_empty() {
+        let (rdn, more) = expect(rdns, SET)?;
+        rdns = more;
+        if rdn.contents.is_empty() {
+            return None;
+        }
+        let mut avas = rdn.contents;
+        while !avas.is_empty() {
+            let (ava, more) = expect(avas, SEQUENCE)?;
+            avas = more;
+            let (_oid, value) = expect(ava.contents, OID)?;
+            let (_, extra) = read_tlv(value)?;
+            if !extra.is_empty() {
+                return None;
+            }
+        }
+    }
+    Some((name, rest))
 }
 
 /// Reads one DER element from the front of `input`: a low tag number and a definite length in
@@ -350,58 +482,6 @@ fn read_tlv(input: &[u8]) -> Option<(Tlv<'_>, &[u8])> {
     ))
 }
 
-fn expect(input: &[u8], tag: u8) -> Option<(Tlv<'_>, &[u8])> {
-    let (tlv, rest) = read_tlv(input)?;
-    (tlv.tag == tag).then_some((tlv, rest))
-}
-
-const SEQUENCE: u8 = 0x30;
-const SET: u8 = 0x31;
-const INTEGER: u8 = 0x02;
-const BIT_STRING: u8 = 0x03;
-const OID: u8 = 0x06;
-const UTC_TIME: u8 = 0x17;
-const GENERALIZED_TIME: u8 = 0x18;
-/// `[0] EXPLICIT` (constructed, context-specific 0): the version.
-const VERSION_TAG: u8 = 0xa0;
-/// `[1] IMPLICIT` / `[2] IMPLICIT` UniqueIdentifier (primitive BIT STRING).
-const ISSUER_UNIQUE_ID: u8 = 0x81;
-const SUBJECT_UNIQUE_ID: u8 = 0x82;
-
-/// The fields of an X.509 certificate this verifier uses.
-struct Certificate<'a> {
-    /// The full encoding of `tbsCertificate` (what the issuer signed).
-    tbs: &'a [u8],
-    /// The contents of the `signatureAlgorithm` AlgorithmIdentifier.
-    signature_algorithm: &'a [u8],
-    /// The bits of `signatureValue`.
-    signature: &'a [u8],
-    /// The contents of `issuer` and `subject` (Name, without the SEQUENCE header).
-    issuer: &'a [u8],
-    subject: &'a [u8],
-    /// `subjectPublicKeyInfo`.
-    spki: Tlv<'a>,
-    /// Validity, in seconds since the epoch.
-    not_before: i64,
-    not_after: i64,
-}
-
-/// The value of the `version` field (0 when absent), or `None` when the certificate cannot be
-/// read that far. Decides the route only; [`parse_pre_v3_certificate`] parses.
-fn certificate_version(der: &[u8]) -> Option<i64> {
-    let (certificate, _) = expect(der, SEQUENCE)?;
-    let (tbs, _) = expect(certificate.contents, SEQUENCE)?;
-    if tbs.contents.first() != Some(&VERSION_TAG) {
-        return Some(0);
-    }
-    let (explicit, _) = read_tlv(tbs.contents)?;
-    let (v, rest) = expect(explicit.contents, INTEGER)?;
-    if !rest.is_empty() {
-        return None;
-    }
-    small_integer(v.contents)
-}
-
 /// The value of a DER INTEGER's contents if it fits in an `i64`; `None` for an empty or
 /// non-minimal encoding.
 ///
@@ -429,196 +509,6 @@ fn minimal_integer(contents: &[u8]) -> bool {
     }
 }
 
-/// An OBJECT IDENTIFIER's contents: non-empty, every subidentifier in its shortest form.
-/// Java (JDK 11): sun/security/util/ObjectIdentifier.java check(byte[]).
-fn valid_oid(contents: &[u8]) -> bool {
-    if contents.is_empty() || contents[contents.len() - 1] & 0x80 != 0 {
-        return false;
-    }
-    let mut start = true;
-    for &b in contents {
-        if start && b == 0x80 {
-            return false;
-        }
-        start = b & 0x80 == 0;
-    }
-    true
-}
-
-/// An AlgorithmIdentifier: `SEQUENCE { OID, parameters OPTIONAL }` and nothing else.
-/// Java (JDK 11): sun/security/x509/AlgorithmId.java:397-421 parse ("Invalid
-/// AlgorithmIdentifier: extra data").
-fn algorithm_identifier(input: &[u8]) -> Option<(Tlv<'_>, &[u8])> {
-    let (alg, rest) = expect(input, SEQUENCE)?;
-    let (oid, params) = expect(alg.contents, OID)?;
-    if !valid_oid(oid.contents) {
-        return None;
-    }
-    if !params.is_empty() {
-        let (_, extra) = read_tlv(params)?;
-        if !extra.is_empty() {
-            return None;
-        }
-    }
-    Some((alg, rest))
-}
-
-/// A Name: `SEQUENCE OF SET OF SEQUENCE { OID, value }`, every element well formed. Returns the
-/// element; its contents are empty for an empty name.
-/// Java (JDK 11): sun/security/x509/X500Name.java parseDER, RDN.java (`X500 RDN`), AVA.java
-/// ("AVA not a sequence", "AVA, extra bytes").
-/// PORT: stricter: an empty RDN (an empty SET) is rejected.
-fn name(input: &[u8]) -> Option<(Tlv<'_>, &[u8])> {
-    let (name, rest) = expect(input, SEQUENCE)?;
-    let mut rdns = name.contents;
-    while !rdns.is_empty() {
-        let (rdn, more) = expect(rdns, SET)?;
-        rdns = more;
-        if rdn.contents.is_empty() {
-            return None;
-        }
-        let mut avas = rdn.contents;
-        while !avas.is_empty() {
-            let (ava, more) = expect(avas, SEQUENCE)?;
-            avas = more;
-            let (oid, value) = expect(ava.contents, OID)?;
-            if !valid_oid(oid.contents) {
-                return None;
-            }
-            let (_, extra) = read_tlv(value)?;
-            if !extra.is_empty() {
-                return None;
-            }
-        }
-    }
-    Some((name, rest))
-}
-
-/// `X509CertImpl.parse` and `X509CertInfo.parse` of a certificate whose version is 1 or 2.
-/// `None` where Java throws.
-fn parse_pre_v3_certificate(der: &[u8]) -> Option<Certificate<'_>> {
-    // Java (JDK 11): sun/security/x509/X509CertImpl.java:1810-1836 parse: a SEQUENCE of
-    // exactly tbsCertificate, signatureAlgorithm, signatureValue ("signed overrun").
-    // PORT: stricter: bytes after the certificate are rejected; Java's X509Factory reads one
-    // DER block and ignores them (`trailing_bytes`).
-    let (certificate, after) = expect(der, SEQUENCE)?;
-    if !after.is_empty() {
-        return None;
-    }
-    let (tbs, rest) = expect(certificate.contents, SEQUENCE)?;
-    let (signature_algorithm, rest) = algorithm_identifier(rest)?;
-    let (signature_value, rest) = expect(rest, BIT_STRING)?;
-    if !rest.is_empty() {
-        return None;
-    }
-    let signature = bit_string_bits(signature_value.contents)?;
-
-    // Java (JDK 11): sun/security/x509/X509CertInfo.java:631-710 parse.
-    let mut fields = tbs.contents;
-    let mut version = 0;
-    // :644 the version, [0] EXPLICIT INTEGER (CertificateVersion.java:80 "X.509 version, bad
-    // format" for anything after the INTEGER).
-    if fields.first() == Some(&VERSION_TAG) {
-        let (explicit, rest) = read_tlv(fields)?;
-        let (v, after) = expect(explicit.contents, INTEGER)?;
-        if !after.is_empty() {
-            return None;
-        }
-        version = small_integer(v.contents)?;
-        fields = rest;
-    }
-    if !(0..=1).contains(&version) {
-        return None;
-    }
-    // :650 serialNumber.
-    let (serial, fields) = expect(fields, INTEGER)?;
-    if !minimal_integer(serial.contents) {
-        return None;
-    }
-    // :653 signature (the inner AlgorithmIdentifier).
-    let (inner_signature_algorithm, fields) = algorithm_identifier(fields)?;
-    // :656-660 issuer; "Empty issuer DN not allowed in X509Certificates" (`empty_issuer`).
-    let (issuer, fields) = name(fields)?;
-    if issuer.contents.is_empty() {
-        return None;
-    }
-    // :663 validity (CertificateValidity.java:77-101: a SEQUENCE of exactly two times).
-    let (validity, fields) = expect(fields, SEQUENCE)?;
-    let (not_before, rest) = read_tlv(validity.contents)?;
-    let (not_after, rest) = read_tlv(rest)?;
-    if !rest.is_empty() {
-        return None;
-    }
-    // :666-671 subject; "Empty subject DN not allowed in v1 certificate" (`empty_subject`).
-    let (subject, fields) = name(fields)?;
-    if version == 0 && subject.contents.is_empty() {
-        return None;
-    }
-    // :674 subjectPublicKeyInfo (X509Key.parse: "excess subject key").
-    let (spki, mut fields) = expect(fields, SEQUENCE)?;
-    parse_spki_contents(spki.contents)?;
-    // :677-681 "no more data allowed for version 1 certificate" (`v1_extensions`,
-    // `v1_explicit_extensions`, `v1_unique_id`).
-    if version == 0 && !fields.is_empty() {
-        return None;
-    }
-    // :686-700 issuerUniqueID [1], then subjectUniqueID [2], each optional, in this order
-    // (`v2_unique_ids`); :703-707 anything else in a v2 certificate is "Extensions not allowed
-    // in v2 certificate" (`v2_extensions`, `v2_unique_ids_reversed`, `v2_trailing_integer`).
-    // PORT: stricter: the unique identifiers must be primitive BIT STRINGs with a valid
-    // unused-bits count.
-    for tag in [ISSUER_UNIQUE_ID, SUBJECT_UNIQUE_ID] {
-        if fields.first() == Some(&tag) {
-            let (unique_id, rest) = read_tlv(fields)?;
-            let (&unused, _) = unique_id.contents.split_first()?;
-            if unused > 7 {
-                return None;
-            }
-            fields = rest;
-        }
-    }
-    if !fields.is_empty() {
-        return None;
-    }
-    // X509CertImpl.java:1842-1847: "Signature algorithm mismatch" (`alg_mismatch`,
-    // `alg_mismatch_outer`).
-    // PORT: stricter: compared by encoding; Java's AlgorithmId.equals also takes absent
-    // parameters as equal to NULL (`alg_params_absent_inner`).
-    if inner_signature_algorithm.raw != signature_algorithm.raw {
-        return None;
-    }
-    Some(Certificate {
-        tbs: tbs.raw,
-        signature_algorithm: signature_algorithm.contents,
-        signature,
-        issuer: issuer.contents,
-        subject: subject.contents,
-        spki,
-        not_before: parse_time(not_before)?,
-        not_after: parse_time(not_after)?,
-    })
-}
-
-/// A `subjectPublicKeyInfo`: the contents of its AlgorithmIdentifier and the key bits.
-struct Spki<'a> {
-    algorithm: &'a [u8],
-    public_key: &'a [u8],
-}
-
-/// Parses the contents of a `subjectPublicKeyInfo` (as a trust anchor stores it): an
-/// AlgorithmIdentifier and a BIT STRING, nothing else.
-fn parse_spki_contents(contents: &[u8]) -> Option<Spki<'_>> {
-    let (algorithm, rest) = algorithm_identifier(contents)?;
-    let (key, rest) = expect(rest, BIT_STRING)?;
-    if !rest.is_empty() {
-        return None;
-    }
-    Some(Spki {
-        algorithm: algorithm.contents,
-        public_key: bit_string_bits(key.contents)?,
-    })
-}
-
 /// The bits of a BIT STRING with no unused bits.
 /// PORT: stricter: Java accepts unused bits (and masks them) in a signature or key.
 fn bit_string_bits(contents: &[u8]) -> Option<&[u8]> {
@@ -626,70 +516,6 @@ fn bit_string_bits(contents: &[u8]) -> Option<&[u8]> {
         Some((0, bits)) => Some(bits),
         _ => None,
     }
-}
-
-/// UTCTime (`YYMMDDHHMMSSZ`, years 1950 to 2049) or GeneralizedTime (`YYYYMMDDHHMMSSZ`), in
-/// seconds since the epoch.
-///
-/// Java (JDK 11): sun/security/util/DerInputBuffer.java getTime: digits only
-/// (`time_non_ascii`), month 1-12, day 1-31, hour < 24, minute and second < 60
-/// (`time_second_60`), "Z" or an offset.
-/// PORT: stricter: seconds are required, the zone must be "Z", no fraction, and the day must
-/// exist in its month; Java also accepts YYMMDDhhmm, +hhmm/-hhmm offsets, fractions of a
-/// GeneralizedTime and days up to 31 in any month (`time_no_seconds`, `time_offset`,
-/// `time_fraction`, `time_feb_31`).
-fn parse_time(tlv: Tlv<'_>) -> Option<i64> {
-    let (zone, digits) = tlv.contents.split_last()?;
-    if *zone != b'Z' || !digits.iter().all(u8::is_ascii_digit) {
-        return None;
-    }
-    let number = |range: std::ops::Range<usize>| -> Option<i64> {
-        digits
-            .get(range)?
-            .iter()
-            .try_fold(0i64, |n, d| Some(n * 10 + (d - b'0') as i64))
-    };
-    let (year, rest) = match (tlv.tag, digits.len()) {
-        (UTC_TIME, 12) => {
-            let yy = number(0..2)?;
-            (if yy >= 50 { 1900 + yy } else { 2000 + yy }, 2)
-        }
-        (GENERALIZED_TIME, 14) => (number(0..4)?, 4),
-        _ => return None,
-    };
-    let field = |i: usize| number(rest + i..rest + i + 2);
-    let (month, day, hour, minute, second) =
-        (field(0)?, field(2)?, field(4)?, field(6)?, field(8)?);
-    if !(1..=12).contains(&month)
-        || day < 1
-        || day > days_in_month(year, month)
-        || hour > 23
-        || minute > 59
-        || second > 59
-    {
-        return None;
-    }
-    Some(days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second)
-}
-
-fn days_in_month(year: i64, month: i64) -> i64 {
-    match month {
-        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
-    }
-}
-
-/// Days since 1970-01-01 of a proleptic Gregorian date.
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (month + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146097 + doe - 719468
 }
 
 /// `X500Name.findMostSpecificAttribute(commonName_oid)` and `DerValue.getAsString()`: the first
@@ -820,8 +646,8 @@ mod tests {
     use super::*;
     use tokio_rustls::rustls::pki_types::pem::PemObject;
 
-    // Bazel's src/test/testdata/test_tls_certificate (ca.crt is v3, server.crt v1, both
-    // CN=localhost, valid from 2020-03-26 to 3000-05-28).
+    // Bazel's src/test/testdata/test_tls_certificate (ca.crt is v3, server.crt v1 signed by it,
+    // both CN=localhost).
     const CA: &str = include_str!("../../tests/data/test_tls_certificate/ca.crt");
     const SERVER: &str = include_str!("../../tests/data/test_tls_certificate/server.crt");
 
@@ -829,159 +655,127 @@ mod tests {
         CertificateDer::from_pem_slice(pem.as_bytes()).unwrap()
     }
 
-    fn verifier(root: &str) -> JdkServerCertVerifier {
+    /// The verifier of a channel whose `--tls_certificate` holds `trust_file`.
+    fn verifier(trust_file: &[&str]) -> JdkServerCertVerifier {
         let mut roots = RootCertStore::empty();
-        roots.add(der(root)).unwrap();
+        let certs: Vec<CertificateDer<'static>> = trust_file.iter().map(|p| der(p)).collect();
+        roots.add_parsable_certificates(certs.clone());
         JdkServerCertVerifier::new(
             Arc::new(roots),
+            certs,
             Arc::new(tokio_rustls::rustls::crypto::ring::default_provider()),
         )
         .unwrap()
     }
 
-    fn at(secs: u64) -> UnixTime {
-        UnixTime::since_unix_epoch(std::time::Duration::from_secs(secs))
+    fn now() -> UnixTime {
+        UnixTime::since_unix_epoch(std::time::Duration::from_secs(1_795_000_000))
     }
 
-    const NOW: u64 = 1_795_000_000; // 2026-11
+    fn localhost() -> ServerName<'static> {
+        ServerName::try_from("localhost").unwrap()
+    }
 
     #[test]
-    fn parses_bazel_test_certificates() {
+    fn routes_bazel_test_certificates() {
+        assert!(matches!(
+            pre_v3_parts(der(SERVER).as_ref()),
+            Route::PreV3(Some(_))
+        ));
+        assert!(matches!(pre_v3_parts(der(CA).as_ref()), Route::Other));
         let server = der(SERVER);
-        assert_eq!(certificate_version(server.as_ref()), Some(0));
-        let cert = parse_pre_v3_certificate(server.as_ref()).unwrap();
-        // notBefore=Mar 26 20:18:14 2020 GMT, notAfter=May 28 20:18:14 3000 GMT
-        assert_eq!(cert.not_before, 1_585_253_894);
-        assert_eq!(cert.not_after, days_from_civil(3000, 5, 28) * 86400 + 73094);
+        let Route::PreV3(Some(parts)) = pre_v3_parts(server.as_ref()) else {
+            unreachable!()
+        };
         assert_eq!(
-            most_specific_common_name(cert.subject).as_deref(),
+            most_specific_common_name(parts.subject).as_deref(),
             Some("localhost")
         );
-        let ca = der(CA);
-        assert_eq!(certificate_version(ca.as_ref()), Some(2));
-        assert!(matches!(route(ca.as_ref()), Route::Webpki));
     }
 
     #[test]
-    fn v1_server_certificate_signed_by_the_root_is_accepted() {
-        let v = verifier(CA);
-        let name = ServerName::try_from("localhost").unwrap();
-        v.verify_server_cert(&der(SERVER), &[], &name, &[], at(NOW))
-            .unwrap();
-        let name = ServerName::try_from("LOCALHOST").unwrap();
-        v.verify_server_cert(&der(SERVER), &[], &name, &[], at(NOW))
-            .unwrap();
+    fn v1_certificate_signed_by_a_trusted_root_is_refused() {
+        // Ruling D16: no chain validation for v1/v2 certificates.
+        let v = verifier(&[CA]);
+        let e = v
+            .verify_server_cert(&der(SERVER), &[], &localhost(), &[], now())
+            .unwrap_err();
+        assert!(e.to_string().contains(PRE_V3_CHAIN_NOT_SUPPORTED), "{e}");
     }
 
     #[test]
-    fn v1_server_certificate_wrong_name_is_rejected() {
-        let v = verifier(CA);
-        let name = ServerName::try_from("example.com").unwrap();
+    fn v1_certificate_identical_to_a_trusted_one_is_accepted() {
+        let v = verifier(&[CA, SERVER]);
+        v.verify_server_cert(&der(SERVER), &[], &localhost(), &[], now())
+            .unwrap();
+        let upper = ServerName::try_from("LOCALHOST").unwrap();
+        v.verify_server_cert(&der(SERVER), &[], &upper, &[], now())
+            .unwrap();
+        // The host name is still checked.
+        let other = ServerName::try_from("example.com").unwrap();
         assert_eq!(
-            v.verify_server_cert(&der(SERVER), &[], &name, &[], at(NOW))
+            v.verify_server_cert(&der(SERVER), &[], &other, &[], now())
                 .err(),
-            Some(Error::InvalidCertificate(CertificateError::NotValidForName))
+            Some(bad(CertificateError::NotValidForName))
         );
         let ip = ServerName::try_from("127.0.0.1").unwrap();
         assert_eq!(
-            v.verify_server_cert(&der(SERVER), &[], &ip, &[], at(NOW))
+            v.verify_server_cert(&der(SERVER), &[], &ip, &[], now())
                 .err(),
-            Some(Error::InvalidCertificate(CertificateError::NotValidForName))
+            Some(bad(CertificateError::NotValidForName))
         );
+        // No validity check under direct trust (the JDK returns chain[0] unchecked).
+        v.verify_server_cert(
+            &der(SERVER),
+            &[],
+            &localhost(),
+            &[],
+            UnixTime::since_unix_epoch(std::time::Duration::from_secs(0)),
+        )
+        .unwrap();
     }
 
     #[test]
-    fn v1_server_certificate_outside_validity_is_rejected() {
-        let v = verifier(CA);
-        let name = ServerName::try_from("localhost").unwrap();
+    fn direct_trust_compares_the_whole_certificate() {
+        // A certificate that differs from the trusted one in one byte of its signature: same
+        // subject and key, not the same certificate (T1).
+        let v = verifier(&[SERVER]);
+        let mut twin = der(SERVER).as_ref().to_vec();
+        let last = twin.len() - 1;
+        twin[last] ^= 1;
+        let e = v
+            .verify_server_cert(&CertificateDer::from(twin), &[], &localhost(), &[], now())
+            .unwrap_err();
+        assert!(e.to_string().contains(PRE_V3_CHAIN_NOT_SUPPORTED), "{e}");
+    }
+
+    #[test]
+    fn requested_host_with_trailing_dot_is_refused() {
+        let v = verifier(&[SERVER]).with_requested_host("localhost.");
         assert_eq!(
-            v.verify_server_cert(&der(SERVER), &[], &name, &[], at(1_500_000_000))
+            v.verify_server_cert(&der(SERVER), &[], &localhost(), &[], now())
                 .err(),
-            Some(Error::InvalidCertificate(CertificateError::NotValidYet))
+            Some(bad(CertificateError::NotValidForName))
         );
     }
 
     #[test]
-    fn not_after_second_counts_as_expired() {
-        // Java compares milliseconds; rustls' time has seconds, so the last second is refused.
-        let v = verifier(CA);
-        let server = der(SERVER);
-        let not_after = parse_pre_v3_certificate(server.as_ref()).unwrap().not_after as u64;
-        let name = ServerName::try_from("localhost").unwrap();
-        v.verify_server_cert(&server, &[], &name, &[], at(not_after - 1))
-            .unwrap();
-        assert_eq!(
-            v.verify_server_cert(&server, &[], &name, &[], at(not_after))
-                .err(),
-            Some(Error::InvalidCertificate(CertificateError::Expired))
+    fn ed25519_is_not_offered() {
+        let v = verifier(&[CA]);
+        assert!(
+            !v.supported_verify_schemes()
+                .contains(&SignatureScheme::ED25519)
         );
-    }
-
-    #[test]
-    fn a_chain_with_intermediates_is_not_built() {
-        let v = verifier(CA);
-        let name = ServerName::try_from("localhost").unwrap();
-        assert_eq!(
-            v.verify_server_cert(&der(SERVER), &[der(CA)], &name, &[], at(NOW))
-                .err(),
-            Some(Error::InvalidCertificate(CertificateError::UnknownIssuer))
+        assert!(
+            v.supported
+                .all
+                .iter()
+                .all(|alg| alg.public_key_alg_id() != alg_id::ED25519)
         );
-    }
-
-    #[test]
-    fn certificate_signature_is_checked_with_the_anchor_key() {
-        let v = verifier(CA);
-        let ca = der(CA);
-        // The CA certificate is v3: read its key with the generic reader.
-        let (ca_cert, _) = expect(ca.as_ref(), SEQUENCE).unwrap();
-        let (ca_tbs, _) = expect(ca_cert.contents, SEQUENCE).unwrap();
-        let mut fields = ca_tbs.contents;
-        for _ in 0..6 {
-            fields = read_tlv(fields).unwrap().1;
-        }
-        let (ca_spki, _) = expect(fields, SEQUENCE).unwrap();
-        let anchor_spki = parse_spki_contents(ca_spki.contents).unwrap();
-        let server = der(SERVER);
-        let s = parse_pre_v3_certificate(server.as_ref()).unwrap();
-        assert!(verify_with(
-            v.supported.all,
-            &anchor_spki,
-            s.signature_algorithm,
-            s.tbs,
-            s.signature
-        ));
-        let mut wrong = s.signature.to_vec();
-        wrong[0] ^= 1;
-        assert!(!verify_with(
-            v.supported.all,
-            &anchor_spki,
-            s.signature_algorithm,
-            s.tbs,
-            &wrong
-        ));
-        // Signed by the CA, not by itself: with only its own key as anchor it is not trusted.
-        let own_spki = parse_spki_contents(s.spki.contents).unwrap();
-        assert!(!verify_with(
-            v.supported.all,
-            &own_spki,
-            s.signature_algorithm,
-            s.tbs,
-            s.signature
-        ));
-    }
-
-    #[test]
-    fn v3_certificates_go_to_webpki() {
-        // The CA certificate presented as the server's: webpki's answer (a CA certificate as an
-        // end entity), not the pre-v3 path.
-        let v = verifier(CA);
-        let name = ServerName::try_from("localhost").unwrap();
-        let ours = v.verify_server_cert(&der(CA), &[], &name, &[], at(NOW));
-        let webpki = v
-            .webpki
-            .verify_server_cert(&der(CA), &[], &name, &[], at(NOW));
-        assert!(webpki.is_err());
-        assert_eq!(format!("{:?}", ours.err()), format!("{:?}", webpki.err()));
+        assert!(
+            v.supported_verify_schemes()
+                .contains(&SignatureScheme::RSA_PSS_SHA256)
+        );
     }
 
     #[test]
@@ -998,55 +792,11 @@ mod tests {
         assert!(!is_sni_host_name(&"a".repeat(64)));
     }
 
-    /// `parse_time` on every malformed form, including a multi-byte character across the year
-    /// boundary (Q2).
-    #[test]
-    fn malformed_times_are_rejected_without_panic() {
-        let time = |tag: u8, s: &[u8]| {
-            parse_time(Tlv {
-                tag,
-                raw: s,
-                contents: s,
-            })
-        };
-        assert_eq!(time(UTC_TIME, b"200326201814Z"), Some(1_585_253_894));
-        for bad in [
-            "2\u{e9}032620181Z".as_bytes(),
-            "200\u{e9}26201814Z".as_bytes(),
-            "20\u{e9}326201814Z".as_bytes(),
-            b"",
-            b"Z",
-            b"200326201814",
-            b"2003262018Z",
-            b"200326201860Z",
-            b"200326246014Z",
-            b"201326201814Z",
-            b"200231201814Z",
-            b"200300201814Z",
-            b"200326201814+0100",
-            b"2003262018145Z",
-            b"+00326201814Z",
-            b"-00326201814Z",
-        ] {
-            assert_eq!(time(UTC_TIME, bad), None, "{bad:?}");
-        }
-        for bad in [
-            "2\u{e9}0326201814Z".as_bytes(),
-            "202\u{e9}0326201814Z".as_bytes(),
-            b"20200326201814.5Z",
-            b"2020032620181Z",
-        ] {
-            assert_eq!(time(GENERALIZED_TIME, bad), None, "{bad:?}");
-        }
-        assert_eq!(time(0x04, b"200326201814Z"), None);
-    }
-
-    /// Every parser of this file on truncated, extended and bit-flipped versions of a real
-    /// certificate (Q2): none may panic.
+    /// Every reader of this file on truncated, extended and bit-flipped versions of real
+    /// certificates: none may panic.
     #[test]
     fn malformed_inputs_never_panic() {
-        let v = verifier(CA);
-        let server_name = ServerName::try_from("localhost").unwrap();
+        let v = verifier(&[CA, SERVER]);
         for pem in [SERVER, CA] {
             let good = der(pem).as_ref().to_vec();
             let mut inputs: Vec<Vec<u8>> = Vec::new();
@@ -1064,26 +814,23 @@ mod tests {
             extended.extend_from_slice(&[0x00, 0x00]);
             inputs.push(extended);
             for input in &inputs {
-                let _ = certificate_version(input);
-                let _ = parse_pre_v3_certificate(input);
-                let _ = parse_spki_contents(input);
                 let _ = name(input);
                 let _ = algorithm_identifier(input);
                 let _ = most_specific_common_name(input);
                 let _ = read_tlv(input);
                 let cert = CertificateDer::from(input.clone());
-                let _ = v.verify_server_cert(&cert, &[], &server_name, &[], at(NOW));
-                if let Route::PreV3(Some(parsed)) = route(input) {
+                let _ = v.verify_server_cert(&cert, &[], &localhost(), &[], now());
+                let _ = v.check_host_name(&cert, &localhost());
+                if let Route::PreV3(Some(parts)) = pre_v3_parts(input) {
                     for scheme in [
                         SignatureScheme::RSA_PKCS1_SHA256,
                         SignatureScheme::ECDSA_NISTP256_SHA256,
                     ] {
-                        let _ = v.verify_pre_v3_signature(b"message", &parsed, scheme, &[0; 64]);
+                        let _ = v.verify_pre_v3_signature(b"message", &parts, scheme, &[0; 64]);
                     }
                 }
             }
         }
-        // The DER reader on hand-made headers.
         for input in [
             &[0x30, 0x84, 0xff, 0xff, 0xff, 0xff][..],
             &[0x30, 0x85, 0, 0, 0, 0, 1],
@@ -1100,9 +847,6 @@ mod tests {
         assert_eq!(small_integer(&[0xff, 0x80]), None);
         assert_eq!(small_integer(&[0x01; 9]), None);
         assert_eq!(small_integer(&[0xff]), Some(-1));
-        assert!(!valid_oid(&[]));
-        assert!(!valid_oid(&[0x80, 0x01]));
-        assert!(!valid_oid(&[0x2a, 0x86]));
         assert_eq!(
             most_specific_common_name(&[0x31, 0x03, 0x30, 0x01, 0x06]),
             None

@@ -475,7 +475,25 @@ fn create_source_value(
             artifact,
         ))));
     }
-    // PORT: `RegularFileStateValueWithMetadata` is never produced by Blaze's file systems.
+    if let blaze_sky_loading::actions::FileStateValue::RegularFileWithMetadata(with_metadata) =
+        file_value.real_file_state_value()
+    {
+        let Some(metadata) = with_metadata
+            .get_metadata()
+            .as_any()
+            .downcast_ref::<FileArtifactValue>()
+        else {
+            // Java: the metadata of a FileStatusWithMetadata is always a FileArtifactValue.
+            panic!("ClassCastException: stat metadata is not a FileArtifactValue");
+        };
+        let metadata = metadata.clone();
+        use crate::metadata_consumer_for_metrics::MetadataConsumerForMetrics as _;
+        executor
+            .artifact_metrics()
+            .source_artifacts_seen
+            .accumulate_file(&metadata);
+        return Ok(Some(ArtifactValue::File(metadata)));
+    }
     if file_value.is_directory() {
         // PORT: skipped, Google-internal (SourceDirectoryEvent has no subscriber in Bazel).
     }

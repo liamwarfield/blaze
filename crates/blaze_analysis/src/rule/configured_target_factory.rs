@@ -46,6 +46,7 @@ use crate::rule::rule_context::{PrerequisiteMap, RuleContext, RuleContextBuilder
 use crate::rule::rule_error_consumer::{RuleErrorConsumer, RuleErrorException};
 use crate::rule::target_context::TargetContext;
 use crate::rule::to_event_location;
+use crate::test::analysis_failure_info::{AnalysisFailure, AnalysisFailureInfo};
 use crate::toolchains::aspect_base_target_resolved_toolchain_context::AspectBaseTargetResolvedToolchainContext;
 use crate::toolchains::exec_group_collection::{
     ExecGroupCollectionBuilder, InvalidExecGroupException,
@@ -62,7 +63,11 @@ pub enum ConfiguredTargetFactoryError {
     #[error(transparent)]
     InvalidExecGroup(#[from] InvalidExecGroupException),
     /// Java `AnalysisFailurePropagationException(label, messages)`.
-    #[error("Analysis failures propagation failed for {label}: {messages:?}")]
+    // Java: com/google/devtools/build/lib/analysis/test/AnalysisFailurePropagationException.java:37 AnalysisFailurePropagationException.<init>
+    #[error(
+        "Error while collecting analysis-phase failure information for '{label}': {}",
+        messages.join("; ")
+    )]
     AnalysisFailurePropagation { label: Label, messages: Vec<String> },
 }
 
@@ -80,7 +85,7 @@ impl From<RuleConfiguredTargetBuildError> for ConfiguredTargetFactoryError {
 }
 
 /// This class creates `ConfiguredTarget` instances using a given `ConfiguredRuleClassProvider`.
-// Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:93 ConfiguredTargetFactory
+// Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:92 ConfiguredTargetFactory
 pub struct ConfiguredTargetFactory {
     rule_class_provider: Arc<ConfiguredRuleClassProvider>,
 }
@@ -99,7 +104,7 @@ impl ConfiguredTargetFactory {
     /// This is constructed by starting with the value obtained from either `Target.getVisibility`
     /// or `Target.getActualVisibility`, and recursively expanding package groups. Errors during
     /// package group resolution are reported to the event handler.
-    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:117 ConfiguredTargetFactory.convertVisibility
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:115 ConfiguredTargetFactory.convertVisibility
     fn convert_visibility(
         prerequisite_map: &PrerequisiteMap,
         reporter: &CachingAnalysisEnvironment,
@@ -394,7 +399,7 @@ impl ConfiguredTargetFactory {
     /// PORT: Java computes the required config fragments here with
     /// `RequiredFragmentsUtil.getRuleRequiredFragmentsIfEnabled(...)`; the caller (agent C's
     /// `ConfiguredTargetFunction`) passes the result.
-    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:327 ConfiguredTargetFactory.createRule
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:361 ConfiguredTargetFactory.createRule
     fn create_rule(
         &self,
         env: &Arc<CachingAnalysisEnvironment>,
@@ -556,7 +561,7 @@ impl ConfiguredTargetFactory {
 
     /// Checks that all the rule advertised providers are returned in the configured target and
     /// adds an error to `rule_context` if not.
-    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:483 ConfiguredTargetFactory.validateRuleAdvertisedProviders
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:495 ConfiguredTargetFactory.validateRuleAdvertisedProviders
     fn validate_rule_advertised_providers(
         rule_context: &RuleContext,
         configured_target: &ConfiguredTarget,
@@ -609,13 +614,30 @@ impl ConfiguredTargetFactory {
         Vec::new()
     }
 
-    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:534 ConfiguredTargetFactory.erroredConfiguredTargetWithFailures
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:567 ConfiguredTargetFactory.erroredConfiguredTargetWithFailures
     fn errored_configured_target_with_failures(
-        _rule_context: &RuleContext,
-        _analysis_failures: Vec<starlark::values::OwnedFrozenValue>,
+        rule_context: &RuleContext,
+        analysis_failures: Vec<starlark::values::OwnedFrozenValue>,
     ) -> Result<Option<ConfiguredTarget>, ConfiguredTargetFactoryError> {
-        // PORT: AnalysisFailureInfo (forAnalysisFailureSets) is not ported.
-        blaze_util::unported!("ConfiguredTargetFactory.erroredConfiguredTargetWithFailures")
+        let mut builder = RuleConfiguredTargetBuilder::new(rule_context);
+        builder.add_native_declared_provider(crate::info::freeze_native_info(
+            AnalysisFailureInfo::for_analysis_failure_sets(causes_of(&analysis_failures)),
+        ));
+        builder.add_provider(crate::providers::file_provider::RunfilesProvider::simple(
+            blaze_actions::analysis::runfiles::Runfiles::empty(),
+        ));
+        match builder.build()? {
+            Some(configured_target) => Ok(Some(configured_target)),
+            // A failure here is a failure in analysis failure testing machinery, not a "normal"
+            // analysis failure that some outer analysis failure test may want to capture.
+            // Instead, this failure means that the outer test would be unusable. So we throw an
+            // exception rather than returning null and allowing it to propagate up in the usual
+            // way.
+            None => Err(ConfiguredTargetFactoryError::AnalysisFailurePropagation {
+                label: rule_context.get_label().clone(),
+                messages: rule_context.get_suppressed_error_messages(),
+            }),
+        }
     }
 
     /// Returns a `ConfiguredTarget` which indicates that an analysis error occurred in processing
@@ -623,25 +645,45 @@ impl ConfiguredTargetFactory {
     /// failed to build and thus the build should fail. However, if analysis failures are allowed
     /// in this build, this returns a stub `ConfiguredTarget` which contains information about the
     /// failure.
-    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:562 ConfiguredTargetFactory.erroredConfiguredTarget
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:484 ConfiguredTargetFactory.erroredConfiguredTarget
     fn errored_configured_target(
         rule_context: &RuleContext,
-        _required_config_fragments_provider: Option<RequiredConfigFragmentsProvider>,
+        required_config_fragments_provider: Option<RequiredConfigFragmentsProvider>,
     ) -> Result<Option<ConfiguredTarget>, ConfiguredTargetFactoryError> {
         if config_util::allow_analysis_failures(rule_context.get_configuration()) {
-            // PORT: AnalysisFailureInfo (forAnalysisFailures) is not ported.
-            blaze_util::unported!(
-                "ConfiguredTargetFactory.erroredConfiguredTarget (allow_analysis_failures)"
-            )
-        }
-        // Returning a null ConfiguredTarget is an indication a rule error occurred. Exceptions
+            let analysis_failures: Vec<AnalysisFailure> = rule_context
+                .get_suppressed_error_messages()
+                .into_iter()
+                .map(|error_message| {
+                    AnalysisFailure::create(rule_context.get_label().clone(), error_message)
+                })
+                .collect();
+            let mut builder = RuleConfiguredTargetBuilder::new(rule_context);
+            builder.add_native_declared_provider(crate::info::freeze_native_info(
+                AnalysisFailureInfo::for_analysis_failures(analysis_failures),
+            ));
+            builder.add_provider(crate::providers::file_provider::RunfilesProvider::simple(
+                blaze_actions::analysis::runfiles::Runfiles::empty(),
+            ));
+            if let Some(provider) = required_config_fragments_provider {
+                builder.add_provider(provider);
+            }
+            return match builder.build()? {
+                Some(configured_target) => Ok(Some(configured_target)),
+                // See comment in erroredConfiguredTargetWithFailures.
+                None => Err(ConfiguredTargetFactoryError::AnalysisFailurePropagation {
+                    label: rule_context.get_label().clone(),
+                    messages: rule_context.get_suppressed_error_messages(),
+                }),
+            };
+        } // Returning a null ConfiguredTarget is an indication a rule error occurred. Exceptions
         // are not propagated, as this would show a nasty stack trace to users, and only provide
         // info on one specific failure with poor messaging. By returning null, the caller can
         // inspect ruleContext for multiple errors and output thorough messaging on each.
         Ok(None)
     }
 
-    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:594 ConfiguredTargetFactory.missingFragmentError
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:437 ConfiguredTargetFactory.missingFragmentError
     fn missing_fragment_error(
         rule_context: &RuleContext,
         configuration_fragment_policy: &blaze_packages::rule_class::ConfigurationFragmentPolicy,
@@ -666,7 +708,7 @@ impl ConfiguredTargetFactory {
     }
 
     /// Removes the toolchain dependencies from a prerequisite map.
-    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:616 ConfiguredTargetFactory.removeToolchainDeps
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:649 ConfiguredTargetFactory.removeToolchainDeps
     pub fn remove_toolchain_deps(map: &PrerequisiteMap) -> PrerequisiteMap {
         let mut result = PrerequisiteMap::new();
         for (kind, values) in map {
@@ -807,11 +849,17 @@ impl ConfiguredTargetFactory {
 
     // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:763 ConfiguredTargetFactory.erroredConfiguredAspectWithFailures
     fn errored_configured_aspect_with_failures(
-        _rule_context: &RuleContext,
-        _analysis_failures: Vec<starlark::values::OwnedFrozenValue>,
+        rule_context: &RuleContext,
+        analysis_failures: Vec<starlark::values::OwnedFrozenValue>,
     ) -> Result<Option<ConfiguredAspect>, ConfiguredTargetFactoryError> {
-        // PORT: AnalysisFailureInfo (forAnalysisFailureSets) is not ported.
-        blaze_util::unported!("ConfiguredTargetFactory.erroredConfiguredAspectWithFailures")
+        let mut builder = ConfiguredAspect::builder(rule_context);
+        builder.add_native_declared_provider(crate::info::freeze_native_info(
+            AnalysisFailureInfo::for_analysis_failure_sets(causes_of(&analysis_failures)),
+        ));
+        // Unlike erroredConfiguredTargetAspectWithFailures, we do not add a RunfilesProvider;
+        // that would result in a RunfilesProvider being provided twice in the merged configured
+        // target.
+        Ok(builder.build()?)
     }
 
     /// Returns a `ConfiguredAspect` which indicates that an analysis error occurred in
@@ -822,15 +870,27 @@ impl ConfiguredTargetFactory {
     // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:785 ConfiguredTargetFactory.erroredConfiguredAspect
     pub fn errored_configured_aspect(
         rule_context: &RuleContext,
-        _required_config_fragments_provider: Option<RequiredConfigFragmentsProvider>,
+        required_config_fragments_provider: Option<RequiredConfigFragmentsProvider>,
     ) -> Result<Option<ConfiguredAspect>, ConfiguredTargetFactoryError> {
         if config_util::allow_analysis_failures(rule_context.get_configuration()) {
-            // PORT: AnalysisFailureInfo (forAnalysisFailures) is not ported.
-            blaze_util::unported!(
-                "ConfiguredTargetFactory.erroredConfiguredAspect (allow_analysis_failures)"
-            )
-        }
-        // Returning a null ConfiguredAspect is an indication a rule error occurred. Exceptions
+            let analysis_failures: Vec<AnalysisFailure> = rule_context
+                .get_suppressed_error_messages()
+                .into_iter()
+                .map(|error_message| {
+                    AnalysisFailure::create(rule_context.get_label().clone(), error_message)
+                })
+                .collect();
+            let mut builder = ConfiguredAspect::builder(rule_context);
+            builder.add_native_declared_provider(crate::info::freeze_native_info(
+                AnalysisFailureInfo::for_analysis_failures(analysis_failures),
+            ));
+            if let Some(provider) = required_config_fragments_provider {
+                builder.add_provider(provider);
+            }
+            // Unlike erroredConfiguredTarget, we do not add a RunfilesProvider; that would
+            // result in a RunfilesProvider being provided twice in the merged configured target.
+            return Ok(builder.build()?);
+        } // Returning a null ConfiguredAspect is an indication a rule error occurred. Exceptions
         // are not propagated, as this would show a nasty stack trace to users, and only provide
         // info on one specific failure with poor messaging. By returning null, the caller can
         // inspect ruleContext for multiple errors and output thorough messaging on each.
@@ -876,7 +936,7 @@ impl ConfiguredTargetFactory {
 
     /// A pseudo-implementation for configured targets that creates fail actions for all
     /// declared outputs, both implicit and explicit, due to a missing fragment class.
-    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:824 ConfiguredTargetFactory.createFailConfiguredTargetForMissingFragmentClass
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:857 ConfiguredTargetFactory.createFailConfiguredTargetForMissingFragmentClass
     fn create_fail_configured_target_for_missing_fragment_class(
         rule_context: &RuleContext,
         _missing_fragment_class: &str,
@@ -903,7 +963,7 @@ impl ConfiguredTargetFactory {
 /// Java `target.getPackageoid().checkMacroNamespaceCompliance(target)`: `Err` is the
 /// `MacroNamespaceViolationException` message. `package` is the target's package (Java
 /// `getPackageoid()`; Blaze targets do not point back to their package).
-// Java: com/google/devtools/build/lib/packages/Package.java:318 Package.checkMacroNamespaceCompliance
+// Java: com/google/devtools/build/lib/packages/Package.java:319 Package.checkMacroNamespaceCompliance
 fn check_macro_namespace_compliance(package: &Package, target: &Target) -> Result<(), String> {
     package
         .check_macro_namespace_compliance(target)
@@ -912,3 +972,19 @@ fn check_macro_namespace_compliance(package: &Package, target: &Target) -> Resul
 
 /// Re-export for callers matching on rule errors.
 pub type FactoryRuleError = RuleErrorException;
+
+/// `infoCollection.get(AnalysisFailureInfo.STARLARK_CONSTRUCTOR).getCausesNestedSet()` of each
+/// collected provider (`depAnalysisFailures` collects the providers).
+fn causes_of(
+    analysis_failures: &[starlark::values::OwnedFrozenValue],
+) -> Vec<blaze_collect::NestedSet<AnalysisFailure>> {
+    analysis_failures
+        .iter()
+        .map(|info| {
+            crate::info::downcast_info::<AnalysisFailureInfo>(info)
+                .expect("ClassCastException: AnalysisFailureInfo")
+                .get_causes_nested_set()
+                .clone()
+        })
+        .collect()
+}

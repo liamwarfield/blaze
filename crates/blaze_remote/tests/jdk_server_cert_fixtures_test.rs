@@ -1,38 +1,50 @@
-//! `JdkServerCertVerifier` against the JDK's decisions on the pre-v3 server certificates of
+//! `JdkServerCertVerifier` against the JDK's decisions on the server certificates of
 //! `tests/data/jdk_cert_fixtures` (made by `scripts/jdk-certs/generate.py`; the verdicts in
 //! `expected.tsv` were recorded with the oracle's embedded JDK 25.0.2 by `scripts/jdk-certs/run`,
 //! which runs `CertificateFactory`, the PKIX trust manager and `HostnameChecker` as
 //! `X509TrustManagerImpl.checkTrusted` does).
 //!
+//! Each case is a full TLS handshake (TLS 1.3, then TLS 1.2) between a rustls client with the
+//! verifier and a rustls server presenting the case's certificate and signing with
+//! `keys/ee.key`, so the end entity's key is part of the decision, as it is in Bazel's handshake.
+//!
 //! The rule: Blaze accepts nothing the JDK rejects. Where the JDK accepts, Blaze accepts too,
-//! except for the cases in [`STRICTER`], each a documented `PORT: stricter` of the verifier.
+//! except for the cases in [`STRICTER`], each a declared deviation.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use blaze_remote::authandtls::jdk_server_cert_verifier::JdkServerCertVerifier;
-use tokio_rustls::rustls::RootCertStore;
-use tokio_rustls::rustls::client::danger::ServerCertVerifier;
+use tokio_rustls::rustls::crypto::CryptoProvider;
 use tokio_rustls::rustls::pki_types::pem::PemObject;
-use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
+use tokio_rustls::rustls::server::{ClientHello, ResolvesServerCert};
+use tokio_rustls::rustls::sign::CertifiedKey;
+use tokio_rustls::rustls::{ClientConfig, RootCertStore, ServerConfig, SupportedProtocolVersion};
 
-/// Cases the JDK accepts and Blaze rejects, with the reason (see the verifier's `PORT:
-/// stricter` comments).
+/// Cases the JDK (as `JdkCertProbe` asks it) accepts and Blaze refuses, with the reason.
 const STRICTER: &[(&str, &str)] = &[
+    ("direct_wildcard", "wildcard common names are not matched"),
     (
-        "alg_params_absent_inner",
-        "signature algorithms compared by encoding",
+        "ee_key_unknown_alg",
+        "the handshake signature cannot be verified with the certificate's key (Bazel's TLS \
+         engine fails the handshake too; the probe has no handshake)",
     ),
-    ("wildcard", "wildcard common names are not matched"),
-    ("serial_leading_zero", "DER INTEGER required"),
-    ("time_no_seconds", "UTCTime without seconds"),
-    ("time_offset", "time zone other than Z"),
-    ("time_fraction", "fractional seconds"),
-    ("time_feb_31", "a day that is not in its month"),
-    ("non_minimal_length", "DER lengths required"),
-    ("trailing_bytes", "bytes after the certificate"),
-    ("version_5", "version above 2 goes to webpki"),
+    ("chain_v1", "ruling D16: no chains of v1/v2 certificates"),
+    (
+        "v3_self_ca_cn_only",
+        "webpki's name check needs a subjectAltName (the JDK falls back to the CN)",
+    ),
+    (
+        "v3_self_noca_cn_only",
+        "webpki's name check needs a subjectAltName (the JDK falls back to the CN)",
+    ),
+    (
+        "v3_ed25519_ca",
+        "Ed25519 is not in the oracle's TLS signature list (Netty's \
+         LOCAL_SUPPORTED_SIGNATURE_ALGORITHMS); the probe has no TLS engine",
+    ),
 ];
 
 fn fixtures() -> PathBuf {
@@ -48,35 +60,76 @@ fn read_tsv(path: &Path) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// 2026-11-26: inside every fixture's validity but the expired ones.
-const NOW: u64 = 1_795_000_000;
+/// The server's certificate, whatever it holds, with `keys/ee.key` as the signing key.
+#[derive(Debug)]
+struct FixedCert(Arc<CertifiedKey>);
 
-fn blaze_accepts(dir: &Path, case: &str, roots_file: &str, host: &str) -> Result<(), String> {
-    let mut roots = RootCertStore::empty();
-    let pem = std::fs::read(dir.join(roots_file)).unwrap();
-    for cert in CertificateDer::pem_slice_iter(&pem) {
-        roots.add(cert.unwrap()).map_err(|e| format!("root: {e}"))?;
+impl ResolvesServerCert for FixedCert {
+    fn resolve(&self, _client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        Some(self.0.clone())
     }
-    let verifier = JdkServerCertVerifier::new(
-        Arc::new(roots),
-        Arc::new(tokio_rustls::rustls::crypto::ring::default_provider()),
-    )
-    .unwrap()
-    .with_requested_host(host);
-    let der = CertificateDer::from(std::fs::read(dir.join(format!("{case}.der"))).unwrap());
+}
+
+fn provider() -> Arc<CryptoProvider> {
+    Arc::new(tokio_rustls::rustls::crypto::ring::default_provider())
+}
+
+/// One handshake; `Err` is the client's failure.
+fn handshake(
+    dir: &Path,
+    case: &str,
+    roots_file: &str,
+    host: &str,
+    version: &'static SupportedProtocolVersion,
+) -> Result<(), String> {
+    let pem = std::fs::read(dir.join(roots_file)).unwrap();
+    let trusted: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&pem)
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let mut roots = RootCertStore::empty();
+    roots.add_parsable_certificates(trusted.clone());
+    let verifier = JdkServerCertVerifier::new(Arc::new(roots), trusted, provider())
+        .unwrap()
+        .with_requested_host(host);
+    let client_config = ClientConfig::builder_with_provider(provider())
+        .with_protocol_versions(&[version])
+        .unwrap()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_no_client_auth();
     // A host name rustls cannot express is refused before the verifier runs.
     let server_name =
         ServerName::try_from(host.to_string()).map_err(|e| format!("server name: {e}"))?;
-    verifier
-        .verify_server_cert(
-            &der,
-            &[],
-            &server_name,
-            &[],
-            UnixTime::since_unix_epoch(std::time::Duration::from_secs(NOW)),
-        )
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+
+    let cert = CertificateDer::from(std::fs::read(dir.join(format!("{case}.der"))).unwrap());
+    let key =
+        PrivateKeyDer::from_pem_slice(&std::fs::read(dir.join("keys/ee.key")).unwrap()).unwrap();
+    let signing_key = provider().key_provider.load_private_key(key).unwrap();
+    let server_config = ServerConfig::builder_with_provider(provider())
+        .with_protocol_versions(&[version])
+        .unwrap()
+        .with_no_client_auth()
+        .with_cert_resolver(Arc::new(FixedCert(Arc::new(CertifiedKey::new(
+            vec![cert],
+            signing_key,
+        )))));
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async move {
+        let (client_io, server_io) = tokio::io::duplex(1 << 16);
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+        let server = async move {
+            // The server's side ends when the client aborts; its result is not the verdict.
+            let _ = acceptor.accept(server_io).await;
+        };
+        let client = connector.connect(server_name, client_io);
+        let (client, ()) = tokio::join!(client, server);
+        client.map(|_| ()).map_err(|e| e.to_string())
+    })
 }
 
 #[test]
@@ -99,8 +152,27 @@ fn verdicts_match_the_jdk() {
     for row in &cases {
         let (case, roots, host) = (&row[0], &row[1], &row[2]);
         let (jdk, jdk_reason) = &expected[case];
-        let blaze = blaze_accepts(&dir, case, roots, host);
-        match (jdk.as_str(), &blaze) {
+        let tls13 = handshake(
+            &dir,
+            case,
+            roots,
+            host,
+            &tokio_rustls::rustls::version::TLS13,
+        );
+        let tls12 = handshake(
+            &dir,
+            case,
+            roots,
+            host,
+            &tokio_rustls::rustls::version::TLS12,
+        );
+        if tls13.is_ok() != tls12.is_ok() {
+            failures.push(format!(
+                "{case}: TLS 1.3 {tls13:?} and TLS 1.2 {tls12:?} disagree"
+            ));
+            continue;
+        }
+        match (jdk.as_str(), &tls13) {
             ("REJECT", Ok(())) => failures.push(format!(
                 "{case}: the JDK rejects ({jdk_reason}), Blaze accepts"
             )),
@@ -114,4 +186,21 @@ fn verdicts_match_the_jdk() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The refusal of a v1 chain carries Blaze's own text (ruling D16).
+#[test]
+fn v1_chain_is_refused_with_blazes_text() {
+    let e = handshake(
+        &fixtures(),
+        "chain_v1",
+        "ca.pem",
+        "localhost",
+        &tokio_rustls::rustls::version::TLS13,
+    )
+    .unwrap_err();
+    assert!(
+        e.contains("X.509 v1/v2 server certificate chains are not supported"),
+        "{e}"
+    );
 }

@@ -145,7 +145,10 @@ impl SkyValueDirtinessChecker for FileDirtinessChecker {
         tsgm: Option<&TimestampGranularityMonitor>,
     ) -> Result<SkyValue, IOException> {
         let rooted_path = &key.downcast::<FileStateKey>().expect("FileStateKey").0;
-        Ok(Arc::new(FileStateValue::create_with_tsgm(rooted_path, tsgm)?))
+        Ok(Arc::new(FileStateValue::create_with_tsgm(
+            rooted_path,
+            tsgm,
+        )?))
     }
 }
 
@@ -299,7 +302,9 @@ impl SkyValueDirtinessChecker for ExternalDirtinessChecker {
         tsgm: Option<&TimestampGranularityMonitor>,
     ) -> Result<DirtyResult, IOException> {
         let rooted_path = rooted_path_of(sky_key);
-        let file_type = self.external_files_helper.get_and_note_file_type(rooted_path);
+        let file_type = self
+            .external_files_helper
+            .get_and_note_file_type(rooted_path);
         let cacheable = Self::is_cacheable_type(file_type);
         // PORT: `cacheable ? syscallCache : SyscallCache.NO_CACHE`: Blaze has no syscall cache.
         let new_value = self.checker.create_new_value(sky_key, tsgm)?;
@@ -318,8 +323,9 @@ impl SkyValueDirtinessChecker for ExternalDirtinessChecker {
             return Ok(match new_file_state.compare_contents(old_file_state) {
                 ContentsComparisonResult::Same => DirtyResult::not_dirty(),
                 ContentsComparisonResult::Different => {
-                    if let Some(repository_name) =
-                        self.external_files_helper.get_external_repo_name(rooted_path)
+                    if let Some(repository_name) = self
+                        .external_files_helper
+                        .get_external_repo_name(rooted_path)
                     {
                         self.dirty_external_repos
                             .lock()
@@ -394,7 +400,8 @@ impl SkyValueDirtinessChecker for UnionDirtinessChecker {
         tsgm: Option<&TimestampGranularityMonitor>,
     ) -> Result<DirtyResult, IOException> {
         self.get_checker(key)
-            .unwrap_or_else(|| panic!("NullPointerException: {:?}", key)).check(key, old_value, tsgm)
+            .unwrap_or_else(|| panic!("NullPointerException: {:?}", key))
+            .check(key, old_value, tsgm)
     }
 }
 
@@ -597,7 +604,9 @@ impl MutableBatchDirtyResult {
     // Java: com/google/devtools/build/lib/skyframe/FilesystemValueChecker.java:769 MutableBatchDirtyResult.toImmutable
     fn to_immutable(self, num_checked: usize, order: &[SkyKey]) -> ImmutableBatchDirtyResult {
         let without = self.concurrent_dirty_keys_without_new_values.into_inner();
-        let mut with = self.concurrent_dirty_keys_with_new_and_old_values.into_inner();
+        let mut with = self
+            .concurrent_dirty_keys_with_new_and_old_values
+            .into_inner();
         let mut dirty_keys_without_new_values = Vec::with_capacity(without.len());
         let mut dirty_keys_with_new_and_old_values = IndexMap::with_capacity(with.len());
         for key in order {

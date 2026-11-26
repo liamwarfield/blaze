@@ -176,6 +176,20 @@ impl FileSystemLock {
         self.shared
     }
 
+    /// Whether this process holds a lock on `path` (Java: the JVM's `FileLockTable` has an
+    /// entry, so a further overlapping request would throw `OverlappingFileLockException`).
+    ///
+    /// PORT: Blaze-only, for the repo contents cache garbage collector of a server whose kept
+    /// graph still holds the cache's shared lock (`blaze_runtime` `idle_tasks.rs`).
+    pub fn held_by_this_process(path: &Path) -> bool {
+        let Ok(metadata) = std::fs::metadata(internal_to_platform(path.get_path_string())) else {
+            return false;
+        };
+        held()
+            .as_ref()
+            .is_some_and(|table| table.contains_key(&(metadata.dev(), metadata.ino())))
+    }
+
     pub fn is_exclusive(&self) -> bool {
         !self.shared
     }

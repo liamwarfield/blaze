@@ -33,6 +33,13 @@ pub trait ActionContextRegistry: Send + Sync {
     fn get_spawn_strategy_registry(&self) -> Option<Arc<SpawnStrategyRegistry>> {
         None
     }
+    /// `getContext(DynamicStrategyRegistry.class)`: the `SpawnStrategyRegistry` unless replaced.
+    fn get_dynamic_strategy_registry(
+        &self,
+    ) -> Option<Arc<dyn crate::exec::spawn_strategy_registry::DynamicStrategyRegistry>> {
+        self.get_spawn_strategy_registry()
+            .map(|r| r as Arc<dyn crate::exec::spawn_strategy_registry::DynamicStrategyRegistry>)
+    }
     /// `getContext(SpawnLogContext.class)`: set when an execution log is requested.
     fn get_spawn_log_context(&self) -> Option<Arc<dyn SpawnLogContext>> {
         None

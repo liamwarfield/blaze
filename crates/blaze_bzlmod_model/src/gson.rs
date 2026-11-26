@@ -67,10 +67,27 @@ impl std::error::Error for JsonParseError {}
 // PORT: Gson's error messages include a JSONPath; this reader reports line and column and the
 // path of enclosing names it can track, which may differ from Gson in corner cases.
 pub fn parse_lenient(input: &str) -> Result<Option<JsonValue>, JsonParseError> {
+    parse_lenient_with(input, false)
+}
+
+/// [`parse_lenient`] for a type adapter that reads the token stream itself
+/// (`TypeAdapter.read(JsonReader)`): an object keeps every member in document order, a repeated
+/// name included.
+pub fn parse_lenient_keeping_repeated_names(
+    input: &str,
+) -> Result<Option<JsonValue>, JsonParseError> {
+    parse_lenient_with(input, true)
+}
+
+fn parse_lenient_with(
+    input: &str,
+    keep_repeated_names: bool,
+) -> Result<Option<JsonValue>, JsonParseError> {
     // Java: Gson 2.11 JsonReader.fillBuffer skips one leading byte order mark (U+FEFF) and
     // counts columns after it (`lineStart++`).
     let input = input.strip_prefix('\u{feff}').unwrap_or(input);
     let mut r = LenientReader::new(input);
+    r.keep_repeated_names = keep_repeated_names;
     // Gson skips a non-execute prefix in lenient mode.
     if r.rest().starts_with(")]}'\n") {
         r.pos += 5;
@@ -111,6 +128,9 @@ struct LenientReader<'a> {
     input: &'a str,
     pos: usize,
     path: Vec<String>,
+    /// Keep every member of an object, repeated names included (what a streaming type adapter
+    /// sees), instead of `JsonObject.add`'s replacement.
+    keep_repeated_names: bool,
 }
 
 impl<'a> LenientReader<'a> {
@@ -119,6 +139,7 @@ impl<'a> LenientReader<'a> {
             input,
             pos: 0,
             path: Vec::new(),
+            keep_repeated_names: false,
         }
     }
 
@@ -248,7 +269,9 @@ impl<'a> LenientReader<'a> {
                 _ => return Err(self.syntax_error("Expected ':'")),
             }
             let value = self.read_value()?;
-            if let Some(slot) = members.iter_mut().find(|(k, _)| *k == name) {
+            if !self.keep_repeated_names
+                && let Some(slot) = members.iter_mut().find(|(k, _)| *k == name)
+            {
                 slot.1 = value;
             } else {
                 members.push((name, value));

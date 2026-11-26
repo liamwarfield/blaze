@@ -959,8 +959,13 @@ mod spawn_action_test {
         assert!(!e.is_catastrophe());
         let root_causes = e.get_root_causes();
         assert_eq!(root_causes.len(), 1);
+        // Cause.getLabel() of either kind of cause.
+        let label = match &root_causes[0] {
+            blaze_exec::actions::action_execution::RootCause::ActionFailed(c) => &c.label,
+            blaze_exec::actions::action_execution::RootCause::Label(c) => &c.label,
+        };
         assert_eq!(
-            root_causes[0].label,
+            *label,
             blaze_cmdline::Label::parse_canonical("//null/action:owner").unwrap()
         );
     }

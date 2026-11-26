@@ -1,0 +1,412 @@
+#!/usr/bin/env python3
+"""Run the functions of Bazel's remote_repo_contents_cache_test.py on the oracle or on Blaze.
+
+usage: scripts/rrc-probe/rrc-probe <oracle|BINARY> <side-name> [TEST_NAME_REGEX]
+       scripts/rrc-probe/rrc-probe --unit <oracle|BINARY> <side-name> [TEST_NAME_REGEX]
+       scripts/rrc-probe/rrc-probe help
+
+Loads src/test/py/bazel/bzlmod/remote_repo_contents_cache_test.py from the pinned Bazel source
+(~/.cache/blaze/src/bazel-9.3.2, read-only) with a stand-in for test_base.TestBase and absltest,
+and runs every test function whose name matches the regex (default: all) on the given binary.
+
+The memory rule (AGENTS.md "Memory") shapes the stand-in:
+  * ONE workspace and ONE output user root per side, reused by every test function:
+      ~/.cache/blaze/work/remote-6/rrc/<side-name>/{ws,ur,tmp,worker}
+    Before a function, the previous function's output base is expunged (`clean --expunge`) and the
+    workspace's files are removed; the remote worker's CAS is emptied (a fresh cache, as the
+    test's StartRemoteWorker gives).
+  * startup --max_idle_secs=60 and build --jobs=4 in the test bazelrc; tearDown runs `shutdown`.
+  * When a function switches to another workspace directory (RunBazel(cwd=...)), the server of
+    the previous directory is shut down first, so at most one Bazel server and the worker live.
+    (A deviation from the test, the same on both sides.)
+  * One remote worker (worker_deploy.jar built from the pin) for the whole series, started by
+    this script and stopped at its end.
+  * Without --unit, the script re-runs itself under
+    systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0
+    so the servers and the worker die with it.
+
+Results: ~/.cache/blaze/work/remote-6/rrc/<side-name>/results.tsv (name, PASS/FAIL/SKIP, first
+line of the failure) and log.txt (every command with exit code, stdout and stderr).
+"""
+import hashlib
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import traceback
+import types
+import unittest
+
+CACHE = os.path.expanduser("~/.cache/blaze")
+SRC = os.path.join(CACHE, "src", "bazel-9.3.2")
+TEST_FILE = os.path.join(SRC, "src/test/py/bazel/bzlmod/remote_repo_contents_cache_test.py")
+LOCK_FILE = os.path.join(SRC, "src/test/tools/bzlmod/MODULE.bazel.lock")
+ORACLE = os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64")
+INSTALL = os.path.join(CACHE, "oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9")
+JAVA = os.path.join(INSTALL, "embedded_tools/jdk/bin/java")
+WORKER_JAR = os.path.join(CACHE, "work/upstream-src/bazel-bin/src/tools/remote/worker_deploy.jar")
+ROOT = os.path.join(CACHE, "work", "remote-6", "rrc")
+
+
+def usage():
+    print(__doc__.strip())
+
+
+class State:
+    binary = None
+    base = None
+    ws = None
+    ur = None
+    tmp = None
+    bazelrc = None
+    worker_proc = None
+    worker_dir = None
+    worker_port = None
+    log = None
+    last_cwd = None
+    used_cwds = set()
+
+
+def log(text):
+    State.log.write(text + "\n")
+    State.log.flush()
+
+
+def free_port():
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def start_worker():
+    State.worker_dir = os.path.join(State.base, "worker")
+    if os.path.exists(State.worker_dir):
+        subprocess.run(["chmod", "-R", "u+w", State.worker_dir], check=False)
+        shutil.rmtree(State.worker_dir)
+    cas = os.path.join(State.worker_dir, "cas")
+    os.makedirs(cas)
+    runfiles = os.path.join(State.worker_dir, "runfiles")
+    os.makedirs(os.path.join(
+        runfiles, "io_bazel/src/tools/remote/src/main/java/com/google/devtools/build/remote/worker"))
+    State.worker_port = free_port()
+    env = {"HOME": os.path.join(State.tmp, "home"), "PATH": "/usr/bin:/bin",
+           "RUNFILES_DIR": runfiles}
+    State.worker_proc = subprocess.Popen(
+        [JAVA, "-jar", WORKER_JAR, "--listen_port=%d" % State.worker_port,
+         "--work_path=" + State.worker_dir, "--cas_path=" + cas],
+        stdout=open(os.path.join(State.base, "worker.stdout"), "w"),
+        stderr=open(os.path.join(State.base, "worker.stderr"), "w"), env=env)
+    for _ in range(300):
+        try:
+            with socket.create_connection(("127.0.0.1", State.worker_port), timeout=1):
+                return
+        except OSError:
+            time.sleep(0.2)
+    raise RuntimeError("worker did not start; see worker.stderr")
+
+
+def stop_worker():
+    if State.worker_proc is not None:
+        State.worker_proc.terminate()
+        State.worker_proc.wait()
+        State.worker_proc = None
+
+
+def clear_cas():
+    cas = os.path.join(State.worker_dir, "cas")
+    shutil.rmtree(cas)
+    os.makedirs(os.path.join(cas, "tmp"))
+
+
+def make_test_base():
+    mod = types.ModuleType("test_base")
+
+    class TestBase(unittest.TestCase):
+        _worker_port = None
+        _cas_path = None
+
+        def setUp(self):
+            self._test_cwd = State.ws
+            self._tests_root = os.path.dirname(State.ws)
+            self._temp = State.tmp
+            self._test_bazelrc = State.bazelrc
+            self.ScratchFile("MODULE.bazel")
+            self.CopyFile(LOCK_FILE, "MODULE.bazel.lock")
+            os.chdir(self._test_cwd)
+
+        def tearDown(self):
+            self.RunBazel(["shutdown"])
+
+        def assertLen(self, container, expected_len, msg=None):
+            if len(container) != expected_len:
+                self.fail(msg or "len %d != %d: %r" % (len(container), expected_len, container))
+
+        @staticmethod
+        def IsWindows():
+            return False
+
+        @staticmethod
+        def IsDarwin():
+            return False
+
+        @staticmethod
+        def IsUnix():
+            return True
+
+        @staticmethod
+        def IsLinux():
+            return True
+
+        def _AssertExitCodeIs(self, actual, pred, msg, stderr_lines, stdout_lines=None):
+            if not pred(actual):
+                self.fail("\n".join(
+                    ["Bazel exited with %d %s, stderr:" % (actual, msg)]
+                    + (stderr_lines or [])[-40:]))
+
+        def AssertExitCode(self, actual, expected, stderr_lines, stdout_lines=None):
+            self._AssertExitCodeIs(actual, lambda x: x == expected, "(expected %d)" % expected,
+                                   stderr_lines, stdout_lines)
+
+        def AssertNotExitCode(self, actual, not_expected, stderr_lines, stdout_lines=None):
+            self._AssertExitCodeIs(actual, lambda x: x != not_expected,
+                                   "(against expectations)", stderr_lines, stdout_lines)
+
+        def AssertFileContentContains(self, file_path, entry):
+            with open(file_path) as f:
+                content = f.read()
+            if entry not in content:
+                self.fail('File "%s" does not contain "%s"' % (file_path, entry))
+
+        def AssertFileContentNotContains(self, file_path, entry):
+            with open(file_path) as f:
+                content = f.read()
+            if entry in content:
+                self.fail('File "%s" does contain "%s"' % (file_path, entry))
+
+        def Path(self, path):
+            if os.path.isabs(path) or ".." in path:
+                raise ValueError("bad path " + path)
+            return os.path.join(self._test_cwd, path)
+
+        def ScratchDir(self, path):
+            if not path:
+                return None
+            abspath = self.Path(path)
+            if os.path.exists(abspath):
+                if os.path.isdir(abspath):
+                    return abspath
+                raise IOError("%s exists and is not a directory" % abspath)
+            os.makedirs(abspath)
+            return abspath
+
+        def ScratchFile(self, path, lines=None, executable=False, mode="w"):
+            if not path:
+                return None
+            abspath = self.Path(path)
+            if os.path.exists(abspath) and not os.path.isfile(abspath):
+                raise IOError("%s exists and is not a file" % abspath)
+            self.ScratchDir(os.path.dirname(path))
+            with open(abspath, mode, encoding="utf-8") as f:
+                for line in lines or []:
+                    f.write(line)
+                    f.write("\n")
+            if executable:
+                os.chmod(abspath, 0o700)
+            return abspath
+
+        def CopyFile(self, src_path, dst_path, executable=False):
+            abspath = self.Path(dst_path)
+            self.ScratchDir(os.path.dirname(dst_path))
+            with open(src_path, "rb") as s, open(abspath, "wb") as d:
+                d.write(s.read())
+            if executable:
+                os.chmod(abspath, 0o700)
+            return abspath
+
+        def StartRemoteWorker(self):
+            # One worker per series (started by the driver); a fresh CAS per function.
+            clear_cas()
+            self._cas_path = os.path.join(State.worker_dir, "cas")
+            return State.worker_port
+
+        def StopRemoteWorker(self):
+            pass
+
+        def ClearRemoteCache(self):
+            clear_cas()
+
+        def DeleteCasEntry(self, content):
+            digest = hashlib.sha256(content).hexdigest()
+            blob_path = os.path.join(self._cas_path, "cas", digest[:2], digest)
+            self.assertTrue(os.path.exists(blob_path))
+            os.remove(blob_path)
+            return blob_path
+
+        def _EnvMap(self, env_remove=None, env_add=None):
+            env = {"HOME": os.path.join(self._temp, "home"), "PATH": "/usr/bin:/bin",
+                   "TEST_TMPDIR": State.tmp, "TMP": self._temp}
+            for e in env_remove or []:
+                env.pop(e, None)
+            for k, v in (env_add or {}).items():
+                env[k] = v
+            return env
+
+        def RunBazel(self, args, env_remove=None, env_add=None, cwd=None, allow_failure=False,
+                     rstrip=False):
+            cwd = str(cwd) if cwd else self._test_cwd
+            if State.last_cwd is not None and State.last_cwd != cwd and args != ["shutdown"]:
+                # At most one Bazel server alive (the memory rule).
+                self.RunProgram([State.binary, "--bazelrc=" + self._test_bazelrc, "shutdown"],
+                                cwd=State.last_cwd, allow_failure=True)
+            State.last_cwd = cwd
+            State.used_cwds.add(cwd)
+            return self.RunProgram([State.binary, "--bazelrc=" + self._test_bazelrc] + args,
+                                   env_remove, env_add, False, cwd, allow_failure, rstrip)
+
+        def RunProgram(self, args, env_remove=None, env_add=None, shell=False, cwd=None,
+                       allow_failure=False, rstrip=False, executable=None):
+            proc = subprocess.run(args, executable=executable, capture_output=True,
+                                  cwd=(str(cwd) if cwd else self._test_cwd),
+                                  env=self._EnvMap(env_remove, env_add), shell=shell)
+            strip = (lambda s: s.rstrip()) if rstrip else (lambda s: s.strip())
+            out = [strip(l) for l in proc.stdout.decode("utf-8", "replace").splitlines()]
+            err = [strip(l) for l in proc.stderr.decode("utf-8", "replace").splitlines()]
+            log("$ (cwd=%s) %s%s\nexit %d\n--- stdout\n%s\n--- stderr\n%s\n" % (
+                cwd or self._test_cwd, " ".join(args[2:] if args[0] == State.binary else args),
+                (" env_add=%s" % env_add) if env_add else "", proc.returncode,
+                "\n".join(out), "\n".join(err)))
+            if not allow_failure:
+                self.AssertExitCode(proc.returncode, 0, err, out)
+            return proc.returncode, out, err
+
+    mod.TestBase = TestBase
+    return mod
+
+
+def install_shims():
+    absl = types.ModuleType("absl")
+    testing = types.ModuleType("absl.testing")
+    absltest = types.ModuleType("absl.testing.absltest")
+    absltest.TestCase = unittest.TestCase
+    absltest.main = lambda *a, **k: None
+    testing.absltest = absltest
+    absl.testing = testing
+    sys.modules.update({"absl": absl, "absl.testing": testing, "absl.testing.absltest": absltest})
+    names = ["src", "src.test", "src.test.py", "src.test.py.bazel"]
+    mods = [types.ModuleType(n) for n in names]
+    for parent, child, name in zip(mods, mods[1:], names[1:]):
+        setattr(parent, name.rsplit(".", 1)[1], child)
+    for n, m in zip(names, mods):
+        sys.modules[n] = m
+    tb = make_test_base()
+    mods[-1].test_base = tb
+    sys.modules["src.test.py.bazel.test_base"] = tb
+
+
+def reset_workspace():
+    """Expunges the previous function's output bases, then empties the workspace."""
+    env = {"HOME": os.path.join(State.tmp, "home"), "PATH": "/usr/bin:/bin",
+           "TEST_TMPDIR": State.tmp, "TMP": State.tmp}
+    for cwd in sorted(State.used_cwds):
+        if os.path.isdir(cwd) and os.path.exists(os.path.join(cwd, "MODULE.bazel")):
+            for args in (["clean", "--expunge"], ["shutdown"]):
+                subprocess.run([State.binary, "--bazelrc=" + State.bazelrc] + args, cwd=cwd,
+                               env=env, capture_output=True)
+    State.used_cwds = set()
+    State.last_cwd = None
+    if os.path.exists(State.ws):
+        subprocess.run(["chmod", "-R", "u+w", State.ws], check=False)
+        shutil.rmtree(State.ws)
+    os.makedirs(State.ws)
+
+
+def main(argv):
+    if not argv or argv[0] in ("help", "--help", "-h"):
+        usage()
+        return 0
+    unit = False
+    if argv[0] == "--unit":
+        unit = True
+        argv = argv[1:]
+    if len(argv) < 2:
+        usage()
+        return 2
+    binary = ORACLE if argv[0] == "oracle" else os.path.abspath(os.path.expanduser(argv[0]))
+    side = argv[1]
+    pattern = re.compile(argv[2] if len(argv) > 2 else ".*")
+    if not unit:
+        cmd = ["systemd-run", "--user", "--collect", "--wait", "--quiet", "--pipe",
+               "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0",
+               "--setenv=HOME=" + os.environ["HOME"], "--setenv=PATH=/usr/bin:/bin",
+               sys.executable, os.path.abspath(__file__), "--unit"] + argv
+        return subprocess.call(cmd)
+
+    State.binary = binary
+    State.base = os.path.join(ROOT, side)
+    State.ws = os.path.join(State.base, "ws")
+    State.ur = os.path.join(State.base, "ur")
+    State.tmp = os.path.join(State.base, "tmp")
+    os.makedirs(os.path.join(State.tmp, "home"), exist_ok=True)
+    os.makedirs(State.ur, exist_ok=True)
+    State.bazelrc = os.path.join(State.base, "test_bazelrc")
+    with open(State.bazelrc, "w") as f:
+        f.write("startup --output_user_root=%s\n" % State.ur)
+        f.write("startup --max_idle_secs=60\n")
+        f.write("common --repository_cache=%s\n" % os.path.join(CACHE, "repo-cache"))
+        f.write("common --repo_env=BAZEL_HTTP_RULES_URLS_AS_DEFAULT_CANONICAL_ID=0\n")
+        f.write("build --jobs=4\n")
+    State.log = open(os.path.join(State.base, "log.txt"), "w")
+    install_shims()
+    module = types.ModuleType("remote_repo_contents_cache_test")
+    module.__file__ = TEST_FILE
+    with open(TEST_FILE) as f:
+        code = compile(f.read(), TEST_FILE, "exec")
+    exec(code, module.__dict__)
+    cls = module.RemoteRepoContentsCacheTest
+    names = [n for n in sorted(dir(cls)) if n.startswith("test") and pattern.search(n)]
+    results = []
+    start_worker()
+    try:
+        for name in names:
+            reset_workspace()
+            log("=" * 30 + " " + name)
+            test = cls(name)
+            res = unittest.TestResult()
+            t0 = time.time()
+            test.run(res)
+            if res.skipped:
+                status, why = "SKIP", res.skipped[0][1]
+            elif res.failures or res.errors:
+                status = "FAIL"
+                why = (res.failures or res.errors)[0][1]
+            else:
+                status, why = "PASS", ""
+            lines = [l for l in why.strip().splitlines() if l.strip()]
+            msg = ""
+            for i, l in enumerate(lines):
+                if l.startswith("AssertionError") or l.startswith("Exception") or (
+                        "Error" in l.split(":")[0] and not l.startswith(" ")):
+                    msg = " | ".join(lines[i:i + 3])
+                    break
+            if not msg and lines:
+                msg = lines[-1]
+            results.append((name, status, msg))
+            log("RESULT %s %s %.0fs\n%s" % (name, status, time.time() - t0, why))
+            print("%s\t%s\t%.0fs\t%s" % (name, status, time.time() - t0, msg[:300]), flush=True)
+    finally:
+        reset_workspace()
+        stop_worker()
+        with open(os.path.join(State.base, "results.tsv"), "w") as f:
+            for r in results:
+                f.write("\t".join([r[0], r[1], r[2].replace("\t", " ")]) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

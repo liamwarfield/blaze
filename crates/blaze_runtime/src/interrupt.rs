@@ -117,6 +117,18 @@ impl InterruptSignalHandler {
     pub fn new(
         mut run: impl FnMut(&InterruptSignalHandlerRef) + Send + 'static,
     ) -> InterruptSignalHandler {
+        // sun.misc.Signal.handle: HotSpot's JVM_RegisterSignal leaves an ignored SIGINT ignored
+        // and installs nothing (a `--batch` build started in the background with SIGINT ignored
+        // is not interrupted by `kill -INT`; review cgroups round 2, C4). The old handler is
+        // SIG_IGN, so uninstall() changes nothing either.
+        // Java: com/google/devtools/build/lib/server/signal/InterruptSignalHandler.java:37 InterruptSignalHandler.<init>
+        if crate::jvm_signals::is_ignored(libc::SIGINT) {
+            return InterruptSignalHandler {
+                handle: InterruptSignalHandlerRef {
+                    old_handler: Arc::new(Mutex::new(None)),
+                },
+            };
+        }
         let mut fds: [libc::c_int; 2] = [-1, -1];
         // SAFETY: `fds` is a valid array of two ints.
         if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {

@@ -136,12 +136,14 @@ the credential cache lives as long as the process (Bazel: the server), so withou
 a second command calls the helper again. `--experimental_remote_scrubbing_config` is parsed by
 `blaze_optdefs`' `ScrubberConverter` and built by `scrubber.rs`.
 
-Pre-v3 server certificates (round 4): `authandtls/jdk_server_cert_verifier.rs` accepts nothing
-the JDK rejects; its expected verdicts are the oracle JDK's on 46 fixtures
-(`scripts/jdk-certs/run`, `tests/jdk_server_cert_fixtures_test.rs`). It is stricter than the JDK
-for non-DER encodings, wildcard common names, offsets and fractions in times, algorithm
-identifiers that differ only by NULL parameters, and chains with intermediates (each a
-`PORT: stricter` there).
+Server certificates (ruling D16, round 5): rustls' webpki verifier plus the JDK's direct trust
+(`authandtls/jdk_server_cert_verifier.rs`): a server certificate byte-identical to one in
+`--tls_certificate` is trusted without a chain, then its host name is checked. Blaze does not
+validate chains of X.509 v1/v2 certificates (refused with Blaze's own text; Bazel accepts them),
+so `remote_execution_tls_test` and `remote_execution_mtls_test` lose `test_remote_grpcs_cache`
+and `test_remote_grpc_cache` (declared gap). Signature algorithms are the oracle's Netty list as
+far as ring has them (no Ed25519). Fixtures: `tests/jdk_server_cert_fixtures_test.rs` (full
+handshakes, verdicts from the oracle's JDK by `scripts/jdk-certs/run`).
 
 Where Blaze is stricter than Bazel (ruling 2026-11-19, docs/decisions.md): TLS for remote
 endpoints uses rustls with the webpki verifier and no hand-written verifier, so an X.509 v1
@@ -165,7 +167,6 @@ where Bazel would enter it; none is silently ignored.
 | Content-defined chunking (`--experimental_remote_cache_chunking`) | `combined_cache.rs` `Chunking.*`, `uploadChunked`; `grpc_cache_client.rs` split/splice |
 | Remote output service (`--experimental_remote_output_service`); the "must be used with a cache" exit and the `--disk_cache` warning are ported | `remote_module.rs` setup, at Java's channel creation for it |
 | Remote downloader (`--experimental_remote_downloader`) | `remote_module.rs` setup; `blaze_runtime` `unported_options.rs` |
-| Remote repo contents cache (startup `--experimental_remote_repo_contents_cache` together with any cache) | `blaze_runtime` `build_remote.rs` `set_up_module` (`RemoteRepoContentsCacheImpl`) |
 | `--remote_max_connections` / `--remote_max_concurrency_per_connection` other than 100 with a gRPC endpoint (one HTTP/2 connection per endpoint, no `DynamicConnectionPool`); ignored for `--disk_cache` alone, as in Java | `remote_module.rs` `create_channel` |
 | `--experimental_remote_cache_lease_extension` with `--norewind_lost_inputs` (`RemoteLeaseExtension`); with the default `--rewind_lost_inputs` Java's "has no effect" warning is printed | `remote_module.rs` `executor_init` |
 | Disk cache garbage collection (`--experimental_disk_cache_gc_max_size` / `_max_age`, with `_idle_delay`): a server idle task, and Blaze has no server | `remote_module.rs` setup |
@@ -175,6 +176,15 @@ where Bazel would enter it; none is silently ignored.
 | Path mapping, persistent-worker signatures | `common/remote_path_resolver.rs`, `remote_execution_service.rs` |
 
 ## Known deviations (not loud; each by a ruling or listed for one)
+
+Work in progress (remote-5, not reviewed): the remote repo contents cache (startup
+`--experimental_remote_repo_contents_cache`) is ported up to the overlay file system
+(`remote_external_overlay_file_system.rs`), the cache (`remote_repo_contents_cache_impl.rs`) and
+its wiring; a cached repository is served from memory for loading (BUILD and .bzl files). NOT
+ported and NOT loud yet: the remote metadata of a source file of an in-memory repo
+(`FileStatusWithMetadata` through `FileStateValue` and the source artifact's value), with which
+Java prefetches such a file for a local action. A local action that reads a file of a repository
+served from the cache fails (the file is not on disk), where Bazel downloads it first.
 
 | What | Bazel 9.3.2 | Blaze | Why |
 |---|---|---|---|

@@ -789,17 +789,29 @@ fn unparsable_netrc_is_a_warning() {
 }
 
 // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:448 BazelRepositoryModule.beforeCommand
+// Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:448 BazelRepositoryModule.beforeCommand
 #[test]
-#[should_panic(
-    expected = "not ported yet: GoogleAuthUtils.newCredentialHelperProvider: --credential_helper=*.example.com=/bin/helper"
-)]
-fn credential_helper_fails_loudly() {
+fn credential_helper_is_set_up() {
     let s = Scratch::new();
     let command = Command::new(&s);
-    let _ = command.prepare(&[
-        "--repository_cache=",
-        "--credential_helper=*.example.com=/bin/helper",
-    ]);
+    // An absolute helper path is taken as it is (CommandLinePathFactory, case 2).
+    assert!(
+        command
+            .prepare(&[
+                "--repository_cache=",
+                "--credential_helper=*.example.com=/bin/helper",
+            ])
+            .is_ok()
+    );
+    // A helper name that is not on PATH fails the setup:
+    // "Error initializing credential helper" (CREDENTIALS_INIT_FAILURE).
+    assert_eq!(
+        err(command.prepare(&[
+            "--repository_cache=",
+            "--credential_helper=no-such-credential-helper-for-blaze",
+        ])),
+        "Error initializing credential helper"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------

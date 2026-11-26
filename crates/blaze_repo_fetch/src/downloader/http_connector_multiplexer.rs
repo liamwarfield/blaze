@@ -12,7 +12,7 @@ use super::http_stream::{HttpStream, HttpStreamFactory};
 use super::http_utils;
 use super::streams::Reconnector;
 use crate::authandtls::{Credentials, Headers};
-use crate::errors::IoException;
+use crate::errors::{IoException, IoExceptionKind};
 use crate::uri::JavaUri;
 
 /// `REQUEST_HEADERS`: not overridable by user provided headers.
@@ -88,18 +88,25 @@ impl HttpConnectorMultiplexer {
             let hf = header_function.clone();
             let extra: Headers = extra_headers.into_iter().collect();
             let combined: HeaderFunction = Arc::new(move |new_url: &JavaUri| {
-                let mut h = hf(new_url);
+                let mut h = hf(new_url)?;
                 for (k, v) in &extra {
-                    // ImmutableMap.Builder.buildOrThrow: duplicate keys are an error.
-                    if h.contains_key(k) {
-                        panic!(
-                            "IllegalArgumentException: Multiple entries with same key: {}",
-                            k
-                        );
+                    // ImmutableMap.Builder.buildOrThrow: duplicate keys are an error
+                    // (IllegalArgumentException, Guava's text: the later entry first).
+                    if let Some(earlier) = h.get(k) {
+                        return Err(IoException::of(
+                            IoExceptionKind::IllegalArgumentException,
+                            format!(
+                                "Multiple entries with same key: {}={} and {}={}",
+                                k,
+                                java_list_to_string(v),
+                                k,
+                                java_list_to_string(earlier)
+                            ),
+                        ));
                     }
                     h.insert(k.clone(), v.clone());
                 }
-                h
+                Ok(h)
             });
             connector.connect(&connection_url, &combined)
         });
@@ -119,6 +126,8 @@ pub fn get_header_function(
         let mut headers = base_headers.clone();
         match credentials.get_request_metadata(url) {
             Ok(m) => put_all_keeping_last(&mut headers, &m),
+            // Java catches IOException only: an IllegalArgumentException reaches the caller.
+            Err(e) if e.kind == IoExceptionKind::IllegalArgumentException => return Err(e),
             Err(e) => {
                 // If fetching credentials fails for any reason, still try to do the connection,
                 // not adding authentication information as we cannot look it up.
@@ -128,6 +137,11 @@ pub fn get_header_function(
                 )));
             }
         }
-        headers
+        Ok(headers)
     })
+}
+
+/// `List.toString()`: `[a, b]`.
+fn java_list_to_string(values: &[String]) -> String {
+    format!("[{}]", values.join(", "))
 }

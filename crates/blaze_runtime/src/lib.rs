@@ -23,7 +23,7 @@
 
 pub mod blaze_command_utils;
 pub mod bugreport;
-pub mod bzlmod_cycle_reporters;
+pub use blaze_sky_top::bzlmod_cycle_reporters;
 pub mod collect_local_resource_usage;
 pub mod command;
 pub mod command_environment;

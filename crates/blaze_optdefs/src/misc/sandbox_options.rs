@@ -466,10 +466,9 @@ impl SandboxOptions {
     }
 
     // Java: com/google/devtools/build/lib/sandbox/SandboxOptions.java:371 SandboxOptions.getLimits
-    /// `ImmutableMap<String, Double>` built with `buildKeepingLast`: the value of the last
-    /// occurrence of a key. Guava's map keeps the position of the last occurrence too; here a
-    /// repeated key keeps its first position (only lookups read the map, so the order is never
-    /// seen).
+    /// `ImmutableMap<String, Double>` built with `buildKeepingLast`: a repeated key keeps the
+    /// position of its first occurrence and the value of its last one (measured with the oracle's
+    /// Guava: `{""=default, Foo=foo, ""=generic}` builds `{=generic, Foo=foo}`).
     pub fn get_limits(&self) -> Vec<(String, f64)> {
         let mut map: Vec<(String, f64)> = vec![("memory".to_string(), self.memory_limit_mb as f64)];
         for (k, v) in &self.limits {

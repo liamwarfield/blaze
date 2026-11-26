@@ -91,7 +91,9 @@ pub fn install() {
                         if n <= 0 {
                             return;
                         }
-                        // Shutdown.exit(128 + signal): the shutdown hooks, then halt.
+                        // Shutdown.exit(128 + signal): the shutdown hooks, then halt; blocks
+                        // for good if a normal exit is already running the hooks.
+                        blaze_exec::worker::shutdown_hooks::begin_shutdown();
                         run_all_shutdown_hooks();
                         let _ = blaze_events::OutErr::system_out_err()
                             .get_error_stream()
@@ -118,7 +120,7 @@ pub fn install() {
 }
 
 /// `os::Posix::is_sig_ignored(sig)`: whether the current disposition of `signal` is `SIG_IGN`.
-fn is_ignored(signal: libc::c_int) -> bool {
+pub(crate) fn is_ignored(signal: libc::c_int) -> bool {
     // SAFETY: a zeroed sigaction is valid output storage; a null new action only queries.
     unsafe {
         let mut old: libc::sigaction = std::mem::zeroed();
@@ -137,6 +139,14 @@ fn is_ignored(signal: libc::c_int) -> bool {
 /// server's files are deleted.
 // Java: java/lang/Shutdown.java Shutdown.exit (JDK)
 pub fn run_all_shutdown_hooks() {
-    blaze_exec::worker::shutdown_hooks::run_shutdown_hooks();
-    blaze_server::shutdown_hooks::run_registered_shutdown_hooks();
+    // A panic in one list does not keep the other from running (each Java hook is a thread).
+    let exec_hooks =
+        std::panic::catch_unwind(blaze_exec::worker::shutdown_hooks::run_shutdown_hooks);
+    let server_hooks =
+        std::panic::catch_unwind(blaze_server::shutdown_hooks::run_registered_shutdown_hooks);
+    for result in [exec_hooks, server_hooks] {
+        if let Err(payload) = result {
+            blaze_exec::worker::shutdown_hooks::report_hook_panic(&*payload);
+        }
+    }
 }

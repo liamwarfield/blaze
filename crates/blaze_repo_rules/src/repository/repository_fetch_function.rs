@@ -11,9 +11,7 @@
 //! SkyFunction's thread; the memory-pressure `CancellationException` retry loop has nothing to
 //! retry.
 //!
-//! PORT: the remote repo contents cache (`RemoteRepoContentsCache`) is always null without
-//! remote cache options; its lookup and `addToCache` are skipped. The remote repository executor
-//! and the syscall cache are not passed to the context.
+//! PORT: the remote repository executor and the syscall cache are not passed to the context.
 
 use std::sync::Arc;
 
@@ -538,7 +536,30 @@ impl RepositoryFetchFunction {
                 }
             }
 
-            // PORT: remoteRepoContentsCache is always null (see the module comment).
+            if let Some(remote_repo_contents_cache) = &self.services.remote_repo_contents_cache {
+                match remote_repo_contents_cache.lookup_cache(
+                    repository_name,
+                    repo_root,
+                    &digest_writer.predeclared_input_hash,
+                    env,
+                )? {
+                    Ok(cache_hit) => {
+                        if env.values_missing() {
+                            return Ok(None);
+                        }
+                        if cache_hit {
+                            return Ok(Some(success(repo_root, exclude_repo_from_vendoring)));
+                        }
+                    }
+                    Err(e) => {
+                        env.listener().handle(&Event::warn(format!(
+                            "Remote repo contents cache lookup failed for {}: {}",
+                            repository_name,
+                            e.get_message()
+                        )));
+                    }
+                }
+            }
         }
 
         /* At this point: This is a force fetch, a local repository, OR The repository cache is old
@@ -588,7 +609,17 @@ impl RepositoryFetchFunction {
                         .into());
                     }
                 };
-                // PORT: remoteRepoContentsCache is always null (see the module comment).
+                if let Some(remote_repo_contents_cache) = &self.services.remote_repo_contents_cache
+                    && replant_symlinks_result.safe_for_remote_cache()
+                {
+                    remote_repo_contents_cache.add_to_cache(
+                        repository_name,
+                        repo_root,
+                        &digest_writer.marker_path,
+                        &digest_writer.predeclared_input_hash,
+                        env.listener(),
+                    )?;
+                }
                 let repo_contents_cache = &self.services.repo_contents_cache;
                 if repo_contents_cache.is_enabled()
                     && replant_symlinks_result.safe_for_local_cache()

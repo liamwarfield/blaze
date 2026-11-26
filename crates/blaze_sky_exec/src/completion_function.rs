@@ -6,6 +6,7 @@ use std::sync::Arc;
 use blaze_actions::Artifact;
 use blaze_collect::{NestedSet, NestedSetBuilder, NestedSetNode};
 use blaze_exec::actions::action_adapters::as_blaze_artifact;
+use blaze_exec::actions::action_execution::RootCause;
 use blaze_exec::actions::{ActionExecutionException, FileArtifactValue, TreeArtifactValue};
 use blaze_skyframe::{ComputeError, Environment, SkyFunctionException, SkyKey, Transience};
 use indexmap::{IndexMap, IndexSet};
@@ -860,25 +861,41 @@ fn compute_completion(
             }
             Err(Err(e)) => {
                 for c in e.get_root_causes() {
-                    root_causes.push(Some(c.label.clone()));
-                    // Java: com/google/devtools/build/lib/causes/ActionFailed.java:38 ActionFailed.<init>
-                    // PORT: blaze_exec's ActionFailed does not keep its DetailedExitCode; the
-                    // exception's failure detail stands for it (exact for the exception's own
-                    // cause, the failing action's).
-                    let failure_detail = e.get_failure_detail().cloned().unwrap_or_else(|| {
-                        blaze_util::unported!(
-                            "ActionFailed.getDetailedExitCode (no failure detail)"
-                        )
-                    });
-                    push_unique(
-                        &mut action_causes,
-                        CompletionRootCause::ActionFailed {
-                            exec_path: c.exec_path.clone(),
-                            label: Some(c.label.clone()),
-                            configuration_checksum: c.configuration_checksum.clone(),
-                            failure_detail,
-                        },
-                    );
+                    match c {
+                        RootCause::ActionFailed(c) => {
+                            root_causes.push(Some(c.label.clone()));
+                            // Java: com/google/devtools/build/lib/causes/ActionFailed.java:38 ActionFailed.<init>
+                            // PORT: blaze_exec's ActionFailed does not keep its
+                            // DetailedExitCode; the exception's failure detail stands for it
+                            // (exact for the exception's own cause, the failing action's).
+                            let failure_detail =
+                                e.get_failure_detail().cloned().unwrap_or_else(|| {
+                                    blaze_util::unported!(
+                                        "ActionFailed.getDetailedExitCode (no failure detail)"
+                                    )
+                                });
+                            push_unique(
+                                &mut action_causes,
+                                CompletionRootCause::ActionFailed {
+                                    exec_path: c.exec_path.clone(),
+                                    label: Some(c.label.clone()),
+                                    configuration_checksum: c.configuration_checksum.clone(),
+                                    failure_detail,
+                                },
+                            );
+                        }
+                        // Java: com/google/devtools/build/lib/causes/LabelCause.java:23 LabelCause
+                        RootCause::Label(c) => {
+                            root_causes.push(Some(c.label.clone()));
+                            push_unique(
+                                &mut action_causes,
+                                CompletionRootCause::Label {
+                                    label: c.label.clone(),
+                                    failure_detail: c.failure_detail.clone(),
+                                },
+                            );
+                        }
+                    }
                 }
                 // Prefer a catastrophic exception as the one we propagate.
                 let replace = match &first_action_execution_exception {

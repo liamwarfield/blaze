@@ -41,6 +41,9 @@ pub struct RepoServices {
     pub process_wrapper_graceful_sigterm: bool,
     /// Java `RepositoryFetchFunction.repoContentsCache`.
     pub repo_contents_cache: Arc<LocalRepoContentsCache>,
+    /// Java `RepositoryFetchFunction.remoteRepoContentsCache` (`setRemoteRepoContentsCache`).
+    pub remote_repo_contents_cache:
+        Option<Arc<dyn crate::repository::remote_helpers::RemoteRepoContentsCache>>,
 }
 
 impl RepoServices {

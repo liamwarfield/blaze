@@ -4,7 +4,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::{EvaluationContext, EvaluatorBuilder, FunctionHermeticity, Key, SkyFunctionName, SkyKey};
+use crate::{
+    EvaluationContext, EvaluatorBuilder, FunctionHermeticity, Key, SkyFunctionName, SkyKey,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Leaf(&'static str);

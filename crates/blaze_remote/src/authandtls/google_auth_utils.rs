@@ -419,22 +419,28 @@ fn rustls_client_config(
         format!("invalid {what}").into()
     };
     let mut roots = RootCertStore::empty();
+    // The trust file's certificates, for the JDK's direct trust (jdk_server_cert_verifier).
+    let mut trusted_certificates: Vec<CertificateDer<'static>> = Vec::new();
     match root_cert {
         Some(root_cert) => {
             let pem = to_x509_certificates(root_cert).map_err(|()| invalid("root certificate"))?;
             let certs = CertificateDer::pem_slice_iter(&pem).collect::<Result<Vec<_>, _>>()?;
+            trusted_certificates = certs.clone();
             roots.add_parsable_certificates(certs);
         }
         None => roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()),
     }
-    // PORT: Java's trust manager is the JDK's PKIX one, which also accepts a pre-v3 server
-    // certificate; rustls' webpki verifier, used for every v3 certificate, does not (see
-    // jdk_server_cert_verifier).
+    // PORT: Java's trust manager is the JDK's PKIX one; Blaze's is webpki plus the JDK's direct
+    // trust (ruling D16, see jdk_server_cert_verifier).
     let builder = builder
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(
-            super::jdk_server_cert_verifier::JdkServerCertVerifier::new(Arc::new(roots), provider)?
-                .with_requested_host(tls_domain),
+            super::jdk_server_cert_verifier::JdkServerCertVerifier::new(
+                Arc::new(roots),
+                trusted_certificates,
+                provider,
+            )?
+            .with_requested_host(tls_domain),
         ));
     let mut config = match (client_cert, client_key) {
         (Some(client_cert), Some(client_key)) => {

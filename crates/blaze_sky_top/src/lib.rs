@@ -21,6 +21,7 @@
     clippy::if_same_then_else
 )]
 
+pub mod action_artifact_cycle_reporter;
 pub mod action_conflict_exception;
 pub mod action_lookup_conflict_finding_function;
 pub mod action_template_expansion_function;
@@ -29,15 +30,16 @@ pub mod analysis_phase_runner;
 pub mod artifact_conflict_finder;
 pub mod build_tool;
 pub mod build_view;
+pub mod bzlmod_cycle_reporters;
 pub mod cycles_reporter;
 pub mod execution_phase;
 pub mod execution_seam;
+pub mod incremental;
 pub mod instrumentation_filter_support;
 pub mod pattern_expanding_error;
 pub mod project;
 pub mod skyframe_build_view;
 pub mod skyframe_error_processor;
-pub mod incremental;
 pub mod skyframe_executor;
 pub mod skyframe_progress_receiver;
 pub mod target_pattern_phase;

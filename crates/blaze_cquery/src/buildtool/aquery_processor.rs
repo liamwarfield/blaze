@@ -433,3 +433,118 @@ fn dumped_target(configured_target: &ConfiguredTarget) -> DumpedTarget {
         rule_class_string: Some(rule_configured_target.get_rule_class_string().to_owned()),
     }
 }
+
+/// `BuildTool.dumpSkyframeStateAfterBuild` (the build command's
+/// `--experimental_aquery_dump_after_build_format`).
+// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:774 BuildTool.dumpSkyframeStateAfterBuild
+pub struct DumpSkyframeStateAfterBuild {
+    pub reporter: Arc<dyn ExtendedEventHandler>,
+    /// `env.getOutputBase()`.
+    pub output_base: blaze_vfs::Path,
+    /// `besOptions.streamingLogFileUploads` (`--experimental_stream_log_file_uploads`).
+    pub streaming_log_file_uploads: bool,
+}
+
+// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:830 BuildTool.getDefaultOutputFileName
+fn get_default_output_file_name(format: &str) -> &'static str {
+    match format {
+        "proto" => "aquery_dump.proto",
+        "streamed_proto" => "aquery_dump.pb",
+        "textproto" => "aquery_dump.textproto",
+        "jsonproto" => "aquery_dump.json",
+        _ => panic!("IllegalArgumentException: Unsupported format type: {format}"),
+    }
+}
+
+impl blaze_sky_top::build_tool::AqueryDumpAfterBuild for DumpSkyframeStateAfterBuild {
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:774 BuildTool.dumpSkyframeStateAfterBuild
+    fn dump_skyframe_state_after_build(
+        &self,
+        skyframe_executor: &SkyframeExecutor,
+        _request: &BuildRequest,
+        format: &str,
+        output_file_path_fragment: Option<&blaze_vfs::PathFragment>,
+    ) -> Result<(), String> {
+        let local_output_file_path = match output_file_path_fragment {
+            None => {
+                let output_file_name = get_default_output_file_name(format);
+                if self.streaming_log_file_uploads {
+                    blaze_util::unported!(
+                        "BuildTool.dumpSkyframeStateAfterBuild",
+                        "--experimental_stream_log_file_uploads (BuildEventArtifactUploader \
+                         streaming of {})",
+                        output_file_name
+                    );
+                }
+                self.output_base.get_relative_str(output_file_name)
+            }
+            Some(fragment) => self.output_base.get_relative(fragment),
+        };
+
+        self.reporter.handle(&blaze_events::Event::info(format!(
+            "Writing aquery dump to {local_output_file_path}"
+        )));
+        // PORT: getReporter().post(new StartingAqueryDumpAfterBuildEvent(localOutputFilePath,
+        // outputFileName)) is not posted: no module of Bazel subscribes to it.
+
+        // initOutputStream(streamingContext, localOutputFilePath)
+        let output_stream = match local_output_file_path.get_output_stream() {
+            Ok(s) => s,
+            Err(e) => blaze_util::unported!(
+                "BuildTool.dumpSkyframeStateAfterBuild",
+                "PostExecutionDumpException(IOException) message for {}: {}",
+                local_output_file_path,
+                e
+            ),
+        };
+        let output: OutputStream = std::rc::Rc::new(std::cell::RefCell::new(
+            std::io::BufWriter::new(output_stream),
+        ));
+        let output_type =
+            match blaze_actions::skyframe::actiongraph::v2::aquery_output_handler::OutputType::from_string(
+                format,
+            ) {
+                Ok(t) => t,
+                Err(_) => {
+                    // catch (InvalidAqueryOutputFormatException e); try-with-resources closes
+                    // the output stream it opened.
+                    let _ = output.borrow_mut().flush();
+                    return Err(
+                        "--skyframe_state must be used with --output=proto|streamed_proto|textproto|jsonproto."
+                            .to_owned(),
+                    );
+                }
+            };
+        let mut aquery_output_handler =
+            crate::aquery::action_graph_proto_output_formatter_callback::construct_aquery_output_handler(
+                output_type,
+                output.clone(),
+            );
+        let result = (|| -> Result<(), ActionGraphDumpError> {
+            // These options are fixed for simplicity. We'll add more configurability if the need
+            // arises.
+            let mut action_graph_dump = ActionGraphDump::new(
+                /* include_action_cmd_line= */ false,
+                /* include_artifacts= */ true,
+                /* include_pruned_inputs= */ true,
+                /* action_filters= */ None,
+                /* include_param_files= */ false,
+                /* include_file_write_contents= */ false,
+                &mut *aquery_output_handler,
+            );
+            dump_action_graph(skyframe_executor, &mut action_graph_dump)?;
+            drop(action_graph_dump);
+            aquery_output_handler.close()?;
+            Ok(())
+        })();
+        let flushed = output.borrow_mut().flush();
+        match result.and(flushed.map_err(ActionGraphDumpError::Io)) {
+            Ok(()) => Ok(()),
+            Err(e) => blaze_util::unported!(
+                "BuildTool.dumpSkyframeStateAfterBuild",
+                "PostExecutionDumpException(e) message (Throwable.toString of the cause): {}",
+                e
+            ),
+        }
+    }
+}

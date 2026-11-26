@@ -21,48 +21,48 @@ pub fn core_options(config: &BuildConfigurationValue) -> &CoreOptions {
         .expect("NullPointerException: BuildConfigurationValue without CoreOptions")
 }
 
-// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:741 BuildConfigurationValue.allowAnalysisFailures
+// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:784 BuildConfigurationValue.allowAnalysisFailures
 pub fn allow_analysis_failures(config: &BuildConfigurationValue) -> bool {
     core_options(config).allow_analysis_failures
 }
 
-// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:731 BuildConfigurationValue.enforceConstraints
+// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:780 BuildConfigurationValue.enforceConstraints
 pub fn enforce_constraints(config: &BuildConfigurationValue) -> bool {
     core_options(config).enforce_constraints
 }
 
-// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:736 BuildConfigurationValue.enforceTransitiveVisibility
+// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:764 BuildConfigurationValue.enforceTransitiveVisibility
 pub fn enforce_transitive_visibility(config: &BuildConfigurationValue) -> bool {
     core_options(config).enforce_transitive_visibility
 }
 
-// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:745 BuildConfigurationValue.evaluatingForAnalysisTest
+// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:788 BuildConfigurationValue.evaluatingForAnalysisTest
 pub fn evaluating_for_analysis_test(config: &BuildConfigurationValue) -> bool {
     core_options(config).evaluating_for_analysis_test
 }
 
-// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:749 BuildConfigurationValue.analysisTestingDepsLimit
+// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:792 BuildConfigurationValue.analysisTestingDepsLimit
 pub fn analysis_testing_deps_limit(config: &BuildConfigurationValue) -> i32 {
     core_options(config).analysis_testing_deps_limit
 }
 
 /// Returns true if we should collect coverage data (`--collect_code_coverage`).
-// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:675 BuildConfigurationValue.isCodeCoverageEnabled
+// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:731 BuildConfigurationValue.isCodeCoverageEnabled
 pub fn is_code_coverage_enabled(config: &BuildConfigurationValue) -> bool {
     core_options(config).collect_code_coverage
 }
 
-// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:680 BuildConfigurationValue.shouldCollectCodeCoverageForGeneratedFiles
+// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:597 BuildConfigurationValue.shouldCollectCodeCoverageForGeneratedFiles
 pub fn should_collect_code_coverage_for_generated_files(config: &BuildConfigurationValue) -> bool {
     core_options(config).collect_code_coverage_for_generated_files
 }
 
-// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:690 BuildConfigurationValue.shouldInstrumentTestTargets
+// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:592 BuildConfigurationValue.shouldInstrumentTestTargets
 pub fn should_instrument_test_targets(config: &BuildConfigurationValue) -> bool {
     core_options(config).instrument_test_targets
 }
 
-// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:695 BuildConfigurationValue.getInstrumentationFilter
+// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:583 BuildConfigurationValue.getInstrumentationFilter
 pub fn instrumentation_filter_is_included(config: &BuildConfigurationValue, label: &str) -> bool {
     core_options(config)
         .instrumentation_filter
@@ -70,17 +70,17 @@ pub fn instrumentation_filter_is_included(config: &BuildConfigurationValue, labe
 }
 
 /// Returns the `--run_under` value, if any.
-// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:640 BuildConfigurationValue.getRunUnder
+// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:741 BuildConfigurationValue.getRunUnder
 pub fn get_run_under(config: &BuildConfigurationValue) -> Option<&RunUnder> {
     core_options(config).run_under.as_ref()
 }
 
-// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:647 BuildConfigurationValue.runUnderExecConfigForTests
+// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:746 BuildConfigurationValue.runUnderExecConfigForTests
 pub fn run_under_exec_config_for_tests(config: &BuildConfigurationValue) -> bool {
     core_options(config).bazel_test_exec_run_under
 }
 
-// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:808 BuildConfigurationValue.getActionListeners
+// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:796 BuildConfigurationValue.getActionListeners
 pub fn get_action_listeners(config: &BuildConfigurationValue) -> Vec<Label> {
     core_options(config)
         .action_listeners
@@ -89,17 +89,17 @@ pub fn get_action_listeners(config: &BuildConfigurationValue) -> Vec<Label> {
         .collect()
 }
 
-// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:870 BuildConfigurationValue.alwaysIncludeFilesToBuildInData
+// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:701 BuildConfigurationValue.alwaysIncludeFilesToBuildInData
 pub fn always_include_files_to_build_in_data(config: &BuildConfigurationValue) -> bool {
     core_options(config).always_include_files_to_build_in_data
 }
 
-// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:925 BuildConfigurationValue.useAutoExecGroups
+// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:505 BuildConfigurationValue.useAutoExecGroups
 pub fn use_auto_exec_groups(config: &BuildConfigurationValue) -> bool {
     core_options(config).use_auto_exec_groups
 }
 
-// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:574 BuildConfigurationValue.isSiblingRepositoryLayout
+// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:534 BuildConfigurationValue.isSiblingRepositoryLayout
 pub fn is_sibling_repository_layout(config: &BuildConfigurationValue) -> bool {
     config.sibling_repository_layout()
 }
@@ -112,24 +112,47 @@ pub fn modify_execution_info(
     mnemonic: &str,
 ) {
     let options = core_options(config);
-    // Java: ExecutionInfoModifier.apply(list, additive, mnemonic, executionInfo) changes nothing
-    // unless a modifier it applies matches the mnemonic.
-    if !blaze_optdefs::fragment::execution_info_modifier::ExecutionInfoModifier::matches_list(
-        &options.execution_info_modifier,
-        options.additive_modify_execution_info,
-        mnemonic,
-    ) {
+    // Java: ExecutionInfoModifier.apply(executionInfoList, isAdditive, mnemonic, executionInfo)
+    // Java: com/google/devtools/build/lib/analysis/config/ExecutionInfoModifier.java:165 ExecutionInfoModifier.apply
+    let list = &options.execution_info_modifier;
+    if list.is_empty() {
         return;
     }
-    // PORT: blaze_optdefs' ExecutionInfoModifier.apply works on a HashMap; Java mutates the
-    // caller's LinkedHashMap in place (insertion order reaches action keys).
-    let _ = execution_info;
-    blaze_util::unported!("BuildConfigurationValue.modifyExecutionInfo (ordered map)")
+    if options.additive_modify_execution_info {
+        for eim in list {
+            apply_execution_info_modifier(eim, mnemonic, execution_info);
+        }
+    } else {
+        apply_execution_info_modifier(list.last().unwrap(), mnemonic, execution_info);
+    }
+}
+
+/// `ExecutionInfoModifier.apply(mnemonic, executionInfo)` on the caller's insertion-ordered map
+/// (Java mutates a `LinkedHashMap` in place: `remove` keeps the other entries' order, `put` of a
+/// present key keeps its position).
+// Java: com/google/devtools/build/lib/analysis/config/ExecutionInfoModifier.java:182 ExecutionInfoModifier.apply
+fn apply_execution_info_modifier(
+    eim: &blaze_optdefs::fragment::execution_info_modifier::ExecutionInfoModifier,
+    mnemonic: &str,
+    execution_info: &mut IndexMap<String, String>,
+) {
+    for expr in eim.expressions() {
+        if expr
+            .pattern()
+            .matches(&blaze_util::string_encoding::internal_to_unicode(mnemonic))
+        {
+            if expr.remove() {
+                execution_info.shift_remove(expr.key());
+            } else {
+                execution_info.insert(expr.key().to_owned(), String::new());
+            }
+        }
+    }
 }
 
 /// `config.hasFragment(fragmentClass)` where the fragment class is named by its Java simple name
 /// (how `ConfigurationFragmentPolicy` names fragments in Blaze).
-// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:560 BuildConfigurationValue.hasFragment
+// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:650 BuildConfigurationValue.hasFragment
 pub fn has_fragment_named(config: &BuildConfigurationValue, simple_name: &str) -> bool {
     config
         .get_fragments()
@@ -188,7 +211,7 @@ pub fn to_build_configuration_info(
 
 /// A configuration as the action layer's `SpawnActionConfiguration` (the values
 /// `SpawnAction.Builder.build(owner, configuration)` reads from `BuildConfigurationValue`).
-// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:79 BuildConfigurationValue
+// Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:89 BuildConfigurationValue
 pub struct ConfigurationSpawnActionConfiguration(pub Arc<BuildConfigurationValue>);
 
 impl blaze_actions::analysis::actions::spawn_action::SpawnActionConfiguration
@@ -228,9 +251,21 @@ impl blaze_actions::analysis::actions::spawn_action::SpawnActionConfiguration
         ) {
             return execution_info.clone();
         }
-        // PORT: java-hash-order. Java applies the modifiers to a `HashMap` copy and returns
-        // `ImmutableMap.copyOf` of it, so the result iterates in Java `HashMap` order.
-        blaze_util::unported!("BuildConfigurationValue.modifiedExecutionInfo (java-hash-order)")
+        // modifiedExecutionInfoInterner.get(key): the loader applies the modifiers to a
+        // `new HashMap<>(executionInfo)` and returns `ImmutableSortedMap.copyOf` of it, so the
+        // result iterates in key order (String.compareTo: UTF-16 code units; internal strings
+        // hold one char per byte, whose UTF-8 byte order is the same).
+        // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:905 BuildConfigurationValue.modifiedExecutionInfoInterner
+        let mut mutable_copy = as_hash_map;
+        ExecutionInfoModifier::apply_list(
+            &options.execution_info_modifier,
+            options.additive_modify_execution_info,
+            mnemonic,
+            &mut mutable_copy,
+        );
+        let mut sorted: Vec<(String, String)> = mutable_copy.into_iter().collect();
+        sorted.sort_by(|a, b| a.0.cmp(&b.0));
+        sorted.into_iter().collect()
     }
 
     // Java: com/google/devtools/build/lib/analysis/actions/PathMappers.java:145 PathMappers.getOutputPathsMode

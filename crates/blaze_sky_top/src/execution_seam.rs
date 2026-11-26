@@ -383,17 +383,26 @@ pub fn get_all_artifacts_to_build_of_aspect(
         .get(&OUTPUT_GROUP_INFO.key())
         .map(|v| downcast_info::<OutputGroupInfo>(v).expect("OutputGroupInfo"));
     // Java: com/google/devtools/build/lib/analysis/TopLevelArtifactHelper.java:247 TopLevelArtifactHelper.getFilesToBuild
-    let files_to_build: Option<NestedSet<Artifact>> =
-        if let Some(file_provider) = providers.get_provider::<FileProvider>() {
-            Some(file_provider.get_files_to_build().clone())
-        } else if providers.get(&DEFAULT_INFO.key()).is_some() {
-            unported!(
-                "TopLevelArtifactHelper.getFilesToBuild",
-                "DefaultInfo.getFiles() of an aspect value"
-            )
-        } else {
-            None
-        };
+    let files_to_build: Option<NestedSet<Artifact>> = if let Some(file_provider) =
+        providers.get_provider::<FileProvider>()
+    {
+        Some(file_provider.get_files_to_build().clone())
+    } else if let Some(default_info_value) = providers.get(&DEFAULT_INFO.key()) {
+        let default_info = blaze_analysis::providers::default_info::DefaultInfo::from_value(
+            default_info_value.value(),
+        )
+        .expect("ClassCastException: DefaultInfo");
+        default_info.get_files().map(|files| {
+            blaze_analysis::rule::depsets::depset_to_artifacts(files, "files").unwrap_or_else(|e| {
+                panic!(
+                    "IllegalStateException: Error getting 'files' field of \
+                             'DefaultInfo': {e}"
+                )
+            })
+        })
+    } else {
+        None
+    };
     get_all_artifacts_to_build_of(output_group_info, files_to_build.as_ref())
 }
 

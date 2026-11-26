@@ -77,6 +77,32 @@ pub struct ActionFailed {
     pub configuration_checksum: Option<String>,
 }
 
+/// `LabelCause` (lib/causes): a failure attributed to a label, such as a missing source input.
+// Java: com/google/devtools/build/lib/causes/LabelCause.java:23 LabelCause
+#[derive(Clone, Debug, PartialEq)]
+pub struct LabelCause {
+    pub label: Label,
+    /// The `DetailedExitCode`'s failure detail.
+    pub failure_detail: FailureDetail,
+}
+
+impl LabelCause {
+    /// `getMessage()`: the message of the detailed exit code's failure detail.
+    // Java: com/google/devtools/build/lib/causes/LabelCause.java:42 LabelCause.getMessage
+    pub fn get_message(&self) -> &str {
+        &self.failure_detail.message
+    }
+}
+
+/// A root cause of an `ActionExecutionException` (Java's `Cause` interface; the two
+/// implementations execution produces).
+// Java: com/google/devtools/build/lib/causes/Cause.java:22 Cause
+#[derive(Clone, Debug, PartialEq)]
+pub enum RootCause {
+    ActionFailed(ActionFailed),
+    Label(LabelCause),
+}
+
 /// A snapshot of the parts of the failed action that consumers of an
 /// `ActionExecutionException` read (`getAction()`): owner label, configuration, primary output,
 /// mnemonic, and the owner's location.
@@ -117,7 +143,7 @@ pub struct ActionExecutionException {
     message: String,
     cause: Option<String>,
     action: Option<FailedActionInfo>,
-    root_causes: Vec<ActionFailed>,
+    root_causes: Vec<RootCause>,
     catastrophe: bool,
     failure_detail: Option<FailureDetail>,
     /// This is an `AlreadyReportedActionExecutionException`: the error was already shown.
@@ -192,7 +218,7 @@ impl ActionExecutionException {
     pub fn with_root_causes(
         message: impl Into<String>,
         action: Option<FailedActionInfo>,
-        root_causes: Vec<ActionFailed>,
+        root_causes: Vec<RootCause>,
         catastrophe: bool,
         failure_detail: Option<FailureDetail>,
     ) -> ActionExecutionException {
@@ -212,14 +238,14 @@ impl ActionExecutionException {
     }
 
     // Java: com/google/devtools/build/lib/actions/ActionExecutionException.java:106 ActionExecutionException.rootCausesFromAction
-    fn root_causes_from_action(action: Option<&FailedActionInfo>) -> Vec<ActionFailed> {
+    fn root_causes_from_action(action: Option<&FailedActionInfo>) -> Vec<RootCause> {
         match action {
             Some(a) => match &a.owner_label {
-                Some(label) => vec![ActionFailed {
+                Some(label) => vec![RootCause::ActionFailed(ActionFailed {
                     exec_path: a.primary_output.clone(),
                     label: label.clone(),
                     configuration_checksum: a.configuration_checksum.clone(),
-                }],
+                })],
                 None => Vec::new(),
             },
             None => Vec::new(),
@@ -343,7 +369,7 @@ impl ActionExecutionException {
     }
 
     /// `getRootCauses()`.
-    pub fn get_root_causes(&self) -> &[ActionFailed] {
+    pub fn get_root_causes(&self) -> &[RootCause] {
         &self.root_causes
     }
 

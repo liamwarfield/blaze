@@ -379,6 +379,19 @@ pub struct SkyframeActionExecutor {
 struct ProgressReportingObjects {
     progress_supplier: Option<Arc<dyn ProgressSupplier>>,
     completion_receiver: Option<Arc<dyn ActionCompletedReceiver>>,
+    /// `statusReporterRef` (`@Nullable`).
+    status_reporter: Option<Arc<dyn ActionStatusReporter>>,
+}
+
+/// The `ActionExecutionStatusReporter` as the action runner uses it.
+///
+/// PORT: the reporter lives in blaze_buildtool, above this crate; it implements this view.
+// Java: com/google/devtools/build/lib/actions/ActionExecutionStatusReporter.java:49 ActionExecutionStatusReporter
+pub trait ActionStatusReporter: Send + Sync {
+    /// `updateStatus(ActionStartedEvent)`.
+    fn update_status(&self, event: &ActionStartedEvent);
+    /// `remove(action)`.
+    fn remove(&self, action: &ActionRef);
 }
 
 /// An object supplying data for action execution progress reporting.
@@ -445,10 +458,19 @@ impl SkyframeActionExecutor {
         progress_supplier: Option<Arc<dyn ProgressSupplier>>,
         completion_receiver: Option<Arc<dyn ActionCompletedReceiver>>,
     ) {
-        *self.progress_reporting.write() = ProgressReportingObjects {
-            progress_supplier,
-            completion_receiver,
-        };
+        let mut objects = self.progress_reporting.write();
+        objects.progress_supplier = progress_supplier;
+        objects.completion_receiver = completion_receiver;
+    }
+
+    /// The `statusReporter` argument of Java's `setActionExecutionProgressReportingObjects`
+    /// (`statusReporterRef.set(statusReporter)`).
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3114 SkyframeExecutor.setActionExecutionProgressReportingObjects
+    pub fn set_action_execution_status_reporter(
+        &self,
+        status_reporter: Option<Arc<dyn ActionStatusReporter>>,
+    ) {
+        self.progress_reporting.write().status_reporter = status_reporter;
     }
 
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1488 SkyframeActionExecutor.prependExecPhaseStats
@@ -848,6 +870,14 @@ impl SkyframeActionExecutor {
         store
     }
 
+    /// `outputService.getOutputChecker()`: the remote module's checker, or `TRUST_LOCAL_ONLY`.
+    pub fn get_output_checker(&self) -> Arc<dyn OutputChecker> {
+        match &self.output_checker {
+            Some(checker) => checker.clone(),
+            None => Arc::new(TrustLocalOnly),
+        }
+    }
+
     /// The command's `TimestampGranularityMonitor` (Java: the `tsgm` the executor hands every
     /// `ActionOutputMetadataStore`). Set once per executor.
     pub fn set_timestamp_granularity_monitor(&self, tsgm: Arc<TimestampGranularityMonitor>) {
@@ -1041,10 +1071,18 @@ impl SkyframeActionExecutor {
                 self.prepend_exec_phase_stats(&message),
             ));
         }
-        env.listener().post(Arc::new(ActionStartedEvent {
+        // ActionRunner.<init>: this.statusReporter = statusReporterRef.get()
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1081 ActionRunner.<init>
+        let status_reporter = self.progress_reporting.read().status_reporter.clone();
+        let event = ActionStartedEvent {
             action: action.clone(),
             nano_time_start: action_start_time,
-        }));
+        };
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1120 ActionRunner.run
+        if let Some(status_reporter) = &status_reporter {
+            status_reporter.update_status(&event);
+        }
+        env.listener().post(Arc::new(event));
         let result: Result<ActionExecutionValue, ExecutionFailure> = (|| {
             let Some(executable) = as_executable(action.as_ref()) else {
                 blaze_util::unported!(&format!(
@@ -1093,6 +1131,9 @@ impl SkyframeActionExecutor {
             self.execute_action_inner(env.listener(), action, &context)
         })();
         // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1199 ActionRunner.notifyActionCompletion
+        if let Some(status_reporter) = &status_reporter {
+            status_reporter.remove(action);
+        }
         env.listener().post(Arc::new(ActionCompletionEvent {
             related_time_start: action_start_time,
             finish_time: Instant::now(),

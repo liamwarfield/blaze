@@ -73,6 +73,23 @@ impl PseudoAction {
         }
     }
 
+    /// [`PseudoAction::new`] with the UUID as (least significant bits, most significant bits).
+    pub fn with_uuid_bits(
+        uuid: (i64, i64),
+        owner: ActionOwner,
+        inputs: NestedSet<Artifact>,
+        outputs: Vec<Artifact>,
+        mnemonic: String,
+        info: PseudoActionInfo,
+    ) -> PseudoAction {
+        PseudoAction {
+            base: AbstractAction::new(owner, inputs, outputs),
+            uuid,
+            mnemonic,
+            info,
+        }
+    }
+
     // Java: com/google/devtools/build/lib/analysis/PseudoAction.java:95 PseudoAction.getInfo
     pub fn get_info(&self) -> &PseudoActionInfo {
         &self.info
@@ -100,6 +117,21 @@ fn parse_uuid(s: &str) -> (i64, i64) {
     );
     let most = u64::from_str_radix(&hex[..16], 16).expect("UUID") as i64;
     let least = u64::from_str_radix(&hex[16..], 16).expect("UUID") as i64;
+    (least, most)
+}
+
+/// `UUID.nameUUIDFromBytes(name)`: the version 3 (MD5) UUID of the bytes, as (least
+/// significant bits, most significant bits).
+// Java: java/util/UUID.java UUID.nameUUIDFromBytes
+pub fn name_uuid_from_bytes(name: &[u8]) -> (i64, i64) {
+    use md5::Digest as _;
+    let mut md5_bytes = md5::Md5::digest(name).to_vec();
+    md5_bytes[6] &= 0x0f; /* clear version        */
+    md5_bytes[6] |= 0x30; /* set to version 3     */
+    md5_bytes[8] &= 0x3f; /* clear variant        */
+    md5_bytes[8] |= 0x80; /* set to IETF variant  */
+    let most = i64::from_be_bytes(md5_bytes[0..8].try_into().unwrap());
+    let least = i64::from_be_bytes(md5_bytes[8..16].try_into().unwrap());
     (least, most)
 }
 
@@ -145,7 +177,18 @@ impl Action for PseudoAction {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_uuid;
+    use super::{name_uuid_from_bytes, parse_uuid};
+
+    /// `UUID.nameUUIDFromBytes("".getBytes())` is d41d8cd9-8f00-3204-a980-0998ecf8427e (the MD5
+    /// of the empty string with version 3 and the IETF variant set).
+    #[test]
+    fn name_uuid_from_bytes_of_empty_input() {
+        let (least, most) = name_uuid_from_bytes(b"");
+        assert_eq!(
+            (least, most),
+            parse_uuid("d41d8cd9-8f00-3204-a980-0998ecf8427e")
+        );
+    }
 
     /// `UUID.fromString("8d720129-bc1a-481f-8c4c-dbe11dcef319")`: most significant bits
     /// 0x8d720129bc1a481f, least 0x8c4cdbe11dcef319.

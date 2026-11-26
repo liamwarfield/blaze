@@ -54,7 +54,7 @@ fn fixture() -> Fixture {
 }
 
 fn no_headers() -> HeaderFunction {
-    Arc::new(|_| Headers::new())
+    Arc::new(|_| Ok(Headers::new()))
 }
 
 fn server() -> (TcpListener, u16) {
@@ -130,7 +130,7 @@ fn normal_request() {
     let hf: HeaderFunction = Arc::new(|_| {
         let mut m = Headers::new();
         m.insert("Content-Encoding".to_string(), vec!["gzip".to_string()]);
-        m
+        Ok(m)
     });
     let c = connect(&f, &format!("http://localhost:{}/boo", port), &hf).unwrap();
     assert_eq!(read_body(c), b"hello");
@@ -465,7 +465,7 @@ fn redirect_to_different_server_works(code: &str) {
         } else if url.get_port() == port2 as i32 {
             m.insert("Authentication".to_string(), vec![basic2.to_string()]);
         }
-        m
+        Ok(m)
     });
     let f = fixture();
     let c = connect(&f, &format!("http://localhost:{}", port1), &auth_headers).unwrap();

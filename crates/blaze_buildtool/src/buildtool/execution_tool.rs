@@ -614,6 +614,7 @@ pub fn prepare_for_execution_with_action_cache(
         package_path_entries: config.package_path_entries.clone(),
         repo_contents_cache_path: config.repo_contents_cache_path.clone(),
         test_arguments: config.test_arguments.clone(),
+        jobs: Some(config.jobs as i32),
     };
     // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:1010 ExecutionTool.configureResourceManager
     configure_resource_manager(&env.resource_manager, &env.execution_options);

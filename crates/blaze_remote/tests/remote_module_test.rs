@@ -30,6 +30,7 @@ use blaze_remote::common::{
     ActionKey, BytesBlob, CacheNotFoundException, FileBlob, RemoteActionExecutionContext,
     RemoteCacheClient,
 };
+use blaze_remote::disk::CollectionPolicy;
 use blaze_remote::grpc_cache_client::GrpcCacheClient;
 use blaze_remote::grpc_remote_executor::GrpcRemoteExecutor;
 use blaze_remote::hooks::RemoteHooks;
@@ -562,14 +563,48 @@ fn disk_cache_garbage_collection_idle_task_disabled() {
         disk_cache_dir.get_path_string()
     )]);
 
-    // `assertThat(env.getIdleTasks()).isEmpty()`: no garbage collection is requested, so setup
-    // succeeds (Blaze has no idle tasks; a requested collection fails loudly, see below).
-    assert!(before_command(&env, remote_options).is_ok());
+    let mut module = before_command(&env, remote_options).unwrap();
+
+    // `assertThat(env.getIdleTasks()).isEmpty()`: the module hands its idle task to the
+    // runtime, which adds it to the command environment.
+    assert!(module.take_disk_cache_gc_idle_task().is_none());
 }
 
 #[test]
-#[ignore = "server idle tasks are not ported (Blaze has no server): a disk cache garbage collection policy fails loudly at setup (disk_cache_gc_policy_fails_loudly)"]
-fn disk_cache_garbage_collection_idle_task_enabled() {}
+fn disk_cache_garbage_collection_idle_task_enabled() {
+    let env = TestEnv::new();
+    let disk_cache_dir = env.root.get_relative_str("disk_cache");
+    let mut remote_options = parse_remote_options(&[&format!(
+        "--disk_cache={}",
+        disk_cache_dir.get_path_string()
+    )]);
+    remote_options.disk_cache_gc_idle_delay = Duration::from_secs(2 * 60);
+    remote_options.disk_cache_gc_max_size = 1234567890;
+    remote_options.disk_cache_gc_max_age = Duration::from_secs(7 * 24 * 60 * 60);
+
+    let mut module = before_command(&env, remote_options).unwrap();
+
+    // `env.getIdleTasks()` has the one task the module created.
+    let idle_task = module
+        .take_disk_cache_gc_idle_task()
+        .expect("DiskCacheGarbageCollectorIdleTask");
+    assert!(module.take_disk_cache_gc_idle_task().is_none());
+    assert_eq!(idle_task.delay(), Duration::from_secs(2 * 60));
+    assert_eq!(
+        idle_task
+            .get_garbage_collector()
+            .get_root()
+            .get_path_string(),
+        disk_cache_dir.get_path_string()
+    );
+    assert_eq!(
+        idle_task.get_garbage_collector().get_policy(),
+        &CollectionPolicy::new(
+            Some(1234567890),
+            Some(Duration::from_secs(7 * 24 * 60 * 60))
+        )
+    );
+}
 
 #[test]
 #[ignore = "needs RepositoryRemoteHelpersFactory (the remote repository contents cache is not ported)"]
@@ -897,19 +932,6 @@ fn invalid_tls_certificate_fails_calls_not_setup() {
         e.to_string(),
         "Failed to init TLS infrastructure using '/nonexistent/ca.pem' as root certificate: File does not contain valid certificates: /nonexistent/ca.pem"
     );
-}
-
-#[test]
-#[should_panic(expected = "not ported yet: DiskCacheGarbageCollectorIdleTask.create")]
-fn disk_cache_gc_policy_fails_loudly() {
-    let env = TestEnv::new();
-    let disk_cache_dir = env.root.get_relative_str("disk_cache");
-    let mut remote_options = parse_remote_options(&[
-        &format!("--disk_cache={}", disk_cache_dir.get_path_string()),
-        "--experimental_disk_cache_gc_max_size=1234567890",
-    ]);
-    remote_options.disk_cache_gc_idle_delay = Duration::from_secs(120);
-    let _ = before_command(&env, remote_options);
 }
 
 #[test]

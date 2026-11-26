@@ -70,6 +70,37 @@ impl fmt::Display for AbruptExitException {
 
 impl std::error::Error for AbruptExitException {}
 
+/// A registry of the strategies of dynamic execution (Java's interface, which
+/// `SpawnStrategyRegistry` implements; tests replace it).
+// Java: com/google/devtools/build/lib/actions/DynamicStrategyRegistry.java:20 DynamicStrategyRegistry
+pub trait DynamicStrategyRegistry: Send + Sync {
+    /// The strategies of `dynamic_mode` for `spawn`.
+    // Java: com/google/devtools/build/lib/actions/DynamicStrategyRegistry.java:47 DynamicStrategyRegistry.getDynamicSpawnActionContexts
+    fn get_dynamic_spawn_action_contexts(
+        &self,
+        spawn: &dyn Spawn,
+        dynamic_mode: DynamicMode,
+    ) -> Vec<Arc<dyn SpawnStrategy>>;
+
+    /// Notifies the dynamic strategies that they are used.
+    // Java: com/google/devtools/build/lib/actions/DynamicStrategyRegistry.java:55 DynamicStrategyRegistry.notifyUsedDynamic
+    fn notify_used_dynamic(&self, action_context_registry: Option<&dyn ActionContextRegistry>);
+}
+
+impl DynamicStrategyRegistry for SpawnStrategyRegistry {
+    fn get_dynamic_spawn_action_contexts(
+        &self,
+        spawn: &dyn Spawn,
+        dynamic_mode: DynamicMode,
+    ) -> Vec<Arc<dyn SpawnStrategy>> {
+        SpawnStrategyRegistry::get_dynamic_spawn_action_contexts(self, spawn, dynamic_mode)
+    }
+
+    fn notify_used_dynamic(&self, action_context_registry: Option<&dyn ActionContextRegistry>) {
+        SpawnStrategyRegistry::notify_used_dynamic(self, action_context_registry)
+    }
+}
+
 /// `DynamicStrategyRegistry.DynamicMode`.
 // Java: com/google/devtools/build/lib/actions/DynamicStrategyRegistry.java:27 DynamicStrategyRegistry.DynamicMode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

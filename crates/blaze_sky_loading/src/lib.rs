@@ -48,6 +48,7 @@ pub mod build_file_name;
 pub mod bundled_fs;
 pub mod bzl_compile;
 pub mod bzl_load;
+pub mod compile_one_dependency_transformer;
 pub mod containing_package_lookup;
 pub mod directories;
 pub mod directory_listing;

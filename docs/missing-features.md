@@ -32,7 +32,7 @@ Partly ported:
 
 | Command | Missing |
 | --- | --- |
-| `print_action` | ported for targets (output equal to Bazel's on a cc_library and on brotli's `//:brotlidec`); missing: `--compile_one_dependency` (the target pattern phase's `CompileOneDependencyTransformer`) |
+| `print_action` | ported, also with `--compile_one_dependency` (output equal to Bazel's on a cc_library and on brotli's `//:brotlidec`) |
 | `mod` | `dump_repo_mapping`, `show_repo` and `tidy` ported after v0.1.0 (133 cases: equal in 89 after the tool's exclusion rules, 40 fail the same way on both sides, 4 differ; upstream tests not run yet); missing: `show_repo` proto output for three attribute types |
 | `help`, `fetch`, `canonicalize-flags`, `license` | ported after v0.1.0 (137 invocations, equal after normalisation: 120 identical, 13 of them by declared exit code, 16 fail identically on both sides, 1 different; binary sha256 `315c2147…`; upstream test counts to be re-measured); missing: `fetch --force` with target patterns |
 | `info` | 15 of 57 compared cases: `info` with no key, JVM-only keys (heap sizes, `java-home`), `build-language`, `peak-heap-size`, `starlark-semantics` |
@@ -92,10 +92,9 @@ Partly ported:
 - `--target_environment` and environment constraint checks.
 - Analysis-failure testing (`allow_analysis_failures`, analysis-test transitions).
 - `ctx.resolve_command`, `ctx.resolve_tools`, `ctx.actions.do_nothing`,
-  `ctx.actions.map_directory`, shadowed actions, `ctx.actions.transform_info_file`.
+  `ctx.actions.map_directory`, `ctx.actions.transform_info_file`.
 - Coverage: `--collect_code_coverage`, instrumented-files providers, baseline coverage,
   the coverage report action, the instrumentation filter.
-- `--compile_one_dependency`.
 - `--toolchain_resolution_debug`.
 - Path mapping (`--experimental_output_paths=strip`).
 - Remote analysis caching (`--experimental_remote_analysis_cache_mode`).

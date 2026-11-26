@@ -360,8 +360,15 @@ impl BlazeRuntime {
             }
         }
         // PORT: Rust has no shutdown hooks; the registered ShutdownHooks run here, as the JVM
-        // runs them in System.exit.
-        blaze_server::shutdown_hooks::run_registered_shutdown_hooks();
+        // runs them in System.exit (which holds the shutdown lock: a signal arriving now waits,
+        // see blaze_exec::worker::shutdown_hooks::begin_shutdown). The worker and cgroup hooks
+        // run from the atexit handler of std::process::exit, on this thread.
+        blaze_exec::worker::shutdown_hooks::begin_shutdown();
+        if let Err(payload) =
+            std::panic::catch_unwind(blaze_server::shutdown_hooks::run_registered_shutdown_hooks)
+        {
+            blaze_exec::worker::shutdown_hooks::report_hook_panic(&*payload);
+        }
         let _ = OutErr::system_out_err().get_error_stream().flush();
         let _ = OutErr::system_out_err().get_output_stream().flush();
         std::process::exit(exit_code)
@@ -999,10 +1006,35 @@ impl BlazeRuntime {
         // digest function of --digest_function (its converter only accepts SHA-256, the only
         // function ported) and --unix_digest_hash_attribute_name.
         // Java: com/google/devtools/build/lib/bazel/BazelFileSystemModule.java:90 BazelFileSystemModule.getFileSystem
-        let fs: FileSystemRef = Arc::new(UnixFileSystem::with_hash_attribute_name(
+        let native_fs: FileSystemRef = Arc::new(UnixFileSystem::with_hash_attribute_name(
             blaze_vfs::DigestHashFunction::Sha256,
             startup_options.unix_digest_hash_attribute_name.clone(),
         ));
+
+        // FileSystem maybeFsForBuildArtifacts: the one module that returns one is RemoteModule
+        // (getFileSystemForBuildArtifacts), with --experimental_remote_repo_contents_cache. Its
+        // overlay is registered as the materializer of the repository rules
+        // (StarlarkBaseExternalContext's `instanceof RemoteExternalOverlayFileSystem`).
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1383 BlazeRuntime.newRuntime
+        // Java: com/google/devtools/build/lib/remote/RemoteModule.java:219 RemoteModule.getFileSystemForBuildArtifacts
+        let use_remote_repo_contents_cache = options
+            .get_options::<blaze_optdefs::misc::remote_startup_options::RemoteStartupOptions>()
+            .is_some_and(|o| o.use_remote_repo_contents_cache);
+        let fs: FileSystemRef = if use_remote_repo_contents_cache {
+            let overlay = Arc::new(
+                blaze_remote::remote_external_overlay_file_system::RemoteExternalOverlayFileSystem::new(
+                    output_base.get_relative(&blaze_cmdline::label_constants::EXTERNAL_REPOSITORY_LOCATION),
+                    native_fs,
+                ),
+            );
+            blaze_repo_rules::repository::remote_helpers::set_remote_repo_materializer(Some(
+                overlay.clone(),
+            ));
+            overlay
+        } else {
+            blaze_repo_rules::repository::remote_helpers::set_remote_repo_materializer(None);
+            native_fs
+        };
 
         // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1396 BlazeRuntime.newRuntime
         if startup_options.lock_install_base {

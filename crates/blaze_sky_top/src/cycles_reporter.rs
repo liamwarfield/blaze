@@ -5,10 +5,10 @@
 //! (`blaze_skyframe`); they are kept here, next to the only reporters that exist, until that
 //! crate takes them.
 //!
-//! Java's `SkyframeExecutor.createCyclesReporter` registers seven reporters. Only
-//! `TargetCycleReporter` is ported. A cycle it does not report reaches `unported!` (it names the
-//! six missing reporters) instead of Java's "could not be properly displayed" fallback, because
-//! that fallback is only right when none of the seven reports the cycle.
+//! Java's `SkyframeExecutor.createCyclesReporter` registers seven reporters; not all are ported
+//! (see `SkyframeExecutor::new`). A cycle no registered reporter reports reaches `unported!`
+//! instead of Java's "could not be properly displayed" fallback, because that fallback is only
+//! right when none of the seven reports the cycle.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -124,14 +124,12 @@ impl CyclesReporter {
         }
 
         // PORT: Java falls back to "Cycle detected but could not be properly displayed due to an
-        // internal problem" once all seven reporters declined. Six of them are not ported, so
-        // the cycle may be one of theirs.
+        // internal problem" once all seven reporters declined. Not all of them are registered
+        // here (see SkyframeExecutor::new), so the cycle may be one of theirs.
         blaze_util::unported!(
             "CyclesReporter.maybeReportCycle",
-            "a cycle TargetCycleReporter does not report (ActionArtifactCycleReporter, \
-             TestExpansionCycleReporter, RegisteredToolchainsCycleReporter, \
-             RegisteredExecutionPlatformsCycleReporter, BzlLoadCycleReporter and \
-             BzlmodRepoCycleReporter are not ported): {}",
+            "a cycle none of the registered reporters reports (TestExpansionCycleReporter is \
+             not ported): {}",
             print_arbitrary_cycle(top_level_key, cycle_info, already_reported)
         )
     }
@@ -302,14 +300,156 @@ pub fn print_cycle(
     cycle_value.expect("non-empty cycle").clone()
 }
 
+/// Reports cycles between skyframe values whose keys contain `Label`s (for example, targets
+/// and actions).
+///
+/// PORT: Java's abstract base class; its template method `maybeReportCycle` is
+/// [`label_maybe_report_cycle`], which each subclass's `SingleCycleReporter` implementation calls.
+// Java: com/google/devtools/build/lib/skyframe/AbstractLabelCycleReporter.java:38 AbstractLabelCycleReporter
+pub trait AbstractLabelCycleReporter {
+    fn package_provider(&self) -> &Arc<SkyframePackageManager>;
+
+    /// Returns the associated Label of the SkyKey.
+    // Java: com/google/devtools/build/lib/skyframe/AbstractLabelCycleReporter.java:47 AbstractLabelCycleReporter.getLabel
+    fn get_label(&self, key: &SkyKey) -> Label;
+
+    // Java: com/google/devtools/build/lib/skyframe/AbstractLabelCycleReporter.java:49 AbstractLabelCycleReporter.canReportCycle
+    fn can_report_cycle(&self, top_level_key: &SkyKey, cycle_info: &CycleInfo) -> bool;
+
+    /// Returns the String representation of the `SkyKey`.
+    ///
+    /// PORT: both subclasses override Java's default (the label of an `ActionLookupKey`, else
+    /// `getLabel(key)`), so it is required here.
+    // Java: com/google/devtools/build/lib/skyframe/AbstractLabelCycleReporter.java:52 AbstractLabelCycleReporter.prettyPrint
+    fn pretty_print(&self, key: &SkyKey) -> String;
+
+    /// Can be used to skip individual keys on the path to the cycle.
+    // Java: com/google/devtools/build/lib/skyframe/AbstractLabelCycleReporter.java:60 AbstractLabelCycleReporter.shouldSkipOnPathToCycle
+    fn should_skip_on_path_to_cycle(&self, _key: &SkyKey) -> bool {
+        false
+    }
+
+    /// Can be used to skip intermediate keys on the cycle itself.
+    // Java: com/google/devtools/build/lib/skyframe/AbstractLabelCycleReporter.java:65 AbstractLabelCycleReporter.shouldSkipIntermediateKeyOnCycle
+    fn should_skip_intermediate_key_on_cycle(&self, _key: &SkyKey) -> bool {
+        false
+    }
+
+    /// Can be used to report an additional message about the cycle.
+    // Java: com/google/devtools/build/lib/skyframe/AbstractLabelCycleReporter.java:76 AbstractLabelCycleReporter.getAdditionalMessageAboutCycle
+    fn get_additional_message_about_cycle(
+        &self,
+        _event_handler: &Arc<dyn ExtendedEventHandler>,
+        _top_level_key: &SkyKey,
+        _cycle_info: &CycleInfo,
+    ) -> String {
+        String::new()
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/AbstractLabelCycleReporter.java:174 AbstractLabelCycleReporter.getTargetForLabel
+    fn get_target_for_label(
+        &self,
+        event_handler: &Arc<dyn ExtendedEventHandler>,
+        label: &Label,
+    ) -> Target {
+        // Java: com/google/devtools/build/lib/pkgcache/PackageProvider.java:36 TargetProvider.getTarget
+        let package = match self
+            .package_provider()
+            .get_package(event_handler.clone(), label.get_package_identifier())
+        {
+            Ok(package) => package,
+            // This method is used for getting the target from a label in a circular dependency.
+            // If we have a cycle that means that we need to have accessed the target (to get its
+            // dependencies). So all the labels in a dependency cycle need to exist.
+            Err(NoSuchPackageOrInterrupted::NoSuchPackage(e)) => {
+                panic!("IllegalStateException: {}", e)
+            }
+            Err(NoSuchPackageOrInterrupted::Interrupted) => {
+                panic!("IllegalStateException: java.lang.InterruptedException")
+            }
+        };
+        match package.get_target(label.get_name()) {
+            Ok(target) => target.clone(),
+            Err(e) => panic!("IllegalStateException: {}", e),
+        }
+    }
+}
+
+// Java: com/google/devtools/build/lib/skyframe/AbstractLabelCycleReporter.java:83 AbstractLabelCycleReporter.maybeReportCycle
+pub fn label_maybe_report_cycle(
+    reporter: &dyn AbstractLabelCycleReporter,
+    top_level_key: &SkyKey,
+    cycle_info: &CycleInfo,
+    already_reported: bool,
+    event_handler: &Arc<dyn ExtendedEventHandler>,
+) -> bool {
+    if !reporter.can_report_cycle(top_level_key, cycle_info) {
+        return false;
+    }
+
+    if already_reported {
+        if !reporter.should_skip_on_path_to_cycle(top_level_key) {
+            let label = reporter.get_label(top_level_key);
+            let target = reporter.get_target_for_label(event_handler, &label);
+            event_handler.handle(&Event::error_at(
+                Some(blaze_sky_loading::starlark_util::event_location(
+                    &target.get_location(),
+                )),
+                format!(
+                    "in {} {}: cycle in dependency graph: target depends on an \
+                     already-reported cycle",
+                    target.get_target_kind(),
+                    label
+                ),
+            ));
+        }
+    } else {
+        let mut cycle_message = String::from("cycle in dependency graph:");
+        let path_to_cycle = cycle_info.get_path_to_cycle();
+        let cycle = cycle_info.get_cycle();
+        for value in path_to_cycle {
+            if reporter.should_skip_on_path_to_cycle(value) {
+                continue;
+            }
+            cycle_message.push_str("\n    ");
+            cycle_message.push_str(&reporter.pretty_print(value));
+        }
+
+        let cycle_value = print_cycle(
+            cycle,
+            &mut cycle_message,
+            &|key| reporter.pretty_print(key),
+            &|key| reporter.should_skip_intermediate_key_on_cycle(key),
+        );
+
+        cycle_message.push_str(&reporter.get_additional_message_about_cycle(
+            event_handler,
+            top_level_key,
+            cycle_info,
+        ));
+
+        let label = reporter.get_label(&cycle_value);
+        let target = reporter.get_target_for_label(event_handler, &label);
+        event_handler.handle(&Event::error_at(
+            Some(blaze_sky_loading::starlark_util::event_location(
+                &target.get_location(),
+            )),
+            format!(
+                "in {} {}: {}",
+                target.get_target_kind(),
+                label,
+                cycle_message
+            ),
+        ));
+    }
+
+    true
+}
+
 /// Reports cycles between targets. These may be in the form of `ConfiguredTargetValue`s or
 /// `TransitiveTargetValue`s.
 ///
-/// PORT: Java's abstract base class `AbstractLabelCycleReporter` (reports cycles between skyframe
-/// values whose keys contain `Label`s) has this one ported subclass; its template method
-/// `maybeReportCycle` is the trait implementation below.
 // Java: com/google/devtools/build/lib/skyframe/TargetCycleReporter.java:36 TargetCycleReporter
-// Java: com/google/devtools/build/lib/skyframe/AbstractLabelCycleReporter.java:38 AbstractLabelCycleReporter
 pub struct TargetCycleReporter {
     package_provider: Arc<SkyframePackageManager>,
 }
@@ -335,18 +475,18 @@ impl TargetCycleReporter {
     pub fn new(package_provider: Arc<SkyframePackageManager>) -> Self {
         TargetCycleReporter { package_provider }
     }
+}
+
+impl AbstractLabelCycleReporter for TargetCycleReporter {
+    fn package_provider(&self) -> &Arc<SkyframePackageManager> {
+        &self.package_provider
+    }
 
     // Java: com/google/devtools/build/lib/skyframe/TargetCycleReporter.java:52 TargetCycleReporter.shouldSkipOnPathToCycle
     fn should_skip_on_path_to_cycle(&self, key: &SkyKey) -> bool {
         PREPARE_ANALYSIS_PHASE == key.function_name()
             // BuildDriverKeys don't provide any relevant info for the end user.
             || BUILD_DRIVER == key.function_name()
-    }
-
-    /// Can be used to skip intermediate keys on the cycle itself.
-    // Java: com/google/devtools/build/lib/skyframe/AbstractLabelCycleReporter.java:65 AbstractLabelCycleReporter.shouldSkipIntermediateKeyOnCycle
-    fn should_skip_intermediate_key_on_cycle(&self, _key: &SkyKey) -> bool {
-        false
     }
 
     // Java: com/google/devtools/build/lib/skyframe/TargetCycleReporter.java:59 TargetCycleReporter.canReportCycle
@@ -363,7 +503,7 @@ impl TargetCycleReporter {
     }
 
     // Java: com/google/devtools/build/lib/skyframe/TargetCycleReporter.java:66 TargetCycleReporter.prettyPrint
-    pub fn pretty_print(&self, key: &SkyKey) -> String {
+    fn pretty_print(&self, key: &SkyKey) -> String {
         if let Some(configured_target_key) = key.downcast::<ConfiguredTargetKey>() {
             configured_target_key.pretty_print()
         } else if let Some(aspect_key) = key.downcast::<AspectKey>() {
@@ -374,7 +514,7 @@ impl TargetCycleReporter {
     }
 
     // Java: com/google/devtools/build/lib/skyframe/TargetCycleReporter.java:77 TargetCycleReporter.getLabel
-    pub fn get_label(&self, key: &SkyKey) -> Label {
+    fn get_label(&self, key: &SkyKey) -> Label {
         // key instanceof ActionLookupKey: the configured target and aspect keys of this
         // reporter (Preconditions.checkNotNull: their labels are never null).
         if let Some(configured_target_key) = key.downcast::<ConfiguredTargetKey>() {
@@ -387,34 +527,6 @@ impl TargetCycleReporter {
             transitive_target_key.get_label().clone()
         } else {
             panic!("UnsupportedOperationException: {:?}", key)
-        }
-    }
-
-    // Java: com/google/devtools/build/lib/skyframe/AbstractLabelCycleReporter.java:174 AbstractLabelCycleReporter.getTargetForLabel
-    fn get_target_for_label(
-        &self,
-        event_handler: &Arc<dyn ExtendedEventHandler>,
-        label: &Label,
-    ) -> Target {
-        // Java: com/google/devtools/build/lib/pkgcache/PackageProvider.java:36 TargetProvider.getTarget
-        let package = match self
-            .package_provider
-            .get_package(event_handler.clone(), label.get_package_identifier())
-        {
-            Ok(package) => package,
-            // This method is used for getting the target from a label in a circular dependency.
-            // If we have a cycle that means that we need to have accessed the target (to get its
-            // dependencies). So all the labels in a dependency cycle need to exist.
-            Err(NoSuchPackageOrInterrupted::NoSuchPackage(e)) => {
-                panic!("IllegalStateException: {}", e)
-            }
-            Err(NoSuchPackageOrInterrupted::Interrupted) => {
-                panic!("IllegalStateException: java.lang.InterruptedException")
-            }
-        };
-        match package.get_target(label.get_name()) {
-            Ok(target) => target.clone(),
-            Err(e) => panic!("IllegalStateException: {}", e),
         }
     }
 
@@ -469,7 +581,6 @@ impl TargetCycleReporter {
 }
 
 impl SingleCycleReporter for TargetCycleReporter {
-    // Java: com/google/devtools/build/lib/skyframe/AbstractLabelCycleReporter.java:83 AbstractLabelCycleReporter.maybeReportCycle
     fn maybe_report_cycle(
         &self,
         top_level_key: &SkyKey,
@@ -477,67 +588,13 @@ impl SingleCycleReporter for TargetCycleReporter {
         already_reported: bool,
         event_handler: &Arc<dyn ExtendedEventHandler>,
     ) -> bool {
-        if !self.can_report_cycle(top_level_key, cycle_info) {
-            return false;
-        }
-
-        if already_reported {
-            if !self.should_skip_on_path_to_cycle(top_level_key) {
-                let label = self.get_label(top_level_key);
-                let target = self.get_target_for_label(event_handler, &label);
-                event_handler.handle(&Event::error_at(
-                    Some(blaze_sky_loading::starlark_util::event_location(
-                        &target.get_location(),
-                    )),
-                    format!(
-                        "in {} {}: cycle in dependency graph: target depends on an \
-                         already-reported cycle",
-                        target.get_target_kind(),
-                        label
-                    ),
-                ));
-            }
-        } else {
-            let mut cycle_message = String::from("cycle in dependency graph:");
-            let path_to_cycle = cycle_info.get_path_to_cycle();
-            let cycle = cycle_info.get_cycle();
-            for value in path_to_cycle {
-                if self.should_skip_on_path_to_cycle(value) {
-                    continue;
-                }
-                cycle_message.push_str("\n    ");
-                cycle_message.push_str(&self.pretty_print(value));
-            }
-
-            let cycle_value = print_cycle(
-                cycle,
-                &mut cycle_message,
-                &|key| self.pretty_print(key),
-                &|key| self.should_skip_intermediate_key_on_cycle(key),
-            );
-
-            cycle_message.push_str(&self.get_additional_message_about_cycle(
-                event_handler,
-                top_level_key,
-                cycle_info,
-            ));
-
-            let label = self.get_label(&cycle_value);
-            let target = self.get_target_for_label(event_handler, &label);
-            event_handler.handle(&Event::error_at(
-                Some(blaze_sky_loading::starlark_util::event_location(
-                    &target.get_location(),
-                )),
-                format!(
-                    "in {} {}: {}",
-                    target.get_target_kind(),
-                    label,
-                    cycle_message
-                ),
-            ));
-        }
-
-        true
+        label_maybe_report_cycle(
+            self,
+            top_level_key,
+            cycle_info,
+            already_reported,
+            event_handler,
+        )
     }
 }
 

@@ -18,7 +18,7 @@ use blaze_cmdline::{
     Label, PackageIdentifier, RepositoryMapping, SignedTargetPattern, TargetParsingException,
     TargetPatternParser,
 };
-use blaze_events::Event;
+use blaze_events::{Event, StoredEventHandler};
 use blaze_optdefs::command::loading_options::LoadingOptions;
 use blaze_optdefs::common::test_size::TestSize;
 use blaze_optdefs::common::test_timeout::TestTimeout;
@@ -30,10 +30,14 @@ use blaze_packages::package::Package;
 use blaze_packages::target::target_utils;
 use blaze_packages::target::{RuleOrMacroInstance, Target};
 use blaze_packages::types::{AttrValue, Type};
+use blaze_sky_loading::compile_one_dependency_transformer::CompileOneDependencyTransformer;
 use blaze_sky_loading::package_function::{PackageKey, PackageValue};
 use blaze_sky_loading::recursive_pkg::PackageErrorKey;
 use blaze_sky_loading::repos::RepositoryMappingKey;
-use blaze_sky_loading::target_pattern_function::{FilteringPolicy, TargetPatternKey};
+use blaze_sky_loading::target_pattern_eval::TargetPatternEvalError;
+use blaze_sky_loading::target_pattern_function::{
+    EnvironmentBackedRecursivePackageProvider, FilteringPolicy, TargetPatternKey,
+};
 use blaze_skyframe::{
     ComputeError, Environment, EvaluatorBuilder, FunctionHermeticity, Key, SkyFunctionException,
     SkyFunctionName, SkyKey, Transience,
@@ -926,11 +930,12 @@ fn target_pattern_phase_function(
     let targets: Option<MergedTargets> = if env.values_missing() {
         None
     } else {
-        Some(merge_all(
+        merge_all(
             &expanded_patterns,
             !failed_patterns.is_empty(),
+            env,
             options,
-        ))
+        )?
     };
 
     // Record labels before they're expanded. For example, if the build requests a test_suite
@@ -1239,8 +1244,9 @@ fn get_targets_to_build(
 fn merge_all(
     expanded_patterns: &[ExpandedPattern],
     has_error: bool,
+    env: &mut Environment<'_>,
     options: &TargetPatternPhaseKey,
-) -> MergedTargets {
+) -> Result<Option<MergedTargets>, ComputeError> {
     let mut builder = MergedTargets {
         has_error,
         ..MergedTargets::default()
@@ -1285,9 +1291,59 @@ fn merge_all(
         }
     }
     if options.compile_one_dependency {
-        blaze_util::unported!("CompileOneDependencyTransformer.transformCompileOneDependency");
+        // Java gives the transformer env.getListener(); the environment is borrowed by the
+        // provider here, so its events are stored and replayed on the listener, in order.
+        let events = StoredEventHandler::new();
+        let provider = EnvironmentBackedRecursivePackageProvider::new(env);
+        // CompileOneDependencyTransformer.transformCompileOneDependency returns the original
+        // when it has an error.
+        let transformed = if builder.has_error {
+            None
+        } else {
+            Some(
+                CompileOneDependencyTransformer::new(&provider)
+                    .transform_compile_one_dependency(&events, builder.targets.values()),
+            )
+        };
+        let encountered_package_errors = provider.encountered_package_errors();
+        drop(provider);
+        events.replay_on(env.listener());
+        match transformed {
+            None => {}
+            Some(Ok(targets)) => {
+                // ResolvedTargets.builder().add(...).build(): no filtered targets, no error.
+                let mut result = MergedTargets::default();
+                for target in targets {
+                    result.targets.insert(target.get_label().clone(), target);
+                }
+                builder = result;
+            }
+            Some(Err(TargetPatternEvalError::MissingDep)) => return Ok(None),
+            Some(Err(TargetPatternEvalError::Interrupted)) => {
+                return Err(blaze_skyframe::Interrupted.into());
+            }
+            Some(Err(TargetPatternEvalError::TargetParsing(e))) => {
+                let _ = env.get_value_or_throw::<TargetPatternErrorKey, TargetParsingException>(
+                    TargetPatternErrorKey::key(&e),
+                )?;
+                // We ignore this. Keep going is active.
+                env.listener().handle(&Event::error(e.get_message()));
+                return Ok(Some(MergedTargets {
+                    has_error: true,
+                    ..MergedTargets::default()
+                }));
+            }
+            Some(Err(other)) => {
+                // The transformer's provider only throws the above (and NoSuchThingException,
+                // which it handles); Java has no other checked exception here.
+                panic!("unexpected exception from CompileOneDependencyTransformer: {other:?}")
+            }
+        }
+        if encountered_package_errors {
+            builder.has_error = true;
+        }
     }
-    builder
+    Ok(Some(builder))
 }
 
 /// Interpret test target labels from the command-line arguments and return the corresponding set

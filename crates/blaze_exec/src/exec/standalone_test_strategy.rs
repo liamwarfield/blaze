@@ -293,6 +293,11 @@ impl ActionContextRegistry for DerivedActionExecutionContext<'_> {
     fn get_spawn_strategy_registry(&self) -> Option<Arc<SpawnStrategyRegistry>> {
         self.inner.get_spawn_strategy_registry()
     }
+    fn get_dynamic_strategy_registry(
+        &self,
+    ) -> Option<Arc<dyn crate::exec::spawn_strategy_registry::DynamicStrategyRegistry>> {
+        self.inner.get_dynamic_strategy_registry()
+    }
     fn get_spawn_log_context(&self) -> Option<Arc<dyn SpawnLogContext>> {
         self.inner.get_spawn_log_context()
     }

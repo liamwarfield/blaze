@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use blaze_actions::Artifact;
 use blaze_exec::actions::FileArtifactValue;
 use blaze_exec::actions::action_adapters::as_blaze_artifact;
+use blaze_exec::actions::action_cache_checker::OutputChecker;
 use blaze_exec::actions::input_metadata_provider::TreeArtifactValue;
 use blaze_skyframe::{Key, SkyKey, SkyValue};
 use blaze_util::io::timestamp_granularity_monitor::TimestampGranularityMonitor;
@@ -37,15 +38,14 @@ pub trait ModifiedOutputsReceiver: Sync {
 /// Returns the action values which have output files that are not in-sync with the on-disk file
 /// value (were modified externally).
 ///
-/// PORT: the remote parts of `artifactIsDirtyWithDirectSystemCalls` (`OutputChecker`
-/// `shouldTrustMetadata` for a remote output that is missing locally, and the "deleted after
-/// materialization" record) are not ported: a remote output is compared with
-/// `couldBeModifiedSince` like any other, which reports it modified when it is not present
-/// locally, so the action is re-evaluated (never kept when it may be stale).
+/// PORT: the "deleted after materialization" record of a remote output
+/// (`wasMaterializedAsToplevelOutput`) is not in Blaze's `FileArtifactValue`: such an output is
+/// never treated as deleted after materialization.
 // Java: com/google/devtools/build/lib/skyframe/FilesystemValueChecker.java:210 FilesystemValueChecker.getDirtyActionValues
 pub fn get_dirty_action_values(
     values_map: &HashMap<SkyKey, SkyValue>,
     modified_output_files: &ModifiedFileSet,
+    output_checker: &dyn OutputChecker,
     modified_outputs_receiver: &dyn ModifiedOutputsReceiver,
     tsgm: Option<&TimestampGranularityMonitor>,
     num_threads: usize,
@@ -92,6 +92,7 @@ pub fn get_dirty_action_values(
                         Some(value) => action_value_is_dirty_with_direct_system_calls(
                             value,
                             tsgm,
+                            output_checker,
                             known_modified_output_files,
                             sorted_known_modified_output_files.as_deref(),
                             modified_outputs_receiver,
@@ -163,6 +164,7 @@ fn tree_artifact_is_dirty(artifact: &Artifact, value: &TreeArtifactValue) -> boo
 // Java: com/google/devtools/build/lib/skyframe/FilesystemValueChecker.java:527 FilesystemValueChecker.artifactIsDirtyWithDirectSystemCalls
 fn artifact_is_dirty_with_direct_system_calls(
     tsgm: Option<&TimestampGranularityMonitor>,
+    output_checker: &dyn OutputChecker,
     known_modified_output_files: Option<&IndexSet<PathFragment>>,
     file: &Artifact,
     last_known_data: &FileArtifactValue,
@@ -173,7 +175,14 @@ fn artifact_is_dirty_with_direct_system_calls(
     }
     match crate::skyframe_action_executor::file_artifact_value_for_output_check(file, tsgm) {
         Ok(file_metadata) => {
-            if file_metadata.could_be_modified_since(last_known_data) {
+            let is_trusted_remote_value = file_metadata.get_type()
+                == blaze_exec::actions::file_artifact_value::FileStateType::Nonexistent
+                && last_known_data.is_remote()
+                && output_checker.should_trust_metadata(
+                    &*blaze_exec::actions::action_adapters::artifact_input(file).0,
+                    last_known_data,
+                );
+            if !is_trusted_remote_value && file_metadata.could_be_modified_since(last_known_data) {
                 let maybe_modified_time = if file_metadata.get_type()
                     != blaze_exec::actions::file_artifact_value::FileStateType::Nonexistent
                 {
@@ -209,6 +218,7 @@ fn artifact_is_dirty_with_direct_system_calls(
 fn action_value_is_dirty_with_direct_system_calls(
     action_value: &ActionExecutionValue,
     tsgm: Option<&TimestampGranularityMonitor>,
+    output_checker: &dyn OutputChecker,
     known_modified_output_files: Option<&IndexSet<PathFragment>>,
     sorted_known_modified_output_files: Option<&[PathFragment]>,
     modified_outputs_receiver: &dyn ModifiedOutputsReceiver,
@@ -217,6 +227,7 @@ fn action_value_is_dirty_with_direct_system_calls(
     for (artifact, value) in action_value.get_all_file_values() {
         if artifact_is_dirty_with_direct_system_calls(
             tsgm,
+            output_checker,
             known_modified_output_files,
             artifact,
             value,
@@ -232,6 +243,7 @@ fn action_value_is_dirty_with_direct_system_calls(
             let child = as_blaze_artifact(child).expect("TreeFileArtifact");
             if artifact_is_dirty_with_direct_system_calls(
                 tsgm,
+                output_checker,
                 known_modified_output_files,
                 child,
                 child_value,
@@ -247,6 +259,7 @@ fn action_value_is_dirty_with_direct_system_calls(
                 .is_some_and(|(archived, archived_value)| {
                     artifact_is_dirty_with_direct_system_calls(
                         tsgm,
+                        output_checker,
                         known_modified_output_files,
                         as_blaze_artifact(archived).expect("ArchivedTreeArtifact"),
                         archived_value,

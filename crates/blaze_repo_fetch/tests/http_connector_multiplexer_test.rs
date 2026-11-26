@@ -132,7 +132,7 @@ fn test_header_computation_function() {
         handler.clone(),
     );
     let apply = |f: &blaze_repo_fetch::downloader::http_connector::HeaderFunction, u: &str| {
-        sorted(f(&JavaUri::create(u).unwrap()))
+        sorted(f(&JavaUri::create(u).unwrap()).unwrap())
     };
 
     // Unrelated URL

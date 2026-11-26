@@ -16,6 +16,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::sync::Arc;
 
+use blaze_util::profiler::{Profiler, ProfilerTask};
+
 use crate::digest_hash_function::DigestHashFunction;
 use crate::dirent::{Dirent, DirentType};
 use crate::file_status::FileStatus;
@@ -361,11 +363,14 @@ impl FileSystem for UnixFileSystem {
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:118 UnixFileSystem.stat
     fn stat(&self, path: &PathFragment, follow_symlinks: bool) -> io::Result<FileStatus> {
         let name = path.get_path_string();
+        let start_time = Profiler::nano_time_maybe();
         let m = if follow_symlinks {
             fs::metadata(os(name))
         } else {
             fs::symlink_metadata(os(name))
         };
+        // finally: profiler.logSimpleTask(startTime, ProfilerTask.VFS_STAT, name)
+        Profiler::instance().log_simple_task(start_time, ProfilerTask::VFS_STAT, name);
         m.map(|m| FileStatus::from_metadata(&m))
             .map_err(|e| posix_error(name, e))
     }
@@ -425,47 +430,28 @@ impl FileSystem for UnixFileSystem {
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:54 UnixFileSystem.getDirectoryEntries
     fn get_directory_entries(&self, path: &PathFragment) -> io::Result<Vec<String>> {
         let name = path.get_path_string();
-        let mut result = Vec::new();
-        for entry in fs::read_dir(os(name)).map_err(|e| posix_error(name, e))? {
-            let entry = entry.map_err(|e| posix_error(name, e))?;
-            result.push(from_os(&entry.file_name()));
-        }
-        Ok(result)
+        let start_time = Profiler::nano_time_maybe();
+        let result = (|| {
+            let mut result = Vec::new();
+            for entry in fs::read_dir(os(name)).map_err(|e| posix_error(name, e))? {
+                let entry = entry.map_err(|e| posix_error(name, e))?;
+                result.push(from_os(&entry.file_name()));
+            }
+            Ok(result)
+        })();
+        // finally: profiler.logSimpleTask(startTime, ProfilerTask.VFS_DIR, name)
+        Profiler::instance().log_simple_task(start_time, ProfilerTask::VFS_DIR, name);
+        result
     }
 
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:88 UnixFileSystem.readdir
     fn readdir(&self, path: &PathFragment, follow_symlinks: bool) -> io::Result<Vec<Dirent>> {
         let name = path.get_path_string();
-        let mut result = Vec::new();
-        for entry in fs::read_dir(os(name)).map_err(|e| posix_error(name, e))? {
-            let entry = entry.map_err(|e| posix_error(name, e))?;
-            let file_type = entry.file_type().map_err(|e| posix_error(name, e))?;
-            let child = from_os(&entry.file_name());
-            // std resolves an unknown d_type with lstat, so "UNKNOWN" here means special file.
-            let native_type = if file_type.is_file() {
-                DirentType::File
-            } else if file_type.is_dir() {
-                DirentType::Directory
-            } else if file_type.is_symlink() {
-                DirentType::Symlink
-            } else {
-                DirentType::Unknown
-            };
-            let t = if native_type == DirentType::Unknown
-                || (follow_symlinks && native_type == DirentType::Symlink)
-            {
-                match self.stat_if_found(&path.get_relative_str(&child), follow_symlinks) {
-                    Ok(Some(stat)) => stat.get_dirent_type(),
-                    Ok(None) => DirentType::Unknown,
-                    Err(e) if FileSymlinkLoopException::is(&e) => DirentType::Unknown,
-                    Err(e) => return Err(e),
-                }
-            } else {
-                native_type
-            };
-            result.push(Dirent::new(child, t));
-        }
-        Ok(result)
+        let start_time = Profiler::nano_time_maybe();
+        let result = self.readdir_unprofiled(path, follow_symlinks);
+        // finally: profiler.logSimpleTask(startTime, ProfilerTask.VFS_DIR, name)
+        Profiler::instance().log_simple_task(start_time, ProfilerTask::VFS_DIR, name);
+        result
     }
 
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:179 UnixFileSystem.isReadable
@@ -561,5 +547,70 @@ impl FileSystem for UnixFileSystem {
             os(link_path.get_path_string()),
         )
         .map_err(|e| posix_error(link_path.get_path_string(), e))
+    }
+}
+
+impl UnixFileSystem {
+    /// The body of `readdir`, without its `VFS_DIR` profiler event.
+    // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:88 UnixFileSystem.readdir
+    fn readdir_unprofiled(
+        &self,
+        path: &PathFragment,
+        follow_symlinks: bool,
+    ) -> io::Result<Vec<Dirent>> {
+        let name = path.get_path_string();
+        let mut result = Vec::new();
+        for entry in fs::read_dir(os(name)).map_err(|e| posix_error(name, e))? {
+            let entry = entry.map_err(|e| posix_error(name, e))?;
+            let file_type = entry.file_type().map_err(|e| posix_error(name, e))?;
+            let child = from_os(&entry.file_name());
+            // std resolves an unknown d_type with lstat, so "UNKNOWN" here means special file.
+            let native_type = if file_type.is_file() {
+                DirentType::File
+            } else if file_type.is_dir() {
+                DirentType::Directory
+            } else if file_type.is_symlink() {
+                DirentType::Symlink
+            } else {
+                DirentType::Unknown
+            };
+            let t = if native_type == DirentType::Unknown
+                || (follow_symlinks && native_type == DirentType::Symlink)
+            {
+                // NativePosixFiles.stat/lstat, not this.stat: no VFS_STAT event of its own.
+                match self.stat_if_found_unprofiled(&path.get_relative_str(&child), follow_symlinks)
+                {
+                    Ok(Some(stat)) => stat.get_dirent_type(),
+                    Ok(None) => DirentType::Unknown,
+                    Err(e) if FileSymlinkLoopException::is(&e) => DirentType::Unknown,
+                    Err(e) => return Err(e),
+                }
+            } else {
+                native_type
+            };
+            result.push(Dirent::new(child, t));
+        }
+        Ok(result)
+    }
+
+    /// `NativePosixFiles.stat`/`lstat` with `THROW_UNLESS_NOT_FOUND` (no profiler event).
+    fn stat_if_found_unprofiled(
+        &self,
+        path: &PathFragment,
+        follow_symlinks: bool,
+    ) -> io::Result<Option<FileStatus>> {
+        let name = path.get_path_string();
+        let m = if follow_symlinks {
+            fs::metadata(os(name))
+        } else {
+            fs::symlink_metadata(os(name))
+        };
+        match m {
+            Ok(m) => Ok(Some(FileStatus::from_metadata(&m))),
+            Err(e) => {
+                let e = posix_error(name, e);
+                if is_not_found(&e) { Ok(None) } else { Err(e) }
+            }
+        }
     }
 }

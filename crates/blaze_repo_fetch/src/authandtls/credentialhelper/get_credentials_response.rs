@@ -3,6 +3,30 @@
 use super::gson::{self, JsonSyntaxException, JsonValue};
 use crate::authandtls::Headers;
 
+/// Why `GSON.fromJson(json, GetCredentialsResponse.class)` failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResponseParseError {
+    /// `JsonSyntaxException`.
+    JsonSyntax(JsonSyntaxException),
+    /// `IllegalArgumentException` (a repeated header name), with its message; Gson does not wrap
+    /// it.
+    IllegalArgument(String),
+}
+
+impl std::fmt::Display for ResponseParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResponseParseError::JsonSyntax(e) => e.fmt(f),
+            ResponseParseError::IllegalArgument(message) => f.write_str(message),
+        }
+    }
+}
+
+/// `List.toString()`: `[a, b]`.
+fn java_list_to_string(values: &[String]) -> String {
+    format!("[{}]", values.join(", "))
+}
+
 /// `java.time.Instant`: seconds since the epoch and a nanosecond adjustment in `0..1e9`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct JavaInstant {
@@ -122,8 +146,8 @@ impl GetCredentialsResponse {
     /// `GSON.fromJson(json, GetCredentialsResponse.class)`: `Ok(None)` is Java's `null` (no
     /// output).
     // Java: com/google/gson/Gson.java Gson.fromJson
-    pub fn parse(json: &str) -> Result<Option<GetCredentialsResponse>, JsonSyntaxException> {
-        match gson::from_json(json)? {
+    pub fn parse(json: &str) -> Result<Option<GetCredentialsResponse>, ResponseParseError> {
+        match gson::from_json(json).map_err(ResponseParseError::JsonSyntax)? {
             None => Ok(None),
             Some(value) => GetCredentialsResponse::from_json(&value).map(Some),
         }
@@ -131,19 +155,17 @@ impl GetCredentialsResponse {
 
     /// `GsonTypeAdapter.read`, over the parsed document.
     ///
-    /// PORT: a repeated `"headers"` member is read once (the parsed tree keeps one member per
-    /// name); Java reads both, merges their header names and fails with
-    /// `IllegalArgumentException` on a name both repeat. A header name repeated inside one
-    /// `"headers"` object is likewise kept once, where `ImmutableMap.Builder` throws.
+    /// The header names of every `"headers"` member go into one `ImmutableMap.Builder`, whose
+    /// `build()` throws `IllegalArgumentException` on a repeated name.
     // Java: com/google/devtools/build/lib/authandtls/credentialhelper/GetCredentialsResponse.java:110 GetCredentialsResponse.GsonTypeAdapter.read
-    fn from_json(value: &JsonValue) -> Result<GetCredentialsResponse, JsonSyntaxException> {
-        let mut headers = Headers::new();
+    fn from_json(value: &JsonValue) -> Result<GetCredentialsResponse, ResponseParseError> {
+        // response.headersBuilder()
+        let mut headers_builder: Vec<(String, Vec<String>)> = Vec::new();
         let mut expires = None;
 
         let JsonValue::Object(members) = value else {
-            return Err(JsonSyntaxException(format!(
-                "Expected object, got {}",
-                value.token_name()
+            return Err(ResponseParseError::JsonSyntax(JsonSyntaxException(
+                format!("Expected object, got {}", value.token_name()),
             )));
         };
 
@@ -151,9 +173,11 @@ impl GetCredentialsResponse {
             match name.as_str() {
                 "headers" => {
                     let JsonValue::Object(header_members) = value else {
-                        return Err(JsonSyntaxException(format!(
-                            "Expected value of 'headers' to be an object, got {}",
-                            value.token_name()
+                        return Err(ResponseParseError::JsonSyntax(JsonSyntaxException(
+                            format!(
+                                "Expected value of 'headers' to be an object, got {}",
+                                value.token_name()
+                            ),
                         )));
                     };
 
@@ -161,39 +185,47 @@ impl GetCredentialsResponse {
                         let mut header_values = Vec::new();
 
                         let JsonValue::Array(elements) = header_value else {
-                            return Err(JsonSyntaxException(format!(
-                                "Expected value of '{}' header to be an array of strings, got {}",
-                                header_name,
-                                header_value.token_name()
+                            return Err(ResponseParseError::JsonSyntax(JsonSyntaxException(
+                                format!(
+                                    "Expected value of '{}' header to be an array of strings, got {}",
+                                    header_name,
+                                    header_value.token_name()
+                                ),
                             )));
                         };
                         for (i, element) in elements.iter().enumerate() {
                             let JsonValue::String(s) = element else {
-                                return Err(JsonSyntaxException(format!(
-                                    "Expected value {} of '{}' header to be a string, got {}",
-                                    i,
-                                    header_name,
-                                    element.token_name()
+                                return Err(ResponseParseError::JsonSyntax(JsonSyntaxException(
+                                    format!(
+                                        "Expected value {} of '{}' header to be a string, got {}",
+                                        i,
+                                        header_name,
+                                        element.token_name()
+                                    ),
                                 )));
                             };
                             header_values.push(s.clone());
                         }
 
-                        headers.insert(header_name.clone(), header_values);
+                        headers_builder.push((header_name.clone(), header_values));
                     }
                 }
                 "expires" => {
                     let JsonValue::String(s) = value else {
-                        return Err(JsonSyntaxException(format!(
-                            "Expected value of 'expires' to be a string, got {}",
-                            value.token_name()
+                        return Err(ResponseParseError::JsonSyntax(JsonSyntaxException(
+                            format!(
+                                "Expected value of 'expires' to be a string, got {}",
+                                value.token_name()
+                            ),
                         )));
                     };
                     match rfc_3339_parse(s) {
                         Ok(instant) => expires = Some(instant),
                         Err(message) => {
-                            return Err(JsonSyntaxException(format!(
-                                "Expected value of 'expires' to be a RFC 3339 formatted timestamp: {message}"
+                            return Err(ResponseParseError::JsonSyntax(JsonSyntaxException(
+                                format!(
+                                    "Expected value of 'expires' to be a RFC 3339 formatted timestamp: {message}"
+                                ),
                             )));
                         }
                     }
@@ -202,6 +234,21 @@ impl GetCredentialsResponse {
                 // responses coming from newer tools.
                 _ => {}
             }
+        }
+        // response.build(): ImmutableMap.Builder.buildOrThrow.
+        let mut headers = Headers::new();
+        for (name, values) in headers_builder {
+            if let Some(earlier) = headers.get(&name) {
+                // Guava: conflictException("key", entry, earlierEntry).
+                return Err(ResponseParseError::IllegalArgument(format!(
+                    "Multiple entries with same key: {}={} and {}={}",
+                    name,
+                    java_list_to_string(&values),
+                    name,
+                    java_list_to_string(earlier)
+                )));
+            }
+            headers.insert(name, values);
         }
         Ok(GetCredentialsResponse { headers, expires })
     }

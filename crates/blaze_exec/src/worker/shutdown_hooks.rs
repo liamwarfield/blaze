@@ -23,7 +23,35 @@ static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn run_hooks_at_exit() {
     // A panic must not unwind out of an `atexit` handler.
-    let _ = std::panic::catch_unwind(run_shutdown_hooks);
+    let _ = std::panic::catch_unwind(|| {
+        begin_shutdown();
+        run_shutdown_hooks();
+    });
+}
+
+/// The thread running the shutdown (`Shutdown.exit` holds the `Shutdown` class lock while the
+/// hooks run and then halts; a second `exit`, from another thread or a signal, blocks for good).
+static SHUTDOWN_OWNER: parking_lot::Mutex<Option<std::thread::ThreadId>> =
+    parking_lot::Mutex::new(None);
+static SHUTDOWN_STARTED: parking_lot::Condvar = parking_lot::Condvar::new();
+
+/// Enters the process's shutdown: returns at once on the thread that already runs it, and
+/// blocks forever on any other thread, so that the process cannot end (or start a second
+/// shutdown) while the hooks of the first one are still running.
+// Java: java/lang/Shutdown.java Shutdown.exit (JDK)
+pub fn begin_shutdown() {
+    let me = std::thread::current().id();
+    let mut owner = SHUTDOWN_OWNER.lock();
+    loop {
+        match *owner {
+            None => {
+                *owner = Some(me);
+                return;
+            }
+            Some(o) if o == me => return,
+            Some(_) => SHUTDOWN_STARTED.wait(&mut owner),
+        }
+    }
 }
 
 /// `process.destroyAndWait()` as a hook may run it: during `exit`, after the thread-local
@@ -92,7 +120,30 @@ pub fn run_shutdown_hooks() {
         .into_values()
         .rev()
         .collect();
+    // Each Java hook is a thread of its own: an exception in one does not keep the others from
+    // running; it reaches the uncaught exception handler. Here a panicking hook is caught, the
+    // rest run, then the panics are reported.
+    let mut panics = Vec::new();
     for hook in hooks {
-        hook();
+        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| hook())) {
+            panics.push(payload);
+        }
+    }
+    for payload in panics {
+        report_hook_panic(&*payload);
+    }
+}
+
+/// An uncaught exception of a shutdown hook's thread: the default uncaught exception handler.
+pub fn report_hook_panic(payload: &(dyn std::any::Any + Send)) {
+    match blaze_util::uncaught_exception::get_default_uncaught_exception_handler() {
+        Some(handler) => handler(
+            &blaze_util::uncaught_exception::panic_message(payload),
+            blaze_util::uncaught_exception::CrashContextKind::Halt,
+        ),
+        None => eprintln!(
+            "Exception in thread \"Thread-shutdown-hook\": {}",
+            blaze_util::uncaught_exception::panic_message(payload)
+        ),
     }
 }

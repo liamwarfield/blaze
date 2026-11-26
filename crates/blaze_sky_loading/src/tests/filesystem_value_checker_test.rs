@@ -16,12 +16,11 @@ use blaze_skyframe::{Evaluator, SkyKey};
 use blaze_vfs::{PathFragment, Root, RootedPath};
 
 use crate::file::FileKey;
-use crate::file_state::{
-    ExternalFileAction, ExternalFilesHelper, FileStateKey, FileType,
-};
+use crate::file_state::{ExternalFileAction, ExternalFilesHelper, FileStateKey, FileType};
 use crate::filesystem_value_checker::{
     ExternalDirtinessChecker, FilesystemValueChecker, ImmutableBatchDirtyResult,
-    MissingDiffDirtinessChecker, SkyValueDirtinessChecker, create_basic_filesystem_dirtiness_checker,
+    MissingDiffDirtinessChecker, SkyValueDirtinessChecker,
+    create_basic_filesystem_dirtiness_checker,
 };
 use crate::test_util::{FakeRepos, TestSetup, evaluate};
 
@@ -51,9 +50,12 @@ impl Fixture {
     }
 
     fn file(&self, rel: &str, contents: &str) {
-        self.setup
-            .scratch
-            .file(self.pkg_root.get_relative(&PathFragment::create(rel)).get_path_string(), contents);
+        self.setup.scratch.file(
+            self.pkg_root
+                .get_relative(&PathFragment::create(rel))
+                .get_path_string(),
+            contents,
+        );
     }
 
     fn evaluate(&self, keys: Vec<SkyKey>) -> blaze_skyframe::EvaluationResult {
@@ -66,7 +68,10 @@ impl Fixture {
     }
 
     // Java: FilesystemValueCheckerTest.getDirtyFilesystemKeys
-    fn get_dirty_filesystem_keys(&self, checker: &FilesystemValueChecker) -> ImmutableBatchDirtyResult {
+    fn get_dirty_filesystem_keys(
+        &self,
+        checker: &FilesystemValueChecker,
+    ) -> ImmutableBatchDirtyResult {
         checker.get_dirty_keys(
             &self.evaluator.get_values(),
             &create_basic_filesystem_dirtiness_checker(),
@@ -90,7 +95,11 @@ fn assert_diff_with_new_values(diff: &ImmutableBatchDirtyResult, keys_with_new_v
         "{:?}",
         diff.changed_keys_without_new_values()
     );
-    let actual: HashSet<SkyKey> = diff.changed_keys_with_new_values().keys().cloned().collect();
+    let actual: HashSet<SkyKey> = diff
+        .changed_keys_with_new_values()
+        .keys()
+        .cloned()
+        .collect();
     let expected: HashSet<SkyKey> = keys_with_new_values.iter().cloned().collect();
     assert_eq!(actual, expected);
 }
@@ -165,7 +174,10 @@ fn test_dirty_symlink() {
     let symlink_key = FileKey::key(symlink_rooted_path.clone());
     let symlink_file_state_key = SkyKey::new(FileStateKey::key(symlink_rooted_path));
     let sym1_file_state_key = SkyKey::new(FileStateKey::key(f.rooted_path("sym1")));
-    let all_keys = vec![SkyKey::new(symlink_key.clone()), SkyKey::new(foo_key.clone())];
+    let all_keys = vec![
+        SkyKey::new(symlink_key.clone()),
+        SkyKey::new(foo_key.clone()),
+    ];
 
     // First build -- prime the graph.
     let result = f.evaluate(all_keys.clone());
@@ -348,10 +360,8 @@ fn skips_syscall_cache_for_repo_file_and_doesnt_return_new_value() {
     );
     let key = SkyKey::new(FileStateKey::key(rooted_path));
     let old_value: blaze_skyframe::SkyValue = Arc::new(
-        crate::actions::FileStateValue::create(
-            key.downcast::<FileStateKey>().unwrap().argument(),
-        )
-        .unwrap(),
+        crate::actions::FileStateValue::create(key.downcast::<FileStateKey>().unwrap().argument())
+            .unwrap(),
     );
     wait_for_timestamp_granularity();
     f.setup.scratch.file(

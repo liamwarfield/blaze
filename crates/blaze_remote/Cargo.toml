@@ -20,6 +20,11 @@ blaze_exec = { path = "../blaze_exec" }
 blaze_shell = { path = "../blaze_shell" }
 blaze_repo_fetch = { path = "../blaze_repo_fetch" }
 blaze_bep = { path = "../blaze_bep" }
+# The remote repo contents cache (RepositoryFetchFunction's RemoteRepoContentsCache, DigestWriter,
+# RepoRecordedInput, Skyframe environment).
+blaze_repo_rules = { path = "../blaze_repo_rules" }
+blaze_sky_loading = { path = "../blaze_sky_loading" }
+blaze_skyframe = { path = "../blaze_skyframe" }
 indexmap.workspace = true
 parking_lot.workspace = true
 sha2.workspace = true

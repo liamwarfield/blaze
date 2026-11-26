@@ -39,9 +39,7 @@ fn format_grouped(n: usize) -> String {
 /// the graph after the evaluation by the build command (blaze_runtime `commands/build.rs`,
 /// `top_level_target_built` and `top_level_aspect_built`), which predates this receiver; they are
 /// not posted here a second time. `changePruned`'s `ActionChangePrunedEvent` needs change pruning
-/// of action nodes, which a command-per-process build never does. The inactivity monitor and
-/// reporter (`createInactivityMonitor`, `createInactivityReporter`) belong to
-/// `ActionExecutionInactivityWatchdog`, which is not ported.
+/// of action nodes, which a command-per-process build never does.
 // Java: com/google/devtools/build/lib/buildtool/ExecutionProgressReceiver.java:54 ExecutionProgressReceiver
 pub struct ExecutionProgressReceiver {
     enqueued_actions: Mutex<HashSet<ActionLookupData>>,
@@ -87,6 +85,36 @@ impl ExecutionProgressReceiver {
             format_grouped(completed),
             format_grouped(self.exclusive_tests_count as usize + enqueued)
         )
+    }
+
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionProgressReceiver.java:190 ExecutionProgressReceiver.createInactivityMonitor
+    pub fn create_inactivity_monitor(
+        self: &Arc<Self>,
+        status_reporter: Arc<
+            crate::buildtool::action_execution_status_reporter::ActionExecutionStatusReporter,
+        >,
+    ) -> Arc<dyn crate::buildtool::action_execution_inactivity_watchdog::InactivityMonitor> {
+        Arc::new(InactivityMonitorImpl {
+            receiver: self.clone(),
+            status_reporter,
+        })
+    }
+
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionProgressReceiver.java:219 ExecutionProgressReceiver.createInactivityReporter
+    pub fn create_inactivity_reporter(
+        self: &Arc<Self>,
+        status_reporter: Arc<
+            crate::buildtool::action_execution_status_reporter::ActionExecutionStatusReporter,
+        >,
+        is_building_exclusive_artifacts: Arc<AtomicBool>,
+        event_bus: Arc<dyn EventBus>,
+    ) -> Arc<dyn crate::buildtool::action_execution_inactivity_watchdog::InactivityReporter> {
+        Arc::new(InactivityReporterImpl {
+            receiver: self.clone(),
+            status_reporter,
+            is_building_exclusive_artifacts,
+            event_bus,
+        })
     }
 
     // Java: com/google/devtools/build/lib/buildtool/ExecutionProgressReceiver.java:237 ExecutionProgressReceiver.hasActionsInFlight
@@ -177,6 +205,74 @@ impl ExecutionProgress for ExecutionProgressReceiver {
 /// build always drives execution with `BuildDriverKey`s, so the setup also serves a build
 /// without merged analysis and execution, where Java's `SkyframeBuilder.buildArtifacts` posts
 /// the receiver with the count of exclusive tests.
+struct InactivityMonitorImpl {
+    receiver: Arc<ExecutionProgressReceiver>,
+    status_reporter:
+        Arc<crate::buildtool::action_execution_status_reporter::ActionExecutionStatusReporter>,
+}
+
+impl crate::buildtool::action_execution_inactivity_watchdog::InactivityMonitor
+    for InactivityMonitorImpl
+{
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionProgressReceiver.java:195 ExecutionProgressReceiver.createInactivityMonitor.hasStarted
+    fn has_started(&self) -> bool {
+        !self.receiver.enqueued_actions.lock().is_empty()
+    }
+
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionProgressReceiver.java:200 ExecutionProgressReceiver.createInactivityMonitor.getPending
+    fn get_pending(&self) -> usize {
+        self.status_reporter.get_count()
+    }
+
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionProgressReceiver.java:205 ExecutionProgressReceiver.createInactivityMonitor.waitForNextCompletion
+    fn wait_for_next_completion(
+        &self,
+        timeout_seconds: i32,
+        sleeper: &crate::buildtool::action_execution_inactivity_watchdog::Sleeper,
+    ) -> Result<usize, crate::buildtool::action_execution_inactivity_watchdog::Interrupted> {
+        let before = self.receiver.completed_actions.lock().len();
+        // Otherwise, wake up once per second to see whether something completed.
+        for _ in 0..timeout_seconds {
+            sleeper.sleep(1000)?;
+            let count = self.receiver.completed_actions.lock().len() - before;
+            if count > 0 {
+                return Ok(count);
+            }
+        }
+        Ok(0)
+    }
+}
+
+struct InactivityReporterImpl {
+    receiver: Arc<ExecutionProgressReceiver>,
+    status_reporter:
+        Arc<crate::buildtool::action_execution_status_reporter::ActionExecutionStatusReporter>,
+    is_building_exclusive_artifacts: Arc<AtomicBool>,
+    event_bus: Arc<dyn EventBus>,
+}
+
+impl crate::buildtool::action_execution_inactivity_watchdog::InactivityReporter
+    for InactivityReporterImpl
+{
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionProgressReceiver.java:224 ExecutionProgressReceiver.createInactivityReporter.maybeReportInactivity
+    fn maybe_report_inactivity(&self, last_action_completed_at: std::time::SystemTime) {
+        // Do not report inactivity if we are currently running an exclusive test or a streaming
+        // action (in practice only tests can stream and it implicitly makes them exclusive).
+        if !self.is_building_exclusive_artifacts.load(Ordering::SeqCst) {
+            self.status_reporter
+                .show_currently_executing_actions(&format!(
+                    "{} ",
+                    self.receiver.get_progress_string()
+                ));
+            self.event_bus.post(Arc::new(
+                crate::buildtool::action_execution_inactivity_watchdog::ActionExecutionInactivityEvent {
+                    last_action_completed_at,
+                },
+            ));
+        }
+    }
+}
+
 // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:1030 ExecutionTool.ExecutionProgressReceiverSetup
 pub struct ExecutionProgressReceiverSetup {
     event_bus: Arc<dyn EventBus>,

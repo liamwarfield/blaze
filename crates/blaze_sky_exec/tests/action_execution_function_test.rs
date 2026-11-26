@@ -219,14 +219,15 @@ impl Fixture {
         // ARTIFACT requests the FILE value of a source artifact (Java's TimestampBuilderTestCase
         // registers FILE_STATE and FILE with it).
         let root = self.exec_root.get_parent_directory().unwrap();
-        let config = blaze_sky_loading::skyframe_executor::LoadingFunctionsConfig::for_bazel_default(
-            blaze_sky_loading::directories::LoadingDirectories {
-                workspace: self.exec_root.clone(),
-                output_base: root.get_child("output_base"),
-                install_base: root.get_child("install_base"),
-            },
-            Arc::new(NoRepos),
-        );
+        let config =
+            blaze_sky_loading::skyframe_executor::LoadingFunctionsConfig::for_bazel_default(
+                blaze_sky_loading::directories::LoadingDirectories {
+                    workspace: self.exec_root.clone(),
+                    output_base: root.get_child("output_base"),
+                    install_base: root.get_child("install_base"),
+                },
+                Arc::new(NoRepos),
+            );
         let mut builder = blaze_sky_loading::skyframe_executor::register_loading_functions(
             EvaluatorBuilder::new(),
             &config,
@@ -238,13 +239,9 @@ impl Fixture {
             IndexMap::new(),
         );
         builder = blaze_sky_loading::precomputed::BUILD_ID.set(builder, String::new());
-        let evaluator = blaze_sky_exec::register_execution_functions(
-            builder,
-            executor,
-            Arc::new(seam),
-            None,
-        )
-        .build();
+        let evaluator =
+            blaze_sky_exec::register_execution_functions(builder, executor, Arc::new(seam), None)
+                .build();
         let ctx = EvaluationContext {
             keep_going,
             event_handler: self.events.clone(),

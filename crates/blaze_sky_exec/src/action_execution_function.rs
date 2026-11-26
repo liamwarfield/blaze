@@ -14,7 +14,7 @@ use blaze_exec::actions::action_cache_checker::{
     InterruptedException, PackageRootException, PackageRootExceptionOrInterrupted,
     PackageRootResolver, Token,
 };
-use blaze_exec::actions::action_execution::{ActionFailed, FailedActionInfo};
+use blaze_exec::actions::action_execution::{FailedActionInfo, LabelCause, RootCause};
 use blaze_exec::actions::{
     ActionExecutionException, ActionInputRef, FileArtifactValue, TreeArtifactValue,
 };
@@ -1197,25 +1197,6 @@ fn expand_tree_artifact_and_populate_artifact_data(
     );
 }
 
-/// A `LabelCause`: a missing or unreadable source input.
-// Java: com/google/devtools/build/lib/causes/LabelCause.java:23 LabelCause
-struct LabelCause {
-    /// The BEP root-cause id. PORT: `ActionExecutionException` root causes are `ActionFailed`
-    /// only in `blaze_exec`, so the label does not reach the exception (see
-    /// `maybe_throw_exception`).
-    #[allow(dead_code)]
-    label: blaze_cmdline::Label,
-    failure_detail: FailureDetail,
-}
-
-impl LabelCause {
-    /// `getMessage()`: the message of the detailed exit code's failure detail.
-    // Java: com/google/devtools/build/lib/causes/LabelCause.java:42 LabelCause.getMessage
-    fn get_message(&self) -> &str {
-        &self.failure_detail.message
-    }
-}
-
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1160 ActionExecutionFunction.createLabelCauseNullOwnerOk
 fn create_label_cause_null_owner_ok(
     input: &Artifact,
@@ -1248,7 +1229,7 @@ struct ActionExecutionFunctionExceptionHandler<'a> {
     skyframe_action_executor: &'a SkyframeActionExecutor,
     missing_artifact_causes: Vec<LabelCause>,
     /// `List<NestedSet<Cause>>`: the root causes of each failed input.
-    transitive_causes: Vec<Vec<ActionFailed>>,
+    transitive_causes: Vec<Vec<RootCause>>,
     first_action_execution_exception: Option<ActionExecutionException>,
 }
 
@@ -1472,14 +1453,17 @@ impl<'a> ActionExecutionFunctionExceptionHandler<'a> {
                 return Err(first_action_execution_exception.clone());
             }
             // NestedSetBuilder.<Cause>stableOrder().addAll(missingArtifactCauses), then
-            // addTransitive of each transitive cause set.
-            // PORT: the root causes of blaze_exec's ActionExecutionException are ActionFailed
-            // only (see LabelCause), so the missing inputs' LabelCauses are not among them; a
-            // cause in several sets is kept once, as a NestedSet does.
-            let mut all_causes: Vec<ActionFailed> = Vec::new();
-            for cause in self.transitive_causes.iter().flatten() {
-                if !all_causes.contains(cause) {
-                    all_causes.push(cause.clone());
+            // addTransitive of each transitive cause set; a cause in several sets is kept once,
+            // as a NestedSet does.
+            let mut all_causes: Vec<RootCause> = Vec::new();
+            let missing = self
+                .missing_artifact_causes
+                .iter()
+                .cloned()
+                .map(RootCause::Label);
+            for cause in missing.chain(self.transitive_causes.iter().flatten().cloned()) {
+                if !all_causes.contains(&cause) {
+                    all_causes.push(cause);
                 }
             }
             // PORT: firstActionExecutionException.getCause() is kept as its message only by
@@ -1531,13 +1515,17 @@ impl<'a> ActionExecutionFunctionExceptionHandler<'a> {
             .collect();
         let (code, message) =
             create_source_error_code_and_message_of(&source_artifact_error_causes);
-        // PORT: Java's root causes are the LabelCauses (NestedSetBuilder.wrap(STABLE_ORDER,
-        // sourceArtifactErrorCauses)); blaze_exec's ActionExecutionException holds ActionFailed
-        // causes only, so the exception has none.
+        // NestedSetBuilder.wrap(Order.STABLE_ORDER, sourceArtifactErrorCauses)
+        let root_causes: Vec<RootCause> = self
+            .missing_artifact_causes
+            .iter()
+            .cloned()
+            .map(RootCause::Label)
+            .collect();
         let ex = ActionExecutionException::with_root_causes(
             message,
             Some(FailedActionInfo::of(self.action)),
-            Vec::new(),
+            root_causes,
             /* catastrophe= */ false,
             code.get_failure_detail().cloned(),
         );

@@ -386,8 +386,10 @@ impl blaze_sky_loading::repos::ExternalRepos for NoRepos {
         &self,
         _repository_name: &blaze_cmdline::RepositoryName,
         _env: &mut blaze_skyframe::Environment<'_>,
-    ) -> Result<Option<blaze_sky_loading::repos::RepositoryMappingValue>, blaze_skyframe::ComputeError>
-    {
+    ) -> Result<
+        Option<blaze_sky_loading::repos::RepositoryMappingValue>,
+        blaze_skyframe::ComputeError,
+    > {
         Ok(Some(
             blaze_sky_loading::repos::RepositoryMappingValue::value_for_empty_root_module(),
         ))
@@ -397,8 +399,10 @@ impl blaze_sky_loading::repos::ExternalRepos for NoRepos {
         &self,
         repository_name: &blaze_cmdline::RepositoryName,
         _env: &mut blaze_skyframe::Environment<'_>,
-    ) -> Result<Option<blaze_sky_loading::repos::RepositoryDirectoryValue>, blaze_skyframe::ComputeError>
-    {
+    ) -> Result<
+        Option<blaze_sky_loading::repos::RepositoryDirectoryValue>,
+        blaze_skyframe::ComputeError,
+    > {
         panic!("no external repository here: {repository_name}")
     }
 }

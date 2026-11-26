@@ -1018,9 +1018,26 @@ async fn prefetch_file(
         // directory. If it lies in an external repo backed by the remote repo contents cache, its
         // contents may only be available in memory and must be materialized to the local file
         // system for local actions to access them.
-        // PORT: `inputPath.getFileSystem() instanceof SubtreeMaterializer`: only
-        // `RemoteExternalOverlayFileSystem` (the remote repo contents cache) is one, and it is not
-        // ported, so no Blaze file system is a `SubtreeMaterializer`.
+        // `inputPath.getFileSystem() instanceof SubtreeMaterializer subtreeMaterializer`: the one
+        // implementation is `RemoteExternalOverlayFileSystem`.
+        if let Some(subtree_materializer) =
+            crate::remote_external_overlay_file_system::RemoteExternalOverlayFileSystem::of(
+                input_path.get_file_system(),
+            )
+        {
+            use crate::remote_external_overlay_file_system::SubtreeMaterializer as _;
+            // PORT: the materialization blocks on remote transfers, which must not happen on a
+            // thread of the remote runtime; it runs on a thread of its own while this task
+            // waits.
+            let path = input_path.as_fragment().clone();
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            std::thread::spawn(move || {
+                let _ = sender.send(subtree_materializer.ensure_subtree_materialized(&path));
+            });
+            receiver.await.map_err(|_| {
+                io::Error::other("subtree materialization ended without a result")
+            })??;
+        }
         return Ok(());
     }
 

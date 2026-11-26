@@ -22,9 +22,10 @@
 //! E2-11; measured on the oracle's JDK).
 //!
 //! The JDK 25 processing limits are ported: an element depth over 100, more than 200 attributes
-//! on one element, a name longer than 1,000 characters (`jdk.xml.maxElementDepth`,
-//! `jdk.xml.elementAttributeLimit`, `jdk.xml.maxXMLNameLimit`; measured on the oracle's JDK by
-//! the review exec-2 round 2, E2-10).
+//! on one element, a name (or the URI of a namespace declaration) longer than 1,000 characters
+//! (`jdk.xml.maxElementDepth`,
+//! `jdk.xml.elementAttributeLimit`, `jdk.xml.maxXMLNameLimit`; measured on the oracle's JDK in
+//! the reviews exec-2 rounds 2 and 3, E2-10 and E2-14).
 //!
 //! Not ported (`unported!`): a document type declaration with an internal subset or an external
 //! identifier (Java reads the DTD and its entity declarations), XML 1.1 documents, UCS-4 and
@@ -88,7 +89,11 @@ const READER_BUFFER_SIZE: usize = 8192;
 /// (`XMLEntityScanner.load` with an offset) reads less, which moves the later boundaries; that is
 /// not modelled. A bad byte right after the root element is in the first chunk after the
 /// declaration (rejected, as in Java); one 200,000 characters later is never loaded (accepted, as
-/// in Java).
+/// in Java). Known difference (review exec-2 round 3, 59 of 60 boundary documents agree):
+/// `asciib_16400_16424` (end tag at byte 16,400, bad byte at 16,424), which Java accepts because
+/// its second boundary falls between the two, and this port rejects; the reverse is possible.
+/// Porting the exact refill points means porting the buffer handling of every
+/// `XMLEntityScanner` scan method.
 fn eager_chunk_start(bad: usize, first: usize, chunk: usize) -> usize {
     if bad < first {
         return bad;
@@ -267,7 +272,12 @@ impl XmlStreamReader {
         }
         if !self.started {
             self.started = true;
-            if let Some(decl) = parse_xml_decl(&self.chars)? {
+            let (decl, ran_off) = parse_xml_decl_tracked(&self.chars);
+            if ran_off && self.decode_error.is_some() {
+                // The declaration scan reaches where the bytes stop being decodable.
+                self.char_at(self.chars.len())?;
+            }
+            if let Some(decl) = decl? {
                 self.pos = decl.end;
             }
         }
@@ -686,6 +696,11 @@ impl XmlStreamReader {
                     self.expect("=")?;
                     self.skip_spaces()?;
                     let value = self.scan_attribute_value()?;
+                    // The URI of a namespace declaration is held to the name limit too.
+                    // Java: com/sun/org/apache/xerces/internal/impl/XMLNSDocumentScannerImpl.java:457 XMLNSDocumentScannerImpl.scanAttribute (JDK)
+                    if attr_raw == "xmlns" || attr_prefix.as_deref() == Some("xmlns") {
+                        check_name_limit(value.chars().count())?;
+                    }
                     attributes.push((attr_raw, attr_prefix, attr_local, value));
                     // jdk.xml.elementAttributeLimit (JDK 25 default 200). Namespace declarations
                     // do not count (measured: one declaration and 200 attributes pass).
@@ -876,18 +891,35 @@ struct XmlDecl {
 /// [`standalone`] S? `?>`.
 // Java: com/sun/org/apache/xerces/internal/impl/XMLDocumentFragmentScannerImpl.java scanXMLDeclOrTextDecl
 fn parse_xml_decl(chars: &[char]) -> Result<Option<XmlDecl>, XmlStreamException> {
-    let starts = |pos: usize, s: &str| {
-        s.chars()
-            .enumerate()
-            .all(|(i, c)| chars.get(pos + i) == Some(&c))
+    parse_xml_decl_tracked(chars).0
+}
+
+/// [`parse_xml_decl`], and whether the scan read past the last of `chars` (where the document's
+/// bytes stop being decodable, Xerces' reader fails at that read).
+fn parse_xml_decl_tracked(chars: &[char]) -> (Result<Option<XmlDecl>, XmlStreamException>, bool) {
+    let ran_off = std::cell::Cell::new(false);
+    let result = parse_xml_decl_with(chars, &ran_off);
+    (result, ran_off.get())
+}
+
+fn parse_xml_decl_with(
+    chars: &[char],
+    ran_off: &std::cell::Cell<bool>,
+) -> Result<Option<XmlDecl>, XmlStreamException> {
+    let get = |i: usize| {
+        if i >= chars.len() {
+            ran_off.set(true);
+        }
+        chars.get(i)
     };
-    if !(starts(0, "<?xml") && chars.get(5).is_some_and(|c| is_space(*c))) {
+    let starts = |pos: usize, s: &str| s.chars().enumerate().all(|(i, c)| get(pos + i) == Some(&c));
+    if !(starts(0, "<?xml") && get(5).is_some_and(|c| is_space(*c))) {
         return Ok(None);
     }
     let mut pos = 5;
     let skip_spaces = |pos: &mut usize| {
         let start = *pos;
-        while chars.get(*pos).is_some_and(|c| is_space(*c)) {
+        while get(*pos).is_some_and(|c| is_space(*c)) {
             *pos += 1;
         }
         *pos > start
@@ -896,14 +928,14 @@ fn parse_xml_decl(chars: &[char]) -> Result<Option<XmlDecl>, XmlStreamException>
     let pseudo_attribute = |pos: &mut usize, name: &str| -> Result<String, XmlStreamException> {
         *pos += name.len();
         skip_spaces(pos);
-        if chars.get(*pos) != Some(&'=') {
+        if get(*pos) != Some(&'=') {
             return error(format!(
                 "The ' = ' character must follow \"{name}\" in the XML declaration."
             ));
         }
         *pos += 1;
         skip_spaces(pos);
-        let quote = match chars.get(*pos) {
+        let quote = match get(*pos) {
             Some(q @ ('"' | '\'')) => *q,
             _ => {
                 return error(format!(
@@ -913,7 +945,7 @@ fn parse_xml_decl(chars: &[char]) -> Result<Option<XmlDecl>, XmlStreamException>
         };
         *pos += 1;
         let start = *pos;
-        while let Some(c) = chars.get(*pos) {
+        while let Some(c) = get(*pos) {
             if *c == quote {
                 let value: String = chars[start..*pos].iter().collect();
                 *pos += 1;
@@ -1036,14 +1068,30 @@ fn decode(input: &[u8]) -> Result<(Vec<char>, Option<DecodeError>), XmlStreamExc
         }
         return Ok(decoded);
     }
-    // An ASCII-compatible stream: the declaration (read as ASCII) names the encoding.
-    let head: Vec<char> = bytes
-        .iter()
-        .take_while(|b| **b != b'>')
-        .map(|b| *b as char)
-        .chain(std::iter::once('>'))
+    // An ASCII-compatible stream: Xerces reads the declaration through its UTF-8 reader (it
+    // switches readers once the declaration is scanned), so a malformed byte the declaration
+    // scan reaches is that reader's error, printed (review exec-2 round 3, E2-13).
+    // Java: com/sun/org/apache/xerces/internal/impl/XMLDocumentScannerImpl.java:795 XMLDocumentScannerImpl.XMLDeclDriver.next (JDK)
+    let utf8_valid = match std::str::from_utf8(bytes) {
+        Ok(_) => bytes.len(),
+        Err(e) => e.valid_up_to(),
+    };
+    let head: Vec<char> = std::str::from_utf8(&bytes[..utf8_valid])
+        .expect("valid prefix")
+        .chars()
         .collect();
-    let head_decl = parse_xml_decl(&head)?;
+    let (head_decl, ran_off) = parse_xml_decl_tracked(&head);
+    if ran_off && utf8_valid < bytes.len() {
+        return Ok((
+            normalize_line_ends(head),
+            Some(DecodeError {
+                message: utf8_reader_error(bytes, utf8_valid),
+                visible_from: None,
+                reader: true,
+            }),
+        ));
+    }
+    let head_decl = head_decl?;
     let decl_end = head_decl.as_ref().map_or(0, |d| d.end);
     let encoding = match head_decl.and_then(|d| d.encoding) {
         None => Encoding::Utf8,
@@ -1922,3 +1970,90 @@ const OTHER_SUPPORTED_NAMES: &[&str] = &[
     "X0208",
     "X0212",
 ];
+
+#[cfg(test)]
+mod fatal_error_tests {
+    use super::*;
+
+    /// Reads `document` until it fails; the failure's message and whether it is a reader error
+    /// (printed as `[Fatal Error]`).
+    fn failure(document: &[u8]) -> (String, bool) {
+        let mut reader = match XmlStreamReader::new(document) {
+            Ok(r) => r,
+            Err(e) => return (e.0, false),
+        };
+        loop {
+            match reader.next_event() {
+                Ok(XmlEvent::EndDocument) => panic!("the document is accepted"),
+                Ok(_) => {}
+                Err(e) => return (e.0, reader.reader_error_raised.get()),
+            }
+        }
+    }
+
+    // Review exec-2 round 3, E2-13: a malformed byte inside the XML declaration is the UTF-8
+    // reader's error, printed. Documents and messages measured on the oracle's JDK
+    // (`~/.cache/blaze/work/review-exec-2/xml3/cases`).
+    #[test]
+    fn malformed_byte_in_the_declaration_is_a_printed_reader_error() {
+        let cases: [(&[u8], &str); 6] = [
+            (
+                b"<?xml version=\"1.0\"\xff",
+                "Invalid byte 1 of 1-byte UTF-8 sequence.",
+            ),
+            (
+                b"<?xml version=\"1.0\" encoding=\"UTF-8\"\xff?><testsuite name=\"s\"/>",
+                "Invalid byte 1 of 1-byte UTF-8 sequence.",
+            ),
+            (
+                b"<?xml version=\"1.\xff\"?><testsuite name=\"s\"/>",
+                "Invalid byte 1 of 1-byte UTF-8 sequence.",
+            ),
+            (
+                b"<?xml version=\"1.0\" encoding=\"UTF\xff8\"?><testsuite name=\"s\"/>",
+                "Invalid byte 1 of 1-byte UTF-8 sequence.",
+            ),
+            (
+                b"<?xml version=\"1.0\" encoding=\"US-ASCII\" standalone=\"y\xe9s\"?><t",
+                "Invalid byte 2 of 3-byte UTF-8 sequence.",
+            ),
+            (
+                b"<?xml version=\"1.0\" encoding=\"US-ASCII\"\xe9",
+                "Expected byte 2 of 3-byte UTF-8 sequence.",
+            ),
+        ];
+        for (document, message) in cases {
+            assert_eq!(
+                failure(document),
+                (message.to_string(), true),
+                "{document:?}"
+            );
+        }
+    }
+
+    // Review exec-2 round 3, E2-14: the URI of a namespace declaration is held to the name
+    // limit (measured: 1,000 characters pass, 1,001 fail).
+    #[test]
+    fn namespace_uri_over_the_name_limit_fails() {
+        for (prefix, len, ok) in [
+            ("xmlns:p", 1000, true),
+            ("xmlns:p", 1001, false),
+            ("xmlns", 1001, false),
+        ] {
+            let document = format!("<testsuite name=\"s\" {prefix}=\"{}\"/>", "u".repeat(len));
+            let mut reader = XmlStreamReader::new(document.as_bytes()).unwrap();
+            let mut result = Ok(());
+            loop {
+                match reader.next_event() {
+                    Ok(XmlEvent::EndDocument) => break,
+                    Ok(_) => {}
+                    Err(e) => {
+                        result = Err(e);
+                        break;
+                    }
+                }
+            }
+            assert_eq!(result.is_ok(), ok, "{prefix} {len}");
+        }
+    }
+}

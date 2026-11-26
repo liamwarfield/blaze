@@ -220,6 +220,16 @@ impl Path {
             .stat_nullable(&self.path_fragment, follow_symlinks.to_boolean())
     }
 
+    /// The metadata the stat of this path carries (`FileStatusWithMetadata.getMetadata()`), if
+    /// any (see `FileSystem::stat_metadata`).
+    pub fn stat_metadata(
+        &self,
+        follow_symlinks: Symlinks,
+    ) -> io::Result<Option<std::sync::Arc<dyn crate::file_status::StatMetadata>>> {
+        self.file_system
+            .stat_metadata(&self.path_fragment, follow_symlinks.to_boolean())
+    }
+
     /// Status or `None` if not found.
     // Java: com/google/devtools/build/lib/vfs/Path.java:378 Path.statIfFound
     pub fn stat_if_found(&self, follow_symlinks: Symlinks) -> io::Result<Option<FileStatus>> {
