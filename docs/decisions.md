@@ -409,3 +409,9 @@ Each entry: date, decision, why, who decided.
   collision skips the loud stop), coverage V3 (`coverage_environment` keeps the first of a
   repeated key, Java the last) and the coverage Starlark accessors; native aspects;
   `testing.analysis_test`; include scanning; action rewinding. Root.
+- 2026-11-26. Checkpoint 36 (f71fc67; HEAD 18b4d4f builds from a clean checkout). Outer measure
+  at 5f68157: 140 of 211 targets, 2,411 of 2,878 functions. Coverage finding V1 probed by root
+  on a binary of the tree after checkpoint 36: `build //:g
+  --noexperimental_merged_skyframe_analysis_execution` on a one-genrule workspace exits 0 on
+  both binaries with the same Found, Elapsed and "Build completed" lines (before the fix Blaze
+  stopped with "not ported yet"). Root.
