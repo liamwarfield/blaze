@@ -474,3 +474,14 @@ Each entry: date, decision, why, who decided.
   with Bazel's warning). `info local_resources` reads what Bazel reads, not the cgroup limit of
   the agents' slice. The repo contents cache lock held across commands by a kept graph goes to
   the incremental implementer. Root.
+- 2026-11-26. Checkpoint 38 is 374c631 (clean-checkout build; binary sha256 a96a5ec8…).
+  First review of the query work: STOP (S1-1 gzip bytes of `genquery(compressed_output)`,
+  S1-2 `print()` of the cquery Starlark formatter bypasses the output stream); back with its
+  implementer. Two Blaze-only mechanisms of that work are recorded here as declared
+  deviations, both judged by the reviewer: (1) `blaze_analysis::skyframe_env`, a scoped
+  thread-local that lends ConfiguredTargetFunction's Skyframe environment to a rule factory
+  (genquery needs it; one `unsafe` block, found sound; the safe form is an extra parameter
+  through every factory, to be done when a second user appears); (2) the Skyframe node
+  CQUERY_TRANSITION_RESOLVER, which runs the dependency resolver for `cquery
+  --output=transitions` where Java walks the analysed graph; its nodes must be removed when the
+  command ends. Root.
