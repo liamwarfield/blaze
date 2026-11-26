@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""Stop Bazel (oracle) servers that agents left running.
+
+usage: scripts/reap-idle-servers [--min-idle SECONDS] [--dry-run]
+       scripts/reap-idle-servers help
+
+A server is a java process running A-server.jar. It is stopped (SIGTERM, which Bazel answers
+with an orderly shutdown) when its last command started more than --min-idle seconds ago
+(default 600; the modification time of <output_base>/command.log, or the process's age when
+that file is missing), its output root is under ~/.cache/blaze/work/, no client process (a
+non-java process whose arguments name the same output root and whose working directory is
+inside the server's workspace) exists, and the output root holds no file named `.keep-server`
+(for tests that keep a server on purpose: delete the file when the test is over). Servers
+of the referee and of the integration-test harness (output roots outside ~/.cache/blaze/work/)
+are never touched. Prints one line per server stopped and the memory it held.
+"""
+import os, signal, sys
+
+def main():
+    if "help" in sys.argv[1:] or "--help" in sys.argv[1:]:
+        print(__doc__); return 0
+    min_age = 600; dry = "--dry-run" in sys.argv
+    if "--min-idle" in sys.argv:
+        min_age = int(sys.argv[sys.argv.index("--min-idle") + 1])
+    import time
+    work = os.path.expanduser("~/.cache/blaze/work/")
+    hz = os.sysconf("SC_CLK_TCK"); up = float(open("/proc/uptime").read().split()[0])
+    servers = {}; clients = []
+    for pid in filter(str.isdigit, os.listdir("/proc")):
+        try:
+            args = [a.decode("utf-8", "replace") for a in open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0") if a]
+            stat = open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()
+        except OSError:
+            continue
+        root = next((a.split("=", 1)[1] for a in args if a.startswith("--output_user_root=")), None)
+        if not root or not root.startswith(work):
+            continue
+        if any(a.endswith("A-server.jar") for a in args):
+            ws = next((a.split("=", 1)[1] for a in args if a.startswith("--workspace_directory=")), "")
+            age = up - int(stat[19]) / hz; rss = int(stat[21]) * os.sysconf("SC_PAGE_SIZE")
+            base = next((a.split("=", 1)[1] for a in args if a.startswith("--output_base=")), None)
+            try:
+                age = min(age, time.time() - os.stat(os.path.join(base, "command.log")).st_mtime)
+            except (OSError, TypeError):
+                pass
+            if os.path.exists(os.path.join(root, ".keep-server")):
+                continue
+            servers[int(pid)] = (root, ws, age, rss)
+        else:
+            try:
+                clients.append((root, os.readlink(f"/proc/{pid}/cwd")))
+            except OSError:
+                pass
+    total = 0
+    for pid, (root, ws, age, rss) in sorted(servers.items()):
+        busy = any(r == root and ws and (c == ws or c.startswith(ws + "/")) for r, c in clients)
+        if busy or age < min_age:
+            continue
+        print(f"{'would stop' if dry else 'stop'} {pid} idle {int(age)}s {rss >> 20} MiB {root}")
+        total += rss
+        if not dry:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+    if total:
+        print(f"total {total >> 20} MiB")
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

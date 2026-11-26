@@ -42,6 +42,17 @@ Read them again after a context reset.
   `scripts/cargo-capped` re-applies it. Never start a heavy process in a way that leaves that
   slice (no `--slice=` of your own, no `setsid` tricks, no `--scope` elsewhere); a unit you
   start with an explicit `--unit` name must pass `--slice=app-t3code-agents-jobs.slice`.
+- Memory (the user's rule, 2026-11-26; the machine ran out on that day because 51 oracle
+  servers were left running): the agents' slice is limited to 25 GiB. Every Bazel (oracle) or
+  Blaze server you start for a probe gets the startup option `--max_idle_secs=60` on both
+  sides, and you run `shutdown` on it as soon as its probe is over; never keep more than two
+  servers alive. Reuse one workspace directory and one output base per side for a series of
+  cases instead of one per case (each new workspace starts a new JVM of about 1 GiB). Builds in
+  probes use `--jobs=4`. `scripts/reap-idle-servers` stops servers under `~/.cache/blaze/work/`
+  whose last command started more than ten minutes ago; a test that needs a server kept longer
+  puts a file `.keep-server` in its output root and deletes it afterwards. At most two Cargo
+  runs go at once (`scripts/cargo-capped` waits for a slot); do not start Cargo in parallel
+  with yourself.
 - Wait for a job by blocking in the foreground (Bash timeout up to 600000 ms), not by short polls.
 - Tools live under `scripts/`, never in `/tmp`. Every tool prints usage with `help`.
 - `/tmp` is RAM-backed. Put binaries, recordings and run outputs under `~/.cache/blaze/work/<your

@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 # The only way agents run Cargo. Caps parallelism and memory so several agents can share
 # this 16-core / 30 GB machine. Usage: scripts/cargo-capped <cargo args...>
-#   BLAZE_CARGO_JOBS (default 6), BLAZE_CARGO_MEM (default 12G).
+#   BLAZE_CARGO_JOBS (default 4), BLAZE_CARGO_MEM (default 8G). At most two Cargo runs go at
+#   once on the machine (two lock files under ~/.cache/blaze/locks); a third waits.
 # Cargo's own target-dir lock serializes concurrent builds in one checkout.
 # Each call re-applies scripts/cpu-cap (two cores stay free for the rest of the machine).
 set -euo pipefail
-if [[ "${1:-}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,7p' "$0"; exit 0; fi
+if [[ "${1:-}" == "help" || "${1:-}" == "--help" ]]; then sed -n '2,9p' "$0"; exit 0; fi
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
-jobs="${BLAZE_CARGO_JOBS:-6}"
-mem="${BLAZE_CARGO_MEM:-12G}"
+jobs="${BLAZE_CARGO_JOBS:-4}"
+mem="${BLAZE_CARGO_MEM:-8G}"
 export CARGO_BUILD_JOBS="$jobs"
 "$root/scripts/cpu-cap" apply || true
+# Two slots for the whole machine: take the first free one, else wait for slot 1.
+lockdir="$HOME/.cache/blaze/locks"; mkdir -p "$lockdir"
+exec 8>"$lockdir/cargo-slot-1" 9>"$lockdir/cargo-slot-2"
+if flock -n 8; then exec 9>&-; elif flock -n 9; then exec 8>&-; else exec 9>&-; flock 8; fi
 exec systemd-run --user --collect --quiet --pipe --wait --same-dir \
   -p MemoryMax="$mem" -p MemorySwapMax=0 \
   --setenv=CARGO_BUILD_JOBS="$jobs" --setenv=PATH="$PATH" --setenv=HOME="$HOME" \

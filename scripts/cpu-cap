@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Keep two CPU cores free for the rest of the machine (the user's rule, 2026-11-26).
+# Keep two CPU cores and about 5 GiB of memory free for the rest of the machine (the user's
+# rules, 2026-11-26).
 #
 # usage: scripts/cpu-cap [apply|status|help]
 #
 # apply (default): idempotent, quiet. Two runtime settings of the systemd user manager, both
 #   gone at logout or reboot and re-applied by the next call (scripts/cargo-capped calls this):
-#   1. CPUQuota = (cores - 2) x 100% on app-t3code-agents.slice, the slice every agent runs in.
+#   1. CPUQuota = (cores - 2) x 100%, MemoryHigh (BLAZE_MEM_HIGH, default 22G) and MemoryMax
+#      (BLAZE_MEM_MAX, default 25G) on app-t3code-agents.slice, the slice every agent runs in.
 #   2. A drop-in for transient `run-*.service` units (what `systemd-run --user` creates: Cargo
 #      through scripts/cargo-capped, the test harness, comparison tools, agents' heavy jobs)
 #      that places them in app-t3code-agents-jobs.slice, a child of that slice, so that agents
@@ -21,9 +23,9 @@ quota=$(( (cores - free_cores) * 100 ))
 dropin_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/systemd/user/run-.service.d"
 dropin="$dropin_dir/50-blaze-cpu-cap.conf"
 case "${1:-apply}" in
-  help|-h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  help|-h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   status)
-    systemctl --user show "$slice" -p CPUQuotaPerSecUSec -p CPUWeight
+    systemctl --user show "$slice" -p CPUQuotaPerSecUSec -p MemoryHigh -p MemoryMax -p MemoryCurrent
     if [ -f "$dropin" ]; then echo "drop-in: $dropin"; cat "$dropin"; else echo "drop-in: missing"; fi
     exit 0 ;;
   apply) ;;
@@ -39,4 +41,8 @@ fi
 have=$(systemctl --user show "$slice" -p CPUQuotaPerSecUSec --value 2>/dev/null || true)
 if [ "$have" != "$(( cores - free_cores ))s" ]; then
   systemctl --user set-property --runtime "$slice" "CPUQuota=${quota}%" >/dev/null
+fi
+mem_high="${BLAZE_MEM_HIGH:-22G}"; mem_max="${BLAZE_MEM_MAX:-25G}"
+if [ "$(systemctl --user show "$slice" -p MemoryMax --value 2>/dev/null)" = "infinity" ]; then
+  systemctl --user set-property --runtime "$slice" "MemoryHigh=$mem_high" "MemoryMax=$mem_max" >/dev/null
 fi

@@ -437,3 +437,15 @@ Each entry: date, decision, why, who decided.
   the functions of remote_execution_tls_test and remote_execution_mtls_test that need a v1
   chain become a declared gap. Reason: a certificate path validator written for this port is a
   security liability out of proportion to four test functions. The user can overrule. Root.
+- 2026-11-26, 13:17. The machine ran out of memory (29 of 30 GiB, swap full, load 48): the
+  path-mapping agent's sweep had started one oracle workspace, and so one Bazel server of 0.5
+  to 1.1 GiB, per test function and left 51 of them running (20 GiB); root's briefs said
+  "shut down the servers you start" but set no idle timeout and no limit, and root had nine
+  builders running. The user asked for limits. Done: root stopped the 51 idle servers (memory
+  used fell from 28 to 9 GiB); MemoryHigh 22G and MemoryMax 25G on the agents' slice beside the
+  14-core quota (`scripts/cpu-cap`); `scripts/cargo-capped` now allows two Cargo runs at once
+  machine-wide, 4 jobs and 8 GiB each; `scripts/reap-idle-servers` (new, run by root every
+  three minutes) stops servers under `~/.cache/blaze/work/` idle for ten minutes with no client
+  unless the output root holds `.keep-server`; AGENTS.md rule "Memory": `--max_idle_secs=60`
+  on every probe server, `shutdown` after each probe, at most two servers, one reused
+  workspace per side. All eight running implementers were told. Root.
