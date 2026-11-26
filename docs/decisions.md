@@ -465,3 +465,12 @@ Each entry: date, decision, why, who decided.
   quota REMAINS (80% used); the user monitors it from another thread and sends the pause
   instruction; root cannot read the quota itself. The pause of 14:20 is withdrawn; the six
   implementers were restarted in their threads (three of them had been cancelled twice). Root.
+- 2026-11-26. D15 amended after the server implementer's probes: every heap item of `info`
+  derives from resident memory (so the unit is MB, as two functions of Bazel's info_test
+  expect): used = resident, after-gc = resident after `malloc_trim`, committed = resident, peak
+  = peak resident, max = physical memory. Also ruled: a rebuilt Blaze binary must not reuse a
+  server started by an older one; the install base stays single, and the client treats the
+  identity of its executable as Bazel treats the install-base startup option (kill and restart
+  with Bazel's warning). `info local_resources` reads what Bazel reads, not the cgroup limit of
+  the agents' slice. The repo contents cache lock held across commands by a kept graph goes to
+  the incremental implementer. Root.
