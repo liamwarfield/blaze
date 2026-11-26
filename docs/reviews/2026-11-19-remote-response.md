@@ -1462,3 +1462,244 @@ State when the work was paused (2026-11-19, about 17:15), said exactly:
   command in docs/remote.md as label `blaze-remote-2`; run the probes P3 did not reach; then
   `scripts/gate/run-tests`.
 
+
+# Round 3 evidence on e8b79c0
+
+- Worker: implementer `remote-r3` (Opus), 2026-11-25, on root's brief. Reviewed commit:
+  `e8b79c0`, binary `~/.cache/blaze/work/root-runs/blaze-e8b79c0` (sha256 `7455128a0ccfc453…`).
+  Oracle: `~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64`.
+- The suite run of e8b79c0 showed defects in ported remote code; root asked me to fix them first
+  (section 2). Every fix is now in root's checkpoint `77eacad`. The fixed binary is
+  `~/.cache/blaze/work/remote-r3/blaze-4` (sha256 `9086f54cb15dbf0f…`), built at 11:14 from the
+  shared working tree (these fixes and the other agents' uncommitted work of that hour; root's
+  checkpoints `987d9b3` and `77eacad` were made minutes later and hold all of my changes but the
+  two script path overrides noted under "Tools").
+- Every comparison below was run twice, on the e8b79c0 binary and on `blaze-4`, unless it says
+  otherwise. Each tool says which binary it ran in its log (`~/.cache/blaze/work/remote-r3/`).
+- Incident (mine, reported plainly): at 11:45 a removal command I generated wrongly (a `sed` that
+  read and appended the same file left a third line ending in `…/remote-r3/ur/`) deleted my own
+  output-root directory while three of my runs used it. Nothing outside
+  `~/.cache/blaze/work/remote-r3/` was touched. The damaged runs, all on the e8b79c0 binary, were
+  rerun and only the reruns are used here: matrix step `all cold` (exit 36, replaced by runs 11/12),
+  `evict-probe ws … remote` with retries=0 (exit 36, rerun as `r3e2-remote-0`), and `probe-trees`
+  (step 1 lost its install base, rerun as `r3e2`).
+
+## 1. Bazel's remote tests in the suite run `blaze-e8b79c0`
+
+Root's suite run (label `blaze-e8b79c0`, binary sha256 `7455128a…`, all 237 default targets in
+suite mode); `scripts/upstream-tests/compare corpus/upstream-tests/oracle-9.3.2.json
+blaze-e8b79c0 --all`, restricted to the remote targets. Base: the functions that pass on the
+oracle (flaky-in-base functions excluded; none of them is in these targets).
+
+| target | oracle-passing functions | pass on blaze-e8b79c0 | lost | absent |
+|---|---|---|---|---|
+| `//src/test/py/bazel:bazel_remote_cache_decompression_test` | 1 | 0 | 1 | 0 |
+| `//src/test/py/bazel:remote_repo_contents_cache_test` | 38 | 0 | 38 | 0 |
+| `//src/test/shell/bazel/remote:build_without_the_bytes_test` | 63 | 44 | 19 | 0 |
+| `//src/test/shell/bazel/remote:remote_build_event_uploader_test` | 20 | 16 | 0 | 4 |
+| `//src/test/shell/bazel/remote:remote_downloader_test` | 4 | 0 | 4 | 0 |
+| `//src/test/shell/bazel/remote:remote_execution_http_test` | 15 | 4 | 11 | 0 |
+| `//src/test/shell/bazel/remote:remote_execution_mtls_test` | 4 | 2 | 2 | 0 |
+| `//src/test/shell/bazel/remote:remote_execution_sandboxing_test` | 3 | 3 | 0 | 0 |
+| `//src/test/shell/bazel/remote:remote_execution_test` | 96 | 82 | 14 | 0 |
+| `//src/test/shell/bazel/remote:remote_execution_tls_test` | 4 | 2 | 2 | 0 |
+| `//src/test/shell/bazel/remote:remote_execution_with_xattr_test` | 1 | 0 | 1 | 0 |
+| `//src/test/shell/bazel:external_remote_file_test` | 8 | 8 | 0 | 0 |
+| `//src/test/shell/bazel:unix_digest_hash_attribute_name_test` | 1 | 0 | 1 | 0 |
+| total | 258 | 161 | 93 | 4 |
+
+The 97 lost or absent functions by root's failure family
+(`~/.cache/blaze/work/root-runs/e8b79c0-failures/by-family.tsv`): remote-repo-contents-cache 38,
+http-cache 13, remote-flags-other-commands 12, unclassified 10 (section 2), tls-v1-cert 4 (fixed),
+no-server 3, path-mapping 3, collateral-xml-overflow 3 (the suite aborted after unittest.bash's XML
+writer overflowed; those functions did not run), credential-helper 3, modify-execution-info 2,
+rewinding 2, xattr-digest 2 (fixed), include-scanning 1, scrubbing 1. These numbers are
+e8b79c0's; the suite was not rerun on `blaze-4` (root runs it).
+
+## 2. Defects the suite showed in ported code: fixed
+
+Evidence for each: `scripts/remote/fixes-probe` (new; one case per defect, written as the upstream
+test writes its workspace), oracle (label `o`) against `blaze-4` (label `b4`). Exit codes and the
+lines the upstream test checks, compared:
+
+| case (upstream test) | oracle | e8b79c0 (suite) | blaze-4 |
+|---|---|---|---|
+| `cc-tree-cache` (`test_cc_tree_remote_cache_download_minimal`) | exit 0, `5 processes: 1 internal, 4 linux-sandbox` | crash, NPE in the Merkle tree | equal to the oracle |
+| `cc-tree-exec` (`test_cc_tree_remote_executor_download_all`) | exit 0, `5 processes: 1 internal, 4 remote` | crash | equal |
+| `start-lines` (`test_downloads_minimal_hit_action_cache`) | 6 `START`/`FINISH` lines (`START <no location>: [1 / 3] Executing genrule //a:foo`, …) | none | the same 6 lines |
+| `tls-v1` (`remote_execution_tls_test test_remote_grpcs_cache`) | exit 0, `2 processes: 1 internal, 1 linux-sandbox` | `invalid peer certificate: …UnsupportedCertVersion` | equal |
+| `xattr` (`remote_execution_with_xattr_test`) | `VFS md5` file1 0, file2 1; `VFS xattr` file1 1, file2 2, BUILD 1 | `unported!` (`--unix_digest_hash_attribute_name`) | `VFS md5` file1 0, file2 1; `VFS xattr` file1 1, file2 **1**, BUILD 1 |
+| `exec-log` (`test_upload_minimal_upload_compact_exec_log`) | buildToolLogs: elapsed time, critical path, process stats, `command.profile.gz` bytestream, `execution_log.binpb.zst` bytestream | no `execution_log.binpb.zst` | the same five entries in the same order |
+
+- Merkle tree NPE (`test_cc_tree_*`, 3). `ActionInputMap.getInputMetadataChecked` looks up every
+  `TreeFileArtifact` through its parent tree (`ActionInputMap.java:218`); the port did so only for
+  `isChildOfDeclaredDirectory()`, so the children of a tree that an action template produced (the
+  `.pic.o` files of a C++ tree) came back null. Fix:
+  `blaze_sky_exec/src/skyframe_action_executor.rs:3437` (77eacad). Test
+  `get_input_metadata_template_expansion_output_from_parent_tree` (:5166; no Java test covers it).
+- `START … Executing genrule` (2). `SkyframeActionExecutor.ActionRunner` posts
+  `reporter.startTask(null, prependExecPhaseStats(message))` and `finishTask` (Java :1113, :1216);
+  the port had a "not ported" note. Ported: `ProgressSupplier`, `ActionCompletedReceiver`,
+  `setActionExecutionProgressReportingObjects`, `prependExecPhaseStats`
+  (`skyframe_action_executor.rs:381-450`), the two events (:1016, :1088);
+  `ExecutionProgressReceiver` implements both (`blaze_buildtool/…/execution_progress_receiver.rs:136`);
+  `ExecutionProgressReceiverSetup` hands the receiver to the executor
+  (`blaze_runtime/src/commands/build.rs:665`; PORT: no `ActionExecutionStatusReporter` argument).
+- `1 process: 1 internal.` (2, `test_downloads_toplevel*`). Not a remote defect: on the unchanged
+  second build Blaze prints `1 process: 2 action cache hit, 1 internal.` because it evaluates
+  every command anew (no graph kept between commands, ruling of 2026-11-19 on the server, D2);
+  Bazel's server keeps the graph. Left to the incremental work; not changed.
+- `tls-v1-cert` (4). Bazel's test certificates are X.509 v1 (`server.crt`, `client.crt`). The JDK's
+  PKIX trust manager accepts a v1 end entity and checks the host name against the common name
+  when there is no subjectAltName; webpki rejects any certificate that is not v3. New
+  `blaze_remote/src/authandtls/jdk_server_cert_verifier.rs`: every v3 certificate goes to rustls'
+  `WebPkiServerVerifier` unchanged; a v1/v2 end entity is checked as a one-certificate PKIX path
+  (trust anchor itself, or issued by an anchor whose key verifies its signature), validity, and
+  the most specific CN (`HostnameChecker.matchDNS`); handshake signatures with its raw key. Wired at
+  `google_auth_utils.rs:429`. PORT: no path through an intermediate for a v1 certificate
+  (`UnknownIssuer`); a wildcard CN in a v1 certificate is `unported!` (the JDK's public-suffix
+  rule). 7 tests with Bazel's certificates (`blaze_remote/tests/data/test_tls_certificate/`).
+- `xattr-digest` (2). Ported `UnixFileSystem.getxattr`, `getFastDigest` and `getDigest`'s
+  `VFS_MD5` task (`blaze_vfs/src/unix_file_system.rs:82, 140, 153, 205, 216`; the native
+  `getxattr_common`: ENODATA is null, ENOTSUP is null, other errors `<path> (<strerror>)`);
+  `BazelFileSystemModule.getFileSystem` passes the startup option (`blaze_runtime/src/runtime.rs:966`).
+  `DigestUtils.getDigestWithManualFallback` ported (`blaze_exec/src/actions/cache/digest_utils.rs:23`,
+  no digest cache) and used where Java calls it: `FileArtifactValue.createFromStat` and
+  `createForNormalFileUsingPath` (`file_artifact_value.rs:337, 436, 525`) and `DigestUtil.compute`
+  (`blaze_remote/src/util/digest_util.rs:83`). 2 tests (`blaze_vfs/tests/unix_file_system_xattr_test.rs`).
+  Remaining difference (the bold cell): the oracle reads file2's attribute twice (once for its
+  `FileStateValue`, once in the fallback), Blaze once, because `ArtifactFunction.createSourceValue`
+  stats the file instead of using its `FileValue` (an existing PORT in `artifact_function.rs`).
+  What the upstream test checks (no `VFS md5` for file1, one for file2) is equal.
+- Compact execution log not published (1). `SpawnLogModule.buildComplete` returned the file but
+  `build.rs` dropped it, after the BEP had already posted `BuildToolLogs`. Now the file joins the
+  collection after `BuildSummaryStatsModule`'s entries, the oracle's order
+  (`bep.rs:1832, 1886`, `build.rs:932`).
+
+## 3. re2 remote matrix
+
+New run driver `scripts/remote/modes` (help prints the scenarios). One output user root per side,
+`clean --expunge` before every step, Bazel's worker started empty per scenario, `--jobs=4`,
+`--remote_grpc_log`. The project's command (`test //:all //python:all`); remote execution uses
+`build` (as `scripts/remote/matrix`). Compared per step: exit code, `N processes:` line,
+`scripts/remote/compare-grpc-log` (oracle the reference), and `bazel-bin.sha256`
+(`second-build rehash`). Runs: oracle `r3-m-oracle`, e8b79c0 `r3-m-e8b` (`all` from runs 11/12,
+see the incident), blaze-4 `r3-m-f`; full comparisons in `matrix-compare-e8b.txt` and
+`matrix-compare-f.txt`.
+
+| step | summary line (oracle = e8b79c0 = blaze-4) | gRPC calls by method, oracle = Blaze (both binaries) | unmatched RPCs | bazel-bin |
+|---|---|---|---|---|
+| remote cache, cold | `716 processes: 165 internal, 551 linux-sandbox` | GetActionResult 550, UpdateActionResult 550, Write 1884, GetCapabilities 1, FindMissingBlobs 550 | 81 each side, all TestRunner | same, 4917 |
+| remote cache, warm | `716 processes: 550 remote cache hit, 165 internal, 1 linux-sandbox` | GetActionResult 550, Read 49, GetCapabilities 1 | 59, all TestRunner | same, 3865 |
+| minimal, cold | as remote cache cold | as remote cache cold | 82, all TestRunner | same, 4917 |
+| minimal, warm | as remote cache warm | GetActionResult 550, Read 23, GetCapabilities 1 | 39, all TestRunner | same, 3860 |
+| all, cold | as remote cache cold | as remote cache cold | 82, all TestRunner | same, 4917 |
+| all, warm | as remote cache warm | GetActionResult 550, Read 346, GetCapabilities 1 | 60, all TestRunner | same, 4388 |
+| disk + remote cache, cold | as remote cache cold | as remote cache cold | 82, all TestRunner | same, 4917 |
+| disk + remote cache, warm | `716 processes: 550 disk cache hit, 165 internal, 1 linux-sandbox` | GetCapabilities 1 | none, MATCH | same, 3865 |
+| remote execution, cold | `695 processes: 165 internal, 1 linux-sandbox, 529 remote` | GetActionResult 529, Read 93, Write 4414, GetCapabilities 1, FindMissingBlobs 9636, Execute 529 | none, MATCH (attribution-insensitive, 15202 of 15202 items) | same, 3951 |
+| remote execution, warm | `695 processes: 529 remote cache hit, 165 internal, 1 linux-sandbox` | GetActionResult 529, Read 93, GetCapabilities 1 | none, MATCH (623 of 623) | same, 3951 |
+
+Exit code 0 on all 30 steps. Remote cache only is the toplevel mode (Bazel's default). The
+unmatched RPCs, classified by their metadata, belong to the 21 TestRunner actions and to nothing
+else: test results carry timings, so their action results and blobs differ between any two runs
+(the matrix's existing allowance `re2-cold-test-actions`); each warm step reads its own side's
+cache. Per-method counts are equal on all 39 rows for both binaries.
+
+## 4. Probes, oracle against both binaries
+
+Run under `BLAZE_REMOTE_WORK=~/.cache/blaze/work/remote-r3` (logs `battery-{o,e,f}.log`, compares
+`compare-{e,f}.txt`). Equal to the oracle on both binaries unless listed:
+
+- `probe-trees` (3 steps, bazel-bin listings identical), `probe-inprocess` (`10 processes: 3 disk
+  cache hit, 7 internal`, same `final.txt`).
+- `evict-probe`: 4 sources × `--norewind_lost_inputs` (lost-input line, retry line, `3 processes`,
+  exit 0) and × retries=0 (exit 1, same text); `exit39` exit 39; `disk --norewind_lost_inputs`.
+  Different, as ruled: the 4 default-flags rows (oracle rewinds, exit 0; Blaze the loud
+  `ActionRewindStrategy.prepareRewindPlanForLostInputs` failure, exit 37) and `disk` with default
+  flags (oracle `1 disk cache hit, 1 internal, 1 linux-sandbox`, Blaze rebuilds, both exit 0).
+  New: in `exit39` the oracle prints a final `FAILED: ` progress line that Blaze does not
+  (exit code and every other line equal; UI, not analysed).
+- `second-build` brotli toplevel and minimal (6 steps): lines and bazel-bin hashes equal.
+- `caps-matrix` (20 scenarios): exit codes 20 of 20 equal; texts equal except the listed ones
+  (`unreach-*`: the oracle named `[0:0:0:0:0:0:0:1]`, Blaze `127.0.0.1`; `tls-http-cache`: Netty's
+  `not an SSL/TLS record` against rustls' `received corrupt message`).
+- The seven not run on the final binary in round 3: `platform-probe --execlog` 30 of 30 SAME;
+  `regex-probe` 8 of 8 same; `nonascii-probe` ALL SAME; `strings-probe` json, binary, compact and
+  dc equal (on e8b79c0 `dump --action_cache` fails loudly, `DumpCommand.exec` not ported; on
+  blaze-4, built later, it is equal); `stale-probe` (query, build, clean and the 12 remote
+  variants equal; `info` exits 37 on Blaze: `CommittedHeapSizeInfoItem.get: no JVM`, not remote);
+  `bep-interrupt-probe` equal (uris, schemes, Write statuses); `discovery-probe` local step fails
+  on both with the same aggregate-ddi failure (the oracle reports the action of `//:main`, Blaze
+  the one of `//:base`; the oracle cannot build C++20 modules here, so no remote step).
+- `sigpipe-probe` (P1): `mtls-noclient` 10 of 10 exit 34 on all three; `http-cache` 10 of 10 exit 34;
+  `reset-peer` 10 of 10 exit 0, one reset each; `build 2>&1 | head -1` 141, `build | head -1` 0,
+  `query //... | head -1` 141 (3 runs each), the same on all three.
+
+## 5. The six `remote_execution_service_test` failures
+
+The six (`build_remote_action_code_point_sorting`, `build_remote_action_golden_test_seed_{1,2,3}`,
+`download_outputs_output_directories_with_unicode_filenames_works`,
+`download_outputs_non_ascii_names_are_unicode_on_both_sides_of_the_seam`) failed in the gate
+recorded at `051c8c7` (dirty tree, `~/.cache/blaze/work/bytes-lead/tests-3.json`), right after the
+byte-strings switch: their fixtures used Unicode literals where the Java test calls
+`StringEncoding.unicodeToInternal` (file and environment names of the sorting and golden tests,
+the expected paths and symlink targets of the download tests), so the expectation was in the wrong
+string form. `2574fef` wraps them as Java does; no product change was needed. They pass now:
+`scripts/cargo-capped test -p blaze_remote --no-fail-fast` 648 passed, 0 failed, 62 ignored;
+`-p blaze_exec --no-fail-fast` 857 / 0 / 157 (shared working tree on HEAD `3a006d7`, whole
+crates).
+
+## 6. Round-3 open items that are not blocking, at e8b79c0
+
+| item | state | where |
+|---|---|---|
+| P2 input discovery without the action file system | fixed (unit tests only: the oracle cannot build C++20 modules here) | `blaze_sky_exec/src/skyframe_action_executor.rs:1754`; tests `action_execution_function.rs:2627, 2659` |
+| P3 TextFormat `from_utf8_lossy` | fixed | `blaze_protos/src/text_format.rs:701-703, 1727-1730` (`java::new_string_utf8`); the one left at :1677 decodes eight already-checked hex digits |
+| P4 wrappers record systemd-run's status | fixed | `scripts/remote/unit-supervisor`, `unitstatus.py`, `ws-run:109-142` |
+| P5 post-handshake TLS alert | fixed | `blaze_remote/src/grpc/channel.rs:981, 1005, 1022, 1043`, `ConnectionLifecycle` :1082 |
+| P6 regex dialect | fixed | `blaze_util/src/java_regex.rs:176`; `blaze_options/src/converters.rs:573-602`; `blaze_remote/src/scrubber.rs:9-59` |
+| P7a interrupt of an in-process download | fixed | `blaze_exec/src/exec/remote_action_file_system.rs:401, 1037-1045`; test `remote_action_file_system_test.rs:3347` |
+| P7b purge on a second cache handle | fixed | `blaze_runtime/src/commands/build_remote.rs:130-160`; `skyframe_action_executor.rs:354, 474-476`; test `action_execution_function.rs:2334` |
+| P8 tests | fixed | `blaze_sky_exec/src/action_output_metadata_store_tests.rs:629, 703` (30 of 30 methods, 4 ignored); `action_output_directory_helper_test.rs` no ignore |
+| S3 rewinding, `RemoteLeaseExtension`, `RemoteImportantOutputHandler`, `DynamicConnectionPool` | unchanged, loud (by ruling) | `docs/remote.md` |
+| S4 U+FFFD property names keep a HashMap order | fixed in `blaze_remote`; **not fixed** in `blaze_exec`'s private copy | `blaze_remote/src/platform_utils.rs:113-140`; `blaze_exec/src/exec/spawn_log_context.rs:178` still a `HashMap` |
+| S4 `to_path_from_hash` by bytes | fixed | `blaze_remote/src/disk/disk_cache_client.rs:407-416` |
+| S4 `BulkTransferException` sort | fixed | `blaze_remote/src/common/bulk_transfer_exception.rs:156-157` |
+| S4 `inline_output_files` HashSet | fixed (`IndexSet`) | `blaze_remote/src/common/remote_cache_client.rs:125` |
+| S4 `create_hard_link` | fixed (Java's call as written) | `blaze_exec/src/exec/remote_action_file_system.rs:1103-1115` |
+| S4 BEP close comment | **not fixed at e8b79c0**: `blaze_runtime/src/commands/bep.rs:1858-1859` still says the file transports close synchronously, while `get_close_futures_map` waits for each close future; the working tree's `bep.rs` has since been rewritten by its owner (:2044) | |
+| S4 stale statements | fixed | `docs/remote.md:21`; `blaze_bep/src/events/completion_context.rs:64-71` now states the identity resolver as not ported |
+| S4 `stat_from_metadata` mtime | fixed (-1 for constant metadata) | `blaze_exec/src/exec/remote_action_file_system.rs:134-140` |
+
+Still open from the round-3 response's list: 1 (`CompletionContext` identity resolver), 3
+(negative lookahead loud), 4 (`write_to_std_out_err` in the client daemon), 5 (special-file
+output), 6 (the `spawn_log_context.rs` copy above), 7 (unchanged S3).
+
+## 7. Tests and checks (shared working tree on HEAD `3a006d7`, 11:20 to 11:45)
+
+- `scripts/cargo-capped test --no-fail-fast`, whole crates: blaze_remote 648 / 0 / 62,
+  blaze_exec 857 / 0 / 157, blaze_sky_exec 115 / 0 / 27, blaze_vfs 93 / 0 / 8, blaze_buildtool
+  139 / 0 / 48, blaze_runtime 182 / 0 / 89 (passed / failed / ignored).
+- `scripts/cargo-capped check --workspace --all-targets`: passes.
+- clippy `-D warnings`: clean for blaze_remote and blaze_vfs; blaze_sky_exec fails only on
+  `action_execution_value.rs:605-606` (`default_constructed_unit_structs`, committed code that is
+  not mine).
+
+## 8. Not ported: next work (not started)
+
+From the suite run, in functions of the remote targets: remote repository contents cache (38),
+HTTP cache (13), remote flags on other commands (`RemoteModule.beforeCommand` for run, coverage,
+the downloader: 18 across the suite), credential helper (10 across the suite), rewinding (2),
+`Scrubber.parse` (1), disk cache GC, remote execution of repository rules (4).
+
+## Tools
+
+- New: `scripts/remote/modes` (run driver for the matrix above), `scripts/remote/fixes-probe`.
+- Uncommitted (mine): the path overrides in `scripts/remote/caps-matrix` and
+  `scripts/remote/sigpipe-probe`.
+- `oracle-run` gained `--expunge`; `oracle-run`, `ws-run`, `worker`, `second-build`, `caps-matrix`,
+  `sigpipe-probe` and the probes take `$BLAZE_REMOTE_WORK` / `$BLAZE_REMOTE_UR` (defaults
+  unchanged); `compare-grpc-log` takes `$BLAZE_GRPC_LOG_DUMP`.
+- Disk: my output roots are removed; `~/.cache/blaze/work/remote-r3/` keeps 4.8 GB of run results,
+  workspace copies and worker caches.
