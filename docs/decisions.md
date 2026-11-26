@@ -369,3 +369,24 @@ Each entry: date, decision, why, who decided.
   timing fields. Root.
 - 2026-11-25. Pushes go over HTTPS with the `gh` credential while the SSH agent holds no key
   (reboot); same repository, same account. Root.
+- 2026-11-26. The Fable usage limit was reached on 2026-11-25 (eight Fable reviewers at high
+  effort at once, beside root); two re-reviews stopped mid-run and were resumed today. From now
+  on: at most three Fable agents at once, at medium effort, re-checks of two areas share one
+  agent, and reviewers are told to keep reports short. Opus implementers: at most six building
+  at once (ten gave a load average near 50 and constant waits on the Cargo lock). Root.
+- 2026-11-26. Checkpoint 35 (db8c652; HEAD 5f68157 builds from a clean checkout): all ten
+  agents of 2026-11-25 reported. Referee guard at checkpoint 33 (label `ckpt33-e593d87d59e0`,
+  dirty tree): gained 2, regressed 0. Full-suite run of 5f68157 started (label
+  `blaze-5f68157`, binary sha256 3d7356b8…, clean `crates/`). Root's error, repeated:
+  checkpoint 33 committed the tool fixer's versions of scripts/server, query, tests and
+  workers, whose directories were not protected; they are now (5f68157). Root.
+- 2026-11-26. `info` items that describe the JVM (ruling D15; they made `info` with no key fail,
+  23 functions of Bazel's suite): Blaze has no JVM, so the port reports the nearest process
+  figure in Bazel's format: `used-heap-size` and `used-heap-size-after-gc` the allocator's
+  in-use bytes (resident memory where unknown), `committed-heap-size` resident memory,
+  `peak-heap-size` peak resident memory, `max-heap-size` physical memory, `gc-count` 0,
+  `gc-time` 0ms; `java-home`, `java-runtime`, `java-vm` describe the embedded JDK of the
+  install base (the one Bazel's server itself runs on), read from its `release` file. Values
+  differ from Bazel's by nature; comparison tools treat these keys as volatile. Releasing freed
+  memory to the system after each server command (`malloc_trim`) is allowed: it changes no
+  output. Root.
