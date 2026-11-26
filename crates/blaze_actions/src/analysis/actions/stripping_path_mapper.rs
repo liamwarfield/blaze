@@ -358,19 +358,18 @@ pub fn is_path_strippable(
 /// Returns true if the two inputs have the same file digest.
 // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:358 StrippingPathMapper.haveSameDigest
 fn have_same_digest(
-    _a: &Artifact,
-    _b: &Artifact,
+    a: &Artifact,
+    b: &Artifact,
     input_metadata_provider: Option<&dyn InputMetadataProvider>,
 ) -> bool {
-    if input_metadata_provider.is_none() {
+    let Some(provider) = input_metadata_provider else {
         return false;
+    };
+    // A null metadata, a null digest or an IOException answers false.
+    match (provider.get_input_digest(a), provider.get_input_digest(b)) {
+        (Ok(Some(digest_a)), Ok(Some(digest_b))) => digest_a == digest_b,
+        _ => false,
     }
-    // PORT: the Rust `InputMetadataProvider` of this crate has no `getInputMetadata`; a
-    // provider is only passed when a spawn is created, which does not create this mapper yet.
-    unported!(
-        "StrippingPathMapper.haveSameDigest",
-        "comparing the digests of colliding inputs"
-    )
 }
 
 /// Keep the config segment, but replace it with a fixed string to improve cacheability while

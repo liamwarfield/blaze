@@ -330,11 +330,11 @@ impl ParameterFileWriteAction {
         // not match. Since this depends on the consumer but the decision is only made at
         // execution time, it is not clear how to improve that situation. Actions that are prone to
         // such collisions should avoid depending on parameter files.
-        let path_mapper = path_mappers::create_for_execution(
+        let path_mapper = path_mappers::create(
             self,
             self.get_output_paths_mode(),
             /* is_starlark_action= */ false,
-            None,
+            input_metadata_provider,
         );
         let arguments = match self
             .command_line

@@ -82,13 +82,14 @@ uncommitted work of this task and of other agents. Survey and preliminary verdic
 | `BaselineOptionsKey` | N | = | |
 | `BuildOptionsScopeKey` | H | - | no `equals` |
 
-### Group 4: `blaze_analysis` 7 + `blaze_sky_analysis` 4
+### Group 4: `blaze_analysis` 8 + `blaze_sky_analysis` 4
 
 | Key | Herm. | Equality | Note |
 | --- | --- | --- | --- |
 | `ToolchainContextKey`, `StarlarkBuildSettingsDetailsKey`, `RegisteredExecutionPlatformsKey`, `RegisteredToolchainsKey`, `SingleToolchainResolutionKey` | H | = | Rust compares some sets in order (prunes less) |
 | `ConfiguredTargetKey`, `AspectKey` | H | - | `NotComparableSkyValue` |
 | `WorkspaceStatusKey`, `TopLevelAspectsKey`, `LoadAspectsKey`, `FlagSetKey` (new since the survey) | H | - | no `equals` |
+| `CoverageReportKey` (`blaze_analysis/src/coverage_report_value.rs`; added by I3 after the 2026-11-26 review, S4) | H | - | no `equals` (Java `CoverageReportValue`) |
 
 ### Group 5: `blaze_sky_exec` (9)
 

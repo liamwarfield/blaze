@@ -570,6 +570,7 @@ version = "0.1.0"
 dependencies = [
  "blaze_cmdline",
  "blaze_options",
+ "blaze_protos",
  "blaze_util",
  "blaze_vfs",
  "libc",
@@ -723,7 +724,9 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "blake3",
+ "blaze_bzlmod_model",
  "blaze_events",
+ "blaze_shell",
  "blaze_util",
  "blaze_vfs",
  "bzip2",
@@ -804,6 +807,8 @@ dependencies = [
  "blaze_options",
  "blaze_packages",
  "blaze_protos",
+ "blaze_query",
+ "blaze_query_engine",
  "blaze_shell",
  "blaze_sky_loading",
  "blaze_skyframe",
@@ -811,6 +816,7 @@ dependencies = [
  "blaze_util",
  "blaze_vfs",
  "dupe",
+ "flate2",
  "hex",
  "indexmap",
  "once_cell",
@@ -1093,6 +1099,7 @@ name = "blaze_vfs"
 version = "0.1.0"
 dependencies = [
  "blaze_util",
+ "indexmap",
  "libc",
  "sha2",
 ]

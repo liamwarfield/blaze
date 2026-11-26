@@ -160,14 +160,19 @@ impl RemoteSpawnCache {
             Err(SpawnCacheError::Io(e)) => {
                 if errors::downcast_ref::<CacheNotFoundException>(&e).is_some() {
                     // Intentionally left blank
+                } else if let Some(c) = crate::util::utils::credential_helper_exception_of(&e) {
+                    if let Some(this_execution) = this_execution {
+                        this_execution.close();
+                    }
+                    return Err(
+                        crate::util::utils::create_exec_exception_for_credential_helper_exception(
+                            c,
+                        )
+                        .into(),
+                    );
                 } else if let Some(e) =
                     errors::downcast_ref::<RemoteExecutionCapabilitiesException>(&e)
                 {
-                    // PORT: `catch (CredentialHelperException e) { if (thisExecution != null) {
-                    // thisExecution.close(); } throw
-                    // createExecExceptionForCredentialHelperException(e); }` has no port:
-                    // `CredentialHelperException` (lib/authandtls/credentialhelper) is not
-                    // ported, so no error is one.
                     let should_local_fallback = self.options.remote_local_fallback_for_remote_cache
                         && self.options.remote_local_fallback;
                     if !should_local_fallback {
@@ -282,18 +287,12 @@ impl RemoteSpawnCache {
 
 /// `new SpawnResult.DelegateSpawnResult(previousResult) { getRunnerName() { return
 /// "deduplicated"; } getMetrics() { return buildMetrics; } }`.
-///
-/// PORT: missing hook. `blaze_exec`'s `SpawnResult` is a plain struct; it has no
-/// `DelegateSpawnResult`, and a copy through `SpawnResultBuilder` would lose the in-memory output
-/// (which has no getter for its `ActionInput`).
 // Java: com/google/devtools/build/lib/remote/RemoteSpawnCache.java:225 RemoteSpawnCache.lookup
 fn deduplicated_spawn_result(
-    _previous_result: SpawnResult,
-    _build_metrics: SpawnMetrics,
+    previous_result: SpawnResult,
+    build_metrics: SpawnMetrics,
 ) -> SpawnResult {
-    blaze_util::unported!(
-        "RemoteSpawnCache.lookup (missing hook: SpawnResult.DelegateSpawnResult overriding getRunnerName() and getMetrics())"
-    )
+    previous_result.delegate_with_runner_name_and_metrics("deduplicated", build_metrics)
 }
 
 impl SpawnCache for RemoteSpawnCache {

@@ -23,6 +23,7 @@ pub(crate) mod file_loader;
 pub(crate) mod frame_span;
 pub(crate) mod frozen_file_span;
 pub(crate) mod inlined_frame;
+pub(crate) mod java_call; // BLAZE PATCH 0061
 pub(crate) mod params;
 pub(crate) mod profile;
 pub(crate) mod rust_loc;

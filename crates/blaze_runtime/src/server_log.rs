@@ -238,6 +238,22 @@ impl SimpleLogHandler {
     /// Opens the log file (and creates the symlink) if it is not open yet. Failures are reported
     /// on stderr and are not fatal (Java `reportError` through the default `ErrorManager`).
     // Java: com/google/devtools/build/lib/util/SimpleLogHandler.java:433 SimpleLogHandler.openOutputIfNeeded
+    /// Writes a formatted record to the current log file, opening it if needed, and flushes.
+    ///
+    /// PORT: the record is formatted by the caller ([`single_line_format`]); no rotation (Bazel's
+    /// `javalog.properties` sets no limit `SimpleLogHandler` reads).
+    // Java: com/google/devtools/build/lib/util/SimpleLogHandler.java:423 SimpleLogHandler.publish
+    pub fn publish(&mut self, formatted: &str) {
+        use std::io::Write as _;
+        self.open_output_if_needed();
+        if let Some((_, file)) = self.output.as_mut() {
+            let bytes = blaze_util::string_encoding::latin1_encode_lossy(formatted);
+            if let Err(e) = file.write_all(&bytes).and_then(|()| file.flush()) {
+                report_error("Failed to write to log file", &e);
+            }
+        }
+    }
+
     pub fn open_output_if_needed(&mut self) {
         if self.output.is_some() {
             return;
@@ -396,6 +412,15 @@ pub fn init(output_base: &blaze_vfs::Path) {
         .build();
     handler.open_output_if_needed();
     *SERVER_LOG_HANDLER.lock() = Some(handler);
+    // The loggers of the crates below the runtime write here too.
+    blaze_util::server_logger::set_info_sink(|class, method, message| {
+        log(
+            blaze_options::converters::LogLevel::INFO,
+            class,
+            method,
+            message,
+        )
+    });
 }
 
 /// `LogManager.getLogManager().reset()`: closes the server log.
@@ -417,6 +442,137 @@ pub fn get_server_log_path() -> std::io::Result<Option<String>> {
         .as_ref()
         .and_then(|h| h.get_current_log_file_path())
         .map(|p| platform_to_internal(p.as_os_str()).into_owned()))
+}
+
+/// `Level.intValue()` of a standard `java.util.logging.Level`.
+fn level_int_value(level: blaze_options::converters::LogLevel) -> i32 {
+    use blaze_options::converters::LogLevel;
+    match level {
+        LogLevel::OFF => i32::MAX,
+        LogLevel::SEVERE => 1000,
+        LogLevel::WARNING => 900,
+        LogLevel::INFO => 800,
+        LogLevel::FINE => 500,
+        LogLevel::FINER => 400,
+        LogLevel::FINEST => 300,
+    }
+}
+
+/// The level of the `com.google.devtools.build` logger (`templateLogger`); `None` inherits the
+/// root logger's `INFO`.
+static TEMPLATE_LOGGER_LEVEL: Mutex<Option<blaze_options::converters::LogLevel>> = Mutex::new(None);
+
+/// `DebugLoggerConfigurator.currentVerbosityLevel`.
+static CURRENT_VERBOSITY_LEVEL: Mutex<Option<blaze_options::converters::LogLevel>> =
+    Mutex::new(None);
+
+/// Configures "com.google.devtools.build.*" loggers to the given `level`.
+// Java: com/google/devtools/build/lib/util/DebugLoggerConfigurator.java:52 DebugLoggerConfigurator.setupLogging
+pub fn setup_logging(level: blaze_options::converters::LogLevel) {
+    let mut current = CURRENT_VERBOSITY_LEVEL.lock();
+    if *current != Some(level) {
+        *TEMPLATE_LOGGER_LEVEL.lock() = Some(level);
+        log(
+            blaze_options::converters::LogLevel::INFO,
+            "com.google.devtools.build.lib.util.DebugLoggerConfigurator",
+            "setupLogging",
+            &format!("Log level: {:?}", level),
+        );
+        *current = Some(level);
+    }
+}
+
+/// Logs `message` at `level` on a `com.google.devtools.build.*` logger, as
+/// `Logger.log(LogRecord)` with the server log's `SimpleLogHandler` and Bazel's
+/// `SingleLineFormatter` (the formatter the client's `javalog.properties` names).
+///
+/// PORT: Blaze has no `java.util.logging`; this is the one logger the server writes through.
+/// The thread ID of the record is the OS thread ID (Java's is the JVM's thread number).
+pub fn log(
+    level: blaze_options::converters::LogLevel,
+    source_class_name: &str,
+    source_method_name: &str,
+    message: &str,
+) {
+    // Logger.isLoggable: the effective level of the logger.
+    let logger_level = TEMPLATE_LOGGER_LEVEL
+        .lock()
+        .unwrap_or(blaze_options::converters::LogLevel::INFO);
+    if level_int_value(level) < level_int_value(logger_level)
+        || level_int_value(logger_level) == i32::MAX
+    {
+        return;
+    }
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    // SAFETY: gettid has no preconditions.
+    let thread_id = unsafe { libc::gettid() };
+    let record = single_line_format(
+        millis,
+        level,
+        thread_id as i64,
+        source_class_name,
+        source_method_name,
+        message,
+    );
+    let mut handler = SERVER_LOG_HANDLER.lock();
+    if let Some(handler) = handler.as_mut() {
+        handler.publish(&record);
+    }
+}
+
+/// `SingleLineFormatter.format` of a record without a throwable.
+// Java: com/google/devtools/build/lib/util/SingleLineFormatter.java:49 SingleLineFormatter.format
+fn single_line_format(
+    millis: i64,
+    level: blaze_options::converters::LogLevel,
+    thread_id: i64,
+    source_class_name: &str,
+    source_method_name: &str,
+    message: &str,
+) -> String {
+    let mut buf = String::new();
+    // Timestamp: "yyMMdd HH:mm:ss.SSS" in UTC.
+    let t = millis.div_euclid(1000) as libc::time_t;
+    // SAFETY: tm is plain data; gmtime_r writes into it.
+    let tm = unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::gmtime_r(&t, &mut tm);
+        tm
+    };
+    buf.push_str(&format!(
+        "{:02}{:02}{:02} {:02}:{:02}:{:02}.{:03}:",
+        (tm.tm_year + 1900) % 100,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec,
+        millis.rem_euclid(1000)
+    ));
+    // One character code for level (CODES_BY_LEVEL).
+    let value = level_int_value(level);
+    buf.push(if value <= 500 {
+        'D'
+    } else if value < 900 {
+        'I'
+    } else if value < 1000 {
+        'W'
+    } else {
+        'X'
+    });
+    buf.push(' ');
+    // Information about the source of the exception
+    buf.push_str(&format!(
+        "{} [{}.{}] ",
+        thread_id, source_class_name, source_method_name
+    ));
+    // The actual message
+    buf.push_str(message);
+    buf.push('\n');
+    buf
 }
 
 #[cfg(test)]

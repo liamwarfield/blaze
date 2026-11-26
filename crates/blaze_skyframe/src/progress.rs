@@ -414,6 +414,20 @@ impl DirtyAndInflightTrackingProgressReceiver {
         }
     }
 
+    /// The same dirty and in-flight sets, forwarding to another receiver.
+    ///
+    /// PORT: Blaze-only. Java's evaluator keeps one receiver for its lifetime; Blaze hands the
+    /// graph of one command's evaluator to the next command's evaluator, whose functions (and
+    /// the receiver they report to) are the next command's
+    /// ([`crate::EvaluatorBuilder::build_reusing`]). The sets belong to the graph.
+    pub(crate) fn with_receiver(self, progress_receiver: Arc<dyn EvaluationProgressReceiver>) -> Self {
+        DirtyAndInflightTrackingProgressReceiver {
+            progress_receiver,
+            dirty_keys: self.dirty_keys,
+            inflight_keys: self.inflight_keys,
+        }
+    }
+
     // Java: com/google/devtools/build/skyframe/DirtyAndInflightTrackingProgressReceiver.java:63 DirtyAndInflightTrackingProgressReceiver.enqueueing
     fn enqueueing_after_error(&self, sky_key: &SkyKey, after_error: bool) {
         // We unconditionally add the key to the set of in-flight nodes even if evaluation is

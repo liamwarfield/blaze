@@ -142,6 +142,52 @@ impl RuleConfiguredTargetFactory for ConfigSetting {
             .add_provider(config_matcher);
         Ok(builder.build()?)
     }
+
+    // Java: com/google/devtools/build/lib/rules/config/ConfigSetting.java:261 ConfigSetting.addRuleImplSpecificRequiredConfigFragments
+    fn add_rule_impl_specific_required_config_fragments(
+        &self,
+        required_fragments: &mut blaze_analysis::providers::required_config_fragments_provider::RequiredConfigFragmentsProviderBuilder,
+        attributes: &blaze_analysis::config::configured_attribute_mapper::ConfiguredAttributeMapper,
+        configuration: &blaze_build_config::build_configuration_value::BuildConfigurationValue,
+    ) {
+        // values
+        for (option_name, value) in string_dict(attributes, ConfigSettingRule::SETTINGS_ATTRIBUTE) {
+            if option_name == "define" {
+                // value.indexOf('='), in chars.
+                let equals_index = value.chars().position(|c| c == '=');
+                match equals_index {
+                    Some(i) if i > 0 => {
+                        required_fragments.add_define(&value.chars().take(i).collect::<String>())
+                    }
+                    _ => required_fragments.add_define(&value),
+                };
+            } else if let Some(options_class) =
+                BuildOptionDetails::for_options(configuration.get_options())
+                    .get_option_class(&option_name)
+            {
+                required_fragments.add_options_class(
+                    blaze_analysis::required_fragments_util::get_simple_name_with_outer(
+                        options_class.get_name(),
+                    ),
+                );
+            }
+        }
+
+        // define_values
+        required_fragments.add_defines(
+            string_dict(attributes, ConfigSettingRule::DEFINE_SETTINGS_ATTRIBUTE)
+                .keys()
+                .map(|s| s.as_str()),
+        );
+
+        // flag_values
+        if let Some(AttrValue::LabelKeyedStringDict(d)) = attributes.get(
+            ConfigSettingRule::FLAG_SETTINGS_ATTRIBUTE,
+            Type::LabelKeyedStringDict,
+        ) {
+            required_fragments.add_starlark_options(d.into_keys());
+        }
+    }
 }
 
 /// Returns this `config_setting`'s expected settings.

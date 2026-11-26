@@ -199,3 +199,78 @@ fn json_parse_round_trips() {
         .unwrap();
     assert_eq!(event, oneof_event());
 }
+
+#[allow(deprecated)] // aspect_name, aspect_parameters (Java sets them too)
+fn extra_action_spawn_info() -> blaze_protos::blaze::ExtraActionInfo {
+    use blaze_protos::blaze::{EnvironmentVariable, ExtraActionInfo, SpawnInfo, extra_action_info};
+    ExtraActionInfo {
+        owner: Some("//pkg:gen".to_owned()),
+        id: Some("0123abcd".to_owned()),
+        mnemonic: Some("Genrule".to_owned()),
+        aspect_name: Some("MyAspect".to_owned()),
+        aspect_parameters: vec![extra_action_info::AspectParametersEntry {
+            key: "p".to_owned(),
+            value: Some(extra_action_info::StringList {
+                value: vec!["v1".to_owned(), "v2".to_owned()],
+            }),
+        }],
+        spawn_info: Some(SpawnInfo {
+            argument: vec![
+                "/bin/bash".to_owned(),
+                "-c".to_owned(),
+                "echo \"é\" > $@".to_owned(),
+            ],
+            variable: vec![EnvironmentVariable {
+                name: "PATH".to_owned(),
+                value: "/bin".to_owned(),
+            }],
+            input_file: vec!["pkg/in.txt".to_owned()],
+            output_file: vec!["bazel-out/k8-fastbuild/bin/pkg/out.txt".to_owned()],
+        }),
+        ..Default::default()
+    }
+}
+
+/// Extensions of `ExtraActionInfo` are written after its fields, in number order, and printed
+/// by `TextFormat` as `[full.name]` blocks (print_action's output).
+#[test]
+fn extra_action_info_extensions() {
+    use blaze_protos::blaze::{
+        CppCompileInfo, DetailedExtraActionInfo, ExtraActionInfo, ExtraActionSummary, PythonInfo,
+    };
+    let spawn = extra_action_spawn_info();
+    assert_eq!(spawn.to_byte_array(), data!("extra_action_info.bin"));
+    let cpp = ExtraActionInfo {
+        owner: Some("//pkg:lib".to_owned()),
+        id: Some("ffff".to_owned()),
+        mnemonic: Some("CppCompile".to_owned()),
+        python_info: Some(PythonInfo {
+            source_file: vec!["a.py".to_owned()],
+            dep_file: vec![],
+        }),
+        cpp_compile_info: Some(CppCompileInfo {
+            tool: Some("/usr/bin/gcc".to_owned()),
+            compiler_option: vec!["-c".to_owned()],
+            source_file: Some("pkg/a.cc".to_owned()),
+            output_file: Some("bazel-out/k8-fastbuild/bin/pkg/_objs/lib/a.o".to_owned()),
+            sources_and_headers: vec!["pkg/a.cc".to_owned()],
+            variable: vec![],
+        }),
+        ..Default::default()
+    };
+    let summary = ExtraActionSummary {
+        action: vec![
+            DetailedExtraActionInfo {
+                triggering_file: None,
+                action: spawn,
+            },
+            DetailedExtraActionInfo {
+                triggering_file: Some("pkg/a.cc".to_owned()),
+                action: cpp,
+            },
+        ],
+    };
+    assert_eq!(summary.to_byte_array(), data!("extra_action_summary.bin"));
+    let text = blaze_protos::text_format::printer().print_to_string(&summary);
+    assert_eq!(text.as_bytes(), data!("extra_action_summary.txt"));
+}

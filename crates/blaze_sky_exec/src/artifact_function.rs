@@ -16,7 +16,7 @@ use blaze_skyframe::{
     Transience,
 };
 use blaze_util::fingerprint::Fingerprint;
-use blaze_vfs::{RootedPath, Symlinks};
+use blaze_vfs::RootedPath;
 
 use crate::action_execution_value::ActionExecutionValue;
 use crate::action_template_expansion_value::ActionTemplateExpansionValue;
@@ -77,6 +77,21 @@ impl SourceArtifactException {
                     "{}: {}",
                     construct_error_message(artifact, "error reading file"),
                     e
+                ),
+                execution::Code::SourceInputIoException,
+            ),
+        }
+    }
+
+    /// [`SourceArtifactException::create`] for the `IOException` of a `FILE` dependency.
+    // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:522 SourceArtifactException.create
+    pub fn create_from_message(artifact: &Artifact, message: &str) -> SourceArtifactException {
+        SourceArtifactException {
+            failure_detail: execution_failure(
+                format!(
+                    "{}: {}",
+                    construct_error_message(artifact, "error reading file"),
+                    message
                 ),
                 execution::Code::SourceInputIoException,
             ),
@@ -173,7 +188,7 @@ pub fn compute_artifact(
     if !artifact.has_known_generating_action() {
         // If the artifact has no known generating action, it is a source artifact and is never
         // cached remotely.
-        return create_source_value(artifact, env);
+        return create_source_value(action_executor, artifact, env);
     }
     // PORT: remote analysis caching (retrieveRemoteSkyValue) is not ported:
     // `RemoteAnalysisCachingDependenciesProvider.isRetrievalEnabled()` is false without it.
@@ -429,37 +444,78 @@ impl fmt::Debug for ArtifactDependencies {
 
 // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:278 ArtifactFunction.createSourceValue
 fn create_source_value(
+    executor: &SkyframeActionExecutor,
     artifact: &Artifact,
     env: &mut Environment<'_>,
 ) -> Result<Option<ArtifactValue>, ComputeError> {
     env.check_interrupted()?;
-    // PORT: Java requests FileValue.key(rootedPath) (FILE, in blaze_sky_loading) and builds the
-    // metadata from it. Within a single non-incremental build the FILE value is a stat of the
-    // same path, so the path is stat'ed here directly (following symlinks, as FileValue does).
     let path = artifact.get_path();
-    let stat = match path.stat_if_found(Symlinks::Follow) {
-        Ok(s) => s,
+    let rooted_path =
+        RootedPath::to_rooted_path_from_path(artifact.get_root().get_root().clone(), &path);
+    let file_value = match env
+        .get_value_or_throw::<blaze_sky_loading::file::FileKey, blaze_sky_loading::io::IOException>(
+            blaze_sky_loading::file::FileKey::key(rooted_path),
+        )? {
+        Ok(v) => v,
+        // PORT: Java's DetailedIOException branch (`createdDetailed`) is not reachable: FILE
+        // throws plain IOExceptions here.
         Err(e) => {
             return Err(SkyFunctionException::new(
-                SourceArtifactException::create(artifact, &e),
+                SourceArtifactException::create_from_message(artifact, e.get_message()),
                 Transience::Persistent,
             )
             .into());
         }
     };
-    let Some(stat) = stat else {
+    let Some(file_value) = file_value else {
+        return Ok(None);
+    };
+    if !file_value.exists() {
         return Ok(Some(ArtifactValue::Missing(MissingArtifactValue::new(
             artifact,
         ))));
-    };
-    if stat.is_directory() {
+    }
+    // PORT: `RegularFileStateValueWithMetadata` is never produced by Blaze's file systems.
+    if file_value.is_directory() {
         // PORT: skipped, Google-internal (SourceDirectoryEvent has no subscriber in Bazel).
     }
 
-    if !stat.is_directory() || !TrackSourceDirectoriesFlag::track_source_directories() {
-        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:183 FileArtifactValue.createForSourceArtifact
-        return match FileArtifactValue::create_from_stat(&path, &stat) {
-            Ok(v) => Ok(Some(ArtifactValue::File(v))),
+    if !file_value.is_directory() || !TrackSourceDirectoriesFlag::track_source_directories() {
+        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:319 FileArtifactValue.createForSourceArtifact
+        let is_file = file_value.is_file();
+        let metadata = FileArtifactValue::create_for_source_artifact(
+            &path,
+            is_file,
+            if is_file { file_value.get_size() } else { 0 },
+            if is_file {
+                file_value
+                    .real_file_state_value()
+                    .get_contents_proxy()
+                    .map(|p| {
+                        blaze_exec::actions::FileContentsProxy::new(
+                            p.get_ctime(),
+                            p.get_mtime(),
+                            p.get_node_id(),
+                        )
+                    })
+            } else {
+                None
+            },
+            if is_file {
+                file_value.get_digest().map(<[u8]>::to_vec)
+            } else {
+                None
+            },
+        );
+        return match metadata {
+            Ok(v) => {
+                use crate::metadata_consumer_for_metrics::MetadataConsumerForMetrics as _;
+                executor
+                    .artifact_metrics()
+                    .source_artifacts_seen
+                    .accumulate_file(&v);
+                Ok(Some(ArtifactValue::File(v)))
+            }
             Err(e) => Err(SkyFunctionException::new(
                 SourceArtifactException::create(artifact, &e),
                 Transience::Transient,
@@ -517,7 +573,7 @@ fn create_source_value(
                 Type::GeneratedPathConflict => {
                     panic!(
                         "IllegalStateException: Generated conflict in source tree: {} {:?} {:?}: {}",
-                        artifact, stat, request, e
+                        artifact, file_value, request, e
                     );
                 }
             }

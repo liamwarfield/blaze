@@ -219,9 +219,17 @@ pub(crate) fn environmental_exec_exception(
 
 /// The execution layer's `InputMetadataProvider` as the key/command-line expansion one of
 /// `blaze_actions` (which only reads tree artifact children).
-pub(crate) struct KeyMetadataAdapter<'a>(pub &'a dyn InputMetadataProvider);
+pub struct KeyMetadataAdapter<'a>(pub &'a dyn InputMetadataProvider);
 
 impl KeyInputMetadataProvider for KeyMetadataAdapter<'_> {
+    // Java: com/google/devtools/build/lib/actions/InputMetadataProvider.java:75 InputMetadataProvider.getInputMetadata
+    fn get_input_digest(&self, input: &BlazeArtifact) -> std::io::Result<Option<Vec<u8>>> {
+        Ok(self
+            .0
+            .get_input_metadata(&artifact_input(input))?
+            .and_then(|m| m.get_digest().map(<[u8]>::to_vec)))
+    }
+
     // Java: com/google/devtools/build/lib/actions/InputMetadataProvider.java:56 InputMetadataProvider.getTreeMetadata
     fn get_tree_children(&self, tree: &BlazeArtifact) -> Option<Vec<BlazeArtifact>> {
         let value = self.0.get_tree_metadata(&artifact_input(tree))?;

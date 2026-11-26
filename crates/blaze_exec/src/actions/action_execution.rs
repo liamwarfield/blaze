@@ -130,6 +130,8 @@ pub struct ActionExecutionException {
     interrupted: bool,
     /// This is a `LostInputsActionExecutionException`: its `getLostInputs()`.
     lost_inputs: Option<std::sync::Arc<super::LostArtifacts>>,
+    /// This is a `SpawnActionExecutionException`: its `getSpawnResult()` (the failed spawn's).
+    spawn_result: Option<std::sync::Arc<super::spawn_result::SpawnResult>>,
 }
 
 impl ActionExecutionException {
@@ -138,8 +140,10 @@ impl ActionExecutionException {
     /// BuildFailedException without message.
     // Java: com/google/devtools/build/lib/actions/AlreadyReportedActionExecutionException.java:31 AlreadyReportedActionExecutionException.<init>
     pub fn already_reported(cause: ActionExecutionException) -> ActionExecutionException {
+        // A new exception (not a SpawnActionExecutionException).
         ActionExecutionException {
             already_reported: true,
+            spawn_result: None,
             ..cause
         }
     }
@@ -165,6 +169,7 @@ impl ActionExecutionException {
             cause_is_test_exec_exception: false,
             interrupted: false,
             lost_inputs: None,
+            spawn_result: None,
         }
     }
 
@@ -202,6 +207,7 @@ impl ActionExecutionException {
             cause_is_test_exec_exception: false,
             interrupted: false,
             lost_inputs: None,
+            spawn_result: None,
         }
     }
 
@@ -252,6 +258,23 @@ impl ActionExecutionException {
         // Java: com/google/devtools/build/lib/actions/LostInputsExecException.java:54 LostInputsExecException.fromExecException
         e.lost_inputs = exception.get_lost_inputs().cloned();
         e
+    }
+
+    /// `new SpawnActionExecutionException(..., spawnResult)`: this exception with the failed
+    /// spawn's result.
+    // Java: com/google/devtools/build/lib/actions/SpawnActionExecutionException.java:24 SpawnActionExecutionException.<init>
+    pub fn with_spawn_result(
+        mut self,
+        spawn_result: super::spawn_result::SpawnResult,
+    ) -> ActionExecutionException {
+        self.spawn_result = Some(std::sync::Arc::new(spawn_result));
+        self
+    }
+
+    /// `this instanceof SpawnActionExecutionException`: its `getSpawnResult()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnActionExecutionException.java:35 SpawnActionExecutionException.getSpawnResult
+    pub fn get_spawn_result(&self) -> Option<&super::spawn_result::SpawnResult> {
+        self.spawn_result.as_deref()
     }
 
     /// `this instanceof LostInputsActionExecutionException ? getLostInputs() : null`.
@@ -403,6 +426,12 @@ pub trait ExecutableAction: Action {
     // Java: com/google/devtools/build/lib/actions/NotifyOnActionCacheHit.java:53 NotifyOnActionCacheHit.actionCacheHit
     fn action_cache_hit(&self, _event_handler: &dyn blaze_events::EventHandler) -> Option<bool> {
         None
+    }
+
+    /// `action instanceof NotifyOnActionCacheHit` for the actions that answer
+    /// [`Self::action_cache_hit`] (`TestRunnerAction` is recognized by the executor itself).
+    fn is_notify_on_action_cache_hit(&self) -> bool {
+        false
     }
 }
 

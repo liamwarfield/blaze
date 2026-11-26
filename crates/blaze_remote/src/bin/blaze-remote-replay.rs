@@ -429,6 +429,7 @@ fn main() -> ExitCode {
         exec_root: exec_root.clone(),
         working_directory: exec_root.clone(),
         workspace: None,
+        install_base: None,
         workspace_name: "_main".to_string(),
         action_temps_directory: output_base.get_relative_str("action_temps"),
         build_request_id,

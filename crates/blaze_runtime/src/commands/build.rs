@@ -604,12 +604,26 @@ fn run_build_with_bep(
         env.get_config_flag_definitions().clone();
     // `processRequest(request, validator, options)`: the command's parser (not
     // env.getOptions(), which keeps the dispatcher's first parse).
-    let project_options_applier =
-        Arc::new(crate::project_options::BuildProjectOptionsApplier::new(
-            Arc::new(options.clone()),
-            env.get_relative_working_directory().clone(),
-            reporter.clone(),
-        ));
+    let mut applier = crate::project_options::BuildProjectOptionsApplier::new(
+        Arc::new(options.clone()),
+        env.get_relative_working_directory().clone(),
+        reporter.clone(),
+    );
+    if let Some(bep) = bep {
+        let bep = bep.clone();
+        let product_name = env.get_runtime().get_product_name().to_string();
+        let startup_options = env.get_runtime().get_startup_options_provider_arc();
+        let command_name = command_name.to_string();
+        applier = applier.with_canonical_command_line_poster(Box::new(move |parser| {
+            bep.post_project_canonical_command_line(
+                &product_name,
+                startup_options.clone(),
+                &command_name,
+                parser,
+            )
+        }));
+    }
+    let project_options_applier = Arc::new(applier);
     request.project_options_applier = Some(project_options_applier.clone());
     // SkymeldModule.beforeCommand: env.setMergedAnalysisAndExecution(...)
     let merged_analysis_and_execution = determine_if_merging_analysis_execution(
@@ -692,6 +706,9 @@ fn run_build_with_bep(
             .get_options::<blaze_optdefs::command::analysis_options::AnalysisOptions>()
             .map(|o| o.extra_action_top_level_only)
             .unwrap_or(false),
+        extra_action_filter: options
+            .get_options::<blaze_optdefs::command::analysis_options::AnalysisOptions>()
+            .map(|o| o.extra_action_filter),
         sibling_repository_layout: build_language_options.experimental_sibling_repository_layout,
         collector: collector.clone(),
         event_reporter: env.get_reporter().clone(),
@@ -773,14 +790,28 @@ fn run_build_with_bep(
     // WorkerModule.buildStarting (a BuildStartingEvent subscriber): the worker factory, pool and
     // lifecycle manager of the build.
     // Java: com/google/devtools/build/lib/worker/WorkerModule.java:92 WorkerModule.buildStarting
+    let worker_options = Arc::new(options_or_default::<
+        blaze_optdefs::misc::worker_options::WorkerOptions,
+    >(options));
+    // env.getBlazeWorkspace().getBinTools(): only read for the hardened worker sandbox (scanning
+    // the install base is not free).
+    let worker_bin_tools = if worker_options.sandbox_hardening {
+        blaze_exec::exec::bin_tools::BinTools::for_production(
+            env.get_directories().get_install_base().clone(),
+        )
+        .ok()
+        .map(Arc::new)
+    } else {
+        None
+    };
     blaze_exec::worker::worker_module::WorkerModule::build_starting(
         blaze_exec::worker::worker_module::WorkerBuildStarting {
-            worker_options: Arc::new(options_or_default::<
-                blaze_optdefs::misc::worker_options::WorkerOptions,
-            >(options)),
+            worker_options,
             sandbox_options: Some(&options_or_default::<SandboxOptions>(options)),
             output_base: env.get_output_base(),
             reporter: env.get_reporter().clone() as Arc<dyn EventHandler>,
+            bin_tools: worker_bin_tools,
+            file_system: Some(env.get_output_base().get_file_system().clone()),
         },
     );
     let detailed_exit_code = to_runtime_detailed_exit_code(build_tool.process_request(&request));
@@ -943,6 +974,9 @@ fn run_build_with_bep(
             &mut build_result,
             &to_util_detailed_exit_code(&detailed_exit_code),
             &collector,
+            skyframe_executor
+                .get_execution()
+                .map(|e| &*e.prepared.executor),
         );
     }
     // RunCommand.exec after BuildTool.processRequest returned; the modules' afterCommand below
@@ -1057,7 +1091,8 @@ pub(crate) fn stop_request_without_execution(
     if let Some(bep) = env.get_bep() {
         let detailed_exit_code = to_runtime_detailed_exit_code(detailed_exit_code.clone());
         result.set_detailed_exit_code(Arc::new(detailed_exit_code.clone()));
-        bep.build_complete(&mut result, &detailed_exit_code, collector);
+        // No execution state: the action executor's metrics consumers are not reached.
+        bep.build_complete(&mut result, &detailed_exit_code, collector, None);
     }
 }
 
@@ -1109,10 +1144,44 @@ struct ExecutionToolConstruction<'a> {
 impl AnalysisPostProcessor for ExecutionToolConstruction<'_> {
     fn process(
         &self,
+        request: &BuildRequest,
+        skyframe_executor: &SkyframeExecutor,
+        analysis_result: &AnalysisResult,
+    ) -> Result<(), BuildToolError> {
+        self.construct(skyframe_executor)?;
+        // Without merged analysis and execution, the result's configuration and targets are set
+        // once the analysis returned, before the post-processing and the execution (which
+        // replaces them); with it, ExecutionTool's finalizations set them.
+        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:540 BuildTool.buildTargetsWithoutMergedAnalysisExecution
+        if !request.with_merged_analysis_and_execution_source_of_truth() {
+            let mut build_result = self.execution_phase.build_result.borrow_mut();
+            build_result.set_build_configuration(analysis_result.get_configuration().clone());
+            build_result.set_actual_targets(Some(configured_target_views(
+                analysis_result.get_targets_to_build(),
+            )));
+            build_result.set_test_targets(
+                analysis_result
+                    .get_targets_to_test()
+                    .map(configured_target_views),
+            );
+        }
+        Ok(())
+    }
+
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:520 BuildTool.buildTargetsWithoutMergedAnalysisExecution
+    fn process_without_analysis(
+        &self,
         _request: &BuildRequest,
         skyframe_executor: &SkyframeExecutor,
-        _analysis_result: &AnalysisResult,
     ) -> Result<(), BuildToolError> {
+        self.construct(skyframe_executor)
+    }
+}
+
+impl ExecutionToolConstruction<'_> {
+    /// `new ExecutionTool(env, request)`.
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:171 ExecutionTool.<init>
+    fn construct(&self, skyframe_executor: &SkyframeExecutor) -> Result<(), BuildToolError> {
         let state = skyframe_executor
             .get_execution()
             .expect("IllegalStateException: the executor was created without execution");
@@ -1482,6 +1551,8 @@ struct RuntimeExecutionPhase {
     execution_options: ExecutionOptions,
     /// `--experimental_extra_action_top_level_only` (`AnalysisOptions`).
     extra_action_top_level_only: bool,
+    /// `--experimental_extra_action_filter` (`AnalysisOptions`).
+    extra_action_filter: Option<blaze_optdefs::common::regex_filter::RegexFilter>,
     /// `request.getOptions(BuildLanguageOptions.class).experimentalSiblingRepositoryLayout`.
     sibling_repository_layout: bool,
     collector: Arc<ExecutionEventCollector>,
@@ -1553,6 +1624,8 @@ impl RuntimeExecutionPhase {
         for_run_command: bool,
         keep_going: bool,
         keys_to_execute: &[BuildDriverKey],
+        root_keys: &[BuildDriverKey],
+        skipped_keys: &[BuildDriverKey],
         main_evaluation_result: &blaze_skyframe::EvaluationResult,
     ) -> Result<ExclusiveTestsOutcome, blaze_skyframe::Interrupted> {
         let mut outcome = ExclusiveTestsOutcome::default();
@@ -1567,30 +1640,60 @@ impl RuntimeExecutionPhase {
                 for_run_command,
             };
             let mut exclusive: Vec<(usize, &BuildDriverKey)> = Vec::new();
-            // Every distinct key of the result in insertion order, with its Java hash code when
-            // it is known here (a BuildDriverKey of a configured target).
+            // Every distinct key of the result in root order, with its Java hash code when it is
+            // known here (a BuildDriverKey of a configured target).
+            //
+            // Java evaluates every BuildDriverKey (SkyframeExecutor.evaluateBuildDriverKeys roots:
+            // the configured-target keys, the aspect keys, the workspace status artifacts); for a
+            // target skipped as incompatible BuildDriverFunction.compute returns a skipped
+            // BuildDriverValue, so its key is an entry of the result map too (review exec-2
+            // round 2, E2-9). Blaze does not evaluate the skipped keys: they are added here, with
+            // an index past the evaluated values, at their place among the roots.
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2503 SkyframeExecutor.evaluateBuildDriverKeys
+            // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:292 BuildDriverFunction.compute
             let mut result_entries: Vec<(usize, Option<i32>)> = Vec::new();
             let mut seen: std::collections::HashSet<&blaze_skyframe::SkyKey> =
                 std::collections::HashSet::new();
+            let mut evaluated_driver_keys: Vec<(usize, &BuildDriverKey, bool)> = Vec::new();
+            let mut other_entries: Vec<usize> = Vec::new();
             for (index, (sky_key, value)) in main_evaluation_result.values.iter().enumerate() {
                 if !seen.insert(sky_key) {
                     continue;
                 }
                 let Some(key) = sky_key.downcast::<BuildDriverKey>() else {
-                    result_entries.push((index, None));
+                    other_entries.push(index);
                     continue;
                 };
                 let key = keys_to_execute
                     .iter()
                     .find(|k| *k == key)
                     .expect("an evaluated BuildDriverKey is a key to execute");
-                let hash_code =
-                    super::exclusive_test_order::build_driver_key_hash_code(key, &flags);
-                result_entries.push((index, hash_code));
                 let is_exclusive = value
                     .clone()
                     .downcast::<blaze_sky_exec::build_driver_function::BuildDriverValue>()
                     .is_ok_and(|value| value.exclusive_test);
+                evaluated_driver_keys.push((index, key, is_exclusive));
+            }
+            let mut next_skipped_index = main_evaluation_result.values.len();
+            let mut placed: Vec<usize> = Vec::new();
+            for root in root_keys {
+                if skipped_keys.contains(root) {
+                    let hash_code =
+                        super::exclusive_test_order::build_driver_key_hash_code(root, &flags);
+                    result_entries.push((next_skipped_index, hash_code));
+                    next_skipped_index += 1;
+                    continue;
+                }
+                let Some(&(index, key, is_exclusive)) =
+                    evaluated_driver_keys.iter().find(|(_, k, _)| *k == root)
+                else {
+                    // Not analyzed (an analysis error) or in error: not a value of the result.
+                    continue;
+                };
+                placed.push(index);
+                let hash_code =
+                    super::exclusive_test_order::build_driver_key_hash_code(key, &flags);
+                result_entries.push((index, hash_code));
                 if !is_exclusive {
                     continue;
                 }
@@ -1599,6 +1702,14 @@ impl RuntimeExecutionPhase {
                     "an exclusive test's key is a ConfiguredTargetKey"
                 );
                 exclusive.push((index, key));
+            }
+            assert_eq!(
+                placed.len(),
+                evaluated_driver_keys.len(),
+                "every evaluated BuildDriverKey is a root"
+            );
+            for index in other_entries {
+                result_entries.push((index, None));
             }
             let order = super::exclusive_test_order::evaluation_result_values_order(result_entries);
             order
@@ -1935,6 +2046,13 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                 )
             });
 
+        // `extraActionFilterSupplier` of BuildDriverFunction: the build's
+        // `AnalysisOptions.extraActionFilter`.
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3479 SkyframeExecutor.setExtraActionFilter
+        if let Some(services) = skyframe_executor.get_analysis_services() {
+            *services.extra_action_filter.write() = self.extra_action_filter.clone();
+        }
+
         // The top-level BuildDriverKeys.
         let label_to_target_map = construct_label_to_target_map(skyframe_executor, loading_result);
         let main_repo_mapping = skyframe_executor
@@ -2122,6 +2240,8 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                 request.command_name == "run",
                 request.keep_going,
                 &keys_to_execute,
+                &keys,
+                &skipped_keys,
                 &evaluation,
             ) {
                 Ok(outcome) => outcome,
@@ -2142,14 +2262,6 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         if !interrupted
             && ((!evaluation.has_error() && !has_exclusive_tests_error) || request.keep_going)
         {
-            if !request.with_merged_analysis_and_execution_source_of_truth() {
-                // The other path builds the coverage artifacts with the targets
-                // (BuildView.update adds them to artifactsToBuild).
-                blaze_util::unported!(
-                    "BuildView.update",
-                    "coverage report artifacts without merged analysis and execution"
-                );
-            }
             let (coverage_report_artifacts, actions_wrapper) =
                 blaze_sky_top::build_view::construct_coverage_artifacts(
                     skyframe_executor,
@@ -2158,6 +2270,19 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                     analysis_result.get_targets_to_test().unwrap_or(&[]),
                     reporter.as_ref(),
                 );
+            if !request.with_merged_analysis_and_execution_source_of_truth()
+                && (actions_wrapper.is_some() || !coverage_report_artifacts.is_empty())
+            {
+                // The other path builds the coverage artifacts with the targets
+                // (BuildView.update adds them to artifactsToBuild). Only a build that collects
+                // coverage has any; every other build has nothing to do here (review
+                // 2026-11-26-coverage, V1).
+                // Java: com/google/devtools/build/lib/analysis/BuildView.java:440 BuildView.update
+                blaze_util::unported!(
+                    "BuildView.update",
+                    "coverage report artifacts without merged analysis and execution"
+                );
+            }
             // eventBus.register(new CoverageReportCollector(wrapper))
             if let (Some(bep), Some(wrapper)) = (&self.bep, &actions_wrapper) {
                 bep.register_coverage_report_collector(

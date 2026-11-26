@@ -57,6 +57,9 @@ impl BcNativeFunction {
         args: &Arguments<'v, '_>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> crate::Result<Value<'v>> {
-        self.imp.invoke(eval, args)
+        self.imp.invoke(eval, args).map_err(|e| { // BLAZE PATCH 0062
+            let f = self.fun.as_ref(); // BLAZE PATCH 0062
+            crate::values::function::java_argument_order(e, &f.docs, args, &f.name, None, eval.heap()) // BLAZE PATCH 0062
+        }) // BLAZE PATCH 0062
     }
 }

@@ -576,8 +576,13 @@ impl ReferenceCountedChannel {
         // Java: io.grpc.auth.GoogleAuthLibraryCallCredentials.applyRequestMetadata
         if let Some(credentials) = &options.call_credentials {
             let uri = service_uri(&self.inner.authority, method);
+            // Java: `applier.fail(Status.UNAUTHENTICATED.withDescription("Failed computing
+            // credential metadata").withCause(e))` (e is not a google-auth `Retryable`).
             let metadata = credentials.get_request_metadata(&uri).await.map_err(|e| {
-                tonic::Status::unauthenticated(format!("Failed computing credential metadata: {e}"))
+                let mut status =
+                    tonic::Status::unauthenticated("Failed computing credential metadata");
+                status.set_source(Arc::new(e));
+                status
             })?;
             for (name, values) in metadata {
                 let lower = name.to_ascii_lowercase();

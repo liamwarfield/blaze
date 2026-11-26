@@ -126,9 +126,9 @@ impl blaze_sky_top::build_tool::BuildEventHooks for PostAnalysisBuildEventHooks<
         }
     }
 
-    fn project_evaluated(&self) {
+    fn project_evaluated(&self, project_flags_applied: bool) {
         if let Some(bep) = self.bep {
-            bep.project_evaluated();
+            bep.project_evaluated(project_flags_applied);
         }
     }
 

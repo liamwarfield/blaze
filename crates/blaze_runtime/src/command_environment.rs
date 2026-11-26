@@ -78,6 +78,12 @@ pub struct CommandEnvironment {
     /// Java `waitTime`: the time this command waited for the command lock plus the client's
     /// `--command_wait_time` (`CommonCommandOptions.waitTime`), in milliseconds.
     wait_time_millis: i64,
+    /// Java `idleTasks`: the tasks to run during the idle period following this command.
+    /// Behind a lock so that the modules' hooks, which see the environment shared, can add.
+    idle_tasks: parking_lot::Mutex<Vec<Arc<dyn blaze_server::IdleTask>>>,
+    /// Java `timestampGranularityMonitor`.
+    timestamp_granularity_monitor:
+        Arc<blaze_util::io::timestamp_granularity_monitor::TimestampGranularityMonitor>,
 }
 
 /// The state behind `pendingException`: `None` if neither [`BlazeModuleEnvironment::exit`] nor
@@ -149,6 +155,17 @@ impl CommandEnvironment {
         );
         // The thread that creates the environment runs the command (Java passes
         // Thread.currentThread() from BlazeWorkspace.initCommand).
+        // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:266 CommandEnvironment.<init>
+        // (runtime.getClock(): BlazeClock).
+        let timestamp_granularity_monitor = Arc::new(
+            blaze_util::io::timestamp_granularity_monitor::TimestampGranularityMonitor::new(
+                Arc::new(crate::profiler_init::ProfilerClock),
+            ),
+        );
+        // Record the command's starting time again, for use by
+        // TimestampGranularityMonitor.waitForTimestampGranularity(). This should be done as close
+        // as possible to the start of the command's execution.
+        timestamp_granularity_monitor.set_command_start_time();
         let blaze_module_environment = BlazeModuleEnvironment {
             pending_exception: Arc::new(parking_lot::Mutex::new(None)),
             command_thread: blaze_shell::thread_interrupt::ThreadInterrupt::current(),
@@ -305,7 +322,29 @@ impl CommandEnvironment {
             track_incremental_state: true,
             command_start_time,
             wait_time_millis,
+            idle_tasks: parking_lot::Mutex::new(Vec::new()),
+            timestamp_granularity_monitor,
         }
+    }
+
+    /// The command's `TimestampGranularityMonitor`.
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:700 CommandEnvironment.getTimestampGranularityMonitor
+    pub fn get_timestamp_granularity_monitor(
+        &self,
+    ) -> &Arc<blaze_util::io::timestamp_granularity_monitor::TimestampGranularityMonitor> {
+        &self.timestamp_granularity_monitor
+    }
+
+    /// Registers a task to be executed during an idle period following this command.
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:1166 CommandEnvironment.addIdleTask
+    pub fn add_idle_task(&self, idle_task: Arc<dyn blaze_server::IdleTask>) {
+        self.idle_tasks.lock().push(idle_task);
+    }
+
+    /// Returns the list of registered idle tasks.
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:1171 CommandEnvironment.getIdleTasks
+    pub fn get_idle_tasks(&self) -> Vec<Arc<dyn blaze_server::IdleTask>> {
+        self.idle_tasks.lock().clone()
     }
 
     // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:886 CommandEnvironment.getCommandStartTime
@@ -661,11 +700,27 @@ impl CommandEnvironment {
 
     /// Initializes the package cache (the package path, default visibility, ...).
     // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:851 CommandEnvironment.syncPackageLoading
+    ///
+    /// PORT: Blaze's commands create their `SkyframeExecutor` from the command's options when
+    /// they need one (`commands::query::create_skyframe_executor`), so `getSkyframeExecutor()
+    /// .sync(...)` reduces to the per-command resets of `preparePackageLoading` whose state is
+    /// process-wide (`commands::query::prepare_package_loading`).
     pub fn sync_package_loading(
         &mut self,
         _options: &OptionsParsingResult,
     ) -> Result<(), AbruptExitException> {
-        blaze_util::unported!("CommandEnvironment.syncPackageLoading")
+        // We want to ensure that we're never calling #syncPackageLoading twice in the same build
+        // because it does the very expensive work of diffing the cache between incremental
+        // builds.
+        if self.has_synced_package_loading {
+            panic!(
+                "IllegalStateException: We should never call this method more than once over the \
+                 course of a single command"
+            );
+        }
+        self.has_synced_package_loading = true;
+        crate::commands::query::prepare_package_loading();
+        Ok(())
     }
 
     /// `setUiEventHandler(uiEventHandler)`: also registers the handler's `@Subscribe` methods

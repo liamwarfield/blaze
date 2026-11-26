@@ -56,3 +56,15 @@ pub fn get_label_printer(
         LabelPrinter::display_form(main_repo_mapping)
     }
 }
+
+// Java: com/google/devtools/build/lib/query2/common/CommonQueryOptions.java:206 CommonQueryOptions.getLabelPrinterLegacy
+pub fn get_label_printer_legacy(
+    options: &QueryOptions,
+    starlark_semantics: &StarlarkSemantics,
+) -> LabelPrinter {
+    if options.emit_consistent_labels {
+        LabelPrinter::starlark(starlark_semantics)
+    } else {
+        LabelPrinter::legacy()
+    }
+}

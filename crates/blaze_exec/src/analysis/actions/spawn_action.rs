@@ -88,7 +88,7 @@ pub fn get_spawn_with_env(
     report_outputs: bool,
 ) -> Result<SimpleSpawn, GetSpawnError> {
     let metadata = KeyMetadataAdapter(action_execution_context.get_input_metadata_provider());
-    let path_mapper = path_mappers::create_for_execution(
+    let path_mapper = path_mappers::create(
         action,
         action.get_output_paths_mode(),
         action.is_starlark_action(),
@@ -101,8 +101,6 @@ pub fn get_spawn_with_env(
         &get_command_line_limits(action),
     )?;
 
-    // PORT: `path_mappers::create` returns a non-noop mapper only for STRIP, which is unported
-    // there; the spawn's mapper is therefore PathMapper.NOOP.
     new_action_spawn(
         expanded_command_lines.arguments().to_vec(),
         action,
@@ -113,7 +111,7 @@ pub fn get_spawn_with_env(
             .map(|p| ActionInputRef::new(p.clone()))
             .collect(),
         report_outputs,
-        PathMapper::NOOP,
+        PathMapper::of(path_mapper),
     )
 }
 
@@ -570,8 +568,7 @@ impl ExecutableAction for SpawnAction {
 
 /// `SpawnExecException.toActionExecutionException(action)`.
 ///
-/// PORT: Java returns a `SpawnActionExecutionException` that also carries the failed
-/// `SpawnResult`; the execution layer's `ActionExecutionException` has no field for it.
+/// Java returns a `SpawnActionExecutionException`, which also carries the failed `SpawnResult`.
 // Java: com/google/devtools/build/lib/exec/SpawnExecException.java:73 SpawnExecException.toActionExecutionException
 pub fn to_action_execution_exception(
     e: &crate::actions::SpawnExecException,
@@ -593,6 +590,7 @@ pub fn to_action_execution_exception(
         e.catastrophe,
         Some(code),
     )
+    .with_spawn_result(e.get_spawn_result().clone())
 }
 
 #[cfg(test)]

@@ -230,6 +230,30 @@ fn mount_test_parse() {
     assert_eq!(m[1].path, PathBuf::from("/dev/cgroup/unified"));
 }
 
+// Review cgroups round 1, S4 (no Java test): the corners of Files.readLines and of the mount
+// pattern.
+
+#[test]
+fn read_lines_ends_a_line_at_a_lone_carriage_return() {
+    let s = Scratch::new();
+    let path = s.path("lines");
+    std::fs::write(&path, "a\rb\r\nc\n\nd").unwrap();
+    assert_eq!(read_lines(&path).unwrap(), vec!["a", "b", "c", "", "d"]);
+}
+
+#[test]
+fn mount_parse_line_matches_an_empty_file_group() {
+    // `\S*` may match nothing between the two separators: "dev", "  ", "", then "cgroup2".
+    let m = Mount::parse_line("dev  cgroup2 rw").expect("matches");
+    assert_eq!(m.path, PathBuf::from(""));
+    assert_eq!(m.type_, "cgroup2");
+    assert_eq!(m.opts, vec!["rw"]);
+    // An empty mntops needs a separator after the type; a comment never matches.
+    assert!(Mount::parse_line("dev /x cgroup").is_none());
+    assert_eq!(Mount::parse_line("dev /x cgroup ").unwrap().opts, vec![""]);
+    assert!(Mount::parse_line("#dev /x cgroup rw").is_none());
+}
+
 // VirtualCgroupFactoryTest
 
 fn factory_root(s: &Scratch) -> Arc<VirtualCgroup> {

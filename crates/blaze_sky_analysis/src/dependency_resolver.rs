@@ -69,7 +69,24 @@ pub struct DependencyResolverState {
     /// Stores events emitted by memoized computations (the target-and-configuration producer
     /// and dependency resolution may perform Starlark transitions that emit events).
     pub stored_events: StoredEventHandler,
+    /// Observes the attribute transitions of dependency resolution (cquery's
+    /// `--output=transitions`); `None` is Java's `NULL_TRANSITION_COLLECTOR`.
+    // Java: com/google/devtools/build/lib/skyframe/DependencyResolver.java:180 DependencyResolver.State.transitionCollector
+    pub transition_collector: Option<TransitionCollector>,
 }
+
+/// Observes transitions for Cquery (Java `TransitionCollector.acceptTransition(kind, label,
+/// transition)`). The implementation of dependency resolution calls this as transitions are
+/// created.
+// Java: com/google/devtools/build/lib/analysis/config/transitions/TransitionCollector.java:20 TransitionCollector
+pub type TransitionCollector = Arc<
+    dyn Fn(
+            &blaze_analysis::dependency_kind::DependencyKind,
+            &Label,
+            &blaze_analysis::config::transitions::ConfigurationTransition,
+        ) + Send
+        + Sync,
+>;
 
 impl DependencyResolverState {
     // Java: com/google/devtools/build/lib/skyframe/DependencyResolver.java:211 DependencyResolver.State.<init>
@@ -82,7 +99,19 @@ impl DependencyResolverState {
             materializer_targets: None,
             transitive_state: TransitiveDependencyState::new(store_transitive_packages),
             stored_events: StoredEventHandler::new(),
+            transition_collector: None,
         }
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/DependencyResolver.java:200 DependencyResolver.State.createForCquery
+    pub fn create_for_cquery(
+        target_and_configuration: TargetAndConfiguration,
+        transition_collector: TransitionCollector,
+    ) -> Self {
+        let mut state = DependencyResolverState::new(/* store_transitive_packages= */ false);
+        state.target_and_configuration = Some(target_and_configuration);
+        state.transition_collector = Some(transition_collector);
+        state
     }
 
     // Java: com/google/devtools/build/lib/skyframe/DependencyResolver.java:224 DependencyResolver.State.transitiveRootCauses
@@ -666,11 +695,9 @@ pub fn get_dependency_context(
 ///
 /// PORT: a file in `@_builtins` is evaluated by the bundled loader of `blaze_build_config`
 /// (Java: BZL_LOAD with `keyForBuiltins`), whose result is memoized here per
-/// `--experimental_exec_config` value, for the life of the build arena
-/// (`blaze_util::build_arena`, decision D7): one command in batch mode and in the in-process
-/// server, and also one command in the persistent server, which releases the arena after every
-/// command (its graph is discarded after every command, decision D2, so Java's BZL_LOAD node
-/// would be gone too); another file is requested through BZL_LOAD
+/// `--experimental_exec_config` value and Starlark semantics (what Java's BZL_LOAD node of the
+/// file depends on; the file itself is compiled in), for the life of the build arena
+/// (`blaze_util::build_arena`, decision D7); another file is requested through BZL_LOAD
 /// (`keyForBuild`), as in Java.
 // Java: com/google/devtools/build/lib/analysis/config/StarlarkExecTransitionLoader.java:78 StarlarkExecTransitionLoader.loadStarlarkExecTransition
 pub fn load_starlark_exec_transition_provider(
@@ -682,7 +709,18 @@ pub fn load_starlark_exec_transition_provider(
     StarlarkExecTransitionLoadingException,
 > {
     #[derive(Default)]
-    struct Loaded(Mutex<HashMap<String, Option<Arc<StarlarkAttributeTransitionProvider>>>>);
+    // Keyed by the flag and the semantics: Java's BZL_LOAD node of the builtins file depends on
+    // STARLARK_SEMANTICS, so with a graph kept across commands a semantics change loads it
+    // again; the arena outlives such a change.
+    #[allow(clippy::type_complexity)]
+    struct Loaded(
+        Mutex<
+            HashMap<
+                (String, blaze_starlark::StarlarkSemantics),
+                Option<Arc<StarlarkAttributeTransitionProvider>>,
+            >,
+        >,
+    );
     impl blaze_util::build_arena::ArenaSlot for Loaded {
         // The providers own their modules' heaps (`StarlarkDefinedConfigTransition::from_frozen`
         // of an `OwnedFrozenValue`).
@@ -701,6 +739,7 @@ pub fn load_starlark_exec_transition_provider(
         .expect("CoreOptions")
         .starlark_exec_config
         .clone();
+    let user_ref = (user_ref, (*services.starlark_semantics).clone());
     if let Some(p) = loaded.0.lock().get(&user_ref) {
         return Ok(Some(p.clone()));
     }
@@ -884,6 +923,7 @@ fn compute_dependencies_internal(
             event_handler: &state.stored_events,
             base_target_prerequisites_supplier,
             base_target_toolchain_contexts: base_target_unloaded_toolchain_contexts,
+            transition_collector: state.transition_collector.clone(),
         };
         produce_dependency_map(env, &mut parameters, &dependency_labels.labels)?
     };
@@ -988,11 +1028,11 @@ fn handle_dependency_root_cause_error(
     let configuration = target_and_configuration.get_configuration();
     let label = target_and_configuration.get_label();
     // AnalysisRootCauseEvent.withConfigurationValue(configuration, label, message)
-    listener.post(Arc::new(AnalysisRootCauseEvent {
-        configuration_checksum: configuration.map(|c| c.checksum().to_owned()),
-        label: label.clone(),
-        error_message: message.to_owned(),
-    }));
+    listener.post(Arc::new(AnalysisRootCauseEvent::with_configuration_value(
+        configuration.cloned(),
+        label.clone(),
+        message.to_owned(),
+    )));
     let cause = Cause::AnalysisFailed {
         label: label.clone(),
         configuration: configuration_id_message(configuration.map(|c| c.checksum())),

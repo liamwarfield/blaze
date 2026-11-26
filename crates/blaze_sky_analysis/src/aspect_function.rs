@@ -24,7 +24,9 @@ use blaze_analysis::config::ordered_set_multimap::PrerequisiteMap;
 use blaze_analysis::config::transitions::StarlarkAttributeTransitionProvider;
 use blaze_analysis::configured_aspect::ConfiguredAspect;
 use blaze_analysis::configured_aspect_factory::ConfiguredAspectFactory;
-use blaze_analysis::configured_rule_class_provider::CreateConfiguredTargetError;
+use blaze_analysis::configured_rule_class_provider::{
+    ConfiguredRuleClassProvider, CreateConfiguredTargetError,
+};
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::configured_target_and_data::ConfiguredTargetAndData;
 use blaze_analysis::configured_target_key::ConfiguredTargetKey;
@@ -223,7 +225,7 @@ impl AspectFunction {
     ) -> Result<Option<Arc<AspectValue>>, ComputeError> {
         // PORT: remote analysis caching is not ported (`isRetrievalEnabled()` is false).
         let mut state = DependencyResolverState::new(self.store_transitive_packages);
-        let Some(initial_values) = get_initial_values(&mut state, key, env)? else {
+        let Some(initial_values) = get_initial_values(&mut state, key, env, &self.services.rule_class_provider)? else {
             return Ok(None);
         };
         let InitialValues {
@@ -796,12 +798,32 @@ impl AspectFunction {
             // Java: RequiredFragmentsUtil.getAspectRequiredFragmentsIfEnabled (called by
             // ConfiguredTargetFactory.createAspect): null unless
             // --include_config_fragments_provider.
-            let required_config_fragments = match core_options {
-                Some(o)
+            let required_config_fragments = match (core_options, configuration) {
+                (Some(o), Some(aspect_configuration))
                     if o.include_required_config_fragments_provider
                         != blaze_optdefs::fragment::core_options::CoreOptionsIncludeConfigFragmentsEnum::OFF =>
                 {
-                    blaze_util::unported!("RequiredFragmentsUtil.getAspectRequiredFragmentsIfEnabled")
+                    // Java: ruleClassProvider.getFragmentRegistry().getUniversalFragments()
+                    let universal_fragments = blaze_build_config::fragment::FragmentClassSet::of(
+                        blaze_build_config::fragments::bazel_fragments().1,
+                    );
+                    let universal_fragments: Vec<_> = universal_fragments.iter().collect();
+                    blaze_analysis::required_fragments_util::get_aspect_required_fragments_if_enabled(
+                        aspect,
+                        &**aspect_factory,
+                        associated_target
+                            .get_associated_rule()
+                            .expect("NullPointerException: associatedTarget.getAssociatedRule()"),
+                        aspect_configuration,
+                        &universal_fragments,
+                        config_conditions,
+                        direct_deps
+                            .values()
+                            .flatten()
+                            .map(|d| d.get_configured_target())
+                            .chain(std::iter::once(associated_configured_target)),
+                        starlark_exec_transition.clone(),
+                    )
                 }
                 _ => None,
             };
@@ -1052,6 +1074,7 @@ fn get_initial_values(
     state: &mut DependencyResolverState,
     key: &AspectKey,
     env: &mut Environment<'_>,
+    rule_class_provider: &ConfiguredRuleClassProvider,
 ) -> Result<Option<InitialValues>, ComputeError> {
     let configured_target_lookup_key = key.get_base_configured_target_key().clone();
     let base_package_key = PackageKey(
@@ -1148,7 +1171,7 @@ fn get_initial_values(
             let AspectClass::Native(native_aspect_class) = key.get_aspect_class() else {
                 unreachable!("native aspect class");
             };
-            aspect_factory = native_aspect_factory(native_aspect_class);
+            aspect_factory = native_aspect_factory(rule_class_provider, native_aspect_class);
             aspect = Aspect::for_native(native_aspect_class, key.get_parameters().clone());
         }
         Some(bzl_load_key) => {
@@ -1204,15 +1227,18 @@ fn get_initial_values(
 /// Java `(ConfiguredAspectFactory) nativeAspectClass`: a native aspect class is its own factory.
 // Java: com/google/devtools/build/lib/skyframe/AspectFunction.java:744 AspectFunction.getInitialValues
 fn native_aspect_factory(
+    rule_class_provider: &ConfiguredRuleClassProvider,
     native_aspect_class: &Arc<dyn NativeAspectClass>,
 ) -> Arc<dyn ConfiguredAspectFactory> {
-    // PORT: no native aspect (a `NativeAspectClass` implementing `ConfiguredAspectFactory`) is
-    // ported.
-    blaze_util::unported!(
-        "NativeAspectClass.create",
-        "native aspect {}",
-        native_aspect_class.get_name()
-    )
+    // Java: aspectFactory = (ConfiguredAspectFactory) nativeAspectClass
+    rule_class_provider
+        .get_native_aspect_factory(native_aspect_class.as_ref())
+        .unwrap_or_else(|| {
+            panic!(
+                "ClassCastException: {} is not a registered ConfiguredAspectFactory",
+                native_aspect_class.get_name()
+            )
+        })
 }
 
 /// Loads a Starlark-defined aspect from an extension file: the frozen `StarlarkDefinedAspect`
@@ -1224,22 +1250,16 @@ pub fn load_aspect_from_bzl(
 ) -> Result<OwnedFrozenValue, AspectCreationException> {
     let extension_label = starlark_aspect_class.get_extension_label();
     let starlark_value_name = starlark_aspect_class.get_exported_name();
-    // Java `Module.getGlobal(name)`: any global, exported or not.
-    // PORT: starlark-rust's private visibility also covers names bound by load(), which are not
-    // globals in Java.
+    // Java `Module.getGlobal(name)`: any global, exported or not; a name the file only binds by
+    // `load` is not a global.
     let starlark_value: Option<OwnedFrozenValue> = bzl_load_value
         .get_module()
-        .get_any_visibility(starlark_value_name)
-        .ok()
-        .map(|(v, _)| v);
+        .java_get_global(starlark_value_name);
+    let found = starlark_value.is_some();
     match starlark_value.filter(|v| is_starlark_aspect(v.value())) {
         Some(aspect) => Ok(aspect),
         None => Err(AspectCreationException::for_label(
-            if bzl_load_value
-                .get_module()
-                .get_any_visibility(starlark_value_name)
-                .is_err()
-            {
+            if !found {
                 format!(
                     "{} is not exported from {}",
                     starlark_value_name, extension_label

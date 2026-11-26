@@ -6,5 +6,7 @@
 pub mod file_state_value;
 pub mod file_value;
 
-pub use file_state_value::{FileContentsProxy, FileStateType, FileStateValue};
+pub use file_state_value::{
+    ContentsComparisonResult, FileContentsProxy, FileStateType, FileStateValue,
+};
 pub use file_value::FileValue;

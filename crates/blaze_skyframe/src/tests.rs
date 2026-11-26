@@ -2230,6 +2230,7 @@ impl MemoizingTester {
 }
 
 mod eager_invalidator_test;
+mod build_reusing_test;
 mod engine_test;
 mod graph_test;
 mod grouped_deps_test;

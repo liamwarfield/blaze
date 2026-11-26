@@ -948,11 +948,11 @@ impl MissingEdgeError {
                 let configuration = from_node.get_configuration();
                 // AnalysisRootCauseEvent.withConfigurationValue(configuration, label, message)
                 listener.post(Arc::new(
-                    blaze_analysis::rule::rule_error_consumer::AnalysisRootCauseEvent {
-                        configuration_checksum: configuration.map(|c| c.checksum().to_owned()),
-                        label: label.clone(),
-                        error_message: cause.get_message().to_owned(),
-                    },
+                    blaze_analysis::rule::rule_error_consumer::AnalysisRootCauseEvent::with_configuration_value(
+                        configuration.cloned(),
+                        label.clone(),
+                        cause.get_message().to_owned(),
+                    ),
                 ));
                 transitive_state.add_transitive_cause(Cause::AnalysisFailed {
                     label: label.clone(),

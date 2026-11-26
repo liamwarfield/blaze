@@ -541,8 +541,8 @@ fn assertion_loop_issue(node: &Node) -> Option<String> {
 /// iteration matched the empty string and continues after it (Pattern.Loop.match, the
 /// `i > locals[beginIndex]` test), before the body's later choices; the crate drops that
 /// iteration and tries the later choices first, so it can match further. Boolean results
-/// (`find()` succeeds, `matches()`) are the same in both. Lazy repetitions try the exit first
-/// in both and agree.
+/// (`find()` succeeds, `matches()`) are the same in both. A lazy repetition with a finite
+/// maximum of 2 or more differs the same way (below); an unbounded lazy one agrees.
 // Java: java/util/regex/Pattern.java Pattern.Loop.match
 fn find_span_issue(node: &Node) -> Option<String> {
     match node {
@@ -553,8 +553,16 @@ fn find_span_issue(node: &Node) -> Option<String> {
             body, max, qtype, ..
         } => {
             let (bn, bl) = empty_shape(body);
-            if *qtype != Qtype::Lazy && max.is_none_or(|m| m >= 2) && bn && !bl && can_consume(body)
-            {
+            // Greedy: any repetition of 2 or more. Lazy: only with a finite maximum of 2 or more
+            // (the crate writes it as nested lazy optionals, so an empty first iteration can be
+            // followed by a non-empty one before Java's "non-empty, then one more"; JDK 25:
+            // `(?:|ab|a){1,2}?(?:b|c)` on `ababc` is (0,5), the crate (0,2)); an unbounded lazy
+            // loop tries the exit first in both and agrees.
+            let counted = match qtype {
+                Qtype::Lazy => max.is_some_and(|m| m >= 2),
+                Qtype::Greedy | Qtype::Possessive => max.is_none_or(|m| m >= 2),
+            };
+            if counted && bn && !bl && can_consume(body) {
                 return Some(
                     "a repetition whose body can match the empty string before a non-empty \
                      string (Java's loop stops at an empty iteration)"

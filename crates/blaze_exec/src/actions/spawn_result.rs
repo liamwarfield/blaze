@@ -93,6 +93,21 @@ pub struct SpawnResult {
 }
 
 impl SpawnResult {
+    /// `new SpawnResult.DelegateSpawnResult(this) { getRunnerName() { return runnerName; }
+    /// getMetrics() { return metrics; } }`: every other getter answers as this result does.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:424 SpawnResult.DelegateSpawnResult
+    pub fn delegate_with_runner_name_and_metrics(
+        &self,
+        runner_name: &str,
+        metrics: SpawnMetrics,
+    ) -> SpawnResult {
+        SpawnResult {
+            runner_name: runner_name.to_owned(),
+            spawn_metrics: metrics,
+            ..self.clone()
+        }
+    }
+
     /// `setupSuccess()`.
     pub fn setup_success(&self) -> bool {
         matches!(

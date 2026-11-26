@@ -101,7 +101,6 @@ pub struct ConfigParseException {
 
 impl ConfigParseException {
     // Java: com/google/devtools/build/lib/remote/Scrubber.java:51 ConfigParseException.<init>
-    #[allow(dead_code)] // Only `Scrubber.parse` creates it, and that is not ported.
     fn new(message: String) -> ConfigParseException {
         ConfigParseException { message }
     }
@@ -145,12 +144,19 @@ impl Scrubber {
     /// Constructs a `Scrubber` from the given configuration file, which must contain a `Config`
     /// protocol buffer in text format.
     // Java: com/google/devtools/build/lib/remote/Scrubber.java:73 Scrubber.parse
-    pub fn parse(_config_path: &str) -> Result<Scrubber, ConfigParseException> {
-        // PORT: Blaze has no protobuf text-format parser. Java reads the file, merges it into a
-        // `Config` with `TextFormat.getParser()`, calls the constructor and reports an
-        // `IOException` as `ConfigParseException(e.getMessage())` and a `PatternSyntaxException`
-        // as `ConfigParseException("in regex '<pattern>': <message>")`.
-        blaze_util::unported!("Scrubber.parse (TextFormat)")
+    pub fn parse(config_path: &str) -> Result<Scrubber, ConfigParseException> {
+        // PORT: reading the file, `TextFormat.getParser().merge` and the pattern checks of the
+        // constructor are `blaze_optdefs`' `parse_scrubbing_config` (the option converter
+        // needs them below this crate); its error is `ConfigParseException`'s message.
+        let config = blaze_optdefs::misc::remote_options::parse_scrubbing_config(config_path)
+            .map_err(ConfigParseException::new)?;
+        Scrubber::new(&config).map_err(|e| {
+            ConfigParseException::new(format!(
+                "in regex '{}': {}",
+                e.get_pattern(),
+                e.get_message()
+            ))
+        })
     }
 
     /// Returns a `SpawnScrubber` suitable for a `Spawn`, or `None` if the spawn does not need to

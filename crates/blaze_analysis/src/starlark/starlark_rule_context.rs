@@ -897,8 +897,21 @@ impl<'v> StarlarkValue<'v> for CtxSuper {
         args: &starlark::eval::Arguments<'v, '_>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
-        args.no_positional_args(eval.heap())?;
-        args.no_named_args()?;
+        // Java: `ctx.super()` is a builtin without parameters (BuiltinFunction): a keyword
+        // fails while it is bound (addNamedArg, before any positional check), a positional
+        // argument in `call`.
+        // Java: net/starlark/java/eval/BuiltinFunction.java:331 ArgumentProcessor.addNamedArg
+        if let Some((name, _)) = args.names_map()?.into_iter().next() {
+            return Err(starlark::values::bazel_argument_binding_error(format!(
+                "super() got unexpected keyword argument '{}'",
+                name.as_str()
+            )));
+        }
+        // Java: net/starlark/java/eval/BuiltinFunction.java:420 ArgumentProcessor.call (and
+        // fastcall)
+        if args.positions(eval.heap())?.next().is_some() {
+            return Err(errorf("super() got unexpected positional argument"));
+        }
         let ctx = super::thread_payload::get_starlark_rule_context(eval).ok_or_else(|| {
             errorf("super can only be called from a rule or aspect implementation")
         })?;

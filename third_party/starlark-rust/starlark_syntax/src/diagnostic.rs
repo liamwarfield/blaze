@@ -112,6 +112,16 @@ impl<T> WithDiagnostic<T> {
             self.0.diagnostic.call_stack = call_stack();
         }
     }
+
+    /// BLAZE PATCH 0061: the call stack, to move an error to where Bazel reports it.
+    pub fn call_stack_mut(&mut self) -> &mut CallStack {
+        &mut self.0.diagnostic.call_stack
+    }
+
+    /// BLAZE PATCH 0061: set the span, also when one is set.
+    pub fn replace_span(&mut self, span: Span, codemap: &CodeMap) {
+        self.0.diagnostic.span = Some(codemap.file_span(span));
+    }
 }
 
 impl<T: StdError> fmt::Display for WithDiagnostic<T> {

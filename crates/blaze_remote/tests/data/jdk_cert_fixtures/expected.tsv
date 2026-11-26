@@ -1,0 +1,46 @@
+# case	verdict	step: message (Azul Systems, Inc. 25.0.2+10-LTS)
+v1	ACCEPT	
+v1_upper_host	ACCEPT	
+v1_explicit	ACCEPT	
+v2	ACCEPT	
+v1_extensions	REJECT	parse: java.security.cert.CertificateParsingException: no more data allowed for version 1 certificate
+v1_explicit_extensions	REJECT	parse: java.security.cert.CertificateParsingException: no more data allowed for version 1 certificate
+v2_extensions	REJECT	parse: java.security.cert.CertificateParsingException: Extensions not allowed in v2 certificate
+v2_unique_ids	ACCEPT	
+v2_unique_ids_reversed	REJECT	parse: java.security.cert.CertificateParsingException: Extensions not allowed in v2 certificate
+v1_unique_id	REJECT	parse: java.security.cert.CertificateParsingException: no more data allowed for version 1 certificate
+v2_trailing_integer	REJECT	parse: java.security.cert.CertificateParsingException: Extensions not allowed in v2 certificate
+alg_mismatch	REJECT	parse: java.security.cert.CertificateException: Signature algorithm mismatch
+alg_mismatch_outer	REJECT	parse: java.security.cert.CertificateException: Signature algorithm mismatch
+alg_params_absent_inner	ACCEPT	
+expired	REJECT	trust: sun.security.validator.ValidatorException: PKIX path validation failed: java.security.cert.CertPathValidatorException: validity check failed
+wrong_host	REJECT	host: java.security.cert.CertificateException: No name matching example.com found
+ip_host	REJECT	host: java.security.cert.CertificateException: No subject alternative names present
+trailing_dot_host	REJECT	host: java.security.cert.CertificateException: Illegal given domain name: localhost.
+underscore	REJECT	host: java.security.cert.CertificateException: Illegal given domain name: local_host
+wildcard	ACCEPT	
+two_cn_first	ACCEPT	
+two_cn_second	REJECT	host: java.security.cert.CertificateException: No name matching localhost found
+cn_last_rdn	ACCEPT	
+cn_first_rdn	REJECT	host: java.security.cert.CertificateException: No name matching localhost found
+cn_bmp	ACCEPT	
+empty_subject	REJECT	parse: java.security.cert.CertificateParsingException: Empty subject DN not allowed in v1 certificate
+empty_subject_v2	REJECT	host: java.security.cert.CertificateException: No name matching localhost found
+empty_issuer	REJECT	parse: java.security.cert.CertificateParsingException: Empty issuer DN not allowed in X509Certificates
+serial_leading_zero	ACCEPT	
+serial_negative	ACCEPT	
+time_non_ascii	REJECT	parse: java.security.cert.CertificateParsingException: java.io.IOException: Parse UTC time, invalid format
+time_no_seconds	ACCEPT	
+time_offset	ACCEPT	
+time_fraction	ACCEPT	
+time_feb_31	ACCEPT	
+time_second_60	REJECT	parse: java.security.cert.CertificateParsingException: java.io.IOException: Parse UTC time, invalid format
+non_minimal_length	ACCEPT	
+trailing_bytes	ACCEPT	
+version_5	ACCEPT	
+direct	ACCEPT	
+direct_expired	ACCEPT	
+self_signed	ACCEPT	
+self_signed_expired	ACCEPT	
+self_signed_untrusted	REJECT	trust: sun.security.validator.ValidatorException: PKIX path building failed: sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid certification path to requested target
+bad_signature	REJECT	trust: sun.security.validator.ValidatorException: PKIX path validation failed: java.security.cert.CertPathValidatorException: signature check failed

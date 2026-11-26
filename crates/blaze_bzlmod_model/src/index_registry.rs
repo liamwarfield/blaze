@@ -58,6 +58,8 @@ pub struct IndexRegistry {
     previously_selected_yanked_versions: IndexMap<ModuleKey, String>,
     known_file_hashes_mode: KnownFileHashesMode,
     module_mirrors: IndexSet<JavaUri>,
+    /// `null` when vendor mode is off.
+    vendor_manager: Option<crate::vendor_manager::VendorManager>,
     bazel_registry_json: OnceLock<(
         Result<Option<BazelRegistryJson>, RegistryException>,
         StoredEventHandler,
@@ -205,10 +207,8 @@ impl IndexRegistry {
         vendor_dir: Option<PathFragment>,
         module_mirrors: IndexSet<JavaUri>,
     ) -> IndexRegistry {
-        if vendor_dir.is_some() {
-            // PORT: VendorManager (--vendor_dir) is not ported.
-            blaze_util::unported!("VendorManager");
-        }
+        // Java: com/google/devtools/build/lib/bazel/bzlmod/IndexRegistry.java:125 IndexRegistry.<init>
+        let vendor_manager = vendor_dir.map(crate::vendor_manager::VendorManager::new);
         IndexRegistry {
             uri,
             client_env,
@@ -216,6 +216,7 @@ impl IndexRegistry {
             previously_selected_yanked_versions,
             known_file_hashes_mode,
             module_mirrors,
+            vendor_manager,
             bazel_registry_json: OnceLock::new(),
         }
     }
@@ -293,8 +294,35 @@ impl IndexRegistry {
         }
         let url = JavaUri::new(raw_url)
             .unwrap_or_else(|e| panic!("IllegalArgumentException: {}", e.get_message()));
-        // PORT: the vendor directory branch (VendorManager) is not ported; `new` rejects
-        // vendor dirs.
+        // Don't read the registry URL from the vendor directory in the following cases:
+        // 1. vendorUtil is null, which means vendor mode is disabled.
+        // 2. The checksum is not present, which means the URL is not vendored or the vendored
+        // content is out-dated.
+        // 3. The URL starts with "file:", which means it's a local file and isn't vendored.
+        // 4. The vendor path doesn't exist, which means the URL is not vendored.
+        // Java: com/google/devtools/build/lib/bazel/bzlmod/IndexRegistry.java:217 IndexRegistry.doGrabFile
+        if let Some(vendor_manager) = &self.vendor_manager
+            && let Some(checksum) = &checksum
+            && url.get_scheme() != Some("file")
+            && vendor_manager
+                .is_url_vendored(&url)
+                .map_err(|e| RegistryException::Io(e.0))?
+        {
+            return vendor_manager
+                .read_registry_url(&url, checksum)
+                .map_err(|message| {
+                    RegistryException::Io(format!(
+                        "Failed to read vendored registry file {} at {}: {}. Please rerun the \
+                         bazel vendor command.",
+                        raw_url,
+                        vendor_manager
+                            .get_vendor_path_for_url(&url)
+                            .map(|p| p.get_path_string().to_string())
+                            .unwrap_or_default(),
+                        message
+                    ))
+                });
+        }
         match download_manager.download_and_read_one_url_for_bzlmod(
             &url,
             &self.client_env,

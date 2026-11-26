@@ -149,6 +149,14 @@ fn as_configured_target_key(key: &ActionLookupKeyRef) -> Option<&ConfiguredTarge
 }
 
 impl AnalysisSeam for SkyframeAnalysisSeam {
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:691 BuildDriverFunction.addArtifactsToBuilder
+    fn is_extra_action_owner_included(&self, owner_label: &str) -> bool {
+        match &*self.services.extra_action_filter.read() {
+            Some(filter) => filter.is_included(owner_label),
+            None => true,
+        }
+    }
+
     // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:378 ArtifactFunction.getActionLookupValue
     fn get_action_lookup_value(
         &self,
@@ -457,6 +465,21 @@ impl ConfiguredTargetView for SkyframeConfiguredTargetView {
         self.configured_target.get_label()
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:600 BuildDriverFunction.requestConfiguredTargetExecution
+    fn get_extra_action_artifacts_provider(
+        &self,
+    ) -> Option<(NestedSet<Artifact>, NestedSet<Artifact>)> {
+        use blaze_analysis::configuredtargets::extra_action_artifacts_provider::ExtraActionArtifactsProvider;
+        self.configured_target
+            .get_provider::<ExtraActionArtifactsProvider>()
+            .map(|p| {
+                (
+                    p.get_extra_action_artifacts().clone(),
+                    p.get_transitive_extra_action_artifacts().clone(),
+                )
+            })
+    }
+
     // Java: com/google/devtools/build/lib/rules/AliasConfiguredTarget.java:176 AliasConfiguredTarget.getOriginalLabel
     fn get_original_label(&self) -> Label {
         self.configured_target.get_original_label()
@@ -615,6 +638,22 @@ impl ConfiguredAspectView for SkyframeConfiguredAspectView {
     // Java: com/google/devtools/build/lib/analysis/AspectValue.java:105 AspectValue.getWritesOutputToMasterLog
     fn get_writes_output_to_master_log(&self) -> bool {
         self.value.get_writes_output_to_master_log()
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:333 BuildDriverFunction.compute
+    fn get_extra_action_artifacts_provider(
+        &self,
+    ) -> Option<(NestedSet<Artifact>, NestedSet<Artifact>)> {
+        use blaze_analysis::configuredtargets::extra_action_artifacts_provider::ExtraActionArtifactsProvider;
+        self.value
+            .get_providers()
+            .get_provider::<ExtraActionArtifactsProvider>()
+            .map(|p| {
+                (
+                    p.get_extra_action_artifacts().clone(),
+                    p.get_transitive_extra_action_artifacts().clone(),
+                )
+            })
     }
 }
 

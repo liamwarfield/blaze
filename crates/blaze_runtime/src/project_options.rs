@@ -62,6 +62,9 @@ pub struct BuildProjectOptionsApplier {
     pub reporter: Arc<dyn ExtendedEventHandler>,
     /// The parser with the project's flags, once `apply` has run.
     pub updated_options: Mutex<Option<Arc<OptionsParser>>>,
+    /// Posts the final `CanonicalCommandLineEvent` of the updated parser to the command's build
+    /// event stream (`None` without a stream).
+    pub post_canonical_command_line: Option<Box<dyn Fn(&OptionsParser) + Send + Sync>>,
 }
 
 impl BuildProjectOptionsApplier {
@@ -75,7 +78,17 @@ impl BuildProjectOptionsApplier {
             relative_working_directory,
             reporter,
             updated_options: Mutex::new(None),
+            post_canonical_command_line: None,
         }
+    }
+
+    /// With the build event stream's poster of the final canonical command line.
+    pub fn with_canonical_command_line_poster(
+        mut self,
+        poster: Box<dyn Fn(&OptionsParser) + Send + Sync>,
+    ) -> Self {
+        self.post_canonical_command_line = Some(poster);
+        self
     }
 
     /// The command's parser after the project file's flags were parsed into it, if a project
@@ -150,8 +163,12 @@ impl ProjectOptionsApplier for BuildProjectOptionsApplier {
                 }
             }
         }
-        // PORT: the CanonicalCommandLineEvent and UpdateOptionsEvent that Java posts here belong
-        // to the command's build event stream, which this applier does not reach.
+        // env.getEventBus().post(new CanonicalCommandLineEvent(..., /* replaceable= */ false)),
+        // then new UpdateOptionsEvent(optionsParser), which no subscriber at the pin receives.
+        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:375 BuildTool.buildTargets
+        if let Some(post) = &self.post_canonical_command_line {
+            post(&parser);
+        }
         // buildOptions = runtime.createBuildOptions(optionsParser)
         // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:400 BuildTool.buildTargets
         let build_options = create_build_options(&BazelRuleClassProvider::create(), &parser);

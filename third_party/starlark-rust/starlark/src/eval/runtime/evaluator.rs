@@ -551,15 +551,27 @@ impl<'v, 'a, 'e: 'a> Evaluator<'v, 'a, 'e> {
     ) -> crate::Result<R> {
         #[cold]
         #[inline(never)]
-        fn add_diagnostics(mut e: crate::Error, me: &Evaluator) -> crate::Error {
+        fn add_diagnostics(
+            mut e: crate::Error,
+            me: &Evaluator,
+            span: Option<&'static FrameSpan>, // BLAZE PATCH 0061
+        ) -> crate::Error {
+            let fresh = e.call_stack().frames.is_empty(); // BLAZE PATCH 0061
             // Make sure we capture the call_stack before popping things off it
             e.set_call_stack(|| me.call_stack.to_diagnostic_frames(InlinedFrames::default()));
+            // BLAZE PATCH 0061: an argument binding error, or an error Java raises before
+            // entering the callee, where Bazel reports it.
+            if fresh { // BLAZE PATCH 0061
+                if let Some(span) = span { // BLAZE PATCH 0061
+                    crate::eval::runtime::java_call::relocate(&mut e, span); // BLAZE PATCH 0061
+                } // BLAZE PATCH 0061
+            } // BLAZE PATCH 0061
             e
         }
 
         self.call_stack.push(function, span)?;
         // Must always call .pop regardless
-        let res = within(self).map_err(|e| add_diagnostics(e, self));
+        let res = within(self).map_err(|e| add_diagnostics(e, self, span)); // BLAZE PATCH 0061
         self.call_stack.pop();
         res
     }

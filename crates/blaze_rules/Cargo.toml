@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+flate2.workspace = true
 blaze_util = { path = "../blaze_util" }
 blaze_cmdline = { path = "../blaze_cmdline" }
 blaze_vfs = { path = "../blaze_vfs" }
@@ -39,5 +40,7 @@ blaze_analysis = { path = "../blaze_analysis" }
 blaze_cc_features = { path = "../blaze_cc_features" }
 regex.workspace = true
 blaze_sky_loading = { path = "../blaze_sky_loading" }
+blaze_query = { path = "../blaze_query" }
+blaze_query_engine = { path = "../blaze_query_engine" }
 # Java: the .jdeps proto (src/main/protobuf/deps.proto) read by JavaCompileAction.
 prost.workspace = true

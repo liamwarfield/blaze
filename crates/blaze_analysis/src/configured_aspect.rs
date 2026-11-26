@@ -244,7 +244,12 @@ impl<'a> ConfiguredAspectBuilder<'a> {
 
         // Only add {@link ExtraActionProvider} if extra action listeners are applied
         if !config_util::get_action_listeners(rule_context.get_configuration()).is_empty() {
-            blaze_util::unported!("ConfiguredAspect.Builder.createExtraActionProvider");
+            let provider = crate::extra::extra_action_utils::create_extra_action_provider(
+                /* actions_without_extra_action= */ &[],
+                rule_context,
+            )
+            .map_err(|_| RuleConfiguredTargetBuildError::Interrupted)?;
+            self.add_provider(provider);
         }
 
         let analysis_environment = rule_context.get_analysis_environment();

@@ -824,14 +824,8 @@ unported_command!(
 pub use crate::commands::fetch::FetchCommand;
 // Integration lead: implemented in crate::commands::mod_command.
 pub use crate::commands::mod_command::ModCommand;
-unported_command!(
-    /// Fetches external repositories into a specified directory.
-    /// PORT: Java constructs it with the repository module's non-strict repo env supplier.
-    // Java: com/google/devtools/build/lib/bazel/commands/VendorCommand.java:110 VendorCommand
-    VendorCommand,
-    VENDOR_COMMAND,
-    "VendorCommand.exec"
-);
+// Implemented in crate::commands::vendor.
+pub use crate::commands::vendor::VendorCommand;
 
 #[cfg(test)]
 mod tests {

@@ -11,6 +11,12 @@
 //! Only `proto2` and `proto3` files occur (no editions); the features a file of either syntax
 //! implies are computed here as `Descriptors` resolves them (`hasPresence`, `isPacked`,
 //! `EnumDescriptor.isClosed`).
+//!
+//! Extensions: each message descriptor lists the extensions of it that the crate compiled
+//! ([`Descriptor::extensions`], Java's `ExtensionRegistry` of the generated extensions). They
+//! are not in [`Descriptor::fields`] (`getFields()` never holds extensions); a parse that
+//! registers them ([`crate::dynamic_message::DynamicMessage::from_message`]) resolves their
+//! numbers, any other parse treats them as unknown fields (an empty registry).
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -175,6 +181,9 @@ pub struct Descriptor {
     containing_type: Option<usize>,
     /// `getFields()`, in declaration order.
     pub fields: Vec<FieldDescriptor>,
+    /// The extensions of this type the crate compiled, in pool order (Java: those of the
+    /// generated code's `ExtensionRegistry`). Their `index` follows the fields' indices.
+    pub extensions: Vec<FieldDescriptor>,
     /// `getOneofs()`.
     pub oneofs: Vec<OneofDescriptor>,
     /// `getNestedTypes()` (pool indices).
@@ -222,6 +231,12 @@ impl Descriptor {
         self.fields.iter().find(|f| f.number == number)
     }
 
+    /// `ExtensionRegistry.findExtensionByNumber(this, number)` over the compiled extensions.
+    // Java: com/google/protobuf/ExtensionRegistry.java ExtensionRegistry.findExtensionByNumber
+    pub fn find_extension_by_number(&self, number: i32) -> Option<&FieldDescriptor> {
+        self.extensions.iter().find(|f| f.number == number)
+    }
+
     /// Whether `other` is this descriptor.
     pub fn same(&self, other: &Descriptor) -> bool {
         self.index == other.index
@@ -251,6 +266,10 @@ pub struct FieldDescriptor {
     proto3_optional: bool,
     packed_option: Option<bool>,
     syntax: Syntax,
+    /// `isExtension()`.
+    extension: bool,
+    /// `getExtensionScope()` (pool index; `None` for a file-level extension or a field).
+    extension_scope: Option<usize>,
 }
 
 impl FieldDescriptor {
@@ -274,9 +293,18 @@ impl FieldDescriptor {
         !self.repeated && !self.required
     }
 
-    /// `isExtension()`: extensions are never in the pool's field lists.
+    /// `isExtension()`.
     pub fn is_extension(&self) -> bool {
-        false
+        self.extension
+    }
+
+    /// `getExtensionScope()`: the message an extension is declared in (`None` at file level).
+    // Java: com/google/protobuf/Descriptors.java FieldDescriptor.getExtensionScope
+    pub fn get_extension_scope(&self) -> Option<&'static Descriptor> {
+        if !self.extension {
+            panic!("UnsupportedOperationException: This field is not an extension.");
+        }
+        self.extension_scope.map(|i| &pool().messages[i])
     }
 
     /// `getContainingType()`.
@@ -347,6 +375,7 @@ impl FieldDescriptor {
             Syntax::Proto3 => {
                 self.type_ == Type::Message
                     || self.type_ == Type::Group
+                    || self.extension
                     || self.oneof_index.is_some()
             }
         }
@@ -378,7 +407,11 @@ impl FieldDescriptor {
         }
 
         // Group messages are always defined in the same scope as the field.
-        message_type.containing_type == Some(self.containing_type)
+        if self.extension {
+            message_type.containing_type == self.extension_scope
+        } else {
+            message_type.containing_type == Some(self.containing_type)
+        }
     }
 
     /// `legacyEnumFieldTreatedAsClosed()`: whether unknown values of this enum field go to the
@@ -547,7 +580,79 @@ impl DescriptorPool {
                 message_types: top,
             });
         }
+        // Pass 3: the extensions, now that every type has its index.
+        for file in &fds.file {
+            let syntax = match file.syntax() {
+                "proto3" => Syntax::Proto3,
+                _ => Syntax::Proto2,
+            };
+            pool.add_extensions(
+                syntax,
+                file.package(),
+                None,
+                &file.extension,
+                &file.message_type,
+            );
+        }
         pool
+    }
+
+    /// Registers the extensions declared at `prefix` (scope `scope`) and in the nested types of
+    /// `msgs` on the messages they extend.
+    fn add_extensions(
+        &mut self,
+        syntax: Syntax,
+        prefix: &str,
+        scope: Option<usize>,
+        extensions: &[prost_types::FieldDescriptorProto],
+        msgs: &[DescriptorProto],
+    ) {
+        for f in extensions {
+            let extendee_name = f.extendee().trim_start_matches('.');
+            let extendee = *self
+                .message_by_name
+                .get(extendee_name)
+                .unwrap_or_else(|| panic!("unresolved extendee {extendee_name}"));
+            let type_ = Type::from_proto(f.r#type());
+            let resolve = |map: &HashMap<String, usize>| {
+                let name = f.type_name().trim_start_matches('.');
+                *map.get(name)
+                    .unwrap_or_else(|| panic!("unresolved type {name}"))
+            };
+            let index =
+                self.messages[extendee].fields.len() + self.messages[extendee].extensions.len();
+            let descriptor = FieldDescriptor {
+                name: f.name().to_string(),
+                full_name: join(prefix, f.name()),
+                number: f.number(),
+                type_,
+                repeated: f.label() == ProtoLabel::Repeated,
+                required: f.label() == ProtoLabel::Required,
+                index,
+                containing_type: extendee,
+                message_type: matches!(type_, Type::Message | Type::Group)
+                    .then(|| resolve(&self.message_by_name)),
+                enum_type: (type_ == Type::Enum).then(|| resolve(&self.enum_by_name)),
+                oneof_index: None,
+                proto3_optional: f.proto3_optional(),
+                packed_option: f.options.as_ref().and_then(|o| o.packed),
+                syntax,
+                extension: true,
+                extension_scope: scope,
+            };
+            self.messages[extendee].extensions.push(descriptor);
+        }
+        for m in msgs {
+            let full_name = join(prefix, m.name());
+            let index = self.message_by_name[&full_name];
+            self.add_extensions(
+                syntax,
+                &full_name,
+                Some(index),
+                &m.extension,
+                &m.nested_type,
+            );
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -609,6 +714,8 @@ impl DescriptorPool {
                         proto3_optional: f.proto3_optional(),
                         packed_option: f.options.as_ref().and_then(|o| o.packed),
                         syntax,
+                        extension: false,
+                        extension_scope: None,
                     }
                 })
                 .collect::<Vec<_>>();
@@ -631,6 +738,7 @@ impl DescriptorPool {
                 file,
                 containing_type,
                 fields,
+                extensions: Vec::new(),
                 oneofs,
                 nested_types: Vec::new(),
                 map_entry: options.and_then(|o| o.map_entry).unwrap_or(false),

@@ -174,15 +174,42 @@ impl<'v> StarlarkValue<'v> for InstrumentedFilesInfo {
             "metadata_files" => Some(depset_value(&artifacts_to_depset(
                 &self.instrumentation_metadata_files,
             ))),
-            // PORT: these two check `BuiltinRestriction.failIfCalledOutsideDefaultAllowlist`
-            // (they need the thread, which `get_attr` does not have).
-            "coverage_support_files" => {
-                blaze_util::unported!("InstrumentedFilesInfo.getCoverageSupportFilesForStarlark")
-            }
-            "coverage_environment" => {
-                blaze_util::unported!("InstrumentedFilesInfo.getCoverageEnvironmentForStarlark")
-            }
+            // `coverage_support_files` and `coverage_environment` check
+            // `BuiltinRestriction.failIfCalledOutsideDefaultAllowlist`, which needs the thread:
+            // they are answered by `get_attr_fallible` (Starlark `x.f` calls it); a Rust caller
+            // without an evaluator does not see them.
             _ => None,
+        }
+    }
+
+    fn get_attr_fallible(
+        &self,
+        attribute: starlark::collections::Hashed<&str>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<Option<Value<'v>>> {
+        match attribute.key().as_ref() {
+            // Java: com/google/devtools/build/lib/analysis/test/InstrumentedFilesInfo.java:111 InstrumentedFilesInfo.getCoverageSupportFilesForStarlark
+            "coverage_support_files" => {
+                builtin_restriction::fail_if_called_outside_default_allowlist(eval)?;
+                Ok(Some(depset_value(&artifacts_to_depset(
+                    &self.coverage_support_files,
+                ))))
+            }
+            // Java: com/google/devtools/build/lib/analysis/test/InstrumentedFilesInfo.java:122 InstrumentedFilesInfo.getCoverageEnvironmentForStarlark
+            "coverage_environment" => {
+                builtin_restriction::fail_if_called_outside_default_allowlist(eval)?;
+                // The ImmutableMap becomes an immutable Dict (Starlark.fromJava).
+                let heap = eval.heap();
+                let dict = heap.alloc(starlark::values::dict::AllocDict(
+                    self.coverage_environment
+                        .iter()
+                        .map(|(k, v)| (k.as_str(), v.as_str())),
+                ));
+                Ok(Some(blaze_starlark::dict::dict_immutable_copy_of(
+                    heap, dict,
+                )?))
+            }
+            other => Ok(self.get_attr(other, eval.heap())),
         }
     }
 
@@ -308,6 +335,8 @@ impl<'a> InstrumentedFilesInfoBuilder<'a> {
         self.coverage_support_files_builder
             .add_transitive(provider.get_coverage_support_files());
         for (k, v) in provider.get_coverage_environment() {
+            // ImmutableMap.Builder.buildKeepingLast: a repeated key takes its last position.
+            self.coverage_environment_builder.shift_remove(k);
             self.coverage_environment_builder
                 .insert(k.clone(), v.clone());
         }
@@ -481,6 +510,8 @@ impl InstrumentedFilesCollector {
         }
 
         for (k, v) in coverage_environment {
+            // ImmutableMap.Builder.buildKeepingLast: a repeated key takes its last position.
+            builder.coverage_environment_builder.shift_remove(k);
             builder
                 .coverage_environment_builder
                 .insert(k.clone(), v.clone());

@@ -3,17 +3,12 @@
 //!
 //! Ports `runtime/commands/PrintActionCommand.java` and `analysis/PrintActionVisitor.java` (with
 //! `actions/ActionGraphVisitor.java` and `actions/BipartiteVisitor.java`, which only it uses).
-//!
-//! PORT: `Action.getExtraActionInfo` (and the `ExtraActionSummary` /`DetailedExtraActionInfo`
-//! messages of `extra_actions_base.proto` with their extensions, printed through `TextFormat`)
-//! is not ported: extra actions are not ported anywhere in Blaze. Every action that would be
-//! printed fails loudly there; the paths that print nothing (no matching mnemonic, no files to
-//! compile, a failed build) are ported.
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
-use blaze_actions::{ActionRef, Artifact};
+use blaze_actions::actions::action::CommandLineError;
+use blaze_actions::{ActionKeyContext, ActionRef, Artifact};
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::configured_target_key::ConfiguredTargetKey;
 use blaze_analysis::providers::file_provider::FileProvider;
@@ -23,6 +18,7 @@ use blaze_events::{Event, EventHandler as _};
 use blaze_optdefs::command::print_action_command::PrintActionCommandPrintActionOptions;
 use blaze_packages::starlark_defs::builtin_providers::OUTPUT_GROUP_INFO;
 use blaze_packages::target::Target;
+use blaze_protos::blaze::{DetailedExtraActionInfo, ExtraActionSummary};
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail::Category};
 use blaze_sky_loading::package_manager::{NoSuchThingOrInterrupted, TargetProvider as _};
 use blaze_sky_top::skyframe_executor::SkyframeExecutor;
@@ -105,19 +101,24 @@ impl PrintActionException {
     }
 }
 
-/// The exceptions of `gatherActionsForTargets`.
+/// The exceptions of `gatherActionsForTargets` (and `CommandLineExpansionException` of the
+/// methods it calls, which it turns into a `PrintActionException`).
 enum GatherError {
     PrintAction(PrintActionException),
+    /// `CommandLineExpansionException` (its message).
+    CommandLineExpansion(String),
     Interrupted,
 }
 
-/// `summaryBuilder`: the `DetailedExtraActionInfo`s gathered so far.
-///
-/// PORT: the entries would be `getExtraActionInfo` results, which fail loudly
-/// ([`get_extra_action_info`]), so an entry is never added and the summary stays empty.
-#[derive(Default)]
-struct ExtraActionSummary {
-    action_count: usize,
+impl From<CommandLineError> for GatherError {
+    fn from(e: CommandLineError) -> Self {
+        match e {
+            CommandLineError::CommandLineExpansion(e) => {
+                GatherError::CommandLineExpansion(e.message)
+            }
+            CommandLineError::Interrupted(_) => GatherError::Interrupted,
+        }
+    }
 }
 
 impl PrintActionRunner {
@@ -162,6 +163,7 @@ impl PrintActionRunner {
                 validator: &validator,
                 repo_precomputed: Default::default(),
                 after_build: Box::new(|outcome: RunBuildOutcome<'_>| {
+                    // summaryBuilder = ExtraActionSummary.newBuilder()
                     let mut summary = ExtraActionSummary::default();
                     let gathered =
                         self.gather_actions_after_build(&outcome, &targets, &mut summary);
@@ -196,16 +198,19 @@ impl PrintActionRunner {
                 env.get_reporter().handle(&Event::error(message));
                 return interrupted_detailed_exit_code(message);
             }
+            Err(GatherError::CommandLineExpansion(_)) => {
+                unreachable!("turned into a PrintActionException by gatherActionsForTargets")
+            }
         }
         if self.has_fatal_build_failure(outcome) {
             env.get_reporter()
                 .handle(&Event::error("Build failed when printing actions"));
             return outcome.detailed_exit_code.clone();
         }
-        // TextFormat.printer().printToString(summaryBuilder): empty for a summary without
-        // actions.
-        if summary.action_count != 0 {
-            blaze_util::unported!("TextFormat.printToString(ExtraActionSummary)");
+        let action = blaze_protos::text_format::printer().print_to_string(summary);
+        if !action.is_empty() {
+            env.get_reporter().get_out_err().print_out(&action);
+            return outcome.detailed_exit_code.clone();
         }
         let message = "no actions to print were found";
         env.get_reporter().handle(&Event::error(message));
@@ -246,14 +251,20 @@ impl PrintActionRunner {
             let files_to_compile_is_empty = output_group_info_of(&configured_target)
                 .is_none_or(|info| info.get_output_group(FILES_TO_COMPILE).is_empty());
             if !files_to_compile_is_empty {
-                if self.compile_one_dependency {
+                let action_key_context = outcome
+                    .skyframe_executor
+                    .get_action_key_context()
+                    .expect("NullPointerException: getActionKeyContext")
+                    .clone();
+                let gathered = if self.compile_one_dependency {
                     self.gather_actions_for_files(
                         &configured_target,
                         env,
                         &action_graph,
+                        &action_key_context,
                         targets,
                         summary,
-                    )?;
+                    )
                 } else {
                     let target = match outcome
                         .skyframe_executor
@@ -278,8 +289,27 @@ impl PrintActionRunner {
                         &configured_target,
                         &target,
                         &action_graph,
+                        &action_key_context,
                         summary,
-                    );
+                    )
+                };
+                match gathered {
+                    Ok(()) => {}
+                    Err(GatherError::CommandLineExpansion(e_message)) => {
+                        // "Error expanding command line: " + e (Throwable.toString()).
+                        let message = format!(
+                            "Error expanding command line: \
+                             com.google.devtools.build.lib.actions.CommandLineExpansionException: {}",
+                            e_message
+                        );
+                        env.get_reporter().handle(&Event::error(message.clone()));
+                        return Err(GatherError::PrintAction(PrintActionException {
+                            message,
+                            detailed_code:
+                                failure_details::print_action_command::Code::CommandLineExpansionFailure,
+                        }));
+                    }
+                    Err(e) => return Err(e),
                 }
             } else {
                 let message = format!(
@@ -303,6 +333,7 @@ impl PrintActionRunner {
         configured_target: &ConfiguredTarget,
         env: &CommandEnvironment,
         action_graph: &SkyframeActionGraph<'_>,
+        action_key_context: &ActionKeyContext,
         files: &[String],
         summary: &mut ExtraActionSummary,
     ) -> Result<(), GatherError> {
@@ -312,7 +343,14 @@ impl PrintActionRunner {
             files_desired: &mut files_desired,
             runner: self,
         };
-        self.gather_actions_for_file(configured_target, &mut filter, env, action_graph, summary)
+        self.gather_actions_for_file(
+            configured_target,
+            &mut filter,
+            env,
+            action_graph,
+            action_key_context,
+            summary,
+        )
     }
 
     // Java: com/google/devtools/build/lib/runtime/commands/PrintActionCommand.java:268 PrintActionCommand.PrintActionRunner.gatherActionsForTarget
@@ -321,10 +359,11 @@ impl PrintActionRunner {
         configured_target: &ConfiguredTarget,
         target: &Target,
         action_graph: &SkyframeActionGraph<'_>,
+        action_key_context: &ActionKeyContext,
         summary: &mut ExtraActionSummary,
-    ) {
+    ) -> Result<(), GatherError> {
         if !matches!(target, Target::Rule(_)) {
-            return;
+            return Ok(());
         }
 
         let mut visitor = PrintActionVisitor::new(action_graph, configured_target, |a| {
@@ -344,8 +383,9 @@ impl PrintActionRunner {
 
         for action in visitor.get_actions() {
             // `action instanceof Action`: every Blaze action is an `Action`.
-            add_extra_action_info(summary, &action);
+            add_extra_action_info(summary, &action, action_key_context)?;
         }
+        Ok(())
     }
 
     /// Looks for files to compile in the given configured target and outputs the corresponding
@@ -357,6 +397,7 @@ impl PrintActionRunner {
         filter: &mut ActionFilter<'_>,
         env: &CommandEnvironment,
         action_graph: &SkyframeActionGraph<'_>,
+        action_key_context: &ActionKeyContext,
         summary: &mut ExtraActionSummary,
     ) -> Result<(), GatherError> {
         let artifacts = output_group_info_of(configured_target)
@@ -376,7 +417,7 @@ impl PrintActionRunner {
                 action_graph.skyframe_executor,
             )? {
                 if let Some(action) = &action {
-                    add_extra_action_info(summary, action);
+                    add_extra_action_info(summary, action, action_key_context)?;
                 }
             }
         }
@@ -390,22 +431,20 @@ impl PrintActionRunner {
     }
 }
 
-/// `detail.setAction(((Action) action).getExtraActionInfo(actionKeyContext));
+/// `DetailedExtraActionInfo.Builder detail = DetailedExtraActionInfo.newBuilder();
+/// detail.setAction(((Action) action).getExtraActionInfo(actionKeyContext));
 /// summaryBuilder.addAction(detail)`.
-fn add_extra_action_info(summary: &mut ExtraActionSummary, action: &ActionRef) {
-    get_extra_action_info(action);
-    summary.action_count += 1;
-}
-
-/// `Action.getExtraActionInfo(actionKeyContext)`.
-// Java: com/google/devtools/build/lib/actions/AbstractAction.java:563 AbstractAction.getExtraActionInfo
-fn get_extra_action_info(action: &ActionRef) {
-    blaze_util::unported!(
-        "AbstractAction.getExtraActionInfo",
-        "ExtraActionInfo of the {} action (extra_actions_base.proto and the actions' \
-         extensions are not ported)",
-        action.get_mnemonic()
-    );
+// Java: com/google/devtools/build/lib/runtime/commands/PrintActionCommand.java:290 PrintActionCommand.PrintActionRunner.gatherActionsForTarget
+fn add_extra_action_info(
+    summary: &mut ExtraActionSummary,
+    action: &ActionRef,
+    action_key_context: &ActionKeyContext,
+) -> Result<(), GatherError> {
+    summary.action.push(DetailedExtraActionInfo {
+        triggering_file: None,
+        action: action.get_extra_action_info(action_key_context)?,
+    });
+    Ok(())
 }
 
 /// `BuildTool.processRequest(request, null, options)`: no target validator.

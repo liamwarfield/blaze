@@ -10,6 +10,23 @@ use blaze_starlark::StarlarkSemantics;
 
 use crate::pkgcache::PathPackageLocator;
 
+/// `RepositoryDirectoryValue.VENDOR_DIRECTORY`: the absolute vendor directory (`--vendor_dir`).
+///
+/// PORT: also declared as `blaze_bzlmod::skyframe::precomputed::VENDOR_DIRECTORY` (that crate
+/// does not depend on this one); both name the key `vendor_directory` with the same value type,
+/// so they are one Skyframe node.
+// Java: com/google/devtools/build/lib/rules/repository/RepositoryDirectoryValue.java:48 RepositoryDirectoryValue.VENDOR_DIRECTORY
+pub static VENDOR_DIRECTORY: Precomputed<Option<std::path::PathBuf>> =
+    Precomputed::new("vendor_directory");
+
+/// The id of the current build (the command id). Actions that must have a chance to run in every
+/// build (`Actions.dependsOnBuildId`) and the workspace status depend on it, so that an injection
+/// per command dirties them.
+///
+/// PORT: Java's value is the command's `UUID`; here it is its string form.
+// Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:88 PrecomputedValue.BUILD_ID
+pub static BUILD_ID: Precomputed<String> = Precomputed::new("build_id");
+
 // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:84 PrecomputedValue.STARLARK_SEMANTICS
 pub static STARLARK_SEMANTICS: Precomputed<StarlarkSemantics> =
     Precomputed::new("starlark_semantics");

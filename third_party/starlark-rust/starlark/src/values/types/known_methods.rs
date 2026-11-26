@@ -56,7 +56,11 @@ impl KnownMethod {
         args: &Arguments<'v, '_>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> crate::Result<Value<'v>> {
-        self.imp.invoke(eval, this, args)
+        self.imp.invoke(eval, this, args).map_err(|e| { // BLAZE PATCH 0062
+            crate::values::function::java_argument_order( // BLAZE PATCH 0062
+                e, &self.method.docs, args, &self.method.name, Some(this.get_type()), eval.heap(), // BLAZE PATCH 0062
+            ) // BLAZE PATCH 0062
+        }) // BLAZE PATCH 0062
     }
 }
 

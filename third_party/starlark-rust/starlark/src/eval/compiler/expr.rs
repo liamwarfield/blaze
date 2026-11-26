@@ -1280,6 +1280,35 @@ impl<'v, 'a, 'e> Compiler<'v, 'a, 'e, '_> {
                 ExprCompiled::dot(left, &s, &mut self.opt_ctx())
             }
             ExprP::Call(left, args) => {
+                // BLAZE PATCH 0061: Java's call-site spans (eval::runtime::java_call).
+                let mut span = span; // BLAZE PATCH 0061
+                let mut java = crate::eval::runtime::java_call::JavaCallSpans { // BLAZE PATCH 0061
+                    handler: self.java_handler, // BLAZE PATCH 0061
+                    star: None, // BLAZE PATCH 0061
+                    star_star: None, // BLAZE PATCH 0061
+                    positional_only: true, // BLAZE PATCH 0061
+                }; // BLAZE PATCH 0061
+                for a in args.args.iter() { // BLAZE PATCH 0061
+                    let at = |n: u32| { // BLAZE PATCH 0061
+                        let b = a.span.begin(); // BLAZE PATCH 0061
+                        Some(FrozenFileSpan::new(self.codemap, crate::codemap::Span::new(b, b + n))) // BLAZE PATCH 0061
+                    }; // BLAZE PATCH 0061
+                    match &a.node { // BLAZE PATCH 0061
+                        starlark_syntax::syntax::ast::ArgumentP::Positional(_) => {} // BLAZE PATCH 0061
+                        starlark_syntax::syntax::ast::ArgumentP::Named(..) => java.positional_only = false, // BLAZE PATCH 0061
+                        starlark_syntax::syntax::ast::ArgumentP::Args(_) => { // BLAZE PATCH 0061
+                            java.positional_only = false; // BLAZE PATCH 0061
+                            java.star = at(1); // BLAZE PATCH 0061
+                        } // BLAZE PATCH 0061
+                        starlark_syntax::syntax::ast::ArgumentP::KwArgs(_) => { // BLAZE PATCH 0061
+                            java.positional_only = false; // BLAZE PATCH 0061
+                            java.star_star = at(2); // BLAZE PATCH 0061
+                        } // BLAZE PATCH 0061
+                    } // BLAZE PATCH 0061
+                } // BLAZE PATCH 0061
+                span.java_call = crate::eval::runtime::java_call::JavaCall(Some( // BLAZE PATCH 0061
+                    self.eval.module_env.frozen_heap().alloc_any_value(java), // BLAZE PATCH 0061
+                )); // BLAZE PATCH 0061
                 let left = self.expr(left)?;
                 let args = self.args(args)?;
                 CallCompiled::call(span, left, args, &mut self.opt_ctx())

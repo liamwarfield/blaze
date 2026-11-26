@@ -216,9 +216,6 @@ struct Shared {
     execution_timer: Mutex<Option<Instant>>,
     /// `failedPatterns` of `TargetPatternPhaseFunction.compute`, in the order they failed.
     failed_target_patterns: Mutex<Vec<String>>,
-    /// The configuration events made so far, by checksum (for the events that carry only a
-    /// configuration's checksum: `AnalysisRootCauseEvent`).
-    configuration_events: Mutex<std::collections::HashMap<String, Arc<dyn BuildEvent>>>,
 }
 
 /// The subscriber of the command's event bus: the `@Subscribe` methods of the
@@ -414,38 +411,27 @@ impl EventBus for BepSubscriber {
             return;
         }
         if let Some(e) = downcast_event::<AnalysisRootCauseEvent>(&event) {
-            // Java: com/google/devtools/build/lib/analysis/AnalysisRootCauseEvent.java:60 AnalysisRootCauseEvent.withConfigurationValue
-            // PORT: the posted event carries the configuration's checksum. Its configuration
-            // event is the one this command made for that checksum; a configuration the BEP has
-            // not seen is treated as Java's unavailable configuration (no configuration event),
-            // which is what Java does for the keys whose value is never computed
-            // (ConfiguredTargetFunction) and differs for a computed configuration not yet in the
-            // stream (review response 2026-11-25).
-            let event = match &e.configuration_checksum {
-                None => AnalysisRootCauseBuildEvent::with_configuration_value(
-                    None,
-                    None,
+            // The event is a `BuildEventWithConfiguration` in Java; its build event here.
+            let event = match &e.configuration {
+                // Java: com/google/devtools/build/lib/analysis/AnalysisRootCauseEvent.java:60 AnalysisRootCauseEvent.withConfigurationValue
+                Some(configuration) => AnalysisRootCauseBuildEvent::with_configuration_value(
+                    e.configuration_id.as_deref(),
+                    // `buildEvent(configuration.orElse(null))`: the null configuration's event
+                    // for `None`.
+                    configuration
+                        .as_ref()
+                        .map(|c| shared.configuration_event(c)),
                     e.label.clone(),
                     e.error_message.clone(),
                 ),
-                Some(checksum) => {
-                    let configuration = shared.configuration_events.lock().get(checksum).cloned();
-                    match configuration {
-                        Some(configuration) => {
-                            AnalysisRootCauseBuildEvent::with_configuration_value(
-                                Some(checksum),
-                                Some(configuration),
-                                e.label.clone(),
-                                e.error_message.clone(),
-                            )
-                        }
-                        None => AnalysisRootCauseBuildEvent::with_unavailable_configuration(
-                            build_event_id_util::configuration_id_message(checksum),
-                            e.label.clone(),
-                            e.error_message.clone(),
-                        ),
-                    }
-                }
+                // Java: com/google/devtools/build/lib/analysis/AnalysisRootCauseEvent.java:69 AnalysisRootCauseEvent.withUnavailableConfiguration
+                None => AnalysisRootCauseBuildEvent::with_unavailable_configuration(
+                    build_event_id_util::configuration_id_message_for_key(
+                        e.configuration_id.as_deref(),
+                    ),
+                    e.label.clone(),
+                    e.error_message.clone(),
+                ),
             };
             shared.streamer.build_event(Arc::new(event));
             return;
@@ -707,13 +693,9 @@ impl TargetSummarySink for StreamerSink {
 }
 
 impl Shared {
-    /// `configuration.toBuildEvent()`, remembered by checksum.
+    /// `configuration.toBuildEvent()`.
     fn configuration_event(&self, configuration: &BuildConfigurationValue) -> Arc<dyn BuildEvent> {
-        let event = configuration_event(configuration);
-        self.configuration_events
-            .lock()
-            .insert(configuration.checksum().to_string(), event.clone());
-        event
+        configuration_event(configuration)
     }
 
     /// `TopLevelTargetPendingExecutionEvent.configuredTarget()` as the publisher sees it: the
@@ -807,7 +789,8 @@ fn convert_test_summary(summary: &TestSummary) -> TestSummaryEvent {
 }
 
 /// `ActionExecutedEvent` as a build event. The streamer ignores successful actions unless
-/// `--build_event_publish_all_actions` (Java `BuildEventStreamer.shouldIgnoreBuildEvent`);
+/// `--build_event_publish_all_actions` or the action is an extra action (Java
+/// `BuildEventStreamer.shouldPublishActionExecutedEvent`);
 /// the execution phase does not record the primary output's metadata of those, so they are
 /// dropped here and fail loudly when they would be published.
 // Java: com/google/devtools/build/lib/actions/ActionExecutedEvent.java:63 ActionExecutedEvent.<init>
@@ -815,9 +798,13 @@ fn convert_action_executed(
     shared: &Shared,
     e: &SkyActionExecutedEvent,
 ) -> Option<ActionExecutedEvent> {
-    // BuildEventStreamer: a successful action is published only with
-    // --build_event_publish_all_actions.
-    if e.exception.is_none() && !shared.publish_all_actions {
+    // BuildEventStreamer.shouldPublishActionExecutedEvent: a successful action is published
+    // only with --build_event_publish_all_actions, or when it is an extra action.
+    let is_extra_action = e
+        .action
+        .as_any()
+        .is::<blaze_analysis::extra::extra_action::ExtraAction>();
+    if e.exception.is_none() && !shared.publish_all_actions && !is_extra_action {
         return None;
     }
     let failure = match &e.exception {
@@ -850,8 +837,7 @@ fn convert_action_executed(
             .action
             .as_command_action()
             .and_then(|c| c.get_arguments().ok()),
-        // PORT: Blaze has no extra actions (`ExtraAction` is not ported).
-        is_extra_action: false,
+        is_extra_action,
     };
     Some(ActionExecutedEvent::new(
         e.action_id.clone(),
@@ -1306,7 +1292,6 @@ impl BepCommandSupport {
             build_info_posted: AtomicBool::new(false),
             execution_timer: Mutex::new(None),
             failed_target_patterns: Mutex::new(Vec::new()),
-            configuration_events: Mutex::new(std::collections::HashMap::new()),
         });
         // cmdEnv.getEventBus().register(streamer) (and the MetricsCollector's registration).
         env.get_event_bus().register(Arc::new(BepSubscriber {
@@ -1501,6 +1486,39 @@ impl BepCommandSupport {
         )));
     }
 
+    /// The `CanonicalCommandLineEvent` that `BuildTool.buildTargets` posts once a project file's
+    /// flags were parsed into the command's options parser: not replaceable, it replaces the
+    /// tentative one of the dispatcher. The `UpdateOptionsEvent` posted next has no subscriber
+    /// at the pin.
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:375 BuildTool.buildTargets
+    pub(crate) fn post_project_canonical_command_line(
+        &self,
+        product_name: &str,
+        active_startup_options: Arc<OptionsParsingResult>,
+        command_name: &str,
+        options_parser: &OptionsParsingResult,
+    ) {
+        let include_residue_in_run_bep_event = options_parser
+            .get_options::<BuildEventProtocolOptions>()
+            .expect("NullPointerException: BuildEventProtocolOptions")
+            .include_residue_in_run_bep_event;
+        self.post(Arc::new(CanonicalCommandLineEvent::new(
+            product_name.to_string(),
+            active_startup_options,
+            command_name.to_string(),
+            options_parser.get_residue(),
+            include_residue_in_run_bep_event,
+            options_parser
+                .get_explicit_starlark_options(OriginalCommandLineEvent::command_line_priority),
+            options_parser.get_starlark_options().clone(),
+            options_parser.as_list_of_canonical_options(),
+            // This replaces the tentative CanonicalCommandLineEvent posted earlier in the build
+            // in BlazeCommandDispatcher.
+            /* replaceable= */
+            false,
+        )));
+    }
+
     /// The command-line events of `BlazeCommandDispatcher.execExclusively`.
     // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:779 BlazeCommandDispatcher.execExclusively
     pub(crate) fn post_command_line_events(
@@ -1678,9 +1696,17 @@ impl BepCommandSupport {
     /// as the `MetricsCollector` receives them.
     // Java: com/google/devtools/build/lib/analysis/BuildView.java:253 BuildView.update
     // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:431 AnalysisPhaseRunner.execute
-    fn analysis_metrics(&self, analysis_result: &AnalysisResult) {
+    ///
+    /// `analysis_phase_completed`: whether the analysis posted `AnalysisPhaseCompleteEvent` (and
+    /// `AnalysisGraphStatsEvent`); with merged analysis and execution not when there was no
+    /// top-level key (`blaze_sky_top::analysis_phase_runner::analysis_phase_complete_event_posted`).
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:911 SkyframeBuildView.analysisFinishedCallback
+    fn analysis_metrics(&self, analysis_result: &AnalysisResult, analysis_phase_completed: bool) {
         let metrics = &self.shared.metrics;
         metrics.log_analysis_starting_event();
+        if !analysis_phase_completed {
+            return;
+        }
         let stats = analysis_result.get_analysis_phase_complete_stats();
         if self.publish_package_metrics_in_bep {
             blaze_util::unported!("PackageMetricsPackageLoadingListener.getPackageMetricsRecorder");
@@ -1852,11 +1878,12 @@ impl BepCommandSupport {
         build_result: &mut BuildResult,
         detailed_exit_code: &blaze_util::DetailedExitCode,
         collector: &ExecutionEventCollector,
+        action_executor: Option<&blaze_sky_exec::skyframe_action_executor::SkyframeActionExecutor>,
     ) {
         // ExecutionTool.unconditionalExecutionPhaseFinalizations, as the MetricsCollector receives
         // it (posted whenever the build's ExecutionTool exists, before stopRequest).
         if collector.executor_initialized() {
-            self.unconditional_execution_phase_finalizations();
+            self.unconditional_execution_phase_finalizations(action_executor);
         }
         // Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:154 BuildSummaryStatsModule.buildComplete
         let elapsed_seconds = build_result.get_elapsed_seconds();
@@ -1973,14 +2000,31 @@ impl BepCommandSupport {
     ///
     /// PORT: called from `build_complete` (right after the point Java posts the events: the
     /// ExecutionTool's finalizations precede `BuildTool.stopRequest`, and nothing between them
-    /// reads the metrics). The `ExecutionFinishedEvent`'s artifact counts
-    /// (`SkyframeExecutor.createExecutionFinishedEvent`: the `FilesMetricConsumer`s fed by
-    /// `ArtifactFunction`, `SkyframeActionExecutor.addOutputToMetrics` and `CompletionFunction`)
-    /// are not ported in `blaze_sky_exec`, so `onExecutionComplete` is not called and
-    /// `artifactMetrics` stays empty (review response 2026-11-25, S1-1).
+    /// reads the metrics). The `ExecutionFinishedEvent`'s artifact counts are those of the
+    /// action executor's `FilesMetricConsumer`s (`SkyframeExecutor.createExecutionFinishedEvent`;
+    /// see `blaze_sky_exec::metadata_consumer_for_metrics`); without an executor (no execution
+    /// state) nothing was counted and the consumers would hold zeros.
     // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:592 ExecutionTool.unconditionalExecutionPhaseFinalizations
-    fn unconditional_execution_phase_finalizations(&self) {
-        // env.getEventBus().post(skyframeExecutor.createExecutionFinishedEvent()): see above.
+    fn unconditional_execution_phase_finalizations(
+        &self,
+        action_executor: Option<&blaze_sky_exec::skyframe_action_executor::SkyframeActionExecutor>,
+    ) {
+        // env.getEventBus().post(skyframeExecutor.createExecutionFinishedEvent())
+        // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:267 MetricsCollector.onExecutionComplete
+        let metrics = action_executor
+            .map(|e| {
+                e.artifact_metrics()
+                    .to_execution_finished_metrics_and_reset()
+            })
+            .unwrap_or_default();
+        self.shared.metrics.on_execution_complete(
+            &blaze_bep::metrics::metrics_collector::ExecutionFinishedInfo {
+                source_artifacts_read: metrics.source_artifacts_read,
+                output_artifacts_seen: metrics.output_artifacts_seen,
+                output_artifacts_from_action_cache: metrics.output_artifacts_from_action_cache,
+                top_level_artifacts: metrics.top_level_artifacts,
+            },
+        );
         if let Some(start) = self.shared.execution_timer.lock().take() {
             // new ExecutionPhaseCompleteEvent(executionTimer.stop().elapsed().toMillis())
             // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:233 MetricsCollector.handleExecutionPhaseComplete
@@ -2091,12 +2135,9 @@ impl BepCommandSupport {
         // PORT: the file transports close synchronously (see `after_command`); the close results
         // are the futures' outcomes. For OUT_OF_MEMORY Java waits at most
         // --bes_oom_finish_upload_timeout, which only matters for a Build Event Service upload.
-        for (_name, result) in streamer.streamer().get_close_futures_map() {
-            if result.is_err() {
-                // logger.atSevere().withCause(e).log("Failed to close a build event transport")
-                // PORT: logging is not ported.
-            }
-        }
+        // A failed close is only logged by Java (`logger.atSevere()...log("Failed to close a
+        // build event transport")`); logging is not ported, so the results are not read.
+        let _ = streamer.streamer().get_close_futures_map();
         // finally: cancelAndResetPendingUploads() (nothing pending: the closes are synchronous).
     }
 
@@ -2183,10 +2224,14 @@ impl BuildEventHooks for BepCommandSupport {
     }
 
     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:343 BuildTool.buildTargets
-    fn project_evaluated(&self) {
+    fn project_evaluated(&self, project_flags_applied: bool) {
+        // With PROJECT.scl flag updates, the final CanonicalCommandLineEvent was posted when the
+        // flags were applied (`post_project_canonical_command_line`).
+        if project_flags_applied {
+            return;
+        }
         // No PROJECT.scl flag updates. Release the original CanonicalCommandLineEvent for
         // posting.
-        // PORT: PROJECT.scl evaluation is not ported, so there is never a replacement.
         self.post(Arc::new(ReleaseReplaceableBuildEvent::new(
             build_event_id_util::structured_commandline_id(CanonicalCommandLineEvent::LABEL),
         )));
@@ -2232,7 +2277,13 @@ impl BuildEventHooks for BepCommandSupport {
         _target_pattern_phase_value: &TargetPatternPhaseValue,
         analysis_result: &AnalysisResult,
     ) {
-        self.analysis_metrics(analysis_result);
+        self.analysis_metrics(
+            analysis_result,
+            blaze_sky_top::analysis_phase_runner::analysis_phase_complete_event_posted(
+                request,
+                analysis_result,
+            ),
+        );
         self.post_targets_configured(
             skyframe_executor,
             analysis_result,

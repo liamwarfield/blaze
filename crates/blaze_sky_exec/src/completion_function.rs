@@ -462,6 +462,57 @@ fn expand_tree_artifact_and_populate_artifact_data(
     input_map.put(archived, archived_file_value.clone());
 }
 
+/// The `consumer.accumulate` calls of `ActionInputMapHelper.addToMap` (the metrics half of the
+/// call `CompletionFunction` makes for every built artifact).
+// Java: com/google/devtools/build/lib/skyframe/ActionInputMapHelper.java:31 ActionInputMapHelper.addToMap
+fn accumulate_metrics(
+    key: &Artifact,
+    value: &InputValue,
+    consumer: &crate::metadata_consumer_for_metrics::FilesMetricConsumer,
+) {
+    use crate::metadata_consumer_for_metrics::MetadataConsumerForMetrics as _;
+    match value {
+        InputValue::Artifact(ArtifactValue::Tree(tree_artifact_value)) => {
+            consumer.accumulate_tree(tree_artifact_value);
+        }
+        InputValue::Artifact(ArtifactValue::File(file_artifact_value)) => {
+            consumer.accumulate_file(file_artifact_value);
+        }
+        InputValue::Artifact(ArtifactValue::Missing(_)) => {
+            panic!("IllegalStateException: Unexpected value {key}")
+        }
+        InputValue::Action(action_execution_value) => {
+            if key.is_child_of_declared_directory() {
+                let tree_artifact = key
+                    .get_parent()
+                    .unwrap_or_else(|| panic!("NullPointerException: parent of {key}"));
+                let tree_artifact_value = action_execution_value
+                    .get_tree_artifact_value(tree_artifact)
+                    .unwrap_or_else(|| panic!("NullPointerException: {tree_artifact}"));
+                consumer.accumulate_tree(tree_artifact_value);
+            }
+            if key.is_fileset() {
+                blaze_util::unported!("ActionInputMapHelper.addToMap (filesets)");
+            } else if key.is_runfiles_tree() {
+                let runfiles_artifact_value = action_execution_value
+                    .get_rich_artifact_data()
+                    .unwrap_or_else(|| panic!("NullPointerException: rich artifact data of {key}"));
+                runfiles_artifact_value.for_each_file(|_, metadata| {
+                    consumer.accumulate_file(metadata);
+                });
+                runfiles_artifact_value.for_each_tree(|_, metadata| {
+                    consumer.accumulate_tree(metadata);
+                });
+            } else {
+                let metadata = action_execution_value
+                    .get_existing_file_artifact_value(key)
+                    .unwrap_or_else(|| panic!("NullPointerException: metadata of {key}"));
+                consumer.accumulate_file(metadata);
+            }
+        }
+    }
+}
+
 /// `ActionInputMapHelper.addToMap` for the values a completion reads.
 // Java: com/google/devtools/build/lib/skyframe/ActionInputMapHelper.java:31 ActionInputMapHelper.addToMap
 fn add_to_map(input_map: &mut ImportantInputMap, key: &Artifact, value: &InputValue) {
@@ -754,6 +805,8 @@ fn compute_completion(
     };
     let mut important_input_map = ImportantInputMap::default();
     let mut built_artifacts: HashSet<Artifact> = HashSet::new();
+    // Don't double-count files due to Skyframe restarts.
+    let current_consumer = crate::metadata_consumer_for_metrics::FilesMetricConsumer::new();
     // key.actionLookupKey().getLabel().
     let key_label = completor.key_label();
     // NestedSetBuilder<Cause>.stableOrder(): the exceptions' causes (transitive) come before the
@@ -798,6 +851,9 @@ fn compute_completion(
             }
             Ok(Some(input_value)) => {
                 built_artifacts.insert(input.clone());
+                // ActionInputMapHelper.addToMap(inputMap, input, artifactValue, currentConsumer):
+                // the full input map is not kept; its metrics are.
+                accumulate_metrics(input, &input_value, &current_consumer);
                 if all_artifacts_are_important || important_artifacts.contains(input) {
                     add_to_map(&mut important_input_map, input, &input_value);
                 }
@@ -924,6 +980,10 @@ fn compute_completion(
         env,
     );
     env.listener().post(event);
+    skyframe_action_executor
+        .artifact_metrics()
+        .top_level_artifacts_metric
+        .merge_in(&current_consumer);
     Ok(Some(()))
 }
 

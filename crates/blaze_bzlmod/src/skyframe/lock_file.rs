@@ -23,6 +23,7 @@ use super::{java_io_message, platform_path, throw};
 pub fn compute(
     root_directory: &Path,
     output_base: &Path,
+    file_value_lookup: &dyn super::config::FileValueLookup,
     sky_key: &BazelLockFileKey,
     env: &mut Environment<'_>,
 ) -> Result<Option<BazelLockFileValue>, ComputeError> {
@@ -32,15 +33,21 @@ pub fn compute(
     }
 
     let for_hidden_lockfile = sky_key.is_hidden();
-    let lockfile_path: PathBuf = if for_hidden_lockfile {
+    let lockfile_root = if for_hidden_lockfile {
         output_base
     } else {
         root_directory
-    }
-    .join(platform_path(MODULE_LOCKFILE_NAME.get_path_string()));
+    };
+    let lockfile_path: PathBuf =
+        lockfile_root.join(platform_path(MODULE_LOCKFILE_NAME.get_path_string()));
 
-    // PORT: Java requests FileValue.key(lockfilePath) to recognize changes to the lockfile; FILE
-    // is not ported here and a single build per process needs no invalidation.
+    // Add dependency on the lockfile to recognize changes to it
+    if file_value_lookup
+        .file_value(lockfile_root, &MODULE_LOCKFILE_NAME, env)?
+        .is_none()
+    {
+        return Ok(None);
+    }
 
     // PORT: profiling ("parse lockfile") skipped.
     // FileSystemUtils.readContent(path, UTF_8): the lockfile is Unicode text (malformed input is

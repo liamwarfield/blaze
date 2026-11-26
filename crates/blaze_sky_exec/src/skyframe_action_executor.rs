@@ -61,6 +61,7 @@ use blaze_optdefs::command::action_execution_context::ShowSubcommands;
 use blaze_protos::failure_details::{FailureDetail, execution};
 use blaze_skyframe::Environment;
 use blaze_util::check_state;
+use blaze_util::io::timestamp_granularity_monitor::TimestampGranularityMonitor;
 use blaze_vfs::{DirentType, Path, PathFragment, Root, Symlinks};
 use indexmap::{IndexMap, IndexSet};
 use parking_lot::{Mutex, RwLock};
@@ -318,6 +319,8 @@ impl Postable for CachedActionEvent {}
 /// Action executor: it executes actions for `ActionExecutionFunction`.
 // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:144 SkyframeActionExecutor
 pub struct SkyframeActionExecutor {
+    /// The artifact metrics of the build (`BuildMetrics.artifactMetrics`).
+    artifact_metrics: crate::metadata_consumer_for_metrics::ArtifactMetricsConsumers,
     exec_root: Path,
     action_out_dir: Path,
     external_directory: Path,
@@ -357,6 +360,8 @@ pub struct SkyframeActionExecutor {
     /// `directories.getRelativeOutputPath()`, which `ActionExecutionFunction` hands the
     /// `SkyframeInputMetadataProvider` of each action.
     per_build_file_cache: OnceLock<Arc<SingleBuildFileCache>>,
+    /// See [`SkyframeActionExecutor::set_timestamp_granularity_monitor`].
+    tsgm: OnceLock<Arc<TimestampGranularityMonitor>>,
     /// Java: `buildActionMap`. Shared actions (same primary output) execute once; the entry
     /// records the `ActionLookupData` of the action that runs (`ActionExecutionState
     /// .actionLookupData`).
@@ -397,6 +402,7 @@ impl SkyframeActionExecutor {
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:331 SkyframeActionExecutor.prepareForExecution
     pub fn new(config: SkyframeActionExecutorConfig) -> SkyframeActionExecutor {
         SkyframeActionExecutor {
+            artifact_metrics: Default::default(),
             exec_root: config.exec_root,
             action_out_dir: config.action_out_dir,
             external_directory: config.external_directory,
@@ -418,11 +424,19 @@ impl SkyframeActionExecutor {
             lost_inputs_policy: None,
             action_cache_purged: RwLock::new(false),
             per_build_file_cache: OnceLock::new(),
+            tsgm: OnceLock::new(),
             build_action_map: Mutex::new(HashMap::new()),
             had_execution_error: AtomicBool::new(false),
             action_uniquifier: AtomicU64::new(0),
             progress_reporting: RwLock::new(ProgressReportingObjects::default()),
         }
+    }
+
+    /// The `FilesMetricConsumer`s of the build's artifact metrics.
+    pub fn artifact_metrics(
+        &self,
+    ) -> &crate::metadata_consumer_for_metrics::ArtifactMetricsConsumers {
+        &self.artifact_metrics
     }
 
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1999 SkyframeActionExecutor.setActionExecutionProgressReportingObjects
@@ -830,7 +844,14 @@ impl SkyframeActionExecutor {
             action.get_outputs(),
         );
         store.action_file_system = self.create_action_file_system(input_metadata);
+        store.tsgm = self.tsgm.get().cloned();
         store
+    }
+
+    /// The command's `TimestampGranularityMonitor` (Java: the `tsgm` the executor hands every
+    /// `ActionOutputMetadataStore`). Set once per executor.
+    pub fn set_timestamp_granularity_monitor(&self, tsgm: Arc<TimestampGranularityMonitor>) {
+        let _ = self.tsgm.set(tsgm);
     }
 
     /// `actionFileSystemType().inMemoryFileSystem()`: the output service's file system type is
@@ -1213,7 +1234,11 @@ impl SkyframeActionExecutor {
             "Action {} successfully executed, but inputs still not known",
             action.to_string_java()
         );
-        if !self.check_outputs(action.as_ref(), output_metadata_store) {
+        if !self.check_outputs(
+            action.as_ref(),
+            output_metadata_store,
+            /* is_action_cache_hit_for_metrics= */ false,
+        ) {
             let e = self.to_action_execution_exception(
                 "not all outputs were created or valid",
                 None,
@@ -1382,6 +1407,7 @@ impl SkyframeActionExecutor {
         &self,
         action: &dyn Action,
         output_metadata_store: &ActionOutputMetadataStore,
+        is_action_cache_hit_for_metrics: bool,
     ) -> bool {
         let mut success = true;
         for output in action.get_outputs() {
@@ -1399,7 +1425,19 @@ impl SkyframeActionExecutor {
                     {
                         return false;
                     }
-                    // PORT: addOutputToMetrics (BEP output-artifact metrics) is not ported.
+                    // PORT: the rich artifact data of the context (a FilesetOutputTree) is not
+                    // passed here; filesets fail loudly in addOutputToMetrics.
+                    if let Err(e) = self.add_output_to_metrics(
+                        &output,
+                        metadata.as_ref(),
+                        output_metadata_store,
+                        is_action_cache_hit_for_metrics,
+                        action,
+                    ) {
+                        // The IOException of getTreeArtifactValue: caught as the others above.
+                        success = false;
+                        report_output_tree_artifact_errors(action, &output, &*self.reporter, &e);
+                    }
                 }
                 Err(e) => {
                     success = false;
@@ -1433,6 +1471,60 @@ impl SkyframeActionExecutor {
             }
         }
         success
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1686 SkyframeActionExecutor.addOutputToMetrics
+    fn add_output_to_metrics(
+        &self,
+        output: &Artifact,
+        metadata: Option<&FileArtifactValue>,
+        output_metadata_store: &ActionOutputMetadataStore,
+        is_action_cache_hit: bool,
+        action_for_debugging: &dyn Action,
+    ) -> std::io::Result<()> {
+        use crate::metadata_consumer_for_metrics::MetadataConsumerForMetrics as _;
+        let Some(metadata) = metadata else {
+            // BugReport.sendBugReport(new IllegalStateException(...)): not ported.
+            blaze_util::unported!(
+                "BugReport.sendBugReport",
+                "Metadata for {} not present (for {})",
+                output.get_exec_path_string(),
+                action_for_debugging.to_string_java()
+            );
+        };
+        let metrics = &self.artifact_metrics;
+        if output.is_fileset() {
+            blaze_util::unported!(
+                "SkyframeActionExecutor.addOutputToMetrics",
+                "fileset output {}",
+                output.get_exec_path_string()
+            );
+        } else if !output.is_tree_artifact() {
+            metrics.output_artifacts_seen.accumulate_file(metadata);
+            if is_action_cache_hit {
+                metrics
+                    .output_artifacts_from_action_cache
+                    .accumulate_file(metadata);
+            }
+        } else {
+            let tree_artifact_value =
+                match output_metadata_store.get_tree_artifact_value(&artifact_input(output)) {
+                    Ok(v) => v,
+                    Err(IoOrInterruptedException::Io(e)) => return Err(e),
+                    Err(IoOrInterruptedException::Interrupted(_)) => {
+                        return Err(std::io::Error::other("interrupted"));
+                    }
+                };
+            metrics
+                .output_artifacts_seen
+                .accumulate_tree(&tree_artifact_value);
+            if is_action_cache_hit {
+                metrics
+                    .output_artifacts_from_action_cache
+                    .accumulate_tree(&tree_artifact_value);
+            }
+        }
+        Ok(())
     }
 
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1469 SkyframeActionExecutor.createOutputDirectories
@@ -1643,7 +1735,11 @@ impl SkyframeActionExecutor {
 
             // We still need to check the outputs so that output file data is available to the
             // value. Filesets cannot be cached in the action cache.
-            let _ = self.check_outputs(action.as_ref(), output_metadata_store);
+            let _ = self.check_outputs(
+                action.as_ref(),
+                output_metadata_store,
+                /* is_action_cache_hit_for_metrics= */ true,
+            );
             if !event_posted {
                 event_handler.post(Arc::new(CachedActionEvent {
                     action: action.clone(),
@@ -2071,14 +2167,17 @@ impl SkyframeActionExecutor {
             .has_recorded_stderr()
             .then(|| out_err.get_error_path().clone());
         // Collect MetadataLogs and spawn start times/end times from the Action's SpawnResults.
-        // PORT: `findSpawnResultsInActionResultAndException`'s second case (the SpawnResult of a
-        // SpawnActionExecutionException) has no counterpart: blaze_exec's
-        // ActionExecutionException does not keep the failed spawn's result, so a failed spawn
-        // action reports no times (Java reports the failed spawn's).
         // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1976 SkyframeActionExecutor.findSpawnResultsInActionResultAndException
+        let failed_spawn_result;
         let spawn_results: &[blaze_exec::actions::spawn_result::SpawnResult] = match action_result {
             Some(action_result) => action_result.spawn_results(),
-            None => &[],
+            None => match exception.as_ref().and_then(|e| e.get_spawn_result()) {
+                Some(spawn_result) => {
+                    failed_spawn_result = [spawn_result.clone()];
+                    &failed_spawn_result
+                }
+                None => &[],
+            },
         };
         let mut first_start_time: Option<std::time::SystemTime> = None;
         let mut last_end_time: Option<std::time::SystemTime> = None;
@@ -2337,6 +2436,8 @@ pub struct ActionOutputMetadataStore {
     /// The action file system (`RemoteOutputService.createActionFileSystem`) the outputs are
     /// stat'ed through: Java's `artifactPathResolver` of the store.
     action_file_system: Option<Arc<RemoteActionFileSystem>>,
+    /// Java's `tsgm` (the command's `TimestampGranularityMonitor`); `None` outside a command.
+    tsgm: Option<Arc<TimestampGranularityMonitor>>,
 }
 
 impl ActionOutputMetadataStore {
@@ -2355,6 +2456,7 @@ impl ActionOutputMetadataStore {
             artifact_data: Mutex::new(HashMap::new()),
             tree_artifact_data: Mutex::new(HashMap::new()),
             action_file_system: None,
+            tsgm: None,
         }
     }
 
@@ -2596,8 +2698,16 @@ impl ActionOutputMetadataStore {
             artifact
         );
 
-        let stat_and_value =
-            file_artifact_value_from_artifact(artifact, self.action_file_system.as_ref())?;
+        let stat_and_value = file_artifact_value_from_artifact(
+            artifact,
+            self.action_file_system.as_ref(),
+            // artifact.isConstantMetadata() ? null : tsgm
+            if artifact.is_constant_metadata() {
+                None
+            } else {
+                self.tsgm.as_deref()
+            },
+        )?;
         let value = stat_and_value.file_artifact_value;
 
         let type_ = value.get_type();
@@ -2750,6 +2860,7 @@ fn stat_if_found_with_metadata(
 fn file_artifact_value_from_artifact(
     artifact: &Artifact,
     action_file_system: Option<&Arc<RemoteActionFileSystem>>,
+    tsgm: Option<&TimestampGranularityMonitor>,
 ) -> std::io::Result<FileArtifactStatAndValue> {
     check_state!(
         !artifact.is_tree_artifact() && !artifact.is_runfiles_tree(),
@@ -2785,7 +2896,7 @@ fn file_artifact_value_from_artifact(
         .is_some_and(|s| s.status.is_symbolic_link())
     {
         let file_artifact_value =
-            file_artifact_value_from_stat(&path_no_follow, stat_no_follow.as_ref())?;
+            file_artifact_value_from_stat(&path_no_follow, stat_no_follow.as_ref(), tsgm)?;
         return Ok(FileArtifactStatAndValue {
             path_no_follow,
             real_path: None,
@@ -2807,7 +2918,8 @@ fn file_artifact_value_from_artifact(
     // TODO(bazel-team): consider avoiding a 'stat' here when the symlink target hasn't changed
     // and is a source file (since changes to those are checked separately).
     let real_stat = stat_if_found_with_metadata(&real_path, Symlinks::Nofollow)?;
-    let mut file_artifact_value = file_artifact_value_from_stat(&real_path, real_stat.as_ref())?;
+    let mut file_artifact_value =
+        file_artifact_value_from_stat(&real_path, real_stat.as_ref(), tsgm)?;
 
     // If the artifact was materialized in the filesystem as as symlink to another artifact, record
     // the real path in the metadata so that it can be recreated as such later.
@@ -2831,10 +2943,22 @@ fn file_artifact_value_from_artifact(
     })
 }
 
+/// `ActionOutputMetadataStore.fileArtifactValueFromArtifact(artifact, null, xattrProvider, tsgm)`
+/// as `FilesystemValueChecker` calls it for an output of a kept `ACTION_EXECUTION` value (the
+/// identity path resolver: no action file system).
+// Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:478 ActionOutputMetadataStore.fileArtifactValueFromArtifact
+pub(crate) fn file_artifact_value_for_output_check(
+    artifact: &Artifact,
+    tsgm: Option<&TimestampGranularityMonitor>,
+) -> std::io::Result<FileArtifactValue> {
+    file_artifact_value_from_artifact(artifact, None, tsgm).map(|v| v.file_artifact_value)
+}
+
 // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:566 ActionOutputMetadataStore.fileArtifactValueFromStat
 fn file_artifact_value_from_stat(
     path: &Path,
     stat: Option<&StatWithMetadata>,
+    tsgm: Option<&TimestampGranularityMonitor>,
 ) -> std::io::Result<FileArtifactValue> {
     let Some(stat_with_metadata) = stat else {
         return Ok(FileArtifactValue::MissingFileMarker);
@@ -2860,7 +2984,11 @@ fn file_artifact_value_from_stat(
         // digest (RegularFileStateValueWithContentsProxy: the stat carries no digest, and
         // `xattrProvider.getFastDigest` is null for a file system without digest xattrs) both
         // have no digest and the contents proxy of the stat.
-        // PORT: skipped, incremental (TimestampGranularityMonitor.notifyDependenceOnFileTime).
+        // Java: com/google/devtools/build/lib/actions/FileStateValue.java:160 FileStateValue.createRegularFileStateValueFromPath
+        // (and SpecialFileStateValue.fromStat): tsgm.notifyDependenceOnFileTime.
+        if let Some(tsgm) = tsgm {
+            tsgm.notify_dependence_on_file_time(stat.get_last_change_time());
+        }
         return Ok(FileArtifactValue::create_for_normal_file(
             None,
             Some(FileContentsProxy::create(stat)),
@@ -3142,6 +3270,14 @@ impl ActionCacheAwareAction for CacheCheckActionAdapter<'_> {
 struct KeyMetadataAdapter<'a>(&'a dyn InputMetadataProvider);
 
 impl blaze_actions::actions::action::InputMetadataProvider for KeyMetadataAdapter<'_> {
+    // Java: com/google/devtools/build/lib/actions/InputMetadataProvider.java:75 InputMetadataProvider.getInputMetadata
+    fn get_input_digest(&self, input: &Artifact) -> std::io::Result<Option<Vec<u8>>> {
+        Ok(self
+            .0
+            .get_input_metadata(&artifact_input(input))?
+            .and_then(|m| m.get_digest().map(<[u8]>::to_vec)))
+    }
+
     // Java: com/google/devtools/build/lib/actions/InputMetadataProvider.java:56 InputMetadataProvider.getTreeMetadata
     fn get_tree_children(&self, tree: &Artifact) -> Option<Vec<Artifact>> {
         let value = self.0.get_tree_metadata(&artifact_input(tree))?;

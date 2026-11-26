@@ -1,7 +1,8 @@
 //! `BlazeWorkspace`: the workspace-specific state of the server (directories, caches).
 //!
-//! PORT: W1 subset. The Skyframe executor, action cache, bin tools, syscall cache and package
-//! locator are added with the waves that need them.
+//! PORT: W1 subset. The action cache, bin tools, syscall cache and package locator are added
+//! with the waves that need them; of the Skyframe executor, what outlives a command is
+//! `blaze_sky_top::incremental::SkyframeIncrementalState`.
 
 use std::io::Write;
 
@@ -13,6 +14,9 @@ use crate::directories::BlazeDirectories;
 // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:68 BlazeWorkspace
 pub struct BlazeWorkspace {
     directories: BlazeDirectories,
+    /// Java `skyframeExecutor`: what of it outlives a command (the kept graph and its sync
+    /// state, see `blaze_sky_top::incremental`).
+    incremental_state: std::sync::Arc<blaze_sky_top::incremental::SkyframeIncrementalState>,
 }
 
 impl BlazeWorkspace {
@@ -21,7 +25,15 @@ impl BlazeWorkspace {
 
     // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:156 BlazeWorkspace.<init>
     pub fn new(directories: BlazeDirectories) -> Self {
-        let ws = BlazeWorkspace { directories };
+        let ws = BlazeWorkspace {
+            directories,
+            // PORT: Blaze-only (decision D6): `BLAZE_INCREMENTAL` of the server's environment.
+            incremental_state: std::sync::Arc::new(
+                blaze_sky_top::incremental::SkyframeIncrementalState::new(
+                    blaze_sky_top::incremental::KeepGraphMode::from_process_environment(),
+                ),
+            ),
+        };
         if ws.directories.in_workspace() {
             ws.write_output_base_readme_file();
             ws.write_do_not_build_here_files();
@@ -67,17 +79,27 @@ impl BlazeWorkspace {
         self.get_output_base().get_child("action_cache.tmp")
     }
 
+    /// The Skyframe state that outlives a command.
+    // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:205 BlazeWorkspace.getSkyframeExecutor
+    pub fn get_incremental_state(
+        &self,
+    ) -> &std::sync::Arc<blaze_sky_top::incremental::SkyframeIncrementalState> {
+        &self.incremental_state
+    }
+
     /// Reinitializes the Skyframe evaluator, dropping all previously computed values.
-    /// PORT: there is no Skyframe executor in the runtime yet and nothing is computed across
-    /// commands (one command per process), so there is nothing to drop.
     // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:366 BlazeWorkspace.resetEvaluator
-    pub fn reset_evaluator(&self) {}
+    pub fn reset_evaluator(&self) {
+        self.incremental_state.reset_evaluator();
+    }
 
     /// Removes in-memory and on-disk action caches.
     /// PORT: the in-memory action cache does not exist yet; the on-disk directories are deleted
     /// as in Java.
     // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:371 BlazeWorkspace.clearCaches
     pub fn clear_caches(&self) -> std::io::Result<()> {
+        // actionCache = null
+        crate::idle_tasks::note_persistent_action_cache_dropped();
         self.get_action_cache_directory().delete_tree()?;
         self.get_corrupted_action_cache_directory().delete_tree()?;
         self.get_action_cache_tmp_directory().delete_tree()?;

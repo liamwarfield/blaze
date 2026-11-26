@@ -173,6 +173,7 @@ impl<'v, 'a, 'e> Evaluator<'v, 'a, 'e> {
             check_types: dialect.enable_types == DialectTypes::Enable,
             top_level_stmt_count,
             typecheck,
+            java_handler: None, // BLAZE PATCH 0061
         };
 
         let res = compiler.eval_module(cst, local_names);

@@ -7,7 +7,6 @@
 //! cannot depend on it (it would pull in the package loading crates). The local copy keeps the
 //! function name `CLIENT_ENVIRONMENT_VARIABLE` and the key format.
 
-use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -15,16 +14,18 @@ use std::time::SystemTime;
 use blaze_bzlmod_model::{
     BazelCompatibilityMode, CheckDirectDepsMode, LockfileMode, ModuleOverride,
 };
-use blaze_skyframe::{EvaluatorBuilder, FunctionHermeticity, Key, SkyFunctionName};
+use blaze_skyframe::EvaluatorBuilder;
 use blaze_starlark::StarlarkSemantics;
 use blaze_vfs::PathFragment;
 use indexmap::{IndexMap, IndexSet};
 
 pub use blaze_skyframe::precomputed::{PRECOMPUTED, Precomputed, PrecomputedKey, PrecomputedValue};
 
-// Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:24 SkyFunctions.CLIENT_ENVIRONMENT_VARIABLE
-pub const CLIENT_ENVIRONMENT_VARIABLE: SkyFunctionName =
-    SkyFunctionName("CLIENT_ENVIRONMENT_VARIABLE");
+/// The client environment variable key and value moved to blaze_skyframe (I2 item X2: action
+/// execution, in a crate that cannot depend on this one, requests them too).
+pub use blaze_skyframe::precomputed::{
+    CLIENT_ENVIRONMENT_VARIABLE, ClientEnvironmentKey, EnvironmentVariableValue,
+};
 
 // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:85 PrecomputedValue.STARLARK_SEMANTICS
 pub static STARLARK_SEMANTICS: Precomputed<StarlarkSemantics> =
@@ -73,53 +74,6 @@ pub static LAST_INVALIDATION: Precomputed<SystemTime> =
 /// `Optional<Path>`: the absolute vendor directory.
 // Java: com/google/devtools/build/lib/rules/repository/RepositoryDirectoryValue.java:48 RepositoryDirectoryValue.VENDOR_DIRECTORY
 pub static VENDOR_DIRECTORY: Precomputed<Option<PathBuf>> = Precomputed::new("vendor_directory");
-
-/// `ClientEnvironmentFunction.Key`: the name of a client environment variable. `Debug` is
-/// `CLIENT_ENVIRONMENT_VARIABLE:<name>` (Java `AbstractSkyKey.toString`).
-///
-/// PORT: move to blaze_sky_loading (`lib/skyframe/ClientEnvironmentFunction`).
-// Java: com/google/devtools/build/lib/skyframe/ClientEnvironmentFunction.java:37 ClientEnvironmentFunction.Key
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct ClientEnvironmentKey(pub String);
-
-impl ClientEnvironmentKey {
-    // Java: com/google/devtools/build/lib/skyframe/ClientEnvironmentFunction.java:30 ClientEnvironmentFunction.key
-    pub fn key(key_string: &str) -> ClientEnvironmentKey {
-        ClientEnvironmentKey(key_string.to_string())
-    }
-}
-
-impl fmt::Debug for ClientEnvironmentKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", CLIENT_ENVIRONMENT_VARIABLE, self.0)
-    }
-}
-
-impl Key for ClientEnvironmentKey {
-    type Value = EnvironmentVariableValue;
-    const FUNCTION: SkyFunctionName = CLIENT_ENVIRONMENT_VARIABLE;
-    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:24 SkyFunctions.CLIENT_ENVIRONMENT_VARIABLE (createNonHermetic)
-    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
-    /// Java: `EnvironmentVariableValue` is a record of one nullable string.
-    // Java: com/google/devtools/build/lib/skyframe/EnvironmentVariableValue.java:28 EnvironmentVariableValue
-    fn values_equal(old: &EnvironmentVariableValue, new: &EnvironmentVariableValue) -> bool {
-        old == new
-    }
-}
-
-/// The value of a client environment variable (`None`: unset). Port of
-/// `EnvironmentVariableValue`.
-///
-/// PORT: move to blaze_sky_loading (`lib/skyframe/EnvironmentVariableValue`).
-// Java: com/google/devtools/build/lib/skyframe/EnvironmentVariableValue.java:28 EnvironmentVariableValue
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EnvironmentVariableValue(pub Option<String>);
-
-impl EnvironmentVariableValue {
-    pub fn value(&self) -> Option<&str> {
-        self.0.as_deref()
-    }
-}
 
 /// Registers `ClientEnvironmentFunction`: the value of a variable in `client_env`.
 // Java: com/google/devtools/build/lib/skyframe/ClientEnvironmentFunction.java:73 ClientEnvironmentFunction.compute

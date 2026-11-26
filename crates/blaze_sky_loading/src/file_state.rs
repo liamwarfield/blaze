@@ -11,8 +11,12 @@ use blaze_cmdline::label_constants::EXTERNAL_REPOSITORY_LOCATION;
 use blaze_skyframe::{
     ComputeError, Environment, FunctionHermeticity, Key, SkyFunctionException, SkyFunctionName,
 };
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use blaze_util::io::timestamp_granularity_monitor::TimestampGranularityMonitor;
 use blaze_vfs::{Path, RootedPath};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
 use crate::actions::FileStateValue;
 use crate::directories::LoadingDirectories;
@@ -102,16 +106,45 @@ pub enum FileType {
 #[derive(Debug)]
 pub struct NonexistentImmutableExternalFileException;
 
+// Java: com/google/devtools/build/lib/skyframe/ExternalFilesHelper.java:56 ExternalFilesHelper.MAX_EXTERNAL_FILES_TO_TRACK
+const MAX_EXTERNAL_FILES_TO_TRACK: usize = 2500;
+
+/// What kinds of files outside the package roots the graph has seen.
+// Java: com/google/devtools/build/lib/skyframe/ExternalFilesHelper.java:220 ExternalFilesHelper.ExternalFilesKnowledge
+#[derive(Clone, Debug, Default)]
+pub struct ExternalFilesKnowledge {
+    pub any_output_files_seen: bool,
+    pub external_other_files_seen: HashSet<RootedPath>,
+    pub any_files_in_external_repos_seen: bool,
+    pub too_many_external_other_files_seen: bool,
+}
+
+/// The mutable knowledge of an [`ExternalFilesHelper`].
+///
+/// PORT: Java's helper is one object for the server's lifetime and holds these fields itself.
+/// Blaze builds the loading functions (and their helper) per command; the knowledge is this
+/// shared object, which the server's kept graph hands from one command's helper to the next
+/// (blaze_sky_top `incremental`). The fields are "set to true from multiple threads, but only
+/// read in the main thread", as in Java.
+#[derive(Default)]
+pub struct ExternalFilesKnowledgeState {
+    any_output_files_seen: AtomicBool,
+    too_many_external_other_files_seen: AtomicBool,
+    any_files_in_external_repos_seen: AtomicBool,
+    // This is the set of EXTERNAL_OTHER files.
+    external_other_files_seen: Mutex<HashSet<RootedPath>>,
+}
+
 /// Classifies paths and adds the dependencies Skyframe needs for paths in external repositories.
 ///
-/// PORT: the "external files knowledge" (which kinds of external paths were seen, used by the
-/// next command's diff awareness) and the logging of external paths are skipped (incremental).
+/// PORT: the logging of external paths (`maxNumExternalFilesToLog`) is not ported.
 // Java: com/google/devtools/build/lib/skyframe/ExternalFilesHelper.java:47 ExternalFilesHelper
 pub struct ExternalFilesHelper {
     pkg_locator: Arc<RwLock<PathPackageLocator>>,
     external_file_action: ExternalFileAction,
     directories: LoadingDirectories,
     repo_contents_cache_path: Option<Path>,
+    knowledge: Arc<ExternalFilesKnowledgeState>,
 }
 
 impl ExternalFilesHelper {
@@ -122,12 +155,75 @@ impl ExternalFilesHelper {
         directories: LoadingDirectories,
         repo_contents_cache_path: Option<Path>,
     ) -> ExternalFilesHelper {
+        Self::create_with_knowledge(
+            pkg_locator,
+            external_file_action,
+            directories,
+            repo_contents_cache_path,
+            Arc::default(),
+        )
+    }
+
+    /// [`ExternalFilesHelper::create`] over the knowledge of an earlier helper (see
+    /// [`ExternalFilesKnowledgeState`]).
+    // Java: com/google/devtools/build/lib/skyframe/ExternalFilesHelper.java:80 ExternalFilesHelper.create
+    pub fn create_with_knowledge(
+        pkg_locator: Arc<RwLock<PathPackageLocator>>,
+        external_file_action: ExternalFileAction,
+        directories: LoadingDirectories,
+        repo_contents_cache_path: Option<Path>,
+        knowledge: Arc<ExternalFilesKnowledgeState>,
+    ) -> ExternalFilesHelper {
         ExternalFilesHelper {
             pkg_locator,
             external_file_action,
             directories,
             repo_contents_cache_path,
+            knowledge,
         }
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/ExternalFilesHelper.java:233 ExternalFilesHelper.getExternalFilesKnowledge
+    pub fn get_external_files_knowledge(&self) -> ExternalFilesKnowledge {
+        ExternalFilesKnowledge {
+            any_output_files_seen: self.knowledge.any_output_files_seen.load(Ordering::SeqCst),
+            external_other_files_seen: self.knowledge.external_other_files_seen.lock().clone(),
+            any_files_in_external_repos_seen: self
+                .knowledge
+                .any_files_in_external_repos_seen
+                .load(Ordering::SeqCst),
+            too_many_external_other_files_seen: self
+                .knowledge
+                .too_many_external_other_files_seen
+                .load(Ordering::SeqCst),
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/ExternalFilesHelper.java:242 ExternalFilesHelper.setExternalFilesKnowledge
+    pub fn set_external_files_knowledge(&self, external_files_knowledge: ExternalFilesKnowledge) {
+        let k = &self.knowledge;
+        k.any_output_files_seen
+            .store(external_files_knowledge.any_output_files_seen, Ordering::SeqCst);
+        *k.external_other_files_seen.lock() = external_files_knowledge.external_other_files_seen;
+        k.any_files_in_external_repos_seen.store(
+            external_files_knowledge.any_files_in_external_repos_seen,
+            Ordering::SeqCst,
+        );
+        k.too_many_external_other_files_seen.store(
+            external_files_knowledge.too_many_external_other_files_seen,
+            Ordering::SeqCst,
+        );
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/ExternalFilesHelper.java:250 ExternalFilesHelper.cloneWithFreshExternalFilesKnowledge
+    pub fn clone_with_fresh_external_files_knowledge(&self) -> ExternalFilesHelper {
+        Self::create_with_knowledge(
+            self.pkg_locator.clone(),
+            self.external_file_action,
+            self.directories.clone(),
+            self.repo_contents_cache_path.clone(),
+            Arc::default(),
+        )
     }
 
     /// Returns the path of the repo contents cache directory, or `None` if the repo contents cache
@@ -139,8 +235,28 @@ impl ExternalFilesHelper {
 
     // Java: com/google/devtools/build/lib/skyframe/ExternalFilesHelper.java:262 ExternalFilesHelper.getAndNoteFileType
     pub fn get_and_note_file_type(&self, rooted_path: &RootedPath) -> FileType {
-        // PORT: skipped, incremental (noting which kinds of files were seen).
-        self.detect_file_type(rooted_path)
+        let file_type = self.detect_file_type(rooted_path);
+        if file_type == FileType::ExternalOther {
+            let mut seen = self.knowledge.external_other_files_seen.lock();
+            if seen.len() >= MAX_EXTERNAL_FILES_TO_TRACK {
+                self.knowledge
+                    .too_many_external_other_files_seen
+                    .store(true, Ordering::SeqCst);
+            } else {
+                seen.insert(rooted_path.clone());
+            }
+        }
+        if file_type == FileType::ExternalRepo {
+            self.knowledge
+                .any_files_in_external_repos_seen
+                .store(true, Ordering::SeqCst);
+        }
+        if file_type == FileType::Output {
+            self.knowledge
+                .any_output_files_seen
+                .store(true, Ordering::SeqCst);
+        }
+        file_type
     }
 
     /// Returns the classification of a path.
@@ -253,6 +369,37 @@ impl ExternalFilesHelper {
         RepositoryName::create(repository_path.get_segment(0)).ok()
     }
 
+    /// Warns about each repository a file of which was modified externally, deletes its marker
+    /// file (so that invalidating its `RepositoryDirectoryValue` re-fetches it) and returns the
+    /// keys to invalidate.
+    // Java: com/google/devtools/build/lib/skyframe/ExternalFilesHelper.java:385 ExternalFilesHelper.getExtraKeysToInvalidate
+    pub fn get_extra_keys_to_invalidate(
+        &self,
+        dirty_external_repos: &indexmap::IndexMap<RepositoryName, RootedPath>,
+        event_handler: &dyn blaze_events::EventHandler,
+    ) -> Vec<blaze_skyframe::SkyKey> {
+        for (repo_name, file) in dirty_external_repos {
+            event_handler.handle(&blaze_events::Event::warn(format!(
+                "Repository '{}' will be fetched again since the file '{}' has been modified \
+                 externally. External modifications can lead to incorrect builds.",
+                repo_name,
+                file.get_root_relative_path()
+            )));
+            // Delete the marker file so that invalidating the RepositoryDirectoryValue actually
+            // causes a re-fetch of the repository.
+            // Any failure to delete the file should also make it non-readable, so we still
+            // achieve our goal of forcing a re-fetch of the repository.
+            let _ = self
+                .get_external_directory()
+                .get_relative_str(&repo_name.get_marker_file_name())
+                .delete();
+        }
+        dirty_external_repos
+            .keys()
+            .map(|repo_name| blaze_skyframe::SkyKey::new(RepositoryDirectoryKey(repo_name.clone())))
+            .collect()
+    }
+
     // Java: com/google/devtools/build/lib/skyframe/ExternalFilesHelper.java:411 ExternalFilesHelper.getExternalDirectory
     fn get_external_directory(&self) -> Path {
         self.directories.get_external_repository_directory()
@@ -276,18 +423,30 @@ fn file_state_function_exception(e: IOException) -> SkyFunctionException {
 /// Merely calls [`FileStateValue::create`], but also has special handling for files outside the
 /// package roots (see [`ExternalFilesHelper`]).
 ///
-/// PORT: the `SyscallCache` and `TimestampGranularityMonitor` constructor arguments are not
-/// ported; files are always stat'ed (Java's NO_CACHE path, used for external repos).
+/// PORT: the `SyscallCache` constructor argument is not ported; files are always stat'ed (Java's
+/// NO_CACHE path, used for external repos).
 // Java: com/google/devtools/build/lib/skyframe/FileStateFunction.java:35 FileStateFunction
 pub struct FileStateFunction {
     external_files_helper: Arc<ExternalFilesHelper>,
+    tsgm: Option<Arc<TimestampGranularityMonitor>>,
 }
 
 impl FileStateFunction {
     // Java: com/google/devtools/build/lib/skyframe/FileStateFunction.java:41 FileStateFunction.<init>
     pub fn new(external_files_helper: Arc<ExternalFilesHelper>) -> FileStateFunction {
+        Self::with_tsgm(external_files_helper, None)
+    }
+
+    /// [`FileStateFunction::new`] with Java's `tsgm` supplier (the command's
+    /// `TimestampGranularityMonitor`).
+    // Java: com/google/devtools/build/lib/skyframe/FileStateFunction.java:41 FileStateFunction.<init>
+    pub fn with_tsgm(
+        external_files_helper: Arc<ExternalFilesHelper>,
+        tsgm: Option<Arc<TimestampGranularityMonitor>>,
+    ) -> FileStateFunction {
         FileStateFunction {
             external_files_helper,
+            tsgm,
         }
     }
 
@@ -313,7 +472,7 @@ impl FileStateFunction {
         // PORT: Java does not use the syscall cache for EXTERNAL_REPO files (they get generated
         // during the build); Blaze never caches, so both branches stat.
         let _ = file_type;
-        match FileStateValue::create(rooted_path) {
+        match FileStateValue::create_with_tsgm(rooted_path, self.tsgm.as_deref()) {
             Ok(v) => Ok(Some(v)),
             Err(e) => Err(file_state_function_exception(e).into()),
         }

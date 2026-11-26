@@ -11,7 +11,7 @@
 //! the end. Not ported from the module (each fails loudly or is a documented no-op): the remote
 //! output service (`--experimental_remote_output_service`), the remote downloader
 //! (`--experimental_remote_downloader`), the BEP artifact uploader, the repository-rule remote
-//! helpers, the disk cache garbage collection idle task, action rewinding, and the HTTP cache.
+//! helpers, action rewinding, and the HTTP cache.
 
 use std::collections::HashSet;
 use std::io;
@@ -32,7 +32,7 @@ use indexmap::IndexMap;
 use parking_lot::Mutex;
 
 use crate::authandtls::call_credentials_provider::CallCredentialsProvider;
-use crate::authandtls::google_auth_utils::{self, CredentialHelperEnvironment};
+use crate::authandtls::google_auth_utils;
 use crate::authandtls::headers;
 use crate::byte_stream_build_event_artifact_uploader::ByteStreamBuildEventArtifactUploaderFactory;
 use crate::circuitbreaker::circuit_breaker_factory;
@@ -71,6 +71,9 @@ use crate::scrubber::Scrubber;
 use crate::util::DigestUtil;
 use crate::util::temp_path_generator::TempPathGenerator;
 use crate::util::tracing_metadata_utils;
+use blaze_repo_fetch::authandtls::credentialhelper::{
+    CommandLinePathFactory, CredentialCache, CredentialHelperEnvironment, credential_module,
+};
 
 /// What `RemoteModule` reads from the `CommandEnvironment` of a command.
 pub struct RemoteModuleEnvironment {
@@ -100,6 +103,8 @@ pub struct RemoteModuleEnvironment {
     pub working_directory: Path,
     /// `env.getWorkspace()`.
     pub workspace: Option<Path>,
+    /// `env.getDirectories().getInstallBase()` (a root of `env.getCommandLinePathFactory()`).
+    pub install_base: Option<Path>,
     /// `env.getWorkspaceName()`.
     pub workspace_name: String,
     /// `env.getActionTempsDirectory()`.
@@ -142,6 +147,9 @@ pub struct RemoteModule {
     /// `buildEventArtifactUploaderFactoryDelegate`'s factory: the ByteStream build event artifact
     /// uploader factory `setup` installed (a gRPC cache), until `afterCommand` resets it.
     build_event_artifact_uploader_factory: Option<Arc<ByteStreamBuildEventArtifactUploaderFactory>>,
+    /// The disk cache garbage collection task `beforeCommand` registers with `env.addIdleTask`
+    /// (see [`RemoteModule::take_disk_cache_gc_idle_task`]).
+    disk_cache_gc_idle_task: Option<crate::disk::DiskCacheGarbageCollectorIdleTask>,
 }
 
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1370 RemoteModule.createOptionsExitException
@@ -252,11 +260,20 @@ impl RemoteModule {
             build_request_id: env.build_request_id.clone(),
             command_id: env.command_id.clone(),
             build_event_artifact_uploader_factory: None,
+            disk_cache_gc_idle_task: None,
         };
         // PORT: `knownMissingCasDigests` survives across commands in the Bazel server (cleared
         // by `clean`); one command per process here.
         module.cache_available = module.setup(env)?;
         Ok(module)
+    }
+
+    /// The disk cache garbage collection idle task `beforeCommand` created (Java registers it
+    /// with `env.addIdleTask`), once.
+    pub fn take_disk_cache_gc_idle_task(
+        &mut self,
+    ) -> Option<crate::disk::DiskCacheGarbageCollectorIdleTask> {
+        self.disk_cache_gc_idle_task.take()
     }
 
     /// Whether any cache (disk or remote) is enabled (the result of `setup`).
@@ -443,6 +460,7 @@ impl RemoteModule {
             exec_root,
             working_directory,
             workspace,
+            install_base,
             workspace_name,
             action_temps_directory,
             build_request_id,
@@ -536,19 +554,13 @@ impl RemoteModule {
                     failure_details::remote_options::Code::ExecutionWithInvalidCache,
                 ));
             }
-            // Java: DiskCacheGarbageCollectorIdleTask.create returns null unless a policy is
-            // set; otherwise the task is registered with `env.addIdleTask`. Blaze has no server
-            // and so no idle periods: a requested garbage collection fails loudly instead of
-            // never running (review 2026-11-19 R13).
-            // Java: com/google/devtools/build/lib/remote/disk/DiskCacheGarbageCollectorIdleTask.java:58 DiskCacheGarbageCollectorIdleTask.create
-            if remote_options.disk_cache_gc_max_size > 0
-                || !remote_options.disk_cache_gc_max_age.is_zero()
-            {
-                blaze_util::unported!(
-                    "DiskCacheGarbageCollectorIdleTask.create",
-                    "--experimental_disk_cache_gc_max_size / --experimental_disk_cache_gc_max_age (with --experimental_disk_cache_gc_idle_delay): the garbage collection is a server idle task, and Blaze has no server"
-                );
-            }
+            // PORT: `env.addIdleTask(gcIdleTask)`: the module keeps the task, and the runtime,
+            // which owns the command environment, registers it
+            // (`take_disk_cache_gc_idle_task`).
+            self.disk_cache_gc_idle_task = crate::disk::DiskCacheGarbageCollectorIdleTask::create(
+                &remote_options,
+                &working_directory,
+            );
         }
 
         if enable_remote_downloader && !enable_grpc_cache {
@@ -655,13 +667,20 @@ impl RemoteModule {
         let log_dir = output_base.get_relative_str(&format!("{product_name}-remote-logs"));
         clean_and_create_remote_logs_dir(&log_dir)?;
 
+        let command_line_path_factory = CommandLinePathFactory::create_for(
+            file_system.clone(),
+            workspace.clone(),
+            install_base,
+        );
         let credentials = match create_credentials(
             &CredentialHelperEnvironment {
-                event_reporter: reporter.as_ref(),
+                event_reporter: reporter.clone(),
                 workspace_path: workspace,
                 client_environment: client_env,
                 helper_execution_timeout: auth_and_tls_options.credential_helper_timeout,
             },
+            credential_module().get_credential_cache(),
+            &command_line_path_factory,
             &file_system,
             &auth_and_tls_options,
             &remote_options,
@@ -1076,13 +1095,17 @@ fn clean_and_create_remote_logs_dir(log_dir: &Path) -> Result<(), AbruptExitExce
 /// `createCredentials(...)` (`@VisibleForTesting`).
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1448 RemoteModule.createCredentials
 pub fn create_credentials(
-    credential_helper_environment: &CredentialHelperEnvironment<'_>,
+    credential_helper_environment: &CredentialHelperEnvironment,
+    credential_cache: &Arc<CredentialCache>,
+    command_line_path_factory: &CommandLinePathFactory,
     file_system: &FileSystemRef,
     auth_and_tls_options: &AuthAndTLSOptions,
     remote_options: &RemoteOptions,
 ) -> io::Result<Arc<dyn crate::authandtls::Credentials>> {
     let credentials = google_auth_utils::new_credentials(
         credential_helper_environment,
+        credential_cache,
+        command_line_path_factory,
         file_system,
         auth_and_tls_options,
     )?;
@@ -1090,9 +1113,19 @@ pub fn create_credentials(
     if let Some(remote_cache) = &remote_options.remote_cache
         && remote_cache.to_ascii_lowercase().starts_with("http://")
     {
-        // Java warns "Credentials are transmitted in plaintext to ..." when the credentials
-        // have request metadata for the HTTP cache URI; the HTTP cache is not ported.
-        blaze_util::unported!("RemoteModule.createCredentials (HTTP remote cache)");
+        let uri = blaze_repo_fetch::uri::JavaUri::create(remote_cache)
+            .map_err(|e| crate::common::errors::io_exception(e.message))?;
+        let metadata = credentials
+            .get_request_metadata(&uri)
+            .map_err(|e| e.into_io_error())?;
+        if !metadata.is_empty() {
+            // TODO(yannic): Make this a error aborting the build.
+            credential_helper_environment
+                .event_reporter
+                .handle(&Event::warn(format!(
+                    "Credentials are transmitted in plaintext to {remote_cache}. Please consider using an HTTPS endpoint."
+                )));
+        }
     }
 
     Ok(credentials)

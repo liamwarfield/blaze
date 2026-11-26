@@ -317,24 +317,26 @@ impl JavaHeaderCompileAction {
         &self,
         ctx: &dyn ActionExecutionContext,
     ) -> Result<SimpleSpawn, ActionExecutionException> {
-        let path_mapper = path_mappers::create_for_execution(
+        // Java: PathMappers.create(this, outputPathsMode, this instanceof StarlarkAction,
+        // actionExecutionContext.getInputMetadataProvider())
+        let metadata =
+            blaze_exec::analysis::actions::KeyMetadataAdapter(ctx.get_input_metadata_provider());
+        let path_mapper = path_mappers::create(
             self,
             self.spawn.get_output_paths_mode(),
             false,
-            None,
+            Some(&metadata),
         );
         let limits = CommandLineLimits::new(
             self.get_owner()
                 .get_build_configuration_info()
                 .command_line_limits_max_length as i64,
         );
-        // PORT: the input metadata provider only expands tree artifacts, which header
-        // compilations do not take as inputs.
         let expanded = self
             .spawn
             .get_command_lines()
             .expand(
-                None,
+                Some(&metadata),
                 self.get_primary_output().get_exec_path(),
                 path_mapper.as_ref(),
                 &limits,
@@ -368,7 +370,7 @@ impl JavaHeaderCompileAction {
             self.get_outputs().iter().map(artifact_input).collect(),
             None::<HashSet<ActionInputRef>>,
             Arc::new(ResourceSet::create_from_map(resources, r.local_test_count)),
-            SpawnPathMapper::NOOP,
+            SpawnPathMapper::of(path_mapper),
         ))
     }
 

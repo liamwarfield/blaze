@@ -1,5 +1,12 @@
 // Writes the expected outputs of tests/synthetic.rs using the protobuf runtime and the generated
 // message classes inside the oracle's server jar (Bazel 9.3.2). Run by scripts/record-synthetic.
+import com.google.devtools.build.lib.actions.extra.CppCompileInfo;
+import com.google.devtools.build.lib.actions.extra.DetailedExtraActionInfo;
+import com.google.devtools.build.lib.actions.extra.EnvironmentVariable;
+import com.google.devtools.build.lib.actions.extra.ExtraActionInfo;
+import com.google.devtools.build.lib.actions.extra.ExtraActionSummary;
+import com.google.devtools.build.lib.actions.extra.PythonInfo;
+import com.google.devtools.build.lib.actions.extra.SpawnInfo;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.ActionExecuted;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildEvent;
 import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.BuildMetadata;
@@ -10,6 +17,7 @@ import com.google.devtools.build.lib.exec.Protos.SpawnExec;
 import com.google.protobuf.Any;
 import com.google.protobuf.Duration;
 import com.google.protobuf.Message;
+import com.google.protobuf.TextFormat;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.JsonFormat;
 import java.nio.charset.StandardCharsets;
@@ -95,5 +103,53 @@ public class JavaSynthetic {
       error = e.getClass().getName() + ": " + e.getMessage();
     }
     text("any.unregistered.error", error);
+
+    // Extra actions: ExtraActionInfo with extensions (written after the fields, in number
+    // order) as print_action prints them (TextFormat.printer().printToString(summary)).
+    ExtraActionInfo spawn =
+        ExtraActionInfo.newBuilder()
+            .setOwner("//pkg:gen")
+            .setId("0123abcd")
+            .setMnemonic("Genrule")
+            .setAspectName("MyAspect")
+            .putAspectParameters(
+                "p", ExtraActionInfo.StringList.newBuilder().addValue("v1").addValue("v2").build())
+            .setExtension(
+                SpawnInfo.spawnInfo,
+                SpawnInfo.newBuilder()
+                    .addArgument("/bin/bash")
+                    .addArgument("-c")
+                    .addArgument("echo \"é\" > $@")
+                    .addVariable(EnvironmentVariable.newBuilder().setName("PATH").setValue("/bin"))
+                    .addInputFile("pkg/in.txt")
+                    .addOutputFile("bazel-out/k8-fastbuild/bin/pkg/out.txt")
+                    .build())
+            .build();
+    ExtraActionInfo cpp =
+        ExtraActionInfo.newBuilder()
+            .setOwner("//pkg:lib")
+            .setId("ffff")
+            .setMnemonic("CppCompile")
+            .setExtension(
+                PythonInfo.pythonInfo, PythonInfo.newBuilder().addSourceFile("a.py").build())
+            .setExtension(
+                CppCompileInfo.cppCompileInfo,
+                CppCompileInfo.newBuilder()
+                    .setTool("/usr/bin/gcc")
+                    .addCompilerOption("-c")
+                    .setSourceFile("pkg/a.cc")
+                    .setOutputFile("bazel-out/k8-fastbuild/bin/pkg/_objs/lib/a.o")
+                    .addSourcesAndHeaders("pkg/a.cc")
+                    .build())
+            .build();
+    ExtraActionSummary summary =
+        ExtraActionSummary.newBuilder()
+            .addAction(DetailedExtraActionInfo.newBuilder().setAction(spawn))
+            .addAction(
+                DetailedExtraActionInfo.newBuilder().setTriggeringFile("pkg/a.cc").setAction(cpp))
+            .build();
+    bin("extra_action_info", spawn);
+    bin("extra_action_summary", summary);
+    text("extra_action_summary.txt", TextFormat.printer().printToString(summary));
   }
 }

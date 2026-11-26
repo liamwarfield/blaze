@@ -936,14 +936,26 @@ enum_converter!(
 // Java: com/google/devtools/build/lib/remote/Scrubber.java:46 Scrubber
 /// The remote cache key scrubber of `--experimental_remote_scrubbing_config`.
 ///
-/// PORT: `Scrubber` (a parsed `remote_scrubbing.proto` text-format config) is not ported; no value
-/// of this type can be constructed yet, and `ScrubberConverter` fails loudly.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Scrubber {}
+/// PORT: Java's option holds the `Scrubber` itself (`blaze_remote::scrubber::Scrubber`, a crate
+/// above this one); here it holds the parsed `Config` it is built from, whose patterns the
+/// converter has compiled once (so a bad pattern fails the option as in Java).
+/// `blaze_remote::scrubber::Scrubber::new(&config)` builds the scrubber. Java's `Scrubber`
+/// compares patterns by identity, so two parses are never equal: equality is identity here too.
+#[derive(Clone, Debug)]
+pub struct Scrubber {
+    pub config: std::sync::Arc<blaze_protos::remote_scrubbing::Config>,
+}
+
+impl PartialEq for Scrubber {
+    fn eq(&self, other: &Scrubber) -> bool {
+        std::sync::Arc::ptr_eq(&self.config, &other.config)
+    }
+}
 
 impl OptionScalar for Scrubber {
+    // Java: Object.toString (`Scrubber` does not override it): the class name and identity hash.
     fn java_to_string(&self) -> String {
-        match *self {}
+        blaze_util::unported!("Scrubber.toString (Object.toString: identity hash)")
     }
 }
 
@@ -953,6 +965,77 @@ option_field_type!(
     raw = unreachable!("Scrubber fields are always nullable")
 );
 
+/// `Scrubber.ConfigParseException`'s message, or the parsed `Config`: the reading part of
+/// `Scrubber.parse(configPath)`, and the patterns `new Scrubber(config)` compiles, compiled in
+/// its order (`SpawnScrubber.<init>`: mnemonic, label, kind, omitted inputs, argument
+/// replacement sources; an empty matcher field is `.*`).
+// Java: com/google/devtools/build/lib/remote/Scrubber.java:73 Scrubber.parse
+pub fn parse_scrubbing_config(
+    config_path: &str,
+) -> Result<blaze_protos::remote_scrubbing::Config, String> {
+    use blaze_protos::remote_scrubbing::{Config, config};
+    // Files.newBufferedReader(Paths.get(configPath)): UTF-8, malformed input is an error.
+    // PORT: the IOException messages are the JDK's for the common cases (NoSuchFileException
+    // and AccessDeniedException carry the path, MalformedInputException "Input length = <n>");
+    // any other I/O error carries the OS error text.
+    let bytes = match std::fs::read(blaze_util::string_encoding::internal_to_platform(
+        config_path,
+    )) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return Err(match e.kind() {
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied => {
+                    config_path.to_string()
+                }
+                _ => e.to_string(),
+            });
+        }
+    };
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(text) => text,
+        Err(e) => match e.error_len() {
+            Some(n) => return Err(format!("Input length = {n}")),
+            None => blaze_util::unported!(
+                "Scrubber.parse (MalformedInputException of a truncated UTF-8 sequence at the end of the file)"
+            ),
+        },
+    };
+    let mut builder = Config::default();
+    if let Err(e) = blaze_protos::text_format::get_parser().merge(text, &mut builder) {
+        return Err(e.to_string());
+    }
+    // new Scrubber(builder.build()): PatternSyntaxException is
+    // "in regex '<pattern>': <message>".
+    let compile = |regex: &str| -> Result<(), String> {
+        blaze_util::java_regex::Pattern::compile(regex, 0)
+            .map(|_| ())
+            .map_err(|message| format!("in regex '{regex}': {message}"))
+    };
+    let empty_to_all = |s: &str| -> String {
+        if s.is_empty() {
+            ".*".to_string()
+        } else {
+            s.to_string()
+        }
+    };
+    for rule_proto in &builder.rules {
+        let default_matcher = config::Matcher::default();
+        let matcher_proto = rule_proto.matcher.as_ref().unwrap_or(&default_matcher);
+        compile(&empty_to_all(&matcher_proto.mnemonic))?;
+        compile(&empty_to_all(&matcher_proto.label))?;
+        compile(&empty_to_all(&matcher_proto.kind))?;
+        let default_transform = config::Transform::default();
+        let transform_proto = rule_proto.transform.as_ref().unwrap_or(&default_transform);
+        for omitted_input in &transform_proto.omitted_inputs {
+            compile(omitted_input)?;
+        }
+        for r in &transform_proto.arg_replacements {
+            compile(&r.source)?;
+        }
+    }
+    Ok(builder)
+}
+
 // Java: com/google/devtools/build/lib/remote/options/RemoteOptions.java:832 RemoteOptions.ScrubberConverter
 #[derive(Clone, Copy, Debug, Default)]
 struct ScrubberConverter;
@@ -961,12 +1044,20 @@ impl Converter for ScrubberConverter {
     // Java: com/google/devtools/build/lib/remote/options/RemoteOptions.java:835 RemoteOptions.ScrubberConverter.convert
     fn convert(
         &self,
-        _path: Option<&str>,
+        path: Option<&str>,
         _: Option<&ConversionContext>,
     ) -> Result<Option<Value>, OptionsParsingException> {
-        // Java: Scrubber.parse(path), mapping ConfigParseException to
-        // "Failed to parse ScrubbingConfig: " + e.getMessage().
-        blaze_util::unported!("Scrubber.parse")
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        match parse_scrubbing_config(path) {
+            Ok(config) => Ok(Some(Value::new(Scrubber {
+                config: std::sync::Arc::new(config),
+            }))),
+            Err(message) => Err(OptionsParsingException::new(format!(
+                "Failed to parse ScrubbingConfig: {message}"
+            ))),
+        }
     }
 
     // Java: com/google/devtools/build/lib/remote/options/RemoteOptions.java:844 RemoteOptions.ScrubberConverter.getTypeDescription

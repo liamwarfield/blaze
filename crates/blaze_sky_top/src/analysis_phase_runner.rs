@@ -196,16 +196,20 @@ fn run_analysis_phase(
     // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:429 AnalysisPhaseRunner.runAnalysisPhase
     // PORT: with merged analysis and execution Java posts it from
     // SkyframeBuildView.analysisFinishedCallback (SkyframeBuildView.java:957), once the analysis
-    // of every top-level target concluded; Blaze's merged build has concluded its analysis here.
+    // of every top-level key concluded, and so never when there is no top-level key
+    // (AnalysisOperationWatcher.java:70); Blaze's merged build has concluded its analysis here.
     // Java posts it before the errors of a keep_going analysis are reported, Blaze after
     // (open: the "errors encountered while analyzing" warnings precede the summary line). The
     // event's counters for the build metrics are the command's
     // (`AnalysisResult::get_analysis_phase_complete_stats`).
-    reporter.post(Arc::new(
-        blaze_buildtool::buildtool::buildevent::AnalysisPhaseCompleteEvent::new(
-            analysis_result.get_targets_to_build().len(),
-        ),
-    ));
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:713 SkyframeBuildView.analyzeAndExecuteTargets
+    if analysis_phase_complete_event_posted(request, &analysis_result) {
+        reporter.post(Arc::new(
+            blaze_buildtool::buildtool::buildevent::AnalysisPhaseCompleteEvent::new(
+                analysis_result.get_targets_to_build().len(),
+            ),
+        ));
+    }
     // PORT: Java's AnalysisPhaseRunner serves only requests without merged analysis and
     // execution; for a merged request BuildDriverFunction posts the top-level status events,
     // which `build_view::update` (analyzed, skipped) and the command (skipped tests) do here,
@@ -229,6 +233,20 @@ fn run_analysis_phase(
     }
 
     Ok(analysis_result)
+}
+
+/// Whether the analysis of `request` posted `AnalysisPhaseCompleteEvent` (and, when it checked
+/// for action conflicts, `AnalysisGraphStatsEvent`): always without merged analysis and
+/// execution (`AnalysisPhaseRunner.runAnalysisPhase`); with it, only when there was a top-level
+/// key to analyze (`SkyframeBuildView.analysisFinishedCallback`).
+// Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:429 AnalysisPhaseRunner.runAnalysisPhase
+// Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:911 SkyframeBuildView.analysisFinishedCallback
+pub fn analysis_phase_complete_event_posted(
+    request: &BuildRequest,
+    analysis_result: &AnalysisResult,
+) -> bool {
+    !request.with_merged_analysis_and_execution_source_of_truth()
+        || analysis_result.has_top_level_keys()
 }
 
 /// An event that marks the successful analysis of an aspect.

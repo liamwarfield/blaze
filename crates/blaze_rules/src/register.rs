@@ -10,7 +10,10 @@ pub fn register_factories(builder: &mut ConfiguredRuleClassProviderBuilder) {
     crate::platform::register(builder);
     crate::config::register(builder);
     crate::generic::register(builder);
+    crate::genquery::register(builder);
     crate::java::register(builder);
+    crate::extra::register(builder);
+    crate::rules_core::register(builder);
 }
 
 /// Bazel's analysis rule class provider.

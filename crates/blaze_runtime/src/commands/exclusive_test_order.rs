@@ -401,6 +401,21 @@ mod order_tests {
         assert_eq!(order, vec![1, 0]);
     }
 
+    // Review exec-2 round 2, E2-9: `test excl_b excl_c` plus a target skipped as incompatible.
+    // Java's result map holds the skipped key's BuildDriverValue too: 4 entries, a copy table of
+    // 8, so excl_b (bucket 2) runs before excl_c (bucket 4). The skipped key's hash (here bucket
+    // 7) does not change that.
+    #[test]
+    fn order_with_a_skipped_target() {
+        let order = evaluation_result_values_order([
+            (0, Some(EXCL_B)),
+            (1, Some(EXCL_C)),
+            (3, Some(0x7)),
+            (2, None),
+        ]);
+        assert_eq!(order, vec![0, 1, 3]);
+    }
+
     // Six entries: a copy table of 8 (JDK 18 and older: 16).
     #[test]
     fn order_with_six_entries() {

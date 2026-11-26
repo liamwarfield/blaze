@@ -170,7 +170,9 @@ impl<'v> StarlarkValue<'v> for NativeFunction {
         args: &Arguments<'v, '_>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> crate::Result<Value<'v>> {
-        self.function.invoke(eval, args)
+        self.function.invoke(eval, args).map_err(|e| { // BLAZE PATCH 0062
+            java_argument_order(e, &self.docs, args, &self.name, None, eval.heap()) // BLAZE PATCH 0062
+        }) // BLAZE PATCH 0062
     }
 
     fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
@@ -426,12 +428,91 @@ where
         args: &Arguments<'v, '_>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> crate::Result<Value<'v>> {
+        let this = self.this.to_value(); // BLAZE PATCH 0062
         self.method
             .function
-            .invoke(eval, self.this.to_value(), args)
+            .invoke(eval, this, args)
+            .map_err(|e| { // BLAZE PATCH 0062
+                java_argument_order( // BLAZE PATCH 0062
+                    e, &self.method.docs, args, &self.method.name, Some(this.get_type()), eval.heap(), // BLAZE PATCH 0062
+                ) // BLAZE PATCH 0062
+            }) // BLAZE PATCH 0062
     }
 
     fn documentation(&self) -> DocItem {
         self.method.documentation()
     }
+}
+
+/// BLAZE PATCH 0062: Java's order of a builtin's argument checks.
+///
+/// Java's `BuiltinFunction` checks each argument's type as it binds it (`checkParamValue`, from
+/// `addPositionalArg` and `addNamedArg` in the order of the call: positional arguments, then
+/// named ones as written) and reports a wrong number of arguments or a missing one only after
+/// that, in `call`. starlark-rust reports the arity first, then unpacks the parameters in the
+/// order of declaration. When the builtin failed with an arity error or a parameter type error,
+/// this returns the first parameter type error in Java's order, if there is one; otherwise `e`.
+/// The parameter types are the function's documented ones (its derived unpacking types).
+// Java: net/starlark/java/eval/BuiltinFunction.java:117 BuiltinFunction.fastcall, :309
+// ArgumentProcessor.addPositionalArg, :322 addNamedArg
+pub(crate) fn java_argument_order<'v>(
+    e: crate::Error,
+    docs: &DocItem,
+    args: &Arguments<'v, '_>,
+    function: &str,
+    receiver: Option<&str>,
+    heap: Heap<'v>,
+) -> crate::Error {
+    use crate::eval::runtime::arguments::FunctionError;
+    use crate::values::unpack::BazelParamTypeError;
+    let reorder = match e.kind() {
+        crate::ErrorKind::Function(a) => {
+            matches!(a.downcast_ref::<FunctionError>(), Some(FunctionError::Bazel(_)))
+        }
+        crate::ErrorKind::Value(a) => a.downcast_ref::<BazelParamTypeError>().is_some(),
+        _ => false,
+    };
+    if !reorder {
+        return e;
+    }
+    let DocItem::Member(crate::docs::DocMember::Function(f)) = docs else {
+        return e;
+    };
+    let params = &f.params;
+    let positional: Vec<&crate::docs::DocParam> =
+        params.pos_only.iter().chain(&params.pos_or_named).collect();
+    let named: Vec<&crate::docs::DocParam> =
+        params.pos_or_named.iter().chain(&params.named_only).collect();
+    let mut order: Vec<(&crate::docs::DocParam, Value<'v>)> = Vec::new();
+    for (i, v) in args.0.pos.iter().enumerate() {
+        if let Some(p) = positional.get(i) {
+            order.push((p, *v));
+        }
+    }
+    for ((_, name), v) in args.0.names.names().iter().zip(args.0.named.iter()) {
+        if let Some(p) = named.iter().find(|p| p.name == name.as_str()) {
+            order.push((p, *v));
+        }
+    }
+    for (p, v) in order {
+        // Java's allowed classes from the table where it has the parameter (also for one
+        // starlark-rust takes as any value and the builtin checks itself), else the derived type.
+        let wrong = match crate::values::unpack::java_param_accepts(function, receiver, &p.name, v) {
+            Some(ok) => !ok,
+            None => {
+                !p.typ.is_any()
+                    && !crate::values::typing::TypeCompiled::from_ty(&p.typ, heap).matches(v)
+            }
+        };
+        if wrong {
+            return crate::Error::new_value(BazelParamTypeError {
+                function: Some(function.to_owned()),
+                receiver: receiver.map(str::to_owned),
+                param: p.name.clone(),
+                actual: v.get_type().to_owned(),
+                ty: p.typ.clone(),
+            });
+        }
+    }
+    e
 }

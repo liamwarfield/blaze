@@ -11,5 +11,7 @@ blaze_util = { path = "../blaze_util" }
 blaze_options = { path = "../blaze_options" }
 blaze_cmdline = { path = "../blaze_cmdline" }
 blaze_vfs = { path = "../blaze_vfs" }
+# The parsed `--experimental_remote_scrubbing_config` (remote_scrubbing.proto, TextFormat).
+blaze_protos = { path = "../blaze_protos" }
 # getpwuid for the JVM's user.home (common/options_utils.rs).
 libc.workspace = true

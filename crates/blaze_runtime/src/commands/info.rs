@@ -41,6 +41,8 @@ pub struct BuildConfigurationSupplier {
     repo_env: IndexMap<String, String>,
     nonstrict_repo_env: IndexMap<String, String>,
     reporter: Arc<blaze_events::Reporter>,
+    /// The server's kept graph (Java: `info` uses the server's one executor).
+    incremental: blaze_sky_top::incremental::IncrementalCommand,
     configuration:
         Option<Arc<blaze_build_config::build_configuration_value::BuildConfigurationValue>>,
 }
@@ -61,6 +63,7 @@ impl BuildConfigurationSupplier {
             repo_env: env.get_repo_env().clone(),
             nonstrict_repo_env: env.get_nonstrict_repo_env().clone(),
             reporter: env.get_reporter().clone(),
+            incremental: crate::commands::query::incremental_command(env, env.get_options()),
             configuration: None,
         }
     }
@@ -82,7 +85,11 @@ impl BuildConfigurationSupplier {
         // package path. Since info inherits all the build options, all the necessary information
         // is available here.
         // ensureSyncPackageLoading(env, optionsParsingResult): Blaze creates the command's
-        // executor here, with the configuration's build options as its baseline.
+        // executor here, with the configuration's build options as its baseline; the
+        // per-command resets of SkyframeExecutor.preparePackageLoading run first.
+        // PORT: the supplier does not hold the environment, so `hasSyncedPackageLoading` is not
+        // set; the only other caller in `info` (`build-language`) is not ported.
+        crate::commands::query::prepare_package_loading();
         let rule_class_provider = Arc::new(BazelRuleClassProvider::create());
         // TODO(bazel-team): What if there are multiple configurations? [multi-config]
         let build_options = create_build_options(&rule_class_provider, &self.options);
@@ -91,6 +98,7 @@ impl BuildConfigurationSupplier {
             blaze_util::unported!("InfoCommand.exec (configuration outside a workspace)");
         };
         let executor = SkyframeExecutor::create(SkyframeExecutorInputs {
+            incremental: Some(self.incremental.clone()),
             workspace,
             working_directory: self.working_directory.clone(),
             output_base: self.output_base.clone(),

@@ -55,13 +55,25 @@ pub struct CgroupsInfo {
 fn read_lines(file: &Path) -> io::Result<Vec<String>> {
     let bytes = std::fs::read(file)?;
     let text = String::from_utf8_lossy(&bytes);
-    // BufferedReader.readLine: \n, \r or \r\n end a line; a final empty line is not returned.
-    let mut lines: Vec<String> = text
-        .split('\n')
-        .map(|l| l.trim_end_matches('\r').to_string())
-        .collect();
-    if lines.last().is_some_and(String::is_empty) {
-        lines.pop();
+    // BufferedReader.readLine: \n, \r or \r\n end a line; text after the last terminator is
+    // a last line, an empty one is not returned.
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\n' => lines.push(std::mem::take(&mut current)),
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                lines.push(std::mem::take(&mut current));
+            }
+            c => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
     }
     Ok(lines)
 }
@@ -109,26 +121,23 @@ impl Mount {
     }
 
     fn parse_line(line: &str) -> Option<Mount> {
-        let is_space = |c: char| matches!(c, ' ' | '\t' | '\n' | '\x0B' | '\x0C' | '\r');
-        let first = line.chars().next()?;
-        if is_space(first) || first == '#' {
-            return None;
-        }
-        let fields: Vec<&str> = line.split(is_space).filter(|f| !f.is_empty()).collect();
-        // device file vfstype mntops: `\s+` separators, so the fields are non-empty; an empty
-        // mntops needs whitespace after the vfstype.
-        if fields.len() < 3 || (fields[2] != "cgroup" && fields[2] != "cgroup2") {
-            return None;
-        }
-        let mntops = match fields.get(3) {
-            Some(m) => *m,
-            None if line.ends_with(is_space) => "",
-            None => return None,
-        };
+        // Java's `\s` and `\S` are ASCII classes; `.` stops at the line terminators. With the
+        // whole line anchored (`Matcher.matches`), the leftmost-first captures of `regex` are
+        // the ones Java's backtracking matcher returns (an empty `file` group included).
+        static CGROUPS_MOUNT_PATTERN: LazyLock<regex::Regex> = LazyLock::new(|| {
+            regex::Regex::new(concat!(
+                r"^[^ \t\n\x0B\x0C\r#][^ \t\n\x0B\x0C\r]*[ \t\n\x0B\x0C\r]+",
+                r"(?P<file>[^ \t\n\x0B\x0C\r]*)[ \t\n\x0B\x0C\r]+",
+                r"(?P<vfstype>cgroup2?)[ \t\n\x0B\x0C\r]+",
+                r"(?P<mntops>[^ \t\n\x0B\x0C\r]*)[^\n\r\x{85}\x{2028}\x{2029}]*$",
+            ))
+            .expect("CGROUPS_MOUNT_PATTERN")
+        });
+        let m = CGROUPS_MOUNT_PATTERN.captures(line)?;
         Some(Mount {
-            path: PathBuf::from(fields[1]),
-            type_: fields[2].to_string(),
-            opts: java_split_comma(mntops),
+            path: PathBuf::from(&m["file"]),
+            type_: m["vfstype"].to_string(),
+            opts: java_split_comma(&m["mntops"]),
         })
     }
 }

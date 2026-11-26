@@ -519,6 +519,20 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              frame.set_bc_slot(target, r);
              return Ok(());
          }
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/bc/native_function.rs starlark/src/eval/bc/native_function.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/bc/native_function.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/eval/bc/native_function.rs	2026-11-26 12:28:32.408637841 -0700
+@@ -57,6 +57,9 @@
+         args: &Arguments<'v, '_>,
+         eval: &mut Evaluator<'v, '_, '_>,
+     ) -> crate::Result<Value<'v>> {
+-        self.imp.invoke(eval, args)
++        self.imp.invoke(eval, args).map_err(|e| { // BLAZE PATCH 0062
++            let f = self.fun.as_ref(); // BLAZE PATCH 0062
++            crate::values::function::java_argument_order(e, &f.docs, args, &f.name, None, eval.heap()) // BLAZE PATCH 0062
++        }) // BLAZE PATCH 0062
+     }
+ }
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/bc/opcode.rs starlark/src/eval/bc/opcode.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/bc/opcode.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/eval/bc/opcode.rs	2026-11-18 16:00:00.495893116 -0700
@@ -563,9 +577,125 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  
          if fun.is_fn_len() {
              if let Some(arg) = args.one_pos() {
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/compr.rs starlark/src/eval/compiler/compr.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/compr.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/eval/compiler/compr.rs	2026-11-26 11:45:18.552849790 -0700
+@@ -34,6 +34,7 @@
+ use crate::eval::compiler::scope::payload::CstPayload;
+ use crate::eval::compiler::span::IrSpanned;
+ use crate::eval::compiler::stmt::AssignCompiledValue;
++use crate::eval::runtime::frozen_file_span::FrozenFileSpan; // BLAZE PATCH 0061
+ 
+ impl Compiler<'_, '_, '_, '_> {
+     pub fn list_comprehension(
+@@ -42,8 +43,8 @@
+         for_: &ForClauseP<CstPayload>,
+         clauses: &[ClauseP<CstPayload>],
+     ) -> Result<ExprCompiled, CompilerInternalError> {
+-        let clauses = self.compile_clauses(for_, clauses)?;
+-        let x = self.expr(x)?;
++        let (clauses, body_handler) = self.compile_clauses(x.span.begin(), for_, clauses)?; // BLAZE PATCH 0061
++        let x = self.with_java_handler(body_handler, |this| this.expr(x))?; // BLAZE PATCH 0061
+         Ok(ExprCompiled::compr(ComprCompiled::List(
+             Box::new(x),
+             clauses,
+@@ -57,9 +58,11 @@
+         for_: &ForClauseP<CstPayload>,
+         clauses: &[ClauseP<CstPayload>],
+     ) -> Result<ExprCompiled, CompilerInternalError> {
+-        let clauses = self.compile_clauses(for_, clauses)?;
+-        let k = self.expr(k)?;
+-        let v = self.expr(v)?;
++        let (clauses, body_handler) = self.compile_clauses(k.span.begin(), for_, clauses)?; // BLAZE PATCH 0061
++        // BLAZE PATCH 0061: Java sets the `:` on errors of the value (Eval.java:928).
++        let colon = self.java_token(k.span.end(), v.span.begin(), ":"); // BLAZE PATCH 0061
++        let k = self.with_java_handler(body_handler, |this| this.expr(k))?; // BLAZE PATCH 0061
++        let v = self.with_java_handler(colon.or(body_handler), |this| this.expr(v))?; // BLAZE PATCH 0061
+         Ok(ExprCompiled::compr(ComprCompiled::Dict(
+             Box::new((k, v)),
+             clauses,
+@@ -70,17 +73,19 @@
+     fn compile_ifs(
+         &mut self,
+         clauses: &mut Vec<ClauseP<CstPayload>>,
+-    ) -> Result<(Option<ForClauseP<CstPayload>>, Vec<IrSpanned<ExprCompiled>>), CompilerInternalError>
++        handlers: &[Option<FrozenFileSpan>], // BLAZE PATCH 0061
++    ) -> Result<(Option<(ForClauseP<CstPayload>, Option<FrozenFileSpan>)>, Vec<IrSpanned<ExprCompiled>>), CompilerInternalError> // BLAZE PATCH 0061
+     {
+         let mut ifs = Vec::new();
+         while let Some(x) = clauses.pop() {
++            let handler = handlers[clauses.len()]; // BLAZE PATCH 0061
+             match x {
+                 ClauseP::For(f) => {
+                     ifs.reverse();
+-                    return Ok((Some(f), ifs));
++                    return Ok((Some((f, handler)), ifs)); // BLAZE PATCH 0061
+                 }
+                 ClauseP::If(x) => {
+-                    let x = self.expr_truth(&x)?;
++                    let x = self.with_java_handler(handler, |this| this.expr_truth(&x))?; // BLAZE PATCH 0061
+                     if let ExprCompiledBool::Const(true) = &x.node {
+                         // If the condition is always true, skip the clause.
+                         continue;
+@@ -96,12 +101,30 @@
+ 
+     fn compile_clauses(
+         &mut self,
++        from: crate::codemap::Pos, // BLAZE PATCH 0061
+         for_: &ForClauseP<CstPayload>,
+         clauses: &[ClauseP<CstPayload>],
+-    ) -> Result<ClausesCompiled, CompilerInternalError> {
++    ) -> Result<(ClausesCompiled, Option<FrozenFileSpan>), CompilerInternalError> { // BLAZE PATCH 0061
+         // The first for.over is scoped before we enter the list comp
+         let over = self.expr(&list_to_tuple(&for_.over))?;
+ 
++        // BLAZE PATCH 0061: Java sets a `for` clause's start on errors of everything evaluated
++        // inside its loop (later clauses and the body; Eval.java:904). `handlers[i]` is the
++        // clause before `clauses[i]`'s `for`; the second value is the last `for`'s, the body's.
++        let for_start = |this: &Self, var: &crate::eval::compiler::scope::payload::CstAssignTarget| { // BLAZE PATCH 0061
++            crate::eval::runtime::java_call::find_token_back(&this.codemap, from, var.span.begin(), "for") // BLAZE PATCH 0061
++                .map(|s| FrozenFileSpan::new(this.codemap, s)) // BLAZE PATCH 0061
++        }; // BLAZE PATCH 0061
++        let mut current = for_start(self, &for_.var); // BLAZE PATCH 0061
++        let mut handlers = Vec::with_capacity(clauses.len()); // BLAZE PATCH 0061
++        for c in clauses { // BLAZE PATCH 0061
++            handlers.push(current); // BLAZE PATCH 0061
++            if let ClauseP::For(f) = c { // BLAZE PATCH 0061
++                current = for_start(self, &f.var); // BLAZE PATCH 0061
++            } // BLAZE PATCH 0061
++        } // BLAZE PATCH 0061
++        let body_handler = current; // BLAZE PATCH 0061
++
+         // TODO(nga): unnecessary clone.
+         let mut clauses = clauses.to_vec();
+ 
+@@ -109,7 +132,7 @@
+         // The evaluator wants to use pop to consume them, so reverse the order.
+         let mut res = Vec::new();
+         loop {
+-            let (next_for, ifs) = self.compile_ifs(&mut clauses)?;
++            let (next_for, ifs) = self.compile_ifs(&mut clauses, &handlers)?; // BLAZE PATCH 0061
+             match next_for {
+                 None => {
+                     let last = ClauseCompiled {
+@@ -117,11 +140,11 @@
+                         over,
+                         ifs,
+                     };
+-                    return Ok(ClausesCompiled::new(res, last));
++                    return Ok((ClausesCompiled::new(res, last), body_handler)); // BLAZE PATCH 0061
+                 }
+-                Some(f) => {
++                Some((f, handler)) => { // BLAZE PATCH 0061
+                     res.push(ClauseCompiled {
+-                        over: self.expr(&f.over)?,
++                        over: self.with_java_handler(handler, |this| this.expr(&f.over))?, // BLAZE PATCH 0061
+                         var: self.assign_target(&f.var)?,
+                         ifs,
+                     });
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/def.rs starlark/src/eval/compiler/def.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/def.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/compiler/def.rs	2026-11-18 16:14:11.695641338 -0700
++++ starlark/src/eval/compiler/def.rs	2026-11-26 11:44:36.749260612 -0700
 @@ -42,6 +42,7 @@
  use crate as starlark;
  use crate::any::ProvidesStaticType;
@@ -593,15 +723,34 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              parameter_captures: VALUE_EMPTY_PARAMETER_CAPTURES.unpack(),
              ty: Ty::any(),
              codemap,
-@@ -448,6 +454,7 @@
+@@ -448,6 +454,26 @@
          &mut self,
          name: &str,
          signature_span: FrozenFileSpan,
 +        declaration_span: FrozenFileSpan, // BLAZE PATCH 0024
++        scope_id: ScopeId,
++        params: &[CstParameter],
++        return_type: Option<&CstTypeExpr>,
++        suite: &CstStmt,
++    ) -> Result<ExprCompiled, CompilerInternalError> {
++        // BLAZE PATCH 0061: a function body is a new Java frame: no enclosing error location.
++        self.with_java_handler(None, |this| { // BLAZE PATCH 0061
++            this.function_body( // BLAZE PATCH 0061
++                name, signature_span, declaration_span, scope_id, params, return_type, suite, // BLAZE PATCH 0061
++            ) // BLAZE PATCH 0061
++        }) // BLAZE PATCH 0061
++    } // BLAZE PATCH 0061
++
++    #[allow(clippy::too_many_arguments)] // BLAZE PATCH 0061
++    fn function_body( // BLAZE PATCH 0061
++        &mut self,
++        name: &str,
++        signature_span: FrozenFileSpan,
++        declaration_span: FrozenFileSpan,
          scope_id: ScopeId,
          params: &[CstParameter],
          return_type: Option<&CstTypeExpr>,
-@@ -501,6 +508,7 @@
+@@ -501,6 +527,7 @@
          let info = self.eval.module_env.frozen_heap().alloc_any_value(DefInfo {
              name,
              signature_span,
@@ -609,7 +758,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              parameter_captures: self
                  .eval
                  .frozen_heap()
-@@ -602,14 +610,159 @@
+@@ -602,14 +629,159 @@
  }
  
  impl<V> Display for DefGen<V> {
@@ -770,7 +919,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  starlark_complex_values!(Def);
  
  impl<'v> Def<'v> {
-@@ -773,6 +926,39 @@
+@@ -773,6 +945,39 @@
          Ok(())
      }
  
@@ -810,7 +959,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      #[inline(always)]
      fn invoke_impl<'a, A: ArgumentsImpl<'v, 'a>>(
          &self,
-@@ -795,7 +981,14 @@
+@@ -795,7 +1000,14 @@
                  //   We use `slots` only in `collect_inline`,
                  //   which does not have access to `eval` thus cannot access the frame indirectly.
                  let slots = unsafe { eval.current_frame.locals_mut() };
@@ -828,7 +977,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          )
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/expr.rs starlark/src/eval/compiler/expr.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/expr.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/compiler/expr.rs	2026-11-19 13:12:53.431579066 -0700
++++ starlark/src/eval/compiler/expr.rs	2026-11-26 11:45:38.654568868 -0700
 @@ -38,7 +38,7 @@
  use crate::codemap::Spanned;
  use crate::collections::symbol::symbol::Symbol;
@@ -951,7 +1100,43 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              }
              ExprP::Tuple(exprs) => {
                  let xs = self.exprs(exprs)?;
-@@ -1443,8 +1445,11 @@
+@@ -1278,6 +1280,35 @@
+                 ExprCompiled::dot(left, &s, &mut self.opt_ctx())
+             }
+             ExprP::Call(left, args) => {
++                // BLAZE PATCH 0061: Java's call-site spans (eval::runtime::java_call).
++                let mut span = span; // BLAZE PATCH 0061
++                let mut java = crate::eval::runtime::java_call::JavaCallSpans { // BLAZE PATCH 0061
++                    handler: self.java_handler, // BLAZE PATCH 0061
++                    star: None, // BLAZE PATCH 0061
++                    star_star: None, // BLAZE PATCH 0061
++                    positional_only: true, // BLAZE PATCH 0061
++                }; // BLAZE PATCH 0061
++                for a in args.args.iter() { // BLAZE PATCH 0061
++                    let at = |n: u32| { // BLAZE PATCH 0061
++                        let b = a.span.begin(); // BLAZE PATCH 0061
++                        Some(FrozenFileSpan::new(self.codemap, crate::codemap::Span::new(b, b + n))) // BLAZE PATCH 0061
++                    }; // BLAZE PATCH 0061
++                    match &a.node { // BLAZE PATCH 0061
++                        starlark_syntax::syntax::ast::ArgumentP::Positional(_) => {} // BLAZE PATCH 0061
++                        starlark_syntax::syntax::ast::ArgumentP::Named(..) => java.positional_only = false, // BLAZE PATCH 0061
++                        starlark_syntax::syntax::ast::ArgumentP::Args(_) => { // BLAZE PATCH 0061
++                            java.positional_only = false; // BLAZE PATCH 0061
++                            java.star = at(1); // BLAZE PATCH 0061
++                        } // BLAZE PATCH 0061
++                        starlark_syntax::syntax::ast::ArgumentP::KwArgs(_) => { // BLAZE PATCH 0061
++                            java.positional_only = false; // BLAZE PATCH 0061
++                            java.star_star = at(2); // BLAZE PATCH 0061
++                        } // BLAZE PATCH 0061
++                    } // BLAZE PATCH 0061
++                } // BLAZE PATCH 0061
++                span.java_call = crate::eval::runtime::java_call::JavaCall(Some( // BLAZE PATCH 0061
++                    self.eval.module_env.frozen_heap().alloc_any_value(java), // BLAZE PATCH 0061
++                )); // BLAZE PATCH 0061
+                 let left = self.expr(left)?;
+                 let args = self.args(args)?;
+                 CallCompiled::call(span, left, args, &mut self.opt_ctx())
+@@ -1443,8 +1474,11 @@
                  // Desugar f"foo{x}bar{y}" to "foo{}bar{}.format(x, y)"
                  let heap = self.eval.module_env.frozen_heap();
  
@@ -964,7 +1149,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                      span: fstring_span,
                  };
                  let method = IrSpanned {
-@@ -1453,8 +1458,36 @@
+@@ -1453,8 +1487,36 @@
                  };
  
                  let mut args = ArgsCompiledValue::default();
@@ -1003,7 +1188,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                  }
  
                  CallCompiled::call(span, method, args, &mut self.opt_ctx())
-@@ -1483,3 +1516,30 @@
+@@ -1483,3 +1545,30 @@
              .collect::<Result<_, CompilerInternalError>>()
      }
  }
@@ -1185,7 +1370,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          )
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/stmt.rs starlark/src/eval/compiler/stmt.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/stmt.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/compiler/stmt.rs	2026-11-19 13:25:54.974901735 -0700
++++ starlark/src/eval/compiler/stmt.rs	2026-11-26 11:44:47.205048961 -0700
 @@ -68,6 +68,8 @@
  use crate::values::Value;
  use crate::values::ValueError;
@@ -1315,17 +1500,30 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                          *scope_id,
                          params,
                          return_type.as_deref(),
-@@ -766,6 +804,8 @@
+@@ -766,8 +804,12 @@
              StmtP::For(ForP { var, over, body }) => {
                  let over = list_to_tuple(over);
                  let var = self.assign_target(var)?;
 +                // Java Eval.execFor: an assignment error is located at the `for`.
 +                let var = var.located_at(span); // BLAZE PATCH 0028
                  let over = self.expr(&over)?;
-                 let st = self.stmt(body, false)?;
+-                let st = self.stmt(body, false)?;
++                // BLAZE PATCH 0061: Java Eval.execFor sets the `for` on errors of the body.
++                let for_start = Some(span.span.begin_point()); // BLAZE PATCH 0061
++                let st = self.with_java_handler(for_start, |this| this.stmt(body, false))?; // BLAZE PATCH 0061
                  Ok(StmtsCompiled::for_stmt(span, var, over, st))
-@@ -801,6 +841,9 @@
-                 let rhs = self.expr(rhs)?;
+             }
+             StmtP::Return(None) => Ok(StmtsCompiled::one(IrSpanned {
+@@ -798,16 +840,33 @@
+             }
+             StmtP::Expression(e) => self.stmt_expr(e),
+             StmtP::Assign(AssignP { lhs, ty, rhs }) => {
+-                let rhs = self.expr(rhs)?;
++                // BLAZE PATCH 0061: Java Eval.execAssignment sets the `=` on errors of the
++                // right-hand side.
++                let after_lhs = ty.as_ref().map_or(lhs.span.end(), |t| t.span.end()); // BLAZE PATCH 0061
++                let eq = self.java_token(after_lhs, rhs.span.begin(), "="); // BLAZE PATCH 0061
++                let rhs = self.with_java_handler(eq, |this| this.expr(rhs))?; // BLAZE PATCH 0061
                  let ty = self.expr_for_type(ty.as_ref());
                  let lhs = self.assign_target(lhs)?;
 +                // Java Eval.execAssignment: an error assigning to `x[i]` or unpacking is located
@@ -1334,16 +1532,84 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                  Ok(StmtsCompiled::one(IrSpanned {
                      span,
                      node: StmtCompiled::Assign(lhs, ty, rhs),
+                 }))
+             }
+             StmtP::AssignModify(lhs, op, rhs) => {
+-                let rhs = self.expr(rhs)?;
++                // BLAZE PATCH 0061: Java Eval.execAssignment sets the operator on errors of the
++                // right-hand side; for `x.f op= y` the `.` (execAugmentedAssignment's inner try).
++                let handler = match &lhs.node { // BLAZE PATCH 0061
++                    AssignTargetP::Dot(e, f) => self.java_token(e.span.end(), f.span.begin(), "."), // BLAZE PATCH 0061
++                    _ => self.java_token( // BLAZE PATCH 0061
++                        lhs.span.end(), // BLAZE PATCH 0061
++                        rhs.span.begin(), // BLAZE PATCH 0061
++                        format!("{op}").trim(), // BLAZE PATCH 0061
++                    ), // BLAZE PATCH 0061
++                }; // BLAZE PATCH 0061
++                let rhs = self.with_java_handler(handler, |this| this.expr(rhs))?; // BLAZE PATCH 0061
+                 self.assign_modify(span.span.span(), lhs, rhs, *op)
+             }
+             StmtP::Load(..) => unreachable!(),
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler.rs starlark/src/eval/compiler.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/eval/compiler.rs	2026-11-26 11:44:36.747361834 -0700
+@@ -92,6 +92,35 @@
+     pub(crate) top_level_stmt_count: usize,
+     /// Set with `@starlark-rust: typecheck`.
+     pub(crate) typecheck: bool,
++    /// BLAZE PATCH 0061: the innermost enclosing node whose Java evaluation sets the location of
++    /// an error raised inside it without one (`eval::runtime::java_call`); `None` at the top of
++    /// a function body.
++    pub(crate) java_handler: Option<crate::eval::runtime::frozen_file_span::FrozenFileSpan>,
++}
++
++impl Compiler<'_, '_, '_, '_> {
++    /// BLAZE PATCH 0061: runs `f` with `handler` as [`Compiler::java_handler`].
++    pub(crate) fn with_java_handler<R>(
++        &mut self,
++        handler: Option<crate::eval::runtime::frozen_file_span::FrozenFileSpan>,
++        f: impl FnOnce(&mut Self) -> R,
++    ) -> R {
++        let saved = std::mem::replace(&mut self.java_handler, handler);
++        let r = f(self);
++        self.java_handler = saved;
++        r
++    }
++
++    /// BLAZE PATCH 0061: `needle` between `from` and `to` in this file, as a span.
++    pub(crate) fn java_token(
++        &self,
++        from: crate::codemap::Pos,
++        to: crate::codemap::Pos,
++        needle: &str,
++    ) -> Option<crate::eval::runtime::frozen_file_span::FrozenFileSpan> {
++        crate::eval::runtime::java_call::find_token(&self.codemap, from, to, needle)
++            .map(|s| crate::eval::runtime::frozen_file_span::FrozenFileSpan::new(self.codemap, s))
++    }
+ }
+ 
+ impl Compiler<'_, '_, '_, '_> {
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/arguments.rs starlark/src/eval/runtime/arguments.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/arguments.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/runtime/arguments.rs	2026-11-19 16:23:55.119408119 -0700
-@@ -63,6 +63,17 @@
++++ starlark/src/eval/runtime/arguments.rs	2026-11-26 11:43:27.757149356 -0700
+@@ -63,6 +63,28 @@
      #[error("Wrong number of positional arguments, expected {}, got {got}",
          if min == max {min.to_string()} else {format!("between {min} and {max}")})]
      WrongNumberOfArgs { min: usize, max: usize, got: usize },
 +    /// BLAZE PATCH 0052: an argument error with Java's text.
 +    #[error("{0}")]
 +    Bazel(String),
++    /// BLAZE PATCH 0061: Java's text of an error Java raises while binding an argument
++    /// (`ArgumentProcessor.addPositionalArg` / `addNamedArg`).
++    #[error("{0}")]
++    JavaBinding(String),
++    /// BLAZE PATCH 0061: Java's text for `*x` that is not iterable (Eval.java:735).
++    #[error("{0}")]
++    JavaStar(String),
++    /// BLAZE PATCH 0061: Java's text for `**x` that is not a dict or has a key that is not a
++    /// string (Eval.java:749, 754).
++    #[error("{0}")]
++    JavaStarStar(String),
 +    /// BLAZE PATCH 0056: a name given twice to a builtin's `**kwargs` (Java
 +    /// BuiltinFunction.java:343 addNamedArg); the call names the builtin
 +    /// (`BazelParamTypeError::with_function`).
@@ -1355,13 +1621,13 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  }
  
  impl From<FunctionError> for crate::Error {
-@@ -294,7 +305,12 @@
+@@ -294,7 +316,12 @@
                  if self.0.names().names().is_empty() {
                      match kwargs.downcast_ref_key_string() {
                          Some(kwargs) => Ok(kwargs.clone()),
 -                        None => Err(FunctionError::ArgsValueIsNotString.into()),
 +                        // BLAZE PATCH 0052: Java's text (Eval.java:754 evalCall).
-+                        None => Err(FunctionError::Bazel(format!( // BLAZE PATCH 0052
++                        None => Err(FunctionError::JavaStarStar(format!( // BLAZE PATCH 0052, 0061
 +                            "keywords must be strings, not {}", // BLAZE PATCH 0052
 +                            kwargs.keys().find(|k| k.unpack_str().is_none()).map_or("?", |k| k.get_type()) // BLAZE PATCH 0052
 +                        )) // BLAZE PATCH 0052
@@ -1369,7 +1635,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                      }
                  } else {
                      // We have to insert the names before the kwargs since the iteration order is observable
-@@ -311,7 +327,8 @@
+@@ -311,7 +338,8 @@
                          let k = Hashed::new_unchecked(k.hash(), s);
                          let old = result.insert_hashed(k, v);
                          if unlikely(old.is_some()) {
@@ -1379,14 +1645,14 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                                  name: s.as_str().to_owned(),
                              }
                              .into());
-@@ -352,7 +369,13 @@
+@@ -352,7 +380,13 @@
      ) -> crate::Result<impl Iterator<Item = Value<'v>> + 'b> {
          let tail = match self.0.args {
              None => Either::Left(iter::empty()),
 -            Some(args) => Either::Right(args.iterate(heap)?),
 +            // BLAZE PATCH 0052: Java's text (Eval.java:735 evalCall).
 +            Some(args) => Either::Right(args.iterate(heap).map_err(|_| { // BLAZE PATCH 0052
-+                crate::Error::from(FunctionError::Bazel(format!( // BLAZE PATCH 0052
++                crate::Error::from(FunctionError::JavaStar(format!( // BLAZE PATCH 0052, 0061
 +                    "argument after * must be an iterable, not {}", // BLAZE PATCH 0052
 +                    args.get_type() // BLAZE PATCH 0052
 +                ))) // BLAZE PATCH 0052
@@ -1394,34 +1660,34 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          };
          Ok(self.0.pos.iter().copied().chain(tail))
      }
-@@ -366,7 +389,8 @@
+@@ -366,7 +400,8 @@
          match self.0.kwargs {
              None => Ok(None),
              Some(kwargs) => match DictRef::from_value(kwargs) {
 -                None => Err(FunctionError::KwArgsIsNotDict.into()),
 +                // BLAZE PATCH 0052: Java's text (Eval.java:749 evalCall).
-+                None => Err(FunctionError::Bazel(format!("argument after ** must be a dict, not {}", kwargs.get_type())).into()), // BLAZE PATCH 0052
++                None => Err(FunctionError::JavaStarStar(format!("argument after ** must be a dict, not {}", kwargs.get_type())).into()), // BLAZE PATCH 0052, 0061
                  Some(x) => Ok(Some(x)),
              },
          }
-@@ -376,7 +400,8 @@
+@@ -376,7 +411,8 @@
      #[inline(always)]
      pub(crate) fn unpack_kwargs_key_as_value(k: Value<'v>) -> crate::Result<StringValue<'v>> {
          match StringValue::new(k) {
 -            None => Err(FunctionError::ArgsValueIsNotString.into()),
 +            // BLAZE PATCH 0052: Java's text (Eval.java:754 evalCall).
-+            None => Err(FunctionError::Bazel(format!("keywords must be strings, not {}", k.get_type())).into()), // BLAZE PATCH 0052
++            None => Err(FunctionError::JavaStarStar(format!("keywords must be strings, not {}", k.get_type())).into()), // BLAZE PATCH 0052, 0061
              Some(k) => Ok(k),
          }
      }
-@@ -452,7 +477,13 @@
+@@ -452,7 +488,13 @@
              // with a *args is very rare.
              let args = match x.0.args {
                  None => StarlarkIterator::empty(heap),
 -                Some(args) => args.iterate(heap)?,
 +                // BLAZE PATCH 0052: Java's text (Eval.java:735 evalCall).
 +                Some(args) => args.iterate(heap).map_err(|_| { // BLAZE PATCH 0052
-+                    crate::Error::from(FunctionError::Bazel(format!( // BLAZE PATCH 0052
++                    crate::Error::from(FunctionError::JavaStar(format!( // BLAZE PATCH 0052, 0061
 +                        "argument after * must be an iterable, not {}", // BLAZE PATCH 0052
 +                        args.get_type() // BLAZE PATCH 0052
 +                    ))) // BLAZE PATCH 0052
@@ -1465,7 +1731,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          self.stack[1..self.count].map(|x| x.function)
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/evaluator.rs starlark/src/eval/runtime/evaluator.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/evaluator.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/runtime/evaluator.rs	2026-11-19 13:10:01.998312854 -0700
++++ starlark/src/eval/runtime/evaluator.rs	2026-11-26 11:43:02.883794874 -0700
 @@ -47,6 +47,7 @@
  use crate::eval::compiler::def::CopySlotFromParent;
  use crate::eval::compiler::def::Def;
@@ -1509,7 +1775,37 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              max_heap_size: None,
              max_tick_count: None,
              frame_stack: Vec::with_capacity(DEFAULT_STACK_SIZE),
-@@ -584,7 +598,8 @@
+@@ -537,15 +551,27 @@
+     ) -> crate::Result<R> {
+         #[cold]
+         #[inline(never)]
+-        fn add_diagnostics(mut e: crate::Error, me: &Evaluator) -> crate::Error {
++        fn add_diagnostics(
++            mut e: crate::Error,
++            me: &Evaluator,
++            span: Option<&'static FrameSpan>, // BLAZE PATCH 0061
++        ) -> crate::Error {
++            let fresh = e.call_stack().frames.is_empty(); // BLAZE PATCH 0061
+             // Make sure we capture the call_stack before popping things off it
+             e.set_call_stack(|| me.call_stack.to_diagnostic_frames(InlinedFrames::default()));
++            // BLAZE PATCH 0061: an argument binding error, or an error Java raises before
++            // entering the callee, where Bazel reports it.
++            if fresh { // BLAZE PATCH 0061
++                if let Some(span) = span { // BLAZE PATCH 0061
++                    crate::eval::runtime::java_call::relocate(&mut e, span); // BLAZE PATCH 0061
++                } // BLAZE PATCH 0061
++            } // BLAZE PATCH 0061
+             e
+         }
+ 
+         self.call_stack.push(function, span)?;
+         // Must always call .pop regardless
+-        let res = within(self).map_err(|e| add_diagnostics(e, self));
++        let res = within(self).map_err(|e| add_diagnostics(e, self, span)); // BLAZE PATCH 0061
+         self.call_stack.pop();
+         res
+     }
+@@ -584,7 +610,8 @@
                  Ok(Some(e)) => e.get_slot_name(slot).map(|s| s.as_str().to_owned()),
              }
              .unwrap_or_else(|| "<unknown>".to_owned());
@@ -1519,7 +1815,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                  name,
              ))
          }
-@@ -606,8 +621,10 @@
+@@ -606,8 +633,10 @@
          };
          let names = &def_info.used;
          let name = names[slot.0 as usize].as_str().to_owned();
@@ -1532,7 +1828,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          ))
      }
  
-@@ -955,6 +972,69 @@
+@@ -955,6 +984,69 @@
          }
      }
  
@@ -1604,8 +1900,21 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      pub fn set_max_callstack_size(&mut self, stack_size: usize) -> anyhow::Result<()> {
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/frame_span.rs starlark/src/eval/runtime/frame_span.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/frame_span.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/runtime/frame_span.rs	2026-11-18 15:45:28.482923649 -0700
-@@ -50,6 +50,44 @@
++++ starlark/src/eval/runtime/frame_span.rs	2026-11-26 11:43:02.874491591 -0700
+@@ -40,6 +40,8 @@
+     pub(crate) span: FrozenFileSpan,
+     /// Parent frames.
+     pub(crate) inlined_frames: InlinedFrames,
++    /// BLAZE PATCH 0061: Java's call-site spans of a call expression's span.
++    pub(crate) java_call: crate::eval::runtime::java_call::JavaCall, // BLAZE PATCH 0061
+ }
+ 
+ impl FrameSpan {
+@@ -47,13 +49,55 @@
+         FrameSpan {
+             span,
+             inlined_frames: InlinedFrames { frames: None },
++            java_call: crate::eval::runtime::java_call::JavaCall(None), // BLAZE PATCH 0061
          }
      }
  
@@ -1630,6 +1939,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +                    return FrameSpan { // BLAZE PATCH 0028
 +                        span: FrozenFileSpan::new_unchecked(file, colon), // BLAZE PATCH 0028
 +                        inlined_frames: self.inlined_frames, // BLAZE PATCH 0028
++                        java_call: crate::eval::runtime::java_call::JavaCall(None), // BLAZE PATCH 0061
 +                    }; // BLAZE PATCH 0028
 +                } // BLAZE PATCH 0028
 +                _ => {} // BLAZE PATCH 0028
@@ -1644,12 +1954,26 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +        FrameSpan { // BLAZE PATCH 0028
 +            span: self.span.begin_point(), // BLAZE PATCH 0028
 +            inlined_frames: self.inlined_frames, // BLAZE PATCH 0028
++            java_call: crate::eval::runtime::java_call::JavaCall(None), // BLAZE PATCH 0061
 +        } // BLAZE PATCH 0028
 +    } // BLAZE PATCH 0028
 +
      pub(crate) fn end_span(&self) -> FrameSpan {
          FrameSpan {
              span: self.span.end_span(),
+             inlined_frames: self.inlined_frames,
++            java_call: crate::eval::runtime::java_call::JavaCall(None), // BLAZE PATCH 0061
+         }
+     }
+ }
+@@ -71,6 +115,7 @@
+         FrameSpan {
+             span: self.span.merge(&other.span),
+             inlined_frames: self.inlined_frames,
++            java_call: crate::eval::runtime::java_call::JavaCall(None), // BLAZE PATCH 0061
+         }
+     }
+ }
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/frozen_file_span.rs starlark/src/eval/runtime/frozen_file_span.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/frozen_file_span.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/eval/runtime/frozen_file_span.rs	2026-11-18 15:42:52.158278344 -0700
@@ -1670,7 +1994,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              file: self.file,
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/inlined_frame.rs starlark/src/eval/runtime/inlined_frame.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/inlined_frame.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/runtime/inlined_frame.rs	2026-11-18 07:02:46.445365955 -0700
++++ starlark/src/eval/runtime/inlined_frame.rs	2026-11-26 11:42:52.443582049 -0700
 @@ -75,7 +75,8 @@
          }
      }
@@ -1681,9 +2005,34 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          let mut r = Vec::new();
          let mut frames_iter = self;
          while let Some(frames) = frames_iter.frames {
+@@ -99,6 +100,7 @@
+             span: FrameSpan {
+                 span: span.span,
+                 inlined_frames: *self,
++                java_call: crate::eval::runtime::java_call::JavaCall(None), // BLAZE PATCH 0061
+             },
+             fun,
+         }));
+@@ -107,6 +109,7 @@
+                 span: FrameSpan {
+                     span: f.span.span,
+                     inlined_frames: *self,
++                    java_call: crate::eval::runtime::java_call::JavaCall(None), // BLAZE PATCH 0061
+                 },
+                 fun: f.fun,
+             }));
+@@ -180,6 +183,7 @@
+             FrameSpan {
+                 span: FrozenFileSpan::new(codemap, codemap.full_span()),
+                 inlined_frames: InlinedFrames::default(),
++                java_call: crate::eval::runtime::java_call::JavaCall(None), // BLAZE PATCH 0061
+             }
+         }
+ 
+Only in starlark/src/eval/runtime: java_call.rs
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/params/spec.rs starlark/src/eval/runtime/params/spec.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/params/spec.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/runtime/params/spec.rs	2026-11-19 13:24:17.936454482 -0700
++++ starlark/src/eval/runtime/params/spec.rs	2026-11-26 11:43:36.973319657 -0700
 @@ -124,6 +124,7 @@
  /// Builder for [`ParametersSpec`]
  pub(crate) struct ParametersSpecBuilder<V> {
@@ -1750,7 +2099,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              params: Vec::with_capacity(capacity),
              names: SymbolMap::with_capacity(capacity),
              positional_only: 0,
-@@ -623,9 +646,70 @@
+@@ -623,9 +646,77 @@
              return Ok(());
          }
  
@@ -1774,46 +2123,53 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +        'v: 'a,
 +    {
 +        let mut p = JavaArgs::new(self);
-+        let mut run = || -> Result<(), String> {
++        // BLAZE PATCH 0061: each error says which step of Java's evalCall raised it (binding an
++        // argument, `*x`, `**x`, or the callee's `call`), for where Bazel locates it
++        // (`eval::runtime::java_call`).
++        let binding = FunctionError::JavaBinding; // BLAZE PATCH 0061
++        let mut run = || -> Result<(), FunctionError> {
 +            for _ in args.pos() {
-+                p.add_positional()?;
++                p.add_positional().map_err(binding)?;
 +            }
 +            for (_, name) in args.names().names() {
-+                p.add_named(name.as_str())?;
++                p.add_named(name.as_str()).map_err(binding)?;
 +            }
 +            if let Some(star) = args.args() {
 +                // Java: net/starlark/java/eval/Eval.java:733 Eval.evalCall
 +                let iter = star.iterate(heap).map_err(|_| {
-+                    format!(
++                    FunctionError::JavaStar(format!(
 +                        "argument after * must be an iterable, not {}",
 +                        star.get_type()
-+                    )
++                    ))
 +                })?;
 +                for _ in iter {
-+                    p.add_positional()?;
++                    p.add_positional().map_err(binding)?;
 +                }
 +            }
 +            if let Some(kwargs) = args.kwargs() {
 +                let Some(dict) = DictRef::from_value(kwargs) else {
-+                    return Err(format!(
++                    return Err(FunctionError::JavaStarStar(format!(
 +                        "argument after ** must be a dict, not {}",
 +                        kwargs.get_type()
-+                    ));
++                    )));
 +                };
 +                let keys: Vec<Value<'v>> = dict.keys().collect();
 +                drop(dict);
 +                for k in keys {
 +                    let Some(k) = k.unpack_str() else {
-+                        return Err(format!("keywords must be strings, not {}", k.get_type()));
++                        return Err(FunctionError::JavaStarStar(format!(
++                            "keywords must be strings, not {}",
++                            k.get_type()
++                        )));
 +                    };
-+                    p.add_named(k)?;
++                    p.add_named(k).map_err(binding)?;
 +                }
 +            }
-+            p.call()
++            p.call().map_err(FunctionError::Bazel)
 +        };
 +        match run() {
 +            Ok(()) => None,
-+            Err(message) => Some(FunctionError::Bazel(message).into()),
++            Err(e) => Some(e.into()),
 +        }
 +    }
 +
@@ -1821,7 +2177,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      fn collect_slow<'a, A: ArgumentsImpl<'v, 'a>>(
          &self,
          args: &A,
-@@ -1005,3 +1089,273 @@
+@@ -1005,3 +1096,273 @@
          self.as_value().can_fill_with_args_impl(pos, names)
      }
  }
@@ -2095,9 +2451,20 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +        Ok(())
 +    }
 +}
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime.rs starlark/src/eval/runtime.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/eval/runtime.rs	2026-11-26 11:42:44.866975778 -0700
+@@ -23,6 +23,7 @@
+ pub(crate) mod frame_span;
+ pub(crate) mod frozen_file_span;
+ pub(crate) mod inlined_frame;
++pub(crate) mod java_call; // BLAZE PATCH 0061
+ pub(crate) mod params;
+ pub(crate) mod profile;
+ pub(crate) mod rust_loc;
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval.rs starlark/src/eval.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval.rs	2026-11-18 15:50:36.318451392 -0700
++++ starlark/src/eval.rs	2026-11-26 11:44:36.748816935 -0700
 @@ -42,6 +42,8 @@
  pub use runtime::profile::mode::ProfileMode;
  pub use soft_error::SoftErrorHandler;
@@ -2141,6 +2508,14 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  impl<'v, 'a, 'e> Evaluator<'v, 'a, 'e> {
      /// Evaluate an [`AstModule`] with this [`Evaluator`], modifying the in-scope
      /// [`Module`](crate::environment::Module) as appropriate.
+@@ -144,6 +173,7 @@
+             check_types: dialect.enable_types == DialectTypes::Enable,
+             top_level_stmt_count,
+             typecheck,
++            java_handler: None, // BLAZE PATCH 0061
+         };
+ 
+         let res = compiler.eval_module(cst, local_names);
 Only in starlark/src/stdlib/funcs: java_timsort.rs
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/stdlib/funcs/min_max.rs starlark/src/stdlib/funcs/min_max.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/stdlib/funcs/min_max.rs	2006-07-23 19:21:28.000000000 -0600
@@ -2665,7 +3040,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          AlignedSize::new_bytes(1 << 31)
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/layout/value.rs starlark/src/values/layout/value.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/layout/value.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/layout/value.rs	2026-11-19 13:12:22.118866180 -0700
++++ starlark/src/values/layout/value.rs	2026-11-26 11:37:07.539999860 -0700
 @@ -575,6 +575,15 @@
          self.get_ref().at(index, heap)
      }
@@ -2785,6 +3160,15 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          match json_stack_push(*self) {
              Ok(_guard) => erased_serde::serialize(self.get_ref().as_serialize(), s),
              Err(..) => Err(serde::ser::Error::custom(ToJsonCycleError(self.get_type()))),
+@@ -1424,6 +1500,8 @@
+     }
+ 
+     fn write_hash(self, hasher: &mut StarlarkHasher) -> crate::Result<()> {
++        // BLAZE PATCH 0060: hashing a nested tuple recurses like equality does.
++        let _guard = stack_guard::stack_guard()?; // BLAZE PATCH 0060
+         self.get_ref().write_hash(hasher)
+     }
+ 
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/layout/vtable.rs starlark/src/values/layout/vtable.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/layout/vtable.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/layout/vtable.rs	2026-11-18 15:32:51.831530703 -0700
@@ -2884,7 +3268,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          } else {
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/stack_guard.rs starlark/src/values/stack_guard.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/stack_guard.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/stack_guard.rs	2026-11-25 10:53:22.505532689 -0700
++++ starlark/src/values/stack_guard.rs	2026-11-26 11:37:07.539468853 -0700
 @@ -24,11 +24,11 @@
  
  // Maximum recursion level for comparison
@@ -2902,9 +3286,93 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  
  // A thread-local counter is used to detect too deep recursion.
  //
+@@ -77,9 +77,83 @@
+     if unlikely(STACK_DEPTH.with(|stack_depth| stack_depth.get()) >= MAX_RECURSION) {
+         return Err(ControlError::TooManyRecursionLevel.into());
+     }
++    // BLAZE PATCH 0060 (round 2): equality, comparison and hashing also run on threads with
++    // smaller stacks than the 256 MiB evaluation threads (Blaze's execution-phase evaluator
++    // threads have 16 MiB, its gRPC command threads 8 MiB or more): stop while at least
++    // `STACK_MARGIN` bytes of the current thread's stack are left, whatever the depth.
++    if unlikely(remaining_stack().is_some_and(|r| r < STACK_MARGIN)) { // BLAZE PATCH 0060
++        return Err(ControlError::TooManyRecursionLevel.into()); // BLAZE PATCH 0060
++    } // BLAZE PATCH 0060
+     Ok(())
+ }
+ 
++/// BLAZE PATCH 0060: stack left when a guarded recursion stops (the error path and the deepest
++/// recursion between two guarded calls must fit in it).
++const STACK_MARGIN: usize = 1 << 20;
++
++thread_local! {
++    /// BLAZE PATCH 0060: the lowest address of the current thread's stack (0: not looked up yet;
++    /// `usize::MAX`: unknown).
++    static STACK_LOW: Cell<usize> = const { Cell::new(0) };
++}
++
++/// BLAZE PATCH 0060: bytes of the current thread's stack below the caller's frame, from glibc's
++/// `pthread_getattr_np` (Blaze runs on Linux x86-64 only); `None` where it is unknown.
++#[inline(never)]
++fn remaining_stack() -> Option<usize> {
++    let marker = 0u8;
++    let sp = std::hint::black_box(&marker) as *const u8 as usize;
++    let low = STACK_LOW.with(|low| {
++        if low.get() == 0 {
++            low.set(stack_low().unwrap_or(usize::MAX));
++        }
++        low.get()
++    });
++    if low == usize::MAX || sp < low {
++        return None;
++    }
++    Some(sp - low)
++}
++
++#[cfg(all(target_os = "linux", target_env = "gnu"))]
++fn stack_low() -> Option<usize> {
++    use std::os::raw::c_int;
++    use std::os::raw::c_void;
++    /// glibc's `pthread_attr_t` (56 bytes on x86-64), as opaque storage.
++    #[repr(C, align(16))]
++    struct PthreadAttr([u8; 128]);
++    unsafe extern "C" {
++        fn pthread_self() -> usize;
++        fn pthread_getattr_np(thread: usize, attr: *mut PthreadAttr) -> c_int;
++        fn pthread_attr_getstack(
++            attr: *const PthreadAttr,
++            stackaddr: *mut *mut c_void,
++            stacksize: *mut usize,
++        ) -> c_int;
++        fn pthread_attr_destroy(attr: *mut PthreadAttr) -> c_int;
++    }
++    let mut attr = PthreadAttr([0; 128]);
++    // SAFETY: glibc fills `attr` (large enough) for the calling thread; it is destroyed below.
++    unsafe {
++        if pthread_getattr_np(pthread_self(), &mut attr) != 0 {
++            return None;
++        }
++        let mut addr: *mut c_void = std::ptr::null_mut();
++        let mut size: usize = 0;
++        let r = pthread_attr_getstack(&attr, &mut addr, &mut size);
++        pthread_attr_destroy(&mut attr);
++        if r != 0 || addr.is_null() {
++            return None;
++        }
++        Some(addr as usize)
++    }
++}
++
++#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
++fn stack_low() -> Option<usize> {
++    None
++}
++
+ /// Try increment stack depth.
+ ///
+ /// Return opaque object which resets stack to previous value
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/traits.rs starlark/src/values/traits.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/traits.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/traits.rs	2026-11-19 13:14:27.607700659 -0700
++++ starlark/src/values/traits.rs	2026-11-26 11:43:10.140452000 -0700
 @@ -375,7 +375,8 @@
  
      /// Invoked to print `repr` when a cycle is the object stack is detected.
@@ -2915,7 +3383,24 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      /// Return a string representation of self, as returned by the `str()` function.
-@@ -470,6 +471,18 @@
+@@ -462,7 +463,15 @@
+         _args: &Arguments<'v, '_>,
+         _eval: &mut Evaluator<'v, '_, '_>,
+     ) -> crate::Result<Value<'v>> {
+-        ValueError::unsupported(self, "call()")
++        // BLAZE PATCH 0061: Java's text (Starlark.java:904 getStarlarkCallable), marked as raised
++        // before the callee is entered (`eval::runtime::java_call`).
++        let _ = ValueError::unsupported::<(), Self>; // BLAZE PATCH 0061
++        Err(crate::Error::new_value( // BLAZE PATCH 0061
++            crate::eval::runtime::java_call::JavaNotCallable(format!( // BLAZE PATCH 0061
++                "'{}' object is not callable", // BLAZE PATCH 0061
++                Self::TYPE // BLAZE PATCH 0061
++            )), // BLAZE PATCH 0061
++        )) // BLAZE PATCH 0061
+     }
+ 
+     /// Return the result of `a[index]` if `a` is indexable.
+@@ -470,6 +479,18 @@
          ValueError::unsupported_with(self, "[]", index)
      }
  
@@ -2934,7 +3419,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      /// Return the result of `a[index0, index1]` if `a` is indexable by two parameters.
      fn at2(
          &self,
-@@ -644,6 +657,41 @@
+@@ -644,6 +665,41 @@
          Vec::new()
      }
  
@@ -2976,7 +3461,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      /// Tell whether `other` is in the current value, if it is a container.
      ///
      /// # Examples
-@@ -659,6 +707,18 @@
+@@ -659,6 +715,18 @@
          ValueError::unsupported_owned(other.get_type(), "in", Some(Self::TYPE))
      }
  
@@ -2995,7 +3480,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      /// Apply the `+` unary operator to the current value.
      ///
      /// # Examples
-@@ -832,6 +892,13 @@
+@@ -832,6 +900,13 @@
          ValueError::unsupported_with(self, "|", other)
      }
  
@@ -3009,7 +3494,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      /// Bitwise `^` operator.
      fn bit_xor(&self, other: Value<'v>, _heap: Heap<'v>) -> crate::Result<Value<'v>> {
          ValueError::unsupported_with(self, "^", other)
-@@ -884,9 +951,12 @@
+@@ -884,9 +959,12 @@
      /// # "#);
      /// ```
      fn set_at(&self, _index: Value<'v>, _new_value: Value<'v>) -> crate::Result<()> {
@@ -3977,7 +4462,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  }
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/function.rs starlark/src/values/types/function.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/function.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/function.rs	2026-11-25 10:52:26.706140917 -0700
++++ starlark/src/values/types/function.rs	2026-11-26 12:29:17.083420151 -0700
 @@ -67,6 +67,10 @@
  /// Return value of `type(any function)`.
  pub const FUNCTION_TYPE: &str = "function";
@@ -4013,7 +4498,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  pub(crate) struct NativeFunction {
      #[derivative(Debug = "ignore")]
      pub(crate) function: NativeFunc,
-@@ -148,8 +158,12 @@
+@@ -148,15 +158,21 @@
  }
  
  /// Define the function type
@@ -4027,7 +4512,17 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      fn invoke(
          &self,
          _me: Value<'v>,
-@@ -193,18 +207,11 @@
+         args: &Arguments<'v, '_>,
+         eval: &mut Evaluator<'v, '_, '_>,
+     ) -> crate::Result<Value<'v>> {
+-        self.function.invoke(eval, args)
++        self.function.invoke(eval, args).map_err(|e| { // BLAZE PATCH 0062
++            java_argument_order(e, &self.docs, args, &self.name, None, eval.heap()) // BLAZE PATCH 0062
++        }) // BLAZE PATCH 0062
+     }
+ 
+     fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
+@@ -193,18 +209,11 @@
          Some(self.ty.dupe())
      }
  
@@ -4051,7 +4546,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      fn at2(
-@@ -265,7 +272,18 @@
+@@ -265,7 +274,18 @@
          this: Value<'v>,
          args: &Arguments<'v, '_>,
      ) -> crate::Result<Value<'v>> {
@@ -4071,7 +4566,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  }
  
-@@ -386,11 +404,22 @@
+@@ -386,23 +406,113 @@
      }
  }
  
@@ -4095,6 +4590,98 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      fn invoke(
          &self,
          _me: Value<'v>,
+         args: &Arguments<'v, '_>,
+         eval: &mut Evaluator<'v, '_, '_>,
+     ) -> crate::Result<Value<'v>> {
++        let this = self.this.to_value(); // BLAZE PATCH 0062
+         self.method
+             .function
+-            .invoke(eval, self.this.to_value(), args)
++            .invoke(eval, this, args)
++            .map_err(|e| { // BLAZE PATCH 0062
++                java_argument_order( // BLAZE PATCH 0062
++                    e, &self.method.docs, args, &self.method.name, Some(this.get_type()), eval.heap(), // BLAZE PATCH 0062
++                ) // BLAZE PATCH 0062
++            }) // BLAZE PATCH 0062
+     }
+ 
+     fn documentation(&self) -> DocItem {
+         self.method.documentation()
+     }
+ }
++
++/// BLAZE PATCH 0062: Java's order of a builtin's argument checks.
++///
++/// Java's `BuiltinFunction` checks each argument's type as it binds it (`checkParamValue`, from
++/// `addPositionalArg` and `addNamedArg` in the order of the call: positional arguments, then
++/// named ones as written) and reports a wrong number of arguments or a missing one only after
++/// that, in `call`. starlark-rust reports the arity first, then unpacks the parameters in the
++/// order of declaration. When the builtin failed with an arity error or a parameter type error,
++/// this returns the first parameter type error in Java's order, if there is one; otherwise `e`.
++/// The parameter types are the function's documented ones (its derived unpacking types).
++// Java: net/starlark/java/eval/BuiltinFunction.java:117 BuiltinFunction.fastcall, :309
++// ArgumentProcessor.addPositionalArg, :322 addNamedArg
++pub(crate) fn java_argument_order<'v>(
++    e: crate::Error,
++    docs: &DocItem,
++    args: &Arguments<'v, '_>,
++    function: &str,
++    receiver: Option<&str>,
++    heap: Heap<'v>,
++) -> crate::Error {
++    use crate::eval::runtime::arguments::FunctionError;
++    use crate::values::unpack::BazelParamTypeError;
++    let reorder = match e.kind() {
++        crate::ErrorKind::Function(a) => {
++            matches!(a.downcast_ref::<FunctionError>(), Some(FunctionError::Bazel(_)))
++        }
++        crate::ErrorKind::Value(a) => a.downcast_ref::<BazelParamTypeError>().is_some(),
++        _ => false,
++    };
++    if !reorder {
++        return e;
++    }
++    let DocItem::Member(crate::docs::DocMember::Function(f)) = docs else {
++        return e;
++    };
++    let params = &f.params;
++    let positional: Vec<&crate::docs::DocParam> =
++        params.pos_only.iter().chain(&params.pos_or_named).collect();
++    let named: Vec<&crate::docs::DocParam> =
++        params.pos_or_named.iter().chain(&params.named_only).collect();
++    let mut order: Vec<(&crate::docs::DocParam, Value<'v>)> = Vec::new();
++    for (i, v) in args.0.pos.iter().enumerate() {
++        if let Some(p) = positional.get(i) {
++            order.push((p, *v));
++        }
++    }
++    for ((_, name), v) in args.0.names.names().iter().zip(args.0.named.iter()) {
++        if let Some(p) = named.iter().find(|p| p.name == name.as_str()) {
++            order.push((p, *v));
++        }
++    }
++    for (p, v) in order {
++        // Java's allowed classes from the table where it has the parameter (also for one
++        // starlark-rust takes as any value and the builtin checks itself), else the derived type.
++        let wrong = match crate::values::unpack::java_param_accepts(function, receiver, &p.name, v) {
++            Some(ok) => !ok,
++            None => {
++                !p.typ.is_any()
++                    && !crate::values::typing::TypeCompiled::from_ty(&p.typ, heap).matches(v)
++            }
++        };
++        if wrong {
++            return crate::Error::new_value(BazelParamTypeError {
++                function: Some(function.to_owned()),
++                receiver: receiver.map(str::to_owned),
++                param: p.name.clone(),
++                actual: v.get_type().to_owned(),
++                ty: p.typ.clone(),
++            });
++        }
++    }
++    e
++}
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/int/globals.rs starlark/src/values/types/int/globals.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/int/globals.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/types/int/globals.rs	2026-11-19 13:22:02.929457291 -0700
@@ -4433,6 +5020,22 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          }
          if self.is_zero() || other.is_zero() {
              return Ok(self.to_owned());
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/known_methods.rs starlark/src/values/types/known_methods.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/known_methods.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark/src/values/types/known_methods.rs	2026-11-26 11:47:17.265343995 -0700
+@@ -56,7 +56,11 @@
+         args: &Arguments<'v, '_>,
+         eval: &mut Evaluator<'v, '_, '_>,
+     ) -> crate::Result<Value<'v>> {
+-        self.imp.invoke(eval, this, args)
++        self.imp.invoke(eval, this, args).map_err(|e| { // BLAZE PATCH 0062
++            crate::values::function::java_argument_order( // BLAZE PATCH 0062
++                e, &self.method.docs, args, &self.method.name, Some(this.get_type()), eval.heap(), // BLAZE PATCH 0062
++            ) // BLAZE PATCH 0062
++        }) // BLAZE PATCH 0062
+     }
+ }
+ 
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/list/globals.rs starlark/src/values/types/list/globals.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/list/globals.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/types/list/globals.rs	2026-11-19 13:25:14.123631453 -0700
@@ -7980,7 +8583,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          heap: Heap<'v>,
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/unpack.rs starlark/src/values/unpack.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/unpack.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/unpack.rs	2026-11-25 10:21:07.156612644 -0700
++++ starlark/src/values/unpack.rs	2026-11-26 12:34:08.959019544 -0700
 @@ -226,17 +226,27 @@
      fn unpack_named_param(value: Value<'v>, param_name: &str) -> crate::Result<Self> {
          #[cold]
@@ -8018,7 +8621,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          Self::unpack_value(value)
              .into_anyhow_result()
              .with_context(|| {
-@@ -273,3 +283,237 @@
+@@ -273,3 +283,284 @@
          }
      }
  }
@@ -8100,10 +8703,11 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +    }
 +}
 +
-+/// BLAZE PATCH 0058: Java's `ParamDescriptor.getTypeErrorMessage` of every `@StarlarkMethod`
-+/// parameter of Bazel 9.3.2 (`receiver`, `method`, `param`, `want`; receiver is the declaring
-+/// class's `@StarlarkBuiltin` name or empty; want `-` for a parameter that accepts `Object`),
-+/// computed from the oracle's server jar by Bazel's own classes
++/// BLAZE PATCH 0058: Java's `ParamDescriptor.getTypeErrorMessage` of every Starlark method
++/// parameter of Bazel 9.3.2 (`receiver`, `method`, `param`, `want`; receiver is the
++/// `@StarlarkBuiltin` name of the class the method is called on, inherited methods included, or
++/// empty for global functions; want `-` for a parameter that accepts `Object`), printed by
++/// calling Bazel's `MethodDescriptor.of` and `getTypeErrorMessage` on the oracle's server jar
 +/// (`scripts/java-param-types/run`).
 +static JAVA_PARAM_TYPES: std::sync::LazyLock<
 +    std::collections::HashMap<(&'static str, &'static str), Vec<(&'static str, &'static str)>>,
@@ -8119,9 +8723,10 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +});
 +
 +/// BLAZE PATCH 0058: the "want" part of Java's parameter type error for a builtin named
-+/// `function` (a method of a value of type `receiver`), from Bazel's annotations when they
-+/// decide it: the receiver's entry, else the one text all of Bazel's methods of that name give
-+/// for that parameter. Otherwise (a builtin Bazel does not have, or a parameter Bazel declares
++/// `function` (a method of a value of type `receiver`, or a function when `receiver` is
++/// `None`), from Bazel's annotations when they decide it: the receiver's entry (a function's is
++/// the receiver `""`), else the one text all of Bazel's methods of that name give for that
++/// parameter. Otherwise (a builtin Bazel does not have, or a parameter Bazel declares
 +/// `Object`) [`java_allowed_types`]' derivation.
 +// Java: net/starlark/java/eval/ParamDescriptor.java:123 ParamDescriptor.getTypeErrorMessage
 +pub(crate) fn java_param_type_error_message(
@@ -8131,7 +8736,10 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +    ty: &Ty,
 +) -> String {
 +    if let Some(entries) = JAVA_PARAM_TYPES.get(&(function, param)) {
-+        let chosen = match receiver.and_then(|r| entries.iter().find(|(rc, _)| *rc == r)) {
++        // A method call takes its receiver's row; a function call the row of Java's global
++        // functions (receiver ""), as `configure_features(requested_features=)`.
++        let own = receiver.unwrap_or(""); // BLAZE PATCH 0058 (round 2)
++        let chosen = match entries.iter().find(|(rc, _)| *rc == own) {
 +            Some((_, want)) => Some(*want),
 +            None if entries.iter().all(|(_, w)| *w == entries[0].1) => Some(entries[0].1),
 +            None => None,
@@ -8143,6 +8751,38 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +        }
 +    }
 +    java_allowed_types(function, param, ty)
++}
++
++/// BLAZE PATCH 0062: whether `v` is one of Java's allowed classes of the builtin's parameter, as
++/// the table lists them (`Starlark.classType` names); `None` when the table has no text for it.
++// Java: net/starlark/java/eval/BuiltinFunction.java:388 checkParamValue
++pub(crate) fn java_param_accepts<'v>(
++    function: &str,
++    receiver: Option<&str>,
++    param: &str,
++    v: Value<'v>,
++) -> Option<bool> {
++    let entries = JAVA_PARAM_TYPES.get(&(function, param))?;
++    let own = receiver.unwrap_or("");
++    let want = match entries.iter().find(|(rc, _)| *rc == own) {
++        Some((_, w)) => *w,
++        None if entries.iter().all(|(_, w)| *w == entries[0].1) => entries[0].1,
++        None => return None,
++    };
++    if want == "-" {
++        return Some(true);
++    }
++    let names = want.replace(", or ", ", ").replace(" or ", ", ");
++    let ty = v.get_type();
++    Some(names.split(", ").any(|n| match n {
++        "NoneType" => v.is_none(),
++        "string" => v.unpack_str().is_some(),
++        "sequence" => ty == "list" || ty == "tuple",
++        "iterable" => matches!(ty, "list" | "tuple" | "dict" | "set" | "range" | "depset"),
++        "callable" => v.vtable().starlark_value.HAS_invoke,
++        "unknown" | "Object" => true,
++        other => ty == other,
++    }))
 +}
 +
 +/// BLAZE PATCH 0052: Java `ParamDescriptor.getTypeErrorMessage` for a parameter of a builtin:
@@ -8250,26 +8890,57 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +        None => Ok(None),
 +        Some(v) if v.is_none() => Ok(None),
 +        Some(v) if v.vtable().starlark_value.HAS_invoke => Ok(Some(v)),
-+        Some(v) => Err(crate::Error::new_other(anyhow::anyhow!(
-+            "in call to {function}(), parameter '{param}' got value of type '{}', want 'callable or NoneType'",
++        // BLAZE PATCH 0061: a binding error (Bazel's location for it, `eval::runtime::java_call`).
++        Some(v) => Err(bazel_argument_binding_error(format!(
++            "in call to {function}(), parameter '{param}' got value of type '{}', want 'callable or NoneType'", // BLAZE PATCH 0061
 +            v.get_type()
 +        ))),
 +    }
 +}
++
++/// BLAZE PATCH 0061: an error a host builtin raises while checking its arguments the way Java's
++/// `BuiltinFunction` binds them (`checkParamValue`: "in call to F(), parameter 'P' got value of
++/// type 'T', want 'W'"). Bazel reports such an error at the call's enclosing statement when the
++/// call has named or `*`/`**` arguments (`eval::runtime::java_call`); a plain error would stay
++/// at the `(`.
++pub fn bazel_argument_binding_error(message: String) -> crate::Error {
++    crate::Error::new_value(crate::eval::runtime::java_call::JavaArgBinding(message))
++}
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values.rs starlark/src/values.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values.rs	2026-11-19 13:25:20.880913168 -0700
-@@ -136,7 +136,7 @@
++++ starlark/src/values.rs	2026-11-26 11:43:45.453223133 -0700
+@@ -136,7 +136,8 @@
  pub mod type_repr;
  pub(crate) mod types;
  pub mod typing;
 -mod unpack;
 +pub(crate) mod unpack; // BLAZE PATCH 0052 (was private)
++pub use unpack::bazel_argument_binding_error; // BLAZE PATCH 0061
  mod unpack_and_discard;
  pub(crate) mod value_of;
  pub(crate) mod value_of_unchecked;
 Only in /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2: .cargo-ok
 Only in /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2: .cargo_vcs_info.json
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/diagnostic.rs starlark_syntax/src/diagnostic.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/diagnostic.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark_syntax/src/diagnostic.rs	2026-11-26 11:42:39.169236869 -0700
+@@ -112,6 +112,16 @@
+             self.0.diagnostic.call_stack = call_stack();
+         }
+     }
++
++    /// BLAZE PATCH 0061: the call stack, to move an error to where Bazel reports it.
++    pub fn call_stack_mut(&mut self) -> &mut CallStack {
++        &mut self.0.diagnostic.call_stack
++    }
++
++    /// BLAZE PATCH 0061: set the span, also when one is set.
++    pub fn replace_span(&mut self, span: Span, codemap: &CodeMap) {
++        self.0.diagnostic.span = Some(codemap.file_span(span));
++    }
+ }
+ 
+ impl<T: StdError> fmt::Display for WithDiagnostic<T> {
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/dialect.rs starlark_syntax/src/dialect.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/dialect.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark_syntax/src/dialect.rs	2026-11-19 12:15:56.388114254 -0700
@@ -8395,6 +9066,26 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      #[test]
      fn test_failure() {
          let s = "}foo";
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/error.rs starlark_syntax/src/error.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/error.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark_syntax/src/error.rs	2026-11-26 11:42:39.170950428 -0700
+@@ -133,6 +133,16 @@
+         self.0.set_call_stack(call_stack);
+     }
+ 
++    /// BLAZE PATCH 0061: the call stack, to move an error to where Bazel reports it.
++    pub fn call_stack_mut(&mut self) -> &mut CallStack {
++        self.0.call_stack_mut()
++    }
++
++    /// BLAZE PATCH 0061: set the span, also when one is set.
++    pub fn replace_span(&mut self, span: Span, codemap: &CodeMap) {
++        self.0.replace_span(span, codemap);
++    }
++
+     /// Wrap this error with additional context (anyhow-style).
+     /// Preserves the existing `Diagnostic` (span and call stack).
+     pub fn with_context(self, context: String) -> Self {
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/fast_string.rs starlark_syntax/src/fast_string.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/fast_string.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark_syntax/src/fast_string.rs	2026-11-19 12:16:31.262316859 -0700

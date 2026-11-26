@@ -261,7 +261,7 @@ impl FetchCommand {
 /// `env.getEventBus().post(new NoBuildRequestFinishedEvent(result.getExitCode(), now))`, then
 /// `return result`.
 // Java: com/google/devtools/build/lib/bazel/commands/FetchCommand.java:139 FetchCommand.exec
-fn post_no_build_request_finished_event(
+pub(crate) fn post_no_build_request_finished_event(
     env: &CommandEnvironment,
     result: BlazeCommandResult,
 ) -> BlazeCommandResult {
@@ -287,7 +287,7 @@ fn fetch_interrupted(env: &CommandEnvironment) -> BlazeCommandResult {
 }
 
 // Java: com/google/devtools/build/lib/bazel/commands/FetchCommand.java:240 FetchCommand.createFailedBlazeCommandResult
-fn create_failed_blaze_command_result_with_code(
+pub(crate) fn create_failed_blaze_command_result_with_code(
     reporter: &Reporter,
     fetch_command_code: failure_details::fetch_command::Code,
     message: &str,
@@ -305,7 +305,7 @@ fn create_failed_blaze_command_result_with_code(
 }
 
 // Java: com/google/devtools/build/lib/bazel/commands/FetchCommand.java:253 FetchCommand.createFailedBlazeCommandResult
-fn create_failed_blaze_command_result(
+pub(crate) fn create_failed_blaze_command_result(
     reporter: &Reporter,
     error_message: &str,
 ) -> BlazeCommandResult {
@@ -317,7 +317,7 @@ fn create_failed_blaze_command_result(
 }
 
 // Java: com/google/devtools/build/lib/bazel/commands/FetchCommand.java:259 FetchCommand.createFailedBlazeCommandResult
-fn create_failed_blaze_command_result_with_exit_code(
+pub(crate) fn create_failed_blaze_command_result_with_exit_code(
     reporter: &Reporter,
     message: &str,
     exit_code: DetailedExitCode,
@@ -338,7 +338,7 @@ fn interrupted_detailed_exit_code(message: &str) -> DetailedExitCode {
 }
 
 /// The exceptions of `RepositoryFetcher.fetchRepos`.
-enum RepositoryFetcherError {
+pub(crate) enum RepositoryFetcherError {
     /// `RepositoryMappingResolutionException`: message and detailed exit code.
     RepositoryMappingResolution(String, DetailedExitCode),
     /// `RepositoryFetcherException`.
@@ -349,7 +349,7 @@ enum RepositoryFetcherError {
 
 /// Fetches repositories for commands.
 // Java: com/google/devtools/build/lib/bazel/commands/RepositoryFetcher.java:44 RepositoryFetcher
-struct RepositoryFetcher<'a> {
+pub(crate) struct RepositoryFetcher<'a> {
     env: &'a CommandEnvironment,
     skyframe_executor: &'a SkyframeExecutor,
     threads: usize,
@@ -357,7 +357,7 @@ struct RepositoryFetcher<'a> {
 
 impl RepositoryFetcher<'_> {
     // Java: com/google/devtools/build/lib/bazel/commands/RepositoryFetcher.java:57 RepositoryFetcher.fetchRepos
-    fn fetch_repos(
+    pub(crate) fn fetch_repos(
         repos: &[String],
         env: &CommandEnvironment,
         skyframe_executor: &SkyframeExecutor,
@@ -488,10 +488,10 @@ impl RepositoryFetcher<'_> {
 
 /// Fetches all repos needed for building a given set of targets.
 // Java: com/google/devtools/build/lib/bazel/commands/TargetFetcher.java:33 TargetFetcher
-struct TargetFetcher;
+pub(crate) struct TargetFetcher;
 
 /// `BuildTool.processRequest(request, null, ...)`: no target validator.
-struct NoTargetValidator;
+pub(crate) struct NoTargetValidator;
 
 impl blaze_sky_top::build_tool::TargetValidator for NoTargetValidator {
     fn validate_targets(
@@ -554,7 +554,7 @@ impl TargetFetcher {
     }
 
     // Java: com/google/devtools/build/lib/bazel/commands/TargetFetcher.java:68 TargetFetcher.injectNoBuildOption
-    fn inject_no_build_option(options_parser: &mut OptionsParser) {
+    pub(crate) fn inject_no_build_option(options_parser: &mut OptionsParser) {
         if let Err(e) = options_parser.parse_with_priority(
             PriorityCategory::COMPUTED_DEFAULT,
             Some("Options required to fetch target"),

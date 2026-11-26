@@ -34,6 +34,7 @@ use crate::eval::compiler::scope::payload::CstExpr;
 use crate::eval::compiler::scope::payload::CstPayload;
 use crate::eval::compiler::span::IrSpanned;
 use crate::eval::compiler::stmt::AssignCompiledValue;
+use crate::eval::runtime::frozen_file_span::FrozenFileSpan; // BLAZE PATCH 0061
 
 impl Compiler<'_, '_, '_, '_> {
     pub fn list_comprehension(
@@ -42,8 +43,8 @@ impl Compiler<'_, '_, '_, '_> {
         for_: &ForClauseP<CstPayload>,
         clauses: &[ClauseP<CstPayload>],
     ) -> Result<ExprCompiled, CompilerInternalError> {
-        let clauses = self.compile_clauses(for_, clauses)?;
-        let x = self.expr(x)?;
+        let (clauses, body_handler) = self.compile_clauses(x.span.begin(), for_, clauses)?; // BLAZE PATCH 0061
+        let x = self.with_java_handler(body_handler, |this| this.expr(x))?; // BLAZE PATCH 0061
         Ok(ExprCompiled::compr(ComprCompiled::List(
             Box::new(x),
             clauses,
@@ -57,9 +58,11 @@ impl Compiler<'_, '_, '_, '_> {
         for_: &ForClauseP<CstPayload>,
         clauses: &[ClauseP<CstPayload>],
     ) -> Result<ExprCompiled, CompilerInternalError> {
-        let clauses = self.compile_clauses(for_, clauses)?;
-        let k = self.expr(k)?;
-        let v = self.expr(v)?;
+        let (clauses, body_handler) = self.compile_clauses(k.span.begin(), for_, clauses)?; // BLAZE PATCH 0061
+        // BLAZE PATCH 0061: Java sets the `:` on errors of the value (Eval.java:928).
+        let colon = self.java_token(k.span.end(), v.span.begin(), ":"); // BLAZE PATCH 0061
+        let k = self.with_java_handler(body_handler, |this| this.expr(k))?; // BLAZE PATCH 0061
+        let v = self.with_java_handler(colon.or(body_handler), |this| this.expr(v))?; // BLAZE PATCH 0061
         Ok(ExprCompiled::compr(ComprCompiled::Dict(
             Box::new((k, v)),
             clauses,
@@ -70,17 +73,19 @@ impl Compiler<'_, '_, '_, '_> {
     fn compile_ifs(
         &mut self,
         clauses: &mut Vec<ClauseP<CstPayload>>,
-    ) -> Result<(Option<ForClauseP<CstPayload>>, Vec<IrSpanned<ExprCompiled>>), CompilerInternalError>
+        handlers: &[Option<FrozenFileSpan>], // BLAZE PATCH 0061
+    ) -> Result<(Option<(ForClauseP<CstPayload>, Option<FrozenFileSpan>)>, Vec<IrSpanned<ExprCompiled>>), CompilerInternalError> // BLAZE PATCH 0061
     {
         let mut ifs = Vec::new();
         while let Some(x) = clauses.pop() {
+            let handler = handlers[clauses.len()]; // BLAZE PATCH 0061
             match x {
                 ClauseP::For(f) => {
                     ifs.reverse();
-                    return Ok((Some(f), ifs));
+                    return Ok((Some((f, handler)), ifs)); // BLAZE PATCH 0061
                 }
                 ClauseP::If(x) => {
-                    let x = self.expr_truth(&x)?;
+                    let x = self.with_java_handler(handler, |this| this.expr_truth(&x))?; // BLAZE PATCH 0061
                     if let ExprCompiledBool::Const(true) = &x.node {
                         // If the condition is always true, skip the clause.
                         continue;
@@ -96,11 +101,29 @@ impl Compiler<'_, '_, '_, '_> {
 
     fn compile_clauses(
         &mut self,
+        from: crate::codemap::Pos, // BLAZE PATCH 0061
         for_: &ForClauseP<CstPayload>,
         clauses: &[ClauseP<CstPayload>],
-    ) -> Result<ClausesCompiled, CompilerInternalError> {
+    ) -> Result<(ClausesCompiled, Option<FrozenFileSpan>), CompilerInternalError> { // BLAZE PATCH 0061
         // The first for.over is scoped before we enter the list comp
         let over = self.expr(&list_to_tuple(&for_.over))?;
+
+        // BLAZE PATCH 0061: Java sets a `for` clause's start on errors of everything evaluated
+        // inside its loop (later clauses and the body; Eval.java:904). `handlers[i]` is the
+        // clause before `clauses[i]`'s `for`; the second value is the last `for`'s, the body's.
+        let for_start = |this: &Self, var: &crate::eval::compiler::scope::payload::CstAssignTarget| { // BLAZE PATCH 0061
+            crate::eval::runtime::java_call::find_token_back(&this.codemap, from, var.span.begin(), "for") // BLAZE PATCH 0061
+                .map(|s| FrozenFileSpan::new(this.codemap, s)) // BLAZE PATCH 0061
+        }; // BLAZE PATCH 0061
+        let mut current = for_start(self, &for_.var); // BLAZE PATCH 0061
+        let mut handlers = Vec::with_capacity(clauses.len()); // BLAZE PATCH 0061
+        for c in clauses { // BLAZE PATCH 0061
+            handlers.push(current); // BLAZE PATCH 0061
+            if let ClauseP::For(f) = c { // BLAZE PATCH 0061
+                current = for_start(self, &f.var); // BLAZE PATCH 0061
+            } // BLAZE PATCH 0061
+        } // BLAZE PATCH 0061
+        let body_handler = current; // BLAZE PATCH 0061
 
         // TODO(nga): unnecessary clone.
         let mut clauses = clauses.to_vec();
@@ -109,7 +132,7 @@ impl Compiler<'_, '_, '_, '_> {
         // The evaluator wants to use pop to consume them, so reverse the order.
         let mut res = Vec::new();
         loop {
-            let (next_for, ifs) = self.compile_ifs(&mut clauses)?;
+            let (next_for, ifs) = self.compile_ifs(&mut clauses, &handlers)?; // BLAZE PATCH 0061
             match next_for {
                 None => {
                     let last = ClauseCompiled {
@@ -117,11 +140,11 @@ impl Compiler<'_, '_, '_, '_> {
                         over,
                         ifs,
                     };
-                    return Ok(ClausesCompiled::new(res, last));
+                    return Ok((ClausesCompiled::new(res, last), body_handler)); // BLAZE PATCH 0061
                 }
-                Some(f) => {
+                Some((f, handler)) => { // BLAZE PATCH 0061
                     res.push(ClauseCompiled {
-                        over: self.expr(&f.over)?,
+                        over: self.with_java_handler(handler, |this| this.expr(&f.over))?, // BLAZE PATCH 0061
                         var: self.assign_target(&f.var)?,
                         ifs,
                     });

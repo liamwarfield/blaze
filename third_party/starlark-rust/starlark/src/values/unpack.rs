@@ -361,10 +361,11 @@ impl BazelParamTypeError {
     }
 }
 
-/// BLAZE PATCH 0058: Java's `ParamDescriptor.getTypeErrorMessage` of every `@StarlarkMethod`
-/// parameter of Bazel 9.3.2 (`receiver`, `method`, `param`, `want`; receiver is the declaring
-/// class's `@StarlarkBuiltin` name or empty; want `-` for a parameter that accepts `Object`),
-/// computed from the oracle's server jar by Bazel's own classes
+/// BLAZE PATCH 0058: Java's `ParamDescriptor.getTypeErrorMessage` of every Starlark method
+/// parameter of Bazel 9.3.2 (`receiver`, `method`, `param`, `want`; receiver is the
+/// `@StarlarkBuiltin` name of the class the method is called on, inherited methods included, or
+/// empty for global functions; want `-` for a parameter that accepts `Object`), printed by
+/// calling Bazel's `MethodDescriptor.of` and `getTypeErrorMessage` on the oracle's server jar
 /// (`scripts/java-param-types/run`).
 static JAVA_PARAM_TYPES: std::sync::LazyLock<
     std::collections::HashMap<(&'static str, &'static str), Vec<(&'static str, &'static str)>>,
@@ -380,9 +381,10 @@ static JAVA_PARAM_TYPES: std::sync::LazyLock<
 });
 
 /// BLAZE PATCH 0058: the "want" part of Java's parameter type error for a builtin named
-/// `function` (a method of a value of type `receiver`), from Bazel's annotations when they
-/// decide it: the receiver's entry, else the one text all of Bazel's methods of that name give
-/// for that parameter. Otherwise (a builtin Bazel does not have, or a parameter Bazel declares
+/// `function` (a method of a value of type `receiver`, or a function when `receiver` is
+/// `None`), from Bazel's annotations when they decide it: the receiver's entry (a function's is
+/// the receiver `""`), else the one text all of Bazel's methods of that name give for that
+/// parameter. Otherwise (a builtin Bazel does not have, or a parameter Bazel declares
 /// `Object`) [`java_allowed_types`]' derivation.
 // Java: net/starlark/java/eval/ParamDescriptor.java:123 ParamDescriptor.getTypeErrorMessage
 pub(crate) fn java_param_type_error_message(
@@ -392,7 +394,10 @@ pub(crate) fn java_param_type_error_message(
     ty: &Ty,
 ) -> String {
     if let Some(entries) = JAVA_PARAM_TYPES.get(&(function, param)) {
-        let chosen = match receiver.and_then(|r| entries.iter().find(|(rc, _)| *rc == r)) {
+        // A method call takes its receiver's row; a function call the row of Java's global
+        // functions (receiver ""), as `configure_features(requested_features=)`.
+        let own = receiver.unwrap_or(""); // BLAZE PATCH 0058 (round 2)
+        let chosen = match entries.iter().find(|(rc, _)| *rc == own) {
             Some((_, want)) => Some(*want),
             None if entries.iter().all(|(_, w)| *w == entries[0].1) => Some(entries[0].1),
             None => None,
@@ -404,6 +409,38 @@ pub(crate) fn java_param_type_error_message(
         }
     }
     java_allowed_types(function, param, ty)
+}
+
+/// BLAZE PATCH 0062: whether `v` is one of Java's allowed classes of the builtin's parameter, as
+/// the table lists them (`Starlark.classType` names); `None` when the table has no text for it.
+// Java: net/starlark/java/eval/BuiltinFunction.java:388 checkParamValue
+pub(crate) fn java_param_accepts<'v>(
+    function: &str,
+    receiver: Option<&str>,
+    param: &str,
+    v: Value<'v>,
+) -> Option<bool> {
+    let entries = JAVA_PARAM_TYPES.get(&(function, param))?;
+    let own = receiver.unwrap_or("");
+    let want = match entries.iter().find(|(rc, _)| *rc == own) {
+        Some((_, w)) => *w,
+        None if entries.iter().all(|(_, w)| *w == entries[0].1) => entries[0].1,
+        None => return None,
+    };
+    if want == "-" {
+        return Some(true);
+    }
+    let names = want.replace(", or ", ", ").replace(" or ", ", ");
+    let ty = v.get_type();
+    Some(names.split(", ").any(|n| match n {
+        "NoneType" => v.is_none(),
+        "string" => v.unpack_str().is_some(),
+        "sequence" => ty == "list" || ty == "tuple",
+        "iterable" => matches!(ty, "list" | "tuple" | "dict" | "set" | "range" | "depset"),
+        "callable" => v.vtable().starlark_value.HAS_invoke,
+        "unknown" | "Object" => true,
+        other => ty == other,
+    }))
 }
 
 /// BLAZE PATCH 0052: Java `ParamDescriptor.getTypeErrorMessage` for a parameter of a builtin:
@@ -511,9 +548,19 @@ pub(crate) fn java_check_callable_or_none<'v>(
         None => Ok(None),
         Some(v) if v.is_none() => Ok(None),
         Some(v) if v.vtable().starlark_value.HAS_invoke => Ok(Some(v)),
-        Some(v) => Err(crate::Error::new_other(anyhow::anyhow!(
-            "in call to {function}(), parameter '{param}' got value of type '{}', want 'callable or NoneType'",
+        // BLAZE PATCH 0061: a binding error (Bazel's location for it, `eval::runtime::java_call`).
+        Some(v) => Err(bazel_argument_binding_error(format!(
+            "in call to {function}(), parameter '{param}' got value of type '{}', want 'callable or NoneType'", // BLAZE PATCH 0061
             v.get_type()
         ))),
     }
+}
+
+/// BLAZE PATCH 0061: an error a host builtin raises while checking its arguments the way Java's
+/// `BuiltinFunction` binds them (`checkParamValue`: "in call to F(), parameter 'P' got value of
+/// type 'T', want 'W'"). Bazel reports such an error at the call's enclosing statement when the
+/// call has named or `*`/`**` arguments (`eval::runtime::java_call`); a plain error would stay
+/// at the `(`.
+pub fn bazel_argument_binding_error(message: String) -> crate::Error {
+    crate::Error::new_value(crate::eval::runtime::java_call::JavaArgBinding(message))
 }

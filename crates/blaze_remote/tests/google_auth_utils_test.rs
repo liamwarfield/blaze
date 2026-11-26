@@ -12,10 +12,15 @@
 
 use std::sync::Arc;
 
+use blaze_events::StoredEventHandler;
 use blaze_optdefs::misc::auth_and_tls_options::AuthAndTLSOptions;
+use blaze_optdefs::misc::auth_and_tls_options::CredentialHelperOptionConverter;
 use blaze_remote::authandtls::Credentials;
 use blaze_remote::authandtls::google_auth_utils::{
-    is_tls_enabled, new_channel, new_credentials_from_netrc,
+    is_tls_enabled, new_channel, new_credential_helper_provider, new_credentials_from_netrc,
+};
+use blaze_repo_fetch::authandtls::credentialhelper::{
+    CommandLinePathFactory, CredentialHelperEnvironment, CredentialHelperProvider,
 };
 use blaze_repo_fetch::authandtls::{Headers, basic_http_authentication_encode};
 use blaze_repo_fetch::fs_utils;
@@ -169,13 +174,202 @@ fn test_netrc_netrc_from_netrc_env_not_exist_should_ignore() {
     );
 }
 
+/// `createExecutable(path)`: an empty executable file.
+fn create_executable(path: &Path) -> Path {
+    path.get_parent_directory()
+        .unwrap()
+        .create_directory_and_parents()
+        .unwrap();
+    fs_utils::write_content(path, b"").unwrap();
+    path.set_executable(true).unwrap();
+    path.clone()
+}
+
+/// `newCredentialHelperProvider(environment, factory, inputs)` of the Java test: the inputs go
+/// through `CredentialHelperOptionConverter`.
+fn new_credential_helper_provider_of(
+    environment: &CredentialHelperEnvironment,
+    factory: &CommandLinePathFactory,
+    inputs: &[String],
+) -> CredentialHelperProvider {
+    let options: Vec<_> = inputs
+        .iter()
+        .map(|s| CredentialHelperOptionConverter.convert_option(s).unwrap())
+        .collect();
+    new_credential_helper_provider(environment, factory, &options).unwrap()
+}
+
 #[test]
-#[ignore = "needs CommandLinePathFactory (blaze_runtime) and lib/authandtls/credentialhelper (CredentialHelperProvider.findCredentialHelper, CredentialHelper), which are not ported"]
 fn test_credential_helper_provider() {
-    // Every case of the Java test but the first resolves the path of a helper with
-    // `CommandLinePathFactory.create` and looks it up with
-    // `CredentialHelperProvider.findCredentialHelper`.
-    panic!("not ported: GoogleAuthUtils.newCredentialHelperProvider with helpers");
+    let f = Fixture::new();
+    let fs = &f.file_system;
+    let at = |p: &str| Path::create_from_str(&format!("{}{}", f.root, p), fs);
+
+    let workspace = at("/workspace");
+    let path_value = at("/usr/local/bin");
+    path_value.create_directory_and_parents().unwrap();
+
+    let environment = CredentialHelperEnvironment {
+        event_reporter: Arc::new(StoredEventHandler::new()),
+        workspace_path: Some(workspace.clone()),
+        client_environment: client_env(&[("PATH", path_value.get_path_string())]),
+        helper_execution_timeout: std::time::Duration::ZERO,
+    };
+    let mut roots = IndexMap::new();
+    roots.insert("workspace".to_string(), workspace.clone());
+    let factory = CommandLinePathFactory::new(fs.clone(), roots);
+
+    let unused_helper = create_executable(&at("/unused/helper"));
+
+    let default_helper = create_executable(&at("/default/helper"));
+    let example_com_helper = create_executable(&at("/example/com/helper"));
+    let foo_example_com_helper = create_executable(&at("/foo/example/com/helper"));
+    let example_com_wildcard_helper = create_executable(&at("/example/com/wildcard/helper"));
+
+    let example_org_helper = create_executable(&workspace.get_relative_str("helpers/example-org"));
+
+    let s = |p: &Path| p.get_path_string().to_string();
+    let scoped = |scope: &str, p: &Path| format!("{scope}={}", p.get_path_string());
+    let find = |provider: &CredentialHelperProvider, uri: &str| {
+        provider
+            .find_credential_helper(&JavaUri::create(uri).unwrap())
+            .map(|h| h.get_path().clone())
+    };
+
+    // No helpers.
+    let provider1 = new_credential_helper_provider_of(&environment, &factory, &[]);
+    assert_eq!(find(&provider1, "https://example.com"), None);
+    assert_eq!(find(&provider1, "https://foo.example.com"), None);
+
+    // Default helper only.
+    let provider2 =
+        new_credential_helper_provider_of(&environment, &factory, &[s(&default_helper)]);
+    assert_eq!(
+        find(&provider2, "https://example.com"),
+        Some(default_helper.clone())
+    );
+    assert_eq!(
+        find(&provider2, "https://foo.example.com"),
+        Some(default_helper.clone())
+    );
+
+    // Default and exact match.
+    let provider3 = new_credential_helper_provider_of(
+        &environment,
+        &factory,
+        &[
+            s(&default_helper),
+            scoped("example.com", &example_com_helper),
+        ],
+    );
+    assert_eq!(
+        find(&provider3, "https://example.com"),
+        Some(example_com_helper.clone())
+    );
+    assert_eq!(
+        find(&provider3, "https://foo.example.com"),
+        Some(default_helper.clone())
+    );
+
+    // Exact match without default.
+    let provider4 = new_credential_helper_provider_of(
+        &environment,
+        &factory,
+        &[scoped("example.com", &example_com_helper)],
+    );
+    assert_eq!(
+        find(&provider4, "https://example.com"),
+        Some(example_com_helper.clone())
+    );
+    assert_eq!(find(&provider4, "https://foo.example.com"), None);
+
+    // Multiple scoped helpers with default.
+    let provider5 = new_credential_helper_provider_of(
+        &environment,
+        &factory,
+        &[
+            s(&default_helper),
+            scoped("example.com", &example_com_helper),
+            scoped("*.foo.example.com", &foo_example_com_helper),
+            scoped("*.example.com", &example_com_wildcard_helper),
+            "example.org=%workspace%/helpers/example-org".to_string(),
+        ],
+    );
+    assert_eq!(
+        find(&provider5, "https://anotherdomain.com"),
+        Some(default_helper.clone())
+    );
+    assert_eq!(
+        find(&provider5, "https://example.com"),
+        Some(example_com_helper.clone())
+    );
+    assert_eq!(
+        find(&provider5, "https://foo.example.com"),
+        Some(foo_example_com_helper.clone())
+    );
+    assert_eq!(
+        find(&provider5, "https://abc.foo.example.com"),
+        Some(foo_example_com_helper.clone())
+    );
+    assert_eq!(
+        find(&provider5, "https://bar.example.com"),
+        Some(example_com_wildcard_helper.clone())
+    );
+    assert_eq!(
+        find(&provider5, "https://abc.bar.example.com"),
+        Some(example_com_wildcard_helper.clone())
+    );
+    assert_eq!(
+        find(&provider5, "https://example.org"),
+        Some(example_org_helper.clone())
+    );
+
+    // Helpers override.
+    let provider6 = new_credential_helper_provider_of(
+        &environment,
+        &factory,
+        &[
+            // <system .bazelrc>
+            s(&unused_helper),
+            // <user .bazelrc>
+            s(&default_helper),
+            scoped("example.com", &unused_helper),
+            scoped("*.example.com", &unused_helper),
+            scoped("example.org", &unused_helper),
+            scoped("*.example.org", &example_org_helper),
+            // <workspace .bazelrc>
+            scoped("*.example.com", &example_com_wildcard_helper),
+            scoped("example.org", &example_org_helper),
+            scoped("*.foo.example.com", &unused_helper),
+            // <command-line>
+            scoped("example.com", &example_com_helper),
+            scoped("*.foo.example.com", &foo_example_com_helper),
+        ],
+    );
+    assert_eq!(
+        find(&provider6, "https://anotherdomain.com"),
+        Some(default_helper)
+    );
+    assert_eq!(
+        find(&provider6, "https://example.com"),
+        Some(example_com_helper)
+    );
+    assert_eq!(
+        find(&provider6, "https://foo.example.com"),
+        Some(foo_example_com_helper)
+    );
+    assert_eq!(
+        find(&provider6, "https://bar.example.com"),
+        Some(example_com_wildcard_helper)
+    );
+    assert_eq!(
+        find(&provider6, "https://example.org"),
+        Some(example_org_helper.clone())
+    );
+    assert_eq!(
+        find(&provider6, "https://foo.example.org"),
+        Some(example_org_helper)
+    );
 }
 
 // The tests below have no Java counterpart (see the file comment).

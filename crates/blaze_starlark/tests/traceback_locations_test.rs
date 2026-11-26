@@ -57,23 +57,9 @@ fn shape(text: &str) -> String {
 
 /// Cases that still differ, with the reason. A case that starts matching fails the test, so the
 /// entry is removed when a fix lands.
-const KNOWN_DEVIATIONS: &[(&str, &str)] = &[
-    (
-        "call_not_callable",
-        "starlark-rust pushes a frame for the non-callable value and reports `Error in 1` at the \
-         `(`; Java's Starlark.getStarlarkCallable fails before the call (no frame), located by \
-         the enclosing statement (`=`)",
-    ),
-    (
-        "star_not_iterable",
-        "`f(*x)` with a non-iterable x fails inside the callee's argument binding (`Error in \
-         len` at the `(`); Java fails before the call, at the `*` (Eval.evalCall)",
-    ),
-    (
-        "starstar_not_dict",
-        "`f(**x)` with a non-dict x: as star_not_iterable, Java at the `**`",
-    ),
-];
+// The three former entries (a call of a non-callable value, `f(*x)` and `f(**x)` with a bad `x`)
+// match Bazel since starlark patch 0061 (Java's call-site error locations).
+const KNOWN_DEVIATIONS: &[(&str, &str)] = &[];
 
 #[test]
 fn error_locations_match_bazel() {

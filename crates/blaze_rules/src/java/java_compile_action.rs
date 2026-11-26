@@ -225,8 +225,9 @@ pub struct JavaCompileAction {
     dependency_artifacts: NestedSet<Artifact>,
     output_deps_proto: Option<Artifact>,
     classpath_mode: JavaClasspathMode,
-    // PORT: `extraActionInfoSupplier` feeds `getExtraActionInfo` (extra actions), which Blaze's
-    // `Action` does not have; the supplier is not kept.
+    /// `extraActionInfoSupplier` (null for the header compilation's action).
+    extra_action_info_supplier:
+        Option<Arc<crate::java::java_compile_action_builder::JavaCompileExtraActionInfoSupplier>>,
 }
 
 impl std::fmt::Debug for JavaCompileAction {
@@ -297,18 +298,14 @@ impl JavaCompileAction {
         None
     }
 
-    /// `getExtraActionInfo(actionKeyContext)`: the `ExtraActionInfo` of extra actions, extended
-    /// with the `JavaCompileInfo` of the action's `ExtraActionInfoSupplier`.
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:590 JavaCompileAction.getExtraActionInfo
-    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:291 JavaCompileAction.ExtraActionInfoSupplier.extend
-    pub fn get_extra_action_info(&self) -> ! {
-        // PORT: extra actions (`extra_action`, `action_listener`, the `ExtraActionInfo` /
-        // `JavaCompileInfo` protos of extra_actions_base.proto) are not ported; the supplier's
-        // data is not kept (see JavaCompileActionBuilder.JavaCompileExtraActionInfoSupplier).
-        blaze_util::unported!(
-            "JavaCompileAction.getExtraActionInfo",
-            "extra actions (ExtraActionInfo) are not ported"
-        )
+    /// The `extraActionInfoSupplier` argument of Java's constructor (`JavaCompileActionBuilder`
+    /// passes its `JavaCompileExtraActionInfoSupplier`; the header compilation passes null).
+    pub fn with_extra_action_info_supplier(
+        mut self,
+        supplier: Arc<crate::java::java_compile_action_builder::JavaCompileExtraActionInfoSupplier>,
+    ) -> Self {
+        self.extra_action_info_supplier = Some(supplier);
+        self
     }
 
     // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:138 JavaCompileAction.<init>
@@ -372,6 +369,7 @@ impl JavaCompileAction {
             dependency_artifacts,
             output_deps_proto,
             classpath_mode,
+            extra_action_info_supplier: None,
         };
         check_state!(
             action.output_deps_proto.is_some()
@@ -483,22 +481,22 @@ impl JavaCompileAction {
     }
 
     /// The path mapper of `PathMappers.create(this, getOutputPathsMode(configuration), false,
-    /// metadata)`, as the spawn's mapper.
+    /// actionExecutionContext.getInputMetadataProvider())`, and the spawn's view of it.
     fn spawn_path_mapper(
         &self,
+        metadata: &dyn blaze_actions::actions::action::InputMetadataProvider,
     ) -> (
         Arc<dyn blaze_actions::actions::path_mapper::PathMapper>,
         SpawnPathMapper,
     ) {
-        let mapper = path_mappers::create_for_execution(
+        let mapper = path_mappers::create(
             self,
             get_output_paths_mode(&self.configuration),
             false,
-            None,
+            Some(metadata),
         );
-        // PORT: `path_mappers::create` returns a non-noop mapper only for STRIP, which is
-        // unported there; the spawn's mapper is therefore PathMapper.NOOP.
-        (mapper, SpawnPathMapper::NOOP)
+        let spawn_mapper = SpawnPathMapper::of(mapper.clone());
+        (mapper, spawn_mapper)
     }
 
     /// Builds the `JavaSpawn` of `expanded` command lines over `inputs`.
@@ -517,12 +515,13 @@ impl JavaCompileAction {
         inputs: NestedSet<Artifact>,
         only_mandatory_output: Option<&Artifact>,
     ) -> Result<SimpleSpawn, ActionExecutionException> {
-        let (mapper, spawn_mapper) = self.spawn_path_mapper();
-        // PORT: the input metadata provider only expands tree artifacts, which Java compile
-        // actions do not take as inputs.
+        let metadata = blaze_exec::analysis::actions::KeyMetadataAdapter(
+            action_execution_context.get_input_metadata_provider(),
+        );
+        let (mapper, spawn_mapper) = self.spawn_path_mapper(&metadata);
         let expanded = command_lines
             .expand(
-                None,
+                Some(&metadata),
                 self.get_primary_output().get_exec_path(),
                 mapper.as_ref(),
                 &self.command_line_limits(),
@@ -805,8 +804,8 @@ pub(crate) fn create_failure_detail(
 pub(crate) fn create_full_output_deps(
     spawn_result: &SpawnResult,
     output_deps_proto: &Artifact,
-    _action_inputs: &NestedSet<Artifact>,
-    _additional_artifacts_for_path_mapping: &NestedSet<Artifact>,
+    action_inputs: &NestedSet<Artifact>,
+    additional_artifacts_for_path_mapping: &NestedSet<Artifact>,
     action_execution_context: &dyn ActionExecutionContext,
     path_mapper: &SpawnPathMapper,
 ) -> std::io::Result<Arc<Dependencies>> {
@@ -822,12 +821,85 @@ pub(crate) fn create_full_output_deps(
         return Ok(Arc::new(executor_jdeps));
     }
 
-    // PORT: a non-noop path mapper is only created for --experimental_output_paths=strip
-    // (StrippingPathMapper), which is not ported.
-    blaze_util::unported!(
-        "JavaCompileAction.createFullOutputDeps",
-        "rewriting a .jdeps file of a path-mapped spawn"
-    )
+    // For each of the action's generated inputs, revert its mapped path back to its original
+    // path.
+    let mapper = path_mapper.as_actions_path_mapper();
+    let mut mapped_to_original_path: std::collections::HashMap<String, blaze_vfs::PathFragment> =
+        std::collections::HashMap::new();
+    let mut original_paths: HashSet<String> = HashSet::new();
+    for action_input in action_inputs
+        .to_list()
+        .iter()
+        .chain(additional_artifacts_for_path_mapping.to_list().iter())
+    {
+        if action_input.is_source_artifact() {
+            continue;
+        }
+        let mapped_path = mapper.get_mapped_exec_path_string(action_input);
+        original_paths.insert(action_input.get_exec_path_string().to_string());
+        let previous_path = mapped_to_original_path
+            .insert(mapped_path.clone(), action_input.get_exec_path().clone());
+        if let Some(previous_path) = previous_path
+            && &previous_path != action_input.get_exec_path()
+        {
+            // Multiple inputs from different configs map to the same path. This is allowed when
+            // they have identical content (checked by StrippingPathMapper.isPathStrippable). Pick
+            // any original path for jdeps rewriting.
+            mapped_to_original_path.insert(mapped_path, previous_path);
+        }
+    }
+
+    // Rewrite the .jdeps proto with full paths.
+    let output_root = output_deps_proto.get_exec_path().sub_fragment(0, 1);
+    let mut full_output_deps = executor_jdeps.clone();
+    for dep in &mut full_output_deps.dependency {
+        let path_on_executor = blaze_vfs::PathFragment::create(&dep.get_path());
+        let original_path = mapped_to_original_path.get(path_on_executor.get_path_string());
+        // Source files, which do not lie under the output root, are not mapped. It is also
+        // possible that a jdeps file contains a reference to a transitive classpath element that
+        // isn't an input to the current action, just an additional artifact marked for path
+        // mapping, and itself wasn't built with path mapping enabled (e.g. due to path
+        // collisions). In that case, the path will already be unmapped and we can leave it as
+        // is. For entirely unexpected paths, we still report an error.
+        if original_path.is_none()
+            && path_on_executor.sub_fragment(0, 1) == output_root
+            && !original_paths.contains(path_on_executor.get_path_string())
+        {
+            let mut map: Vec<String> = mapped_to_original_path
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect();
+            // PORT: java-hash-order. Java prints the HashMap; the entries are sorted here.
+            map.sort();
+            panic!(
+                "IllegalStateException: Missing original path for mapped path {} in {}\njdeps: {:?}\npath map: {{{}}}",
+                path_on_executor,
+                output_deps_proto.get_exec_path(),
+                executor_jdeps,
+                map.join(", ")
+            );
+        }
+        let new_path = match original_path {
+            None => path_on_executor.get_path_string().to_string(),
+            Some(p) => p.get_path_string().to_string(),
+        };
+        dep.path = new_path.into_bytes();
+    }
+
+    // Write the updated proto back to the filesystem. If the executor produced in-memory-only
+    // outputs (see getInMemoryOutput above), the filesystem version doesn't exist and we can skip
+    // this. Note that in-memory and filesystem outputs aren't necessarily mutually exclusive.
+    let fs_path =
+        blaze_exec::analysis::actions::get_input_path(action_execution_context, output_deps_proto);
+    if fs_path.exists() {
+        // Make sure to clear the output store cache if it has an entry from before the rewrite.
+        action_execution_context.reset_outputs(&[artifact_input(output_deps_proto)]);
+        fs_path.set_writable(true)?;
+        let mut out = fs_path.get_output_stream()?;
+        std::io::Write::write_all(&mut out, &prost::Message::encode_to_vec(&full_output_deps))?;
+    }
+
+    Ok(Arc::new(full_output_deps))
 }
 
 // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:778 JavaCompileAction.readExecutorJdeps
@@ -849,6 +921,32 @@ fn read_executor_jdeps(
 }
 
 impl Action for JavaCompileAction {
+    // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:590 JavaCompileAction.getExtraActionInfo
+    fn get_extra_action_info(
+        &self,
+        action_key_context: &ActionKeyContext,
+    ) -> Result<blaze_protos::blaze::ExtraActionInfo, CommandLineError> {
+        let mut builder = blaze_actions::actions::action::abstract_get_extra_action_info(
+            self,
+            action_key_context,
+        )?;
+        let mut command_lines_builder = CommandLines::builder();
+        command_lines_builder
+            .add_command_line(self.flag_line.clone())
+            .add_command_line(self.get_full_classpath_line());
+        for extra_command_line in &self.extra_command_line_args {
+            command_lines_builder.add_command_line(extra_command_line.clone());
+        }
+        let command_lines_without_executable = command_lines_builder.build();
+        if let Some(supplier) = &self.extra_action_info_supplier {
+            supplier.extend(
+                &mut builder,
+                command_lines_without_executable.all_arguments()?,
+            );
+        }
+        Ok(builder)
+    }
+
     fn abstract_action(&self) -> &AbstractAction {
         &self.base
     }

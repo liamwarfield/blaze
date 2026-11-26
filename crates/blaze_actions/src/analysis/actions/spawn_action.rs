@@ -363,6 +363,59 @@ impl SpawnAction {
         env
     }
 
+    /// Returns information about this spawn action for use by the extra action mechanism.
+    ///
+    /// PORT: the `Spawn` of `getSpawnForExtraActionSpawnInfo` is not built (the spawn types are
+    /// the execution layer's); its parts are read where `ActionSpawn` takes them: the arguments
+    /// (`commandLines.allArguments()`), the effective environment for an empty client
+    /// environment, the given inputs (no additional inputs) and the outputs (`reportOutputs`).
+    // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:487 SpawnAction.getExtraActionSpawnInfo
+    fn get_extra_action_spawn_info(
+        &self,
+    ) -> Result<blaze_protos::blaze::SpawnInfo, CommandLineError> {
+        let inputs = self.get_inputs_for_extra_action_spawn_info();
+        let mut info = blaze_protos::blaze::SpawnInfo {
+            argument: self.command_lines.all_arguments()?,
+            ..Default::default()
+        };
+        // ActionSpawn: parent.getEffectiveEnvironment(clientEnv = ImmutableMap.of(), NOOP).
+        for (name, value) in self
+            .get_effective_environment(&IndexMap::new())
+            .map_err(CommandLineError::CommandLineExpansion)?
+        {
+            info.variable
+                .push(blaze_protos::blaze::EnvironmentVariable { name, value });
+        }
+        for input in inputs.to_list().iter() {
+            // Explicitly ignore runfiles tree artifacts here.
+            if !input.is_runfiles_tree() {
+                info.input_file
+                    .push(input.get_exec_path_string().to_owned());
+            }
+        }
+        for output in self.get_outputs() {
+            info.output_file
+                .push(output.get_exec_path_string().to_owned());
+        }
+        Ok(info)
+    }
+
+    /// The inputs `getSpawnForExtraActionSpawnInfo()` gives its spawn: `getInputs()`, or for an
+    /// `EnhancedStarlarkAction` all its Starlark inputs (after its shadowed action's inputs).
+    // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:329 SpawnAction.getSpawnForExtraActionSpawnInfo
+    // Java: com/google/devtools/build/lib/analysis/actions/StarlarkAction.java:443 EnhancedStarlarkAction.getSpawnForExtraActionSpawnInfo
+    fn get_inputs_for_extra_action_spawn_info(&self) -> NestedSet<Artifact> {
+        match &self.class {
+            SpawnActionClass::EnhancedStarlark(d) => match &d.shadowed_action {
+                Some(shadowed) => {
+                    create_inputs(&[shadowed.get_inputs(), d.all_starlark_action_inputs.clone()])
+                }
+                None => d.all_starlark_action_inputs.clone(),
+            },
+            _ => self.get_inputs(),
+        }
+    }
+
     fn enhanced(&self) -> Option<&EnhancedStarlarkData> {
         match &self.class {
             SpawnActionClass::EnhancedStarlark(d) => Some(d),
@@ -608,6 +661,17 @@ impl Action for SpawnAction {
 
     fn as_command_action(&self) -> Option<&dyn CommandAction> {
         Some(self)
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:475 SpawnAction.getExtraActionInfo
+    fn get_extra_action_info(
+        &self,
+        action_key_context: &crate::actions::action_key_context::ActionKeyContext,
+    ) -> Result<blaze_protos::blaze::ExtraActionInfo, CommandLineError> {
+        let mut info =
+            crate::actions::action::abstract_get_extra_action_info(self, action_key_context)?;
+        info.spawn_info = Some(self.get_extra_action_spawn_info()?);
+        Ok(info)
     }
 
     // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:217 SpawnAction.getStarlarkArgs

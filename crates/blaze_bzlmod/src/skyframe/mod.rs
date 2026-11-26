@@ -156,7 +156,13 @@ pub fn register_bzlmod_functions(
     });
     let c = config.clone();
     builder = builder.typed_function::<BazelLockFileKey, _>(move |key, env| {
-        lock_file::compute(&c.workspace_root, &c.output_base, key, env)
+        lock_file::compute(
+            &c.workspace_root,
+            &c.output_base,
+            &*c.file_value_lookup,
+            key,
+            env,
+        )
     });
     let c = config.clone();
     builder = builder.typed_function::<RegistryKey, _>(move |key, env| {

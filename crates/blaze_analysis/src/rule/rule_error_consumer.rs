@@ -98,14 +98,63 @@ pub trait RuleErrorConsumer: Send + Sync {
     }
 }
 
-/// Java `AnalysisRootCauseEvent` (posted on the first error of a configured target).
-// Java: com/google/devtools/build/lib/analysis/AnalysisRootCauseEvent.java:31 AnalysisRootCauseEvent
+/// Error message of an analysis root cause (Java `AnalysisRootCauseEvent`, posted on the first
+/// error of a configured target). The build event stream turns it into its build event
+/// (`blaze_bep`'s `AnalysisRootCauseBuildEvent`).
+// Java: com/google/devtools/build/lib/analysis/AnalysisRootCauseEvent.java:40 AnalysisRootCauseEvent
 #[derive(Debug, Clone)]
 pub struct AnalysisRootCauseEvent {
-    /// `configuration.checksum()`, or `None` for the null configuration.
-    pub configuration_checksum: Option<String>,
+    /// A tri-state representation of the configuration to capture two different notions of
+    /// nullness: `Some(Some(value))` a configuration value; `Some(None)` the *null
+    /// configuration*, used for unconfigurable targets, for example source files; `None` an
+    /// *unavailable configuration*: sometimes errors may occur for a transient
+    /// `BuildConfigurationKey` for which a `BuildConfigurationValue` is never computed, for
+    /// example, the intermediate configuration after the attribute transition occurs but before
+    /// the rule transition.
+    pub configuration: Option<Option<Arc<BuildConfigurationValue>>>,
+    /// `configurationId`: the checksum of the configuration id (`None` is the null
+    /// configuration's id, `BuildEventIdUtil.nullConfigurationIdMessage()`).
+    pub configuration_id: Option<String>,
     pub label: Label,
     pub error_message: String,
+}
+
+impl AnalysisRootCauseEvent {
+    // Java: com/google/devtools/build/lib/analysis/AnalysisRootCauseEvent.java:60 AnalysisRootCauseEvent.withConfigurationValue
+    pub fn with_configuration_value(
+        configuration: Option<Arc<BuildConfigurationValue>>,
+        label: Label,
+        error_message: String,
+    ) -> AnalysisRootCauseEvent {
+        AnalysisRootCauseEvent {
+            // BuildConfigurationValue.configurationIdMessage(configuration)
+            configuration_id: configuration.as_ref().map(|c| c.checksum().to_owned()),
+            configuration: Some(configuration),
+            label,
+            error_message,
+        }
+    }
+
+    /// `configuration_id`: the checksum of `configurationIdMessage(configurationKey)` (`None`
+    /// for a null key).
+    // Java: com/google/devtools/build/lib/analysis/AnalysisRootCauseEvent.java:69 AnalysisRootCauseEvent.withUnavailableConfiguration
+    pub fn with_unavailable_configuration(
+        configuration_id: Option<String>,
+        label: Label,
+        error_message: String,
+    ) -> AnalysisRootCauseEvent {
+        AnalysisRootCauseEvent {
+            configuration: None,
+            configuration_id,
+            label,
+            error_message,
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/AnalysisRootCauseEvent.java:84 AnalysisRootCauseEvent.getLabel
+    pub fn get_label(&self) -> &Label {
+        &self.label
+    }
 }
 
 impl Postable for AnalysisRootCauseEvent {
@@ -146,13 +195,13 @@ impl ErrorReporter {
     // Java: com/google/devtools/build/lib/analysis/EventHandlingErrorReporter.java:40 EventHandlingErrorReporter.reportError
     fn report_error(&self, message: String) {
         if !self.has_errors() {
-            self.env
-                .get_event_handler()
-                .post(Arc::new(AnalysisRootCauseEvent {
-                    configuration_checksum: Some(self.configuration.checksum().to_owned()),
-                    label: self.get_label().clone(),
-                    error_message: message.clone(),
-                }));
+            self.env.get_event_handler().post(Arc::new(
+                AnalysisRootCauseEvent::with_configuration_value(
+                    Some(self.configuration.clone()),
+                    self.get_label().clone(),
+                    message.clone(),
+                ),
+            ));
         }
         self.env.get_event_handler().handle(&Event::error_at(
             Some(to_event_location(self.rule.get_location())),

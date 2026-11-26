@@ -48,6 +48,8 @@ const PROTOS: &[&str] = &[
     "src/main/protobuf/remote_execution_log.proto",
     "src/main/protobuf/cache_salt.proto",
     "src/main/protobuf/remote_scrubbing.proto",
+    // Extra actions (`ExtraActionInfo` and its extensions; `print_action`, `.xa` files).
+    "src/main/protobuf/extra_actions_base.proto",
     // Well-known types JsonFormat prints specially; compiled so that `Any` can hold them.
     "google/protobuf/wrappers.proto",
     "google/protobuf/field_mask.proto",
@@ -69,8 +71,12 @@ fn main() {
 
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
 
+    // Types for prost-build and the Java encoders: proto2 extensions become ordinary fields of
+    // the message they extend (see `inline_extensions`).
+    let inlined = inline_extensions(&fds);
+
     // Types for prost-build: map entries become ordinary nested messages.
-    let mut for_prost = fds.clone();
+    let mut for_prost = inlined.clone();
     for file in &mut for_prost.file {
         for msg in &mut file.message_type {
             clear_map_entry(msg);
@@ -83,7 +89,7 @@ fn main() {
         .compile_fds(for_prost)
         .unwrap_or_else(|e| panic!("prost-build: {e}"));
 
-    let generated = Generator::new(&fds).generate();
+    let generated = Generator::new(&inlined).generate();
     fs::write(out.join("java_impls.rs"), generated).unwrap();
 
     // The descriptors themselves (map entries kept), for the descriptor-driven `TextFormat`
@@ -93,6 +99,128 @@ fn main() {
         prost::Message::encode_to_vec(&fds),
     )
     .unwrap();
+}
+
+/// The descriptor set with every proto2 extension (`extend Foo { optional Bar bar = N; }`) added
+/// as an ordinary optional field of the message it extends, and removed from its scope.
+///
+/// PORT: Java's generated messages hold extensions in a `FieldSet` beside their fields
+/// (`GeneratedMessage.ExtendableMessage`); prost has no extensions. A Blaze message holds a set
+/// extension as a field (`ExtraActionInfo.spawn_info`, ...). The encoders keep Java's bytes:
+/// `ExtensionWriter.writeUntil` writes the extensions in number order after the fields below
+/// their range, which is where field-number order puts them. The JSON name is Java's
+/// (`JsonFormat` prints an extension as `"[full.name]"`). The runtime descriptors
+/// (`descriptor_set.bin`) keep the extensions as extensions (`crate::descriptors`).
+fn inline_extensions(fds: &FileDescriptorSet) -> FileDescriptorSet {
+    fn collect(
+        scope: &str,
+        extensions: &[FieldDescriptorProto],
+        msgs: &[DescriptorProto],
+        out: &mut Vec<(String, FieldDescriptorProto)>,
+    ) {
+        for e in extensions {
+            let full_name = if scope.is_empty() {
+                e.name().to_string()
+            } else {
+                format!("{scope}.{}", e.name())
+            };
+            out.push((full_name, e.clone()));
+        }
+        for m in msgs {
+            let full = if scope.is_empty() {
+                m.name().to_string()
+            } else {
+                format!("{scope}.{}", m.name())
+            };
+            collect(&full, &m.extension, &m.nested_type, out);
+        }
+    }
+    fn strip(msgs: &mut [DescriptorProto]) {
+        for m in msgs {
+            m.extension.clear();
+            strip(&mut m.nested_type);
+        }
+    }
+    fn find<'m>(
+        scope: &str,
+        msgs: &'m mut [DescriptorProto],
+        full_name: &str,
+    ) -> Option<&'m mut DescriptorProto> {
+        for m in msgs {
+            let full = if scope.is_empty() {
+                m.name().to_string()
+            } else {
+                format!("{scope}.{}", m.name())
+            };
+            if full == full_name {
+                return Some(m);
+            }
+            if full_name.starts_with(&format!("{full}."))
+                && let Some(found) = find(&full, &mut m.nested_type, full_name)
+            {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    let mut extensions = Vec::new();
+    for file in &fds.file {
+        collect(
+            file.package(),
+            &file.extension,
+            &file.message_type,
+            &mut extensions,
+        );
+    }
+    let mut out = fds.clone();
+    for file in &mut out.file {
+        file.extension.clear();
+        strip(&mut file.message_type);
+    }
+    for (full_name, ext) in extensions {
+        let extendee = ext.extendee().trim_start_matches('.').to_string();
+        let mut field = ext.clone();
+        field.extendee = None;
+        field.json_name = Some(format!("[{full_name}]"));
+        let target = out
+            .file
+            .iter_mut()
+            .find_map(|f| {
+                let package = f.package().to_string();
+                find(&package, &mut f.message_type, &extendee)
+            })
+            .unwrap_or_else(|| panic!("extendee {extendee} of {full_name} not compiled"));
+        assert!(
+            target
+                .field
+                .iter()
+                .all(|f| f.number() != field.number() && f.name() != field.name()),
+            "extension {full_name} clashes with a field of {extendee}"
+        );
+        target.field.push(field);
+    }
+    // proto2 map entries: Java's `MapEntryLite` always writes the key and value; a scalar key or
+    // value of a proto2 entry is made `required` here so that prost holds it as a plain value
+    // (the encoders then write it as they write a proto3 entry's).
+    fn require_proto2_map_entry_scalars(msgs: &mut [DescriptorProto]) {
+        for m in msgs {
+            if m.options.as_ref().and_then(|o| o.map_entry) == Some(true) {
+                for f in &mut m.field {
+                    if f.r#type() != Type::Message {
+                        f.set_label(Label::Required);
+                    }
+                }
+            }
+            require_proto2_map_entry_scalars(&mut m.nested_type);
+        }
+    }
+    for file in &mut out.file {
+        if file.syntax() != "proto3" {
+            require_proto2_map_entry_scalars(&mut file.message_type);
+        }
+    }
+    out
 }
 
 fn clear_map_entry(msg: &mut DescriptorProto) {

@@ -79,6 +79,7 @@ use crate::env_handle::SkyEnv;
 use crate::precomputed::FETCH_DISABLED;
 use crate::precomputed::FORCE_FETCH;
 use crate::precomputed::FORCE_FETCH_CONFIGURE;
+use crate::precomputed::IS_VENDOR_COMMAND;
 use crate::precomputed::REMOTE_EXECUTION_ENABLED;
 use crate::precomputed::REQUIRE_REPO_EXTENSION_METADATA;
 use crate::precomputed::RequireRepoExtensionMetadataMode;
@@ -461,16 +462,34 @@ impl RepositoryFetchFunction {
             return Ok(None);
         };
 
-        let exclude_repo_from_vendoring = true;
+        let mut exclude_repo_from_vendoring = true;
         if required(&VENDOR_DIRECTORY, env)?.is_some() {
             // If vendor mode is on
-            let _exclude_repo_by_default =
+            let vendor_file = env.get_value(crate::bzlmod::vendor_file_function::VendorFileKey)?;
+            if env.values_missing() {
+                return Ok(None);
+            }
+            let vendor_file = vendor_file.expect("not missing");
+            let exclude_repo_by_default =
                 Self::is_repo_excluded_from_vendoring_by_default(&repo_definition);
-            unported!(
-                "RepositoryFetchFunction.tryGettingValueUsingVendoredRepo",
-                "vendor mode (VendorFileValue) for {}",
-                repository_name
-            );
+            if !exclude_repo_by_default && !vendor_file.ignored_repos().contains(repository_name) {
+                let repository_directory_value = self.try_getting_value_using_vendored_repo(
+                    env,
+                    repo_root,
+                    repository_name,
+                    &digest_writer,
+                    &vendor_file,
+                )?;
+                if env.values_missing() {
+                    return Ok(None);
+                }
+                if repository_directory_value.is_some() {
+                    return Ok(repository_directory_value);
+                }
+            }
+            exclude_repo_from_vendoring = exclude_repo_by_default
+                || vendor_file.ignored_repos().contains(repository_name)
+                || vendor_file.pinned_repos().contains(repository_name);
         }
 
         if Self::should_use_cached_repo_contents(env, &repo_definition)? {
@@ -688,6 +707,110 @@ impl RepositoryFetchFunction {
         repo_definition.repo_rule.local || repo_definition.repo_rule.configure
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/RepositoryFetchFunction.java:421 RepositoryFetchFunction.tryGettingValueUsingVendoredRepo
+    fn try_getting_value_using_vendored_repo(
+        &self,
+        env: &mut Environment<'_>,
+        repo_root: &Path,
+        repository_name: &RepositoryName,
+        digest_writer: &DigestWriter,
+        vendor_file: &crate::bzlmod::vendor_file_function::VendorFileValue,
+    ) -> Result<Option<RepositoryDirectoryValue>, FetchFunctionError> {
+        let vendor_directory = required(&VENDOR_DIRECTORY, env)?;
+        let vendor_directory = vendor_directory
+            .as_ref()
+            .as_ref()
+            .expect("vendor mode is on");
+        let vendor_path = Path::create(
+            PathFragment::create(&blaze_util::string_encoding::platform_to_internal(
+                vendor_directory.as_os_str(),
+            )),
+            self.directories().get_workspace().get_file_system(),
+        );
+        let vendor_repo_path = vendor_path.get_relative_str(repository_name.get_name());
+        if vendor_repo_path.exists() {
+            let vendor_marker = vendor_path.get_child(&repository_name.get_marker_file_name());
+            if vendor_file.pinned_repos().contains(repository_name) {
+                // pinned repos are used as they are without checking their marker file
+                // delete the marker as it may become out-of-date while it's pinned (old version
+                // or manual changes)
+                if let Err(e) = vendor_marker.delete() {
+                    return Err(RepositoryFunctionException::from_io_error(
+                        &e,
+                        Transience::Transient,
+                    )
+                    .into());
+                }
+                return self.setup_override(
+                    vendor_repo_path.as_fragment(),
+                    env,
+                    repo_root,
+                    repository_name,
+                );
+            }
+
+            let vendored_repo_out_of_date_reason =
+                digest_writer.are_repository_and_marker_file_consistent_at(env, &vendor_marker)?;
+            if env.values_missing() {
+                return Ok(None);
+            }
+            // If our repo is up-to-date, or this is an offline build (--nofetch), then the
+            // vendored repo is used.
+            if vendored_repo_out_of_date_reason.is_none()
+                || (!*required(&IS_VENDOR_COMMAND, env)? && *required(&FETCH_DISABLED, env)?)
+            {
+                if let Some(reason) = &vendored_repo_out_of_date_reason {
+                    env.listener().handle(&Event::warn(format!(
+                        "Vendored repository '{}' is out-of-date ({}) and fetching is disabled. \
+                         Run build without the '--nofetch' option or run the bazel vendor \
+                         command to update it",
+                        repository_name.get_name(),
+                        reason
+                    )));
+                }
+                return self.setup_override(
+                    vendor_repo_path.as_fragment(),
+                    env,
+                    repo_root,
+                    repository_name,
+                );
+            } else if !*required(&IS_VENDOR_COMMAND, env)? {
+                // build command & fetch enabled
+                // We will continue fetching but warn the user that we are not using the vendored
+                // repo
+                env.listener().handle(&Event::warn(format!(
+                    "Vendored repository '{}' is out-of-date ({}). The up-to-date version will be \
+                     fetched into the external cache and used. To update the repo in the vendor \
+                     directory, run the bazel vendor command",
+                    repository_name.get_name(),
+                    vendored_repo_out_of_date_reason.expect("checked above")
+                )));
+            }
+        } else if vendor_file.pinned_repos().contains(repository_name) {
+            return Err(RepositoryFunctionException::io_message(
+                format!(
+                    "Pinned repository {} not found under the vendor directory",
+                    repository_name.get_name()
+                ),
+                Transience::Persistent,
+            )
+            .into());
+        } else if *required(&FETCH_DISABLED, env)? {
+            // repo not vendored & fetching is disabled (--nofetch)
+            return Err(RepositoryFunctionException::io_message(
+                format!(
+                    "Vendored repository {} not found under the vendor directory and fetching is \
+                     disabled. To fix, run the bazel vendor command or build without the \
+                     '--nofetch'",
+                    repository_name.get_name()
+                ),
+                Transience::Transient,
+            )
+            .into());
+        }
+        Ok(None)
+    }
+
     // Java: com/google/devtools/build/lib/bazel/repository/RepositoryFetchFunction.java:531 RepositoryFetchFunction.fetchAndHandleEvents
     fn fetch_and_handle_events(
         &self,
@@ -897,7 +1020,7 @@ impl RepositoryFetchFunction {
                     mut context,
                     ..
                 } = call_implementation(
-                    &repo_rule.impl_,
+                    repo_rule.get_impl(),
                     repo_rule.module_context.as_ref(),
                     Phase::Repository,
                     starlark_semantics.clone(),
@@ -1125,7 +1248,7 @@ impl RepositoryFetchFunction {
             "repository rule for repo '{}' did not return repo_metadata (implementation at {}), \
              but --incompatible_require_repo_extension_metadata={} requires it",
             repo_definition.name,
-            implementation_location(&repo_definition.repo_rule.impl_),
+            implementation_location(repo_definition.repo_rule.get_impl()),
             require_repo_extension_metadata_mode
         );
         env.listener().handle(&Event::error(message.clone()));

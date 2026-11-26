@@ -1,0 +1,44 @@
+action {
+  action {
+    owner: "//pkg:gen"
+    id: "0123abcd"
+    mnemonic: "Genrule"
+    aspect_name: "MyAspect"
+    aspect_parameters {
+      key: "p"
+      value {
+        value: "v1"
+        value: "v2"
+      }
+    }
+    [blaze.SpawnInfo.spawn_info] {
+      argument: "/bin/bash"
+      argument: "-c"
+      argument: "echo \"\303\251\" > $@"
+      variable {
+        name: "PATH"
+        value: "/bin"
+      }
+      input_file: "pkg/in.txt"
+      output_file: "bazel-out/k8-fastbuild/bin/pkg/out.txt"
+    }
+  }
+}
+action {
+  triggering_file: "pkg/a.cc"
+  action {
+    owner: "//pkg:lib"
+    id: "ffff"
+    mnemonic: "CppCompile"
+    [blaze.CppCompileInfo.cpp_compile_info] {
+      tool: "/usr/bin/gcc"
+      compiler_option: "-c"
+      source_file: "pkg/a.cc"
+      output_file: "bazel-out/k8-fastbuild/bin/pkg/_objs/lib/a.o"
+      sources_and_headers: "pkg/a.cc"
+    }
+    [blaze.PythonInfo.python_info] {
+      source_file: "a.py"
+    }
+  }
+}

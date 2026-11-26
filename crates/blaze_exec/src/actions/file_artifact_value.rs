@@ -422,6 +422,38 @@ impl FileArtifactValue {
         }
     }
 
+    /// `createForSourceArtifact(artifact, fileValue, xattrProvider)`, given the parts of the
+    /// `FileValue` it reads: `isFile`, the size, contents proxy and digest of a regular file.
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:319 FileArtifactValue.createForSourceArtifact
+    pub fn create_for_source_artifact(
+        path: &Path,
+        is_file: bool,
+        size: i64,
+        proxy: Option<FileContentsProxy>,
+        digest: Option<Vec<u8>>,
+    ) -> io::Result<FileArtifactValue> {
+        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:364 FileArtifactValue.create
+        if !is_file {
+            // In this case, we need to store the mtime because the action cache uses mtime for
+            // directories to determine if this artifact has changed. We want this code path to go
+            // away somehow.
+            return Ok(FileArtifactValue::Directory {
+                mtime: path.get_last_modified_time()?,
+            });
+        }
+        let digest = match digest {
+            Some(digest) => digest,
+            None => crate::actions::cache::digest_utils::DigestUtils::get_digest_with_manual_fallback(
+                path,
+            )?,
+        };
+        Ok(FileArtifactValue::create_for_normal_file(
+            Some(digest),
+            proxy,
+            size,
+        ))
+    }
+
     /// `createFromStat(path, stat, xattrProvider)`: the digest is the file's fast digest or
     /// read from the file (`DigestUtils.getDigestWithManualFallback`).
     // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:353 FileArtifactValue.createFromStat
@@ -481,6 +513,59 @@ impl FileArtifactValue {
 }
 
 impl FileArtifactValue {
+    /// Java `this instanceof Singleton`: `SingletonMarkerValue` (`RUNFILES_TREE_MARKER`,
+    /// `MISSING_FILE_MARKER`, `OMITTED_FILE_MARKER`) and `ConstantMetadataValue`.
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:299 FileArtifactValue.Singleton
+    fn is_singleton(&self) -> bool {
+        matches!(
+            self,
+            FileArtifactValue::RunfilesTreeMarker
+                | FileArtifactValue::MissingFileMarker
+                | FileArtifactValue::ConstantMetadata
+        )
+    }
+
+    /// Returns whether the two `FileArtifactValue` instances could be considered the same for
+    /// purposes of action invalidation.
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:235 FileArtifactValue.couldBeModifiedSince
+    pub fn could_be_modified_since(&self, last_known: &FileArtifactValue) -> bool {
+        if self.is_singleton() || last_known.is_singleton() {
+            return true;
+        }
+
+        if self.get_type() != last_known.get_type() {
+            return true;
+        }
+
+        match (self.get_digest(), last_known.get_digest()) {
+            // If we know the digests, we can tell with certainty whether the file has changed.
+            (Some(digest), Some(last_known_digest)) => {
+                digest != last_known_digest || self.get_size() != last_known.get_size()
+            }
+            // If not, we assume by default that the file has changed, but individual
+            // implementations might know better. For example, regular local files can be
+            // compared by ctime or mtime.
+            _ => self.could_be_modified_by_metadata(last_known),
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:266 FileArtifactValue.couldBeModifiedByMetadata
+    fn could_be_modified_by_metadata(&self, last_known: &FileArtifactValue) -> bool {
+        match self {
+            // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:682 RegularFileArtifactValue.couldBeModifiedByMetadata
+            FileArtifactValue::RegularFile { size, proxy, .. } => {
+                *size != last_known.get_size() || *proxy != last_known.get_contents_proxy()
+            }
+            // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1022 ResolvedSymlinkArtifactValue.couldBeModifiedByMetadata
+            FileArtifactValue::ResolvedSymlink { delegate, .. } => {
+                delegate.could_be_modified_by_metadata(last_known)
+            }
+            // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:292 TreeArtifactCompositeFileArtifactValue.couldBeModifiedByMetadata
+            FileArtifactValue::TreeArtifactComposite { .. } => false,
+            _ => true,
+        }
+    }
+
     /// Returns whether the file contents have changed since the digest was computed, as far as
     /// this value can tell (`path` is the file's current location).
     // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:228 FileArtifactValue.wasModifiedSinceDigest

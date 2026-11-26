@@ -19,6 +19,59 @@ use crate::{
 // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:22 SkyFunctions.PRECOMPUTED
 pub const PRECOMPUTED: SkyFunctionName = SkyFunctionName("PRECOMPUTED");
 
+// Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:24 SkyFunctions.CLIENT_ENVIRONMENT_VARIABLE
+pub const CLIENT_ENVIRONMENT_VARIABLE: SkyFunctionName =
+    SkyFunctionName("CLIENT_ENVIRONMENT_VARIABLE");
+
+/// `ClientEnvironmentFunction.Key`: the name of a client environment variable. `Debug` is
+/// `CLIENT_ENVIRONMENT_VARIABLE:<name>` (Java `AbstractSkyKey.toString`).
+///
+/// PORT: Java's class is in `lib/skyframe`; it is in this crate because action execution
+/// (blaze_sky_exec) and bzlmod (blaze_bzlmod), which do not depend on each other, request it.
+// Java: com/google/devtools/build/lib/skyframe/ClientEnvironmentFunction.java:37 ClientEnvironmentFunction.Key
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct ClientEnvironmentKey(pub String);
+
+impl ClientEnvironmentKey {
+    // Java: com/google/devtools/build/lib/skyframe/ClientEnvironmentFunction.java:30 ClientEnvironmentFunction.key
+    pub fn key(key_string: &str) -> ClientEnvironmentKey {
+        ClientEnvironmentKey(key_string.to_string())
+    }
+}
+
+impl fmt::Debug for ClientEnvironmentKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", CLIENT_ENVIRONMENT_VARIABLE, self.0)
+    }
+}
+
+impl Key for ClientEnvironmentKey {
+    type Value = EnvironmentVariableValue;
+    const FUNCTION: SkyFunctionName = CLIENT_ENVIRONMENT_VARIABLE;
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:24 SkyFunctions.CLIENT_ENVIRONMENT_VARIABLE (createNonHermetic)
+    const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
+    /// Java: `EnvironmentVariableValue` is a record of one nullable string.
+    // Java: com/google/devtools/build/lib/skyframe/EnvironmentVariableValue.java:28 EnvironmentVariableValue
+    fn values_equal(old: &EnvironmentVariableValue, new: &EnvironmentVariableValue) -> bool {
+        old == new
+    }
+}
+
+/// The value of a client environment variable (`None`: unset). Port of
+/// `EnvironmentVariableValue`.
+///
+/// PORT: in this crate for the reason given at [`ClientEnvironmentKey`].
+// Java: com/google/devtools/build/lib/skyframe/EnvironmentVariableValue.java:28 EnvironmentVariableValue
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvironmentVariableValue(pub Option<String>);
+
+impl EnvironmentVariableValue {
+    pub fn value(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+}
+
+
 type AnyValue = dyn Any + Send + Sync;
 
 /// A variable's value. Java: `PrecomputedValue` (the `Object value` it wraps).

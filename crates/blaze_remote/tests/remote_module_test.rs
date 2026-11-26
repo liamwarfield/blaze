@@ -23,7 +23,6 @@ use blaze_optdefs::misc::auth_and_tls_options::AuthAndTLSOptions;
 use blaze_optdefs::misc::remote_options::{CircuitBreakerStrategy, RemoteOptions};
 use blaze_options::Options;
 use blaze_remote::api_version::ApiVersion;
-use blaze_remote::authandtls::google_auth_utils::CredentialHelperEnvironment;
 use blaze_remote::circuitbreaker::failure_circuit_breaker::FailureCircuitBreaker;
 use blaze_remote::common::errors;
 use blaze_remote::common::remote_execution_capabilities_exception::RemoteExecutionCapabilitiesException;
@@ -44,6 +43,9 @@ use blaze_remote::retrier::{ALLOW_ALL_CALLS, CircuitBreaker};
 use blaze_remote::runtime::get_from_future;
 use blaze_remote::util::DigestUtil;
 use blaze_remote::util::tracing_metadata_utils;
+use blaze_repo_fetch::authandtls::credentialhelper::{
+    CommandLinePathFactory, CredentialHelperEnvironment, CredentialModule,
+};
 use blaze_repo_fetch::uri::JavaUri;
 use blaze_vfs::{DigestHashFunction, FileSystemRef, Path, UnixFileSystem};
 use indexmap::IndexMap;
@@ -180,6 +182,7 @@ impl TestEnv {
             exec_root: exec_root.clone(),
             working_directory: self.workspace(),
             workspace: Some(self.workspace()),
+            install_base: None,
             workspace_name: "_main".to_string(),
             action_temps_directory: output_base.get_relative_str("action_temps"),
             build_request_id: "build-request-id".to_string(),
@@ -399,13 +402,19 @@ fn test_netrc_netrc_without_remote_cache() {
     let mut client_env = IndexMap::new();
     client_env.insert("NETRC".to_string(), netrc.get_path_string().to_string());
 
+    // `Caffeine.newBuilder().build()`: the module's cache type (no entry outlives this test).
+    let credential_cache = CredentialModule::new(Arc::new(JavaClock))
+        .get_credential_cache()
+        .clone();
     let credentials = create_credentials(
         &CredentialHelperEnvironment {
-            event_reporter: &reporter,
+            event_reporter: Arc::new(reporter),
             workspace_path: Some(env.workspace()),
             client_environment: client_env,
             helper_execution_timeout: Duration::ZERO,
         },
+        &credential_cache,
+        &CommandLinePathFactory::create_for(env.file_system.clone(), None, None),
         &env.file_system,
         &auth_and_tls_options,
         &remote_options,

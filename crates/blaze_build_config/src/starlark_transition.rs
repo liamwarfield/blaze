@@ -332,10 +332,104 @@ pub struct JavaObjectValue(#[allocative(skip)] pub OptionValue);
 
 starlark_simple_value!(JavaObjectValue);
 
+/// `Class.getName()` of the option value classes [`is_java_starlark_value`] lists whose `repr`
+/// is `StarlarkValue`'s default; `None` for the classes that override it (`CompilationMode` and
+/// `DottedVersion.Option` print their `toString()`).
+fn default_repr_class_name(v: &OptionValue) -> Option<&'static str> {
+    use blaze_optdefs::fragment::android_configuration as android;
+    use blaze_optdefs::fragment::apple_configuration as apple;
+    use blaze_optdefs::fragment::converters::CoreOptionConvertersStrictDepsMode;
+    use blaze_optdefs::fragment::core_options as core;
+    use blaze_optdefs::fragment::cpp_configuration as cpp;
+    use blaze_optdefs::fragment::java_configuration as java;
+    use blaze_optdefs::fragment::python_version::PythonVersion;
+    let names: [(bool, &'static str); 15] = [
+        (
+            v.downcast_ref::<blaze_options::TriState>().is_some(),
+            "com.google.devtools.common.options.TriState",
+        ),
+        (
+            v.downcast_ref::<core::CoreOptionsExecConfigurationDistinguisherScheme>()
+                .is_some(),
+            "com.google.devtools.build.lib.analysis.config.CoreOptions$ExecConfigurationDistinguisherScheme",
+        ),
+        (
+            v.downcast_ref::<core::CoreOptionsOutputDirectoryNamingScheme>()
+                .is_some(),
+            "com.google.devtools.build.lib.analysis.config.CoreOptions$OutputDirectoryNamingScheme",
+        ),
+        (
+            v.downcast_ref::<core::CoreOptionsOutputPathsMode>()
+                .is_some(),
+            "com.google.devtools.build.lib.analysis.config.CoreOptions$OutputPathsMode",
+        ),
+        (
+            v.downcast_ref::<core::CoreOptionsIncludeConfigFragmentsEnum>()
+                .is_some(),
+            "com.google.devtools.build.lib.analysis.config.CoreOptions$IncludeConfigFragmentsEnum",
+        ),
+        (
+            v.downcast_ref::<CoreOptionConvertersStrictDepsMode>()
+                .is_some(),
+            "com.google.devtools.build.lib.analysis.config.CoreOptionConverters$StrictDepsMode",
+        ),
+        (
+            v.downcast_ref::<cpp::CppConfigurationDynamicMode>()
+                .is_some(),
+            "com.google.devtools.build.lib.rules.cpp.CppConfiguration$DynamicMode",
+        ),
+        (
+            v.downcast_ref::<cpp::CppConfigurationStripMode>().is_some(),
+            "com.google.devtools.build.lib.rules.cpp.CppConfiguration$StripMode",
+        ),
+        (
+            v.downcast_ref::<java::JavaConfigurationJavaClasspathMode>()
+                .is_some(),
+            "com.google.devtools.build.lib.rules.java.JavaConfiguration$JavaClasspathMode",
+        ),
+        (
+            v.downcast_ref::<java::JavaConfigurationOneVersionEnforcementLevel>()
+                .is_some(),
+            "com.google.devtools.build.lib.rules.java.JavaConfiguration$OneVersionEnforcementLevel",
+        ),
+        (
+            v.downcast_ref::<PythonVersion>().is_some(),
+            "com.google.devtools.build.lib.rules.python.PythonVersion",
+        ),
+        (
+            v.downcast_ref::<android::AndroidConfigurationAndroidManifestMerger>()
+                .is_some(),
+            "com.google.devtools.build.lib.rules.android.AndroidConfiguration$AndroidManifestMerger",
+        ),
+        (
+            v.downcast_ref::<android::AndroidConfigurationManifestMergerOrder>()
+                .is_some(),
+            "com.google.devtools.build.lib.rules.android.AndroidConfiguration$ManifestMergerOrder",
+        ),
+        (
+            v.downcast_ref::<android::AndroidConfigurationConfigurationDistinguisher>()
+                .is_some(),
+            "com.google.devtools.build.lib.rules.android.AndroidConfiguration$ConfigurationDistinguisher",
+        ),
+        (
+            v.downcast_ref::<apple::AppleConfigurationConfigurationDistinguisher>()
+                .is_some(),
+            "com.google.devtools.build.lib.rules.apple.AppleConfiguration$ConfigurationDistinguisher",
+        ),
+    ];
+    names.iter().find(|(is, _)| *is).map(|(_, name)| *name)
+}
+
 impl fmt::Display for JavaObjectValue {
+    // Java: net/starlark/java/eval/StarlarkValue.java:37 StarlarkValue.repr (the default:
+    // "<unknown object " + getClass().getName() + ">"); str and debugPrint default to repr.
+    // Java: com/google/devtools/build/lib/analysis/config/CompilationMode.java:54 CompilationMode.repr
+    // Java: com/google/devtools/build/lib/rules/apple/DottedVersion.java:114 DottedVersion.Option.repr
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // PORT: Java prints these with their `repr` (Printer.debugPrint -> toString for enums).
-        f.write_str(&self.0.java_to_string())
+        match default_repr_class_name(&self.0) {
+            Some(class_name) => write!(f, "<unknown object {class_name}>"),
+            None => f.write_str(&self.0.java_to_string()),
+        }
     }
 }
 
@@ -350,7 +444,7 @@ impl<'v> StarlarkValue<'v> for JavaObjectValue {
 
 /// `Starlark.fromJava(x, mutability)`: `None` when the object is not Starlark-convertible
 /// (`InvalidStarlarkValueException`).
-fn from_java<'v>(x: &JavaObject, heap: starlark::values::Heap<'v>) -> Option<Value<'v>> {
+pub fn from_java<'v>(x: &JavaObject, heap: starlark::values::Heap<'v>) -> Option<Value<'v>> {
     match x {
         JavaObject::Null => Some(Value::new_none()),
         JavaObject::Bool(b) => Some(Value::new_bool(*b)),

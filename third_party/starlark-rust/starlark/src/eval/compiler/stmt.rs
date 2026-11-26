@@ -807,7 +807,9 @@ impl Compiler<'_, '_, '_, '_> {
                 // Java Eval.execFor: an assignment error is located at the `for`.
                 let var = var.located_at(span); // BLAZE PATCH 0028
                 let over = self.expr(&over)?;
-                let st = self.stmt(body, false)?;
+                // BLAZE PATCH 0061: Java Eval.execFor sets the `for` on errors of the body.
+                let for_start = Some(span.span.begin_point()); // BLAZE PATCH 0061
+                let st = self.with_java_handler(for_start, |this| this.stmt(body, false))?; // BLAZE PATCH 0061
                 Ok(StmtsCompiled::for_stmt(span, var, over, st))
             }
             StmtP::Return(None) => Ok(StmtsCompiled::one(IrSpanned {
@@ -838,7 +840,11 @@ impl Compiler<'_, '_, '_, '_> {
             }
             StmtP::Expression(e) => self.stmt_expr(e),
             StmtP::Assign(AssignP { lhs, ty, rhs }) => {
-                let rhs = self.expr(rhs)?;
+                // BLAZE PATCH 0061: Java Eval.execAssignment sets the `=` on errors of the
+                // right-hand side.
+                let after_lhs = ty.as_ref().map_or(lhs.span.end(), |t| t.span.end()); // BLAZE PATCH 0061
+                let eq = self.java_token(after_lhs, rhs.span.begin(), "="); // BLAZE PATCH 0061
+                let rhs = self.with_java_handler(eq, |this| this.expr(rhs))?; // BLAZE PATCH 0061
                 let ty = self.expr_for_type(ty.as_ref());
                 let lhs = self.assign_target(lhs)?;
                 // Java Eval.execAssignment: an error assigning to `x[i]` or unpacking is located
@@ -850,7 +856,17 @@ impl Compiler<'_, '_, '_, '_> {
                 }))
             }
             StmtP::AssignModify(lhs, op, rhs) => {
-                let rhs = self.expr(rhs)?;
+                // BLAZE PATCH 0061: Java Eval.execAssignment sets the operator on errors of the
+                // right-hand side; for `x.f op= y` the `.` (execAugmentedAssignment's inner try).
+                let handler = match &lhs.node { // BLAZE PATCH 0061
+                    AssignTargetP::Dot(e, f) => self.java_token(e.span.end(), f.span.begin(), "."), // BLAZE PATCH 0061
+                    _ => self.java_token( // BLAZE PATCH 0061
+                        lhs.span.end(), // BLAZE PATCH 0061
+                        rhs.span.begin(), // BLAZE PATCH 0061
+                        format!("{op}").trim(), // BLAZE PATCH 0061
+                    ), // BLAZE PATCH 0061
+                }; // BLAZE PATCH 0061
+                let rhs = self.with_java_handler(handler, |this| this.expr(rhs))?; // BLAZE PATCH 0061
                 self.assign_modify(span.span.span(), lhs, rhs, *op)
             }
             StmtP::Load(..) => unreachable!(),

@@ -348,6 +348,7 @@ fn get_repo_rule(
             .clone()
             .unwrap_or_default(),
         impl_,
+        impl_stamp: blaze_util::build_arena::ArenaStamp::current(),
         doc: data.doc.clone(),
         attributes: data.builder.attributes.clone(),
         attribute_indices: data.builder.attribute_indices.clone(),

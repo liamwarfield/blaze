@@ -15,8 +15,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use blaze_events::{Event, EventHandler};
+use blaze_events::Event;
 use blaze_optdefs::misc::auth_and_tls_options::{AuthAndTLSOptions, CredentialHelperOption};
+use blaze_repo_fetch::authandtls::credentialhelper::{
+    CommandLinePathFactory, CredentialCache, CredentialHelperCredentials,
+    CredentialHelperEnvironment, CredentialHelperProvider,
+};
 use blaze_repo_fetch::authandtls::{Headers, NetrcCredentials, netrc_parser};
 use blaze_repo_fetch::errors::IoException;
 use blaze_repo_fetch::uri::JavaUri;
@@ -256,6 +260,7 @@ pub fn new_channel(
         builder = match builder.clone().tls_config(ssl_context) {
             Ok(_) => {
                 let config = rustls_client_config(
+                    &tls_domain,
                     options.tls_certificate.as_deref(),
                     options.tls_client_certificate.as_deref(),
                     options.tls_client_key.as_deref(),
@@ -397,6 +402,7 @@ fn http_connector(builder: &Endpoint) -> hyper_util::client::legacy::connect::Ht
 /// certificate or the webpki roots (checked by `JdkServerCertVerifier`), the client
 /// certificate, and ALPN `h2`.
 fn rustls_client_config(
+    tls_domain: &str,
     root_cert: Option<&str>,
     client_cert: Option<&str>,
     client_key: Option<&str>,
@@ -427,7 +433,8 @@ fn rustls_client_config(
     let builder = builder
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(
-            super::jdk_server_cert_verifier::JdkServerCertVerifier::new(Arc::new(roots), provider)?,
+            super::jdk_server_cert_verifier::JdkServerCertVerifier::new(Arc::new(roots), provider)?
+                .with_requested_host(tls_domain),
         ));
     let mut config = match (client_cert, client_key) {
         (Some(client_cert), Some(client_key)) => {
@@ -764,95 +771,36 @@ pub fn new_call_credentials_provider(
     NO_CREDENTIALS.clone()
 }
 
-/// Environment for running credential helpers in.
-///
-/// PORT: the Java record lives in `lib/authandtls/credentialhelper`, which is not ported; this
-/// is the record itself, for the fields `GoogleAuthUtils` reads.
-// Java: com/google/devtools/build/lib/authandtls/credentialhelper/CredentialHelperEnvironment.java:39 CredentialHelperEnvironment
-pub struct CredentialHelperEnvironment<'a> {
-    /// The reporter for reporting events related to credential helpers.
-    pub event_reporter: &'a dyn EventHandler,
-    /// The absolute path to the workspace, or `None` if Bazel was invoked outside a workspace.
-    pub workspace_path: Option<Path>,
-    /// The environment from the Bazel client.
-    pub client_environment: IndexMap<String, String>,
-    /// The execution timeout for the helper subprocess.
-    pub helper_execution_timeout: Duration,
-}
-
-/// A provider for credential helpers.
-///
-/// PORT: only the provider without helpers exists: [`new_credential_helper_provider`] cannot
-/// resolve the path of a helper (`CommandLinePathFactory` is not ported) and there is no
-/// credential helper runner (`CredentialHelper.getCredentials`), so a configured helper fails
-/// loudly where its path would be resolved.
-// Java: com/google/devtools/build/lib/authandtls/credentialhelper/CredentialHelperProvider.java:37 CredentialHelperProvider
-#[derive(Debug)]
-pub struct CredentialHelperProvider {
-    _no_helpers: (),
-}
-
-/// `CommandLinePathFactory.create(env, value)`.
-fn command_line_path_factory_create(helper: &CredentialHelperOption) -> ! {
-    blaze_util::unported!(
-        "CommandLinePathFactory.create (missing hook: blaze_runtime CommandLinePathFactory; CredentialHelper.getCredentials, the credential helper runner, is not ported either)",
-        "--credential_helper={}",
-        match &helper.scope {
-            Some(scope) => format!("{scope}={}", helper.path),
-            None => helper.path.clone(),
-        }
-    )
-}
-
 /// `GoogleAuthUtils.newCredentialHelperProvider(environment, pathFactory, helpers)`.
-///
-/// PORT: the `CommandLinePathFactory` parameter is absent (see [`CredentialHelperProvider`]).
 // Java: com/google/devtools/build/lib/authandtls/GoogleAuthUtils.java:416 GoogleAuthUtils.newCredentialHelperProvider
 pub fn new_credential_helper_provider(
-    _environment: &CredentialHelperEnvironment<'_>,
+    environment: &CredentialHelperEnvironment,
+    path_factory: &CommandLinePathFactory,
     helpers: &[CredentialHelperOption],
-) -> io::Result<CredentialHelperProvider> {
-    // CredentialHelperProvider.Builder builder = CredentialHelperProvider.builder();
-    if let Some(helper) = helpers.first() {
-        // Path path = pathFactory.create(environment.clientEnvironment(), helper.path());
-        command_line_path_factory_create(helper);
+) -> Result<CredentialHelperProvider, IoException> {
+    let mut builder = CredentialHelperProvider::builder();
+    for helper in helpers {
+        let path = path_factory.create(&environment.client_environment, &helper.path)?;
+        match &helper.scope {
+            Some(scope) => builder.add(scope, path)?,
+            None => builder.add_default(path)?,
+        };
     }
-    Ok(CredentialHelperProvider { _no_helpers: () })
+    Ok(builder.build())
 }
 
-/// Implementation of [`Credentials`] which fetches credentials by invoking a credential helper
-/// as subprocess, falling back to another [`Credentials`] if no suitable helper exists.
-///
-/// PORT: the provider never has a helper (see [`CredentialHelperProvider`]), so the credential
-/// cache (`Cache<URI, GetCredentialsResponse>`) would stay empty and is not kept.
-// Java: com/google/devtools/build/lib/authandtls/credentialhelper/CredentialHelperCredentials.java:33 CredentialHelperCredentials
-struct CredentialHelperCredentials {
-    _credential_helper_provider: CredentialHelperProvider,
-    fallback_credentials: Option<Arc<dyn Credentials>>,
-}
+/// The remote module's credentials: `CredentialHelperCredentials` over a fallback that can be
+/// refreshed.
+pub type RemoteCredentialHelperCredentials = CredentialHelperCredentials<dyn Credentials>;
 
-impl blaze_repo_fetch::authandtls::Credentials for CredentialHelperCredentials {
-    // Java: com/google/devtools/build/lib/authandtls/credentialhelper/CredentialHelperCredentials.java:60 CredentialHelperCredentials.getRequestMetadata
-    fn get_request_metadata(&self, uri: &JavaUri) -> Result<Headers, IoException> {
-        // response = credentialCache.get(uri, this::getCredentialsFromHelper);
-        // `credentialHelperProvider.findCredentialHelper(uri)` is empty, so `response` is null.
-
-        if let Some(fallback_credentials) = &self.fallback_credentials {
-            return fallback_credentials.get_request_metadata(uri);
-        }
-
-        Ok(Headers::new())
-    }
-}
-
-impl Credentials for CredentialHelperCredentials {
+impl Credentials for CredentialHelperCredentials<dyn Credentials> {
     // Java: com/google/devtools/build/lib/authandtls/credentialhelper/CredentialHelperCredentials.java:114 CredentialHelperCredentials.refresh
     fn refresh(&self) -> io::Result<()> {
-        if let Some(fallback_credentials) = &self.fallback_credentials {
+        if let Some(fallback_credentials) = self.fallback_credentials() {
             fallback_credentials.refresh()?;
         }
 
-        // credentialCache.invalidateAll(): nothing is cached.
+        self.invalidate_cache();
         Ok(())
     }
 }
@@ -865,12 +813,11 @@ impl Credentials for CredentialHelperCredentials {
 /// 3. Use `.netrc` to provide credentials if exists.
 ///
 /// Fails in case the credentials can't be constructed.
-///
-/// PORT: the `credentialCache` and `commandLinePathFactory` parameters are absent (see
-/// [`CredentialHelperProvider`]).
 // Java: com/google/devtools/build/lib/authandtls/GoogleAuthUtils.java:294 GoogleAuthUtils.newCredentials
 pub fn new_credentials(
-    credential_helper_environment: &CredentialHelperEnvironment<'_>,
+    credential_helper_environment: &CredentialHelperEnvironment,
+    credential_cache: &Arc<CredentialCache>,
+    command_line_path_factory: &CommandLinePathFactory,
     file_system: &FileSystemRef,
     auth_and_tls_options: &AuthAndTLSOptions,
 ) -> io::Result<Arc<dyn Credentials>> {
@@ -892,13 +839,18 @@ pub fn new_credentials(
         }
     }
 
-    Ok(Arc::new(CredentialHelperCredentials {
-        _credential_helper_provider: new_credential_helper_provider(
-            credential_helper_environment,
-            &auth_and_tls_options.credential_helpers,
-        )?,
+    let provider = new_credential_helper_provider(
+        credential_helper_environment,
+        command_line_path_factory,
+        &auth_and_tls_options.credential_helpers,
+    )
+    .map_err(|e| e.into_io_error())?;
+    Ok(Arc::new(RemoteCredentialHelperCredentials::new(
+        provider,
+        credential_helper_environment.clone(),
+        credential_cache.clone(),
         fallback_credentials,
-    }))
+    )))
 }
 
 /// Create a new [`Credentials`] object from the authentication flags, or `None` if no flags are

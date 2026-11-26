@@ -126,6 +126,30 @@ pub fn parse_file(file: &str, source: &str, options: JavaOptions) -> ParsedFile 
     }
 }
 
+/// Java `Expression.parse(input, options)`: scans and parses `source` as one expression; the
+/// scanner's and parser's errors (Java throws `SyntaxError.Exception` when there is any).
+// Java: net/starlark/java/syntax/Parser.java:248 Parser.parseExpression
+pub fn parse_expression(file: &str, source: &str, options: JavaOptions) -> Vec<SyntaxError> {
+    let chars: Vec<char> = source.chars().collect();
+    let locs = FileLocations::new(file, &chars);
+    let mut line_starts = vec![0];
+    for (i, c) in chars.iter().enumerate() {
+        if *c == '\n' {
+            line_starts.push(i + 1);
+        }
+    }
+    let lexer = lexer::Lexer::new(&chars, &line_starts, options);
+    let mut p = parser::Parser::new(lexer, options);
+    let _ = p.parse_expression_input();
+    p.errors
+        .into_iter()
+        .map(|e| SyntaxError {
+            location: locs.location(e.offset),
+            message: e.message,
+        })
+        .collect()
+}
+
 /// Java `Program.compileFile`'s static errors: `parsed`'s errors followed by the resolver's.
 // Java: net/starlark/java/syntax/Program.java:101 Program.compileFile
 pub fn compile_errors(

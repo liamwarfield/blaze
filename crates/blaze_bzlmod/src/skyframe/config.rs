@@ -28,6 +28,52 @@ use super::module_file_function::{BuiltinPackageLookup, PackageLookup};
 // Java: com/google/devtools/build/lib/analysis/BlazeVersionInfo.java:132 BlazeVersionInfo.getVersion
 pub const BAZEL_VERSION: &str = "9.3.2";
 
+/// What `ModuleFileFunction` and `BazelLockFileFunction` read of a `FileValue`.
+#[derive(Clone, Copy, Debug)]
+pub struct FileValueFacts {
+    /// `fileValue.exists()`.
+    pub exists: bool,
+    /// `fileValue.isFile()`.
+    pub is_file: bool,
+}
+
+/// `env.getValue(FileValue.key(RootedPath.toRootedPath(root, relative)))`: the dependency through
+/// which an edit of a module file, an included file, a patch or the lockfile invalidates the
+/// function that read it.
+///
+/// PORT: the `FILE` key lives in blaze_sky_loading, which this crate cannot name (I2 item X3); the
+/// repository setup installs a lookup that requests it (blaze_repo_rules `setup`). The default,
+/// [`DirectFileValueLookup`], serves the evaluators of the dev binaries and tests, which have no
+/// `FILE` function.
+pub trait FileValueLookup: Send + Sync {
+    /// `None` when the value is missing or in error (Java's `getValue` returns null).
+    fn file_value(
+        &self,
+        root: &Path,
+        relative: &PathFragment,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<FileValueFacts>, ComputeError>;
+}
+
+/// The facts of a direct stat (following symbolic links, as `FileValue` does), for evaluators
+/// without a `FILE` function (dev binaries, tests). Not used by a Bazel command.
+pub struct DirectFileValueLookup;
+
+impl FileValueLookup for DirectFileValueLookup {
+    fn file_value(
+        &self,
+        root: &Path,
+        relative: &PathFragment,
+        _env: &mut Environment<'_>,
+    ) -> Result<Option<FileValueFacts>, ComputeError> {
+        let path = root.join(super::platform_path(relative.get_path_string()));
+        Ok(Some(FileValueFacts {
+            exists: path.exists(),
+            is_file: path.is_file(),
+        }))
+    }
+}
+
 /// Finds the directory of a fetched repository (Java: `RepositoryDirectoryValue` of
 /// `RepositoryDirectoryValue.key(name)`, cast to `Success`, `.root()`). `Ok(None)` when a
 /// dependency is unavailable (Java returns null).
@@ -143,6 +189,8 @@ pub struct BzlmodConfig {
     pub bazel_version: String,
     /// `ModuleFileFunction`'s built-in modules (see [`builtin_modules`]).
     pub builtin_modules: IndexMap<String, NonRegistryOverride>,
+    /// `FileValue` dependencies (FILE seam).
+    pub file_value_lookup: Arc<dyn FileValueLookup>,
     /// Where fetched repositories are (REPOSITORY_DIRECTORY seam).
     pub repository_directory_lookup: Arc<dyn RepositoryDirectoryLookup>,
     /// Whether a package exists and under which root (PACKAGE_LOOKUP seam). The default,
@@ -362,6 +410,7 @@ impl BzlmodConfig {
             registry_factory,
             bazel_version: BAZEL_VERSION.to_string(),
             builtin_modules: builtin_modules(),
+            file_value_lookup: Arc::new(DirectFileValueLookup),
             repository_directory_lookup: Arc::new(BuiltinRepositoryDirectoryLookup {
                 embedded_tools: install_base.join("embedded_tools"),
                 workspace_root: workspace_root.to_path_buf(),

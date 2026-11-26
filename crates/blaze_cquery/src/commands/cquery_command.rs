@@ -170,6 +170,7 @@ pub fn exec(env: &PostAnalysisCommandEnvironment<'_>) -> DetailedExitCode {
         env.reporter.clone(),
         env.output.clone(),
         env.working_directory.clone(),
+        workspace_of(env),
         env.tracks_state_for_incrementality,
     );
     process_request(env, &request, &processor)
@@ -186,4 +187,16 @@ fn create_failure_result(
             code: detailed_code as i32,
         })),
     })
+}
+
+/// The workspace root: the working directory less its relative part
+/// (`env.getWorkingDirectory()` is `workspace.getRelative(relativeWorkingDirectory)`).
+fn workspace_of(env: &super::PostAnalysisCommandEnvironment<'_>) -> blaze_vfs::Path {
+    let mut workspace = env.working_directory.clone();
+    for _ in 0..env.relative_working_directory.segment_count() {
+        workspace = workspace
+            .get_parent_directory()
+            .expect("the working directory is below the workspace");
+    }
+    workspace
 }

@@ -423,6 +423,16 @@ impl BlazeCommandDispatcher {
         );
         env.set_client_command_line(args.to_vec(), startup_options_tagged_with_bazel_rc.clone());
         env.set_config_flag_definitions(config_flag_definitions);
+        // BlazeWorkspace.initCommand: "Drop the action cache reference to save memory since we
+        // don't need it for this build. If a subsequent build needs it,
+        // getOrLoadPersistentActionCache will reload it from disk."
+        // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:348 BlazeWorkspace.initCommand
+        if options
+            .get_options::<blaze_optdefs::command::build_request_options::BuildRequestOptions>()
+            .is_some_and(|o| !o.use_action_cache)
+        {
+            crate::idle_tasks::note_persistent_action_cache_dropped();
+        }
 
         // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:419 BlazeCommandDispatcher.execExclusively
         if attempt_number > 1 {
@@ -529,8 +539,8 @@ impl BlazeCommandDispatcher {
         if !command_annotation.binary_std_err {
             out_err = buffer_err(&out_err);
         }
-        // PORT: DebugLoggerConfigurator.setupLogging(verbosity) sets the level of the server's
-        // java.util.logging loggers; this crate writes no such log lines.
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:549 BlazeCommandDispatcher.execExclusively
+        crate::server_log::setup_logging(common_options.verbosity);
         let handler = Arc::new(UiEventHandler::new(
             out_err.clone(),
             &ui_event_handler_options(&event_handler_options),
@@ -830,6 +840,18 @@ impl BlazeCommandDispatcher {
             );
             drop(parse_starlark_options_scope);
             drop(skyframe_executor);
+            if early_exit_code.is_success()
+                && env
+                    .get_blaze_workspace()
+                    .get_incremental_state()
+                    .passes_graph_between_executors()
+            {
+                // The command's executor builds on this executor's graph and finds these nodes
+                // done, as Java's one executor does: it reports and posts nothing for them. The
+                // posts go out now, and nothing is to be dropped from the command's output.
+                stored_events.replay_on(env.get_reporter().as_ref());
+                ui_filter.forget_reported();
+            }
             if !early_exit_code.is_success() {
                 post_no_build_event(&env);
                 let result = BlazeCommandResult::detailed_exit_code(early_exit_code);
@@ -1025,9 +1047,31 @@ impl BlazeCommandDispatcher {
         if let Some(reason) = env.take_shutdown_reason() {
             self.set_shutdown_reason(reason);
         }
+        // Wipe the dependency graph if requested. Note that this method always runs at the end
+        // of a commands unless the server crashes, in which case no inmemory state will linger
+        // for the next build anyway.
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:790 BlazeRuntime.afterCommand
+        if env
+            .get_options()
+            .get_options::<blaze_optdefs::command::common_command_options::CommonCommandOptions>()
+            .is_some_and(|o| !o.keep_state_after_build)
+        {
+            env.get_blaze_workspace().reset_evaluator();
+        }
         // Swallow IOException, as we are already in a finally clause
         let _ = out_err.get_output_stream().flush();
         let _ = out_err.get_error_stream().flush();
+        // PORT: Java waits at the end of execExclusively's finally block, after afterCommand;
+        // here it is the last step of the afterCommand port that every exit path runs.
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:899 BlazeCommandDispatcher.execExclusively
+        env.get_timestamp_granularity_monitor()
+            .wait_for_timestamp_granularity();
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:827 BlazeRuntime.afterCommand
+        let idle_tasks = env.get_idle_tasks();
+        if !idle_tasks.is_empty() {
+            final_command_result =
+                BlazeCommandResult::with_idle_tasks(final_command_result, idle_tasks);
+        }
         // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:832 BlazeRuntime.afterCommand
         env.get_reporter().clear_event_bus();
         // PORT: with the reporter's and the workspace's references gone, Java's collector frees
@@ -1159,8 +1203,20 @@ fn set_shutdown_reason(reason: &Mutex<Option<String>>, shutdown_reason: String) 
 
 /// Releases the build arena (`blaze_util::build_arena::release_if_unused`) once a command has
 /// completely ended: `exec_exclusively` has returned, so `afterCommand` ran and the command's
-/// environment, its Skyframe executors (whose leases keep the arena) and the threads they join
-/// are gone; the command lock is still held, so no other command has started to fill the arena.
+/// environment and its Skyframe executors (whose leases keep the arena) are gone, with the
+/// threads they own and join (the evaluator's scoped workers, the consumers of spawned
+/// processes, the profile writer, the BEP writer, the remote background uploads joined in
+/// `close()`); the command lock is still held, so no other command has started to fill the
+/// arena.
+///
+/// Threads of the command that are not joined may still run: the persistent worker threads
+/// (`AsyncFinish-Worker-N`, the multiplexer's sender and receiver, the
+/// `worker-lifecycle-manager`, the worker pipe reader), the remote cache download helpers, the
+/// process reaper, the `idle-server-tasks` and `pid-file-watcher` threads of the server. Each
+/// captures plain data only (worker handles, requests, paths, digests), never a frozen value, an
+/// action or a spawn: rule 1 of `blaze_util::build_arena`. That is what makes the release safe
+/// for them; the unowned frozen handles check their arena generation at every use
+/// (`ArenaStamp`), so a breach of the rule fails loudly.
 ///
 /// PORT: Blaze only (decision D7; docs/research/08-server-and-incrementality.md 3.3 a). Java's
 /// collector frees the frozen Starlark heaps, the memo tables keyed by their values and the
@@ -1168,9 +1224,22 @@ fn set_shutdown_reason(reason: &Mutex<Option<String>>, shutdown_reason: String) 
 /// every command (decision D2), so everything the arena holds belongs to the command that ended.
 /// Not after a crash or a `shutdown` (the server exits; a crashed command's threads may still
 /// run). If a lease is still held (an executor outlived its command) nothing is released and
-/// the next command shares this arena, as in a process that never releases it.
+/// the next command shares this arena, as in a process that never releases it; the server log
+/// says so (review 2026-11-26 O2). Then the allocator returns the freed memory to the system
+/// (`malloc_trim`, allowed by ruling D15; it changes no output).
 fn release_build_arena() {
-    blaze_util::build_arena::release_if_unused();
+    if !blaze_util::build_arena::release_if_unused() {
+        crate::server_log::log(
+            blaze_options::converters::LogLevel::WARNING,
+            "com.google.devtools.build.lib.runtime.BlazeCommandDispatcher",
+            "releaseBuildArena",
+            &format!(
+                "build arena not released after the command: {} lease(s) still held",
+                blaze_util::build_arena::active_leases()
+            ),
+        );
+    }
+    crate::process_memory::release_free_memory();
 }
 
 /// The `systemOutErrPatcher.close()` of execExclusively's `finally`: run when the command's
@@ -1623,6 +1692,11 @@ impl ReportedOnceFilter {
         if !self.dropping.load(std::sync::atomic::Ordering::SeqCst) {
             self.reported.lock().push(event.clone());
         }
+    }
+
+    /// Forgets the recorded events: nothing will be dropped.
+    fn forget_reported(&self) {
+        self.reported.lock().clear();
     }
 
     fn start_dropping(&self) {

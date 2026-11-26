@@ -13,7 +13,18 @@
 //! was checked against Bazel's own `TestXmlOutputParser` on the oracle's JDK
 //! (`~/.cache/blaze/work/exec-fix-1/xmlprobe/`, 145 documents; the cases are the tests of
 //! `test_xml_output_parser_test.rs`). The exception messages are not Java's: Bazel drops them
-//! (`TestStrategy.parseTestResult` returns null on any parse failure).
+//! (`TestStrategy.parseTestResult` returns null on any parse failure). One exception: the
+//! malformed byte sequences the JDK's readers find (`UTF8Reader`, `ASCIIReader`, `UTF16Reader`)
+//! are reported through the five-argument `XMLErrorReporter.reportError`, which the StAX error
+//! reporter does not override; with no error handler set, Xerces' `DefaultErrorHandler` prints
+//! `[Fatal Error] :-1:-1: <message>` to `System.err` (the console during a command) before the
+//! exception is thrown. Those messages are Java's and the line is printed (review exec-2 round 2,
+//! E2-11; measured on the oracle's JDK).
+//!
+//! The JDK 25 processing limits are ported: an element depth over 100, more than 200 attributes
+//! on one element, a name longer than 1,000 characters (`jdk.xml.maxElementDepth`,
+//! `jdk.xml.elementAttributeLimit`, `jdk.xml.maxXMLNameLimit`; measured on the oracle's JDK by
+//! the review exec-2 round 2, E2-10).
 //!
 //! Not ported (`unported!`): a document type declaration with an internal subset or an external
 //! identifier (Java reads the DTD and its entity declarations), XML 1.1 documents, UCS-4 and
@@ -28,6 +39,129 @@ pub(super) struct XmlStreamException(pub(super) String);
 
 fn error<T>(message: impl Into<String>) -> Result<T, XmlStreamException> {
     Err(XmlStreamException(message.into()))
+}
+
+/// `jdk.xml.maxElementDepth` of the oracle's JDK (25.0.2).
+const MAX_ELEMENT_DEPTH: usize = 100;
+/// `jdk.xml.elementAttributeLimit` of the oracle's JDK.
+const ELEMENT_ATTRIBUTE_LIMIT: usize = 200;
+/// `jdk.xml.maxXMLNameLimit` of the oracle's JDK.
+const MAX_NAME_LIMIT: usize = 1000;
+
+/// `XMLEntityScanner.checkLimit(Limit.MAX_NAME_LIMIT, ...)`: a name (or one part of a qualified
+/// name) longer than 1,000 characters fails.
+fn check_name_limit(length: usize) -> Result<(), XmlStreamException> {
+    if length > MAX_NAME_LIMIT {
+        return error(format!(
+            "A name of {length} characters is over the limit {MAX_NAME_LIMIT} (jdk.xml.maxXMLNameLimit)."
+        ));
+    }
+    Ok(())
+}
+
+/// A document whose bytes stop being decodable.
+#[derive(Debug, Clone)]
+struct DecodeError {
+    message: String,
+    /// The first character index whose reading fails: `None` is the end of the decoded
+    /// characters (the error is seen only when the scanner reaches it, as with Xerces'
+    /// `UTF8Reader`, which returns the characters before a bad sequence and fails on the next
+    /// read); `Some` is the start of the chunk the JDK's reader loads with the bad byte (its
+    /// `ASCIIReader` and `UTF16Reader` convert a whole chunk at once, see [`eager_chunk_start`]).
+    visible_from: Option<usize>,
+    /// Whether it is a reader's `MalformedByteSequenceException` (printed as `[Fatal Error]`), not
+    /// a scanner error.
+    reader: bool,
+}
+
+/// The size of the JDK's reader buffers (`XMLEntityManager.DEFAULT_BUFFER_SIZE`): an
+/// `ASCIIReader` converts up to 8192 bytes per read, a `UTF16Reader` up to 8192 bytes (4096
+/// UTF-16 units).
+const READER_BUFFER_SIZE: usize = 8192;
+
+/// The raw index (before line-end normalization; bytes for ASCII, UTF-16 units for UTF-16) of
+/// the start of the chunk that holds `bad`, for a reader that converts whole chunks of
+/// `chunk` units after `first` (the end of the XML declaration, or the start).
+///
+/// PORT: an approximation of Xerces' loads: after the declaration the scanner reads chunks of
+/// the buffer's size, but a load that keeps the start of a token spanning the end of the buffer
+/// (`XMLEntityScanner.load` with an offset) reads less, which moves the later boundaries; that is
+/// not modelled. A bad byte right after the root element is in the first chunk after the
+/// declaration (rejected, as in Java); one 200,000 characters later is never loaded (accepted, as
+/// in Java).
+fn eager_chunk_start(bad: usize, first: usize, chunk: usize) -> usize {
+    if bad < first {
+        return bad;
+    }
+    first + (bad - first) / chunk * chunk
+}
+
+/// The index in the normalized characters (`\r\n` and `\r` become `\n`) of the raw character
+/// at `raw_index`.
+fn normalized_index(raw: &[char], raw_index: usize) -> usize {
+    let dropped = (1..raw_index.min(raw.len()))
+        .filter(|j| raw[*j] == '\n' && raw[*j - 1] == '\r')
+        .count();
+    raw_index - dropped
+}
+
+/// The message of the `MalformedByteSequenceException` Xerces' `UTF8Reader` throws for the
+/// sequence at `p`, the first byte that does not start a valid UTF-8 sequence (both accept the
+/// same sequences; only the message depends on the kind of error).
+// Java: com/sun/org/apache/xerces/internal/impl/io/UTF8Reader.java read (JDK)
+fn utf8_reader_error(bytes: &[u8], p: usize) -> String {
+    let invalid = |n: u32, of: u32| format!("Invalid byte {n} of {of}-byte UTF-8 sequence.");
+    let expected = |n: u32, of: u32| format!("Expected byte {n} of {of}-byte UTF-8 sequence.");
+    let b0 = bytes[p];
+    let at = |i: usize| bytes.get(p + i).copied();
+    let continuation = |b: u8| b & 0xC0 == 0x80;
+    if b0 & 0xE0 == 0xC0 && b0 & 0x1E != 0 {
+        // [110y yyyy] [10xx xxxx]
+        return match at(1) {
+            None => expected(2, 2),
+            Some(_) => invalid(2, 2),
+        };
+    }
+    if b0 & 0xF0 == 0xE0 {
+        // [1110 zzzz] [10yy yyyy] [10xx xxxx]
+        let Some(b1) = at(1) else {
+            return expected(2, 3);
+        };
+        if !continuation(b1) || (b0 == 0xED && b1 >= 0xA0) || (b0 & 0x0F == 0 && b1 & 0x20 == 0) {
+            return invalid(2, 3);
+        }
+        return match at(2) {
+            None => expected(3, 3),
+            Some(_) => invalid(3, 3),
+        };
+    }
+    if b0 & 0xF8 == 0xF0 {
+        // [1111 0uuu] [10uu zzzz] [10yy yyyy] [10xx xxxx]
+        let Some(b1) = at(1) else {
+            return expected(2, 4);
+        };
+        if !continuation(b1) || (b1 & 0x30 == 0 && b0 & 0x07 == 0) {
+            return invalid(2, 4);
+        }
+        let Some(b2) = at(2) else {
+            return expected(3, 4);
+        };
+        if !continuation(b2) {
+            return invalid(3, 4);
+        }
+        let Some(b3) = at(3) else {
+            return expected(4, 4);
+        };
+        if !continuation(b3) {
+            return invalid(4, 4);
+        }
+        let uuuuu = ((b0 << 2) & 0x1C) | ((b1 >> 4) & 0x03);
+        // invalidSurrogate(uuuuu): Integer.toHexString.
+        return format!(
+            "High surrogate bits in UTF-8 sequence must not exceed 0x10 but found 0x{uuuuu:x}."
+        );
+    }
+    invalid(1, 1)
 }
 
 /// The events of `XMLStreamReader.next()` that `TestXmlOutputParser` distinguishes.
@@ -56,10 +190,14 @@ const XMLNS_URI: &str = "http://www.w3.org/2000/xmlns/";
 pub(super) struct XmlStreamReader {
     /// The decoded document after line-end normalization.
     chars: Vec<char>,
-    /// Where decoding stopped, when it stopped at a malformed byte sequence: reading past the
-    /// end of `chars` then fails with this message. Like Xerces' readers, the error is only seen
-    /// when the scanner reaches it (a malformed byte after the root element is never read).
-    decode_error: Option<String>,
+    /// Where decoding stopped, when it stopped at a malformed byte sequence (see
+    /// [`DecodeError`]).
+    decode_error: Option<DecodeError>,
+    /// Whether the scanner reached `decode_error` and it is a reader's error (printed by `next`).
+    reader_error_raised: std::cell::Cell<bool>,
+    /// Whether the `[Fatal Error]` line was printed (Java throws after printing; the parser
+    /// stops there).
+    fatal_error_printed: bool,
     pos: usize,
     started: bool,
     /// The open elements: (raw name, local name).
@@ -80,6 +218,8 @@ impl XmlStreamReader {
         Ok(XmlStreamReader {
             chars,
             decode_error,
+            reader_error_raised: std::cell::Cell::new(false),
+            fatal_error_printed: false,
             pos: 0,
             started: false,
             open: Vec::new(),
@@ -104,6 +244,23 @@ impl XmlStreamReader {
 
     /// `XMLStreamReader.next()`.
     pub(super) fn next(&mut self) -> Result<XmlEvent, XmlStreamException> {
+        let result = self.next_event();
+        if let Err(e) = &result
+            && self.reader_error_raised.get()
+            && !self.fatal_error_printed
+        {
+            self.fatal_error_printed = true;
+            // XMLErrorReporter.reportError(location, domain, key, arguments, SEVERITY_FATAL_ERROR,
+            // exception) with no error handler: DefaultErrorHandler.printError("Fatal Error", ex)
+            // on a PrintWriter over System.err. The reader's exception has no location: line and
+            // column are -1 and there is no system id.
+            // Java: com/sun/org/apache/xerces/internal/util/DefaultErrorHandler.java printError (JDK)
+            blaze_events::io::system_err_println(&format!("[Fatal Error] :-1:-1: {}", e.0));
+        }
+        result
+    }
+
+    fn next_event(&mut self) -> Result<XmlEvent, XmlStreamException> {
         if self.pending_end {
             self.pending_end = false;
             return Ok(XmlEvent::EndElement(self.close_element()));
@@ -124,13 +281,13 @@ impl XmlStreamReader {
     /// The character at `i`, `None` at the end of the document, or the decoding error when the
     /// document's bytes stopped being decodable there.
     fn char_at(&self, i: usize) -> Result<Option<char>, XmlStreamException> {
-        if i < self.chars.len() {
-            Ok(Some(self.chars[i]))
-        } else if let Some(e) = &self.decode_error {
-            error(e.clone())
-        } else {
-            Ok(None)
+        if let Some(e) = &self.decode_error
+            && i >= e.visible_from.unwrap_or(self.chars.len())
+        {
+            self.reader_error_raised.set(e.reader);
+            return error(e.message.clone());
         }
+        Ok(self.chars.get(i).copied())
     }
 
     fn peek(&self) -> Result<Option<char>, XmlStreamException> {
@@ -433,6 +590,7 @@ impl XmlStreamReader {
             }
             self.pos += 1;
         }
+        check_name_limit(self.pos - start)?;
         Ok(self.chars[start..self.pos].iter().collect())
     }
 
@@ -460,6 +618,15 @@ impl XmlStreamReader {
             }
             self.pos += 1;
         }
+        // The limit holds for the prefix and the local part each (measured: a 1000-character
+        // prefix with a 1000-character local part passes, a 1001-character part fails).
+        match index {
+            None => check_name_limit(self.pos - offset)?,
+            Some(index) => {
+                check_name_limit(index - offset)?;
+                check_name_limit(self.pos - index - 1)?;
+            }
+        }
         let raw: String = self.chars[offset..self.pos].iter().collect();
         match index {
             None => Ok((raw.clone(), None, raw)),
@@ -482,6 +649,14 @@ impl XmlStreamReader {
     // Java: com/sun/org/apache/xerces/internal/impl/XMLNSDocumentScannerImpl.java scanStartElement
     fn scan_start_element(&mut self) -> Result<XmlEvent, XmlStreamException> {
         let (raw, prefix, local) = self.scan_qname()?;
+        // jdk.xml.maxElementDepth (JDK 25 default 100): the 101st nested element fails.
+        // Java: com/sun/org/apache/xerces/internal/impl/XMLDocumentFragmentScannerImpl.java scanStartElement (JDK)
+        if self.open.len() + 1 > MAX_ELEMENT_DEPTH {
+            return error(format!(
+                "The element \"{raw}\" has a depth of {} over the limit {MAX_ELEMENT_DEPTH} (jdk.xml.maxElementDepth).",
+                self.open.len() + 1
+            ));
+        }
         // (raw name, prefix, local part, value)
         let mut attributes: Vec<(String, Option<String>, String, String)> = Vec::new();
         let empty = loop {
@@ -512,6 +687,18 @@ impl XmlStreamReader {
                     self.skip_spaces()?;
                     let value = self.scan_attribute_value()?;
                     attributes.push((attr_raw, attr_prefix, attr_local, value));
+                    // jdk.xml.elementAttributeLimit (JDK 25 default 200). Namespace declarations
+                    // do not count (measured: one declaration and 200 attributes pass).
+                    // Java: com/sun/org/apache/xerces/internal/impl/XMLNSDocumentScannerImpl.java scanStartElement (JDK)
+                    let counted = attributes
+                        .iter()
+                        .filter(|a| a.0 != "xmlns" && a.1.as_deref() != Some("xmlns"))
+                        .count();
+                    if counted > ELEMENT_ATTRIBUTE_LIMIT {
+                        return error(format!(
+                            "Element \"{raw}\" has more than {ELEMENT_ATTRIBUTE_LIMIT} attributes (jdk.xml.elementAttributeLimit)."
+                        ));
+                    }
                 }
                 Some(_) => {
                     return error(format!(
@@ -811,7 +998,7 @@ enum Encoding {
 /// Returns the characters decoded before the first malformed sequence and the error there.
 // Java: com/sun/org/apache/xerces/internal/impl/XMLEntityManager.java XMLEntityManager.setupCurrentEntity
 // Java: com/sun/org/apache/xerces/internal/impl/XMLEntityManager.java XMLEntityManager.createReader
-fn decode(input: &[u8]) -> Result<(Vec<char>, Option<String>), XmlStreamException> {
+fn decode(input: &[u8]) -> Result<(Vec<char>, Option<DecodeError>), XmlStreamException> {
     let (detected, skip) = match input {
         [0xFE, 0xFF, ..] => (Encoding::Utf16Be, 2),
         [0xFF, 0xFE, ..] => (Encoding::Utf16Le, 2),
@@ -856,7 +1043,9 @@ fn decode(input: &[u8]) -> Result<(Vec<char>, Option<String>), XmlStreamExceptio
         .map(|b| *b as char)
         .chain(std::iter::once('>'))
         .collect();
-    let encoding = match parse_xml_decl(&head)?.and_then(|d| d.encoding) {
+    let head_decl = parse_xml_decl(&head)?;
+    let decl_end = head_decl.as_ref().map_or(0, |d| d.end);
+    let encoding = match head_decl.and_then(|d| d.encoding) {
         None => Encoding::Utf8,
         Some(name) => {
             let upper = name.to_ascii_uppercase();
@@ -890,63 +1079,96 @@ fn decode(input: &[u8]) -> Result<(Vec<char>, Option<String>), XmlStreamExceptio
             None
         }
         Encoding::Ascii => {
-            let valid = bytes.iter().position(|b| *b >= 0x80);
-            let end = valid.unwrap_or(bytes.len());
+            // Java: com/sun/org/apache/xerces/internal/impl/io/ASCIIReader.java read (JDK)
+            let bad = bytes.iter().position(|b| *b >= 0x80);
+            let end = bad.unwrap_or(bytes.len());
             chars.extend(bytes[..end].iter().map(|b| *b as char));
-            valid.map(|i| {
-                format!(
+            bad.map(|i| DecodeError {
+                message: format!(
                     "Byte \"{}\" is not a member of the (7-bit) ASCII character set.",
                     bytes[i]
-                )
+                ),
+                visible_from: Some(normalized_index(
+                    &chars,
+                    eager_chunk_start(i, decl_end, READER_BUFFER_SIZE),
+                )),
+                reader: true,
             })
         }
-        _ => {
-            // PORT: Xerces' UTF8Reader also decodes surrogates encoded on their own (CESU-8),
-            // which it then pairs; Rust's decoder rejects them.
-            match std::str::from_utf8(bytes) {
-                Ok(s) => {
-                    chars.extend(s.chars());
-                    None
-                }
-                Err(e) => {
-                    let valid = e.valid_up_to();
-                    chars.extend(
-                        std::str::from_utf8(&bytes[..valid])
-                            .expect("valid prefix")
-                            .chars(),
-                    );
-                    Some("Invalid byte of UTF-8 sequence.".to_string())
-                }
+        _ => match std::str::from_utf8(bytes) {
+            Ok(s) => {
+                chars.extend(s.chars());
+                None
             }
-        }
+            Err(e) => {
+                let valid = e.valid_up_to();
+                chars.extend(
+                    std::str::from_utf8(&bytes[..valid])
+                        .expect("valid prefix")
+                        .chars(),
+                );
+                // Xerces' UTF8Reader rejects CESU-8 (surrogates encoded on their own) as Rust
+                // does: `ED A0`..`ED BF` is "Invalid byte 2 of 3-byte UTF-8 sequence.".
+                Some(DecodeError {
+                    message: utf8_reader_error(bytes, valid),
+                    visible_from: None,
+                    reader: true,
+                })
+            }
+        },
     };
     Ok((normalize_line_ends(chars), decode_error))
 }
 
-fn decode_utf16(bytes: &[u8], big_endian: bool) -> (Vec<char>, Option<String>) {
-    let units = bytes.chunks(2).map(|pair| {
-        if pair.len() < 2 {
-            None
-        } else if big_endian {
-            Some(u16::from_be_bytes([pair[0], pair[1]]))
-        } else {
-            Some(u16::from_le_bytes([pair[0], pair[1]]))
-        }
-    });
-    let complete: Vec<u16> = units.clone().map_while(|u| u).collect();
-    let mut chars = Vec::with_capacity(complete.len());
+/// Decodes UTF-16. Xerces' `UTF16Reader` does not check surrogates (an unpaired one is an
+/// invalid XML character for the scanner, seen when it is reached, and not printed); an odd byte
+/// at the end is its `Expected byte 2 of 2-byte UTF-8 sequence.`, thrown for the whole chunk.
+// Java: com/sun/org/apache/xerces/internal/impl/io/UTF16Reader.java read (JDK)
+fn decode_utf16(bytes: &[u8], big_endian: bool) -> (Vec<char>, Option<DecodeError>) {
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|pair| {
+            if big_endian {
+                u16::from_be_bytes([pair[0], pair[1]])
+            } else {
+                u16::from_le_bytes([pair[0], pair[1]])
+            }
+        })
+        .collect();
+    let mut chars = Vec::with_capacity(units.len());
     let mut decode_error = None;
-    for c in char::decode_utf16(complete.iter().copied()) {
+    for c in char::decode_utf16(units.iter().copied()) {
         match c {
             Ok(c) => chars.push(c),
             Err(_) => {
-                decode_error = Some("Invalid UTF-16 surrogate.".to_string());
+                decode_error = Some(DecodeError {
+                    message: "Invalid UTF-16 surrogate.".to_string(),
+                    visible_from: None,
+                    reader: false,
+                });
                 break;
             }
         }
     }
-    if decode_error.is_none() && complete.len() * 2 < bytes.len() {
-        decode_error = Some("Odd number of bytes in a UTF-16 document.".to_string());
+    if decode_error.is_none() && units.len() * 2 < bytes.len() {
+        // The end of the XML declaration in units (the declaration is ASCII: one unit per char).
+        let decl_end = parse_xml_decl(&chars).ok().flatten().map_or(0, |d| d.end);
+        let chunk_start_unit = eager_chunk_start(units.len(), decl_end, READER_BUFFER_SIZE / 2);
+        // Units to characters: a supplementary character is two units.
+        let mut unit = 0;
+        let mut raw_char_index = chars.len();
+        for (i, c) in chars.iter().enumerate() {
+            if unit >= chunk_start_unit {
+                raw_char_index = i;
+                break;
+            }
+            unit += c.len_utf16();
+        }
+        decode_error = Some(DecodeError {
+            message: "Expected byte 2 of 2-byte UTF-8 sequence.".to_string(),
+            visible_from: Some(normalized_index(&chars, raw_char_index)),
+            reader: true,
+        });
     }
     (normalize_line_ends(chars), decode_error)
 }

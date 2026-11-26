@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Regenerates the pre-v3 certificate fixtures of blaze_remote's JdkServerCertVerifier and records
+# what the oracle's embedded JDK decides for each (the expected values of
+# crates/blaze_remote/tests/jdk_server_cert_fixtures_test.rs).
+#
+# usage: scripts/jdk-certs/run [<fixture dir>]
+#        scripts/jdk-certs/run help
+#
+# <fixture dir> defaults to crates/blaze_remote/tests/data/jdk_cert_fixtures. Keys under its
+# keys/ are reused when present, so certificates change only where generate.py changed.
+# Needs python3 with `cryptography`, javac (any JDK >= 11, compiles with --release-less
+# -source/-target 11) and the oracle install base (its embedded JDK runs the probe).
+set -euo pipefail
+
+if [[ "${1:-}" == "help" || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+
+here="$(cd "$(dirname "$0")" && pwd)"
+repo="$(cd "$here/../.." && pwd)"
+out="${1:-$repo/crates/blaze_remote/tests/data/jdk_cert_fixtures}"
+install_base="${BLAZE_ORACLE_INSTALL_BASE:-$HOME/.cache/blaze/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9}"
+java="$install_base/embedded_tools/jdk/bin/java"
+javac="${JAVAC:-$(command -v javac || echo /usr/lib/jvm/java-11-temurin-jdk/bin/javac)}"
+work="${BLAZE_WORK:-$HOME/.cache/blaze/work/jdk-certs}"
+
+mkdir -p "$out" "$work/classes"
+python3 -I "$here/generate.py" "$out"
+"$javac" -source 11 -target 11 -nowarn -d "$work/classes" \
+  --add-exports java.base/sun.security.util=ALL-UNNAMED "$here/JdkCertProbe.java" 2>&1 \
+  | grep -v '^warning' || true
+"$java" --add-exports java.base/sun.security.util=ALL-UNNAMED -cp "$work/classes" \
+  JdkCertProbe "$out" > "$out/expected.tsv"
+cat "$out/expected.tsv"

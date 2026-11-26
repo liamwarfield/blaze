@@ -8,6 +8,7 @@ mod eval_macro_function_test;
 mod exports_files_test;
 mod file_contents_proxy_test;
 mod file_function_test;
+mod filesystem_value_checker_test;
 mod ignored_subdirectories_test;
 mod input_file_test;
 mod native_existing_rules_test;

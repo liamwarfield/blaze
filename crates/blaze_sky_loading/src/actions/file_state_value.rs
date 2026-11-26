@@ -3,12 +3,12 @@
 //! Java: com/google/devtools/build/lib/actions/{FileStateValue,FileStateType,
 //! FileContentsProxy}.java. Not ported: `RegularFileStateValueWithMetadata` (needs
 //! `FileArtifactValue`, only produced by `FileStatusWithMetadata` file systems such as remote
-//! output services), `compareContents` (PORT: skipped, incremental),
-//! `TimestampGranularityMonitor` notifications (PORT: skipped, incremental).
+//! output services).
 
 use std::fmt;
 
 use blaze_util::fingerprint::Fingerprint;
+use blaze_util::io::timestamp_granularity_monitor::TimestampGranularityMonitor;
 use blaze_vfs::{FileStatus, PathFragment, RootedPath, Symlinks};
 
 use crate::io::IOException;
@@ -104,6 +104,21 @@ impl FileContentsProxy {
         )
     }
 
+    /// The change time (milliseconds).
+    pub fn get_ctime(&self) -> i64 {
+        self.ctime
+    }
+
+    /// The modification time (milliseconds).
+    pub fn get_mtime(&self) -> i64 {
+        self.mtime
+    }
+
+    /// The node id (inode number).
+    pub fn get_node_id(&self) -> i64 {
+        self.node_id
+    }
+
     /// Can be used when hardlink reference counter changes should not be considered a file
     /// modification. Is only comparing mtime and not ctime and is therefore not detecting changed
     /// metadata like permission.
@@ -135,6 +150,20 @@ impl fmt::Display for FileContentsProxy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.pretty_print())
     }
+}
+
+/// The result of [`FileStateValue::compare_contents`].
+// Java: com/google/devtools/build/lib/actions/FileStateValue.java:230 FileStateValue.ContentsComparisonResult
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContentsComparisonResult {
+    /// Both values describe the same file contents and can be used interchangeably, even if not
+    /// equal.
+    Same,
+    /// Both values have identical metadata except for ctime, which may have changed due to
+    /// hardlinks.
+    SameExceptChangeTime,
+    /// The values may describe different contents.
+    Different,
 }
 
 /// Encapsulates the filesystem operations needed to get state for a path. This is equivalent to
@@ -178,10 +207,20 @@ impl FileStateValue {
     /// (Java `SyscallCache.NO_CACHE`, which skips `getType` and stats).
     ///
     /// PORT: the `SyscallCache` parameter is not ported; Blaze always stats (Java's
-    /// `DefaultSyscallCache` only caches the same answers). The `TimestampGranularityMonitor` is
-    /// skipped (incremental).
+    /// `DefaultSyscallCache` only caches the same answers). Java's `tsgm` is null here (see
+    /// [`FileStateValue::create_with_tsgm`]).
     // Java: com/google/devtools/build/lib/actions/FileStateValue.java:78 FileStateValue.create
     pub fn create(rooted_path: &RootedPath) -> Result<FileStateValue, IOException> {
+        Self::create_with_tsgm(rooted_path, None)
+    }
+
+    /// [`FileStateValue::create`] with Java's `TimestampGranularityMonitor` argument: a regular
+    /// file without a digest notifies the monitor of its change time.
+    // Java: com/google/devtools/build/lib/actions/FileStateValue.java:78 FileStateValue.create
+    pub fn create_with_tsgm(
+        rooted_path: &RootedPath,
+        tsgm: Option<&TimestampGranularityMonitor>,
+    ) -> Result<FileStateValue, IOException> {
         let path = rooted_path.as_path();
         // NO_CACHE.getType returns FILESYSTEM_OP_SKIPPED.
         let stat = path
@@ -192,7 +231,7 @@ impl FileStateValue {
         };
         // Java: SyscallCache.statusToDirentType
         if stat.is_file() {
-            Self::create_with_stat_no_follow(rooted_path, &stat)
+            Self::create_with_stat_no_follow_and_tsgm(rooted_path, &stat, tsgm)
         } else if stat.is_directory() {
             Ok(FileStateValue::DIRECTORY_FILE_STATE_NODE)
         } else if stat.is_symbolic_link() {
@@ -203,7 +242,7 @@ impl FileStateValue {
             })
         } else {
             // UNKNOWN
-            Self::create_with_stat_no_follow(rooted_path, &stat)
+            Self::create_with_stat_no_follow_and_tsgm(rooted_path, &stat, tsgm)
         }
     }
 
@@ -212,15 +251,28 @@ impl FileStateValue {
         rooted_path: &RootedPath,
         stat_no_follow: &FileStatus,
     ) -> Result<FileStateValue, IOException> {
+        Self::create_with_stat_no_follow_and_tsgm(rooted_path, stat_no_follow, None)
+    }
+
+    /// [`FileStateValue::create_with_stat_no_follow`] with Java's `tsgm` argument.
+    // Java: com/google/devtools/build/lib/actions/FileStateValue.java:114 FileStateValue.createWithStatNoFollow
+    pub fn create_with_stat_no_follow_and_tsgm(
+        rooted_path: &RootedPath,
+        stat_no_follow: &FileStatus,
+        tsgm: Option<&TimestampGranularityMonitor>,
+    ) -> Result<FileStateValue, IOException> {
         let path = rooted_path.as_path();
         if stat_no_follow.is_file() {
             return if stat_no_follow.is_special_file() {
-                // Java: SpecialFileStateValue.fromStat
+                // Java: com/google/devtools/build/lib/actions/FileStateValue.java:525 SpecialFileStateValue.fromStat
+                if let Some(tsgm) = tsgm {
+                    tsgm.notify_dependence_on_file_time(stat_no_follow.get_last_change_time());
+                }
                 Ok(FileStateValue::SpecialFile {
                     contents_proxy: FileContentsProxy::create(stat_no_follow),
                 })
             } else {
-                Self::create_regular_file_state_value_from_path(&path, stat_no_follow)
+                Self::create_regular_file_state_value_from_path(&path, stat_no_follow, tsgm)
             };
         } else if stat_no_follow.is_directory() {
             return Ok(FileStateValue::DIRECTORY_FILE_STATE_NODE);
@@ -247,15 +299,23 @@ impl FileStateValue {
     fn create_regular_file_state_value_from_path(
         path: &blaze_vfs::Path,
         stat: &FileStatus,
+        tsgm: Option<&TimestampGranularityMonitor>,
     ) -> Result<FileStateValue, IOException> {
         blaze_util::check_state!(stat.is_file(), "{}", path);
         // PORT: `FileStatusWithMetadata` (RegularFileStateValueWithMetadata) is never produced by
         // Blaze's file systems.
         match Self::try_get_digest(path) {
-            Ok(None) => Ok(FileStateValue::RegularFileWithContentsProxy {
-                size: stat.get_size(),
-                contents_proxy: FileContentsProxy::create(stat),
-            }),
+            Ok(None) => {
+                // Note that TimestampGranularityMonitor#notifyDependenceOnFileTime is a
+                // thread-safe method.
+                if let Some(tsgm) = tsgm {
+                    tsgm.notify_dependence_on_file_time(stat.get_last_change_time());
+                }
+                Ok(FileStateValue::RegularFileWithContentsProxy {
+                    size: stat.get_size(),
+                    contents_proxy: FileContentsProxy::create(stat),
+                })
+            }
             // We are careful here to avoid putting the value ID into FileMetadata if we already
             // have a digest. Arbitrary filesystems may do weird things with the value ID; a digest
             // is more robust.
@@ -286,6 +346,50 @@ impl FileStateValue {
                 }
                 Err(ioe)
             }
+        }
+    }
+
+    /// Compares the file contents described by this value and `other` regardless of how each
+    /// value represents them, using either a digest or a proxy.
+    // Java: com/google/devtools/build/lib/actions/FileStateValue.java:249 FileStateValue.compareContents
+    pub fn compare_contents(&self, other: &FileStateValue) -> ContentsComparisonResult {
+        if self == other {
+            return ContentsComparisonResult::Same;
+        }
+        if self.get_type() != other.get_type() {
+            return ContentsComparisonResult::Different;
+        }
+        match self.get_type() {
+            FileStateType::RegularFile | FileStateType::SpecialFile => {
+                if self.get_size() != other.get_size() {
+                    return ContentsComparisonResult::Different;
+                }
+                // Prefer comparing digests, the most robust signal, when both values have one.
+                if let (Some(this_digest), Some(other_digest)) =
+                    (self.get_digest(), other.get_digest())
+                {
+                    return if this_digest == other_digest {
+                        ContentsComparisonResult::Same
+                    } else {
+                        ContentsComparisonResult::Different
+                    };
+                }
+                let (Some(this_proxy), Some(other_proxy)) =
+                    (self.get_contents_proxy(), other.get_contents_proxy())
+                else {
+                    return ContentsComparisonResult::Different;
+                };
+                if this_proxy == other_proxy {
+                    return ContentsComparisonResult::Same;
+                }
+                if this_proxy.is_modified(other_proxy) {
+                    ContentsComparisonResult::Different
+                } else {
+                    ContentsComparisonResult::SameExceptChangeTime
+                }
+            }
+            // Java: case SYMLINK, DIRECTORY, NONEXISTENT -> DIFFERENT (equals was false).
+            _ => ContentsComparisonResult::Different,
         }
     }
 

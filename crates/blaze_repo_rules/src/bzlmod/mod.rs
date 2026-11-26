@@ -13,3 +13,5 @@ pub mod single_extension_eval_function;
 pub mod single_extension_usages;
 pub mod starlark_bazel_module;
 pub mod tag_class;
+pub mod vendor_file_function;
+pub mod vendor_manager;

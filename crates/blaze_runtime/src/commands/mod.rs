@@ -27,3 +27,5 @@ pub mod license;
 pub mod config;
 pub mod dump;
 pub mod print_action;
+// commands-fix-2: vendor.
+pub mod vendor;

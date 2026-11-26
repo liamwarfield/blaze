@@ -80,7 +80,7 @@ impl RepositoryCacheInfoItem {
     /// `RepositoryOptions`, so it keeps the previous command's value, initially null). Blaze has
     /// no `BazelRepositoryModule` yet and runs one command per process, so the path is computed
     /// here from the same options.
-    fn get_repository_cache_path(env: &CommandEnvironment) -> Option<Path> {
+    pub(crate) fn get_repository_cache_path(env: &CommandEnvironment) -> Option<Path> {
         let repo_options = env.get_options().get_options::<RepositoryOptions>()?;
         // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:276 BazelRepositoryModule.beforeCommand
         match &repo_options.repository_cache {
@@ -95,7 +95,7 @@ impl RepositoryCacheInfoItem {
     }
 
     // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:715 BazelRepositoryModule.toPath
-    fn to_path(path: &PathFragment, env: &CommandEnvironment) -> Option<Path> {
+    pub(crate) fn to_path(path: &PathFragment, env: &CommandEnvironment) -> Option<Path> {
         let workspace = env.get_directories().get_workspace();
         if path.is_empty() || workspace.is_none() {
             return None;
@@ -147,12 +147,17 @@ impl PeakMemInfoItem {
 impl InfoItem for PeakMemInfoItem {
     info_item_base!();
 
-    // Java: com/google/devtools/build/lib/metrics/PostGCMemoryUseRecorder.java:69 PeakMemInfoItem.get
+    /// PORT: Blaze has no garbage collector; the peak heap after a full GC is the peak resident
+    /// memory of the process (ruling D15), "unknown" where the system does not report it.
+    // Java: com/google/devtools/build/lib/metrics/PostGCMemoryUseRecorder.java:255 PeakMemInfoItem.get
     fn get(
         &self,
         _configuration_supplier: &mut dyn ConfigurationSupplier,
         _env: &mut CommandEnvironment,
     ) -> Result<Vec<u8>, AbruptExitException> {
-        blaze_util::unported!("PeakMemInfoItem.get", "no JVM (PostGCMemoryUseRecorder)")
+        Ok(match crate::process_memory::peak_resident_bytes() {
+            Some(peak) => print(super::items::pretty_print_bytes(peak)),
+            None => print("unknown"),
+        })
     }
 }

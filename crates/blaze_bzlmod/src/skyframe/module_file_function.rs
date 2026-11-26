@@ -223,8 +223,13 @@ fn compute_for_root_module(
     env: &mut Environment<'_>,
 ) -> Result<Option<RootModuleFileValue>, ComputeError> {
     let module_file_path = get_module_file_path(&config.workspace_root);
-    // PORT: Java first requests FileValue.key(moduleFilePath) to depend on the file; FILE is not
-    // ported here and a single build per process needs no invalidation.
+    if config
+        .file_value_lookup
+        .file_value(&config.workspace_root, &MODULE_DOT_BAZEL_FILE_NAME, env)?
+        .is_none()
+    {
+        return Ok(None);
+    }
     let module_file_contents: Vec<u8> = if module_file_path.exists() {
         read_module_file(&module_file_path)?
     } else {
@@ -431,6 +436,8 @@ fn advance_horizon(
         );
     }
     let mut rooted_paths: Vec<PathBuf> = Vec::with_capacity(pending.len());
+    // The (root, root-relative path) of each rooted path, for its FileValue key.
+    let mut rooted_path_parts: Vec<(PathBuf, PathFragment)> = Vec::with_capacity(pending.len());
     for (i, include_label) in include_labels.iter().enumerate() {
         let Some(pkg_lookup_value) = &pkg_lookup_values[i] else {
             return Ok(None);
@@ -458,12 +465,28 @@ fn advance_horizon(
         rooted_paths.push(pkg_lookup_value.get_root().join(platform_path(
             include_label.to_path_fragment().get_path_string(),
         )));
+        rooted_path_parts.push((
+            pkg_lookup_value.get_root().to_path_buf(),
+            include_label.to_path_fragment(),
+        ));
     }
-    // PORT: Java requests FileValue keys for the include files here (a dependency for
-    // invalidation); the stand-in checks the file system directly below.
+    // Resolve all file dependencies before compiling so a restart cannot retain a compiled file
+    // while discarding its nested includes from the next horizon.
+    // PORT: Java's batch request (getValuesAndExceptions) is one request per key here.
+    let mut file_values = Vec::with_capacity(pending.len());
+    for (root, relative) in &rooted_path_parts {
+        file_values.push(config.file_value_lookup.file_value(root, relative, env)?);
+    }
+    let mut checked_file_values = Vec::with_capacity(pending.len());
+    for file_value in file_values {
+        let Some(file_value) = file_value else {
+            return Ok(None);
+        };
+        checked_file_values.push(file_value);
+    }
     let mut new_horizon: Vec<IncludeStatement> = Vec::new();
     for (i, rooted_path) in rooted_paths.iter().enumerate() {
-        if !rooted_path.is_file() {
+        if !checked_file_values[i].is_file {
             return Err(errorf(
                 ExternalDepsCode::BadModule,
                 format!(
@@ -1018,7 +1041,13 @@ fn get_module_file(
         // "translated" into a repo spec.
         let module_file_path =
             repo_dir.join(platform_path(MODULE_DOT_BAZEL_FILE_NAME.get_path_string()));
-        // PORT: FileValue.key(moduleFilePath) dependency skipped (FILE is not ported here).
+        if config
+            .file_value_lookup
+            .file_value(&repo_dir, &MODULE_DOT_BAZEL_FILE_NAME, env)?
+            .is_none()
+        {
+            return Ok(None);
+        }
         let module_file_label = Label::create_unvalidated(
             PackageIdentifier::create(canonical_repo_name, PathFragment::create("")),
             MODULE_DOT_BAZEL_FILE_NAME.get_base_name(),
@@ -1213,11 +1242,16 @@ fn maybe_patch_module_file(
     }
 
     // Register dependencies on the patch files and ensure that they exist.
+    // PORT: Java's batch request (getValuesAndExceptions) is one request per key here.
+    let mut patch_file_values = Vec::with_capacity(patch_paths.len());
     for (root, relative) in &patch_paths {
-        if !root
-            .join(platform_path(relative.get_path_string()))
-            .is_file()
-        {
+        patch_file_values.push(config.file_value_lookup.file_value(root, relative, env)?);
+    }
+    if patch_file_values.iter().any(Option::is_none) {
+        return Ok(None);
+    }
+    for ((root, relative), file_value) in patch_paths.iter().zip(&patch_file_values) {
+        if !file_value.expect("checked above").is_file {
             return Err(errorf(
                 ExternalDepsCode::BadModule,
                 format!(

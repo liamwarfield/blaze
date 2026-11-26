@@ -330,20 +330,20 @@ impl ConfiguredTargetFunction {
                     if !e.get_message().is_empty() {
                         // Reports the error to the user on storedEvents to preserve ordering.
                         // These will be immediately replayed below.
-                        // PORT: Blaze's AnalysisRootCauseEvent has no "unavailable
-                        // configuration" form (Java's null `configuration`); it carries the
-                        // id of `configurationIdMessage(configuredTargetKey.getConfigurationKey())`.
-                        stored_events.post(Arc::new(AnalysisRootCauseEvent {
+                        stored_events.post(Arc::new(
                             // Even without an error here, the configuration key might not be
                             // turned into a configuration value by the build because it does
                             // not include the rule transition. It's therefore marked
                             // unavailable.
-                            configuration_checksum: configured_target_key
-                                .get_configuration_key()
-                                .map(|k| k.get_options_checksum().to_owned()),
-                            label: configured_target_key.get_label().clone(),
-                            error_message: e.get_message().to_owned(),
-                        }));
+                            AnalysisRootCauseEvent::with_unavailable_configuration(
+                                // configurationIdMessage(configuredTargetKey.getConfigurationKey())
+                                configured_target_key
+                                    .get_configuration_key()
+                                    .map(|k| k.get_options_checksum().to_owned()),
+                                configured_target_key.get_label().clone(),
+                                e.get_message().to_owned(),
+                            ),
+                        ));
                         stored_events.handle(&Event::error_at(
                             event_location(e.get_location()),
                             e.get_message(),
@@ -449,13 +449,48 @@ fn create_configured_target(
 
     // Java: RequiredFragmentsUtil.getRuleRequiredFragmentsIfEnabled (called by
     // ConfiguredTargetFactory.createRule): null unless --include_config_fragments_provider.
-    let required_config_fragments = match core_options {
-        Some(o)
+    let required_config_fragments = match (core_options, configuration, target.as_rule()) {
+        (Some(o), Some(configuration), Some(rule))
             if o.include_required_config_fragments_provider
-                != CoreOptionsIncludeConfigFragmentsEnum::OFF
-                && target.is_rule() =>
+                != CoreOptionsIncludeConfigFragmentsEnum::OFF =>
         {
-            blaze_util::unported!("RequiredFragmentsUtil.getRuleRequiredFragmentsIfEnabled")
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1386 SkyframeBuildView.createConfiguredTarget
+            // (StarlarkExecTransitionLoader.loadStarlarkExecTransition; null means a restart).
+            // PORT: only RequiredFragmentsUtil reads it here (see the factory call below).
+            let starlark_exec_transition =
+                match crate::dependency_resolver::load_starlark_exec_transition_provider(
+                    Some(&**configuration.get_options()),
+                    services,
+                    env,
+                ) {
+                    Ok(Some(t)) => t,
+                    Ok(None) => return Ok(None),
+                    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetFunction.java:468 ConfiguredTargetFunction.createConfiguredTarget
+                    Err(e) => {
+                        return Err(CaughtException::ConfiguredValueCreation(
+                            ConfiguredValueCreationException::for_target(
+                                ctg_value.get_target(),
+                                &e.0,
+                            ),
+                        ));
+                    }
+                };
+            let universal_fragments = blaze_build_config::fragment::FragmentClassSet::of(
+                blaze_build_config::fragments::bazel_fragments().1,
+            );
+            let universal_fragments: Vec<_> = universal_fragments.iter().collect();
+            blaze_analysis::required_fragments_util::get_rule_required_fragments_if_enabled(
+                rule,
+                configuration,
+                &universal_fragments,
+                config_conditions,
+                dep_value_map
+                    .values()
+                    .flatten()
+                    .map(|d| d.get_configured_target()),
+                starlark_exec_transition,
+                &services.rule_class_provider,
+            )
         }
         _ => None,
     };
@@ -467,23 +502,28 @@ fn create_configured_target(
     // applied by function_transition_util), so StarlarkExecTransitionLoadingException cannot
     // occur.
     let factory = ConfiguredTargetFactory::new(services.rule_class_provider.clone());
-    let configured_target = match factory.create_configured_target(
-        &analysis_environment,
-        &services.artifact_factory,
-        target,
-        package_value.get_package(),
-        configuration,
-        configured_target_key,
-        dep_value_map,
-        materializer_targets,
-        config_conditions,
-        toolchain_contexts.cloned().map(Arc::new),
-        factory_transitive_packages,
-        exec_group_collection_builder
-            .as_exec_group_collection_builder()
-            .clone(),
-        required_config_fragments,
-    ) {
+    // Java: the CachingAnalysisEnvironment holds `env` (getSkyframeEnv()); it is lent to the
+    // factory call (see blaze_analysis::skyframe_env).
+    let created = blaze_analysis::skyframe_env::with_skyframe_env(env, || {
+        factory.create_configured_target(
+            &analysis_environment,
+            &services.artifact_factory,
+            target,
+            package_value.get_package(),
+            configuration,
+            configured_target_key,
+            dep_value_map,
+            materializer_targets,
+            config_conditions,
+            toolchain_contexts.cloned().map(Arc::new),
+            factory_transitive_packages,
+            exec_group_collection_builder
+                .as_exec_group_collection_builder()
+                .clone(),
+            required_config_fragments,
+        )
+    });
+    let configured_target = match created {
         Ok(ct) => {
             // Java: CachingAnalysisEnvironment.getWorkspaceStatusValue's
             // env.getValue(WorkspaceStatusValue.BUILD_INFO_KEY) (see there).

@@ -43,8 +43,25 @@
 //! [`slot`] hands out an `Arc` of the slot: a caller that still holds it across a release keeps
 //! that slot's contents alive (never a dangling one), so callers take the slot for the duration
 //! of one operation only and never store it.
+//!
+//! Two rules keep a release sound; break either and a server use after free follows:
+//!
+//! 1. No thread that can outlive the command that started it (a detached thread: a worker's
+//!    pipe reader, an `AsyncFinish` worker, a download helper, a background upload that is not
+//!    joined before `afterCommand`) may hold a frozen Starlark value, an action, a spawn, or
+//!    anything else that points into the arena's heaps without owning them. Such a thread
+//!    captures plain data only (paths, digests, requests, process handles). The lease count does
+//!    not cover detached threads.
+//! 2. Every holder of an unowned frozen handle lives in a leased evaluator's graph, in the
+//!    evaluation running now, in a slot of this arena, or on the heap the handle points into.
+//!    No process static, module or cache keeps one across commands.
+//!
+//! Unowned handles record the generation they were made in ([`ArenaStamp`]) and check it where
+//! the value is used, so a handle that outlived its arena is a crash with a message, not
+//! undefined behaviour.
 
 use std::any::{Any, TypeId};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 
 use parking_lot::{Mutex, RwLock};
@@ -182,6 +199,43 @@ pub fn generation() -> u64 {
     CURRENT.lock().generation
 }
 
+/// [`generation`], readable without the lock (written under it at each release).
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// The arena generation an unowned frozen handle (an `OwnedFrozenValue` with an empty owner, a
+/// bare `FrozenValue` kept by this arena's heaps) was made in. [`ArenaStamp::check`] fails
+/// loudly when the arena of that generation has been released since, which only a holder that
+/// broke the module's rules can observe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ArenaStamp(u64);
+
+impl ArenaStamp {
+    /// The stamp of the current arena.
+    pub fn current() -> ArenaStamp {
+        ArenaStamp(GENERATION.load(Ordering::Acquire))
+    }
+
+    /// The generation recorded.
+    pub fn generation(self) -> u64 {
+        self.0
+    }
+
+    /// Panics unless the arena this stamp was taken in is still the current one. `what` names
+    /// the handle in the message.
+    #[track_caller]
+    pub fn check(self, what: &str) {
+        let now = GENERATION.load(Ordering::Acquire);
+        if now != self.0 {
+            panic!(
+                "IllegalStateException: {what} points into a frozen heap of build arena \
+                 generation {}, which was released (the current generation is {now}): a holder \
+                 kept it past the end of the command that made it",
+                self.0
+            );
+        }
+    }
+}
+
 /// Releases the current arena's contents (in [`ReleaseOrder`]) and starts an empty one, if no
 /// lease is held; returns whether it did.
 ///
@@ -195,6 +249,7 @@ pub fn release_if_unused() -> bool {
             return false;
         }
         current.generation += 1;
+        GENERATION.store(current.generation, Ordering::Release);
         std::mem::replace(&mut current.arena, Arc::new(BuildArena::new()))
     };
     // Dropped outside the lock: a slot's drop may take a slot of the new arena.
@@ -336,5 +391,25 @@ mod tests {
         assert_eq!(active_leases(), 0);
         assert!(release_if_unused());
         assert_eq!(slot::<Memo>().0.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn stamp_fails_loudly_after_release() {
+        let _serial = SERIAL.lock();
+        reset();
+        let stamp = ArenaStamp::current();
+        stamp.check("handle");
+        assert!(release_if_unused());
+        let result = std::panic::catch_unwind(|| stamp.check("RepoRule.impl_"));
+        let message = result.unwrap_err();
+        let message = message
+            .downcast_ref::<String>()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            message.contains("RepoRule.impl_ points into a frozen heap of build arena generation"),
+            "{message}"
+        );
+        ArenaStamp::current().check("handle");
     }
 }

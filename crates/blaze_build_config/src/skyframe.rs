@@ -20,7 +20,7 @@ use blaze_skyframe::{
     Transience,
 };
 use blaze_starlark::StarlarkSemantics;
-use blaze_vfs::Path;
+use blaze_vfs::{Path, RootedPath};
 use indexmap::IndexMap;
 
 use crate::build_configuration_key::{BuildConfigurationKey, BuildConfigurationKeyValueKey};
@@ -261,7 +261,72 @@ pub struct ConfigurationEnvironment {
     pub platforms: SharedPlatformValueProvider,
     /// `RepositoryMappingValue.key(RepositoryName.MAIN)` (PlatformMappingFunction).
     pub main_repository_mapping: Arc<dyn MainRepositoryMappingLookup>,
+    /// `FileValue.key(rootedPath)` (PlatformMappingFunction).
+    pub file_lookup: Arc<dyn FileValueLookup>,
 }
+
+/// What `PlatformMappingFunction` reads of a `FileValue`.
+#[derive(Clone, Debug)]
+pub struct FileValueFacts {
+    /// `fileValue.exists()`.
+    pub exists: bool,
+    /// `fileValue.isDirectory()`.
+    pub is_directory: bool,
+    /// `fileValue.realRootedPath(rootedPath).asPath()`.
+    pub real_path: Path,
+}
+
+/// `env.getValue(FileValue.key(rootedPath))`.
+///
+/// PORT: the `FILE` key lives in blaze_sky_loading, which this crate cannot name; the executor
+/// implements this lookup with it (I2 item X3, the pattern of [`MainRepositoryMappingLookup`]).
+pub trait FileValueLookup: Send + Sync {
+    /// The facts of the `FileValue` of `rooted_path`, or `None` when the value is missing or in
+    /// error (Java's `getValue` returns null; the evaluator then reports the dependency's error).
+    fn file_value(
+        &self,
+        env: &mut Environment<'_>,
+        rooted_path: &RootedPath,
+    ) -> Result<Option<FileValueFacts>, ComputeError>;
+}
+
+/// The lookup of the `blaze-config-dev` evaluator, which has no `FILE` function: a direct stat
+/// (following symbolic links, as `FileValue` does). Not used by a Bazel command.
+pub struct DirectStatFileValueLookup;
+
+impl FileValueLookup for DirectStatFileValueLookup {
+    fn file_value(
+        &self,
+        _env: &mut Environment<'_>,
+        rooted_path: &RootedPath,
+    ) -> Result<Option<FileValueFacts>, ComputeError> {
+        let path = rooted_path.as_path();
+        match path.stat_if_found(blaze_vfs::Symlinks::Follow) {
+            Ok(stat) => Ok(Some(FileValueFacts {
+                exists: stat.is_some(),
+                is_directory: stat.is_some_and(|s| s.is_directory()),
+                real_path: path,
+            })),
+            Err(e) => blaze_util::unported!(
+                "FileFunction.compute",
+                "stat of {}: {}",
+                rooted_path,
+                e
+            ),
+        }
+    }
+}
+
+/// The baseline configuration, a dependency of the functions that read it.
+// Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:100 PrecomputedValue.BASELINE_CONFIGURATION
+pub static BASELINE_CONFIGURATION: blaze_skyframe::precomputed::Precomputed<Arc<BuildOptions>> =
+    blaze_skyframe::precomputed::Precomputed::new("baseline_configuration");
+
+/// The baseline exec configuration, a dependency of the functions that read it.
+// Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:104 PrecomputedValue.BASELINE_EXEC_CONFIGURATION
+pub static BASELINE_EXEC_CONFIGURATION: blaze_skyframe::precomputed::Precomputed<
+    Arc<BuildOptions>,
+> = blaze_skyframe::precomputed::Precomputed::new("baseline_exec_configuration");
 
 /// A precomputed `BuildOptions` value of the configuration client (Java: a `PrecomputedValue`
 /// injected into the graph): set before the first configuration is requested.
@@ -325,23 +390,18 @@ fn compute_platform_mapping(
     };
     let path_entries = client(env).package_path_roots.clone();
     for root in &path_entries {
-        // PORT: skipped, incremental: Java requests FileValue.key(rootedMappingPath) (FILE, in
-        // blaze_sky_loading, which this crate cannot name) and reads `exists()` and
-        // `isDirectory()` from it. Here the path is stat'ed directly, following symbolic links as
-        // FileValue does. An I/O error, which FILE would fail with, is `unported!`.
-        let path = root.get_relative(&workspace_relative_mapping_path);
-        let metadata = match path.stat_if_found(blaze_vfs::Symlinks::Follow) {
-            Ok(Some(metadata)) => metadata,
-            // if (!fileValue.exists()) continue;
-            Ok(None) => continue,
-            Err(e) => blaze_util::unported!(
-                "FileFunction.compute",
-                "stat of the platform mappings file {}: {}",
-                path,
-                e
-            ),
+        let rooted_mapping_path = RootedPath::to_rooted_path(
+            blaze_vfs::Root::from_path(root.clone()),
+            &workspace_relative_mapping_path,
+        );
+        let file_lookup = client(env).file_lookup.clone();
+        let Some(file_value) = file_lookup.file_value(env, &rooted_mapping_path)? else {
+            return Ok(None);
         };
-        if metadata.is_directory() {
+        if !file_value.exists {
+            continue;
+        }
+        if file_value.is_directory {
             return Err(platform_mapping_function_exception_missing_input_file(
                 format!(
                     "--platform_mappings was set to '{}' relative to the top-level workspace '{}' but that path refers to a directory, not a file",
@@ -349,6 +409,7 @@ fn compute_platform_mapping(
                 ),
             ));
         }
+        let path = file_value.real_path;
 
         // Java: FileSystemUtils.readLines(path, UTF_8); malformed input is replaced.
         let bytes = match path.get_input_stream().and_then(|mut stream| {
@@ -980,7 +1041,10 @@ fn possibly_apply_scopes(
 
     // TODO: b/390669368 - The same performance issue still exists if we reach this point.
     // Java: tasks.lookUp(PrecomputedValue.BASELINE_CONFIGURATION.getKey(), ...)
-    let baseline_configuration = client(env).baseline_configuration.get();
+    let Some(baseline_configuration) = BASELINE_CONFIGURATION.get(env)? else {
+        return Ok(None);
+    };
+    let baseline_configuration: Arc<BuildOptions> = (*baseline_configuration).clone();
     // BuildConfigurationKeyFunction passes a null label; the analysis producers
     // (BuildConfigurationKeyMapProducer) pass the target's label, which Blaze carries in the
     // request (`BuildConfigurationKeyValueKey::producer_label`).
@@ -1126,11 +1190,15 @@ fn compute_baseline_options(
 ) -> Result<Option<Arc<BuildOptions>>, ComputeError> {
     let raw_baseline_options = if key.after_exec_transition {
         // Use the precomputed baseline exec
-        client(env).baseline_exec_configuration.get()
+        BASELINE_EXEC_CONFIGURATION.get(env)?
     } else {
         // Use the standard baseline
-        client(env).baseline_configuration.get()
+        BASELINE_CONFIGURATION.get(env)?
     };
+    let Some(raw_baseline_options) = raw_baseline_options else {
+        return Ok(None);
+    };
+    let raw_baseline_options: Arc<BuildOptions> = (*raw_baseline_options).clone();
 
     // Some test infrastructure only creates mock or partial top-level BuildOptions such that
     // PlatformOptions or even CoreOptions might not be included.
@@ -1421,11 +1489,15 @@ impl ConfigurationSkyframe {
             baseline_exec_configuration: PrecomputedOptions::new(Some(Arc::new(baseline_exec))),
             platforms: request.platforms,
             main_repository_mapping: Arc::new(UnportedMainRepositoryMapping),
+            file_lookup: Arc::new(DirectStatFileValueLookup),
         };
         let client = Arc::new(client);
-        let evaluator = register_configuration_functions(EvaluatorBuilder::new())
-            .client(client.clone())
-            .build();
+        let mut builder = register_configuration_functions(EvaluatorBuilder::new());
+        builder =
+            BASELINE_CONFIGURATION.set(builder, client.baseline_configuration.get());
+        builder = BASELINE_EXEC_CONFIGURATION
+            .set(builder, client.baseline_exec_configuration.get());
+        let evaluator = builder.client(client.clone()).build();
         Ok(ConfigurationSkyframe {
             evaluator,
             client,

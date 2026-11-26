@@ -1,6 +1,9 @@
 //! The hardwired info items of `blaze info` (one struct per Java class in
 //! `com.google.devtools.build.lib.runtime.commands.info`).
 
+use blaze_optdefs::command::build_language_options::{
+    self, BuildLanguageOptions, SemanticsValue, StarlarkSemanticsKey, Utf8EnforcementMode,
+};
 use blaze_optdefs::command::host_jvm_startup_options::HostJvmStartupOptions;
 use blaze_optdefs::command::package_options::PackageOptions;
 use blaze_vfs::Path;
@@ -532,10 +535,38 @@ impl InfoItem for PackagePathInfoItem {
     }
 }
 
-/// Defines a JVM-only info item: Blaze has no JVM, so `get` fails loudly; name, description and
-/// hidden flag are Java's (they appear in `help info-keys`).
-macro_rules! jvm_info_item {
-    ($(#[$m:meta])* $ty:ident, $name:expr, $description:expr, $hidden:expr, $java_get:expr) => {
+/// `StringUtilities.prettyPrintBytes`: an easy-to-read string approximation of a number of
+/// bytes, e.g. "21MB". Note, these are IEEE units, i.e. decimal not binary powers.
+// Java: com/google/devtools/build/lib/util/StringUtilities.java:96 StringUtilities.prettyPrintBytes
+pub fn pretty_print_bytes(bytes: i64) -> String {
+    if (bytes as f64) < 1E4 {
+        // up to 10KB
+        format!("{}B", bytes)
+    } else if (bytes as f64) < 1E7 {
+        // up to 10MB
+        format!("{}KB", (bytes as f64 / 1E3) as i32)
+    } else if (bytes as f64) < 1E11 {
+        // up to 100GB
+        format!("{}MB", (bytes as f64 / 1E6) as i32)
+    } else {
+        format!("{}GB", (bytes as f64 / 1E9) as i32)
+    }
+}
+
+/// `InfoItemUtils.getMemoryUsage`: the heap figures of the server.
+///
+/// PORT: Blaze has no JVM; the figures are those of ruling D15 (`crate::process_memory`).
+// Java: com/google/devtools/build/lib/runtime/commands/info/InfoItemUtils.java:26 InfoItemUtils.getMemoryUsage
+pub fn get_memory_usage() -> crate::process_memory::MemoryUsage {
+    crate::process_memory::get_heap_memory_usage()
+}
+
+/// Defines an info item whose value is computed from the command environment alone.
+macro_rules! env_info_item {
+    (
+        $(#[$m:meta])* $ty:ident, $name:expr, $description:expr, $hidden:expr,
+        $(#[$gm:meta])* |$env:ident| $body:expr
+    ) => {
         info_item_struct! {
             $(#[$m])*
             $ty {}
@@ -554,18 +585,19 @@ macro_rules! jvm_info_item {
         impl InfoItem for $ty {
             info_item_base!();
 
+            $(#[$gm])*
             fn get(
                 &self,
                 _configuration_supplier: &mut dyn ConfigurationSupplier,
-                _env: &mut CommandEnvironment,
+                $env: &mut CommandEnvironment,
             ) -> Result<Vec<u8>, AbruptExitException> {
-                blaze_util::unported!($java_get, "no JVM")
+                Ok($body)
             }
         }
     };
 }
 
-jvm_info_item!(
+env_info_item!(
     /// Info item for the used heap size.
     // Java: com/google/devtools/build/lib/runtime/commands/info/UsedHeapSizeInfoItem.java:24 UsedHeapSizeInfoItem
     UsedHeapSizeInfoItem,
@@ -573,77 +605,184 @@ jvm_info_item!(
     "The amount of used memory in bytes. Note that this is not a good indicator of the actual \
      memory use, as it includes any remaining inaccessible memory.",
     false,
-    "UsedHeapSizeInfoItem.get"
+    // Java: com/google/devtools/build/lib/runtime/commands/info/UsedHeapSizeInfoItem.java:35 UsedHeapSizeInfoItem.get
+    |_env| print(pretty_print_bytes(get_memory_usage().get_used()))
 );
 
-jvm_info_item!(
+env_info_item!(
     /// Info item for the used heap size after garbage collection.
     // Java: com/google/devtools/build/lib/runtime/commands/info/UsedHeapSizeAfterGcInfoItem.java:27 UsedHeapSizeAfterGcInfoItem
     UsedHeapSizeAfterGcInfoItem,
     "used-heap-size-after-gc",
     "The amount of used memory in bytes after a call to System.gc().",
     true,
-    "UsedHeapSizeAfterGcInfoItem.get"
+    // Java: com/google/devtools/build/lib/runtime/commands/info/UsedHeapSizeAfterGcInfoItem.java:36 UsedHeapSizeAfterGcInfoItem.get
+    // PORT: `System.gc()` is the allocator's release of free memory (D15); the subtraction of
+    // `HeapOffsetHelper.getSizeOfFillerArrayOnHeap` (JVM filler arrays in a heap histogram) is
+    // 0: Blaze's heap has none.
+    |_env| {
+        crate::process_memory::release_free_memory();
+        print(pretty_print_bytes(get_memory_usage().get_used()))
+    }
 );
 
-jvm_info_item!(
+env_info_item!(
     /// Info item for the committed heap size.
     // Java: com/google/devtools/build/lib/runtime/commands/info/CommittedHeapSizeInfoItem.java:24 CommittedHeapSizeInfoItem
     CommittedHeapSizeInfoItem,
     "committed-heap-size",
     "The amount of memory in bytes that is committed for the Java virtual machine to use",
     false,
-    "CommittedHeapSizeInfoItem.get"
+    // Java: com/google/devtools/build/lib/runtime/commands/info/CommittedHeapSizeInfoItem.java:34 CommittedHeapSizeInfoItem.get
+    |_env| print(pretty_print_bytes(get_memory_usage().get_committed()))
 );
 
-jvm_info_item!(
+env_info_item!(
     /// Info item for the max heap size.
     // Java: com/google/devtools/build/lib/runtime/commands/info/MaxHeapSizeInfoItem.java:24 MaxHeapSizeInfoItem
     MaxHeapSizeInfoItem,
     "max-heap-size",
     "The maximum amount of memory in bytes that can be used for memory management.",
     false,
-    "MaxHeapSizeInfoItem.get"
+    // Java: com/google/devtools/build/lib/runtime/commands/info/MaxHeapSizeInfoItem.java:33 MaxHeapSizeInfoItem.get
+    |_env| print(pretty_print_bytes(get_memory_usage().get_max()))
 );
 
-jvm_info_item!(
+env_info_item!(
     /// Info item for the gc-time.
     // Java: com/google/devtools/build/lib/runtime/commands/info/GcTimeInfoItem.java:25 GcTimeInfoItem
     GcTimeInfoItem,
     "gc-time",
     "The approximate accumulated time spend on garbage collection.",
     false,
-    "GcTimeInfoItem.get"
+    // Java: com/google/devtools/build/lib/runtime/commands/info/GcTimeInfoItem.java:31 GcTimeInfoItem.get
+    // The documentation is not very clear on what it means to have more than one GC MXBean, so
+    // we just sum them up.
+    // PORT: Blaze has no garbage collector (D15): the sum over no beans.
+    |_env| {
+        let gc_time: i64 = 0;
+        print(format!("{}ms", gc_time))
+    }
 );
 
-jvm_info_item!(
+env_info_item!(
     /// Info item for the gc-count.
     // Java: com/google/devtools/build/lib/runtime/commands/info/GcCountInfoItem.java:25 GcCountInfoItem
     GcCountInfoItem,
     "gc-count",
     "Number of garbage collection runs.",
     false,
-    "GcCountInfoItem.get"
+    // Java: com/google/devtools/build/lib/runtime/commands/info/GcCountInfoItem.java:31 GcCountInfoItem.get
+    // The documentation is not very clear on what it means to have more than one GC MXBean, so
+    // we just sum them up.
+    // PORT: Blaze has no garbage collector (D15): the sum over no beans.
+    |_env| {
+        let gc_count: i64 = 0;
+        print(format!("{}", gc_count))
+    }
 );
 
-jvm_info_item!(
+/// The `release` file of the JDK Bazel's server runs on (`<java.home>/release`), as
+/// `KEY="value"` pairs.
+///
+/// PORT: Blaze has no JVM; ruling D15 has `java-runtime` and `java-vm` describe the server
+/// javabase (`JavaHomeInfoItem::get_server_javabase`) from its `release` file. A system property
+/// the file does not give keeps the default Java passes to `System.getProperty` (the minimal JDK
+/// embedded in Bazel's install base names only `JAVA_VERSION` and `MODULES`).
+struct JdkRelease {
+    entries: Vec<(String, String)>,
+}
+
+impl JdkRelease {
+    fn read(env: &CommandEnvironment) -> JdkRelease {
+        let java_home = JavaHomeInfoItem::get_server_javabase(env);
+        let release = Path::create_from_str(&java_home, env.get_runtime().get_file_system())
+            .get_relative_str("release");
+        let mut content = Vec::new();
+        if let Ok(mut input) = release.get_input_stream() {
+            let _ = std::io::Read::read_to_end(&mut input, &mut content);
+        }
+        Self::parse(&content)
+    }
+
+    fn parse(content: &[u8]) -> JdkRelease {
+        let text = blaze_util::string_encoding::latin1_decode(content);
+        let mut entries = Vec::new();
+        for line in text.lines() {
+            if let Some((key, value)) = line.split_once('=') {
+                let value = value.trim();
+                let value = value
+                    .strip_prefix('"')
+                    .and_then(|v| v.strip_suffix('"'))
+                    .unwrap_or(value);
+                entries.push((key.trim().to_string(), value.to_string()));
+            }
+        }
+        JdkRelease { entries }
+    }
+
+    fn get(&self, key: &str) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// `java.runtime.version` and `java.vm.version`: `JAVA_RUNTIME_VERSION`, else `JAVA_VERSION`.
+    fn runtime_version(&self) -> Option<&str> {
+        self.get("JAVA_RUNTIME_VERSION")
+            .or_else(|| self.get("JAVA_VERSION"))
+    }
+
+    /// `java.vendor` and `java.vm.vendor`: `IMPLEMENTOR`.
+    fn vendor(&self) -> Option<&str> {
+        self.get("IMPLEMENTOR")
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/commands/info/JavaRuntimeInfoItem.java:29 JavaRuntimeInfoItem.get
+    fn java_runtime(&self) -> String {
+        // The release file has no key for java.runtime.name.
+        format!(
+            "{} (build {}) by {}",
+            "Unknown runtime",
+            self.runtime_version().unwrap_or("unknown"),
+            self.vendor().unwrap_or("unknown")
+        )
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/commands/info/JavaVirtualMachineInfoItem.java:29 JavaVirtualMachineInfoItem.get
+    fn java_vm(&self) -> String {
+        // The release file has no key for java.vm.name and java.vm.info.
+        format!(
+            "{} (build {}, {}) by {}",
+            "Unknown VM",
+            self.runtime_version().unwrap_or("unknown"),
+            "unknown",
+            self.vendor().unwrap_or("unknown")
+        )
+    }
+}
+
+env_info_item!(
     /// Info item for the name and version of the Java runtime environment.
     // Java: com/google/devtools/build/lib/runtime/commands/info/JavaRuntimeInfoItem.java:23 JavaRuntimeInfoItem
     JavaRuntimeInfoItem,
     "java-runtime",
     "Name and version of the current Java runtime environment.",
     false,
-    "JavaRuntimeInfoItem.get"
+    // Java: com/google/devtools/build/lib/runtime/commands/info/JavaRuntimeInfoItem.java:29 JavaRuntimeInfoItem.get
+    |env| print(JdkRelease::read(env).java_runtime())
 );
 
-jvm_info_item!(
+env_info_item!(
     /// Info item for the name and version of the Java VM.
     // Java: com/google/devtools/build/lib/runtime/commands/info/JavaVirtualMachineInfoItem.java:23 JavaVirtualMachineInfoItem
     JavaVirtualMachineInfoItem,
     "java-vm",
     "Name and version of the current Java virtual machine.",
     false,
-    "JavaVirtualMachineInfoItem.get"
+    // Java: com/google/devtools/build/lib/runtime/commands/info/JavaVirtualMachineInfoItem.java:29 JavaVirtualMachineInfoItem.get
+    |env| print(JdkRelease::read(env).java_vm())
 );
 
 info_item_struct! {
@@ -669,7 +808,7 @@ impl JavaHomeInfoItem {
     ///
     /// PORT: Blaze has no JVM; this computes the value Bazel's server would report from the
     /// startup options and the install base. The system-JDK fallback is not ported.
-    fn get_server_javabase(env: &CommandEnvironment) -> String {
+    pub(crate) fn get_server_javabase(env: &CommandEnvironment) -> String {
         let server_javabase = env
             .get_runtime()
             .get_startup_options_provider()
@@ -952,18 +1091,21 @@ info_item_struct! {
     ///
     /// This is hidden because its output is verbose and may be multiline.
     // Java: com/google/devtools/build/lib/runtime/commands/info/StarlarkSemanticsInfoItem.java:31 StarlarkSemanticsInfoItem
-    StarlarkSemanticsInfoItem {}
+    StarlarkSemanticsInfoItem {
+        /// `commandOptions.getOptions(BuildLanguageOptions.class)`, read at construction (see
+        /// [`PackagePathInfoItem`]).
+        command_options: Option<Option<BuildLanguageOptions>>,
+    }
 }
 
 impl StarlarkSemanticsInfoItem {
-    /// PORT: Java keeps `commandOptions` to read `BuildLanguageOptions` in `get`; `get` is not
-    /// ported, so the options are not kept.
     // Java: com/google/devtools/build/lib/runtime/commands/info/StarlarkSemanticsInfoItem.java:34 StarlarkSemanticsInfoItem.<init>
-    pub fn new(_command_options: Option<&OptionsParsingResult>) -> Self {
+    pub fn new(command_options: Option<&OptionsParsingResult>) -> Self {
         StarlarkSemanticsInfoItem {
             name: "starlark-semantics".to_string(),
             description: "The effective set of Starlark semantics option values.".to_string(),
             hidden: true,
+            command_options: command_options.map(|o| o.get_options::<BuildLanguageOptions>()),
         }
     }
 }
@@ -977,7 +1119,140 @@ impl InfoItem for StarlarkSemanticsInfoItem {
         _configuration_supplier: &mut dyn ConfigurationSupplier,
         _env: &mut CommandEnvironment,
     ) -> Result<Vec<u8>, AbruptExitException> {
-        blaze_util::unported!("SkyframeExecutor.getEffectiveStarlarkSemantics")
+        let build_language_options = self
+            .command_options
+            .as_ref()
+            .expect("NullPointerException: commandOptions")
+            .as_ref()
+            .expect("NullPointerException: BuildLanguageOptions");
+        let effective_starlark_semantics = get_effective_starlark_semantics(build_language_options);
+        Ok(print(effective_starlark_semantics))
+    }
+}
+
+/// `SkyframeExecutor.getEffectiveStarlarkSemantics`: `buildLanguageOptions.toStarlarkSemantics()`
+/// (Bazel's executor does not override it).
+///
+/// PORT: Java reads it from the workspace's executor; the method uses nothing of the executor, so
+/// it is a function here.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1754 SkyframeExecutor.getEffectiveStarlarkSemantics
+pub fn get_effective_starlark_semantics(
+    build_language_options: &BuildLanguageOptions,
+) -> StarlarkSemanticsMap {
+    to_starlark_semantics(build_language_options)
+}
+
+/// `StarlarkSemantics` as Java stores it: the entries whose value differs from the key's default,
+/// keyed by name (boolean keys keep their `+`/`-` prefix), sorted by key (Java's builder is a
+/// `TreeMap<String, Object>`; the key names are ASCII, so byte order is Java's `String` order).
+///
+/// PORT: `blaze_starlark::StarlarkSemantics` (the typed form the interpreter reads) has no
+/// `toString`; this is the key/value form `toString` prints.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StarlarkSemanticsMap {
+    map: std::collections::BTreeMap<String, SemanticsValue>,
+}
+
+/// The non-boolean `StarlarkSemantics.Key`s of `BuildLanguageOptions` (name and default).
+// Java: com/google/devtools/build/lib/packages/semantics/BuildLanguageOptions.java:1168 BuildLanguageOptions (non-booleans)
+const NON_BOOLEAN_KEYS: [StarlarkSemanticsKey; 9] = [
+    build_language_options::INCOMPATIBLE_DISABLE_TRANSITIONS_OPTIONS,
+    build_language_options::EXPERIMENTAL_BUILTINS_BZL_PATH,
+    build_language_options::INCOMPATIBLE_AUTOLOAD_EXTERNALLY,
+    build_language_options::REPOSITORIES_WITHOUT_AUTOLOAD,
+    build_language_options::EXPERIMENTAL_BUILTINS_INJECTION_OVERRIDE,
+    build_language_options::INCOMPATIBLE_ENFORCE_STARLARK_UTF8,
+    build_language_options::EXPERIMENTAL_STARLARK_TYPES_ALLOWED_PATHS,
+    build_language_options::MAX_COMPUTATION_STEPS,
+    build_language_options::NESTED_SET_DEPTH_LIMIT,
+];
+
+/// `BuildLanguageOptions.toStarlarkSemantics`: `setFlags` into a `StarlarkSemantics.Builder`.
+// Java: com/google/devtools/build/lib/packages/semantics/BuildLanguageOptions.java:997 BuildLanguageOptions.toStarlarkSemantics
+pub fn to_starlark_semantics(options: &BuildLanguageOptions) -> StarlarkSemanticsMap {
+    // This function connects command-line flags to their corresponding StarlarkSemantics keys.
+    let mut builder = StarlarkSemanticsMap::default();
+    for (key, value) in options.set_flags() {
+        match value {
+            SemanticsValue::Bool(enabled) => builder.set_bool(key, enabled),
+            value => {
+                let key = NON_BOOLEAN_KEYS
+                    .iter()
+                    .find(|k| k.name == key)
+                    .unwrap_or_else(|| panic!("no StarlarkSemantics.Key named {}", key));
+                builder.set(key, value);
+            }
+        }
+    }
+    builder
+}
+
+impl StarlarkSemanticsMap {
+    /// Sets the value for the specified key.
+    // Java: net/starlark/java/eval/StarlarkSemantics.java:152 StarlarkSemantics.Builder.set
+    fn set(&mut self, key: &StarlarkSemanticsKey, value: SemanticsValue) {
+        if value != (key.default)() {
+            self.map.insert(key.name.to_string(), value);
+        } else {
+            self.map.remove(key.name);
+        }
+    }
+
+    /// Sets the value for the boolean key, which must have a [+-] prefix.
+    // Java: net/starlark/java/eval/StarlarkSemantics.java:163 StarlarkSemantics.Builder.setBool
+    fn set_bool(&mut self, name: &str, value: bool) {
+        let prefix = name.chars().next().expect("empty key");
+        blaze_util::check_argument!(prefix == '+' || prefix == '-');
+        let default_value = prefix == '+';
+        if value != default_value {
+            self.map
+                .insert(name.to_string(), SemanticsValue::Bool(value));
+        } else {
+            self.map.remove(name);
+        }
+    }
+}
+
+/// `String.valueOf` of a semantics value.
+fn semantics_value_to_string(value: &SemanticsValue) -> String {
+    match value {
+        SemanticsValue::Bool(b) => b.to_string(),
+        SemanticsValue::String(s) => s.clone(),
+        // AbstractCollection.toString
+        SemanticsValue::StringList(l) => format!("[{}]", l.join(", ")),
+        SemanticsValue::Long(n) => n.to_string(),
+        SemanticsValue::Int(n) => n.to_string(),
+        // Enum.toString: the constant's name.
+        SemanticsValue::Utf8EnforcementMode(mode) => match mode {
+            Utf8EnforcementMode::OFF => "OFF",
+            Utf8EnforcementMode::WARNING => "WARNING",
+            Utf8EnforcementMode::ERROR => "ERROR",
+        }
+        .to_string(),
+    }
+}
+
+/// Returns a representation of this StarlarkSemantics' non-default key/value pairs in key order.
+// Java: net/starlark/java/eval/StarlarkSemantics.java:233 StarlarkSemantics.toString
+impl std::fmt::Display for StarlarkSemanticsMap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Print "StarlarkSemantics{k=v, ...}", without +/- prefixes.
+        let mut buf = String::new();
+        buf.push_str("StarlarkSemantics{");
+        let mut sep = "";
+        for (key, value) in &self.map {
+            buf.push_str(sep);
+            sep = ", ";
+            if key.starts_with('+') || key.starts_with('-') {
+                buf.push_str(&key[1..]);
+            } else {
+                buf.push_str(key);
+            }
+            buf.push('=');
+            buf.push_str(&semantics_value_to_string(value));
+        }
+        buf.push('}');
+        f.write_str(&buf)
     }
 }
 
@@ -1125,6 +1400,97 @@ mod tests {
         assert_eq!(item.get_name(), "CC");
         assert_eq!(item.get_description(), "Make environment variable 'CC'");
         assert!(!item.is_hidden());
+    }
+
+    // Ported from src/test/java/com/google/devtools/build/lib/util/StringUtilitiesTest.java.
+    #[test]
+    fn test_pretty_print_bytes() {
+        let expected = [
+            "2B", "23B", "234B", "2345B", "23KB", "234KB", "2345KB", "23MB", "234MB", "2345MB",
+            "23456MB", "234GB", "2345GB", "23456GB",
+        ];
+        let mut x: f64 = 2.3456;
+        for e in expected {
+            assert_eq!(pretty_print_bytes(x as i64), e);
+            x *= 10.0;
+        }
+    }
+
+    /// The bounds of each unit.
+    #[test]
+    fn pretty_print_bytes_units() {
+        assert_eq!(pretty_print_bytes(0), "0B");
+        assert_eq!(pretty_print_bytes(9999), "9999B");
+        assert_eq!(pretty_print_bytes(10000), "10KB");
+        assert_eq!(pretty_print_bytes(9_999_999), "9999KB");
+        assert_eq!(pretty_print_bytes(10_000_000), "10MB");
+        // Oracle: `max-heap-size: 8187MB`.
+        assert_eq!(pretty_print_bytes(8_187_281_408), "8187MB");
+        assert_eq!(pretty_print_bytes(99_999_999_999), "99999MB");
+        assert_eq!(pretty_print_bytes(100_000_000_000), "100GB");
+    }
+
+    #[test]
+    fn jdk_release_of_the_embedded_jdk() {
+        // The `release` file of the JDK embedded in Bazel 9.3.2's install base.
+        let release =
+            JdkRelease::parse(b"JAVA_VERSION=\"25.0.2\"\nMODULES=\"java.base java.compiler\"\n");
+        assert_eq!(
+            release.java_runtime(),
+            "Unknown runtime (build 25.0.2) by unknown"
+        );
+        assert_eq!(
+            release.java_vm(),
+            "Unknown VM (build 25.0.2, unknown) by unknown"
+        );
+        let full = JdkRelease::parse(
+            b"IMPLEMENTOR=\"Azul Systems, Inc.\"\nJAVA_RUNTIME_VERSION=\"25.0.2+10-LTS\"\nJAVA_VERSION=\"25.0.2\"\n",
+        );
+        assert_eq!(
+            full.java_runtime(),
+            "Unknown runtime (build 25.0.2+10-LTS) by Azul Systems, Inc."
+        );
+    }
+
+    #[test]
+    fn starlark_semantics_default_options() {
+        // `internal_starlark_utf_8_byte_strings` defaults to true while its key
+        // (`-internal_bazel_only_utf_8_byte_strings`) defaults to false.
+        let semantics = to_starlark_semantics(&BuildLanguageOptions::default());
+        assert!(semantics.to_string().starts_with("StarlarkSemantics{"));
+        assert!(
+            semantics
+                .to_string()
+                .contains("internal_bazel_only_utf_8_byte_strings=true")
+        );
+    }
+
+    #[test]
+    fn starlark_semantics_to_string_in_key_order() {
+        let mut semantics = StarlarkSemanticsMap::default();
+        assert_eq!(semantics.to_string(), "StarlarkSemantics{}");
+        semantics.set_bool("-print_test_marker", true);
+        semantics.set(
+            &build_language_options::NESTED_SET_DEPTH_LIMIT,
+            SemanticsValue::Int(10),
+        );
+        semantics.set_bool("+check_bzl_visibility", false);
+        semantics.set(
+            &build_language_options::INCOMPATIBLE_AUTOLOAD_EXTERNALLY,
+            SemanticsValue::StringList(vec!["a".into(), "b".into()]),
+        );
+        // A value equal to the default removes the entry.
+        semantics.set(
+            &build_language_options::MAX_COMPUTATION_STEPS,
+            SemanticsValue::Long(0),
+        );
+        semantics.set_bool("+experimental_bzl_visibility", true);
+        // TreeMap order of the prefixed names: '+' < '-' < letters.
+        assert_eq!(
+            semantics.to_string(),
+            "StarlarkSemantics{check_bzl_visibility=false, print_test_marker=true, \
+             incompatible_autoload_externally=[a, b], nested_set_depth_limit=10}"
+        );
     }
 
     #[test]

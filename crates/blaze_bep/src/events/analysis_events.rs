@@ -394,9 +394,9 @@ impl blaze_events::Postable for AnalysisFailureBuildEvent {}
 /// cause. It also allows UIs to collate errors by root cause.
 ///
 /// PORT: the event posted by the analysis (`blaze_analysis::rule::rule_error_consumer`) carries
-/// the configuration's checksum; the caller passes the configuration's build event (the
-/// tri-state `configuration` field: `None` is the unavailable configuration, `Some(None)` the
-/// null configuration).
+/// Java's tri-state configuration as a `BuildConfigurationValue`; this crate does not see that
+/// type, so the subscriber passes the configuration's build event instead (`None` is the
+/// unavailable configuration, `Some(None)` the null configuration).
 // Java: com/google/devtools/build/lib/analysis/AnalysisRootCauseEvent.java:40 AnalysisRootCauseEvent
 #[derive(Clone, Debug)]
 pub struct AnalysisRootCauseBuildEvent {

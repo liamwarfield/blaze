@@ -141,8 +141,20 @@ pub fn register_repo_rules_functions(
         builder.typed_function::<blaze_bzlmod::skyframe::keys::BazelModTidyKey, _>(|key, env| {
             crate::bzlmod::bazel_mod_tidy_function::compute(key, env)
         });
-    builder.typed_function::<crate::bzlmod::bazel_fetch_all_function::BazelFetchAllKey, _>(
-        crate::bzlmod::bazel_fetch_all_function::compute,
+    let builder = builder
+        .typed_function::<crate::bzlmod::bazel_fetch_all_function::BazelFetchAllKey, _>(
+            crate::bzlmod::bazel_fetch_all_function::compute,
+        );
+    // SkyFunctions.VENDOR_FILE: new VendorFileFunction(runtime.getRuleClassProvider()
+    // .getBazelStarlarkEnvironment()).
+    // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:260 BazelRepositoryModule.workspaceInit
+    let vendor_file_function = Arc::new(
+        crate::bzlmod::vendor_file_function::VendorFileFunction::new(
+            services.directories.workspace.get_file_system().clone(),
+        ),
+    );
+    builder.typed_function::<crate::bzlmod::vendor_file_function::VendorFileKey, _>(
+        move |key, env| vendor_file_function.compute(key, env),
     )
 }
 

@@ -268,6 +268,7 @@ ConstraintCollection	has	constraint	ConstraintSettingInfo
 ConstraintCollection	has_constraint_value	constraint_value	ConstraintValueInfo
 DirectoryExpander	expand	file	File
 DottedVersion	compare_to	other	DottedVersion
+ExecTransitionFactory	and_then	transition	transition
 Facts	get	default	-
 Facts	get	key	string
 FeatureConfiguration	is_enabled	feature	string
@@ -1045,12 +1046,69 @@ list	insert	index	int
 list	insert	item	-
 list	pop	i	int
 list	remove	x	-
+module_ctx	download	allow_fail	bool
+module_ctx	download	auth	dict
+module_ctx	download	block	bool
+module_ctx	download	canonical_id	string
+module_ctx	download	executable	bool
+module_ctx	download	headers	dict
+module_ctx	download	integrity	string
+module_ctx	download	output	string, Label, or path
+module_ctx	download	sha256	string
+module_ctx	download	url	string or Iterable
+module_ctx	download_and_extract	allow_fail	bool
+module_ctx	download_and_extract	auth	dict
+module_ctx	download_and_extract	canonical_id	string
+module_ctx	download_and_extract	headers	dict
+module_ctx	download_and_extract	integrity	string
+module_ctx	download_and_extract	output	string, Label, or path
+module_ctx	download_and_extract	rename_files	dict
+module_ctx	download_and_extract	sha256	string
+module_ctx	download_and_extract	stripPrefix	string
+module_ctx	download_and_extract	strip_components	int
+module_ctx	download_and_extract	strip_prefix	string
+module_ctx	download_and_extract	type	string
+module_ctx	download_and_extract	url	string or Iterable
+module_ctx	execute	arguments	sequence
+module_ctx	execute	environment	dict
+module_ctx	execute	quiet	bool
+module_ctx	execute	timeout	int
+module_ctx	execute	working_directory	string
+module_ctx	execute_wasm	function	string
+module_ctx	execute_wasm	input	string
+module_ctx	execute_wasm	memory_limit	int
+module_ctx	execute_wasm	module	string, Label, path, or wasm_module
+module_ctx	execute_wasm	timeout	int
+module_ctx	execute_wasm	watch	string
 module_ctx	extension_metadata	facts	dict
 module_ctx	extension_metadata	reproducible	bool
 module_ctx	extension_metadata	root_module_direct_deps	sequence, string, or NoneType
 module_ctx	extension_metadata	root_module_direct_dev_deps	sequence, string, or NoneType
+module_ctx	extract	archive	string, Label, or path
+module_ctx	extract	output	string, Label, or path
+module_ctx	extract	rename_files	dict
+module_ctx	extract	stripPrefix	string
+module_ctx	extract	strip_components	int
+module_ctx	extract	strip_prefix	string
+module_ctx	extract	type	string
+module_ctx	extract	watch_archive	string
+module_ctx	file	content	string
+module_ctx	file	executable	bool
+module_ctx	file	legacy_utf8	bool
+module_ctx	file	path	string, Label, or path
+module_ctx	getenv	default	string or NoneType
+module_ctx	getenv	name	string
 module_ctx	is_dev_dependency	tag	bazel_module_tag
+module_ctx	load_wasm	allocate_fn	string
+module_ctx	load_wasm	path	string, Label, or path
+module_ctx	load_wasm	watch	string
+module_ctx	path	path	string, Label, or path
+module_ctx	read	path	string, Label, or path
+module_ctx	read	watch	string
+module_ctx	report_progress	status	string
 module_ctx	tag_sort_key	tag	bazel_module_tag
+module_ctx	watch	path	string, Label, or path
+module_ctx	which	program	string
 native	existing_rule	name	string
 native	exports_files	licenses	sequence or NoneType
 native	exports_files	srcs	sequence
@@ -1099,14 +1157,69 @@ py_builtins	regex_match	subject	string
 repo_rule_proxy	call	dev_dependency	bool
 repo_rule_proxy	call	name	string
 repository_ctx	delete	path	string or path
+repository_ctx	download	allow_fail	bool
+repository_ctx	download	auth	dict
+repository_ctx	download	block	bool
+repository_ctx	download	canonical_id	string
+repository_ctx	download	executable	bool
+repository_ctx	download	headers	dict
+repository_ctx	download	integrity	string
+repository_ctx	download	output	string, Label, or path
+repository_ctx	download	sha256	string
+repository_ctx	download	url	string or Iterable
+repository_ctx	download_and_extract	allow_fail	bool
+repository_ctx	download_and_extract	auth	dict
+repository_ctx	download_and_extract	canonical_id	string
+repository_ctx	download_and_extract	headers	dict
+repository_ctx	download_and_extract	integrity	string
+repository_ctx	download_and_extract	output	string, Label, or path
+repository_ctx	download_and_extract	rename_files	dict
+repository_ctx	download_and_extract	sha256	string
+repository_ctx	download_and_extract	stripPrefix	string
+repository_ctx	download_and_extract	strip_components	int
+repository_ctx	download_and_extract	strip_prefix	string
+repository_ctx	download_and_extract	type	string
+repository_ctx	download_and_extract	url	string or Iterable
+repository_ctx	execute	arguments	sequence
+repository_ctx	execute	environment	dict
+repository_ctx	execute	quiet	bool
+repository_ctx	execute	timeout	int
+repository_ctx	execute	working_directory	string
+repository_ctx	execute_wasm	function	string
+repository_ctx	execute_wasm	input	string
+repository_ctx	execute_wasm	memory_limit	int
+repository_ctx	execute_wasm	module	string, Label, path, or wasm_module
+repository_ctx	execute_wasm	timeout	int
+repository_ctx	execute_wasm	watch	string
+repository_ctx	extract	archive	string, Label, or path
+repository_ctx	extract	output	string, Label, or path
+repository_ctx	extract	rename_files	dict
+repository_ctx	extract	stripPrefix	string
+repository_ctx	extract	strip_components	int
+repository_ctx	extract	strip_prefix	string
+repository_ctx	extract	type	string
+repository_ctx	extract	watch_archive	string
+repository_ctx	file	content	string
+repository_ctx	file	executable	bool
+repository_ctx	file	legacy_utf8	bool
+repository_ctx	file	path	string, Label, or path
+repository_ctx	getenv	default	string or NoneType
+repository_ctx	getenv	name	string
+repository_ctx	load_wasm	allocate_fn	string
+repository_ctx	load_wasm	path	string, Label, or path
+repository_ctx	load_wasm	watch	string
 repository_ctx	patch	directory	string, Label, or path
 repository_ctx	patch	patch_file	string, Label, or path
 repository_ctx	patch	strip	int
 repository_ctx	patch	watch_patch	string
+repository_ctx	path	path	string, Label, or path
+repository_ctx	read	path	string, Label, or path
+repository_ctx	read	watch	string
 repository_ctx	rename	dst	string, Label, or path
 repository_ctx	rename	src	string, Label, or path
 repository_ctx	repo_metadata	attrs_for_reproducibility	dict
 repository_ctx	repo_metadata	reproducible	bool
+repository_ctx	report_progress	status	string
 repository_ctx	symlink	link_name	string, Label, or path
 repository_ctx	symlink	target	string, Label, or path
 repository_ctx	template	executable	bool
@@ -1114,7 +1227,9 @@ repository_ctx	template	path	string, Label, or path
 repository_ctx	template	substitutions	dict
 repository_ctx	template	template	string, Label, or path
 repository_ctx	template	watch_template	string
+repository_ctx	watch	path	string, Label, or path
 repository_ctx	watch_tree	path	string, Label, or path
+repository_ctx	which	program	string
 runfiles	merge	other	runfiles
 runfiles	merge_all	other	sequence
 set	add	element	-

@@ -1,0 +1,10 @@
+
+	//pkg:gen0123abcd*Genrule2MyAspect:
+p
+v1
+v2Ú>a
+	/bin/bash
+-c
+echo "Ã©" > $@
+PATH/bin"
+pkg/in.txt*&bazel-out/k8-fastbuild/bin/pkg/out.txt

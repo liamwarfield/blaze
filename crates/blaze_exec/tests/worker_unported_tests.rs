@@ -81,83 +81,6 @@ mod sandboxed_worker_proxy_test {
     fn different_proxies_different_multiplexer_same_mnem_have_different_work_dirs() {}
 }
 
-mod worker_lifecycle_manager_test {
-    // Java tests: src/test/java/com/google/devtools/build/lib/worker/WorkerLifecycleManagerTest.java
-    #[test]
-    #[ignore = "needs the Mockito fakes of WorkerPool and WorkerProcessMetricsCollector (not ported yet)"]
-    fn test_evict_workers_do_nothing_low_memory_usage() {}
-    #[test]
-    #[ignore = "needs the Mockito fakes of WorkerPool and WorkerProcessMetricsCollector (not ported yet)"]
-    fn test_evict_workers_do_nothing_zero_threshold() {}
-    #[test]
-    #[ignore = "needs the Mockito fakes of WorkerPool and WorkerProcessMetricsCollector (not ported yet)"]
-    fn test_evict_workers_do_nothing_empty_metrics() {}
-    #[test]
-    #[ignore = "needs the Mockito fakes of WorkerPool and WorkerProcessMetricsCollector (not ported yet)"]
-    fn test_get_eviction_candidates_select_only_worker() {}
-    #[test]
-    #[ignore = "needs the Mockito fakes of WorkerPool and WorkerProcessMetricsCollector (not ported yet)"]
-    fn test_get_eviction_candidates_evict_largest_workers() {}
-    #[test]
-    #[ignore = "needs the Mockito fakes of WorkerPool and WorkerProcessMetricsCollector (not ported yet)"]
-    fn test_get_eviction_candidates_number_of_workers_is_more_than_default_num_tests() {}
-    #[test]
-    #[ignore = "needs the Mockito fakes of WorkerPool and WorkerProcessMetricsCollector (not ported yet)"]
-    fn test_get_eviction_candidates_evict_worker_with_same_menmonic_but_different_keys() {}
-    #[test]
-    #[ignore = "needs the Mockito fakes of WorkerPool and WorkerProcessMetricsCollector (not ported yet)"]
-    fn test_get_eviction_candidates_evict_only_idle_workers() {}
-    #[test]
-    #[ignore = "needs the Mockito fakes of WorkerPool and WorkerProcessMetricsCollector (not ported yet)"]
-    fn test_get_eviction_candidates_evict_different_worker_keys() {}
-    #[test]
-    #[ignore = "needs the Mockito fakes of WorkerPool and WorkerProcessMetricsCollector (not ported yet)"]
-    fn test_get_eviction_candidates_test_doomed_workers() {}
-    #[test]
-    #[ignore = "needs the Mockito fakes of WorkerPool and WorkerProcessMetricsCollector (not ported yet)"]
-    fn test_get_eviction_candidates_test_doomed_and_idle_workers() {}
-    #[test]
-    #[ignore = "needs the Mockito fakes of WorkerPool and WorkerProcessMetricsCollector (not ported yet)"]
-    fn evict_workers_test_multiplex_workers() {}
-    #[test]
-    #[ignore = "needs the Mockito fakes of WorkerPool and WorkerProcessMetricsCollector (not ported yet)"]
-    fn evict_workers_doom_multiplex_worker() {}
-}
-
-mod worker_process_metrics_collector_test {
-    // Java tests: src/test/java/com/google/devtools/build/lib/worker/WorkerProcessMetricsCollectorTest.java
-    #[test]
-    #[ignore = "needs fakes of PsInfoCollector and CgroupsInfoCollector (not ported yet)"]
-    fn test_register_worker_insert_different() {}
-    #[test]
-    #[ignore = "needs fakes of PsInfoCollector and CgroupsInfoCollector (not ported yet)"]
-    fn test_register_worker_insert_multiplex() {}
-    #[test]
-    #[ignore = "needs fakes of PsInfoCollector and CgroupsInfoCollector (not ported yet)"]
-    fn test_register_worker_insert_same() {}
-    #[test]
-    #[ignore = "needs fakes of PsInfoCollector and CgroupsInfoCollector (not ported yet)"]
-    fn test_collect_metrics() {}
-    #[test]
-    #[ignore = "needs fakes of PsInfoCollector and CgroupsInfoCollector (not ported yet)"]
-    fn test_collect_resource_usage_windows() {}
-    #[test]
-    #[ignore = "needs fakes of PsInfoCollector and CgroupsInfoCollector (not ported yet)"]
-    fn test_collect_resource_usage_darwin_using_ps() {}
-    #[test]
-    #[ignore = "needs fakes of PsInfoCollector and CgroupsInfoCollector (not ported yet)"]
-    fn test_collect_resource_usage_linux_using_ps() {}
-    #[test]
-    #[ignore = "needs fakes of PsInfoCollector and CgroupsInfoCollector (not ported yet)"]
-    fn test_collect_resource_usage_linux_using_cgroups() {}
-    #[test]
-    #[ignore = "needs fakes of PsInfoCollector and CgroupsInfoCollector (not ported yet)"]
-    fn test_worker_metrics_publish_comparator_compare() {}
-    #[test]
-    #[ignore = "needs fakes of PsInfoCollector and CgroupsInfoCollector (not ported yet)"]
-    fn test_limit_worker_metrics_to_publish() {}
-}
-
 mod worker_spawn_runner_test {
     // Java tests: src/test/java/com/google/devtools/build/lib/worker/WorkerSpawnRunnerTest.java
     #[test]
@@ -202,37 +125,6 @@ mod worker_spawn_runner_test {
     #[test]
     #[ignore = "needs the Mockito fakes of SpawnExecutionContext, ResourceManager and Worker (not ported yet)"]
     fn test_expand_argument_fails_on_undeclared_input() {}
-}
-
-mod worker_module_test {
-    // Java tests: src/test/java/com/google/devtools/build/lib/worker/WorkerModuleTest.java
-    #[test]
-    #[ignore = "needs a CommandEnvironment and BuildStartingEvent fakes (not ported yet)"]
-    fn build_starting_creates_pools() {}
-    #[test]
-    #[ignore = "needs a CommandEnvironment and BuildStartingEvent fakes (not ported yet)"]
-    fn build_starting_no_restart_on_sandbox_change() {}
-    #[test]
-    #[ignore = "needs a CommandEnvironment and BuildStartingEvent fakes (not ported yet)"]
-    fn build_starting_restarts_on_outputbase_changes() {}
-    #[test]
-    #[ignore = "needs a CommandEnvironment and BuildStartingEvent fakes (not ported yet)"]
-    fn build_starting_restarts_on_use_cgroups_on_linux_changes() {}
-    #[test]
-    #[ignore = "needs a CommandEnvironment and BuildStartingEvent fakes (not ported yet)"]
-    fn build_starting_clears_logs_on_factory_creation() {}
-    #[test]
-    #[ignore = "needs a CommandEnvironment and BuildStartingEvent fakes (not ported yet)"]
-    fn build_starting_restarts_on_num_multiplex_workers_changes() {}
-    #[test]
-    #[ignore = "needs a CommandEnvironment and BuildStartingEvent fakes (not ported yet)"]
-    fn build_starting_restarts_on_num_workers_changes() {}
-    #[test]
-    #[ignore = "needs a CommandEnvironment and BuildStartingEvent fakes (not ported yet)"]
-    fn build_starting_survives_no_worker_dir() {}
-    #[test]
-    #[ignore = "needs a CommandEnvironment and BuildStartingEvent fakes (not ported yet)"]
-    fn build_starting_cleans_stale_trash_dir_cleaned_on_first_build() {}
 }
 
 mod worker_spawn_strategy_test {

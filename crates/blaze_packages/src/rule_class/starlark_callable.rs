@@ -24,29 +24,44 @@ use crate::starlark_defs::value_cell::StarlarkValueCell;
 /// the evaluation running now, and the arena is released only when no evaluator exists (every
 /// `SkyframeExecutor` and every `BzlLoadFunction` holds a lease) and only by the server, after a
 /// command has ended. // PORT: keep-alive
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct StarlarkCallable(FrozenValue);
+///
+/// The handle records the arena generation it was made in and checks it at every read, so a
+/// handle that outlived its arena (a holder that broke the rules of `blaze_util::build_arena`)
+/// is a crash with a message, not a read of freed memory.
+#[derive(Clone, Copy)]
+pub struct StarlarkCallable(FrozenValue, blaze_util::build_arena::ArenaStamp);
+
+/// Equality of the values (the stamps of two live handles are equal).
+impl PartialEq for StarlarkCallable {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for StarlarkCallable {}
 
 impl StarlarkCallable {
     /// Wraps a value of a frozen module whose heap is kept alive (see the type docs).
     // PORT: keep-alive
     pub fn new(value: FrozenValue) -> Self {
-        StarlarkCallable(value)
+        StarlarkCallable(value, blaze_util::build_arena::ArenaStamp::current())
     }
 
     /// The frozen value, resolved through a filled `starlark_defs::value_cell` cell (the
     /// cell itself while its module is not yet frozen).
     // PORT: rule()/attr() hand out handles to cells filled when the defining module freezes.
     pub fn value(&self) -> FrozenValue {
-        match self.0.to_value().downcast_ref::<StarlarkValueCell>() {
-            Some(cell) => cell.get().unwrap_or(self.0),
-            None => self.0,
+        let raw = self.raw_value();
+        match raw.to_value().downcast_ref::<StarlarkValueCell>() {
+            Some(cell) => cell.get().unwrap_or(raw),
+            None => raw,
         }
     }
 
     /// The handle's own value (a cell for values of a module not frozen when the handle was
     /// made).
     pub fn raw_value(&self) -> FrozenValue {
+        self.1.check("StarlarkCallable");
         self.0
     }
 
@@ -89,6 +104,6 @@ impl StarlarkCallable {
 
 impl fmt::Debug for StarlarkCallable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "StarlarkCallable({})", self.0)
+        write!(f, "StarlarkCallable({})", self.raw_value())
     }
 }

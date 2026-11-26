@@ -126,6 +126,8 @@ pub struct TargetAndErrorIfAny {
     pub package_loaded_successfully: bool,
     pub error_loading_target: Option<NoSuchTargetException>,
     pub target: Target,
+    /// Java `getPackage()`.
+    pub package: Arc<blaze_packages::package::Package>,
 }
 
 /// What `TargetLoadingUtil.loadTarget` throws.
@@ -236,6 +238,7 @@ pub fn load_target(
         package_loaded_successfully: !pkg.contains_errors(),
         error_loading_target: error,
         target,
+        package: pkg.clone(),
     })))
 }
 

@@ -42,14 +42,12 @@ impl BlazeCommand for ShutdownCommand {
         // (which is maxMemory()). It's really how much memory this process
         // currently consumes, in addition to the JVM code and C heap.
 
-        if limit == 0 {
+        // PORT: Blaze has no JVM; `Runtime.getRuntime().totalMemory()` is the process's resident
+        // memory (ruling D15, `crate::process_memory::total_memory`).
+        if limit == 0 || crate::process_memory::total_memory() > (limit as i64) * 1000 * 1000 {
             return BlazeCommandResult::shutdown_on_success();
         }
-        // PORT: `Runtime.getRuntime().totalMemory() > limit * 1000L * 1000` needs the JVM heap
-        // size; Blaze has no JVM.
-        blaze_util::unported!(
-            "ShutdownCommand.exec",
-            "--iff_heap_size_greater_than needs Runtime.totalMemory (no JVM)"
-        )
+
+        BlazeCommandResult::success()
     }
 }

@@ -463,7 +463,15 @@ pub trait StarlarkValue<'v>:
         _args: &Arguments<'v, '_>,
         _eval: &mut Evaluator<'v, '_, '_>,
     ) -> crate::Result<Value<'v>> {
-        ValueError::unsupported(self, "call()")
+        // BLAZE PATCH 0061: Java's text (Starlark.java:904 getStarlarkCallable), marked as raised
+        // before the callee is entered (`eval::runtime::java_call`).
+        let _ = ValueError::unsupported::<(), Self>; // BLAZE PATCH 0061
+        Err(crate::Error::new_value( // BLAZE PATCH 0061
+            crate::eval::runtime::java_call::JavaNotCallable(format!( // BLAZE PATCH 0061
+                "'{}' object is not callable", // BLAZE PATCH 0061
+                Self::TYPE // BLAZE PATCH 0061
+            )), // BLAZE PATCH 0061
+        )) // BLAZE PATCH 0061
     }
 
     /// Return the result of `a[index]` if `a` is indexable.

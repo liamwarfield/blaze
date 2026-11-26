@@ -37,12 +37,9 @@ pub fn is_java_compile_action(action: Option<&dyn Action>) -> bool {
     action.is_some_and(|a| a.get_mnemonic() == MNEMONIC)
 }
 
-/// The data of `JavaCompileExtraActionInfoSupplier` (the `JavaCompileInfo` of extra actions).
-///
-/// PORT: Blaze's `Action` has no `getExtraActionInfo` (extra actions are not ported); the data
-/// is kept for when it is.
+/// The `JavaCompileInfo` of a Java compilation for extra actions.
 // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:66 JavaCompileActionBuilder.JavaCompileExtraActionInfoSupplier
-#[allow(dead_code)]
+#[derive(Debug)]
 pub struct JavaCompileExtraActionInfoSupplier {
     output_jar: Artifact,
     /// The list of classpath entries to specify to javac.
@@ -65,13 +62,32 @@ pub struct JavaCompileExtraActionInfoSupplier {
 
 impl JavaCompileExtraActionInfoSupplier {
     // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:117 JavaCompileActionBuilder.JavaCompileExtraActionInfoSupplier.extend
-    pub fn extend(&self) -> ! {
-        // PORT: the `JavaCompileInfo` extension of `ExtraActionInfo` (extra_actions_base.proto)
-        // is not ported; extra actions are not ported.
-        blaze_util::unported!(
-            "JavaCompileActionBuilder.JavaCompileExtraActionInfoSupplier.extend",
-            "extra actions (ExtraActionInfo.JavaCompileInfo) are not ported"
-        )
+    pub fn extend(
+        &self,
+        builder: &mut blaze_protos::blaze::ExtraActionInfo,
+        arguments: Vec<String>,
+    ) {
+        let exec_paths = |artifacts: &mut dyn Iterator<Item = &Artifact>| -> Vec<String> {
+            artifacts
+                .map(|a| a.get_exec_path_string().to_owned())
+                .collect()
+        };
+        let mut info = blaze_protos::blaze::JavaCompileInfo {
+            source_file: exec_paths(&mut self.source_files.iter()),
+            classpath: exec_paths(&mut self.classpath_entries.to_list().iter()),
+            bootclasspath: exec_paths(&mut self.bootclasspath_entries.to_list().iter()),
+            sourcepath: exec_paths(&mut self.source_jars.iter()),
+            javac_opt: self.javac_opts.clone(),
+            processor: self.processor_names.to_list().iter().cloned().collect(),
+            processorpath: exec_paths(&mut self.processor_path.to_list().iter()),
+            outputjar: Some(self.output_jar.get_exec_path_string().to_owned()),
+            ..Default::default()
+        };
+        if let Some(system) = &self.system {
+            info.system = Some(system.to_string());
+        }
+        info.argument.extend(arguments);
+        builder.java_compile_info = Some(info);
     }
 }
 
@@ -235,7 +251,7 @@ impl<'a, 'v> JavaCompileActionBuilder<'a, 'v> {
             mandatory_inputs_builder.add(coverage_artifact.clone());
         }
 
-        let _extra_action_info_supplier = JavaCompileExtraActionInfoSupplier {
+        let extra_action_info_supplier = JavaCompileExtraActionInfoSupplier {
             output_jar: outputs.output().clone(),
             classpath_entries: self.classpath_entries.clone(),
             bootclasspath_entries: self.boot_class_path.bootclasspath()?,
@@ -297,7 +313,8 @@ impl<'a, 'v> JavaCompileActionBuilder<'a, 'v> {
             /* dependency_artifacts= */ self.compile_time_dependency_artifacts.clone(),
             outputs.deps_proto().cloned(),
             self.classpath_mode,
-        ))
+        )
+        .with_extra_action_info_supplier(Arc::new(extra_action_info_supplier)))
     }
 
     // Java: com/google/devtools/build/lib/rules/java/JavaCompileActionBuilder.java:272 JavaCompileActionBuilder.allOutputs

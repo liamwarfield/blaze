@@ -567,7 +567,7 @@ fn find_starlark_option_value(build_options: &BuildOptions, setting: &Label) -> 
 
 /// The object a transition reads for a Starlark option (`Starlark.fromJava` then turns Java
 /// lists and sets into Starlark lists).
-fn starlark_option_to_java(v: &StarlarkOptionValue) -> JavaObject {
+pub fn starlark_option_to_java(v: &StarlarkOptionValue) -> JavaObject {
     match v {
         StarlarkOptionValue::Bool(b) => JavaObject::Bool(*b),
         StarlarkOptionValue::Int(i) => JavaObject::Int(*i),

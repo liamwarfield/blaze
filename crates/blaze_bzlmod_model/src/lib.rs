@@ -31,6 +31,7 @@ pub mod registry;
 pub mod repo_spec;
 pub mod resolution;
 pub mod selection;
+pub mod vendor_manager;
 pub mod version;
 
 pub use checksum::{Checksum, InvalidChecksumException, KeyType};

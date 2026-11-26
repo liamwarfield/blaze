@@ -340,7 +340,9 @@ pub fn call_stack(eval: &Evaluator) -> Vec<StackEntry> {
 /// Java's Starlark call-machinery error for an argument of a wrong type.
 // Java: net/starlark/java/eval/BuiltinFunction.java BuiltinFunction.getArgumentVector
 pub fn param_type_error(func: &str, param: &str, v: Value, want: &str) -> starlark::Error {
-    errorf(format!(
+    // A binding error: Bazel locates it at the call's enclosing statement when the call has
+    // named arguments (starlark patch 0061).
+    starlark::values::bazel_argument_binding_error(format!(
         "in call to {func}(), parameter '{param}' got value of type '{}', want '{want}'",
         starlark_type(v)
     ))

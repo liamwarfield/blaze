@@ -30,7 +30,10 @@ pub struct RepoRule {
     pub recorded_repo_mapping_entries: Vec<(RepositoryName, String, RepositoryName)>,
     /// The implementation function. PORT: keep-alive: the handle does not own the frozen heap of
     /// the defining .bzl, which the build arena keeps (see `repository_module::get_repo_rule`).
+    /// Read it with [`RepoRule::get_impl`], which checks [`RepoRule::impl_stamp`].
     pub impl_: OwnedFrozenValue,
+    /// The build arena generation `impl_` was made in (`blaze_util::build_arena::ArenaStamp`).
+    pub impl_stamp: blaze_util::build_arena::ArenaStamp,
     pub doc: Option<String>,
     pub attributes: Vec<Attribute>,
     pub attribute_indices: IndexMap<String, usize>,
@@ -41,6 +44,15 @@ pub struct RepoRule {
     /// The `BazelModuleContext` of the .bzl that exported the rule (Java finds the innermost
     /// .bzl of the running function; see `crate::starlark::thread::call_implementation`).
     pub module_context: Option<Arc<BazelModuleContext>>,
+}
+
+impl RepoRule {
+    /// The implementation function; panics if the build arena that keeps its heap was released
+    /// since the handle was made (a holder that outlived its command).
+    pub fn get_impl(&self) -> &OwnedFrozenValue {
+        self.impl_stamp.check("RepoRule.impl_");
+        &self.impl_
+    }
 }
 
 impl fmt::Debug for RepoRule {

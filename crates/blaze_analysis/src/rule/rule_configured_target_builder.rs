@@ -236,9 +236,16 @@ impl<'a> RuleConfiguredTargetBuilder<'a> {
             }
         }
 
-        // Only add ExtraActionProvider if extra action listeners are applied
+        // Only add {@link ExtraActionProvider} if extra action listeners are applied
         if !config_util::get_action_listeners(&configuration).is_empty() {
-            blaze_util::unported!("RuleConfiguredTargetBuilder.createExtraActionProvider");
+            // actionsWithoutExtraAction is always empty (ImmutableSet.of()).
+            let extra_actions_provider =
+                crate::extra::extra_action_utils::create_extra_action_provider(
+                    /* actions_without_extra_action= */ &[],
+                    rule_context,
+                )
+                .map_err(|_| RuleConfiguredTargetBuildError::Interrupted)?;
+            self.add_provider(extra_actions_provider);
         }
 
         if !self.output_group_builders.is_empty() {

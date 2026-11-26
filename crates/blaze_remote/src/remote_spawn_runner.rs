@@ -3,9 +3,8 @@
 //! PORT notes for the whole file:
 //! - Profiling (`Profiler`, `profileAccounting`, `logProfileTask`) is skipped (PORTING.md:
 //!   profiling).
-//! - `CredentialHelperException` (lib/authandtls/credentialhelper) is not ported, so its two
-//!   `catch` clauses have no counterpart; `utils::create_exec_exception_for_credential_helper_exception`
-//!   is the place they would call.
+//! - `catch (CredentialHelperException e)` is `utils::credential_helper_exception_of(&e)` on the
+//!   `IOException` (Java `instanceof`: the error itself, not a cause).
 //! - `SpawnRunner::exec` has no `IOException` channel: an `IOException` that Java's `exec` throws
 //!   is returned as `abstract_spawn_strategy::exec_io_exception(e)`, which is what
 //!   `AbstractSpawnStrategy.exec` makes of it. Inside this file `IOException | ExecException |
@@ -446,11 +445,18 @@ impl RemoteSpawnRunner {
         match lookup {
             Ok(Some(result)) => return Ok(result),
             Ok(None) => {}
-            // PORT: `catch (CredentialHelperException e)` has no port (see the module comment).
             Err(SpawnCacheError::Io(e)) => {
                 // `InterruptedException` is not an `IOException`: it propagates.
                 if errors::is_interrupted(&e) {
                     return Err(e.into());
+                }
+                if let Some(c) = crate::util::utils::credential_helper_exception_of(&e) {
+                    return Err(
+                        crate::util::utils::create_exec_exception_for_credential_helper_exception(
+                            c,
+                        )
+                        .into(),
+                    );
                 }
                 return self.exec_locally_and_upload_or_fail(
                     &action,
@@ -637,8 +643,14 @@ impl RemoteSpawnRunner {
                 if errors::is_interrupted(&e) {
                     return Err(e.into());
                 }
-                // PORT: `catch (CredentialHelperException e)` has no port (see the module
-                // comment).
+                if let Some(c) = crate::util::utils::credential_helper_exception_of(&e) {
+                    return Err(
+                        crate::util::utils::create_exec_exception_for_credential_helper_exception(
+                            c,
+                        )
+                        .into(),
+                    );
+                }
                 self.exec_locally_and_upload_or_fail(
                     &action,
                     spawn,

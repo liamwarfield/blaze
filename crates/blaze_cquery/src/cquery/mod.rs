@@ -10,6 +10,8 @@ pub mod files_output_formatter_callback;
 pub mod graph_output_formatter_callback;
 pub mod label_and_configuration_output_formatter_callback;
 pub mod proto_output_formatter_callback;
+pub mod starlark_output_formatter_callback;
+pub mod transitions_output_formatter_callback;
 pub mod unported_output_formatter_callbacks;
 
 use std::sync::Arc;
@@ -18,6 +20,7 @@ use blaze_events::ExtendedEventHandler;
 use blaze_optdefs::command::cquery_options::CqueryOptions;
 use blaze_query::query::aspectresolvers::aspect_resolver;
 use blaze_query::query::output::output_formatter::OutputStream;
+use blaze_query_engine::QueryException;
 use blaze_sky_top::skyframe_executor::SkyframeExecutor;
 
 use crate::post_analysis_query_environment::NamedThreadSafeOutputFormatterCallback;
@@ -28,7 +31,8 @@ use files_output_formatter_callback::FilesOutputFormatterCallback;
 use graph_output_formatter_callback::GraphOutputFormatterCallback;
 use label_and_configuration_output_formatter_callback::LabelAndConfigurationOutputFormatterCallback;
 use proto_output_formatter_callback::{OutputType, ProtoOutputFormatterCallback};
-use unported_output_formatter_callbacks::UnportedOutputFormatterCallback;
+use starlark_output_formatter_callback::StarlarkOutputFormatterCallback;
+use transitions_output_formatter_callback::TransitionsOutputFormatterCallback;
 
 /// The output formatter callbacks of cquery, in Java's order.
 // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:175 ConfiguredTargetQueryEnvironment.getDefaultOutputFormatters
@@ -39,7 +43,8 @@ pub fn get_default_output_formatters<'a>(
     out: OutputStream,
     skyframe_executor: &'a SkyframeExecutor,
     top_level_artifact_context_output_groups: Vec<String>,
-) -> Vec<Box<dyn NamedThreadSafeOutputFormatterCallback<CqueryNode> + 'a>> {
+    workspace: &blaze_vfs::Path,
+) -> Result<Vec<Box<dyn NamedThreadSafeOutputFormatterCallback<CqueryNode> + 'a>>, QueryException> {
     // cqueryOptions.aspectDeps.createResolver(packageManager, eventHandler)
     let aspect_resolver = aspect_resolver::create_resolver(
         cquery_options.aspect_deps,
@@ -62,7 +67,8 @@ pub fn get_default_output_formatters<'a>(
     };
     let hash_function = skyframe_executor.get_digest_function();
     let label_printer = env.get_label_printer().clone();
-    vec![
+    let starlark_semantics = skyframe_executor.get_effective_starlark_semantics();
+    Ok(vec![
         Box::new(LabelAndConfigurationOutputFormatterCallback::new(
             base(false),
             true,
@@ -73,7 +79,11 @@ pub fn get_default_output_formatters<'a>(
             false,
             label_printer.clone(),
         )),
-        Box::new(UnportedOutputFormatterCallback::transitions()),
+        Box::new(TransitionsOutputFormatterCallback::new(
+            base(false),
+            skyframe_executor,
+            env.get_label_printer().clone(),
+        )),
         Box::new(ProtoOutputFormatterCallback::new(
             base(false),
             aspect_resolver.clone(),
@@ -110,10 +120,15 @@ pub fn get_default_output_formatters<'a>(
             base(false),
             env.get_label_printer().clone(),
         )),
-        Box::new(UnportedOutputFormatterCallback::starlark()),
+        Box::new(StarlarkOutputFormatterCallback::new(
+            base(false),
+            skyframe_executor,
+            starlark_semantics,
+            workspace,
+        )?),
         Box::new(FilesOutputFormatterCallback::new(
             base(true),
             top_level_artifact_context_output_groups,
         )),
-    ]
+    ])
 }

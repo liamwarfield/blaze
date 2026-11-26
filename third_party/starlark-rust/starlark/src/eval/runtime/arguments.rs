@@ -66,6 +66,17 @@ pub(crate) enum FunctionError {
     /// BLAZE PATCH 0052: an argument error with Java's text.
     #[error("{0}")]
     Bazel(String),
+    /// BLAZE PATCH 0061: Java's text of an error Java raises while binding an argument
+    /// (`ArgumentProcessor.addPositionalArg` / `addNamedArg`).
+    #[error("{0}")]
+    JavaBinding(String),
+    /// BLAZE PATCH 0061: Java's text for `*x` that is not iterable (Eval.java:735).
+    #[error("{0}")]
+    JavaStar(String),
+    /// BLAZE PATCH 0061: Java's text for `**x` that is not a dict or has a key that is not a
+    /// string (Eval.java:749, 754).
+    #[error("{0}")]
+    JavaStarStar(String),
     /// BLAZE PATCH 0056: a name given twice to a builtin's `**kwargs` (Java
     /// BuiltinFunction.java:343 addNamedArg); the call names the builtin
     /// (`BazelParamTypeError::with_function`).
@@ -306,7 +317,7 @@ impl<'v, 'a> Arguments<'v, 'a> {
                     match kwargs.downcast_ref_key_string() {
                         Some(kwargs) => Ok(kwargs.clone()),
                         // BLAZE PATCH 0052: Java's text (Eval.java:754 evalCall).
-                        None => Err(FunctionError::Bazel(format!( // BLAZE PATCH 0052
+                        None => Err(FunctionError::JavaStarStar(format!( // BLAZE PATCH 0052, 0061
                             "keywords must be strings, not {}", // BLAZE PATCH 0052
                             kwargs.keys().find(|k| k.unpack_str().is_none()).map_or("?", |k| k.get_type()) // BLAZE PATCH 0052
                         )) // BLAZE PATCH 0052
@@ -371,7 +382,7 @@ impl<'v, 'a> Arguments<'v, 'a> {
             None => Either::Left(iter::empty()),
             // BLAZE PATCH 0052: Java's text (Eval.java:735 evalCall).
             Some(args) => Either::Right(args.iterate(heap).map_err(|_| { // BLAZE PATCH 0052
-                crate::Error::from(FunctionError::Bazel(format!( // BLAZE PATCH 0052
+                crate::Error::from(FunctionError::JavaStar(format!( // BLAZE PATCH 0052, 0061
                     "argument after * must be an iterable, not {}", // BLAZE PATCH 0052
                     args.get_type() // BLAZE PATCH 0052
                 ))) // BLAZE PATCH 0052
@@ -390,7 +401,7 @@ impl<'v, 'a> Arguments<'v, 'a> {
             None => Ok(None),
             Some(kwargs) => match DictRef::from_value(kwargs) {
                 // BLAZE PATCH 0052: Java's text (Eval.java:749 evalCall).
-                None => Err(FunctionError::Bazel(format!("argument after ** must be a dict, not {}", kwargs.get_type())).into()), // BLAZE PATCH 0052
+                None => Err(FunctionError::JavaStarStar(format!("argument after ** must be a dict, not {}", kwargs.get_type())).into()), // BLAZE PATCH 0052, 0061
                 Some(x) => Ok(Some(x)),
             },
         }
@@ -401,7 +412,7 @@ impl<'v, 'a> Arguments<'v, 'a> {
     pub(crate) fn unpack_kwargs_key_as_value(k: Value<'v>) -> crate::Result<StringValue<'v>> {
         match StringValue::new(k) {
             // BLAZE PATCH 0052: Java's text (Eval.java:754 evalCall).
-            None => Err(FunctionError::Bazel(format!("keywords must be strings, not {}", k.get_type())).into()), // BLAZE PATCH 0052
+            None => Err(FunctionError::JavaStarStar(format!("keywords must be strings, not {}", k.get_type())).into()), // BLAZE PATCH 0052, 0061
             Some(k) => Ok(k),
         }
     }
@@ -479,7 +490,7 @@ impl<'v, 'a> Arguments<'v, 'a> {
                 None => StarlarkIterator::empty(heap),
                 // BLAZE PATCH 0052: Java's text (Eval.java:735 evalCall).
                 Some(args) => args.iterate(heap).map_err(|_| { // BLAZE PATCH 0052
-                    crate::Error::from(FunctionError::Bazel(format!( // BLAZE PATCH 0052
+                    crate::Error::from(FunctionError::JavaStar(format!( // BLAZE PATCH 0052, 0061
                         "argument after * must be an iterable, not {}", // BLAZE PATCH 0052
                         args.get_type() // BLAZE PATCH 0052
                     ))) // BLAZE PATCH 0052

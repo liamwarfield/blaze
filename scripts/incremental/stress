@@ -1,0 +1,780 @@
+#!/usr/bin/env python3
+"""Incremental builds on a persistent server: sequences against the oracle, and randomized
+incremental-against-clean runs with one binary.
+
+usage: scripts/incremental/stress help
+       scripts/incremental/stress probe  [--blaze B] [--oracle O] [--steps a,b,...] [--keep]
+       scripts/incremental/stress random [--blaze B] [--edits N] [--seed S] [--keep]
+       scripts/incremental/stress list
+
+Workspace: a generated one (generate()) under ~/.cache/blaze/work/i3/stress/<mode>/ws, with a
+sibling module `ext` (local_path_override), a module extension whose repository reads an
+environment variable, a .bzl macro and a Starlark rule, globs, a select on --define, a genrule
+that reads an --action_env variable, and a platform_mappings file. Every command gets
+--nohome_rc --nosystem_rc (startup), --symlink_prefix=/ --color=no --curses=no
+--repository_cache=~/.cache/blaze/repo-cache (command). Blaze runs with
+BLAZE_SERVER_MODE=daemon.
+
+probe: runs the step list (`list` prints it) on one server per side, first the oracle
+(~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64, the reference), then Blaze, each from a fresh
+copy of the generated workspace at the same path and its own output user root, and compares per
+step: the exit code; stdout; the INFO/WARNING/ERROR lines of stderr (volatile lines dropped:
+progress, elapsed time, invocation id, streaming, server start; timings and absolute paths
+normalised); the multiset of spawns of --execution_log_json_file (mnemonic, target label,
+listed outputs, cache hit, exit code); and every file under bazel-bin (path, sha256, exec bit).
+A step is SAME or DIFFERENT; differences are printed. Expected outputs come from the oracle.
+
+random: one binary, two servers on the same workspace: A keeps its graph (the default), B runs
+with BLAZE_INCREMENTAL=none and `clean` before every build (a clean build of the same tree).
+Each round applies one random edit (same-size rewrites of a source, edits within the same
+second as the previous build, appends, glob file adds and deletes, package adds and deletes,
+BUILD and .bzl edits, platform_mappings edits, --define and --action_env changes, output
+file modification and deletion, a syntax error and its repair), builds //... on A and on B, and
+compares: exit code, the ERROR and WARNING lines (as sets), and every file under B's bazel-bin
+(A must have the same path with the same sha256 and exec bit; A may keep stale outputs of
+deleted targets, as Bazel does). Mismatches are printed and counted; exit 1 if any.
+
+Heavy: run under `systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0`.
+Servers are shut down at the end (and killed through their pid files if needed). Output user
+roots and workspaces are deleted at the end unless --keep.
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import random
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+HOME = os.path.expanduser("~")
+WORK = os.path.join(HOME, ".cache/blaze/work/i3/stress")
+ORACLE = os.path.join(HOME, ".cache/blaze/oracle/bazel-9.3.2-linux-x86_64")
+REPO_CACHE = os.path.join(HOME, ".cache/blaze/repo-cache")
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DEFAULT_BLAZE = os.path.join(REPO, "target/debug/blaze")
+
+# ---------------------------------------------------------------------------------------------
+# The generated workspace.
+
+MODULE = """module(name = "ws", version = "0.0")
+
+bazel_dep(name = "extmod", version = "1.0")
+local_path_override(module_name = "extmod", path = "../ext")
+
+envext = use_extension("//:envext.bzl", "envext")
+use_repo(envext, "envrepo")
+"""
+
+ENVEXT = """def _envrepo_impl(rctx):
+    value = rctx.getenv("I3_REPO_ENV", "unset")
+    rctx.file("BUILD.bazel", 'genrule(name = "v", outs = ["v.txt"], cmd = "echo %s > $@", visibility = ["//visibility:public"])\\n' % value)
+
+envrepo = repository_rule(implementation = _envrepo_impl)
+
+def _envext_impl(mctx):
+    envrepo(name = "envrepo")
+
+envext = module_extension(implementation = _envext_impl)
+"""
+
+DEFS = """SUFFIX = "suffix-0"
+
+def gen(name, srcs, deps = []):
+    native.genrule(
+        name = name,
+        srcs = srcs + deps,
+        outs = [name + ".out"],
+        cmd = "cat $(SRCS) > $@ && echo " + SUFFIX + " >> $@",
+        visibility = ["//visibility:public"],
+    )
+"""
+
+RULES = """def _w_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".w")
+    ctx.actions.write(out, ctx.attr.content + "\\n")
+    return [DefaultInfo(files = depset([out]))]
+
+w = rule(implementation = _w_impl, attrs = {"content": attr.string()})
+"""
+
+ROOT_BUILD = """load("//:rules.bzl", "w")
+
+config_setting(name = "mode_a", define_values = {"mode": "a"})
+
+genrule(
+    name = "moded",
+    outs = ["moded.out"],
+    cmd = select({":mode_a": "echo A > $@", "//conditions:default": "echo B > $@"}),
+)
+
+genrule(
+    name = "envd",
+    outs = ["envd.out"],
+    cmd = "echo $${I3_ACTION_ENV:-none} > $@",
+)
+
+genrule(
+    name = "ext_user",
+    srcs = ["@extmod//:data", "@envrepo//:v"],
+    outs = ["ext_user.out"],
+    cmd = "cat $(SRCS) > $@",
+)
+
+w(name = "written", content = "w-0")
+"""
+
+EXT_MODULE = """module(name = "extmod", version = "1.0")
+"""
+
+EXT_BUILD = """genrule(
+    name = "data",
+    srcs = ["data.txt"],
+    outs = ["data.out"],
+    cmd = "cp $< $@",
+    visibility = ["//visibility:public"],
+)
+"""
+
+PLATFORM_MAPPINGS = """platforms:
+  //:unused_platform
+    --define=pm=0
+"""
+
+
+def pkg_build(i, npkgs):
+    deps = ""
+    if i > 0:
+        deps = ', deps = ["//pkg%d:g%d"]' % (i - 1, i - 1)
+    return 'load("//:defs.bzl", "gen")\n\ngen(name = "g%d", srcs = glob(["*.txt"])%s)\n' % (i, deps)
+
+
+def generate(root, npkgs=4):
+    """Writes the workspace `root/ws` and the module `root/ext`."""
+    ws = os.path.join(root, "ws")
+    ext = os.path.join(root, "ext")
+    for d in (ws, ext):
+        if os.path.exists(d):
+            shutil.rmtree(d)
+    os.makedirs(ws)
+    os.makedirs(ext)
+    files = {
+        "MODULE.bazel": MODULE,
+        "envext.bzl": ENVEXT,
+        "defs.bzl": DEFS,
+        "rules.bzl": RULES,
+        "BUILD.bazel": ROOT_BUILD,
+        "platform_mappings": PLATFORM_MAPPINGS,
+    }
+    for i in range(npkgs):
+        files["pkg%d/BUILD" % i] = pkg_build(i, npkgs)
+        files["pkg%d/a.txt" % i] = "pkg%d a\n" % i
+        files["pkg%d/b.txt" % i] = "pkg%d b\n" % i
+    for rel, text in files.items():
+        write(os.path.join(ws, rel), text)
+    write(os.path.join(ext, "MODULE.bazel"), EXT_MODULE)
+    write(os.path.join(ext, "BUILD.bazel"), EXT_BUILD)
+    write(os.path.join(ext, "data.txt"), "ext data 0\n")
+    return ws, ext
+
+
+def write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+
+
+def read(path):
+    with open(path) as f:
+        return f.read()
+
+
+# ---------------------------------------------------------------------------------------------
+# Running commands.
+
+
+class Side:
+    def __init__(self, name, binary, out_root, ws, extra_env=None, daemon=True):
+        self.name = name
+        self.binary = binary
+        self.out_root = out_root
+        self.ws = ws
+        self.env = {"HOME": HOME, "PATH": "/usr/bin:/bin"}
+        if daemon:
+            self.env["BLAZE_SERVER_MODE"] = "daemon"
+        if extra_env:
+            self.env.update(extra_env)
+
+    def run(self, args, env=None, timeout=900, interrupt_after=None):
+        e = dict(self.env)
+        if env:
+            e.update(env)
+        cmd = [
+            self.binary,
+            "--output_user_root=" + self.out_root,
+            "--nohome_rc",
+            "--nosystem_rc",
+        ] + args
+        p = subprocess.Popen(
+            cmd, cwd=self.ws, env=e, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        if interrupt_after is not None:
+            time.sleep(interrupt_after)
+            p.send_signal(signal.SIGINT)
+        try:
+            out, err = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            out, err = p.communicate()
+            return 124, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+        return p.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+
+    def shutdown(self):
+        try:
+            self.run(["shutdown"], timeout=120)
+        except Exception:
+            pass
+        kill_root_servers(self.out_root)
+
+
+def kill_root_servers(out_root):
+    if not os.path.isdir(out_root):
+        return
+    for d in os.listdir(out_root):
+        pid_file = os.path.join(out_root, d, "server", "server.pid.txt")
+        try:
+            pid = int(read(pid_file).strip())
+        except Exception:
+            continue
+        try:
+            with open("/proc/%d/cmdline" % pid, "rb") as f:
+                cmdline = f.read().decode("utf-8", "replace")
+        except Exception:
+            continue
+        if out_root in cmdline:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except Exception:
+                pass
+
+
+COMMON = [
+    "--symlink_prefix=/",
+    "--color=no",
+    "--curses=no",
+    "--repository_cache=" + REPO_CACHE,
+]
+
+
+def output_tree(side):
+    """{relative path: (sha256, exec bit)} of every file under bazel-bin (symlinks by target)."""
+    code, out, _ = side.run(["info", "bazel-bin"] + COMMON[:1])
+    if code != 0:
+        return {}
+    root = out.strip()
+    result = {}
+    if not os.path.isdir(root):
+        return result
+    for d, _, fs in os.walk(root):
+        for f in fs:
+            p = os.path.join(d, f)
+            rel = os.path.relpath(p, root)
+            if rel.endswith(".runfiles_manifest") or "/_objs/" in rel:
+                pass
+            if os.path.islink(p):
+                result[rel] = ("link:" + os.readlink(p), False)
+                continue
+            h = hashlib.sha256()
+            with open(p, "rb") as fh:
+                h.update(fh.read())
+            result[rel] = (h.hexdigest(), os.access(p, os.X_OK))
+    return result
+
+
+VOLATILE = [
+    re.compile(r"^(Loading|Analyzing|Computing main repo mapping|Fetching|Building|Starting local|Extracting)\b"),
+    re.compile(r"^\[[\d,]+ / [\d,]+\]"),
+    re.compile(r"^INFO: (Invocation ID|Elapsed time|Streaming build results|Reading rc options|Current date)"),
+    re.compile(r"^INFO: Options provided by the client"),
+    re.compile(r"^\s*$"),
+    re.compile(r"^Another command .* is running"),
+    re.compile(r"^(Server terminated|Starting local Bazel server|.* still trying to connect)"),
+    re.compile(r"^INFO: Running command line"),
+    re.compile(r"^INFO: From "),
+]
+
+
+def norm_lines(text, ws, out_root):
+    lines = []
+    for line in text.splitlines():
+        line = line.replace(out_root, "<OUT_ROOT>").replace(ws, "<WS>")
+        line = re.sub(r"\b[0-9a-f]{32}\b", "<HASH>", line)
+        line = re.sub(r"\d+\.\d+s\b", "<T>s", line)
+        line = re.sub(r"\bin \d+ms\b", "in <T>ms", line)
+        line = re.sub(r"critical path \d+\.\d+s", "critical path <T>s", line)
+        if any(r.search(line) for r in VOLATILE):
+            continue
+        if line.startswith("INFO: Elapsed"):
+            continue
+        lines.append(line)
+    return lines
+
+
+def spawns(path):
+    if not path or not os.path.exists(path):
+        return None
+    with open(path) as f:
+        data = f.read()
+    result = []
+    dec = json.JSONDecoder()
+    i = 0
+    while i < len(data):
+        while i < len(data) and data[i] in " \n\r\t":
+            i += 1
+        if i >= len(data):
+            break
+        obj, i = dec.raw_decode(data, i)
+        outs = sorted(o if isinstance(o, str) else o.get("path", "") for o in obj.get("listedOutputs", []) or [])
+        result.append(
+            json.dumps(
+                [
+                    obj.get("mnemonic"),
+                    obj.get("targetLabel"),
+                    outs,
+                    bool(obj.get("cacheHit")),
+                    obj.get("exitCode", 0),
+                ]
+            )
+        )
+    return sorted(result)
+
+
+# ---------------------------------------------------------------------------------------------
+# probe: oracle against Blaze, one server per side.
+
+
+def touch(ws, rel):
+    os.utime(os.path.join(ws, rel), None)
+
+
+def append(ws, rel, text):
+    with open(os.path.join(ws, rel), "a") as f:
+        f.write(text)
+
+
+def replace_in(ws, rel, old, new):
+    p = os.path.join(ws, rel)
+    write(p, read(p).replace(old, new))
+
+
+def bazel_bin_path(side):
+    code, out, _ = side.run(["info", "bazel-bin"] + COMMON[:1])
+    return out.strip() if code == 0 else None
+
+
+# Each step: (name, action(ws, ext, side) or None, command args, env, options)
+def probe_steps():
+    b = ["build", "//..."]
+    steps = [
+        ("cold", None, b, {}),
+        ("noop", None, b, {}),
+        ("touch-source", lambda ws, ext, s: touch(ws, "pkg0/a.txt"), b, {}),
+        ("same-size-source", lambda ws, ext, s: replace_in(ws, "pkg0/a.txt", "pkg0 a", "pkg0 A"), b, {}),
+        ("edit-source", lambda ws, ext, s: append(ws, "pkg0/a.txt", "more\n"), b, {}),
+        ("edit-build", lambda ws, ext, s: append(ws, "pkg1/BUILD", "# comment\n"), b, {}),
+        ("edit-bzl", lambda ws, ext, s: replace_in(ws, "defs.bzl", "suffix-0", "suffix-1"), b, {}),
+        ("add-glob-file", lambda ws, ext, s: write(os.path.join(ws, "pkg2/c.txt"), "c\n"), b, {}),
+        ("delete-glob-file", lambda ws, ext, s: os.remove(os.path.join(ws, "pkg2/c.txt")), b, {}),
+        ("add-package", lambda ws, ext, s: (write(os.path.join(ws, "newpkg/BUILD"), 'genrule(name = "n", outs = ["n.out"], cmd = "echo n > $@")\n')), b, {}),
+        ("delete-package", lambda ws, ext, s: shutil.rmtree(os.path.join(ws, "newpkg")), b, {}),
+        ("analysis-option", None, b + ["--define=mode=a"], {}),
+        ("analysis-option-back", None, b, {}),
+        ("non-analysis-option", None, b + ["--keep_going"], {}),
+        ("action-env", None, b + ["--action_env=I3_ACTION_ENV"], {"I3_ACTION_ENV": "one"}),
+        ("action-env-changed", None, b + ["--action_env=I3_ACTION_ENV"], {"I3_ACTION_ENV": "two"}),
+        ("path-changed", None, b, {"PATH": "/usr/local/bin:/usr/bin:/bin"}),
+        ("external-file", lambda ws, ext, s: write(os.path.join(ext, "data.txt"), "ext data 1\n"), b, {}),
+        ("repo-env", None, b + ["--repo_env=I3_REPO_ENV=x"], {}),
+        ("repo-env-same", None, b + ["--repo_env=I3_REPO_ENV=x"], {}),
+        ("platform-mappings", lambda ws, ext, s: replace_in(ws, "platform_mappings", "pm=0", "pm=1"), b, {}),
+        ("modify-output", "modify-output", b, {}),
+        ("delete-output", "delete-output", b, {}),
+        ("break", lambda ws, ext, s: append(ws, "pkg3/BUILD", "this is not starlark(\n"), b, {}),
+        ("fix", lambda ws, ext, s: replace_in(ws, "pkg3/BUILD", "this is not starlark(\n", ""), b, {}),
+        ("noop-after-fix", None, b, {}),
+        ("clean", None, ["clean"], {}),
+        ("after-clean", None, b, {}),
+    ]
+    return steps
+
+
+def run_probe_side(side_name, binary, root, step_names, daemon_env):
+    ws, ext = generate(root)
+    out_root = os.path.join(root, "ur-" + side_name)
+    if os.path.exists(out_root):
+        subprocess.run(["chmod", "-R", "u+w", out_root])
+        shutil.rmtree(out_root)
+    side = Side(side_name, binary, out_root, ws, daemon_env)
+    results = []
+    try:
+        for name, action, args, env in probe_steps():
+            if step_names and name not in step_names:
+                continue
+            if callable(action):
+                action(ws, ext, side)
+            elif action in ("modify-output", "delete-output"):
+                bb = bazel_bin_path(side)
+                if bb:
+                    p = os.path.join(bb, "pkg1/g1.out")
+                    if os.path.exists(p):
+                        os.chmod(p, 0o644)
+                        if action == "modify-output":
+                            with open(p, "a") as f:
+                                f.write("tampered\n")
+                        else:
+                            os.remove(p)
+            log = os.path.join(root, "%s-%s.execlog.json" % (side_name, name))
+            if os.path.exists(log):
+                os.remove(log)
+            cmd_args = list(args)
+            if cmd_args[0] == "build":
+                cmd_args = ["build"] + COMMON + [
+                    "--execution_log_json_file=" + log,
+                    "--execution_log_sort",
+                ] + cmd_args[1:]
+            code, out, err = side.run(cmd_args, env=env)
+            results.append(
+                {
+                    "step": name,
+                    "exit": code,
+                    "stdout": norm_lines(out, ws, out_root),
+                    "stderr": norm_lines(err, ws, out_root),
+                    "spawns": spawns(log) if cmd_args[0] == "build" else None,
+                    "outputs": output_tree(side) if cmd_args[0] == "build" else None,
+                }
+            )
+    finally:
+        side.shutdown()
+    return results, out_root
+
+
+def cmd_probe(a):
+    root = os.path.join(WORK, "probe")
+    os.makedirs(root, exist_ok=True)
+    steps = a.steps.split(",") if a.steps else None
+    oracle, our_a = run_probe_side("oracle", a.oracle, root, steps, None)
+    blaze, our_b = run_probe_side("blaze", a.blaze, root, steps, {})
+    with open(os.path.join(root, "report.json"), "w") as f:
+        json.dump({"oracle": oracle, "blaze": blaze}, f, indent=1)
+    same = 0
+    diff = 0
+    for o, b in zip(oracle, blaze):
+        fields = [k for k in ("exit", "stdout", "stderr", "spawns", "outputs") if o[k] != b[k]]
+        if fields:
+            diff += 1
+            print("DIFFERENT %-22s %s" % (o["step"], ",".join(fields)))
+            for k in fields:
+                if k in ("stdout", "stderr"):
+                    for line in o[k]:
+                        if line not in b[k]:
+                            print("    - oracle: " + line)
+                    for line in b[k]:
+                        if line not in o[k]:
+                            print("    + blaze:  " + line)
+                elif k == "spawns" and o[k] is not None and b[k] is not None:
+                    for s in o[k]:
+                        if s not in b[k]:
+                            print("    - oracle spawn: " + s)
+                    for s in b[k]:
+                        if s not in o[k]:
+                            print("    + blaze spawn:  " + s)
+                elif k == "outputs" and o[k] is not None and b[k] is not None:
+                    for p in sorted(set(o[k]) | set(b[k])):
+                        if o[k].get(p) != b[k].get(p):
+                            print("    output %s: oracle %s blaze %s" % (p, o[k].get(p), b[k].get(p)))
+                else:
+                    print("    %s: oracle %r blaze %r" % (k, o[k], b[k]))
+        else:
+            same += 1
+            print("SAME      %s" % o["step"])
+    print("steps %d same %d different %d" % (same + diff, same, diff))
+    if not a.keep:
+        for d in (our_a, our_b):
+            subprocess.run(["chmod", "-R", "u+w", d])
+            shutil.rmtree(d, ignore_errors=True)
+    return 0 if diff == 0 else 1
+
+
+# ---------------------------------------------------------------------------------------------
+# random: incremental against clean with one binary.
+
+
+class Editor:
+    def __init__(self, ws, ext, rng):
+        self.ws = ws
+        self.ext = ext
+        self.rng = rng
+        self.npkgs = 4
+        self.extra_pkgs = []
+        self.broken = None
+        self.define = None
+        self.action_env = None
+        self.counter = 0
+
+    def p(self, rel):
+        return os.path.join(self.ws, rel)
+
+    def txt_files(self):
+        out = []
+        for i in range(self.npkgs):
+            d = self.p("pkg%d" % i)
+            for f in sorted(os.listdir(d)):
+                if f.endswith(".txt"):
+                    out.append("pkg%d/%s" % (i, f))
+        return out
+
+    def edit(self):
+        """Applies one edit; returns its description."""
+        self.counter += 1
+        r = self.rng
+        if self.broken is not None and r.random() < 0.7:
+            rel = self.broken
+            replace_in(self.ws, rel, "this is not starlark(\n", "")
+            self.broken = None
+            return "repair " + rel
+        kinds = [
+            "same-size", "same-size", "append", "touch", "add-glob", "del-glob",
+            "add-pkg", "del-pkg", "build-edit", "bzl-edit", "pm-edit", "define",
+            "action-env", "ext-edit", "break", "rule-edit", "double-edit",
+        ]
+        kind = r.choice(kinds)
+        files = self.txt_files()
+        if kind == "same-size" and files:
+            rel = r.choice(files)
+            text = read(self.p(rel))
+            if text:
+                i = r.randrange(len(text))
+                c = text[i]
+                nc = r.choice([x for x in "abcdefgh" if x != c]) if c != "\n" else "\n"
+                write(self.p(rel), text[:i] + nc + text[i + 1:])
+            return "same-size rewrite " + rel
+        if kind == "double-edit" and files:
+            rel = r.choice(files)
+            text = read(self.p(rel))
+            write(self.p(rel), text.replace("a", "x", 1))
+            write(self.p(rel), text.replace("a", "y", 1))
+            return "two same-size rewrites in one millisecond " + rel
+        if kind == "append" and files:
+            rel = r.choice(files)
+            append(self.ws, rel, "line %d\n" % self.counter)
+            return "append " + rel
+        if kind == "touch" and files:
+            rel = r.choice(files)
+            touch(self.ws, rel)
+            return "touch " + rel
+        if kind == "add-glob":
+            rel = "pkg%d/n%d.txt" % (r.randrange(self.npkgs), self.counter)
+            write(self.p(rel), "new %d\n" % self.counter)
+            return "add glob file " + rel
+        if kind == "del-glob":
+            cands = [f for f in files if os.path.basename(f) not in ("a.txt",)]
+            if cands:
+                rel = r.choice(cands)
+                os.remove(self.p(rel))
+                return "delete glob file " + rel
+            return "nothing"
+        if kind == "add-pkg":
+            name = "extra%d" % self.counter
+            write(
+                self.p(name + "/BUILD"),
+                'genrule(name = "x", srcs = glob(["*.in"]), outs = ["x.out"], cmd = "echo %s > $@; cat $(SRCS) >> $@")\n'
+                % name,
+            )
+            write(self.p(name + "/a.in"), "in\n")
+            self.extra_pkgs.append(name)
+            return "add package " + name
+        if kind == "del-pkg" and self.extra_pkgs:
+            name = self.extra_pkgs.pop(r.randrange(len(self.extra_pkgs)))
+            shutil.rmtree(self.p(name))
+            return "delete package " + name
+        if kind == "build-edit":
+            i = r.randrange(self.npkgs)
+            rel = "pkg%d/BUILD" % i
+            text = read(self.p(rel))
+            if "deps = " in text and r.random() < 0.5:
+                text = re.sub(r', deps = \["[^"]*"\]', "", text)
+                write(self.p(rel), text)
+                return "remove dep " + rel
+            write(self.p(rel), pkg_build(i, self.npkgs) + "# edit %d\n" % self.counter)
+            return "rewrite " + rel
+        if kind == "bzl-edit":
+            replace_in(self.ws, "defs.bzl", re.search(r'SUFFIX = "([^"]*)"', read(self.p("defs.bzl"))).group(1), "suffix-%d" % self.counter)
+            return "edit defs.bzl"
+        if kind == "rule-edit":
+            text = read(self.p("BUILD.bazel"))
+            text = re.sub(r'content = "[^"]*"', 'content = "w-%d"' % self.counter, text)
+            write(self.p("BUILD.bazel"), text)
+            return "edit rule attribute"
+        if kind == "pm-edit":
+            text = read(self.p("platform_mappings"))
+            text = re.sub(r"pm=\d+", "pm=%d" % self.counter, text)
+            write(self.p("platform_mappings"), text)
+            return "edit platform_mappings"
+        if kind == "define":
+            self.define = r.choice([None, "a", "b"])
+            return "define mode=%s" % self.define
+        if kind == "action-env":
+            self.action_env = r.choice([None, "one", "two"])
+            return "action env %s" % self.action_env
+        if kind == "ext-edit":
+            write(os.path.join(self.ext, "data.txt"), "ext data %d\n" % self.counter)
+            return "edit external module file"
+        if kind == "break" and self.broken is None:
+            rel = "pkg%d/BUILD" % r.randrange(self.npkgs)
+            append(self.ws, rel, "this is not starlark(\n")
+            self.broken = rel
+            return "break " + rel
+        return "nothing"
+
+    def args(self):
+        args = ["build"] + COMMON + ["--keep_going", "//..."]
+        if self.define:
+            args.append("--define=mode=" + self.define)
+        if self.action_env:
+            args.append("--action_env=I3_ACTION_ENV")
+        return args
+
+    def env(self):
+        return {"I3_ACTION_ENV": self.action_env} if self.action_env else {}
+
+
+def problem_lines(text, ws, out_root):
+    return sorted(
+        {
+            l
+            for l in norm_lines(text, ws, out_root)
+            if (l.startswith("ERROR:") or l.startswith("WARNING:"))
+            # Only an incremental build can discard an analysis cache (Bazel prints it too).
+            and "discarding analysis cache" not in l
+        }
+    )
+
+
+def cmd_random(a):
+    root = os.path.join(WORK, "random")
+    os.makedirs(root, exist_ok=True)
+    rng = random.Random(a.seed)
+    ws, ext = generate(root)
+    ur_a = os.path.join(root, "ur-incremental")
+    ur_b = os.path.join(root, "ur-clean")
+    for d in (ur_a, ur_b):
+        if os.path.exists(d):
+            subprocess.run(["chmod", "-R", "u+w", d])
+            shutil.rmtree(d)
+    side_a = Side("incremental", a.blaze, ur_a, ws, {})
+    side_b = Side("clean", a.blaze, ur_b, ws, {"BLAZE_INCREMENTAL": "none"})
+    editor = Editor(ws, ext, rng)
+    mismatches = 0
+    rounds = 0
+    log = open(os.path.join(root, "log.txt"), "w")
+    try:
+        for i in range(a.edits):
+            what = editor.edit()
+            # Output tampering edits (A only: B is clean anyway).
+            if rng.random() < 0.08:
+                bb = bazel_bin_path(side_a)
+                if bb:
+                    cands = []
+                    for d, _, fs in os.walk(bb):
+                        for f in fs:
+                            if f.endswith(".out"):
+                                cands.append(os.path.join(d, f))
+                    if cands:
+                        p = rng.choice(sorted(cands))
+                        os.chmod(p, 0o644)
+                        if rng.random() < 0.5:
+                            with open(p, "a") as f:
+                                f.write("tampered\n")
+                            what += "; modify output " + os.path.relpath(p, bb)
+                        else:
+                            os.remove(p)
+                            what += "; delete output " + os.path.relpath(p, bb)
+            args = editor.args()
+            env = editor.env()
+            ca, oa, ea = side_a.run(args, env=env)
+            side_b.run(["clean"])
+            cb, ob, eb = side_b.run(args, env=env)
+            rounds += 1
+            problems = []
+            if ca != cb:
+                problems.append("exit %d (incremental) vs %d (clean)" % (ca, cb))
+            pa = problem_lines(ea, ws, ur_a)
+            pb = problem_lines(eb, ws, ur_b)
+            if pa != pb:
+                problems.append(
+                    "messages differ:\n      incremental: %s\n      clean:       %s" % (pa, pb)
+                )
+            ta = output_tree(side_a)
+            tb = output_tree(side_b)
+            for p, v in sorted(tb.items()):
+                if ta.get(p) != v:
+                    problems.append("output %s: incremental %s clean %s" % (p, ta.get(p), v))
+            line = "%4d %-60s %s" % (i, what, "OK" if not problems else "MISMATCH")
+            print(line)
+            log.write(line + "\n")
+            if problems:
+                mismatches += 1
+                for pr in problems:
+                    print("      " + pr)
+                    log.write("      " + pr + "\n")
+            log.flush()
+            # Edits within the same second as the build's end come from the next round, which
+            # starts right away.
+    finally:
+        side_a.shutdown()
+        side_b.shutdown()
+        log.close()
+    print("rounds %d mismatches %d (seed %d)" % (rounds, mismatches, a.seed))
+    if not a.keep:
+        for d in (ur_a, ur_b):
+            subprocess.run(["chmod", "-R", "u+w", d])
+            shutil.rmtree(d, ignore_errors=True)
+    return 0 if mismatches == 0 else 1
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("help", "-h", "--help"):
+        print(__doc__)
+        return 0
+    ap = argparse.ArgumentParser(prog="scripts/incremental/stress")
+    sub = ap.add_subparsers(dest="cmd")
+    p = sub.add_parser("probe")
+    p.add_argument("--blaze", default=DEFAULT_BLAZE)
+    p.add_argument("--oracle", default=ORACLE)
+    p.add_argument("--steps")
+    p.add_argument("--keep", action="store_true")
+    r = sub.add_parser("random")
+    r.add_argument("--blaze", default=DEFAULT_BLAZE)
+    r.add_argument("--edits", type=int, default=300)
+    r.add_argument("--seed", type=int, default=1)
+    r.add_argument("--keep", action="store_true")
+    sub.add_parser("list")
+    a = ap.parse_args()
+    if a.cmd == "probe":
+        return cmd_probe(a)
+    if a.cmd == "random":
+        return cmd_random(a)
+    if a.cmd == "list":
+        for name, action, args, env in probe_steps():
+            print("%-22s %s %s" % (name, " ".join(args), env if env else ""))
+        return 0
+    print(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

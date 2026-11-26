@@ -1,0 +1,46 @@
+# case	roots	host	description
+v1	ca.pem	localhost	v1, no version field, issued by the CA
+v1_upper_host	ca.pem	LOCALHOST	v1, host name in upper case
+v1_explicit	ca.pem	localhost	version [0] INTEGER 0 encoded
+v2	ca.pem	localhost	version 2, no unique identifiers
+v1_extensions	ca.pem	localhost	Q1a: v1 (no version) with an extensions block
+v1_explicit_extensions	ca.pem	localhost	Q1a: version 0 encoded, with an extensions block
+v2_extensions	ca.pem	localhost	Q1a: v2 with extensions
+v2_unique_ids	ca.pem	localhost	v2 with issuerUniqueID and subjectUniqueID
+v2_unique_ids_reversed	ca.pem	localhost	v2 with subjectUniqueID before issuerUniqueID
+v1_unique_id	ca.pem	localhost	v1 (no version) with an issuerUniqueID
+v2_trailing_integer	ca.pem	localhost	v2 with an INTEGER after the key
+alg_mismatch	ca.pem	localhost	Q1b: inner signature sha384WithRSA, outer (and signature) sha256WithRSA
+alg_mismatch_outer	ca.pem	localhost	Q1b: inner sha256WithRSA, outer (and signature) sha384WithRSA
+alg_params_absent_inner	ca.pem	localhost	inner sha256WithRSA without NULL parameters, outer with
+expired	ca.pem	localhost	issued by the CA, expired in 2001
+wrong_host	ca.pem	example.com	CN=localhost, host example.com
+ip_host	ca.pem	127.0.0.1	CN=127.0.0.1, host 127.0.0.1
+trailing_dot_host	ca.pem	localhost.	host localhost. (trailing dot)
+underscore	ca.pem	local_host	CN and host local_host
+wildcard	ca.pem	foo.example.com	CN=*.example.com, host foo.example.com
+two_cn_first	ca.pem	localhost	Q4: one RDN, CN=localhost then CN=other (as encoded)
+two_cn_second	ca.pem	localhost	Q4: one RDN, CN=other then CN=localhost (as encoded)
+cn_last_rdn	ca.pem	localhost	CN=other, O=x, CN=localhost in three RDNs
+cn_first_rdn	ca.pem	localhost	CN=localhost, CN=other in two RDNs
+cn_bmp	ca.pem	localhost	CN=localhost as a BMPString
+empty_subject	ca.pem	localhost	v1, empty subject
+empty_subject_v2	ca.pem	localhost	v2, empty subject
+empty_issuer	ca.pem	localhost	v1, empty issuer
+serial_leading_zero	ca.pem	localhost	serial number 00 01 (not DER)
+serial_negative	ca.pem	localhost	serial number -1
+time_non_ascii	ca.pem	localhost	Q2: notBefore UTCTime of 12 bytes with a two-byte UTF-8 character at bytes 1-2
+time_no_seconds	ca.pem	localhost	UTCTime without seconds
+time_offset	ca.pem	localhost	UTCTime with a +hhmm offset
+time_fraction	ca.pem	localhost	GeneralizedTime with a fraction
+time_feb_31	ca.pem	localhost	notBefore 2020-02-31
+time_second_60	ca.pem	localhost	notBefore second 60
+non_minimal_length	ca.pem	localhost	issuer Name length in long form (not DER)
+trailing_bytes	ca.pem	localhost	two bytes after the certificate
+version_5	ca.pem	localhost	version field 5
+direct	direct.root.pem	localhost	Q3: v1 issued by an unknown issuer, itself the trust anchor
+direct_expired	direct_expired.root.pem	localhost	S4: as direct, expired
+self_signed	self_signed.root.pem	localhost	self-signed v1, itself the trust anchor
+self_signed_expired	self_signed_expired.root.pem	localhost	S4: self-signed v1, trusted, expired
+self_signed_untrusted	ca.pem	localhost	self-signed v1, not in the trust store
+bad_signature	ca.pem	localhost	issuer name of the CA, signed by another key

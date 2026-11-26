@@ -56,6 +56,7 @@ pub mod exceptions;
 pub mod file;
 pub mod file_chain_uniqueness;
 pub mod file_state;
+pub mod filesystem_value_checker;
 pub mod globs;
 pub mod ignored_subdirectories;
 pub mod io;

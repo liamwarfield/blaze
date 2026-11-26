@@ -322,13 +322,17 @@ fn parse_time_to_millis(string: &str) -> Result<i64, ParseError> {
 }
 
 /// `Float.parseFloat`: surrounding characters `<= ' '` are trimmed, an optional `f`/`F`/`d`/`D`
-/// suffix is allowed, and the only words are `NaN` and `Infinity`.
-///
-/// PORT: hexadecimal floating-point literals (`0x1.8p1`) are not accepted.
+/// suffix is allowed, the only words are `NaN` and `Infinity`, and a hexadecimal literal
+/// (`0x1.8p1`) is read by [`java_parse_hex_float`].
+// Java: jdk/internal/math/FloatingDecimal.java FloatingDecimal.readJavaFormatString (JDK)
 fn java_parse_float(s: &str) -> Option<f32> {
     let s = s.trim_matches(|c: char| c <= ' ');
     let body = s.strip_suffix(['f', 'F', 'd', 'D']).unwrap_or(s);
     let unsigned = body.strip_prefix(['+', '-']).unwrap_or(body);
+    if unsigned.starts_with("0x") || unsigned.starts_with("0X") {
+        let value = java_parse_hex_float(&unsigned[2..])?;
+        return Some(if body.starts_with('-') { -value } else { value });
+    }
     if unsigned == "NaN" || unsigned == "Infinity" {
         let value = if unsigned == "NaN" {
             f32::NAN
@@ -349,6 +353,70 @@ fn java_parse_float(s: &str) -> Option<f32> {
         return None;
     }
     body.parse::<f32>().ok()
+}
+
+/// The part of a hexadecimal floating-point literal after `0x`, rounded to the nearest `float`
+/// (ties to even), as `FloatingDecimal.parseHexString` does: Java's pattern
+/// `((\p{XDigit}+)\.?)|((\p{XDigit}*)\.(\p{XDigit}+))` then `[pP][+-]?\p{Digit}+` (the binary
+/// exponent is required; the type suffix is already removed).
+// Java: jdk/internal/math/FloatingDecimal.java FloatingDecimal.parseHexString (JDK)
+fn java_parse_hex_float(s: &str) -> Option<f32> {
+    let (significand, exponent) = s.split_once(['p', 'P'])?;
+    let (int_part, frac_part) = match significand.split_once('.') {
+        Some((i, f)) => (i, f),
+        None => (significand, ""),
+    };
+    if (int_part.is_empty() && frac_part.is_empty())
+        || !int_part.chars().all(|c| c.is_ascii_hexdigit())
+        || !frac_part.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    let exp_digits = exponent.strip_prefix(['+', '-']).unwrap_or(exponent);
+    if exp_digits.is_empty() || !exp_digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    // A huge exponent only saturates (the value overflows or underflows either way).
+    let exp_magnitude: i64 = exp_digits.parse().unwrap_or(i64::MAX / 4).min(1 << 40);
+    let binary_exponent = if exponent.starts_with('-') {
+        -exp_magnitude
+    } else {
+        exp_magnitude
+    };
+    let digits: Vec<u32> = int_part
+        .chars()
+        .chain(frac_part.chars())
+        .map(|c| c.to_digit(16).expect("hex digit"))
+        .skip_while(|d| *d == 0)
+        .collect();
+    let mut mantissa: u128 = 0;
+    let kept = digits.len().min(30);
+    for d in &digits[..kept] {
+        mantissa = (mantissa << 4) | *d as u128;
+    }
+    let sticky = digits[kept..].iter().any(|d| *d != 0);
+    if mantissa == 0 {
+        return Some(0.0);
+    }
+    // value = mantissa * 2^e2 (+ sticky below its last bit).
+    let e2 = binary_exponent - 4 * frac_part.len() as i64 + 4 * (digits.len() - kept) as i64;
+    let n = 128 - mantissa.leading_zeros() as i64;
+    // Drop the bits below a float's 24-bit significand, or below 2^-149 for a subnormal.
+    let drop = (n - 24).max(-149 - e2);
+    if drop <= 0 {
+        return Some((mantissa as f64 * 2f64.powi((e2).clamp(-2000, 2000) as i32)) as f32);
+    }
+    if drop > 127 {
+        return Some(0.0);
+    }
+    let q = mantissa >> drop;
+    let rem = mantissa & ((1u128 << drop) - 1);
+    let half = 1u128 << (drop - 1);
+    let round_up = rem > half || (rem == half && (sticky || q & 1 == 1));
+    let q = q + round_up as u128;
+    // q <= 2^24: the product is exact in a double, and the cast to float only overflows to
+    // infinity.
+    Some((q as f64 * 2f64.powi((e2 + drop).clamp(-2000, 2000) as i32)) as f32)
 }
 
 /// `Math.round(float)`: rounds half up, `NaN` is 0, and the result saturates to the `int` range.

@@ -11,10 +11,15 @@
 //!   server when a client goes away.
 //! - `SIGQUIT`: HotSpot prints a thread dump to stdout (`jvm.out`) and continues. Blaze has no
 //!   thread dump; the handler does nothing, so the process continues as the JVM does.
-//! - `SIGTERM`, `SIGHUP`: HotSpot's `Terminator` calls `Shutdown.exit(128 + signal)`: the
-//!   shutdown hooks run (`ShutdownHooks` deletes the server's files), then the process exits
-//!   with status 143 or 129.
-//! - `SIGINT` is Bazel's own `InterruptSignalHandler` (`crate::interrupt`).
+//! - `SIGTERM`, `SIGHUP`, `SIGINT` (each unless ignored when the process starts, as HotSpot
+//!   leaves an ignored shutdown signal ignored): HotSpot's `Terminator` calls
+//!   `Shutdown.exit(128 + signal)`:
+//!   every shutdown hook runs (`ShutdownHooks` deletes the server's files; the worker processes'
+//!   hooks destroy them; `VirtualCgroup`'s hook deletes the server's cgroup), then the process
+//!   exits with status 143, 129 or 130. Bazel's own SIGINT handler (`crate::interrupt`,
+//!   `BlazeRuntime.captureSigint` in batch mode) replaces the JVM's for a command and reverts to
+//!   it after the second interrupt, so a third one is this `Shutdown.exit(130)` (review cgroups
+//!   round 1, C1).
 
 use std::sync::Once;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -87,7 +92,7 @@ pub fn install() {
                             return;
                         }
                         // Shutdown.exit(128 + signal): the shutdown hooks, then halt.
-                        blaze_server::shutdown_hooks::run_registered_shutdown_hooks();
+                        run_all_shutdown_hooks();
                         let _ = blaze_events::OutErr::system_out_err()
                             .get_error_stream()
                             .flush();
@@ -100,7 +105,38 @@ pub fn install() {
                 });
             })
             .unwrap_or_else(|e| panic!("OutOfMemoryError: unable to create native thread: {e}"));
-        set_handler(libc::SIGTERM, on_terminate);
-        set_handler(libc::SIGHUP, on_terminate);
+        // java.lang.Terminator.setup registers HUP, INT and TERM; HotSpot's JVM_RegisterSignal
+        // leaves a shutdown signal that is ignored at startup ignored (the server started by
+        // `daemonize` inherits SIGHUP ignored, so Bazel's server survives a SIGHUP).
+        // Java: java/lang/Terminator.java Terminator.setup (JDK)
+        for signal in [libc::SIGHUP, libc::SIGINT, libc::SIGTERM] {
+            if !is_ignored(signal) {
+                set_handler(signal, on_terminate);
+            }
+        }
     });
+}
+
+/// `os::Posix::is_sig_ignored(sig)`: whether the current disposition of `signal` is `SIG_IGN`.
+fn is_ignored(signal: libc::c_int) -> bool {
+    // SAFETY: a zeroed sigaction is valid output storage; a null new action only queries.
+    unsafe {
+        let mut old: libc::sigaction = std::mem::zeroed();
+        libc::sigaction(signal, std::ptr::null(), &mut old) == 0
+            && old.sa_sigaction == libc::SIG_IGN
+    }
+}
+
+/// Every hook `Runtime.addShutdownHook` would hold in Java: the server's `ShutdownHooks` (its
+/// files) and the hooks of the worker processes and of `VirtualCgroup` (registered in
+/// `blaze_exec`, which an `atexit` handler runs on a normal exit; `_exit` skips that handler, so
+/// they run here).
+///
+/// PORT: the JVM starts all hooks at once, in no order; here the `blaze_exec` hooks run first
+/// (newest first, see `blaze_exec::worker::shutdown_hooks::run_shutdown_hooks`), then the
+/// server's files are deleted.
+// Java: java/lang/Shutdown.java Shutdown.exit (JDK)
+pub fn run_all_shutdown_hooks() {
+    blaze_exec::worker::shutdown_hooks::run_shutdown_hooks();
+    blaze_server::shutdown_hooks::run_registered_shutdown_hooks();
 }

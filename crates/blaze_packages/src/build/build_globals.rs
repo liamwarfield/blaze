@@ -39,7 +39,8 @@ pub(crate) fn check_sequence_param(func: &str, param: &str, x: Value<'_>) -> sta
     if is_java_sequence(x) {
         return Ok(());
     }
-    Err(eval_err(format!(
+    // A binding error (starlark patch 0061).
+    Err(starlark::values::bazel_argument_binding_error(format!(
         "in call to {func}(), parameter '{param}' got value of type '{}', want 'sequence'",
         x.get_type()
     )))
@@ -55,7 +56,8 @@ pub(crate) fn check_sequence_or_none_param(
     if is_java_sequence(x) || x.is_none() {
         return Ok(());
     }
-    Err(eval_err(format!(
+    // A binding error (starlark patch 0061).
+    Err(starlark::values::bazel_argument_binding_error(format!(
         "in call to {func}(), parameter '{param}' got value of type '{}', want 'sequence or \
          NoneType'",
         x.get_type()

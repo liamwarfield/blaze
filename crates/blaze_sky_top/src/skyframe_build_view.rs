@@ -735,46 +735,64 @@ fn collect_action_lookup_values_in_build(
 /// consumer, `MetricsCollector`, orders its own map).
 // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1481 ActionLookupValueProgressReceiver.evaluated
 pub fn get_evaluated_counts(evaluator: &Evaluator, time_in_ms: i64) -> AnalysisPhaseCompleteStats {
-    let mut configured_object_count = 0;
-    let mut configured_target_count = 0;
-    let mut action_count = 0;
-    let mut configured_target_action_count = 0;
-    let mut action_count_by_mnemonic: IndexMap<String, i32> = IndexMap::new();
-    let mut packages_successfully_loaded = 0;
+    let mut counts = EvaluatedCounts::default();
     for key in evaluator.get_all_keys_for_testing() {
+        if let Some(value) = evaluator.get_existing_value(&key) {
+            counts.accumulate(&key, &value);
+        }
+    }
+    counts.to_stats(time_in_ms)
+}
+
+/// The counters of `ActionLookupValueProgressReceiver` and `PackageFunction`'s
+/// `numPackagesSuccessfullyLoaded`, filled from evaluated nodes: by a sweep over a graph built
+/// by one command ([`get_evaluated_counts`]) or, over a graph kept across commands, by the
+/// executor's progress receiver as nodes are evaluated
+/// (`crate::skyframe_progress_receiver::SkyframeProgressReceiver`).
+// Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1461 SkyframeBuildView.ActionLookupValueProgressReceiver
+#[derive(Default, Clone)]
+pub struct EvaluatedCounts {
+    configured_object_count: i32,
+    configured_target_count: i32,
+    action_count: i32,
+    configured_target_action_count: i32,
+    action_count_by_mnemonic: IndexMap<String, i32>,
+    packages_successfully_loaded: i32,
+}
+
+impl EvaluatedCounts {
+    /// Counts one node evaluated with a new value.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1481 ActionLookupValueProgressReceiver.evaluated
+    pub fn accumulate(&mut self, key: &SkyKey, value: &SkyValue) {
+        let value = value.clone();
+        let action_count_by_mnemonic = &mut self.action_count_by_mnemonic;
         if key.downcast::<PackageKey>().is_some() {
             // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:624 PackageFunction.compute
-            if let Some(value) = evaluator.get_existing_value(&key)
-                && let Ok(value) = value.downcast::<PackageValue>()
+            if let Ok(value) = value.downcast::<PackageValue>()
                 && !value.get_package().contains_errors()
             {
-                packages_successfully_loaded += 1;
+                self.packages_successfully_loaded += 1;
             }
-            continue;
+            return;
         }
         if key.function_name()
             == <blaze_analysis::analysis_services::WorkspaceStatusKey as Key>::FUNCTION
         {
             // The workspace status value: an ActionLookupValue that is not a configured target.
-            if let Some(value) = evaluator.get_existing_value(&key) {
-                let value = value
-                    .downcast::<blaze_analysis::analysis_services::WorkspaceStatusValue>()
-                    .unwrap_or_else(|_| panic!("BUILD_INFO value"));
-                configured_object_count += 1;
-                for action in &value.actions {
-                    *action_count_by_mnemonic
-                        .entry(action.get_mnemonic())
-                        .or_insert(0) += 1;
-                }
-                action_count += value.actions.len() as i32;
+            let value = value
+                .downcast::<blaze_analysis::analysis_services::WorkspaceStatusValue>()
+                .unwrap_or_else(|_| panic!("BUILD_INFO value"));
+            self.configured_object_count += 1;
+            for action in &value.actions {
+                *action_count_by_mnemonic
+                    .entry(action.get_mnemonic())
+                    .or_insert(0) += 1;
             }
-            continue;
+            self.action_count += value.actions.len() as i32;
+            return;
         }
         if key.function_name() == ASPECT || key.function_name() == TOP_LEVEL_ASPECTS {
-            let Some(value) = evaluator.get_existing_value(&key) else {
-                continue;
-            };
-            configured_object_count += 1;
+            self.configured_object_count += 1;
             let actions: Vec<blaze_actions::ActionRef> = if key.function_name() == ASPECT {
                 let value = value
                     .downcast::<AspectValue>()
@@ -782,7 +800,7 @@ pub fn get_evaluated_counts(evaluator: &Evaluator, time_in_ms: i64) -> AnalysisP
                 if AspectValue::is_for_alias_target(&value) {
                     // Created actions will be counted from {@link AspectValue} on the original
                     // target.
-                    continue;
+                    return;
                 }
                 value.get_actions().to_vec()
             } else {
@@ -797,14 +815,11 @@ pub fn get_evaluated_counts(evaluator: &Evaluator, time_in_ms: i64) -> AnalysisP
                     .entry(action.get_mnemonic())
                     .or_insert(0) += 1;
             }
-            action_count += actions.len() as i32;
-            continue;
+            self.action_count += actions.len() as i32;
+            return;
         }
         let Some(ct_key) = key.downcast::<ConfiguredTargetKey>() else {
-            continue;
-        };
-        let Some(value) = evaluator.get_existing_value(&key) else {
-            continue;
+            return;
         };
         let value = value
             .downcast::<ConfiguredTargetValue>()
@@ -814,10 +829,10 @@ pub fn get_evaluated_counts(evaluator: &Evaluator, time_in_ms: i64) -> AnalysisP
         {
             // The node entry performs delegation and doesn't own the value. Skips it to avoid
             // overcounting.
-            continue;
+            return;
         }
-        configured_target_count += 1;
-        configured_object_count += 1;
+        self.configured_target_count += 1;
+        self.configured_object_count += 1;
         if matches!(value.get_configured_target(), ConfiguredTarget::Rule(_)) {
             let actions = value.get_actions();
             for action in actions {
@@ -826,18 +841,36 @@ pub fn get_evaluated_counts(evaluator: &Evaluator, time_in_ms: i64) -> AnalysisP
                     .or_insert(0) += 1;
             }
             let num_actions = actions.len() as i32;
-            action_count += num_actions;
-            configured_target_action_count += num_actions;
+            self.action_count += num_actions;
+            self.configured_target_action_count += num_actions;
         }
     }
-    AnalysisPhaseCompleteStats {
-        actions_constructed_total: action_count,
-        actions_constructed_configured_targets_only: configured_target_action_count,
-        targets_configured_total: configured_object_count,
-        targets_configured_configured_targets_only: configured_target_count,
-        time_in_ms,
-        packages_successfully_loaded,
-        actions_constructed_by_mnemonic: action_count_by_mnemonic.into_iter().collect(),
+
+    /// `ActionLookupValueProgressReceiver.reset`: the action lookup counts (the packages are
+    /// `PackageFunction`'s counter, reset per command with the executor).
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1540 ActionLookupValueProgressReceiver.reset
+    pub fn reset(&mut self) {
+        self.configured_object_count = 0;
+        self.action_count = 0;
+        self.configured_target_count = 0;
+        self.configured_target_action_count = 0;
+    }
+
+    /// The counts as `AnalysisPhaseRunner` hands them to `AnalysisPhaseCompleteEvent`.
+    pub fn to_stats(&self, time_in_ms: i64) -> AnalysisPhaseCompleteStats {
+        AnalysisPhaseCompleteStats {
+            actions_constructed_total: self.action_count,
+            actions_constructed_configured_targets_only: self.configured_target_action_count,
+            targets_configured_total: self.configured_object_count,
+            targets_configured_configured_targets_only: self.configured_target_count,
+            time_in_ms,
+            packages_successfully_loaded: self.packages_successfully_loaded,
+            actions_constructed_by_mnemonic: self
+                .action_count_by_mnemonic
+                .clone()
+                .into_iter()
+                .collect(),
+        }
     }
 }
 

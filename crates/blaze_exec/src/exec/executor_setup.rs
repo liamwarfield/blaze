@@ -234,7 +234,14 @@ pub fn build_spawn_strategy_registry_with_policy(
     // com.google.devtools.build.lib.bazel.rules.BazelStrategyModule
     bazel_strategy_module_register_spawn_strategies(&mut spawn_strategy_registry_builder, env);
 
-    spawn_strategy_registry_builder.build()
+    let registry = spawn_strategy_registry_builder.build()?;
+    // PORT: Java logs the registry when `ExecutionTool.prepareBuild` makes the `BlazeExecutor`
+    // (once per build, after the registry is built here); Blaze has no `BlazeExecutor`, so the
+    // registry is logged as soon as it is built. A build that stops before Java's executor is made
+    // logs it here and not in Java (only the server log differs).
+    // Java: com/google/devtools/build/lib/exec/BlazeExecutor.java:78 BlazeExecutor.<init>
+    registry.log_spawn_strategies();
+    Ok(registry)
 }
 
 fn is_null_or_empty(s: &Option<String>) -> bool {

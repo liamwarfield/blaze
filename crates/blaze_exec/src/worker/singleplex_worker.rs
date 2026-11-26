@@ -1,7 +1,7 @@
 //! Ports of `lib/worker/SingleplexWorker.java` and `lib/worker/SandboxedWorker.java` (a
 //! `SingleplexWorker` that runs inside a sandboxed execution root).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io;
 use std::sync::Arc;
@@ -10,8 +10,9 @@ use std::time::Duration;
 use blaze_optdefs::misc::worker_options::WorkerOptions;
 use blaze_protos::blaze::worker::{WorkRequest, WorkResponse};
 use blaze_shell::{JavaFile, Subprocess, SubprocessBuilder, SubprocessFactory};
+use blaze_vfs::{FileSystemExt, Symlinks};
 use blaze_vfs::{Path, PathFragment};
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use parking_lot::Mutex;
 
 use super::error_message::JavaException;
@@ -27,31 +28,77 @@ use super::worker_protocol::{
 use crate::actions::execution_requirements::WorkerProtocolFormat;
 use crate::exec::tree_deleter::TreeDeleter;
 use crate::sandbox::cgroups::VirtualCgroupFactory;
+use crate::sandbox::linux_sandbox_command_line_builder::{
+    LinuxSandboxCommandLineBuilder, NetworkNamespace,
+};
+use crate::sandbox::linux_sandbox_util;
 use crate::sandbox::sandbox_helpers::{self, SandboxInputs, SandboxOutputs};
 
 /// Options specific to hardened sandbox (`--experimental_worker_sandbox_hardening`).
 ///
-/// PORT: the hardened sandbox needs `CgroupsInfo` (Java creates a cgroup for every hardened
-/// worker), which is not ported; [`WorkerFactory`](super::worker_factory::WorkerFactory) fails
-/// loudly before one is used.
-// Java: com/google/devtools/build/lib/worker/SandboxedWorker.java:52 SandboxedWorker.WorkerSandboxOptions
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Java's record holds `ImmutableSet`s and an `ImmutableMap`, whose `equals` ignores order; the
+/// `PartialEq` below does the same (the `WorkerFactory` comparison of `WorkerModule.buildStarting`
+/// reads it).
+// Java: com/google/devtools/build/lib/worker/SandboxedWorker.java:49 SandboxedWorker.WorkerSandboxOptions
+#[derive(Clone, Debug)]
 pub struct WorkerSandboxOptions {
-    pub sandbox_binary: Path,
+    /// `LinuxSandboxUtil.getLinuxSandbox(workspace)`: null without an embedded `linux-sandbox`.
+    pub sandbox_binary: Option<Path>,
     pub fake_hostname: bool,
     pub fake_username: bool,
     pub debug_mode: bool,
+    /// `ImmutableSet<PathFragment>`: insertion order, no duplicates.
     pub tmpfs_path: Vec<PathFragment>,
+    /// `ImmutableSet<String>`.
     pub writable_paths: Vec<String>,
     pub memory_limit: i32,
+    /// `ImmutableSet<Path>`.
     pub inaccessible_paths: Vec<Path>,
     pub additional_mount_paths: IndexMap<String, String>,
 }
+
+/// `ImmutableSet.equals`: the same elements, in any order.
+fn same_set<T: PartialEq>(a: &[T], b: &[T]) -> bool {
+    a.len() == b.len() && a.iter().all(|x| b.contains(x))
+}
+
+impl PartialEq for WorkerSandboxOptions {
+    // Java: com/google/devtools/build/lib/worker/SandboxedWorker.java:49 SandboxedWorker.WorkerSandboxOptions.equals
+    fn eq(&self, o: &Self) -> bool {
+        self.sandbox_binary == o.sandbox_binary
+            && self.fake_hostname == o.fake_hostname
+            && self.fake_username == o.fake_username
+            && self.debug_mode == o.debug_mode
+            && same_set(&self.tmpfs_path, &o.tmpfs_path)
+            && same_set(&self.writable_paths, &o.writable_paths)
+            && self.memory_limit == o.memory_limit
+            && same_set(&self.inaccessible_paths, &o.inaccessible_paths)
+            // ImmutableMap.equals (AbstractMap.equals): the same entries, in any order.
+            && self.additional_mount_paths.len() == o.additional_mount_paths.len()
+            && self
+                .additional_mount_paths
+                .iter()
+                .all(|(k, v)| o.additional_mount_paths.get(k) == Some(v))
+    }
+}
+
+impl Eq for WorkerSandboxOptions {}
 
 /// The parts of a `SandboxedWorker` its `SingleplexWorker` superclass does not have.
 struct SandboxedParts {
     worker_exec_root: Mutex<WorkerExecRoot>,
     tree_deleter: Option<Arc<dyn TreeDeleter>>,
+    /// Options specific to hardened sandbox, null if not using that.
+    hardened_sandbox_options: Option<WorkerSandboxOptions>,
+    /// `inaccessibleHelperDir` and `inaccessibleHelperFile`, set by `getBindMounts`.
+    inaccessible_helpers: Arc<Mutex<InaccessibleHelpers>>,
+}
+
+/// `SandboxedWorker.inaccessibleHelperDir` and `inaccessibleHelperFile`.
+#[derive(Default)]
+struct InaccessibleHelpers {
+    dir: Option<Path>,
+    file: Option<Path>,
 }
 
 /// The state Java keeps in the worker's fields.
@@ -175,10 +222,9 @@ impl SingleplexWorker {
                 use_in_memory_tracking,
             )),
             tree_deleter,
+            hardened_sandbox_options: hardened_sandbox_options.cloned(),
+            inaccessible_helpers: Arc::new(Mutex::new(InaccessibleHelpers::default())),
         });
-        if hardened_sandbox_options.is_some() {
-            blaze_util::unported!("SandboxedWorker (--experimental_worker_sandbox_hardening)");
-        }
         worker
     }
 
@@ -188,21 +234,76 @@ impl SingleplexWorker {
     fn create_process(
         &self,
         client_env: &IndexMap<String, String>,
-    ) -> io::Result<Arc<dyn Subprocess>> {
-        let args = self.make_exec_path_absolute(self.base.worker_key.get_args());
-        if self.sandboxed.is_some() {
+    ) -> Result<Arc<dyn Subprocess>, WorkerError> {
+        let mut args = self.make_exec_path_absolute(self.base.worker_key.get_args());
+        if let Some(sandboxed) = &self.sandboxed {
+            let hardened = sandboxed.hardened_sandbox_options.as_ref();
             // We put the sandbox inside a unique subdirectory using the worker's ID.
             if let Some(factory) = &self.cgroup_factory {
                 let cgroup = factory.create(self.base.worker_id, &IndexMap::new())?;
                 *self.base.cgroup.lock() = Some(cgroup);
-            } else if self.options.use_cgroups_on_linux {
+            } else if self.options.use_cgroups_on_linux || hardened.is_some() {
                 // In the event that the memory limit is 0, we defer to using Blaze's
                 // WorkerLifecycleManager to kill workers rather than cgroup's OOM killer.
                 // (The old implementation, --noincompatible_use_new_cgroup_implementation.)
                 blaze_util::unported!("CgroupsInfo.getBlazeSpawnsCgroup");
             }
+
+            // TODO(larsrc): Check that execRoot and outputBase are not under /tmp
+            if let Some(hardened) = hardened {
+                let sandbox_tmp = sandbox_helpers::get_tmp_dir_path(&self.work_dir);
+                sandbox_tmp.create_directory_and_parents()?;
+
+                // Mostly tests require network, and some blaze run commands, but no workers.
+                let sandbox_binary = hardened
+                    .sandbox_binary
+                    .clone()
+                    .expect("NullPointerException: sandboxBinary");
+                let mut command_line_builder =
+                    LinuxSandboxCommandLineBuilder::command_line_builder(sandbox_binary);
+                command_line_builder
+                    .set_writable_files_and_directories(
+                        self.get_writable_dirs(hardened, &self.work_dir)?,
+                    )
+                    .set_tmpfs_directories(hardened.tmpfs_path.iter().cloned().collect())
+                    .set_persistent_process(true)
+                    .set_bind_mounts(self.get_bind_mounts(
+                        sandboxed,
+                        hardened,
+                        &self.work_dir,
+                        &sandbox_tmp,
+                    )?)
+                    .set_use_fake_hostname(hardened.fake_hostname)
+                    .set_create_network_namespace(NetworkNamespace::Netns);
+
+                let cgroup = self.base.cgroup.lock().clone();
+                if let Some(cgroup) = cgroup
+                    && cgroup.exists()
+                {
+                    command_line_builder.set_cgroups_dirs(
+                        cgroup
+                            .paths()
+                            .iter()
+                            .map(|p| p.display().to_string())
+                            .collect(),
+                    );
+                }
+
+                if hardened.fake_username {
+                    command_line_builder.set_use_fake_username(true);
+                }
+
+                args = command_line_builder.build_for_command(&args);
+            }
+
             let process: Arc<dyn Subprocess> =
                 Arc::from(self.create_process_builder(args, client_env).start()?);
+
+            // If using hardened sandbox (aka linux-sandbox), the linux-sandbox parent process
+            // moves the sandboxed children processes (pid 1, 2) into the cgroup. But we still
+            // need to move the linux-sandbox process into the worker cgroup. On the other hand,
+            // without linux-sandbox, Blaze needs to do this itself for the spawned worker
+            // process.
             self.add_process_to_cgroup(&*process)?;
             return Ok(process);
         }
@@ -218,6 +319,72 @@ impl SingleplexWorker {
         }
         self.add_process_to_cgroup(&*process)?;
         Ok(process)
+    }
+
+    // Java: com/google/devtools/build/lib/worker/SandboxedWorker.java:98 SandboxedWorker.getWritableDirs
+    fn get_writable_dirs(
+        &self,
+        hardened: &WorkerSandboxOptions,
+        sandbox_exec_root: &Path,
+    ) -> io::Result<IndexSet<Path>> {
+        // We have to make the TEST_TMPDIR directory writable if it is specified.
+        let mut writable_dirs: IndexSet<Path> = IndexSet::new();
+        writable_dirs.insert(sandbox_exec_root.clone());
+        writable_dirs.insert(sandbox_exec_root.get_relative_str("/tmp"));
+
+        let fs = sandbox_exec_root.get_file_system();
+        for writable_path in &hardened.writable_paths {
+            let path = fs.get_path(writable_path);
+            writable_dirs.insert(path.clone());
+            if path.is_symbolic_link() {
+                writable_dirs.insert(path.resolve_symbolic_links()?);
+            }
+        }
+
+        writable_dirs.insert(fs.get_path("/dev/shm").resolve_symbolic_links()?);
+        writable_dirs.insert(fs.get_path("/tmp"));
+
+        Ok(writable_dirs)
+    }
+
+    /// The bind mounts (target -> source) in `TreeMap` order.
+    // Java: com/google/devtools/build/lib/worker/SandboxedWorker.java:118 SandboxedWorker.getBindMounts
+    fn get_bind_mounts(
+        &self,
+        sandboxed: &SandboxedParts,
+        hardened: &WorkerSandboxOptions,
+        sandbox_exec_root: &Path,
+        sandbox_tmp: &Path,
+    ) -> Result<IndexMap<Path, Path>, WorkerError> {
+        let fs = sandbox_exec_root.get_file_system();
+        let tmp_path = fs.get_path("/tmp");
+        let mut bind_mounts: BTreeMap<Path, Path> = BTreeMap::new();
+        bind_mounts.insert(tmp_path, sandbox_tmp.clone());
+        sandbox_helpers::mount_additional_paths(
+            &hardened.additional_mount_paths,
+            sandbox_exec_root,
+            &mut bind_mounts,
+        )?;
+
+        let inaccessible_helper_file =
+            linux_sandbox_util::get_inaccessible_helper_file(sandbox_exec_root)?;
+        let inaccessible_helper_dir =
+            linux_sandbox_util::get_inaccessible_helper_dir(sandbox_exec_root)?;
+        {
+            let mut helpers = sandboxed.inaccessible_helpers.lock();
+            helpers.file = Some(inaccessible_helper_file.clone());
+            helpers.dir = Some(inaccessible_helper_dir.clone());
+        }
+        for inaccessible_path in &hardened.inaccessible_paths {
+            if inaccessible_path.is_directory_with(Symlinks::Nofollow) {
+                bind_mounts.insert(inaccessible_path.clone(), inaccessible_helper_dir.clone());
+            } else {
+                bind_mounts.insert(inaccessible_path.clone(), inaccessible_helper_file.clone());
+            }
+        }
+        // TODO(larsrc): Handle hermetic tmp
+        linux_sandbox_util::validate_bind_mounts(&bind_mounts)?;
+        Ok(bind_mounts.into_iter().collect())
     }
 
     // Java: com/google/devtools/build/lib/worker/SingleplexWorker.java:114 SingleplexWorker.createProcessBuilder
@@ -254,6 +421,10 @@ impl SingleplexWorker {
         let status = self.base.status.clone();
         // `this.destroy()` is virtual: a SandboxedWorker's also deletes its workDir.
         let sandboxed_work_dir = self.sandboxed.as_ref().map(|_| self.work_dir.clone());
+        let hardened = self
+            .sandboxed
+            .as_ref()
+            .is_some_and(|s| s.hardened_sandbox_options.is_some());
         let cgroup_factory = self.cgroup_factory.clone();
         let worker_id = self.base.worker_id;
         state.shutdown_hook = Some(shutdown_hooks::add_shutdown_hook(Arc::new(move || {
@@ -266,7 +437,9 @@ impl SingleplexWorker {
                 if let Some(work_dir) = &sandboxed_work_dir {
                     // Java: com/google/devtools/build/lib/worker/SandboxedWorker.java:225 SandboxedWorker.destroy
                     // Caught IOException while deleting workdir (logged).
-                    let _ = work_dir.delete_tree();
+                    if work_dir.delete_tree().is_ok() && hardened {
+                        let _ = sandbox_helpers::get_tmp_dir_path(work_dir).delete_tree();
+                    }
                 }
             }
         })));
@@ -396,6 +569,11 @@ impl Worker for SingleplexWorker {
         Ok(())
     }
 
+    /// PORT: the JDK's process reaper is not ported. Once a worker process has exited, the JDK
+    /// replaces its stdin with `ProcessBuilder.NullOutputStream`, so Java's write fails with
+    /// `java.io.IOException: Stream closed`; here the write reaches the closed pipe and fails with
+    /// `Broken pipe`. Which of the two Java reports depends on whether the reaper ran before the
+    /// write (both were seen on the oracle), so no fixed output differs (review exec-2, S3).
     // Java: com/google/devtools/build/lib/worker/SingleplexWorker.java:193 SingleplexWorker.putRequest
     fn put_request(&self, request: &WorkRequest) -> io::Result<()> {
         let protocol = self.shared.worker_protocol.lock();
@@ -494,8 +672,21 @@ impl Worker for SingleplexWorker {
             factory.remove(self.base.worker_id);
         }
         self.base.status.set_killed();
-        if self.sandboxed.is_some() {
-            // SandboxedWorker.destroy: the cgroup, then the work dir.
+        if let Some(sandboxed) = &self.sandboxed {
+            // SandboxedWorker.destroy: the inaccessible helpers, the cgroup, the work dir and
+            // the hardened sandbox's tmp dir. An IOException ends the cleanup (logged).
+            let helpers = sandboxed.inaccessible_helpers.lock();
+            if let Some(file) = &helpers.file
+                && file.delete().is_err()
+            {
+                return;
+            }
+            if let Some(dir) = &helpers.dir
+                && dir.delete().is_err()
+            {
+                return;
+            }
+            drop(helpers);
             let cgroup = self.base.cgroup.lock().clone();
             if let Some(cgroup) = cgroup
                 && cgroup.exists()
@@ -504,7 +695,12 @@ impl Worker for SingleplexWorker {
                 cgroup.destroy();
             }
             // Caught IOException while deleting workdir (logged).
-            let _ = self.work_dir.delete_tree();
+            if self.work_dir.delete_tree().is_err() {
+                return;
+            }
+            if sandboxed.hardened_sandbox_options.is_some() {
+                let _ = sandbox_helpers::get_tmp_dir_path(&self.work_dir).delete_tree();
+            }
         }
     }
 

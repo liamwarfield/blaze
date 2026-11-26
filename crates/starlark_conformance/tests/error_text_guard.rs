@@ -109,6 +109,12 @@ fn error_literals(text: &str) -> Vec<(usize, String)> {
         "bail!(",
         "Bazel(format!(",
         "Error::new_other(format!(",
+        // Patch 0061's markers of where Java raises an error.
+        "bazel_argument_binding_error(format!(",
+        "JavaNotCallable(format!(",
+        "JavaStar(format!(",
+        "JavaStarStar(format!(",
+        "JavaBinding(format!(",
     ];
     let mut out = Vec::new();
     for opener in OPENERS {

@@ -4,8 +4,11 @@ pub mod build_arena;
 pub mod exit_code;
 pub mod fingerprint;
 pub mod graph;
+pub mod io;
+pub mod java_hash_map;
 pub mod java_regex;
 pub mod profiler;
+pub mod server_logger;
 pub mod string_encoding;
 pub mod uncaught_exception;
 

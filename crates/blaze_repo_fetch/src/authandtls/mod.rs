@@ -1,5 +1,6 @@
 //! Port of the parts of `com.google.devtools.build.lib.authandtls` the downloader uses.
 
+pub mod credentialhelper;
 pub mod netrc;
 pub mod netrc_parser;
 

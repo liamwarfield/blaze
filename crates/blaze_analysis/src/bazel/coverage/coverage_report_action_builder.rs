@@ -210,6 +210,11 @@ impl ExecutableAction for CoverageReportAction {
         event_handler.handle(&Event::info(self.location_message.clone()));
         Some(true)
     }
+
+    // Java: com/google/devtools/build/lib/bazel/coverage/CoverageReportActionBuilder.java:114 CoverageReportAction (implements NotifyOnActionCacheHit)
+    fn is_notify_on_action_cache_hit(&self) -> bool {
+        true
+    }
 }
 
 /// A helper interface for product-specific coverage support.

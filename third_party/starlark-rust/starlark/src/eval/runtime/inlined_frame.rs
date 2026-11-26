@@ -100,6 +100,7 @@ impl InlinedFrames {
             span: FrameSpan {
                 span: span.span,
                 inlined_frames: *self,
+                java_call: crate::eval::runtime::java_call::JavaCall(None), // BLAZE PATCH 0061
             },
             fun,
         }));
@@ -108,6 +109,7 @@ impl InlinedFrames {
                 span: FrameSpan {
                     span: f.span.span,
                     inlined_frames: *self,
+                    java_call: crate::eval::runtime::java_call::JavaCall(None), // BLAZE PATCH 0061
                 },
                 fun: f.fun,
             }));
@@ -181,6 +183,7 @@ mod tests {
             FrameSpan {
                 span: FrozenFileSpan::new(codemap, codemap.full_span()),
                 inlined_frames: InlinedFrames::default(),
+                java_call: crate::eval::runtime::java_call::JavaCall(None), // BLAZE PATCH 0061
             }
         }
 

@@ -1,9 +1,8 @@
-//! Port of `analysis/ExtraActionArtifactsProvider.java` (the parts `MergedConfiguredTarget`
-//! uses).
+//! Port of `analysis/ExtraActionArtifactsProvider.java`.
 //!
 //! PORT: the class belongs with the other providers (`crate::providers`); it lives here because
-//! `MergedConfiguredTarget.of` is its only ported user. Blaze creates no extra actions
-//! (`--experimental_action_listener` is unported), so every merge yields [`EMPTY`].
+//! `MergedConfiguredTarget.of` was its first ported user. It is created by
+//! `crate::extra::extra_action_utils::create_extra_action_provider`.
 
 use std::sync::LazyLock;
 

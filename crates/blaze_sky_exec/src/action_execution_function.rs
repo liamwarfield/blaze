@@ -74,6 +74,24 @@ pub fn get_action_for_lookup_data(
 
 /// An `ExecutionFailure` as the SkyFunction's error: an `ActionExecutionFunctionException` or an
 /// interrupt.
+/// Determines whether the given action needs to depend on the build ID.
+///
+/// PORT: Java's `action instanceof NotifyOnActionCacheHit` is a `TestRunnerAction` or an
+/// executable action that answers `is_notify_on_action_cache_hit` (`CoverageReportAction`);
+/// every action reaching `ACTION_EXECUTION` is an `Action`.
+// Java: com/google/devtools/build/lib/actions/Actions.java:61 Actions.dependsOnBuildId
+fn depends_on_build_id(action: &ActionRef) -> bool {
+    // Volatile build actions may need to execute even if none of their known inputs have
+    // changed. Depending on the build ID ensures that these actions have a chance to execute.
+    if blaze_exec::analysis::test::as_test_runner_action(action.as_ref()).is_some()
+        || blaze_exec::actions::action_execution::as_executable(action.as_ref())
+            .is_some_and(|executable| executable.is_notify_on_action_cache_hit())
+    {
+        return true;
+    }
+    action.is_volatile()
+}
+
 fn to_compute_error(e: ExecutionFailure) -> ComputeError {
     match e {
         ExecutionFailure::Exception(e) => action_execution_function_exception(e).into(),
@@ -361,11 +379,30 @@ impl ActionExecutionFunction {
         action: &ActionRef,
         env: &mut Environment<'_>,
     ) -> Result<Option<ActionExecutionValue>, ComputeError> {
-        // PORT: skipped, incremental (the dependencies on BUILD_ID for Actions.dependsOnBuildId
-        // and on the CLIENT_ENVIRONMENT_VARIABLE of each of
-        // action.getClientEnvironmentVariables() only invalidate the node in a later build). The
-        // executor holds the client environment of this single build, and the action cache
-        // checker reads the action's variables from it (computeEffectiveEnvironment).
+        if depends_on_build_id(action) {
+            if blaze_sky_loading::precomputed::BUILD_ID.get(env)?.is_none() {
+                return Ok(None);
+            }
+        }
+
+        // Look up the parts of the environment that influence the action.
+        // PORT: Java builds the action's client environment from these values; the executor
+        // holds the command's client environment, whose values for these variables are the same,
+        // and the action cache checker reads them from it (computeEffectiveEnvironment). The
+        // dependencies are what invalidates the node when a variable changes.
+        let client_environment_variables = action.get_client_environment_variables();
+        if !client_environment_variables.is_empty() {
+            let client_environment_variables_set: IndexSet<String> =
+                client_environment_variables.into_iter().collect();
+            let dep_keys: Vec<SkyKey> = client_environment_variables_set
+                .iter()
+                .map(|var| SkyKey::new(blaze_skyframe::precomputed::ClientEnvironmentKey::key(var)))
+                .collect();
+            env.get_values_and_exceptions(&dep_keys)?;
+            if env.values_missing() {
+                return Ok(None);
+            }
+        }
 
         // If two actions are shared and the first one executes, when the second one goes to
         // execute, we should detect that and short-circuit.
@@ -1820,7 +1857,10 @@ mod timestamp_builder_tests {
                 .with_lost_inputs_policy(remote.lost_inputs_policy.clone()),
             );
             let mut builder = EvaluatorBuilder::new();
-            if remote.loading {
+            // Java's TimestampBuilderTestCase registers FILE_STATE and FILE with ARTIFACT, which
+            // requests the FILE value of a source artifact.
+            let _ = remote.loading;
+            {
                 let root = self.exec_root.get_parent_directory().unwrap();
                 let config =
                     blaze_sky_loading::skyframe_executor::LoadingFunctionsConfig::for_bazel_default(
@@ -1840,6 +1880,7 @@ mod timestamp_builder_tests {
                     blaze_starlark::StarlarkSemantics::from_flags(&Default::default()).unwrap(),
                     IndexMap::new(),
                 );
+                builder = blaze_sky_loading::precomputed::BUILD_ID.set(builder, String::new());
             }
             let evaluator = crate::register_execution_functions(
                 builder,

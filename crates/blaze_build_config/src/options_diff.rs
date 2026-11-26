@@ -155,6 +155,12 @@ impl OptionsDiff {
         }
     }
 
+    /// The changed native options with their declaring fragment options class (Java
+    /// `changedOption.getDeclaringClass(FragmentOptions.class)`), in the order they were found.
+    pub fn get_differing_options(&self) -> &[(FragmentOptionsClass, OptionDefinitionRef)] {
+        &self.differing_options
+    }
+
     pub fn get_first(&self) -> &IndexMap<OptionDefinitionRef, Option<Value>> {
         &self.first
     }

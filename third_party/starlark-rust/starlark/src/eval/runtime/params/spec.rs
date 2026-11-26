@@ -666,46 +666,53 @@ impl<'v> ParametersSpec<Value<'v>> {
         'v: 'a,
     {
         let mut p = JavaArgs::new(self);
-        let mut run = || -> Result<(), String> {
+        // BLAZE PATCH 0061: each error says which step of Java's evalCall raised it (binding an
+        // argument, `*x`, `**x`, or the callee's `call`), for where Bazel locates it
+        // (`eval::runtime::java_call`).
+        let binding = FunctionError::JavaBinding; // BLAZE PATCH 0061
+        let mut run = || -> Result<(), FunctionError> {
             for _ in args.pos() {
-                p.add_positional()?;
+                p.add_positional().map_err(binding)?;
             }
             for (_, name) in args.names().names() {
-                p.add_named(name.as_str())?;
+                p.add_named(name.as_str()).map_err(binding)?;
             }
             if let Some(star) = args.args() {
                 // Java: net/starlark/java/eval/Eval.java:733 Eval.evalCall
                 let iter = star.iterate(heap).map_err(|_| {
-                    format!(
+                    FunctionError::JavaStar(format!(
                         "argument after * must be an iterable, not {}",
                         star.get_type()
-                    )
+                    ))
                 })?;
                 for _ in iter {
-                    p.add_positional()?;
+                    p.add_positional().map_err(binding)?;
                 }
             }
             if let Some(kwargs) = args.kwargs() {
                 let Some(dict) = DictRef::from_value(kwargs) else {
-                    return Err(format!(
+                    return Err(FunctionError::JavaStarStar(format!(
                         "argument after ** must be a dict, not {}",
                         kwargs.get_type()
-                    ));
+                    )));
                 };
                 let keys: Vec<Value<'v>> = dict.keys().collect();
                 drop(dict);
                 for k in keys {
                     let Some(k) = k.unpack_str() else {
-                        return Err(format!("keywords must be strings, not {}", k.get_type()));
+                        return Err(FunctionError::JavaStarStar(format!(
+                            "keywords must be strings, not {}",
+                            k.get_type()
+                        )));
                     };
-                    p.add_named(k)?;
+                    p.add_named(k).map_err(binding)?;
                 }
             }
-            p.call()
+            p.call().map_err(FunctionError::Bazel)
         };
         match run() {
             Ok(()) => None,
-            Err(message) => Some(FunctionError::Bazel(message).into()),
+            Err(e) => Some(e.into()),
         }
     }
 

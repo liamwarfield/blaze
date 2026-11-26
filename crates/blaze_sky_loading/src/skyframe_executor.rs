@@ -36,7 +36,11 @@ use crate::file_chain_uniqueness::{
     FileSymlinkCycleUniquenessKey, FileSymlinkInfiniteExpansionUniquenessKey,
     file_symlink_cycle_uniqueness_function, file_symlink_infinite_expansion_uniqueness_function,
 };
-use crate::file_state::{ExternalFileAction, ExternalFilesHelper, FileStateFunction, FileStateKey};
+use crate::file_state::{
+    ExternalFileAction, ExternalFilesHelper, ExternalFilesKnowledgeState, FileStateFunction,
+    FileStateKey,
+};
+use blaze_util::io::timestamp_granularity_monitor::TimestampGranularityMonitor;
 use crate::globs::{GlobsKey, globs_function};
 use crate::ignored_subdirectories::{IgnoredSubdirectoriesKey, ignored_subdirectories_function};
 use crate::local_repository_lookup::{LocalRepositoryLookupKey, local_repository_lookup_function};
@@ -119,6 +123,12 @@ pub struct LoadingFunctionsConfig {
     /// Java `ruleClassProvider.getConfigurationFragmentMap().keySet()`.
     /// PORT: filled once the configuration fragments are ported (blaze_config).
     pub fragment_names: Vec<String>,
+    /// The knowledge of Java's `externalFilesHelper` (one per server in Java; see
+    /// [`ExternalFilesKnowledgeState`]).
+    pub external_files_knowledge: Arc<ExternalFilesKnowledgeState>,
+    /// Java `SkyframeExecutor.tsgm`, set per command by `preparePackageLoading`; `None` outside
+    /// a command (tests).
+    pub tsgm: Option<Arc<TimestampGranularityMonitor>>,
 }
 
 impl LoadingFunctionsConfig {
@@ -170,6 +180,8 @@ impl LoadingFunctionsConfig {
             rule_class_provider,
             show_loading_progress: false,
             fragment_names: bazel_fragment_names(),
+            external_files_knowledge: Arc::default(),
+            tsgm: None,
         }
     }
 
@@ -279,13 +291,15 @@ pub fn register_loading_functions(
     builder: EvaluatorBuilder,
     config: &LoadingFunctionsConfig,
 ) -> EvaluatorBuilder {
-    let external_files_helper = Arc::new(ExternalFilesHelper::create(
+    let external_files_helper = Arc::new(ExternalFilesHelper::create_with_knowledge(
         config.pkg_locator.clone(),
         config.external_file_action,
         config.directories.clone(),
         config.repo_contents_cache_path.clone(),
+        config.external_files_knowledge.clone(),
     ));
-    let file_state_function = FileStateFunction::new(external_files_helper.clone());
+    let file_state_function =
+        FileStateFunction::with_tsgm(external_files_helper.clone(), config.tsgm.clone());
     let directory_listing_state_function =
         DirectoryListingStateFunction::new(external_files_helper);
     let file_function = FileFunction::new(config.pkg_locator.clone(), &config.directories);
@@ -504,5 +518,15 @@ fn inject_loading_precomputed_impl(
     let builder = DEFAULT_VISIBILITY.set(builder, default_visibility);
     let builder = CONFIG_SETTING_VISIBILITY_POLICY.set(builder, config_setting_visibility_policy);
     let builder = LAZY_MACRO_EXPANSION_PACKAGES.set(builder, lazy_macro_expansion_packages);
+    // Vendor mode is off unless the repository module (blaze_bzlmod's configuration) injected
+    // the directory.
+    // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:774 BazelRepositoryModule.getPrecomputedValues
+    let builder = if builder.has_injected(&blaze_skyframe::SkyKey::new(
+        crate::precomputed::VENDOR_DIRECTORY.get_key(),
+    )) {
+        builder
+    } else {
+        crate::precomputed::VENDOR_DIRECTORY.set(builder, None)
+    };
     REPOSITORY_OVERRIDES.set(builder, repository_overrides)
 }

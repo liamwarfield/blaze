@@ -694,7 +694,9 @@ fn sequence<'v>(x: Value<'v>, what: &str) -> starlark::Result<Vec<Value<'v>>> {
     if let Some(t) = TupleRef::from_value(x) {
         return Ok(t.content().to_vec());
     }
-    Err(err(format!(
+    // A binding error (Java checkParamValue): Bazel locates it at the call's enclosing statement
+    // when the call has named arguments (starlark patch 0061).
+    Err(starlark::values::bazel_argument_binding_error(format!(
         "in call to depset(), parameter '{what}' got value of type '{}', want 'sequence or NoneType'",
         x.get_type()
     )))
@@ -718,8 +720,10 @@ pub fn register_depset(builder: &mut GlobalsBuilder) {
         } else {
             let items = UnpackListOrTuple::<Value>::unpack_value_opt(transitive_v).ok_or_else(
                 || {
-                    err(format!(
-                        "in call to depset(), parameter 'transitive' got value of type '{}', want 'sequence of depsets or NoneType'",
+                    // Java checkParamValue: `@Param(allowedTypes = {Sequence, NoneType})`
+                    // (StarlarkBuiltinsApi DepsetLibrary.depset; the generated table's text).
+                    starlark::values::bazel_argument_binding_error(format!(
+                        "in call to depset(), parameter 'transitive' got value of type '{}', want 'sequence or NoneType'",
                         transitive_v.get_type()
                     ))
                 },

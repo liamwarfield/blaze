@@ -789,6 +789,15 @@ fn check_up_to_date_filter_from_options(
     })
 }
 
+/// `BlazeWorkspace.actionCache != null`: whether this server would hold the action cache in
+/// memory (set when a command loads it here; `blaze_runtime` clears it where Java sets the field
+/// to null and reads it in the action cache garbage collection idle task).
+///
+/// PORT: Blaze loads the action cache from disk in every command instead of keeping it in the
+/// workspace; this records what Java's field would be.
+// Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:99 BlazeWorkspace.actionCache
+pub static PERSISTENT_ACTION_CACHE_LOADED: AtomicBool = AtomicBool::new(false);
+
 /// Get action cache if present or reload it from the on-disk cache
 /// (`BlazeWorkspace.getOrLoadPersistentActionCache`: `<output_base>/action_cache`, with
 /// `action_cache.bad` and `action_cache.tmp`).
@@ -807,7 +816,10 @@ fn get_or_load_action_cache(
         Arc::new(JavaClock),
         reporter as &dyn EventHandler,
     ) {
-        Ok(cache) => Ok(Arc::new(cache)),
+        Ok(cache) => {
+            PERSISTENT_ACTION_CACHE_LOADED.store(true, Ordering::SeqCst);
+            Ok(Arc::new(cache))
+        }
         Err(e) => Err(format!(
             "Couldn't create action cache: {e}. If error persists, use 'bazel clean'."
         )),

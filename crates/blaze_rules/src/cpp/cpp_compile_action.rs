@@ -737,6 +737,86 @@ impl Action for CppCompileAction {
         )
     }
 
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1068 CppCompileAction.getExtraActionInfo
+    fn get_extra_action_info(
+        &self,
+        action_key_context: &ActionKeyContext,
+    ) -> Result<blaze_protos::blaze::ExtraActionInfo, CommandLineError> {
+        use blaze_protos::blaze::{CppCompileInfo, EnvironmentVariable};
+        let mut info = CppCompileInfo {
+            tool: Some(self.compile_command_line.get_tool_path()),
+            ..Default::default()
+        };
+
+        let overwritten = self.get_overwritten_variables();
+        let options = self
+            .compile_command_line
+            .get_compiler_options(Some(&*overwritten), &CC_NOOP)
+            .map_err(cc_error)?;
+
+        for option in options {
+            info.compiler_option.push(option);
+        }
+        info.output_file = Some(self.get_primary_output().get_exec_path_string().to_owned());
+        info.source_file = Some(self.get_source_file().get_exec_path_string().to_owned());
+        if self.inputs_known() {
+            for input in self.get_inputs().to_list().iter() {
+                info.sources_and_headers
+                    .push(input.get_exec_path_string().to_owned());
+            }
+        } else {
+            info.sources_and_headers
+                .push(self.get_source_file().get_exec_path_string().to_owned());
+            for header in self
+                .cc_compilation_context
+                .get_declared_include_srcs()
+                .to_list()
+                .iter()
+            {
+                info.sources_and_headers
+                    .push(header.get_exec_path_string().to_owned());
+            }
+        }
+        // TODO(ulfjack): Extra actions currently ignore the client environment.
+        for (name, value) in self
+            .get_effective_environment(/* client_env= */ &IndexMap::new())
+            .map_err(CommandLineError::CommandLineExpansion)?
+        {
+            info.variable.push(EnvironmentVariable { name, value });
+        }
+
+        let mut result = match blaze_actions::actions::action::abstract_get_extra_action_info(
+            self,
+            action_key_context,
+        ) {
+            Ok(result) => result,
+            Err(CommandLineError::CommandLineExpansion(e)) => panic!(
+                "AssertionError: CppCompileAction command line expansion cannot fail: {}",
+                e.message
+            ),
+            Err(e) => return Err(e),
+        };
+        result.cpp_compile_info = Some(info);
+        Ok(result)
+    }
+
+    /// Without include scanning: the declared include sources and the additional prunable
+    /// headers.
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1927 CppCompileAction.getInputFilesForExtraAction
+    fn get_input_files_for_extra_action(&self) -> Option<NestedSet<Artifact>> {
+        if !self.should_scan_includes {
+            let mut builder = NestedSetBuilder::from_nested_set(
+                self.cc_compilation_context.get_declared_include_srcs(),
+            );
+            builder.add_transitive(&self.additional_prunable_headers);
+            return Some(builder.build());
+        }
+        blaze_util::unported!(
+            "CppCompileAction.getInputFilesForExtraAction",
+            "include scanning (findUsedHeaders)"
+        )
+    }
+
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:539 CppCompileAction.discoversInputs
     fn discovers_inputs(&self) -> bool {
         is_cpp20_module_compilation_action(&self.action_name)
@@ -1728,10 +1808,11 @@ impl CppCompileAction {
                 ));
             }
         };
-        // PORT: the blaze_actions PathMappers.create ignores the input metadata provider (it is
-        // only read for STRIP, which is unported there).
+        let metadata = blaze_exec::analysis::actions::KeyMetadataAdapter(
+            action_execution_context.get_input_metadata_provider(),
+        );
         let path_mapper =
-            path_mappers::create_for_execution(self, self.output_paths_mode, false, None);
+            path_mappers::create(self, self.output_paths_mode, false, Some(&metadata));
         // All module files referenced in the modmap input file are expected to be known modules.
         // We delegate error reporting to the compiler by silently skipping over unknown files.
         let module_files = self
@@ -1754,6 +1835,9 @@ impl CppCompileAction {
         exec_root: &Path,
         client_env: &IndexMap<String, String>,
         path_mapper: &dyn cc::PathMapper,
+        // PORT: Java passes one `PathMapper`; `cc::PathMapper` is the C++ crates' view of it and
+        // `spawn_path_mapper` the spawn's.
+        spawn_path_mapper: SpawnPathMapper,
     ) -> Result<SimpleSpawn, ActionExecutionException> {
         // Intentionally not adding {@link CppCompileAction#inputsForInvalidation}, those are not
         // needed for execution.
@@ -1831,7 +1915,7 @@ impl CppCompileAction {
                 enabled: self.enabled_cpp_compile_resources_estimation(),
                 mnemonic: self.get_mnemonic(),
             }),
-            SpawnPathMapper::NOOP,
+            spawn_path_mapper,
         ))
     }
 
@@ -2058,10 +2142,11 @@ impl ExecutableAction for CppCompileAction {
         &self,
         action_execution_context: &dyn ActionExecutionContext,
     ) -> Result<ActionResult, ActionExecutionException> {
-        // PORT: the blaze_actions PathMappers.create ignores the input metadata provider (it is
-        // only read for STRIP, which is unported there).
+        let metadata = blaze_exec::analysis::actions::KeyMetadataAdapter(
+            action_execution_context.get_input_metadata_provider(),
+        );
         let path_mapper_ref =
-            path_mappers::create_for_execution(self, self.output_paths_mode, false, None);
+            path_mappers::create(self, self.output_paths_mode, false, Some(&metadata));
         let path_mapper = CcPathMapper(&*path_mapper_ref);
 
         if self
@@ -2106,6 +2191,7 @@ impl ExecutableAction for CppCompileAction {
             action_execution_context.get_exec_root(),
             action_execution_context.get_client_env(),
             &path_mapper,
+            SpawnPathMapper::of(path_mapper_ref.clone()),
         );
         // finally
         self.clear_additional_inputs();

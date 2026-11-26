@@ -427,6 +427,7 @@ impl Harness {
             registry_factory: self.registry_factory.clone(),
             bazel_version: self.bazel_version.clone(),
             builtin_modules: self.builtin_modules.clone(),
+            file_value_lookup: Arc::new(blaze_bzlmod::skyframe::config::DirectFileValueLookup),
             repository_directory_lookup: Arc::new(BuiltinRepositoryDirectoryLookup {
                 embedded_tools: self.output_base.join("install/embedded_tools"),
                 workspace_root: self.root_directory.clone(),

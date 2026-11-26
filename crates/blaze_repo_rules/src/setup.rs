@@ -456,6 +456,59 @@ pub fn prepare_repository_functions_with(
             ));
         }
     }
+    // `if (env.getWorkspace() != null)`: every command that gets here runs in a workspace.
+    // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:560 BazelRepositoryModule.beforeCommand
+    {
+        let external_root = to_path(&fs, setup.output_base)
+            .get_relative(&blaze_cmdline::label_constants::EXTERNAL_PATH_PREFIX);
+        let vendor_directory: Option<Path> = repo_options
+            .vendor_directory
+            .as_ref()
+            .map(|v| workspace.get_relative(v.get()));
+        // Both vendoring and the local and remote repo contents cache rely on certain symlinks
+        // at predictable locations to allow symlinks in external repos to be portable (in
+        // particular, relative).
+        // PORT: the RemoteExternalOverlayFileSystem case is not ported (no remote external
+        // overlay file system).
+        if vendor_directory.is_some() || repo_contents_cache_path.is_some() {
+            if let Err(e) = blaze_repo_fetch::fs_utils::ensure_symbolic_link(
+                &external_root
+                    .get_child(crate::repository::repository_utils::WORKSPACE_SYMLINK_NAME),
+                workspace.as_fragment(),
+            ) {
+                let message = io_message(e);
+                reporter.handle(&Event::error(message.clone()));
+                return Err(RepositorySetupError::new(
+                    format!(
+                        "Failed to create symlink to workspace under external directory: {}",
+                        message
+                    ),
+                    "SYMLINKING_FAILED",
+                ));
+            }
+        }
+        if let Some(vendor_directory) = &vendor_directory {
+            // TODO: The same vendor directory may be used concurrently with multiple output
+            //  bases, which can cause conflicts that currently go undetected.
+            // PORT: skipped, Windows only (the <external>/bazel-external junction).
+            if let Err(e) = blaze_repo_fetch::fs_utils::ensure_symbolic_link(
+                &vendor_directory.get_relative_str(
+                    blaze_bzlmod_model::vendor_manager::EXTERNAL_ROOT_SYMLINK_NAME,
+                ),
+                external_root.as_fragment(),
+            ) {
+                let message = io_message(e);
+                reporter.handle(&Event::error(message.clone()));
+                return Err(RepositorySetupError::new(
+                    format!(
+                        "Failed to create symlink to external repo root under vendor directory: {}",
+                        message
+                    ),
+                    "SYMLINKING_FAILED",
+                ));
+            }
+        }
+    }
     let mut repo_contents_cache = LocalRepoContentsCache::new();
     repo_contents_cache.set_path(repo_contents_cache_path.clone());
     if repo_contents_cache.is_enabled() {
@@ -522,29 +575,74 @@ pub fn prepare_repository_functions_with(
         }
     }
 
-    // Java: GoogleAuthUtils.newCredentialHelperProvider(...) and
-    // downloadManager.setCredentialFactory(headers -> new CredentialHelperCredentials(...)).
-    // Without helpers the credentials are the static auth headers, the download manager's
-    // default factory.
-    if let Some(auth_and_tls_options) = inputs.auth_and_tls_options
-        && !auth_and_tls_options.credential_helpers.is_empty()
+    // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:448 BazelRepositoryModule.beforeCommand
     {
-        // PORT: the credential helper protocol (CredentialHelper, CredentialHelperProvider,
-        // CredentialHelperCredentials, CredentialCacheExpiry) is not ported. Ignoring the flag
-        // would send unauthenticated requests where Bazel authenticates, so fail loudly.
-        blaze_util::unported!(
-            "GoogleAuthUtils.newCredentialHelperProvider",
-            "--credential_helper={}",
-            auth_and_tls_options
-                .credential_helpers
-                .iter()
-                .map(|h| match &h.scope {
-                    Some(scope) => format!("{scope}={}", h.path),
-                    None => h.path.clone(),
-                })
-                .collect::<Vec<_>>()
-                .join(" --credential_helper=")
+        use blaze_repo_fetch::authandtls::credentialhelper::{
+            CommandLinePathFactory, CredentialHelperCredentials, CredentialHelperEnvironment,
+            CredentialHelperProvider, credential_module,
+        };
+        let default_auth_and_tls_options;
+        let auth_and_tls_options = match inputs.auth_and_tls_options {
+            Some(o) => o,
+            None => {
+                default_auth_and_tls_options =
+                    blaze_options::Options::<AuthAndTLSOptions>::get_defaults();
+                &default_auth_and_tls_options
+            }
+        };
+        let event_reporter: Arc<dyn blaze_events::EventHandler> = reporter.clone();
+        let credential_helper_environment = CredentialHelperEnvironment {
+            event_reporter,
+            workspace_path: Some(workspace.clone()),
+            client_environment: setup.client_env.clone(),
+            helper_execution_timeout: auth_and_tls_options.credential_helper_timeout,
+        };
+        // env.getCommandLinePathFactory(): the workspace and install base roots.
+        let path_factory = CommandLinePathFactory::create_for(
+            fs.clone(),
+            Some(workspace.clone()),
+            Some(to_path(&fs, setup.install_base)),
         );
+        // GoogleAuthUtils.newCredentialHelperProvider(environment, pathFactory, helpers).
+        // Java: com/google/devtools/build/lib/authandtls/GoogleAuthUtils.java:416 GoogleAuthUtils.newCredentialHelperProvider
+        let mut builder = CredentialHelperProvider::builder();
+        let mut provider_error = None;
+        for helper in &auth_and_tls_options.credential_helpers {
+            let added = path_factory
+                .create(
+                    &credential_helper_environment.client_environment,
+                    &helper.path,
+                )
+                .and_then(|path| match &helper.scope {
+                    Some(scope) => builder.add(scope, path).map(|_| ()),
+                    None => builder.add_default(path).map(|_| ()),
+                });
+            if let Err(e) = added {
+                provider_error = Some(e);
+                break;
+            }
+        }
+        if let Some(e) = provider_error {
+            reporter.handle(&Event::error(e.get_message()));
+            return Err(RepositorySetupError::new(
+                "Error initializing credential helper",
+                "CREDENTIALS_INIT_FAILURE",
+            ));
+        }
+        let credential_helper_provider = builder.build();
+        let credential_cache = credential_module().get_credential_cache().clone();
+        download_manager.set_credential_factory(Arc::new(move |headers| {
+            Arc::new(CredentialHelperCredentials::<
+                dyn blaze_repo_fetch::authandtls::Credentials,
+            >::new(
+                credential_helper_provider.clone(),
+                credential_helper_environment.clone(),
+                credential_cache.clone(),
+                Some(Arc::new(
+                    blaze_repo_fetch::authandtls::StaticCredentials::new(headers.clone()),
+                )),
+            ))
+        }));
     }
 
     download_manager.set_distdir(
@@ -601,6 +699,7 @@ pub fn prepare_repository_functions_with(
     let mut bzlmod_config = bzlmod_config;
     bzlmod_config.repository_directory_lookup = Arc::new(RepositoryDirectoryFunctionLookup);
     bzlmod_config.package_lookup = Arc::new(PackageLookupFunctionLookup);
+    bzlmod_config.file_value_lookup = Arc::new(FileValueFunctionLookup { fs: fs.clone() });
 
     // `--override_repository` (Java BazelRepositoryModule.beforeCommand overrideMap).
     // To get the usual latest-wins semantics, we need a mutable map, as the builder of an
@@ -657,6 +756,37 @@ impl blaze_bzlmod::skyframe::RepositoryDirectoryLookup for RepositoryDirectoryFu
                  RepositoryDirectoryValue$Success ({name}: {error_msg})"
             ),
         }
+    }
+}
+
+/// The `FileValue` dependencies of `ModuleFileFunction` and `BazelLockFileFunction`, answered by
+/// the loading phase's `FILE` function.
+// Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleFileFunction.java:296 ModuleFileFunction.computeForRootModule
+// Java: com/google/devtools/build/lib/bazel/bzlmod/BazelLockFileFunction.java:82 BazelLockFileFunction.compute
+pub struct FileValueFunctionLookup {
+    fs: FileSystemRef,
+}
+
+impl blaze_bzlmod::skyframe::config::FileValueLookup for FileValueFunctionLookup {
+    fn file_value(
+        &self,
+        root: &std::path::Path,
+        relative: &PathFragment,
+        env: &mut blaze_skyframe::Environment<'_>,
+    ) -> Result<Option<blaze_bzlmod::skyframe::config::FileValueFacts>, blaze_skyframe::ComputeError>
+    {
+        let rooted_path = blaze_vfs::RootedPath::to_rooted_path(
+            blaze_vfs::Root::from_path(to_path(&self.fs, root)),
+            relative,
+        );
+        Ok(env
+            .get_value(blaze_sky_loading::file::FileKey::key(rooted_path))?
+            .map(
+                |file_value| blaze_bzlmod::skyframe::config::FileValueFacts {
+                    exists: file_value.exists(),
+                    is_file: file_value.is_file(),
+                },
+            ))
     }
 }
 

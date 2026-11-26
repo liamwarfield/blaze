@@ -161,10 +161,11 @@ impl BlazeModule for NoSpawnCacheModule {
     }
 }
 
-/// A module to manage credentials.
-/// PORT: skipped, incremental (beforeCommand resets the credential cache the server keeps
-/// between commands). The credential helpers of a command are set up with its repository
-/// functions (`blaze_repo_rules::setup`).
+/// A module whose sole purpose is to hold the credential cache which is shared by other
+/// modules.
+/// PORT: the cache is `blaze_repo_fetch`'s process-wide
+/// `credentialhelper::credential_module()` (its users sit below this crate); this module calls
+/// its `beforeCommand`.
 // Java: com/google/devtools/build/lib/authandtls/credentialhelper/CredentialModule.java:31 CredentialModule
 pub struct CredentialModule;
 
@@ -176,6 +177,18 @@ impl BlazeModule for CredentialModule {
     // Java: com/google/devtools/build/lib/authandtls/credentialhelper/CredentialModule.java:56 CredentialModule.getCommonCommandOptions
     fn get_common_command_options(&self) -> Vec<OptionsClassRef> {
         vec![AuthAndTLSOptions::class()]
+    }
+
+    // Java: com/google/devtools/build/lib/authandtls/credentialhelper/CredentialModule.java:61 CredentialModule.beforeCommand
+    fn before_command(&self, env: &mut CommandEnvironment) -> Result<(), AbruptExitException> {
+        // The options are common to every command (getCommonCommandOptions above).
+        if let Some(auth_and_tls_options) = env.get_options().get_options::<AuthAndTLSOptions>() {
+            blaze_repo_fetch::authandtls::credentialhelper::credential_module().before_command(
+                env.get_command_name(),
+                auth_and_tls_options.credential_helper_cache_timeout,
+            );
+        }
+        Ok(())
     }
 }
 
@@ -466,8 +479,9 @@ impl BlazeModule for RemoteModule {
 }
 
 /// Adds support for fetching external code.
-/// PORT: workspaceInit, initializeRuleClasses, beforeCommand, afterCommand and
-/// getPrecomputedValues are ported with the command's executor
+/// PORT: workspaceInit, initializeRuleClasses, beforeCommand (but for the repo contents cache
+/// garbage collection idle task, below), afterCommand and getPrecomputedValues are ported with
+/// the command's executor
 /// (`blaze_repo_rules::setup::prepare_repository_functions_with`, called by
 /// `blaze_sky_top::skyframe_executor::SkyframeExecutor::create`).
 // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:127 BazelRepositoryModule
@@ -501,6 +515,72 @@ impl BlazeModule for BazelRepositoryModule {
     // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:781 BazelRepositoryModule.getCommonCommandOptions
     fn get_common_command_options(&self) -> Vec<OptionsClassRef> {
         vec![RepositoryOptions::class()]
+    }
+
+    /// The repo contents cache part of `beforeCommand`: `env.addIdleTask(repositoryCache
+    /// .getRepoContentsCache().createGcIdleTask(maxAge, idleDelay))` when the cache is enabled.
+    ///
+    /// PORT: the rest of `beforeCommand` (download manager, repository cache paths, the checks
+    /// of the repo contents cache path, its shared lock) runs with the command's executor
+    /// (`blaze_repo_rules::setup::prepare_repository_functions_with`), which reports the two
+    /// path errors; the task is not registered in those two cases, as Java throws before it
+    /// registers it.
+    // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:276 BazelRepositoryModule.beforeCommand
+    fn before_command(&self, env: &mut CommandEnvironment) -> Result<(), AbruptExitException> {
+        use crate::commands::info::module_items::RepositoryCacheInfoItem;
+        let Some(repo_options) = env.get_options().get_options::<RepositoryOptions>() else {
+            return Ok(());
+        };
+        // Note that the repo contents cache stuff has to happen _after_ the repo cache stuff,
+        // because the specific settings about the repo contents cache might overwrite the repo
+        // cache settings.
+        let mut repository_cache = blaze_repo_fetch::cache::RepositoryCache::new();
+        repository_cache.set_path(RepositoryCacheInfoItem::get_repository_cache_path(env));
+        if let Some(p) = &repo_options.repo_contents_cache {
+            repository_cache
+                .get_repo_contents_cache_mut()
+                .set_path(RepositoryCacheInfoItem::to_path(p.get(), env));
+        }
+        let Some(repo_contents_cache_path) = repository_cache
+            .get_repo_contents_cache()
+            .get_path()
+            .cloned()
+        else {
+            return Ok(());
+        };
+        let resolve = |p: &blaze_vfs::Path| match p.resolve_symbolic_links() {
+            Ok(resolved) => Some(resolved),
+            // Will be created later.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(p.clone()),
+            // "could not resolve ...": reported by the executor's setup.
+            Err(_) => None,
+        };
+        let (Some(resolved_output_base), Some(resolved_repo_contents_cache)) = (
+            resolve(env.get_output_base()),
+            resolve(&repo_contents_cache_path),
+        ) else {
+            return Ok(());
+        };
+        if resolved_output_base.starts_with(&resolved_repo_contents_cache) {
+            // "The output base [...] is inside the repo contents cache [...]": the executor's
+            // setup throws it.
+            return Ok(());
+        }
+        if env
+            .get_workspace()
+            .is_some_and(|workspace| repo_contents_cache_path.starts_with(workspace))
+        {
+            // "The repo contents cache [...] is inside the main repo [...]": likewise.
+            return Ok(());
+        }
+        env.add_idle_task(Arc::new(
+            crate::idle_tasks::RepoContentsCacheGcIdleTask::create(
+                repo_contents_cache_path,
+                repo_options.repo_contents_cache_gc_max_age,
+                repo_options.repo_contents_cache_gc_idle_delay,
+            ),
+        ));
+        Ok(())
     }
 }
 

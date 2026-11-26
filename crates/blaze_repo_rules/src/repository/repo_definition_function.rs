@@ -374,13 +374,11 @@ fn load_repo_rule(
         Some(Ok(v)) => v,
     };
 
-    // PORT: Java `Module.getGlobal` returns any global; starlark-rust also marks loaded symbols
-    // private, so a private (`_name`) global is found the same way.
+    // Java `Module.getGlobal`: any global of the file, private ones included; a name the file
+    // only binds by `load` is not a global.
     let object = bzl_load_value
         .get_module()
-        .get_any_visibility(repo_rule_id.rule_name())
-        .ok()
-        .map(|(value, _)| value);
+        .java_get_global(repo_rule_id.rule_name());
     let Some(object) = object else {
         return Err(repo_definition_function_exception(
             ExternalDepsException::with_message(

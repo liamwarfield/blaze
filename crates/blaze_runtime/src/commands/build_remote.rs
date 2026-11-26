@@ -60,6 +60,17 @@ pub(crate) struct RemoteSupport {
     reporter: Arc<dyn ExtendedEventHandler>,
 }
 
+/// `env.addIdleTask(gcIdleTask)` of `RemoteModule.beforeCommand`, for the task the module
+/// created.
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:511 RemoteModule.beforeCommand
+fn add_disk_cache_gc_idle_task(env: &CommandEnvironment, module: &mut RemoteModule) {
+    if let Some(gc_idle_task) = module.take_disk_cache_gc_idle_task() {
+        env.add_idle_task(Arc::new(crate::idle_tasks::DiskCacheGcIdleTask(
+            gc_idle_task,
+        )));
+    }
+}
+
 /// Whether any remote functionality is requested: `RemoteModule.setup` returns early (the
 /// placeholder provider, which `blaze_exec::exec::executor_setup` ports) otherwise.
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:526 RemoteModule.setup
@@ -83,9 +94,10 @@ pub(crate) fn before_command(
     env: &CommandEnvironment,
     options: &OptionsParsingResult,
 ) -> Result<Option<RemoteSupport>, AbruptExitException> {
-    let Some(module) = set_up_module(env, options)? else {
+    let Some(mut module) = set_up_module(env, options)? else {
         return Ok(None);
     };
+    add_disk_cache_gc_idle_task(env, &mut module);
     let build_request_options = options.get_options::<BuildRequestOptions>();
     let lease_extension_requested = options
         .get_options::<RemoteOptions>()
@@ -181,10 +193,13 @@ fn set_up_module(
         )?;
         return Ok(None);
     }
-    if remote_options.scrubber.is_some() {
-        // RemoteOptions.ScrubberConverter parses the file (Scrubber.parse, TextFormat).
-        blaze_util::unported!("Scrubber.parse", "--experimental_remote_scrubbing_config");
-    }
+    // remoteOptions.scrubber: the converter parsed the file and checked its patterns.
+    let scrubber = remote_options.scrubber.as_ref().map(|s| {
+        Arc::new(
+            blaze_remote::scrubber::Scrubber::new(&s.config)
+                .expect("the option converter compiled every pattern"),
+        )
+    });
     let auth_and_tls_options = options
         .get_options::<AuthAndTLSOptions>()
         .unwrap_or_else(blaze_options::Options::<AuthAndTLSOptions>::get_defaults);
@@ -217,6 +232,7 @@ fn set_up_module(
         exec_root: exec_root.clone(),
         working_directory: env.get_working_directory().clone(),
         workspace: env.get_workspace().cloned(),
+        install_base: Some(directories.get_install_base().clone()),
         workspace_name: env.get_workspace_name().to_owned(),
         action_temps_directory: directories.get_action_temps_directory(&exec_root),
         build_request_id,
@@ -225,7 +241,7 @@ fn set_up_module(
         tool_version: BlazeVersionInfo::instance().get_version(),
         client_env: env.get_client_env().clone(),
         clock: Arc::new(JavaClock),
-        scrubber: None,
+        scrubber,
         hooks: RemoteHooks::new(),
     })?;
     // RemoteModule.setup ends with `actionInputFetcher = createActionInputFetcher(combinedCache)`.
@@ -380,7 +396,10 @@ pub(crate) fn dispatcher_before_command(
         )
     };
     if remote_requested(&remote_options) {
-        let module = set_up_module(env, env.get_options()).map_err(to_module_exception)?;
+        let mut module = set_up_module(env, env.get_options()).map_err(to_module_exception)?;
+        if let Some(module) = &mut module {
+            add_disk_cache_gc_idle_task(env, module);
+        }
         *DISPATCHER_MODULE.lock() = module;
         return Ok(());
     }

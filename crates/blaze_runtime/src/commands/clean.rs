@@ -329,8 +329,8 @@ impl BlazeCommand for CleanCommand {
             ));
         }
 
-        // PORT: `env.getEventBus().post(new NoBuildEvent())` and `CleanStartingEvent` are
-        // skipped: Blaze has no event bus yet.
+        // PORT: `env.getEventBus().post(new NoBuildEvent())` is skipped: Blaze has no event bus
+        // yet. CleanStartingEvent is delivered to its subscribers (WorkerModule, SandboxModule) below.
         let clean_options = options
             .get_options::<CleanCommandOptions>()
             .expect("CleanCommand.Options");
@@ -340,6 +340,19 @@ impl BlazeCommand for CleanCommand {
             self.os,
             env.get_reporter(),
         );
+        // env.getEventBus().post(new CleanStartingEvent(options)): its subscriber
+        // WorkerModule.cleanStarting shuts the worker pool down (the clean command inherits the
+        // build command's options, WorkerOptions among them).
+        // Java: com/google/devtools/build/lib/runtime/commands/CleanCommand.java:137 CleanCommand.exec
+        // Java: com/google/devtools/build/lib/worker/WorkerModule.java:74 WorkerModule.cleanStarting
+        if let Some(worker_options) =
+            options.get_options::<blaze_optdefs::misc::worker_options::WorkerOptions>()
+        {
+            blaze_exec::worker::worker_module::WorkerModule::clean_starting(&worker_options);
+        }
+        // Its subscriber SandboxModule.cleanStarting removes the sandbox stash.
+        // Java: com/google/devtools/build/lib/sandbox/SandboxModule.java:389 SandboxModule.cleanStarting
+        blaze_exec::sandbox::sandbox_module::SandboxModule::clean_starting_for_server();
 
         let symlink_prefix = get_symlink_prefix(
             &options

@@ -164,6 +164,31 @@ pub(crate) fn create_skyframe_executor_with_repo_precomputed(
     )
 }
 
+/// This command's part in the server's kept graph (Java: the arguments of
+/// `SkyframeExecutor.decideKeepIncrementalState` and `sync`).
+pub(crate) fn incremental_command(
+    env: &CommandEnvironment,
+    options: &OptionsParsingResult,
+) -> blaze_sky_top::incremental::IncrementalCommand {
+    let common_options = options
+        .get_options::<blaze_optdefs::command::common_command_options::CommonCommandOptions>()
+        .expect("CommonCommandOptions");
+    blaze_sky_top::incremental::IncrementalCommand {
+        state: env.get_blaze_workspace().get_incremental_state().clone(),
+        command_id: env.get_command_id().to_owned(),
+        tsgm: env.get_timestamp_granularity_monitor().clone(),
+        batch: env
+            .get_runtime()
+            .get_startup_options_provider()
+            .get_options::<blaze_optdefs::command::blaze_server_startup_options::BlazeServerStartupOptions>()
+            .is_some_and(|o| o.batch),
+        track_incremental_state: common_options.track_incremental_state,
+        discard_analysis_cache: options
+            .get_options::<blaze_optdefs::command::analysis_options::AnalysisOptions>()
+            .is_some_and(|o| o.discard_analysis_cache),
+    }
+}
+
 fn create_skyframe_executor_internal(
     env: &CommandEnvironment,
     options: Arc<OptionsParsingResult>,
@@ -177,6 +202,7 @@ fn create_skyframe_executor_internal(
         .map(|o| o.keep_going)
         .unwrap_or(false);
     let directories = env.get_directories();
+    let incremental = incremental_command(env, &options);
     let inputs = SkyframeExecutorInputs {
         workspace: env
             .get_workspace()
@@ -197,6 +223,7 @@ fn create_skyframe_executor_internal(
         execution,
         keep_going,
         top_level_build_options,
+        incremental: Some(incremental),
     };
     let created = SkyframeExecutor::create(inputs);
     if let Ok(skyframe_executor) = &created {

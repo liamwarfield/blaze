@@ -3,8 +3,10 @@
 //! process when the JVM shuts down, "to avoid creating zombie processes".
 //!
 //! PORT: Blaze has no JVM. The hooks run from an `atexit` handler, which `std::process::exit`
-//! and a return from `main` both reach. Blaze has no persistent server yet, so this is where every
-//! worker of a command ends; with a server it is where they end at server shutdown, as in Java.
+//! and a return from `main` both reach, and from the terminating-signal path of the server
+//! (`blaze_runtime::jvm_signals`, which ends with `_exit`). In-process mode runs one command per
+//! process, so every worker of a command ends here; a server keeps its workers until it shuts
+//! down, as in Java.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -78,8 +80,8 @@ pub fn remove_shutdown_hook(id: ShutdownHookId) -> bool {
     HOOKS.lock().remove(&id.0).is_some()
 }
 
-/// Runs every registered hook once (in registration order; Java starts them concurrently, in no
-/// particular order).
+/// Runs every registered hook once, newest first (Java starts them concurrently, in no
+/// particular order; the order here is a declared deviation, see the note below).
 pub fn run_shutdown_hooks() {
     SHUTTING_DOWN.store(true, Ordering::SeqCst);
     // PORT: the JVM starts all hooks at once, in no order. Here they run one after the other,

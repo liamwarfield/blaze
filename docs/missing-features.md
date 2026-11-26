@@ -26,13 +26,13 @@ Not ported at all (registered, so `help` lists them, but they do not run):
 - `vendor`
 - `dump`
 - `config`
-- `print_action`
 - `mobile-install`
 
 Partly ported:
 
 | Command | Missing |
 | --- | --- |
+| `print_action` | ported for targets (output equal to Bazel's on a cc_library and on brotli's `//:brotlidec`); missing: `--compile_one_dependency` (the target pattern phase's `CompileOneDependencyTransformer`) |
 | `mod` | `dump_repo_mapping`, `show_repo` and `tidy` ported after v0.1.0 (133 cases: equal in 89 after the tool's exclusion rules, 40 fail the same way on both sides, 4 differ; upstream tests not run yet); missing: `show_repo` proto output for three attribute types |
 | `help`, `fetch`, `canonicalize-flags`, `license` | ported after v0.1.0 (137 invocations, equal after normalisation: 120 identical, 13 of them by declared exit code, 16 fail identically on both sides, 1 different; binary sha256 `315c2147…`; upstream test counts to be re-measured); missing: `fetch --force` with target patterns |
 | `info` | 15 of 57 compared cases: `info` with no key, JVM-only keys (heap sizes, `java-home`), `build-language`, `peak-heap-size`, `starlark-semantics` |
@@ -79,7 +79,10 @@ Partly ported:
 
 - Native aspects (Starlark aspects are ported).
 - Native rules without an analysis implementation: `genquery`, `starlark_doc_extract`,
-  `action_listener`, `extra_action`, `environment`, `java_plugins_flag_alias`.
+  `environment`, `java_plugins_flag_alias`.
+- Extra actions (`action_listener`, `extra_action`, `--experimental_action_listener`): ported
+  for builds with merged analysis and execution (Bazel's default); the path without it
+  (`BuildView.addExtraActionsIfRequested`) and `ctx.actions.do_nothing` are not.
 - Java: the Java configuration fragment and `java_common` built-ins. No Java target has been
   analysed.
 - Apple and Objective-C fragments, Android.
@@ -156,11 +159,19 @@ in, not re-reviewed). Missing:
   `streamed_proto` ported since.
 - Build event stream: `run`, `fetch`, `query`, a command that stops before it runs, target
   summaries, aspect events, failed patterns and analysis failures, and progress stdout/stderr
-  are ported (bep-wave-1); still missing: the stream of `cquery` / `aquery` (fails loudly), the
-  loading and analysis events when analysis fails or nothing executes (`fetch` with targets,
-  `--nobuild`), Skymeld's interleaving of `targetConfigured` / `targetCompleted` and the late
-  `convenienceSymlinksIdentified`, successful actions with `--build_event_publish_all_actions`
-  (fails loudly), `command.profile.gz` in `buildToolLogs` (no profiler).
+  are ported (bep-wave-1); the stream of `cquery` / `aquery`, `--nobuild`, `fetch` with targets
+  and `--build_event_publish_all_actions` were ported later (reporting fixer, 2026-11-25);
+  still missing: Skymeld's interleaving of `targetConfigured` / `targetCompleted` and the late
+  `convenienceSymlinksIdentified`, the Build Event Service upload (`--bes_backend` fails
+  loudly).
+- `buildMetrics`: two groups are absent from the last `buildMetrics` message (not zeroed, not
+  sent): the Skyframe graph statistics of `buildGraphMetrics` (`builtValues`,
+  `evaluatedValues`, `postInvocationSkyframeNodeCount`, and on a warm server the
+  dirtied/changed/cleaned counts), and `memoryMetrics` (JVM heap and garbage collection; Blaze
+  has no JVM). `artifactMetrics` is produced since 2026-11-26 (counts equal to Bazel's on a
+  brotli build). `cumulativeMetrics` counts only commands that have a build event transport
+  (Bazel counts every command). The referee does not compare `buildMetrics` sub-messages yet,
+  so these do not show in its scores.
 - 4 build-event items per project still differ on brotli and re2: `buildToolLogs` (no
   `command.profile.gz`), and the three command lines (`--install_md5` is Blaze's own install
   key; `--restart_reason=no_daemon` because Blaze starts a server per command).

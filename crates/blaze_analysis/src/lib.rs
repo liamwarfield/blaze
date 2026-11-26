@@ -32,6 +32,8 @@ pub mod coverage_report_value;
 pub mod dependency_kind;
 pub mod info;
 pub mod provider_map;
+pub mod required_fragments_util;
+pub mod skyframe_env;
 
 // Aspects wave, W3 (DESIGN.md "Ownership (aspects wave)").
 pub mod aspect_aware_attribute_mapper;
@@ -51,6 +53,7 @@ pub mod bazel;
 pub mod config;
 pub mod configuredtargets;
 pub mod constraints;
+pub mod extra;
 pub mod platform;
 pub mod providers;
 pub mod rule;

@@ -412,6 +412,19 @@ pub trait AnalysisPostProcessor {
         skyframe_executor: &SkyframeExecutor,
         analysis_result: &AnalysisResult,
     ) -> Result<(), BuildToolError>;
+
+    /// `new ExecutionTool(env, request)` of a request without merged analysis and execution
+    /// that does not analyze (`--noanalyze`): Java creates the tool after
+    /// `AnalysisPhaseRunner.execute` returned, outside `if (performAnalysisPhase)`. The default
+    /// is for post-processors that create no execution tool.
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:520 BuildTool.buildTargetsWithoutMergedAnalysisExecution
+    fn process_without_analysis(
+        &self,
+        _request: &BuildRequest,
+        _skyframe_executor: &SkyframeExecutor,
+    ) -> Result<(), BuildToolError> {
+        Ok(())
+    }
 }
 
 /// The execution phase of a build (Java `ExecutionTool.executeBuild` and the Skymeld
@@ -467,10 +480,11 @@ pub trait BuildEventHooks {
     ) {
     }
 
-    /// After the project file was evaluated: the release of the tentative canonical command
-    /// line (`ReleaseReplaceableBuildEvent`).
+    /// After the project file was evaluated and its flags applied. Without project flags, the
+    /// release of the tentative canonical command line (`ReleaseReplaceableBuildEvent`); with
+    /// them, the applier has posted the final `CanonicalCommandLineEvent`.
     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:343 BuildTool.buildTargets
-    fn project_evaluated(&self) {}
+    fn project_evaluated(&self, _project_flags_applied: bool) {}
 
     /// The finally block of `BuildTool.buildTargets` when there was no catastrophe:
     /// `env.ensureBuildInfoPosted()`. The workspace status actions will not run with certain
@@ -733,8 +747,8 @@ impl<'a> BuildTool<'a> {
         if !project_evaluation_result.build_options.is_empty() {
             // First parse the native options from the project file, then its Starlark options;
             // buildOptions = runtime.createBuildOptions(optionsParser).
-            // PORT: the CanonicalCommandLineEvent / UpdateOptionsEvent posts belong to the
-            // command's build event stream (blaze_runtime), which the applier does not post.
+            // The applier posts the CanonicalCommandLineEvent (UpdateOptionsEvent has no
+            // subscriber at the pin).
             let project_file = project_evaluation_result
                 .project_file
                 .as_ref()
@@ -753,7 +767,7 @@ impl<'a> BuildTool<'a> {
             };
         }
         if let Some(hooks) = self.build_event_hooks {
-            hooks.project_evaluated();
+            hooks.project_evaluated(!project_evaluation_result.build_options.is_empty());
         }
 
         // buildTargetsWithoutMergedAnalysisExecution
@@ -806,6 +820,12 @@ impl<'a> BuildTool<'a> {
                     failure_detail: delayed_failure_detail.clone(),
                 });
             }
+        } else {
+            // executionTool = new ExecutionTool(env, request), created whether or not the request
+            // analyzes.
+            // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:520 BuildTool.buildTargetsWithoutMergedAnalysisExecution
+            self.analysis_post_processor
+                .process_without_analysis(request, self.skyframe_executor)?;
         }
         Ok(())
     }

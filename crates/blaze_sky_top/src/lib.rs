@@ -37,6 +37,7 @@ pub mod pattern_expanding_error;
 pub mod project;
 pub mod skyframe_build_view;
 pub mod skyframe_error_processor;
+pub mod incremental;
 pub mod skyframe_executor;
 pub mod skyframe_progress_receiver;
 pub mod target_pattern_phase;

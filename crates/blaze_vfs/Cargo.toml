@@ -9,5 +9,6 @@ publish.workspace = true
 [dependencies]
 sha2 = { workspace = true }
 libc = { workspace = true }
+indexmap.workspace = true
 # string_encoding: internal strings <-> platform strings at the system-call boundary.
 blaze_util = { path = "../blaze_util" }

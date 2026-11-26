@@ -24,12 +24,15 @@ use super::worker_pool::{WorkerPool, WorkerPoolConfig, WorkerPoolImpl};
 use super::worker_process_metrics::WorkerProcessMetricsCollector;
 use super::worker_spawn_runner::WorkerSpawnRunner;
 use crate::exec::abstract_spawn_strategy::AbstractSpawnStrategy;
+use crate::exec::bin_tools::BinTools;
 use crate::exec::exec_command_environment::ExecCommandEnvironment;
 use crate::exec::local::local_env_provider;
 use crate::exec::runfiles_tree_updater::RunfilesTreeUpdater;
 use crate::exec::spawn_strategy_registry::SpawnStrategyRegistryBuilder;
 use crate::exec::tree_deleter::TreeDeleter;
 use crate::sandbox::asynchronous_tree_deleter::{AsynchronousTreeDeleter, MOVED_TRASH_DIR};
+use crate::sandbox::linux_sandbox_util;
+use blaze_vfs::FileSystemRef;
 
 // Java: com/google/devtools/build/lib/worker/WorkerModule.java:51 WorkerModule.STALE_TRASH
 const STALE_TRASH: &str = "_stale_trash";
@@ -64,6 +67,11 @@ pub struct WorkerBuildStarting<'a> {
     pub output_base: &'a Path,
     /// `env.getReporter()`.
     pub reporter: Arc<dyn EventHandler>,
+    /// `env.getBlazeWorkspace().getBinTools()` (read with `--experimental_worker_sandbox_hardening`
+    /// for `LinuxSandboxUtil.getLinuxSandbox`).
+    pub bin_tools: Option<Arc<BinTools>>,
+    /// `env.getRuntime().getFileSystem()` (for `SandboxOptions.getInaccessiblePaths`).
+    pub file_system: Option<FileSystemRef>,
 }
 
 /// A module that adds the WorkerActionContextProvider to the available action context
@@ -134,12 +142,46 @@ impl WorkerModule {
         }
         // env.getRuntime().getProductName() + "-workers"
         let worker_dir = event.output_base.get_relative_str("bazel-workers");
+        let sandbox_options = event.sandbox_options;
         let worker_sandbox_options: Option<WorkerSandboxOptions> = if options.sandbox_hardening {
-            // LinuxSandboxUtil.getLinuxSandbox(workspace) and the sandbox options; the hardened
-            // sandbox needs cgroups (see SandboxedWorker).
-            blaze_util::unported!(
-                "WorkerModule.buildStarting (--experimental_worker_sandbox_hardening)"
-            )
+            let sandbox_options = sandbox_options.expect("NullPointerException: sandboxOptions");
+            // ImmutableSet.copyOf: first occurrence wins, insertion order.
+            let mut tmpfs_path = Vec::new();
+            for p in &sandbox_options.sandbox_tmpfs_path {
+                if !tmpfs_path.contains(&p.0) {
+                    tmpfs_path.push(p.0.clone());
+                }
+            }
+            let mut writable_paths = Vec::new();
+            for p in &sandbox_options.sandbox_writable_path {
+                if !writable_paths.contains(p) {
+                    writable_paths.push(p.clone());
+                }
+            }
+            // ImmutableMap.builder().putAll(...).buildKeepingLast()
+            let mut additional_mount_paths = IndexMap::new();
+            for (k, v) in &sandbox_options.sandbox_additional_mounts {
+                additional_mount_paths.insert(k.clone(), v.clone());
+            }
+            Some(WorkerSandboxOptions {
+                sandbox_binary: event
+                    .bin_tools
+                    .as_ref()
+                    .and_then(|b| linux_sandbox_util::get_linux_sandbox(b)),
+                fake_hostname: sandbox_options.sandbox_fake_hostname,
+                fake_username: sandbox_options.sandbox_fake_username,
+                debug_mode: sandbox_options.sandbox_debug,
+                tmpfs_path,
+                writable_paths,
+                memory_limit: sandbox_options.memory_limit_mb,
+                inaccessible_paths: sandbox_options.get_inaccessible_paths(
+                    event
+                        .file_system
+                        .as_ref()
+                        .expect("the runtime's file system"),
+                ),
+                additional_mount_paths,
+            })
         } else {
             None
         };
@@ -157,17 +199,23 @@ impl WorkerModule {
             }
         }
         // Java: com/google/devtools/build/lib/worker/WorkerModule.java:126 WorkerModule.buildStarting
-        let use_new_cgroup_implementation = event
-            .sandbox_options
-            .is_some_and(|o| o.use_new_cgroup_implementation);
+        let use_new_cgroup_implementation =
+            sandbox_options.is_some_and(|o| o.use_new_cgroup_implementation);
         let cgroup_factory = if !use_new_cgroup_implementation {
             None
         } else {
-            // sandboxHardening ? sandboxOptions.getLimits() : {}: hardening fails loudly above.
             Some(Arc::new(VirtualCgroupFactory::new(
                 "worker_",
                 VirtualCgroup::get_instance(),
-                IndexMap::new(),
+                if options.sandbox_hardening {
+                    sandbox_options
+                        .expect("sandboxOptions")
+                        .get_limits()
+                        .into_iter()
+                        .collect()
+                } else {
+                    IndexMap::new()
+                },
                 options.use_cgroups_on_linux,
             )))
         };
@@ -329,6 +377,8 @@ impl WorkerModule {
                 sandbox_options: Some(&env.sandbox_options),
                 output_base: &env.output_base,
                 reporter: env.reporter.clone(),
+                bin_tools: Some(env.bin_tools.clone()),
+                file_system: Some(env.file_system.clone()),
             });
         }
         let worker_pool = MODULE
@@ -426,5 +476,25 @@ impl WorkerModule {
     /// `workerPool` (`@VisibleForTesting`).
     pub fn get_worker_pool() -> Option<Arc<dyn WorkerPool>> {
         MODULE.lock().worker_pool.clone()
+    }
+
+    /// `workerFactory` (`@VisibleForTesting`).
+    pub fn get_worker_factory() -> Option<Arc<WorkerFactory>> {
+        MODULE.lock().worker_factory.clone()
+    }
+
+    /// For tests: `new WorkerModule()` (the module's state is process-wide here). Closes the pool
+    /// of the previous module first.
+    #[doc(hidden)]
+    pub fn reset_for_testing() {
+        let mut st = MODULE.lock();
+        if let Some(pool) = st.worker_pool.take() {
+            pool.close();
+        }
+        if let Some(manager) = st.worker_lifecycle_manager.take() {
+            manager.stop_processing();
+            manager.interrupt();
+        }
+        *st = WorkerModuleState::default();
     }
 }

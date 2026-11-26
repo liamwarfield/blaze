@@ -252,6 +252,7 @@ fn dump_action_cache(env: &CommandEnvironment, out: &mut PrintStream) -> bool {
         reporter.as_ref() as &dyn blaze_events::EventHandler,
     ) {
         Ok(cache) => {
+            crate::idle_tasks::note_persistent_action_cache_loaded();
             cache.dump(out);
             true
         }

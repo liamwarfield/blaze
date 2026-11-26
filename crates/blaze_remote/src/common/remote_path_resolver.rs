@@ -146,15 +146,87 @@ impl RemotePathResolver for SiblingRepositoryLayoutResolver {
 
 /// Adapts a given base `RemotePathResolver` to also apply a `PathMapper` to map (and inverse map)
 /// paths.
-// Java: com/google/devtools/build/lib/remote/common/RemotePathResolver.java:174 RemotePathResolver.createMapped
+// Java: com/google/devtools/build/lib/remote/common/RemotePathResolver.java:169 RemotePathResolver.createMapped
 pub fn create_mapped(
     base: Arc<dyn RemotePathResolver>,
-    _exec_root: &Path,
+    exec_root: &Path,
     path_mapper: &PathMapper,
 ) -> Arc<dyn RemotePathResolver> {
     if path_mapper.is_noop() {
         return base;
     }
-    // PORT: blaze_exec's PathMapper has only the NOOP mapper.
-    blaze_util::unported!("RemotePathResolver.createMapped (path mapping)")
+    Arc::new(MappedRemotePathResolver {
+        base,
+        exec_root: exec_root.clone(),
+        path_mapper: path_mapper.clone(),
+        inverse: parking_lot::Mutex::new(std::collections::HashMap::new()),
+    })
+}
+
+/// The anonymous resolver of `createMapped`.
+// Java: com/google/devtools/build/lib/remote/common/RemotePathResolver.java:174 RemotePathResolver.createMapped
+struct MappedRemotePathResolver {
+    base: Arc<dyn RemotePathResolver>,
+    exec_root: Path,
+    path_mapper: PathMapper,
+    inverse: parking_lot::Mutex<std::collections::HashMap<PathFragment, PathFragment>>,
+}
+
+impl MappedRemotePathResolver {
+    fn map(&self, path: &PathFragment) -> PathFragment {
+        let mapped_path = self.path_mapper.map(path);
+        let previous_path = self.inverse.lock().insert(mapped_path.clone(), path.clone());
+        blaze_util::check_state!(
+            previous_path.as_ref().is_none_or(|p| p == path),
+            "Two different paths {} and {} map to the same path {}",
+            previous_path.map(|p| p.to_string()).unwrap_or_else(|| "null".to_owned()),
+            path,
+            mapped_path
+        );
+        mapped_path
+    }
+
+    fn inverse_map(&self, path: &PathFragment) -> PathFragment {
+        match self.inverse.lock().get(path) {
+            Some(p) => p.clone(),
+            None => panic!(
+                "NullPointerException: Failed to find original path for mapped path {path}"
+            ),
+        }
+    }
+}
+
+impl RemotePathResolver for MappedRemotePathResolver {
+    fn get_working_directory(&self) -> PathFragment {
+        self.base.get_working_directory()
+    }
+
+    fn get_input_mapping(
+        &self,
+        context: &dyn SpawnExecutionContext,
+        will_access_repeatedly: bool,
+    ) -> Arc<InputMapping> {
+        self.base.get_input_mapping(context, will_access_repeatedly)
+    }
+
+    fn local_path_to_output_path(&self, path: &Path) -> String {
+        self.local_exec_path_to_output_path(&path.relative_to(&self.exec_root))
+    }
+
+    fn local_exec_path_to_output_path(&self, exec_path: &PathFragment) -> String {
+        self.base.local_exec_path_to_output_path(&self.map(exec_path))
+    }
+
+    fn output_path_to_local_path(&self, output_path: &str) -> Path {
+        self.exec_root.get_relative(&self.inverse_map(
+            &self
+                .base
+                .output_path_to_local_path(output_path)
+                .relative_to(&self.exec_root),
+        ))
+    }
+
+    fn local_path_to_exec_path(&self, local_path: &PathFragment) -> PathFragment {
+        self.base.local_path_to_exec_path(local_path)
+    }
 }

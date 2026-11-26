@@ -2518,3 +2518,35 @@ fn patch_0060_deep_comparison() {
         .unwrap();
     assert_eq!(r, Ok("(True, True)".to_owned()));
 }
+
+/// Patch 0060, round 2: on a thread with a small stack (2 MiB here; 15000 levels need more than
+/// that, so the 20000-level cap alone would let the native stack overflow) a deep comparison
+/// stops with an error before the native stack overflows; a 5000-deep tuple hashes on a 256 MiB stack (Bazel hashes it: oracle probe
+/// q105 of loading-fix-2).
+#[test]
+fn patch_0060_guard_follows_the_thread_stack() {
+    let run = |stack: usize, src: &'static str| {
+        std::thread::Builder::new()
+            .stack_size(stack)
+            .spawn(move || {
+                let globals = dialect::bazel_universe();
+                let ast =
+                    AstModule::parse("t.bzl", src.to_owned(), &dialect::bzl_dialect()).unwrap();
+                Module::with_temp_heap(|module| {
+                    let mut e = Evaluator::new(&module);
+                    e.eval_module(ast, &globals).map_err(|e| bare_message(&e))?;
+                    Ok::<_, String>(module.get("r").unwrap().to_repr())
+                })
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    };
+    let deep_eq = "def f(n):\n    a = []\n    b = []\n    for i in range(n):\n        a = [a]\n        b = [b]\n    return a == b\nr = f(15000)\n";
+    assert_eq!(
+        run(2 << 20, deep_eq),
+        Err("Too many recursion levels".to_owned())
+    );
+    let deep_hash = "def f(n):\n    t = ()\n    for i in range(n):\n        t = (t,)\n    return len({t: 1})\nr = f(5000)\n";
+    assert_eq!(run(256 << 20, deep_hash), Ok("1".to_owned()));
+}

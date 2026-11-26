@@ -470,8 +470,27 @@ fn compute_ignored_prefixes(
     }
     let pkg_locator = pkg_locator.expect("not missing");
     if repository_name.is_main() {
-        // PORT: --vendor_dir (VENDOR_DIRECTORY) is not supported yet; Blaze never vendors.
+        let Some(vendor_directory) = crate::precomputed::VENDOR_DIRECTORY.get(env)? else {
+            return Ok(None);
+        };
+        let vendor_dir: Option<PathFragment> = vendor_directory.as_ref().as_ref().map(|p| {
+            PathFragment::create(&blaze_util::string_encoding::platform_to_internal(
+                p.as_os_str(),
+            ))
+        });
+
         for package_path_entry in pkg_locator.get_path_entries() {
+            let workspace_root = package_path_entry
+                .as_path()
+                .expect("a package path entry is a path root")
+                .as_fragment()
+                .clone();
+            if let Some(vendor_dir) = &vendor_dir
+                && vendor_dir.starts_with(&workspace_root)
+            {
+                ignored_prefixes_builder.insert(vendor_dir.relative_to(&workspace_root));
+            }
+
             let rooted_prefix_file = RootedPath::to_rooted_path(
                 package_path_entry.clone(),
                 &PathFragment::create(BAZELIGNORE_REPOSITORY_RELATIVE_PATH),

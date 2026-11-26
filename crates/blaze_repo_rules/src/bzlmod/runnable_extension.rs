@@ -236,24 +236,20 @@ impl RunnableExtension {
 }
 
 /// Java `Module.getGlobal(name)` on a loaded .bzl: the value of a global defined by the file,
-/// public or private (loaded symbols are not globals).
-///
-/// PORT: starlark-rust marks both private (`_x`) globals and loaded symbols as private; a
-/// private symbol is only looked up when its name is a private name.
+/// public or private; a name the file only binds by `load` is not a global.
+// Java: net/starlark/java/eval/Module.java:280 Module.getGlobal
 fn get_global(module: &FrozenModule, name: &str) -> Option<OwnedFrozenValue> {
-    if name.starts_with('_') {
-        module.get_any_visibility(name).ok().map(|(v, _)| v)
-    } else {
-        module.get_option(name).ok().flatten()
-    }
+    module.java_get_global(name)
 }
 
-/// The names of the globals of a loaded .bzl, in definition order.
-///
-/// PORT: Java `Module.getGlobals()` includes private globals; only public ones are listed here
-/// (they are only used for "did you mean" suggestions).
+/// Java `Module.getGlobals().keySet()` of a loaded .bzl: its globals (private ones included,
+/// load bindings excluded) in binding order.
+// Java: net/starlark/java/eval/Module.java:216 Module.getGlobals
 fn global_names(module: &FrozenModule) -> Vec<String> {
-    module.names().map(|n| n.as_str().to_owned()).collect()
+    module
+        .java_globals()
+        .map(|n| n.as_str().to_owned())
+        .collect()
 }
 
 /// `Starlark.type(x)` of a frozen value.

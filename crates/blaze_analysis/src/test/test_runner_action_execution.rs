@@ -46,6 +46,8 @@ pub fn register_executable_actions() {
     register_executable_action::<
         crate::bazel::coverage::coverage_report_action_builder::CoverageReportAction,
     >();
+    // The extra-action classes (`lib/analysis/extra`, `PseudoAction`).
+    crate::extra::execution::register_executable_actions();
     blaze_exec::analysis::test::register();
     blaze_exec::analysis::test::register_test_runner_action_view::<TestRunnerAction>(|a| {
         execution_action(a).clone()

@@ -133,6 +133,16 @@ impl Error {
         self.0.set_call_stack(call_stack);
     }
 
+    /// BLAZE PATCH 0061: the call stack, to move an error to where Bazel reports it.
+    pub fn call_stack_mut(&mut self) -> &mut CallStack {
+        self.0.call_stack_mut()
+    }
+
+    /// BLAZE PATCH 0061: set the span, also when one is set.
+    pub fn replace_span(&mut self, span: Span, codemap: &CodeMap) {
+        self.0.replace_span(span, codemap);
+    }
+
     /// Wrap this error with additional context (anyhow-style).
     /// Preserves the existing `Diagnostic` (span and call stack).
     pub fn with_context(self, context: String) -> Self {

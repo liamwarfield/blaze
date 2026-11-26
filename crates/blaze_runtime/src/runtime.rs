@@ -62,6 +62,8 @@ pub struct BlazeRuntime {
     /// `abruptShutdownHandler`: the gRPC server's `prepareForAbruptShutdown` (null in batch
     /// mode).
     abrupt_shutdown_handler: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// `cgroupsInfo`: the cgroups of the server's `VirtualCgroup` (null when it has none).
+    cgroups_info: Option<blaze_exec::sandbox::cgroups::CgroupsInfo>,
 }
 
 /// What the crash handling uses of the command's `CommandEnvironment`.
@@ -90,6 +92,11 @@ impl CrashEnv {
 }
 
 impl BlazeRuntime {
+    // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1649 BlazeRuntime.getCgroupsInfo
+    pub fn get_cgroups_info(&self) -> Option<&blaze_exec::sandbox::cgroups::CgroupsInfo> {
+        self.cgroups_info.as_ref()
+    }
+
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:526 BlazeRuntime.getFileSystem
     pub fn get_file_system(&self) -> &FileSystemRef {
         &self.file_system
@@ -161,8 +168,6 @@ impl BlazeRuntime {
 
     /// Hook method called by the BlazeCommandDispatcher prior to the dispatch of each command.
     /// PORT: skipped, memory instrumentation: the memory profiler (`--memory_profile`).
-    /// PORT: skipped, incremental: the idle tasks of the server between commands (GC and interner
-    /// shrinking, install base and action cache garbage collection).
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:636 BlazeRuntime.beforeCommand
     pub(crate) fn before_command(
         &self,
@@ -176,6 +181,37 @@ impl BlazeRuntime {
             // The CommandEnvironment is created on the command thread, which calls this.
             command_thread: ThreadInterrupt::current(),
         });
+        let options = env
+            .get_options()
+            .get_options::<blaze_optdefs::command::common_command_options::CommonCommandOptions>()
+            .expect("CommonCommandOptions");
+
+        let state_kept_after_build =
+            env.get_command_name() != "clean" && options.keep_state_after_build;
+        env.add_idle_task(Arc::new(
+            crate::idle_tasks::GcAndInternerShrinkingIdleTask::new(state_kept_after_build),
+        ));
+
+        if !options.install_base_gc_max_age.is_zero() {
+            env.add_idle_task(Arc::new(
+                crate::idle_tasks::InstallBaseGarbageCollectorIdleTask::create(
+                    env.get_directories().get_install_base(),
+                    options.install_base_gc_max_age,
+                ),
+            ));
+        }
+
+        if !options.action_cache_gc_max_age.is_zero() {
+            // workspace.getActionCacheGcIdleTask(delay, threshold / 100.0f, maxAge)
+            env.add_idle_task(Arc::new(
+                crate::idle_tasks::ActionCacheGarbageCollectorIdleTask::new(
+                    options.action_cache_gc_idle_delay,
+                    options.action_cache_gc_threshold as f32 / 100.0f32,
+                    options.action_cache_gc_max_age,
+                    env.get_output_base().clone(),
+                ),
+            ));
+        }
     }
 
     /// Posts the `CommandCompleteEvent`, so that listeners can tidy up. Called by
@@ -1078,6 +1114,7 @@ impl BlazeRuntime {
             env: parking_lot::Mutex::new(None),
             stored_exit_code: parking_lot::Mutex::new(None),
             abrupt_shutdown_handler,
+            cgroups_info: None,
         };
         for command in server_builder.get_commands() {
             runtime.add_command(command.clone());
@@ -1089,6 +1126,12 @@ impl BlazeRuntime {
                 .iter()
                 .map(|(name, command)| (name.clone(), command.annotation())),
         )));
+        // this.cgroupsInfo = VirtualCgroup.getInstance().cgroupsInfo(): every server creates its
+        // spawns cgroup at startup, whatever the command (review cgroups round 1, C2).
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:268 BlazeRuntime.<init>
+        runtime.cgroups_info = blaze_exec::sandbox::cgroups::VirtualCgroup::get_instance()
+            .cgroups_info()
+            .cloned();
 
         // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1516 BlazeRuntime.newRuntime
         CustomExitCodePublisher::set_abrupt_exit_status_file_dir(
@@ -1385,33 +1428,19 @@ mod tests {
     #[ignore = "needs response extensions"]
     fn adds_response_extensions() {}
 
-    #[test]
-    #[ignore = "needs idle tasks"]
-    fn adds_gc_and_interner_shrinking_idle_task_no_state_kept_after_build() {}
+    // adds_gc_and_interner_shrinking_idle_task_no_state_kept_after_build: ported in dispatcher_tests::blaze_runtime_idle_tasks.
 
-    #[test]
-    #[ignore = "needs idle tasks"]
-    fn adds_gc_and_interner_shrinking_idle_task_state_kept_after_build() {}
+    // adds_gc_and_interner_shrinking_idle_task_state_kept_after_build: ported in dispatcher_tests::blaze_runtime_idle_tasks.
 
-    #[test]
-    #[ignore = "needs idle tasks"]
-    fn does_not_add_install_base_gc_idle_task_when_disabled() {}
+    // does_not_add_install_base_gc_idle_task_when_disabled: ported in dispatcher_tests::blaze_runtime_idle_tasks.
 
-    #[test]
-    #[ignore = "needs idle tasks"]
-    fn adds_install_base_gc_idle_task_when_enabled() {}
+    // adds_install_base_gc_idle_task_when_enabled: ported in dispatcher_tests::blaze_runtime_idle_tasks.
 
-    #[test]
-    #[ignore = "needs idle tasks"]
-    fn does_not_add_action_cache_gc_idle_task_when_disabled() {}
+    // does_not_add_action_cache_gc_idle_task_when_disabled: ported in dispatcher_tests::blaze_runtime_idle_tasks.
 
-    #[test]
-    #[ignore = "needs idle tasks"]
-    fn adds_action_cache_gc_idle_task_when_enabled() {}
+    // adds_action_cache_gc_idle_task_when_enabled: ported in dispatcher_tests::blaze_runtime_idle_tasks.
 
-    #[test]
-    #[ignore = "needs idle tasks"]
-    fn adds_idle_tasks_from_modules() {}
+    // adds_idle_tasks_from_modules: ported in dispatcher_tests::blaze_runtime_idle_tasks.
 
     #[test]
     #[ignore = "needs a BlazeRuntime test builder with fake modules"]

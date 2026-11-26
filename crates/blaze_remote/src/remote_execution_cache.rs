@@ -169,16 +169,25 @@ impl RemotePathChecker for DefaultRemotePathChecker {
             let remote_action_file_system = remote_action_file_system.as_arc();
             let fragment = path.as_fragment().clone();
             let (sender, receiver) = futures::channel::oneshot::channel();
+            // A panic of the download is the future's unchecked exception: it is caught here and
+            // raised again in the waiter (Java's `catchingAsync` catches only `IOException`, so
+            // anything else fails the future and reaches the build as a crash).
             std::thread::spawn(move || {
-                let _ = sender.send(remote_action_file_system.download_if_remote(&fragment));
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    remote_action_file_system.download_if_remote(&fragment)
+                }));
+                let _ = sender.send(outcome);
             });
             match receiver.await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) if e.kind() == io::ErrorKind::Interrupted => return Err(e),
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(e))) if e.kind() == io::ErrorKind::Interrupted => return Err(e),
                 // Futures.catchingAsync(..., IOException.class, e -> { logger.atWarning()
                 // .withCause(e).log("Failed to download %s", path); return immediateVoidFuture(); })
                 // PORT: skipped, logging (the warning goes to the Java log only).
-                Ok(Err(_)) => {}
+                Ok(Ok(Err(_))) => {}
+                Ok(Err(panic)) => std::panic::resume_unwind(panic),
+                // The sender is dropped only when the thread ends without sending, which the
+                // catch above rules out but for an abort.
                 Err(_canceled) => return Err(errors::interrupted()),
             }
         }

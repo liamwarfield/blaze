@@ -1452,10 +1452,14 @@ impl RemoteExecutionService {
         ) {
             Ok(merkle_tree) => merkle_tree,
             Err(SpawnCacheError::Io(e)) => {
-                // PORT: `catch (CredentialHelperException e) { throw
-                // createExecExceptionForCredentialHelperException(e); }` has no port:
-                // `CredentialHelperException` (lib/authandtls/credentialhelper) is not ported, so
-                // no error is one.
+                if let Some(c) = crate::util::utils::credential_helper_exception_of(&e) {
+                    return Err(
+                        crate::util::utils::create_exec_exception_for_credential_helper_exception(
+                            c,
+                        )
+                        .into(),
+                    );
+                }
                 if let Some(e) = errors::downcast_ref::<RemoteExecutionCapabilitiesException>(&e) {
                     return Err(
                         create_exec_exception_from_remote_execution_capabilities_exception(e)

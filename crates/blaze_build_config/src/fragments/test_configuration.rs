@@ -1,8 +1,5 @@
 //! Port of `analysis/test/TestConfiguration.java` (the fragment only; its options and
 //! `RunsPerTestConverter` are `blaze_optdefs::fragment::test_configuration`).
-//!
-//! PORT: `SHOULD_INVALIDATE_FOR_OPTION_DIFF` (an `OptionsDiffPredicate` for incremental
-//! invalidation) is skipped, incremental.
 
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -263,4 +260,54 @@ mod tests {
     #[test]
     #[ignore = "needs analysis (TrimTestConfigurationTest)"]
     fn trim_test_configuration_tests() {}
+}
+
+/// Java's `TestOptions.ALWAYS_INVALIDATE_WHEN_CHANGED`: changes in --trim_test_configuration
+/// itself or related flags always prompt invalidation.
+// Java: com/google/devtools/build/lib/analysis/test/TestConfiguration.java:84 TestConfiguration.TestOptions.ALWAYS_INVALIDATE_WHEN_CHANGED
+const ALWAYS_INVALIDATE_WHEN_CHANGED: [&str; 2] = [
+    "trim_test_configuration",
+    "experimental_retain_test_configuration_across_testonly",
+];
+
+/// The `OptionsDiffPredicate` Bazel's rule class provider registers: whether a change of
+/// `changed_option` (declared by `affected_options_class`) from `old_value` to `new_value` must
+/// discard the analysis cache, given the new top-level `options`.
+// Java: com/google/devtools/build/lib/analysis/test/TestConfiguration.java:57 TestConfiguration.SHOULD_INVALIDATE_FOR_OPTION_DIFF
+pub fn should_invalidate_for_option_diff(
+    options: &BuildOptions,
+    affected_options_class: crate::fragment_options_class::FragmentOptionsClass,
+    changed_option: blaze_options::definition::OptionDefinitionRef,
+    old_value: &Option<blaze_options::Value>,
+    new_value: &Option<blaze_options::Value>,
+) -> bool {
+    if std::ptr::eq(affected_options_class, &TEST_OPTIONS)
+        && ALWAYS_INVALIDATE_WHEN_CHANGED.contains(&changed_option.get_option_name())
+    {
+        // changes in --trim_test_configuration itself or related flags always prompt invalidation
+        return true;
+    }
+    if !std::ptr::eq(affected_options_class, &TEST_OPTIONS)
+        && !std::ptr::eq(
+            affected_options_class,
+            &crate::fragment_options_class::COVERAGE_OPTIONS,
+        )
+    {
+        // options outside of TestOptions always prompt invalidation, except for --run_under.
+        if std::ptr::eq(affected_options_class, &crate::fragment_options_class::CORE_OPTIONS)
+            && changed_option.get_option_name() == "run_under"
+        {
+            use blaze_optdefs::fragment::run_under::RunUnder;
+            let as_run_under =
+                |v: &Option<blaze_options::Value>| v.as_ref().and_then(|v| v.downcast_ref::<RunUnder>().cloned());
+            return RunUnder::trim_for_non_test_configuration(as_run_under(old_value).as_ref())
+                != RunUnder::trim_for_non_test_configuration(as_run_under(new_value).as_ref());
+        }
+        return true;
+    }
+    // other options in TestOptions require invalidation when --trim_test_configuration is off
+    !options
+        .get::<TestConfigurationTestOptions>()
+        .expect("TestOptions")
+        .trim_test_configuration
 }

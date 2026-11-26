@@ -21,6 +21,7 @@ use crate::python::py_builtins::CopyWithoutCachingAction;
 pub fn register_executable_actions() {
     register_executable_action::<CppCompileAction>();
     register_executable_action::<CopyWithoutCachingAction>();
+    register_executable_action::<crate::genquery::QueryResultAction>();
     register_executable_action::<crate::java::java_compile_action::JavaCompileAction>();
     register_executable_action::<crate::java::java_header_compile_action::JavaHeaderCompileAction>(
     );

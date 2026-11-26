@@ -48,11 +48,25 @@ pub trait RuleConfiguredTargetFactory: Send + Sync {
         &self,
         rule_context: &mut RuleContext,
     ) -> Result<Option<ConfiguredTarget>, CreateConfiguredTargetError>;
+
+    /// Adds any rule implementation-specific requirements to the given builder (Java's default
+    /// does nothing).
+    // Java: com/google/devtools/build/lib/analysis/RuleConfiguredTargetFactory.java:129 RuleConfiguredTargetFactory.addRuleImplSpecificRequiredConfigFragments
+    fn add_rule_impl_specific_required_config_fragments(
+        &self,
+        _required_fragments: &mut crate::providers::required_config_fragments_provider::RequiredConfigFragmentsProviderBuilder,
+        _attributes: &crate::config::configured_attribute_mapper::ConfiguredAttributeMapper,
+        _configuration: &blaze_build_config::build_configuration_value::BuildConfigurationValue,
+    ) {
+    }
 }
 
 /// The analysis view of Bazel's `ConfiguredRuleClassProvider`.
 pub struct ConfiguredRuleClassProvider {
     factories: IndexMap<String, Arc<dyn RuleConfiguredTargetFactory>>,
+    /// Java `nativeAspectClassMap`: the native aspect classes by key (`getName()`), with the
+    /// `ConfiguredAspectFactory` the Java class also implements.
+    native_aspect_classes: IndexMap<String, NativeAspectEntry>,
     /// Java `getToolsRepository()` (`@bazel_tools`).
     pub tools_repository: RepositoryName,
 }
@@ -61,7 +75,40 @@ impl ConfiguredRuleClassProvider {
     pub fn builder() -> ConfiguredRuleClassProviderBuilder {
         ConfiguredRuleClassProviderBuilder {
             factories: IndexMap::new(),
+            native_aspect_classes: IndexMap::new(),
         }
+    }
+
+    /// The native aspect classes by key.
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredRuleClassProvider.java:767 ConfiguredRuleClassProvider.getNativeAspectClassMap
+    pub fn get_native_aspect_class_map(
+        &self,
+    ) -> IndexMap<String, Arc<dyn blaze_packages::aspect::NativeAspectClass>> {
+        self.native_aspect_classes
+            .iter()
+            .map(|(k, e)| (k.clone(), e.aspect_class.clone()))
+            .collect()
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredRuleClassProvider.java:772 ConfiguredRuleClassProvider.getNativeAspectClass
+    pub fn get_native_aspect_class(
+        &self,
+        key: &str,
+    ) -> Option<Arc<dyn blaze_packages::aspect::NativeAspectClass>> {
+        self.native_aspect_classes
+            .get(key)
+            .map(|e| e.aspect_class.clone())
+    }
+
+    /// `(ConfiguredAspectFactory) nativeAspectClass`: the factory of a registered native aspect
+    /// class (Java's class implements both interfaces).
+    pub fn get_native_aspect_factory(
+        &self,
+        aspect_class: &dyn blaze_packages::aspect::NativeAspectClass,
+    ) -> Option<Arc<dyn crate::configured_aspect_factory::ConfiguredAspectFactory>> {
+        self.native_aspect_classes
+            .get(&aspect_class.get_key())
+            .map(|e| e.factory.clone())
     }
 
     /// The factory registered under `name` (the native rule class's
@@ -76,6 +123,14 @@ impl ConfiguredRuleClassProvider {
 
 pub struct ConfiguredRuleClassProviderBuilder {
     factories: IndexMap<String, Arc<dyn RuleConfiguredTargetFactory>>,
+    native_aspect_classes: IndexMap<String, NativeAspectEntry>,
+}
+
+/// A registered native aspect: its class and its factory.
+#[derive(Clone)]
+struct NativeAspectEntry {
+    aspect_class: Arc<dyn blaze_packages::aspect::NativeAspectClass>,
+    factory: Arc<dyn crate::configured_aspect_factory::ConfiguredAspectFactory>,
 }
 
 impl ConfiguredRuleClassProviderBuilder {
@@ -88,9 +143,28 @@ impl ConfiguredRuleClassProviderBuilder {
         self
     }
 
+    /// Adds a native aspect class (Java's `NativeAspectClass` that is also its
+    /// `ConfiguredAspectFactory`).
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredRuleClassProvider.java:272 ConfiguredRuleClassProvider.Builder.addNativeAspectClass
+    pub fn add_native_aspect_class(
+        &mut self,
+        aspect_class: Arc<dyn blaze_packages::aspect::NativeAspectClass>,
+        factory: Arc<dyn crate::configured_aspect_factory::ConfiguredAspectFactory>,
+    ) -> &mut Self {
+        self.native_aspect_classes.insert(
+            aspect_class.get_key(),
+            NativeAspectEntry {
+                aspect_class,
+                factory,
+            },
+        );
+        self
+    }
+
     pub fn build(self) -> ConfiguredRuleClassProvider {
         ConfiguredRuleClassProvider {
             factories: self.factories,
+            native_aspect_classes: self.native_aspect_classes,
             tools_repository: blaze_cmdline::repository_name::BAZEL_TOOLS.clone(),
         }
     }

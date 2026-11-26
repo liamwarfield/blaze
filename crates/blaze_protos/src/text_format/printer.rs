@@ -7,8 +7,9 @@
 //!
 //! PORT: the safe debug format (`enablingSafeDebugFormat`, `debugFormatPrinter()`: redaction of
 //! `debug_redact` fields) and the field reporter levels (a no-op by default) are not ported;
-//! `debug_format_printer` fails loudly. Extensions are never set on a Blaze message (they would
-//! be unknown fields of the parsed message, as in Java with an empty extension registry).
+//! `debug_format_printer` fails loudly. A generated message's set extensions (Blaze holds them as
+//! fields, see `build.rs`) are printed as extensions: [`DynamicMessage::from_message`] parses
+//! with the compiled extensions registered.
 
 use crate::JavaMessage;
 use crate::descriptors::{Descriptor, FieldDescriptor, JavaType, Type, pool};
@@ -361,7 +362,21 @@ impl Printer {
         generator: &mut TextGenerator<'_>,
     ) {
         if field.is_extension() {
-            unreachable!("no extension is ever a field of a pool descriptor");
+            generator.print("[");
+            // We special-case MessageSet elements for compatibility with proto1.
+            if field.get_containing_type().message_set_wire_format
+                && field.type_ == Type::Message
+                && field.is_optional()
+                // object equality
+                && field
+                    .get_extension_scope()
+                    .is_some_and(|scope| scope.same(field.get_message_type()))
+            {
+                generator.print(&field.get_message_type().full_name);
+            } else {
+                generator.print(&field.full_name);
+            }
+            generator.print("]");
         } else if field.is_group_like() {
             // Groups must be serialized with their original capitalization.
             generator.print(&field.get_message_type().name);

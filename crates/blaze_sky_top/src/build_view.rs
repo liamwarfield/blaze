@@ -69,6 +69,10 @@ pub struct AnalysisResult {
     analysis_phase_complete_stats: AnalysisPhaseCompleteStats,
     /// The `AnalysisGraphStatsEvent`'s metrics (`None`: conflicts were not checked, no event).
     build_graph_metrics: Option<blaze_protos::build_event_stream::build_metrics::BuildGraphMetrics>,
+    /// The number of top-level keys the analysis was asked for: the configured target keys and
+    /// the top-level aspect keys (Java's `topLevelKeys` of
+    /// `SkyframeBuildView.analyzeAndExecuteTargets`).
+    top_level_key_count: usize,
 }
 
 impl AnalysisResult {
@@ -76,6 +80,17 @@ impl AnalysisResult {
     // Java: com/google/devtools/build/lib/analysis/BuildView.java:253 BuildView.update
     pub fn get_analysis_phase_complete_stats(&self) -> &AnalysisPhaseCompleteStats {
         &self.analysis_phase_complete_stats
+    }
+
+    /// Whether the analysis was asked for any top-level key (configured target or top-level
+    /// aspect). With merged analysis and execution, Java's `AnalysisOperationWatcher` runs
+    /// `analysisFinishedCallback` (which posts `AnalysisGraphStatsEvent` and
+    /// `AnalysisPhaseCompleteEvent`) when the last of these keys concludes its analysis: never
+    /// when there is none.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:695 SkyframeBuildView.analyzeAndExecuteTargets
+    // Java: com/google/devtools/build/lib/skyframe/AnalysisOperationWatcher.java:70 AnalysisOperationWatcher.handleTopLevelEntityAnalysisConcluded
+    pub fn has_top_level_keys(&self) -> bool {
+        self.top_level_key_count > 0
     }
 
     /// The `BuildGraphMetrics` of the `AnalysisGraphStatsEvent` (`None` when the analysis did not
@@ -291,6 +306,12 @@ pub fn update_with_aspects_parameters(
     // Configuration creation.
     // TODO(gregce): Consider dropping this phase and passing on-the-fly target / exec configs as
     // needed. This requires cleaning up the invalidation in SkyframeBuildView.setConfigurations.
+    // Java: com/google/devtools/build/lib/analysis/BuildView.java:250 BuildView.update
+    skyframe_executor.reset_progress_receiver();
+    // Java: com/google/devtools/build/lib/analysis/BuildView.java:273 BuildView.update
+    skyframe_executor
+        .should_discard_analysis_cache(target_options, event_handler.as_ref())
+        .map_err(BuildViewError::InvalidConfiguration)?;
     skyframe_executor
         .set_baseline_configuration(target_options, event_handler.clone())
         .map_err(BuildViewError::InvalidConfiguration)?;
@@ -540,11 +561,11 @@ pub fn update_with_aspects_parameters(
 
     // The counters of AnalysisPhaseRunner's AnalysisPhaseCompleteEvent.
     // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:431 AnalysisPhaseRunner.runAnalysisPhase
-    let analysis_phase_complete_stats = skyframe_build_view::get_evaluated_counts(
-        skyframe_executor.get_evaluator(),
-        timer.elapsed().as_millis() as i64,
-    );
+    let analysis_phase_complete_stats =
+        skyframe_executor.get_evaluated_counts(timer.elapsed().as_millis() as i64);
 
+    // Sets.union(buildDriverCTKeys, buildDriverAspectKeys).size()
+    let top_level_key_count = top_level_ct_keys.len() + aspect_keys.len();
     Ok(create_result(
         loading_result,
         top_level_config,
@@ -552,6 +573,7 @@ pub fn update_with_aspects_parameters(
         aspect_keys,
         targets_to_skip,
         analysis_phase_complete_stats,
+        top_level_key_count,
     ))
 }
 
@@ -872,11 +894,12 @@ fn create_top_level_aspect_keys(
     for aspect in aspects {
         let aspect_class = create_top_level_aspect_class(aspect, &main_repo_mapping, &|name| {
             // ruleClassProvider.getNativeAspectClassMap().get(aspect)
-            // PORT: ConfiguredRuleClassProvider's native aspect class map is not ported.
-            blaze_util::unported!(
-                "ConfiguredRuleClassProvider.getNativeAspectClassMap",
-                "native aspect '{name}'"
-            )
+            skyframe_executor
+                .get_analysis_services()
+                .expect("BuildView.ruleClassProvider")
+                .rule_class_provider
+                .get_native_aspect_class(name)
+                .map(AspectClass::Native)
         })
         .map_err(|e| BuildViewError::ViewCreationFailed {
             message: e.get_message().to_owned(),
@@ -909,6 +932,7 @@ fn create_result(
     top_level_aspects_keys: Vec<TopLevelAspectsKey>,
     targets_to_skip: Vec<ConfiguredTarget>,
     analysis_phase_complete_stats: AnalysisPhaseCompleteStats,
+    top_level_key_count: usize,
 ) -> AnalysisResult {
     let tests_to_run = loading_result.get_tests_to_run_labels();
     let configured_targets: Vec<ConfiguredTarget> =
@@ -934,6 +958,7 @@ fn create_result(
             .to_vec(),
         analysis_phase_complete_stats,
         build_graph_metrics: skyframe_analysis_result.get_build_graph_metrics().cloned(),
+        top_level_key_count,
     }
 }
 

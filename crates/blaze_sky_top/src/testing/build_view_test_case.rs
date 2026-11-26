@@ -1018,6 +1018,7 @@ impl BuildViewTestCase {
         build_options: &Arc<BuildOptions>,
     ) -> SkyframeExecutor {
         let inputs = SkyframeExecutorInputs {
+            incremental: None,
             workspace: self.root_directory.clone(),
             working_directory: self.root_directory.clone(),
             output_base: self.output_base.clone(),

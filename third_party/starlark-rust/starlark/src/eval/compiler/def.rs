@@ -460,6 +460,25 @@ impl Compiler<'_, '_, '_, '_> {
         return_type: Option<&CstTypeExpr>,
         suite: &CstStmt,
     ) -> Result<ExprCompiled, CompilerInternalError> {
+        // BLAZE PATCH 0061: a function body is a new Java frame: no enclosing error location.
+        self.with_java_handler(None, |this| { // BLAZE PATCH 0061
+            this.function_body( // BLAZE PATCH 0061
+                name, signature_span, declaration_span, scope_id, params, return_type, suite, // BLAZE PATCH 0061
+            ) // BLAZE PATCH 0061
+        }) // BLAZE PATCH 0061
+    } // BLAZE PATCH 0061
+
+    #[allow(clippy::too_many_arguments)] // BLAZE PATCH 0061
+    fn function_body( // BLAZE PATCH 0061
+        &mut self,
+        name: &str,
+        signature_span: FrozenFileSpan,
+        declaration_span: FrozenFileSpan,
+        scope_id: ScopeId,
+        params: &[CstParameter],
+        return_type: Option<&CstTypeExpr>,
+        suite: &CstStmt,
+    ) -> Result<ExprCompiled, CompilerInternalError> {
         let file = self.codemap.file_span(suite.span);
         let function_name = format!("{}.{}", file.file.filename(), name);
         let name = self.eval.frozen_heap().alloc_str_intern(name);

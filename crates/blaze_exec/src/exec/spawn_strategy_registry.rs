@@ -253,7 +253,58 @@ impl SpawnStrategyRegistry {
         }
     }
 
-    // PORT: skipped, tracing (logSpawnStrategies only writes the Java log).
+    /// Writes the registry to the server log (`BlazeExecutor`'s constructor calls it).
+    // Java: com/google/devtools/build/lib/exec/SpawnStrategyRegistry.java:210 SpawnStrategyRegistry.logSpawnStrategies
+    pub fn log_spawn_strategies(&self) {
+        const CLASS: &str = "com.google.devtools.build.lib.exec.SpawnStrategyRegistry";
+        const METHOD: &str = "logSpawnStrategies";
+        let log = |message: String| blaze_util::server_logger::info(CLASS, METHOD, &message);
+        for (mnemonic, strategies) in &self.mnemonic_to_strategies {
+            log(format!(
+                "MnemonicToStrategyImplementations: \"{}\" = [{}]",
+                mnemonic,
+                to_implementation_names(strategies)
+            ));
+        }
+        for (filter, strategies) in &self.strategy_regex_filter.filter_to_strategies {
+            log(format!(
+                "FilterDescriptionToStrategyImplementations: \"{}\" = [{}]",
+                filter,
+                to_implementation_names(strategies)
+            ));
+        }
+        for (label, strategies) in &self.strategy_platform_filter.platform_to_strategies {
+            log(format!(
+                "FilterPlatformToStrategyImplementations: \"{}\" = [{}]",
+                label.get_canonical_form(),
+                to_implementation_names(strategies)
+            ));
+        }
+        log(format!(
+            "DefaultStrategyImplementations: [{}]",
+            to_implementation_names(&self.default_strategies)
+        ));
+        if let Some(strategy) = &self.remote_local_fallback_strategy {
+            log(format!(
+                "RemoteLocalFallbackImplementation: [{}]",
+                strategy.get_simple_class_name()
+            ));
+        }
+        for (mnemonic, strategies) in &self.mnemonic_to_remote_dynamic_strategies {
+            log(format!(
+                "MnemonicToRemoteDynamicStrategyImplementations: \"{}\" = [{}]",
+                mnemonic,
+                to_implementation_names(strategies)
+            ));
+        }
+        for (mnemonic, strategies) in &self.mnemonic_to_local_dynamic_strategies {
+            log(format!(
+                "MnemonicToLocalDynamicStrategyImplementations: \"{}\" = [{}]",
+                mnemonic,
+                to_implementation_names(strategies)
+            ));
+        }
+    }
 
     /// Returns a new builder suitable for creating instances of SpawnStrategyRegistry.
     // Java: com/google/devtools/build/lib/exec/SpawnStrategyRegistry.java:265 SpawnStrategyRegistry.builder
@@ -970,4 +1021,14 @@ impl<V> JavaStringHashMap<V> {
     fn iter(&self) -> impl Iterator<Item = (&String, &V)> {
         self.table.iter().flatten().map(|e| (&e.1, &e.2))
     }
+}
+
+/// `strategy.getClass().getSimpleName()` of each strategy, joined with ", ".
+// Java: com/google/devtools/build/lib/exec/SpawnStrategyRegistry.java:257 SpawnStrategyRegistry.toImplementationNames
+fn to_implementation_names(strategies: &[Arc<dyn SpawnStrategy>]) -> String {
+    strategies
+        .iter()
+        .map(|s| s.get_simple_class_name())
+        .collect::<Vec<_>>()
+        .join(", ")
 }

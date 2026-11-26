@@ -32,6 +32,8 @@ pub mod build_driver_function;
 pub mod completion_function;
 pub mod events;
 pub mod keys;
+pub mod metadata_consumer_for_metrics;
+pub mod output_checker;
 pub mod recursive_filesystem_traversal_function;
 pub mod skyframe_action_executor;
 pub mod test_completion_function;

@@ -1,0 +1,1087 @@
+//! The Skyframe state that outlives a command on a persistent server: the graph kept from one
+//! command to the next, and the per-command `sync` that tells it what changed.
+//!
+//! Java keeps one `SequencedSkyframeExecutor` per workspace for the server's lifetime; its
+//! functions read the command's inputs through precomputed values and cells, and
+//! `SequencedSkyframeExecutor.sync` / `SkyframeExecutor.handleDiffs` invalidate what changed.
+//!
+//! PORT: Blaze builds a [`crate::skyframe_executor::SkyframeExecutor`] (its functions and the
+//! services they capture) for every command, and more than one in a command (the dispatcher's,
+//! then the command's). The graph is what is kept: when an executor is dropped its evaluator goes
+//! back to the server's [`SkyframeIncrementalState`], and the next executor builds its evaluator
+//! over that graph (`EvaluatorBuilder::build_reusing`). Before it does, this module ports what
+//! Java does at the start of a command, and adds one Blaze-only rule, fail safe: an input that a
+//! Rust function captures where Java reads a dependency, and whose change this module cannot
+//! invalidate precisely, discards the graph (see [`LoadingSignature`]).
+//!
+//! The mode is read once per server from the server's environment variable `BLAZE_INCREMENTAL`
+//! (decision D6 of docs/research/08-server-and-incrementality.md): `none` keeps nothing (each
+//! command starts from an empty graph, the behaviour of decision D2); anything else, or unset,
+//! keeps the graph. A process that runs one command (batch, in-process mode) never reuses it.
+
+use std::collections::HashSet;
+use std::sync::Arc;
+
+use blaze_build_config::build_configuration_key::BuildConfigurationKey;
+use blaze_build_config::build_options::BuildOptions;
+use blaze_cmdline::{PackageIdentifier, RepositoryMapping};
+use blaze_events::{Event, EventHandler, ExtendedEventHandler};
+use blaze_optdefs::command::package_options::PackageOptions;
+use blaze_optdefs::misc::repository_options::RepositoryOptions;
+use blaze_options::{OptionsClass, OptionsParser, Value};
+use blaze_sky_loading::directories::LoadingDirectories;
+use blaze_sky_loading::file_state::{
+    ExternalFileAction, ExternalFilesHelper, ExternalFilesKnowledgeState, FileType,
+};
+use blaze_sky_loading::filesystem_value_checker::{
+    ExternalDirtinessChecker, FilesystemValueChecker, MissingDiffDirtinessChecker,
+    SkyValueDirtinessChecker, UnionDirtinessChecker,
+};
+use blaze_sky_loading::package_lookup::PackageLookupKey;
+use blaze_sky_loading::pkgcache::PathPackageLocator;
+use blaze_skyframe::{
+    EvaluationContext, Evaluator, EvaluatorBuilder, EventFilter, Key, SkyKey, SkyValue,
+};
+use blaze_starlark::StarlarkSemantics;
+use blaze_util::io::timestamp_granularity_monitor::TimestampGranularityMonitor;
+use blaze_vfs::{ModifiedFileSet, Path, Root};
+use indexmap::IndexSet;
+use parking_lot::{Mutex, RwLock};
+
+/// Whether the server keeps its graph between commands (`BLAZE_INCREMENTAL`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeepGraphMode {
+    /// `BLAZE_INCREMENTAL=none`: every command starts from an empty graph (decision D2).
+    Discard,
+    /// The graph is kept and invalidated as Java's `SequencedSkyframeExecutor` does.
+    Keep,
+}
+
+impl KeepGraphMode {
+    /// The environment variable that selects the mode.
+    pub const ENV: &'static str = "BLAZE_INCREMENTAL";
+
+    /// The mode of this process's environment (read by the server once, at start).
+    pub fn from_process_environment() -> KeepGraphMode {
+        match std::env::var(Self::ENV) {
+            Ok(v) if v == "none" => KeepGraphMode::Discard,
+            _ => KeepGraphMode::Keep,
+        }
+    }
+}
+
+/// The inputs of a command that Java turns into dependencies (precomputed values, cells it
+/// invalidates) and that Blaze's functions capture where this module has no precise
+/// invalidation. A change discards the whole graph.
+///
+/// PORT: Blaze-only (see the module documentation). In it:
+/// - the Starlark semantics (Java: `PrecomputedValue.STARLARK_SEMANTICS`, which every loading
+///   and analysis function reads; the Rust services also capture a copy);
+/// - the `RepositoryOptions` that decide what is computed ([`REPOSITORY_OPTIONS_IN_SIGNATURE`];
+///   Java: `BazelRepositoryModule.getPrecomputedValues`; `BzlmodConfig` and the repository
+///   services capture them). Cache locations, download sources, retries and timeouts are not in
+///   it: Java does not invalidate on them either (module state of `BazelRepositoryModule`);
+/// - the working directory when a module or repository override is given (relative override
+///   paths are resolved against it when the bzlmod configuration is built);
+/// - the package path (Java: `PATH_PACKAGE_LOCATOR` and `onPkgLocatorChange`, which invalidates
+///   the file nodes; Rust also captures the roots in the configuration environment).
+/// The `RepositoryOptions` of [`LoadingSignature`]: those Java turns into precomputed values
+/// (`BazelRepositoryModule.getPrecomputedValues`, `beforeCommand`).
+const REPOSITORY_OPTIONS_IN_SIGNATURE: [&str; 12] = [
+    "registry",
+    "module_mirrors",
+    "allow_yanked_versions",
+    "override_repository",
+    "inject_repository",
+    "override_module",
+    "ignore_dev_dependency",
+    "check_direct_dependencies",
+    "check_bazel_compatibility",
+    "incompatible_require_repo_extension_metadata",
+    "lockfile_mode",
+    "vendor_dir",
+];
+
+#[derive(Clone, PartialEq)]
+pub struct LoadingSignature {
+    starlark_semantics: StarlarkSemantics,
+    repository_options: Vec<(String, Option<Value>)>,
+    override_working_directory: Option<Path>,
+    package_path: Vec<Root>,
+}
+
+impl LoadingSignature {
+    /// The signature of an executor's inputs.
+    pub fn new(
+        options: &OptionsParser,
+        starlark_semantics: &StarlarkSemantics,
+        working_directory: &Path,
+        pkg_locator: &PathPackageLocator,
+    ) -> LoadingSignature {
+        let repository_options: Vec<(String, Option<Value>)> = options
+            .get_options_dyn(RepositoryOptions::class())
+            .map(|o| {
+                o.as_map()
+                    .into_iter()
+                    .filter(|(name, _)| REPOSITORY_OPTIONS_IN_SIGNATURE.contains(&name.as_str()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let has_overrides = options
+            .get_options::<RepositoryOptions>()
+            .is_some_and(|o| {
+                !o.module_overrides.is_empty()
+                    || !o.repository_overrides.is_empty()
+                    || !o.repository_injections.is_empty()
+            });
+        LoadingSignature {
+            starlark_semantics: starlark_semantics.clone(),
+            repository_options,
+            override_working_directory: has_overrides.then(|| working_directory.clone()),
+            package_path: pkg_locator.get_path_entries().to_vec(),
+        }
+    }
+}
+
+/// Why a graph is not reused, on the server's stderr when `BLAZE_INCREMENTAL_DEBUG` is set in the
+/// server's environment (Blaze-only diagnostics).
+fn debug(message: &str) {
+    static ON: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var_os("BLAZE_INCREMENTAL_DEBUG").is_some());
+    if *ON {
+        eprintln!("blaze incremental: {message}");
+    }
+}
+
+/// `SkyframeExecutor.DEFAULT_EVENT_FILTER_WITH_ACTIONS`: store events, and do not propagate
+/// events from analysis phase nodes to execution phase nodes.
+///
+/// Use the fact that analysis of a target must occur before execution of that target, and in a
+/// separate Skyframe evaluation, to avoid propagating events from configured target nodes (and
+/// more generally action lookup nodes) to action execution nodes. We take advantage of the fact
+/// that if a node depends on an action lookup node and is not itself an action lookup node, then
+/// it is an execution-phase node: the action lookup nodes are terminal in the analysis phase.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1150 SkyframeExecutor.DEFAULT_EVENT_FILTER_WITH_ACTIONS
+pub struct DefaultEventFilterWithActions;
+
+impl EventFilter for DefaultEventFilterWithActions {
+    fn store_events(&self) -> bool {
+        true
+    }
+
+    fn should_propagate(&self, dep_key: &SkyKey, primary_key: &SkyKey) -> bool {
+        // Do not propagate events from analysis phase nodes to execution phase nodes.
+        is_analysis_phase_action_lookup_key(primary_key)
+            || !is_analysis_phase_action_lookup_key(dep_key)
+            // Skymeld only.
+            || primary_key.function_name()
+                == <blaze_sky_exec::keys::BuildDriverKey as Key>::FUNCTION
+    }
+}
+
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1168 SkyframeExecutor.isAnalysisPhaseActionLookupKey
+fn is_analysis_phase_action_lookup_key(key: &SkyKey) -> bool {
+    // key instanceof ActionLookupKey && !(key instanceof ActionTemplateExpansionKey)
+    let name = key.function_name();
+    name == <blaze_analysis::configured_target_key::ConfiguredTargetKey as Key>::FUNCTION
+        || name == <blaze_analysis::aspect_key_creator::AspectKey as Key>::FUNCTION
+        || name == <blaze_analysis::aspect_key_creator::TopLevelAspectsKey as Key>::FUNCTION
+        || name == <blaze_analysis::analysis_services::WorkspaceStatusKey as Key>::FUNCTION
+        || name == <blaze_analysis::coverage_report_value::CoverageReportKey as Key>::FUNCTION
+}
+
+/// What one executor of a command hands this module (Java: the arguments of
+/// `decideKeepIncrementalState` and `sync`).
+#[derive(Clone)]
+pub struct IncrementalCommand {
+    pub state: Arc<SkyframeIncrementalState>,
+    /// The command's id (`BUILD_ID`); executors of one command share it.
+    pub command_id: String,
+    /// The command's `TimestampGranularityMonitor`.
+    pub tsgm: Arc<TimestampGranularityMonitor>,
+    /// `--batch` (startup).
+    pub batch: bool,
+    /// `--track_incremental_state`.
+    pub track_incremental_state: bool,
+    /// `--discard_analysis_cache`.
+    pub discard_analysis_cache: bool,
+}
+
+/// What the executor computed that the sync reads.
+pub struct SyncInputs<'a> {
+    pub signature: LoadingSignature,
+    pub pkg_locator: Arc<RwLock<PathPackageLocator>>,
+    pub deleted_packages: HashSet<PackageIdentifier>,
+    pub directories: LoadingDirectories,
+    pub repo_contents_cache_path: Option<Path>,
+    pub options: &'a OptionsParser,
+    pub client_env: &'a indexmap::IndexMap<String, String>,
+    pub repo_env: &'a indexmap::IndexMap<String, String>,
+    pub reporter: Arc<dyn ExtendedEventHandler>,
+    /// The executor executes actions (`detectModifiedOutputFiles` applies).
+    pub executes: bool,
+    /// The executor analyzes, with these top-level options.
+    pub top_level_build_options: Option<BuildOptions>,
+}
+
+/// The graph a server keeps between executors.
+struct KeptGraph {
+    evaluator: Arc<Evaluator>,
+    _lease: blaze_util::build_arena::Lease,
+    signature: LoadingSignature,
+}
+
+/// The server's state (Java: the fields of `SequencedSkyframeExecutor` and `SkyframeExecutor`
+/// that outlive a command, and of `SkyframeBuildView` for the analysis cache).
+pub struct SkyframeIncrementalState {
+    mode: KeepGraphMode,
+    /// Java `externalFilesHelper`'s knowledge (one helper per server in Java).
+    external_files_knowledge: Arc<ExternalFilesKnowledgeState>,
+    inner: Mutex<Inner>,
+}
+
+struct Inner {
+    // SequencedSkyframeExecutor.
+    /// `trackIncrementalState`.
+    track_incremental_state: bool,
+    kept: Option<KeptGraph>,
+    /// The command the per-command sync ran for.
+    synced_command: Option<String>,
+    /// The command whose outputs were checked (`detectModifiedOutputFiles`).
+    outputs_checked_command: Option<String>,
+    /// `deletedPackages`.
+    deleted_packages: HashSet<PackageIdentifier>,
+    /// `previousClientEnvironment`.
+    previous_client_environment: IndexSet<String>,
+    /// `previousRepositoryEnvironment`.
+    previous_repository_environment: IndexSet<String>,
+    // SkyframeExecutor.
+    /// `lastAnalysisDiscarded`.
+    last_analysis_discarded: bool,
+    // SkyframeBuildView.
+    /// `configuration != null`: an earlier command set a top-level configuration.
+    has_configuration: bool,
+    /// `originalConfigurationOptions`.
+    original_configuration_options: Option<BuildOptions>,
+    /// `skyframeAnalysisWasDiscarded`.
+    skyframe_analysis_was_discarded: bool,
+    /// The top-level options of the last executor that analyzed (Blaze-only: the analysis
+    /// functions capture them besides reading `BASELINE_CONFIGURATION`).
+    last_top_level_build_options: Option<BuildOptions>,
+    /// The main repository mapping the last command computed (Blaze-only: the configured target
+    /// and aspect functions read it from a cell, Java from `RepositoryMappingValue`).
+    main_repo_mapping: Option<RepositoryMapping>,
+}
+
+/// An executor's hold on the kept graph: given back when the executor is dropped.
+pub struct ExecutorHandle {
+    command: IncrementalCommand,
+    signature: LoadingSignature,
+    analyzed: bool,
+}
+
+impl SkyframeIncrementalState {
+    pub fn new(mode: KeepGraphMode) -> SkyframeIncrementalState {
+        SkyframeIncrementalState {
+            mode,
+            external_files_knowledge: Arc::default(),
+            inner: Mutex::new(Inner {
+                track_incremental_state: true,
+                kept: None,
+                synced_command: None,
+                outputs_checked_command: None,
+                deleted_packages: HashSet::new(),
+                previous_client_environment: IndexSet::new(),
+                previous_repository_environment: IndexSet::new(),
+                last_analysis_discarded: false,
+                has_configuration: false,
+                original_configuration_options: None,
+                skyframe_analysis_was_discarded: false,
+                last_top_level_build_options: None,
+                main_repo_mapping: None,
+            }),
+        }
+    }
+
+    pub fn mode(&self) -> KeepGraphMode {
+        self.mode
+    }
+
+    /// The knowledge the loading functions' `ExternalFilesHelper` notes into.
+    pub fn external_files_knowledge(&self) -> Arc<ExternalFilesKnowledgeState> {
+        self.external_files_knowledge.clone()
+    }
+
+    /// Drops the functions (and the services and execution state they hold) of the executor that
+    /// gave the kept graph back, keeping only its graph. Called when an executor starts being
+    /// created, before it builds its own services (its repository setup, its action cache):
+    /// two generations must not be alive at once.
+    pub fn strip_kept_graph(&self) {
+        let mut inner = self.inner.lock();
+        let Some(kept) = inner.kept.take() else {
+            return;
+        };
+        let keep_edges = true;
+        match Arc::try_unwrap(kept.evaluator) {
+            Ok(evaluator) => {
+                let stripped = EvaluatorBuilder::new()
+                    .keep_edges(keep_edges)
+                    .build_reusing(evaluator);
+                inner.kept = Some(KeptGraph {
+                    evaluator: Arc::new(stripped),
+                    _lease: kept._lease,
+                    signature: kept.signature,
+                });
+            }
+            // Something still holds the last executor's evaluator: it cannot be reused (fail
+            // safe: a new graph).
+            Err(_) => debug("kept evaluator still referenced when stripping: graph discarded"),
+        }
+    }
+
+    /// Whether an executor's graph goes to the next executor (of this command and of later
+    /// ones): the mode keeps graphs and the current command tracks incremental state.
+    pub fn passes_graph_between_executors(&self) -> bool {
+        Self::passes_graph(self, &self.inner.lock())
+    }
+
+    fn passes_graph(state: &SkyframeIncrementalState, inner: &Inner) -> bool {
+        state.mode == KeepGraphMode::Keep && inner.track_incremental_state
+    }
+
+    /// Drops the kept graph (Java `resetEvaluator`: `clean`, `--nokeep_state_after_build`).
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1176 SkyframeExecutor.resetEvaluator
+    pub fn reset_evaluator(&self) {
+        let mut inner = self.inner.lock();
+        inner.kept = None;
+        // skyframeBuildView.reset(): configuration = null, skyframeAnalysisWasDiscarded = false.
+        inner.has_configuration = false;
+        inner.original_configuration_options = None;
+        inner.skyframe_analysis_was_discarded = false;
+        inner.last_analysis_discarded = false;
+        inner.last_top_level_build_options = None;
+        inner.main_repo_mapping = None;
+    }
+
+    /// `RegistryFunction.LAST_INVALIDATION` as `BazelRepositoryModule.getPrecomputedValues`
+    /// computes it: the value in the graph (`beforeCommand` reads it back), replaced by `now`
+    /// once `INVALIDATION_INTERVAL` (an hour) has passed.
+    // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:744 BazelRepositoryModule.getPrecomputedValues
+    pub fn last_registry_invalidation(&self, now: std::time::SystemTime) -> std::time::SystemTime {
+        let inner = self.inner.lock();
+        let last = inner.kept.as_ref().and_then(|kept| {
+            kept.evaluator
+                .get_existing_value(&SkyKey::new(
+                    blaze_bzlmod::skyframe::precomputed::LAST_INVALIDATION.get_key(),
+                ))
+                .and_then(|v| {
+                    v.downcast_ref::<blaze_skyframe::precomputed::PrecomputedValue>()
+                        .and_then(|p| p.get().downcast_ref::<std::time::SystemTime>().copied())
+                })
+        });
+        // lastRegistryInvalidation = Instant.EPOCH initially.
+        let last = last.unwrap_or(std::time::UNIX_EPOCH);
+        // RegistryFunction.INVALIDATION_INTERVAL = Duration.ofHours(1).
+        if now > last + std::time::Duration::from_secs(3600) {
+            now
+        } else {
+            last
+        }
+    }
+
+    /// Builds the evaluator of an executor: over the kept graph when it may be kept, after the
+    /// per-command sync; otherwise a new one. Returns the evaluator and the handle that gives it
+    /// back when the executor is dropped.
+    // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:262 SequencedSkyframeExecutor.sync
+    pub fn build_evaluator(
+        command: &IncrementalCommand,
+        builder: EvaluatorBuilder,
+        inputs: SyncInputs<'_>,
+    ) -> (Evaluator, ExecutorHandle) {
+        let state = &command.state;
+        let mut inner = state.inner.lock();
+        let first_in_command = inner.synced_command.as_deref() != Some(&command.command_id);
+        if first_in_command {
+            inner.synced_command = Some(command.command_id.clone());
+            Self::decide_keep_incremental_state(&mut inner, command);
+        }
+        let analyzed = inputs.top_level_build_options.is_some();
+        let handle = ExecutorHandle {
+            command: command.clone(),
+            signature: inputs.signature.clone(),
+            analyzed,
+        };
+        // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:226 SequencedSkyframeExecutor.createEvaluator
+        // (trackIncrementalState ? DEFAULT_EVENT_FILTER_WITH_ACTIONS : EventFilter.NO_STORAGE).
+        let builder = if Self::passes_graph(state, &inner) {
+            builder.event_filter(Arc::new(DefaultEventFilterWithActions))
+        } else {
+            builder
+        };
+
+        let kept = inner.kept.take();
+        if kept.is_none() {
+            debug("no kept graph");
+        }
+        let previous = kept.and_then(|kept| {
+            if kept.signature != inputs.signature {
+                // PORT: Blaze-only, fail safe (see LoadingSignature).
+                debug("loading signature changed: graph discarded");
+                return None;
+            }
+            // The executors that held the evaluator are gone; nothing else may still hold it.
+            let r = Arc::try_unwrap(kept.evaluator).ok();
+            if r.is_none() {
+                debug("kept evaluator still referenced: graph discarded");
+            }
+            r
+        });
+        let Some(previous) = previous else {
+            // A new graph: nothing of an earlier command is in it.
+            Self::note_new_graph(&mut inner, &inputs, command);
+            drop(inner);
+            return (builder.build(), handle);
+        };
+
+        let previous = match Self::sync(state, &mut inner, command, previous, &inputs, first_in_command)
+        {
+            Some(previous) => previous,
+            None => {
+                Self::note_new_graph(&mut inner, &inputs, command);
+                drop(inner);
+                return (builder.build(), handle);
+            }
+        };
+        drop(inner);
+        (builder.build_reusing(previous), handle)
+    }
+
+    /// Records what a new (empty) graph was built from.
+    fn note_new_graph(inner: &mut Inner, inputs: &SyncInputs<'_>, command: &IncrementalCommand) {
+        inner.deleted_packages = inputs.deleted_packages.clone();
+        inner.previous_client_environment = inputs.client_env.keys().cloned().collect();
+        inner.previous_repository_environment = inputs.repo_env.keys().cloned().collect();
+        inner.last_analysis_discarded = false;
+        inner.main_repo_mapping = None;
+        if inputs.executes {
+            // Nothing of an earlier build is in the new graph: no output to check.
+            inner.outputs_checked_command = Some(command.command_id.clone());
+        }
+        if inputs.top_level_build_options.is_some() {
+            inner.last_top_level_build_options = inputs.top_level_build_options.clone();
+        }
+    }
+
+    /// The bookkeeping part of `decideKeepIncrementalState` (the warnings are printed by
+    /// blaze_runtime's `CommandEnvironment.decide_keep_incremental_state`).
+    // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:399 SequencedSkyframeExecutor.decideKeepIncrementalState
+    fn decide_keep_incremental_state(inner: &mut Inner, command: &IncrementalCommand) {
+        let old_value_of_track_incremental_state = inner.track_incremental_state;
+        // First check if the incrementality state should be kept around during the build.
+        let explicitly_requested_no_incremental_data = !command.track_incremental_state;
+        let implicitly_requested_no_incremental_data =
+            command.batch && command.discard_analysis_cache;
+        inner.track_incremental_state =
+            !explicitly_requested_no_incremental_data && !implicitly_requested_no_incremental_data;
+        // Now check if it is necessary to wipe the previous state. We do this if either the
+        // previous or current command requires the build to have been isolated.
+        let evaluator_needs_reset = old_value_of_track_incremental_state
+            != inner.track_incremental_state
+            || !inner.track_incremental_state;
+        if evaluator_needs_reset {
+            // SequencedSkyframeExecutor.sync: resetEvaluator().
+            inner.kept = None;
+            inner.has_configuration = false;
+            inner.original_configuration_options = None;
+            inner.skyframe_analysis_was_discarded = false;
+            inner.last_analysis_discarded = false;
+            inner.last_top_level_build_options = None;
+            inner.main_repo_mapping = None;
+        }
+    }
+
+    /// What Java does to the kept graph before an evaluation of this command.
+    fn sync(
+        state: &SkyframeIncrementalState,
+        inner: &mut Inner,
+        command: &IncrementalCommand,
+        evaluator: Evaluator,
+        inputs: &SyncInputs<'_>,
+        first_in_command: bool,
+    ) -> Option<Evaluator> {
+        if first_in_command {
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1733 SkyframeExecutor.preparePackageLoading
+            evaluator.emitted_event_state().clear();
+
+            // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:373 SequencedSkyframeExecutor.setDeletedPackages
+            let newly_deleted_or_not_deleted_packages: HashSet<PackageIdentifier> = inner
+                .deleted_packages
+                .symmetric_difference(&inputs.deleted_packages)
+                .cloned()
+                .collect();
+            if !newly_deleted_or_not_deleted_packages.is_empty() {
+                // PackageLookupValue is a HERMETIC node type, so we can't invalidate it.
+                evaluator.delete(|k, _| {
+                    k.downcast::<PackageLookupKey>()
+                        .is_some_and(|k| newly_deleted_or_not_deleted_packages.contains(&k.0))
+                });
+            }
+            inner.deleted_packages = inputs.deleted_packages.clone();
+
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3064 SkyframeExecutor.syncPackageLoading
+            evaluator.invalidate_transient_errors();
+
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3012 SkyframeExecutor.sync
+            if inner.last_analysis_discarded {
+                // dropConfiguredTargetsNow(eventHandler): handleAnalysisInvalidatingChange.
+                let current = inner.last_top_level_build_options.clone();
+                evaluator.delete(|k, v| {
+                    should_delete_on_analysis_invalidating_change(k, v, current.as_ref(), true)
+                });
+                inner.last_analysis_discarded = false;
+            }
+
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3774 SkyframeExecutor.handleDiffs
+            let evaluator =
+                Self::handle_diffs(state, inner, command, evaluator, inputs)?;
+
+            // handleClientEnvironmentChanges, handleRepositoryEnvironmentChanges.
+            inner.previous_client_environment = inject_environment_values(
+                &evaluator,
+                |name| SkyKey::new(blaze_skyframe::precomputed::ClientEnvironmentKey::key(name)),
+                inputs.client_env,
+                &inner.previous_client_environment,
+            );
+            inner.previous_repository_environment = inject_environment_values(
+                &evaluator,
+                |name| {
+                    SkyKey::new(
+                        blaze_repo_rules::repository::repo_environment_function::RepoEnvironmentKey::key(
+                            name,
+                        ),
+                    )
+                },
+                inputs.repo_env,
+                &inner.previous_repository_environment,
+            );
+            return Self::sync_executor(inner, command, evaluator, inputs);
+        }
+        Self::sync_executor(inner, command, evaluator, inputs)
+    }
+
+    /// The checks every executor makes over the kept graph (also the second one of a command).
+    fn sync_executor(
+        inner: &mut Inner,
+        command: &IncrementalCommand,
+        evaluator: Evaluator,
+        inputs: &SyncInputs<'_>,
+    ) -> Option<Evaluator> {
+        // The top-level options need nothing here: the functions that read the baseline depend
+        // on BASELINE_CONFIGURATION, which every executor injects (Java's setBaselineConfiguration),
+        // and the analysis-cache decision is `set_configuration`'s.
+        if inputs.top_level_build_options.is_some() {
+            inner.last_top_level_build_options = inputs.top_level_build_options.clone();
+        }
+        if inputs.executes
+            && inner.outputs_checked_command.as_deref() != Some(&command.command_id)
+        {
+            inner.outputs_checked_command = Some(command.command_id.clone());
+            Self::detect_modified_output_files(&evaluator, command, inputs);
+        }
+        Some(evaluator)
+    }
+
+    /// Invalidates the actions whose outputs were modified outside the build.
+    // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:481 SequencedSkyframeExecutor.detectModifiedOutputFiles
+    fn detect_modified_output_files(
+        evaluator: &Evaluator,
+        command: &IncrementalCommand,
+        inputs: &SyncInputs<'_>,
+    ) {
+        // ExecutionTool.prepareForExecution: `startBuildAndDetermineModifiedOutputFiles`;
+        // without an output service and with --experimental_check_output_files the modified set is
+        // EVERYTHING_MODIFIED, without it NOTHING_MODIFIED.
+        let check_output_files = inputs
+            .options
+            .get_options::<PackageOptions>()
+            .is_none_or(|o| o.check_output_files);
+        let modified_output_files = if check_output_files {
+            ModifiedFileSet::EVERYTHING_MODIFIED
+        } else {
+            ModifiedFileSet::nothing_modified()
+        };
+        struct Receiver;
+        impl blaze_sky_exec::output_checker::ModifiedOutputsReceiver for Receiver {
+            // PORT: Java counts the files for its metrics (modifiedFiles, outputDirtyFiles);
+            // not ported (logging and ExecutionFinishedEvent metrics).
+            fn report_modified_output_file(
+                &self,
+                _maybe_modified_time: i64,
+                _artifact: &blaze_actions::Artifact,
+            ) {
+            }
+        }
+        let dirty = blaze_sky_exec::output_checker::get_dirty_action_values(
+            &evaluator.get_values(),
+            &modified_output_files,
+            &Receiver,
+            Some(&command.tsgm),
+            fsvc_threads(inputs.options),
+        );
+        evaluator.invalidate(dirty);
+    }
+
+    /// `handleDiffs` without diff awareness: every package path entry is without diff
+    /// information.
+    ///
+    /// PORT: `DiffAwarenessManager`, `LocalDiffAwareness` and `WatchServiceDiffAwareness`
+    /// (`--watchfs`) are not ported. Without them every package root is checked here, which is
+    /// what Java does when no diff awareness is available (also with `--watchfs` when the
+    /// watcher cannot be used): correct, and as slow as Bazel without `--watchfs`.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3950 SkyframeExecutor.handleDiffsWithMissingDiffInformation
+    fn handle_diffs(
+        state: &SkyframeIncrementalState,
+        _inner: &mut Inner,
+        command: &IncrementalCommand,
+        evaluator: Evaluator,
+        inputs: &SyncInputs<'_>,
+    ) -> Option<Evaluator> {
+        let package_options = inputs.options.get_options::<PackageOptions>();
+        let check_output_files = package_options
+            .as_ref()
+            .is_none_or(|o| o.check_output_files);
+        let check_external_other_files = package_options
+            .as_ref()
+            .is_none_or(|o| o.check_external_other_files);
+        let check_external_repository_files = inputs
+            .options
+            .get_options::<RepositoryOptions>()
+            .is_some_and(|o| o.check_external_repository_files);
+
+        let external_files_helper = Arc::new(ExternalFilesHelper::create_with_knowledge(
+            inputs.pkg_locator.clone(),
+            ExternalFileAction::DependOnExternalPkgForExternalRepoPaths,
+            inputs.directories.clone(),
+            inputs.repo_contents_cache_path.clone(),
+            state.external_files_knowledge.clone(),
+        ));
+        // We freshly compute knowledge of the presence of external files in the skyframe graph.
+        // We use a fresh ExternalFilesHelper instance and only set the real instance's knowledge
+        // *after* we are done with the graph scan, lest an interrupt during the graph scan
+        // causes us to incorrectly think there are no longer any external files.
+        let tmp_external_files_helper =
+            Arc::new(external_files_helper.clone_with_fresh_external_files_knowledge());
+
+        // Before running the FilesystemValueChecker ensure that all values marked for
+        // invalidation have actually been invalidated, because checking those is a waste of
+        // time.
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:4098 SkyframeExecutor.applyInvalidation
+        let ctx = EvaluationContext {
+            keep_going: false,
+            parallelism: crate::skyframe_executor::DEFAULT_THREAD_COUNT,
+            event_handler: inputs.reporter.clone(),
+            ..EvaluationContext::default()
+        };
+        if evaluator.evaluate(&[], &ctx).is_err() {
+            // Interrupted: the graph is not known to be consistent with the file system.
+            debug("interrupted while applying invalidations: graph discarded");
+            return None;
+        }
+
+        let fsvc = FilesystemValueChecker::new(Some(command.tsgm.clone()), fsvc_threads(inputs.options));
+        let diff_package_roots_under_which_to_check: HashSet<Root> = inputs
+            .pkg_locator
+            .read()
+            .get_path_entries()
+            .iter()
+            .cloned()
+            .collect();
+        let mut dirtiness_checkers: Vec<Arc<dyn SkyValueDirtinessChecker>> = Vec::new();
+        if !diff_package_roots_under_which_to_check.is_empty() {
+            dirtiness_checkers.push(Arc::new(MissingDiffDirtinessChecker::new(
+                diff_package_roots_under_which_to_check,
+            )));
+        }
+        let mut file_types_to_check: Vec<FileType> = Vec::new();
+        if check_external_repository_files {
+            file_types_to_check = vec![FileType::ExternalRepo];
+        }
+        let external_files_knowledge = external_files_helper.get_external_files_knowledge();
+        if check_external_other_files
+            && (external_files_knowledge.too_many_external_other_files_seen
+                || !external_files_knowledge.external_other_files_seen.is_empty())
+        {
+            file_types_to_check.push(FileType::ExternalOther);
+        }
+        // See the comment for FileType.OUTPUT for why we need to consider output files here.
+        if check_output_files {
+            file_types_to_check.push(FileType::Output);
+        }
+        let external_dirtiness_checker = (!file_types_to_check.is_empty()).then(|| {
+            // FileType.REPO_CONTENTS_CACHE_DIRS is intentionally never checked here.
+            Arc::new(ExternalDirtinessChecker::new(
+                tmp_external_files_helper.clone(),
+                file_types_to_check,
+            ))
+        });
+        if let Some(checker) = &external_dirtiness_checker {
+            dirtiness_checkers.push(checker.clone());
+        }
+        let batch_dirty_result = fsvc.get_dirty_keys(
+            &evaluator.get_done_values(),
+            &UnionDirtinessChecker::new(dirtiness_checkers),
+        );
+        if let Some(checker) = &external_dirtiness_checker {
+            evaluator.invalidate(external_files_helper.get_extra_keys_to_invalidate(
+                &checker.get_dirty_external_repos(),
+                inputs.reporter.as_ref() as &dyn EventHandler,
+            ));
+        }
+        // handleChangedFiles
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:4121 SkyframeExecutor.handleChangedFiles
+        evaluator.invalidate(
+            batch_dirty_result
+                .changed_keys_without_new_values()
+                .iter()
+                .cloned(),
+        );
+        for (key, value) in batch_dirty_result.changed_keys_with_new_values() {
+            evaluator.inject_dyn(key.clone(), value.clone());
+        }
+        // We use the knowledge gained during the graph scan that just completed.
+        external_files_helper
+            .set_external_files_knowledge(tmp_external_files_helper.get_external_files_knowledge());
+        Some(evaluator)
+    }
+
+    /// Gives an executor's evaluator back (the executor is being dropped).
+    ///
+    /// The graph of a command with `--nokeep_state_after_build` is dropped at the end of the
+    /// command by [`Self::reset_evaluator`] (Java `BlazeRuntime.afterCommand`), not here: the
+    /// command's later executors still use it, as Java's one executor does.
+    pub fn put_back(&self, handle: ExecutorHandle, evaluator: Arc<Evaluator>) {
+        let mut inner = self.inner.lock();
+        if !Self::passes_graph(self, &inner)
+            || inner.synced_command.as_deref() != Some(&handle.command.command_id)
+        {
+            debug("put_back: graph not kept");
+            inner.kept = None;
+            return;
+        }
+        if handle.analyzed && handle.command.discard_analysis_cache {
+            // SkyframeBuildView.clearAnalysisCache: skyframeAnalysisWasDiscarded = true;
+            // SkyframeExecutor.discardPreExecutionCache: lastAnalysisDiscarded = true.
+            // PORT: Java clears the analysis values now (keeping the nodes for execution) and
+            // deletes them at the next command; Blaze keeps them until the next command, which
+            // deletes them (the same nodes: every cleared value is deleted by
+            // `shouldDeleteOnAnalysisInvalidatingChange`).
+            inner.skyframe_analysis_was_discarded = true;
+            inner.last_analysis_discarded = true;
+        }
+        inner.kept = Some(KeptGraph {
+            evaluator,
+            _lease: blaze_util::build_arena::lease(),
+            signature: handle.signature,
+        });
+    }
+
+    /// `SkyframeBuildView.shouldDiscardAnalysisCache` and `setConfiguration`: prints Java's
+    /// message when the analysis cache is discarded, and deletes the analysis nodes.
+    ///
+    /// Returns the `InvalidConfigurationException` message when discards are not allowed.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:301 SkyframeBuildView.shouldDiscardAnalysisCache
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:350 SkyframeBuildView.setConfiguration
+    pub fn set_configuration(
+        &self,
+        evaluator: &Evaluator,
+        event_handler: &dyn EventHandler,
+        new_options: &BuildOptions,
+        max_differences_to_show: i32,
+        allow_analysis_cache_discards: bool,
+    ) -> Result<(), String> {
+        let mut inner = self.inner.lock();
+        let should_discard = if !inner.has_configuration {
+            false
+        } else if inner.skyframe_analysis_was_discarded {
+            event_handler.handle(&Event::warn(
+                "--discard_analysis_cache was used in the previous build, discarding analysis cache.",
+            ));
+            true
+        } else {
+            let diff = describe_configuration_difference(
+                inner.original_configuration_options.as_ref().expect("configuration set"),
+                new_options,
+                max_differences_to_show,
+            );
+            match diff {
+                Some(diff) => {
+                    if !allow_analysis_cache_discards {
+                        return Err(format!(
+                            "{diff}, analysis cache would have been discarded."
+                        ));
+                    }
+                    event_handler.handle(&Event::warn(format!(
+                        "{diff}, discarding analysis cache (this can be expensive, see \
+                         https://bazel.build/advanced/performance/iteration-speed)."
+                    )));
+                    true
+                }
+                None => false,
+            }
+        };
+        if should_discard {
+            // Note that clearing the analysis cache is currently required for correctness.
+            inner.original_configuration_options = Some(new_options.clone());
+            // skyframeExecutor.handleAnalysisInvalidatingChange()
+            let current = Some(new_options.clone());
+            evaluator.delete(|k, v| {
+                should_delete_on_analysis_invalidating_change(k, v, current.as_ref(), false)
+            });
+        } else if !inner.has_configuration {
+            inner.original_configuration_options = Some(new_options.clone());
+        }
+        inner.has_configuration = true;
+        inner.skyframe_analysis_was_discarded = false;
+        Ok(())
+    }
+
+    /// The main repository mapping of this command, computed outside the analysis functions that
+    /// read it from a cell (Blaze-only: Java's functions request `RepositoryMappingValue`). A
+    /// change deletes the analysis nodes, fail safe.
+    pub fn note_main_repo_mapping(&self, evaluator: &Evaluator, mapping: &RepositoryMapping) {
+        let mut inner = self.inner.lock();
+        if inner
+            .main_repo_mapping
+            .as_ref()
+            .is_some_and(|previous| previous != mapping)
+        {
+            evaluator.delete(|k, _| is_analysis_key(k));
+        }
+        inner.main_repo_mapping = Some(mapping.clone());
+    }
+}
+
+impl ExecutorHandle {
+    /// The server state this handle belongs to.
+    pub fn state(&self) -> &Arc<SkyframeIncrementalState> {
+        &self.command.state
+    }
+}
+
+/// `--experimental_fsvc_threads` (Java `buildRequestOptions == null ? 200 : fsvcThreads`).
+fn fsvc_threads(options: &OptionsParser) -> usize {
+    options
+        .get_options::<blaze_optdefs::command::build_request_options::BuildRequestOptions>()
+        .map(|o| o.fsvc_threads.max(1) as usize)
+        .unwrap_or(200)
+}
+
+/// Injects the current value of each environment variable as a separate Skyframe node and
+/// invalidates the nodes for any variables that disappeared since the previous call. Returns the
+/// new set of variable names to remember as the previous environment.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3897 SkyframeExecutor.injectEnvironmentValues
+fn inject_environment_values(
+    evaluator: &Evaluator,
+    key_fn: impl Fn(&str) -> SkyKey,
+    environment: &indexmap::IndexMap<String, String>,
+    previous_environment: &IndexSet<String>,
+) -> IndexSet<String> {
+    // Remove deleted environment variables.
+    let deleted_keys: Vec<SkyKey> = previous_environment
+        .iter()
+        .filter(|k| !environment.contains_key(*k))
+        .map(|k| key_fn(k))
+        .collect();
+    evaluator.invalidate(deleted_keys);
+    // Inject current environmental values. We can inject unconditionally without fearing
+    // over-invalidation; skyframe will not invalidate an injected key if the key's new value is
+    // the same as the old value.
+    for (name, value) in environment {
+        evaluator.inject_dyn(
+            key_fn(name),
+            Arc::new(blaze_skyframe::precomputed::EnvironmentVariableValue(Some(
+                value.clone(),
+            ))),
+        );
+    }
+    environment.keys().cloned().collect()
+}
+
+/// The keys of analysis nodes: configured targets, aspects, configurations and the execution
+/// nodes above them.
+fn is_analysis_key(k: &SkyKey) -> bool {
+    let name = k.function_name();
+    is_analysis_phase_action_lookup_key(k)
+        || name == <BuildConfigurationKey as Key>::FUNCTION
+        || name == <blaze_sky_exec::keys::ActionExecutionKey as Key>::FUNCTION
+        || name == <blaze_sky_exec::keys::ArtifactNestedSetKey as Key>::FUNCTION
+        || name
+            == <blaze_sky_exec::action_template_expansion_value::ActionTemplateExpansionKey as Key>::FUNCTION
+}
+
+/// Whether a configuration key is `EMPTY_OPTIONS`'s.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1363 SkyframeExecutor.isEmptyOptionsKey
+fn is_empty_options_key(key: Option<&BuildConfigurationKey>) -> bool {
+    key.is_some_and(|key| {
+        key.get_options_checksum() == blaze_build_config::transitions::EMPTY_OPTIONS.checksum()
+    })
+}
+
+// Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:711 SequencedSkyframeExecutor.isExecConfig
+fn is_exec_config(bck: Option<&BuildConfigurationKey>) -> bool {
+    bck.is_some_and(|bck| {
+        bck.get_options()
+            .get::<blaze_optdefs::fragment::core_options::CoreOptions>()
+            .is_some_and(|core| core.is_exec)
+    })
+}
+
+/// Which nodes an analysis-invalidating change deletes.
+///
+/// PORT: `v.isCleared()` (values cleared by `--discard_analysis_cache`) is `cleared`: Blaze does
+/// not clear values; after such a build every configured target and aspect not in the empty
+/// options configuration is deleted, which is the set Java clears. An
+/// `ActionTemplateExpansionKey` is deleted unconditionally (Java keeps it when its owner is kept;
+/// it is re-evaluated, which only costs time).
+// Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:672 SequencedSkyframeExecutor.shouldDeleteOnAnalysisInvalidatingChange
+fn should_delete_on_analysis_invalidating_change(
+    k: &SkyKey,
+    _v: Option<&SkyValue>,
+    current_options: Option<&BuildOptions>,
+    cleared: bool,
+) -> bool {
+    use blaze_analysis::aspect_key_creator::{AspectKey, TopLevelAspectsKey};
+    use blaze_analysis::configured_target_key::ConfiguredTargetKey;
+    let name = k.function_name();
+    // Remove ActionLookupData since all such nodes depend on ActionLookupKey nodes and deleting
+    // en masse is cheaper than deleting via graph traversal.
+    if name == <blaze_sky_exec::keys::ArtifactNestedSetKey as Key>::FUNCTION
+        || name == <blaze_sky_exec::keys::ActionExecutionKey as Key>::FUNCTION
+        || name
+            == <blaze_sky_exec::action_template_expansion_value::ActionTemplateExpansionKey as Key>::FUNCTION
+    {
+        return true;
+    }
+    // Remove BuildConfigurationKeys except for the currently active key and the key for
+    // EMPTY_OPTIONS, which is a constant and will be re-used frequently.
+    if let Some(bck) = k.downcast::<BuildConfigurationKey>() {
+        if is_empty_options_key(Some(bck)) {
+            return false;
+        }
+        if current_options.is_some_and(|o| **bck.get_options() == *o) {
+            return false;
+        }
+        if is_exec_config(Some(bck)) {
+            return false;
+        }
+        return true;
+    }
+    // Remove ActionLookupKeys unless they are for the empty options config, in which case they
+    // will be re-used frequently and we can avoid re-creating them. They are dependencies of the
+    // empty configuration key and will never change.
+    let configuration_key: Option<Option<&BuildConfigurationKey>> =
+        if let Some(ct) = k.downcast::<ConfiguredTargetKey>() {
+            Some(ct.get_configuration_key())
+        } else if let Some(a) = k.downcast::<AspectKey>() {
+            Some(a.get_configuration_key())
+        } else if let Some(a) = k.downcast::<TopLevelAspectsKey>() {
+            Some(a.get_configuration_key())
+        } else {
+            None
+        };
+    if let Some(configuration_key) = configuration_key {
+        if is_empty_options_key(configuration_key) {
+            return false;
+        }
+        if cleared {
+            return true;
+        }
+        if is_exec_config(configuration_key) {
+            return false;
+        }
+        if configuration_key.is_none() {
+            return false;
+        }
+        return true;
+    }
+    false
+}
+
+/// Returns a description of the analysis-cache affecting changes between the current
+/// configuration and the incoming one, or `None` if the configuration has not changed in a way
+/// that requires the analysis cache to be invalidated.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:230 SkyframeBuildView.describeConfigurationDifference
+fn describe_configuration_difference(
+    old_options: &BuildOptions,
+    new_options: &BuildOptions,
+    max_differences_to_show: i32,
+) -> Option<String> {
+    let diff = blaze_build_config::options_diff::OptionsDiff::diff(old_options, new_options);
+
+    // getNativeCacheInvalidatingDifferences(configuration, diff): the configuration's options are
+    // the new options.
+    let mut native_cache_invalidating_differences: Vec<&'static str> = Vec::new();
+    for (class, definition) in diff.get_differing_options() {
+        let old = diff.get_first().get(definition).cloned().flatten();
+        let new = diff
+            .get_second()
+            .get(definition)
+            .and_then(|values| values.first().cloned())
+            .flatten();
+        if blaze_build_config::fragments::test_configuration::should_invalidate_for_option_diff(
+            new_options,
+            class,
+            *definition,
+            &old,
+            &new,
+        ) && !native_cache_invalidating_differences.contains(&definition.get_option_name())
+        {
+            native_cache_invalidating_differences.push(definition.get_option_name());
+        }
+    }
+    let changed_starlark_options = diff.get_changed_starlark_options();
+    if native_cache_invalidating_differences.is_empty() && changed_starlark_options.is_empty() {
+        // The configuration may have changed, but none of the changes required a cache reset.
+        // For example, test trimming was turned on and a test option changed. In this case,
+        // nothing needs to be done.
+        return None;
+    }
+
+    if max_differences_to_show == 0 {
+        return Some("Build options have changed".to_owned());
+    }
+
+    let mut relevant_differences: Vec<String> = changed_starlark_options
+        .iter()
+        .map(|l| l.get_canonical_form())
+        .chain(native_cache_invalidating_differences.iter().map(|s| (*s).to_owned()))
+        .map(|s| format!("--{s}"))
+        .collect();
+    // Sorting the list to ensure that (if truncated through maxDifferencesToShow) the options in
+    // the message remain stable.
+    relevant_differences.sort();
+
+    let n = relevant_differences.len();
+    if max_differences_to_show > 0 && n > max_differences_to_show as usize {
+        let shown = max_differences_to_show as usize;
+        Some(format!(
+            "Build options {}{} and {} more have changed",
+            relevant_differences[..shown].join(", "),
+            if max_differences_to_show == 1 { "" } else { "," },
+            n - shown
+        ))
+    } else if n == 1 {
+        Some(format!("Build option {} has changed", relevant_differences[0]))
+    } else if n == 2 {
+        Some(format!(
+            "Build options {} have changed",
+            relevant_differences.join(" and ")
+        ))
+    } else {
+        Some(format!(
+            "Build options {}, and {} have changed",
+            relevant_differences[..n - 1].join(", "),
+            relevant_differences[n - 1]
+        ))
+    }
+}

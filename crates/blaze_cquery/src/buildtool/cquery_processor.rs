@@ -37,6 +37,9 @@ pub struct CqueryProcessor {
     /// the `QueryRuntimeHelper`.
     output: OutputStream,
     working_directory: blaze_vfs::Path,
+    /// The workspace root: the server process's working directory in Bazel, which
+    /// `--starlark:file` is read relative to.
+    workspace: blaze_vfs::Path,
     /// `env.getSkyframeExecutor().tracksStateForIncrementality()`.
     tracks_state_for_incrementality: bool,
 }
@@ -51,6 +54,7 @@ impl CqueryProcessor {
         reporter: Arc<dyn ExtendedEventHandler>,
         output: OutputStream,
         working_directory: blaze_vfs::Path,
+        workspace: blaze_vfs::Path,
         tracks_state_for_incrementality: bool,
     ) -> Self {
         CqueryProcessor {
@@ -61,6 +65,7 @@ impl CqueryProcessor {
             reporter,
             output,
             working_directory,
+            workspace,
             tracks_state_for_incrementality,
         }
     }
@@ -136,22 +141,29 @@ impl AnalysisPostProcessor for CqueryProcessor {
         // PORT: ConfigFunction reaches the environment through this slot (see
         // config_function.rs).
         *self.config_function_slot.write() = Some(env.graph_lookup());
-        let callbacks = cquery::get_default_output_formatters(
+        let result = match cquery::get_default_output_formatters(
             &env,
             &self.cquery_options,
             self.reporter.clone(),
             query_output,
             skyframe_executor,
             request.get_top_level_artifact_context_output_groups(),
-        );
-        let result = do_post_analysis_query(
-            &env,
-            &callbacks,
-            &self.cquery_options.output_format,
-            query_expression,
-            &self.reporter,
-        );
-        drop(callbacks);
+            &self.workspace,
+        ) {
+            Ok(callbacks) => {
+                let result = do_post_analysis_query(
+                    &env,
+                    &callbacks,
+                    &self.cquery_options.output_format,
+                    query_expression,
+                    &self.reporter,
+                );
+                drop(callbacks);
+                result
+            }
+            // getDefaultOutputFormatters throws QueryException inside doPostAnalysisQuery.
+            Err(e) => Err(super::post_analysis_query_processor::PostAnalysisQueryError::Query(e)),
+        };
         *self.config_function_slot.write() = None;
         handle_post_analysis_query_result(result, request.keep_going, &self.reporter)
     }

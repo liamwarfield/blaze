@@ -2,7 +2,6 @@
 //! two formats share.
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -12,6 +11,7 @@ use blaze_optdefs::misc::remote_options::RemoteOptions;
 use blaze_protos::failure_details::{FailureDetail, failure_detail, spawn as spawn_code};
 use blaze_protos::google::protobuf::{Duration as ProtoDuration, Timestamp};
 use blaze_protos::tools::protos::{self, Digest, EnvironmentVariable, Platform, platform};
+use blaze_util::java_hash_map::JavaHashMap;
 use blaze_util::string_encoding::{internal_to_unicode, unicode_to_internal};
 use blaze_vfs::{DigestHashFunction, FileSystemRef, Path};
 
@@ -175,18 +175,27 @@ fn get_platform_proto(
         return Ok(None);
     }
 
-    let mut properties: HashMap<String, String> = HashMap::new();
+    // PORT: java-hash-order. `properties` holds the entries of Java's `properties` map in that
+    // map's iteration order: a `HashMap` (blaze_util::java_hash_map), the spawn's
+    // `ImmutableMap`, or the `SortedMap` of default exec properties. The order survives the
+    // stable sort below for names that are equal after `internalToUnicode`.
+    let entries_of = |map: &mut dyn Iterator<Item = (&String, &String)>| -> Vec<(String, String)> {
+        map.map(|(k, v)| (k.clone(), v.clone())).collect()
+    };
+    let mut properties: Vec<(String, String)> = Vec::new();
     let combined_exec_properties = spawn.get_combined_exec_properties();
     if !combined_exec_properties.is_empty() {
         // Apply default exec properties if the execution platform does not already set
         // exec_properties
         match spawn.get_execution_platform() {
             Some(p) if !p.exec_properties.is_empty() => {
-                properties.extend(combined_exec_properties);
+                properties = entries_of(&mut combined_exec_properties.iter());
             }
             _ => {
-                properties.extend(default_exec_properties.iter().cloned());
-                properties.extend(combined_exec_properties);
+                let mut map = JavaHashMap::new();
+                map.put_map_entries(&default_exec_properties);
+                map.put_map_entries(&entries_of(&mut combined_exec_properties.iter()));
+                properties = map.into_entries();
             }
         }
     } else if let Some(execution_platform) = spawn.get_execution_platform() {
@@ -219,24 +228,23 @@ fn get_platform_proto(
                 .into());
             }
 
+            let mut map = JavaHashMap::new();
             for property in &platform_builder.properties {
-                properties.insert(
+                map.put(
                     unicode_to_internal(&property.name).into_owned(),
                     unicode_to_internal(&property.value).into_owned(),
                 );
             }
+            properties = map.into_entries();
         } else {
-            properties.extend(
-                execution_platform
-                    .exec_properties
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone())),
-            );
+            let mut map = JavaHashMap::new();
+            map.put_map_entries(&entries_of(&mut execution_platform.exec_properties.iter()));
+            properties = map.into_entries();
         }
     }
 
     if properties.is_empty() {
-        properties.extend(default_exec_properties);
+        properties = default_exec_properties;
     }
 
     // `additionalProperties` is empty for this overload.

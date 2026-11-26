@@ -1909,3 +1909,128 @@ mod server_commands {
         assert_eq!(out_err.out_as_latin1(), format!("{}\n", std::process::id()));
     }
 }
+
+/// Ports of the idle-task tests of `src/test/java/com/google/devtools/build/lib/runtime/
+/// BlazeRuntimeTest.java`. Java calls `runtime.beforeCommand(env, options)` on a hand-built
+/// environment; here the dispatcher builds the environment and runs `beforeCommand` with the
+/// command line's options, and the tasks are read from the command's result (Java's
+/// `afterCommand` hands `env.getIdleTasks()` to it).
+mod blaze_runtime_idle_tasks {
+    use super::*;
+    use blaze_server::IdleTask;
+
+    /// Runs `bar` with `args` and returns its result.
+    fn run_bar(extra_modules: Vec<Arc<dyn BlazeModule>>, args: &[&str]) -> BlazeCommandResult {
+        let mut modules = vec![commands(vec![bar()])];
+        modules.extend(extra_modules);
+        let fixture = initialize_runtime(modules);
+        let dispatch = dispatcher(&fixture, BlazeCommandDispatcher::UNKNOWN_SERVER_PID);
+        let out_err = RecordingOutErr::new();
+        let mut command_line = vec!["bar"];
+        command_line.extend_from_slice(args);
+        let result = exec(&dispatch, &command_line, "test", &out_err);
+        assert_eq!(
+            result.get_exit_code(),
+            ExitCode::SUCCESS,
+            "{}",
+            out_err.err_as_latin1()
+        );
+        result
+    }
+
+    fn tasks_named<'a>(result: &'a BlazeCommandResult, name: &str) -> Vec<&'a Arc<dyn IdleTask>> {
+        result
+            .get_idle_tasks()
+            .iter()
+            .filter(|t| t.display_name() == name)
+            .collect()
+    }
+
+    #[test]
+    fn adds_gc_and_interner_shrinking_idle_task_no_state_kept_after_build() {
+        let result = run_bar(vec![], &["--keep_state_after_build=false"]);
+        let gc_idle_tasks = tasks_named(&result, "GC and interner shrinking");
+        assert_eq!(gc_idle_tasks.len(), 1);
+        assert_eq!(gc_idle_tasks[0].delay(), Duration::ZERO);
+    }
+
+    #[test]
+    fn adds_gc_and_interner_shrinking_idle_task_state_kept_after_build() {
+        let result = run_bar(vec![], &["--keep_state_after_build=true"]);
+        let gc_idle_tasks = tasks_named(&result, "GC and interner shrinking");
+        assert_eq!(gc_idle_tasks.len(), 1);
+        assert!(gc_idle_tasks[0].delay() > Duration::ZERO);
+    }
+
+    #[test]
+    fn does_not_add_install_base_gc_idle_task_when_disabled() {
+        let result = run_bar(vec![], &["--experimental_install_base_gc_max_age=0"]);
+        assert!(tasks_named(&result, "Install base garbage collector").is_empty());
+    }
+
+    #[test]
+    fn adds_install_base_gc_idle_task_when_enabled() {
+        let result = run_bar(vec![], &["--experimental_install_base_gc_max_age=365d"]);
+        let gc_idle_tasks = tasks_named(&result, "Install base garbage collector");
+        assert_eq!(gc_idle_tasks.len(), 1);
+        assert_eq!(gc_idle_tasks[0].delay(), Duration::ZERO);
+        // PORT: the collector's root, own install base and max age are checked on a task built
+        // the same way (`idle_tasks::tests::install_base_gc_idle_task_create`); the trait object
+        // cannot be downcast.
+    }
+
+    #[test]
+    fn does_not_add_action_cache_gc_idle_task_when_disabled() {
+        let result = run_bar(
+            vec![],
+            &[
+                "--experimental_action_cache_gc_max_age=0",
+                "--experimental_action_cache_gc_idle_delay=5m",
+                "--experimental_action_cache_gc_threshold=10",
+            ],
+        );
+        assert!(tasks_named(&result, "Action cache garbage collector").is_empty());
+    }
+
+    #[test]
+    fn adds_action_cache_gc_idle_task_when_enabled() {
+        let result = run_bar(
+            vec![],
+            &[
+                "--experimental_action_cache_gc_max_age=7d",
+                "--experimental_action_cache_gc_idle_delay=5m",
+                "--experimental_action_cache_gc_threshold=10",
+            ],
+        );
+        let gc_idle_tasks = tasks_named(&result, "Action cache garbage collector");
+        assert_eq!(gc_idle_tasks.len(), 1);
+        assert_eq!(gc_idle_tasks[0].delay(), Duration::from_secs(5 * 60));
+    }
+
+    struct NamedTask(&'static str);
+
+    impl IdleTask for NamedTask {
+        fn display_name(&self) -> String {
+            self.0.to_string()
+        }
+
+        fn run(&self) -> Result<(), blaze_server::IdleTaskError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn adds_idle_tasks_from_modules() {
+        let module: Arc<dyn BlazeModule> = Arc::new(TestModule {
+            before_command: Some(Box::new(|env| {
+                env.add_idle_task(Arc::new(NamedTask("foo")));
+                env.add_idle_task(Arc::new(NamedTask("bar")));
+                Ok(())
+            })),
+            ..TestModule::default()
+        });
+        let result = run_bar(vec![module], &[]);
+        assert_eq!(tasks_named(&result, "foo").len(), 1);
+        assert_eq!(tasks_named(&result, "bar").len(), 1);
+    }
+}

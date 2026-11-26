@@ -102,6 +102,38 @@ impl BuildDriverFunction {
         }
     }
 
+    /// The extra action artifacts to build (`ImmutableSet.Builder<Artifact>`: no duplicates,
+    /// first occurrence order).
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:672 BuildDriverFunction.addExtraActionsIfRequested
+    fn add_extra_actions_if_requested(
+        &self,
+        provider: Option<(
+            blaze_collect::NestedSet<blaze_actions::Artifact>,
+            blaze_collect::NestedSet<blaze_actions::Artifact>,
+        )>,
+        extra_action_top_level_only: bool,
+    ) -> indexmap::IndexSet<blaze_actions::Artifact> {
+        let mut builder = indexmap::IndexSet::new();
+        if let Some((extra_action_artifacts, transitive_extra_action_artifacts)) = provider {
+            let artifacts = if extra_action_top_level_only {
+                extra_action_artifacts.to_list()
+            } else {
+                transitive_extra_action_artifacts.to_list()
+            };
+            // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:685 BuildDriverFunction.addArtifactsToBuilder
+            for artifact in artifacts.iter() {
+                let owner_label = artifact
+                    .get_owner_label()
+                    .map(|l| l.to_string())
+                    .unwrap_or_else(|| "null".to_owned());
+                if self.seam.is_extra_action_owner_included(&owner_label) {
+                    builder.insert(artifact.clone());
+                }
+            }
+        }
+        builder
+    }
+
     // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:498 BuildDriverFunction.removeStatesForKey
     fn remove_states_for_key(&self, key: &BuildDriverKey) {
         self.key_to_posted_events.lock().remove(key);
@@ -109,7 +141,7 @@ impl BuildDriverFunction {
 
     /// `BuildDriverFunction.compute` for configured targets.
     // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:155 BuildDriverFunction.compute
-    // PORT: BUILD_ID, action conflict checks (checkActionConflicts), target compatibility
+    // PORT: action conflict checks (checkActionConflicts), target compatibility
     // (isConfiguredTargetCompatible: incompatible targets are skipped), extra actions, top-level
     // aspects and the TopLevelStatusEvents other than TopLevelTargetPendingExecutionEvent,
     // SomeExecutionStartedEvent and TestAnalyzedEvent are the
@@ -119,6 +151,10 @@ impl BuildDriverFunction {
         key: &BuildDriverKey,
         env: &mut Environment<'_>,
     ) -> Result<Option<BuildDriverValue>, ComputeError> {
+        // Register a dependency on the BUILD_ID. We do this to make sure BuildDriverFunction is
+        // reevaluated every build.
+        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:165 BuildDriverFunction.compute
+        blaze_sky_loading::precomputed::BUILD_ID.get(env)?;
         if key.is_top_level_aspect_driver() {
             return self.compute_top_level_aspects(key, env);
         }
@@ -132,6 +168,15 @@ impl BuildDriverFunction {
             return Ok(None);
         }
         let test_type = key.test_type;
+        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:598 BuildDriverFunction.requestConfiguredTargetExecution
+        let mut keys_to_request: Vec<SkyKey> = self
+            .add_extra_actions_if_requested(
+                configured_target.get_extra_action_artifacts_provider(),
+                key.extra_action_top_level_only,
+            )
+            .iter()
+            .map(crate::keys::artifact_key)
+            .collect();
         self.post_event_if_necessary(
             key,
             env,
@@ -187,9 +232,14 @@ impl BuildDriverFunction {
                 })
             }
         };
+        keys_to_request.push(completion_key);
         // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:650 BuildDriverFunction.declareDependenciesAndCheckValues
-        let result = env.get_values_and_exceptions(std::slice::from_ref(&completion_key))?;
-        let _ = result.get(&completion_key);
+        let result = env.get_values_and_exceptions(&keys_to_request)?;
+        for k in &keys_to_request {
+            if result.get(k).is_none() {
+                break;
+            }
+        }
         if env.values_missing() {
             return Ok(None);
         }
@@ -244,9 +294,15 @@ impl BuildDriverFunction {
         blaze_util::check_state!(key.test_type == TestType::NOT_TEST);
 
         // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:323 BuildDriverFunction.compute
+        let mut artifacts_to_build: indexmap::IndexSet<blaze_actions::Artifact> =
+            indexmap::IndexSet::new();
         let mut aspect_completion_keys: Vec<SkyKey> = Vec::new();
         // Do not trigger Skyframe restarts in this loop.
         for aspect in &top_level_aspects {
+            artifacts_to_build.extend(self.add_extra_actions_if_requested(
+                aspect.get_extra_action_artifacts_provider(),
+                key.extra_action_top_level_only,
+            ));
             aspect_completion_keys.push(SkyKey::new(AspectCompletionKey::create(
                 aspect.get_aspect_key(),
                 key.output_groups.clone(),
@@ -262,6 +318,12 @@ impl BuildDriverFunction {
         );
         // Request the execution of the collected aspects.
         // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:650 BuildDriverFunction.declareDependenciesAndCheckValues
+        let mut keys_to_request: Vec<SkyKey> = artifacts_to_build
+            .iter()
+            .map(crate::keys::artifact_key)
+            .collect();
+        keys_to_request.extend(aspect_completion_keys);
+        let aspect_completion_keys = keys_to_request;
         let result = env.get_values_and_exceptions(&aspect_completion_keys)?;
         for k in &aspect_completion_keys {
             if result.get(k).is_none() {

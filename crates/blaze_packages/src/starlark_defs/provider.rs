@@ -753,7 +753,8 @@ where
 /// Java `Starlark.type` check of a `@Param` with `allowedTypes` (BuiltinFunction).
 // Java: net/starlark/java/eval/BuiltinFunction.java:516 BuiltinFunction.checkParamValue
 fn param_type_error(method: &str, param: &str, value: Value, want: &str) -> starlark::Error {
-    errorf(format!(
+    // A binding error (starlark patch 0061).
+    starlark::values::bazel_argument_binding_error(format!(
         "in call to {method}(), parameter '{param}' got value of type '{}', want '{want}'",
         starlark_type(value)
     ))

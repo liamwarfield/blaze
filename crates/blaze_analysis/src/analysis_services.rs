@@ -72,6 +72,11 @@ pub struct AnalysisServices {
     /// user name (`StandardSystemProperty.USER_NAME`) and `NetUtil.getCachedShortHostName()`.
     pub workspace_status_user_name: String,
     pub workspace_status_host_name: String,
+    /// `--experimental_extra_action_filter` of the current build (`AnalysisOptions
+    /// .extraActionFilter`, the supplier `BuildDriverFunction` reads); `None` until a build sets
+    /// it (the default filter includes everything).
+    pub extra_action_filter:
+        parking_lot::RwLock<Option<blaze_optdefs::common::regex_filter::RegexFilter>>,
     /// Java `AspectFunction.baseTargetPrerequisitesSupplier`
     /// (`SkyframeExecutor.BaseTargetPrerequisitesSupplierImpl`): set by `blaze_sky_top` once
     /// its evaluator exists; see [`AnalysisServices::get_base_target_prerequisites_supplier`].

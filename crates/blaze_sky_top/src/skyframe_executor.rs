@@ -115,6 +115,9 @@ pub struct SkyframeExecutorInputs {
     pub top_level_build_options: Option<BuildOptions>,
     /// The execution setup of a command that executes actions (`build`, `test`).
     pub execution: Option<crate::execution_phase::ExecutionSetup>,
+    /// The server's kept graph and this command's part in it (`None`: a new graph that is
+    /// dropped with the executor, as before; see [`crate::incremental`]).
+    pub incremental: Option<crate::incremental::IncrementalCommand>,
 }
 
 /// Why the executor could not be created.
@@ -167,11 +170,33 @@ pub struct SkyframeExecutor {
     /// `topLevelArtifactContextForConflictPruning` of the request being analyzed: the requested
     /// output groups (see `skyframe_build_view::configure_targets`).
     top_level_artifact_context_for_conflict_pruning: parking_lot::Mutex<Option<Vec<String>>>,
+    /// The repository module's download manager as the registries use it (Java: the
+    /// `DownloadManager` `BazelRepositoryModule` hands `VendorCommand.setDownloadManager`).
+    registry_fetcher: Arc<dyn blaze_bzlmod_model::registry::RegistryFetcher>,
     /// PORT: Blaze-only (decision D7). The evaluator's values and the services above hold frozen
     /// Starlark values whose heaps the build arena (`blaze_util::build_arena`) keeps: the arena
     /// is not released while this executor exists. Declared last, so it is dropped after the
     /// evaluator and everything else of the executor.
     _arena_lease: blaze_util::build_arena::Lease,
+    /// The hold on the server's kept graph: the evaluator goes back when the executor is dropped.
+    incremental: Option<crate::incremental::ExecutorHandle>,
+    /// The command's options (`AnalysisOptions` for the analysis-cache decision).
+    options: Arc<OptionsParser>,
+}
+
+impl Drop for SkyframeExecutor {
+    fn drop(&mut self) {
+        // An executor dropped while unwinding from a panic gives nothing back: its graph may be
+        // half updated (Java's server crashes on an uncaught exception).
+        if let Some(handle) = self.incremental.take()
+            && !std::thread::panicking()
+        {
+            handle
+                .state()
+                .clone()
+                .put_back(handle, self.evaluator.clone());
+        }
+    }
 }
 
 /// A `Path` as the platform path an API that takes `std::path` wants: the bytes of the internal
@@ -183,6 +208,13 @@ fn to_std_path(p: &Path) -> PathBuf {
 }
 
 impl SkyframeExecutor {
+    /// The download manager of the repository module, as the registries use it (`vendor`
+    /// downloads the registry files it vendors through it).
+    // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:287 BazelRepositoryModule.workspaceInit
+    pub fn get_registry_fetcher(&self) -> &Arc<dyn blaze_bzlmod_model::registry::RegistryFetcher> {
+        &self.registry_fetcher
+    }
+
     /// The command's event handler (Java `SkyframeExecutor.reporter`).
     pub fn get_reporter(&self) -> &Arc<dyn ExtendedEventHandler> {
         &self.reporter
@@ -242,6 +274,12 @@ impl SkyframeExecutor {
         // Taken before anything that can load Starlark (see the field).
         let arena_lease = blaze_util::build_arena::lease();
         let options = &inputs.options;
+        let incremental = inputs.incremental.clone();
+        if let Some(incremental) = &incremental {
+            incremental.state.strip_kept_graph();
+        }
+        let top_level_build_options_for_sync = inputs.top_level_build_options.clone();
+        let executes = inputs.execution.is_some();
         // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1722 SkyframeExecutor.sync
         // getEffectiveStarlarkSemantics(buildLanguageOptions): the full
         // BuildLanguageOptions.toStarlarkSemantics.
@@ -308,7 +346,16 @@ impl SkyframeExecutor {
         if let Some(builtin_modules) = builtin_modules {
             repository_functions.bzlmod_config.builtin_modules = builtin_modules;
         }
+        if let Some(incremental) = &incremental {
+            // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:744 BazelRepositoryModule.getPrecomputedValues
+            repository_functions
+                .bzlmod_config
+                .last_registry_invalidation = incremental
+                .state
+                .last_registry_invalidation(std::time::SystemTime::now());
+        }
         let lockfile_mode = repository_functions.bzlmod_config.lockfile_mode;
+        let registry_fetcher = repository_functions.bzlmod_config.registry_fetcher.clone();
         let external_repos: Arc<dyn blaze_sky_loading::repos::ExternalRepos> = Arc::new(
             BzlmodExternalRepos::new(blaze_repo_rules::registration::repository_fetch_function(
                 repository_functions.services.clone(),
@@ -342,6 +389,13 @@ impl SkyframeExecutor {
             .unwrap_or_else(Options::<PackageOptions>::get_defaults);
         loading_config.sync_package_loading(&package_options);
         let pkg_locator = loading_config.pkg_locator.read().clone();
+        if let Some(incremental) = &incremental {
+            // Java: SkyframeExecutor.preparePackageLoading `this.tsgm.set(tsgm)`; the server's
+            // externalFilesHelper.
+            loading_config.tsgm = Some(incremental.tsgm.clone());
+            loading_config.external_files_knowledge = incremental.state.external_files_knowledge();
+        }
+        let deleted_packages_for_sync = loading_config.deleted_packages.read().clone();
 
         let mut builder = register_bzlmod_functions(
             EvaluatorBuilder::new(),
@@ -355,6 +409,16 @@ impl SkyframeExecutor {
             starlark_semantics.clone(),
             repository_functions.repository_overrides,
             &package_options,
+        );
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1600 SkyframeExecutor.setCommandId
+        // (PrecomputedValue.BUILD_ID.set(injectable(), commandId)).
+        // PORT: an executor outside a server command gets an empty id (its graph is its own).
+        builder = blaze_sky_loading::precomputed::BUILD_ID.set(
+            builder,
+            incremental
+                .as_ref()
+                .map(|i| i.command_id.clone())
+                .unwrap_or_default(),
         );
         builder = blaze_repo_rules::registration::register_repo_rules_functions(
             builder,
@@ -407,6 +471,7 @@ impl SkyframeExecutor {
                 // NetUtil.getCachedShortHostName().
                 workspace_status_user_name: blaze_exec::exec::test_policy::get_user_name(),
                 workspace_status_host_name: short_host_name(),
+                extra_action_filter: parking_lot::RwLock::new(None),
                 base_target_prerequisites_supplier: std::sync::OnceLock::new(),
             });
             let platforms: SharedPlatformValueProvider = Arc::new(
@@ -442,8 +507,16 @@ impl SkyframeExecutor {
                 baseline_exec_configuration,
                 platforms,
                 main_repository_mapping: Arc::new(MainRepositoryMappingFromSkyframe),
+                file_lookup: Arc::new(FileValueFromSkyframe),
             });
             builder = register_configuration_functions(builder).client(client.clone());
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1537 SkyframeExecutor.setBaselineConfiguration
+            builder = blaze_build_config::skyframe::BASELINE_CONFIGURATION
+                .set(builder, client.baseline_configuration.get());
+            if client.baseline_exec_configuration.is_set() {
+                builder = blaze_build_config::skyframe::BASELINE_EXEC_CONFIGURATION
+                    .set(builder, client.baseline_exec_configuration.get());
+            }
             // Java: SkyFunctions.FLAG_SET (FlagSetFunction), requested by Project.applySclConfig.
             builder = blaze_sky_analysis::flag_set_function::register(builder);
             // Java: SkyFunctions.PARSED_FLAGS (ParsedFlagsFunction), requested by
@@ -465,6 +538,11 @@ impl SkyframeExecutor {
             );
             builder =
                 blaze_sky_analysis::configured_target_function::register(builder, services.clone());
+            // cquery --output=transitions (CqueryTransitionResolver; see the module).
+            builder = blaze_sky_analysis::cquery_transition_resolver::register(
+                builder,
+                services.clone(),
+            );
             // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:858 SkyframeExecutor.skyFunctions
             // (ASPECT, TOP_LEVEL_ASPECTS, LOAD_ASPECTS, in Java's order).
             builder = blaze_sky_analysis::aspect_function::register(builder, services.clone());
@@ -473,6 +551,9 @@ impl SkyframeExecutor {
                 services.clone(),
             );
             builder = blaze_sky_analysis::load_aspects_function::register(builder);
+            // Java: GenQueryPackageProviderFactory.GENQUERY_SCOPE (BazelRulesModule's
+            // getSkyFunctions).
+            builder = blaze_rules::genquery::register_sky_functions(builder);
             // Java: ActionLookupConflictFindingFunction and
             // TopLevelActionLookupConflictFindingFunction.
             builder = action_lookup_conflict_finding_function::register(
@@ -483,7 +564,15 @@ impl SkyframeExecutor {
             let status_services = services.clone();
             builder = builder
                 .typed_function::<blaze_analysis::analysis_services::WorkspaceStatusKey, _>(
-                    move |_, _| Ok(Some(status_services.compute_workspace_status_value())),
+                    move |_, env| {
+                        // PORT: Java's WorkspaceStatusFunction reads WORKSPACE_STATUS_KEY, which
+                        // SkyframeExecutor.injectWorkspaceStatusData injects per build with a new
+                        // action; BUILD_ID changes on the same schedule.
+                        if blaze_sky_loading::precomputed::BUILD_ID.get(env)?.is_none() {
+                            return Ok(None);
+                        }
+                        Ok(Some(status_services.compute_workspace_status_value()))
+                    },
                 );
             // Java: CoverageReportFunction (SkyFunctions.COVERAGE_REPORT).
             // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:932 SkyframeExecutor.skyFunctions
@@ -514,6 +603,12 @@ impl SkyframeExecutor {
                 )
                 .map_err(SkyframeExecutorCreationError::Execution)?;
                 builder = b;
+                if let Some(incremental) = &incremental {
+                    state
+                        .prepared
+                        .executor
+                        .set_timestamp_granularity_monitor(incremental.tsgm.clone());
+                }
                 execution = Some(state);
             }
             analysis_services = Some(services);
@@ -529,10 +624,40 @@ impl SkyframeExecutor {
         // hand every node's direct deps to it.
         let progress_receiver =
             Arc::new(crate::skyframe_progress_receiver::SkyframeProgressReceiver::new());
-        if execution.is_some() {
+        // Over a graph kept across commands the analysis counts come from this receiver too
+        // (see `skyframe_build_view::EvaluatedCounts`).
+        if execution.is_some() || incremental.is_some() {
             builder = builder.progress_receiver(progress_receiver.clone());
         }
-        let evaluator = Arc::new(builder.build());
+        let (evaluator, incremental_handle) = match &incremental {
+            Some(incremental) => {
+                let (evaluator, handle) =
+                    crate::incremental::SkyframeIncrementalState::build_evaluator(
+                        incremental,
+                        builder,
+                        crate::incremental::SyncInputs {
+                            signature: crate::incremental::LoadingSignature::new(
+                                options,
+                                &starlark_semantics,
+                                &inputs.working_directory,
+                                &pkg_locator,
+                            ),
+                            pkg_locator: loading_config.pkg_locator.clone(),
+                            deleted_packages: deleted_packages_for_sync,
+                            directories: directories.clone(),
+                            repo_contents_cache_path: repo_contents_cache_path.clone(),
+                            options,
+                            client_env: &inputs.client_env,
+                            repo_env: &inputs.repo_env,
+                            reporter: inputs.reporter.clone(),
+                            executes,
+                            top_level_build_options: top_level_build_options_for_sync,
+                        },
+                    );
+                (Arc::new(evaluator), Some(handle))
+            }
+            None => (Arc::new(builder.build()), None),
+        };
         if let Some(state) = &configuration
             && !state.client.baseline_exec_configuration.is_set()
         {
@@ -544,10 +669,10 @@ impl SkyframeExecutor {
                 inputs.reporter.clone(),
             )
             .map_err(SkyframeExecutorCreationError::InvalidConfiguration)?;
-            state
-                .client
-                .baseline_exec_configuration
-                .set(Arc::new(baseline_exec));
+            let baseline_exec = Arc::new(baseline_exec);
+            blaze_build_config::skyframe::BASELINE_EXEC_CONFIGURATION
+                .set_on(&evaluator, baseline_exec.clone());
+            state.client.baseline_exec_configuration.set(baseline_exec);
         }
         if let Some(services) = &analysis_services {
             // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:4598 SkyframeExecutor.BaseTargetPrerequisitesSupplierImpl
@@ -600,7 +725,10 @@ impl SkyframeExecutor {
             output_base: output_base_std,
             lockfile_mode,
             execution,
+            registry_fetcher,
             _arena_lease: arena_lease,
+            incremental: incremental_handle,
+            options: inputs.options.clone(),
         })
     }
 
@@ -838,6 +966,11 @@ impl SkyframeExecutor {
         )?;
         if let Some(services) = &self.analysis_services {
             *services.main_repo_mapping.write() = Some(mapping.clone());
+            if let Some(handle) = &self.incremental {
+                handle
+                    .state()
+                    .note_main_repo_mapping(&self.evaluator, &mapping);
+            }
         }
         Ok(mapping)
     }
@@ -1245,10 +1378,9 @@ impl SkyframeExecutor {
 
     /// `setBaselineConfiguration(targetOptions, eventHandler)`.
     ///
-    /// PORT: incremental. Java injects the precomputed values, which invalidates the
-    /// configurations computed from the previous baseline; a Blaze executor serves one command,
-    /// so a new baseline is accepted only before any configuration was computed (the build's
-    /// options change when a project file's flags apply, BuildTool.buildTargets).
+    /// Injects the precomputed values, which invalidates the configurations computed from the
+    /// previous baseline (the functions that read it depend on them), and sets the client's
+    /// copies (read outside Skyframe).
     // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1520 SkyframeExecutor.setBaselineConfiguration
     pub fn set_baseline_configuration(
         &self,
@@ -1259,10 +1391,6 @@ impl SkyframeExecutor {
         if *state.client.baseline_configuration.get() == *target_options {
             return Ok(());
         }
-        blaze_util::check_state!(
-            self.get_transitive_configuration_keys().is_empty(),
-            "the baseline configuration changed after configurations were computed"
-        );
         let baseline = Arc::new(target_options.clone());
         // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1544 SkyframeExecutor.adjustForExec
         let baseline_exec = adjust_for_exec_with_evaluator(
@@ -1271,12 +1399,71 @@ impl SkyframeExecutor {
             &state.client.starlark_semantics,
             event_handler,
         )?;
+        let baseline_exec = Arc::new(baseline_exec);
+        blaze_build_config::skyframe::BASELINE_CONFIGURATION
+            .set_on(&self.evaluator, baseline.clone());
+        blaze_build_config::skyframe::BASELINE_EXEC_CONFIGURATION
+            .set_on(&self.evaluator, baseline_exec.clone());
         state.client.baseline_configuration.set(baseline);
-        state
-            .client
-            .baseline_exec_configuration
-            .set(Arc::new(baseline_exec));
+        state.client.baseline_exec_configuration.set(baseline_exec);
         Ok(())
+    }
+
+    /// The analysis-cache decision of `BuildView.update` for a server that keeps its graph:
+    /// `SkyframeBuildView.shouldDiscardAnalysisCache` (Java's message) and the discard of
+    /// `setConfiguration` (see [`crate::incremental::SkyframeIncrementalState::set_configuration`]).
+    /// Nothing for an executor whose graph is its own.
+    // Java: com/google/devtools/build/lib/analysis/BuildView.java:273 BuildView.update
+    pub fn should_discard_analysis_cache(
+        &self,
+        target_options: &BuildOptions,
+        event_handler: &dyn EventHandler,
+    ) -> Result<(), InvalidConfigurationException> {
+        let Some(handle) = &self.incremental else {
+            return Ok(());
+        };
+        let analysis_options = self
+            .options
+            .get_options::<blaze_optdefs::command::analysis_options::AnalysisOptions>()
+            .unwrap_or_else(
+                Options::<blaze_optdefs::command::analysis_options::AnalysisOptions>::get_defaults,
+            );
+        handle
+            .state()
+            .set_configuration(
+                &self.evaluator,
+                event_handler,
+                target_options,
+                analysis_options.max_config_changes_to_show,
+                analysis_options.allow_analysis_cache_discards,
+            )
+            .map_err(|message| {
+                InvalidConfigurationException::with_code(
+                    message,
+                    "CONFIGURATION_DISCARDED_ANALYSIS_CACHE",
+                )
+            })
+    }
+
+    /// `SkyframeBuildView.getEvaluatedCounts` and the action counts: from the progress receiver
+    /// when the graph may hold nodes of earlier commands, otherwise from a sweep over the graph.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:197 SkyframeBuildView.getEvaluatedCounts
+    pub fn get_evaluated_counts(
+        &self,
+        time_in_ms: i64,
+    ) -> crate::build_view::AnalysisPhaseCompleteStats {
+        if self.incremental.is_some() {
+            self.progress_receiver
+                .evaluated_counts()
+                .to_stats(time_in_ms)
+        } else {
+            crate::skyframe_build_view::get_evaluated_counts(&self.evaluator, time_in_ms)
+        }
+    }
+
+    /// `SkyframeBuildView.resetProgressReceiver` (`BuildView.update`).
+    pub fn reset_progress_receiver(&self) {
+        self.progress_receiver.reset_evaluated_counts();
     }
 
     /// The keys of every configuration computed so far.
@@ -1788,6 +1975,28 @@ impl blaze_build_config::skyframe::MainRepositoryMappingLookup
                 .expect("NullPointerException: repositoryMapping()")
                 .clone()
         }))
+    }
+}
+
+/// `env.getValue(FileValue.key(rootedPath))` for the configuration functions (see
+/// `blaze_build_config::skyframe::FileValueLookup`).
+struct FileValueFromSkyframe;
+
+impl blaze_build_config::skyframe::FileValueLookup for FileValueFromSkyframe {
+    fn file_value(
+        &self,
+        env: &mut blaze_skyframe::Environment<'_>,
+        rooted_path: &blaze_vfs::RootedPath,
+    ) -> Result<Option<blaze_build_config::skyframe::FileValueFacts>, blaze_skyframe::ComputeError>
+    {
+        let key = blaze_sky_loading::file::FileKey::key(rooted_path.clone());
+        Ok(env
+            .get_value(key)?
+            .map(|file_value| blaze_build_config::skyframe::FileValueFacts {
+                exists: file_value.exists(),
+                is_directory: file_value.is_directory(),
+                real_path: file_value.real_rooted_path(rooted_path).as_path(),
+            }))
     }
 }
 

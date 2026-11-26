@@ -326,6 +326,13 @@ impl EvaluatorBuilder {
         self.injected.push((SkyKey::new(key), Arc::new(value)));
         self
     }
+
+    /// Whether [`EvaluatorBuilder::inject`] was given a value for `key`. Lets a crate inject the
+    /// default of a precomputed value it reads that another crate may already have injected
+    /// (Java injects every precomputed value of the server's modules, so it is always present).
+    pub fn has_injected(&self, key: &SkyKey) -> bool {
+        self.injected.iter().any(|(k, _)| k == key)
+    }
     /// Sets the client context functions can read with [`Environment::client`].
     pub fn client<T: Any + Send + Sync>(mut self, client: Arc<T>) -> Self {
         self.client = client;
@@ -398,6 +405,73 @@ impl EvaluatorBuilder {
                 .map(|(k, v)| (k, Delta::just_new(v)))
                 .collect();
             ev.inject_values_into_graph(&map, first_version);
+        }
+        ev
+    }
+
+    /// Builds an evaluator with this builder's functions, client, progress receiver and event
+    /// filter over the graph of `previous`: its nodes, versions, pending invalidations, dirty and
+    /// in-flight sets and emitted event state. The values given to [`EvaluatorBuilder::inject`]
+    /// are recorded in the differencer and applied at the start of the next `evaluate`, where an
+    /// injection of a value equal to the node's is pruned (Java: `PrecomputedValue.set` on the
+    /// executor's `injectable()` once per command, `pruneInjectedValues`).
+    ///
+    /// PORT: Blaze-only. Java's `SkyframeExecutor` outlives a command: its functions read the
+    /// command's inputs through precomputed values and cells. Blaze builds the functions of an
+    /// executor per command (they capture the command's inputs), so the graph of a kept
+    /// evaluator moves into the next command's evaluator. Whoever calls this has proved that the
+    /// new functions compute, for every node it keeps, what the old ones computed, or invalidated
+    /// or deleted the nodes for which that does not hold (blaze_sky_top `incremental`).
+    pub fn build_reusing(self, previous: Evaluator) -> Evaluator {
+        check_state!(
+            !previous.evaluating.load(Ordering::SeqCst),
+            "the previous evaluator is evaluating"
+        );
+        check_argument!(
+            previous.keep_edges == self.keep_edges,
+            "keep_edges differs: {} -> {}",
+            previous.keep_edges,
+            self.keep_edges
+        );
+        let has_user_progress_receiver = self.progress_receiver.is_some();
+        let receiver = self
+            .progress_receiver
+            .unwrap_or_else(|| Arc::new(crate::progress::NULL));
+        let Evaluator {
+            graph,
+            keep_edges,
+            progress_receiver,
+            incremental,
+            emitted_event_state,
+            ..
+        } = previous;
+        let ev = Evaluator {
+            functions: self.functions,
+            graph,
+            keep_edges,
+            progress_receiver: progress_receiver.with_receiver(receiver),
+            has_user_progress_receiver,
+            event_filter: self.event_filter,
+            incremental,
+            waits: Mutex::new(WaitGraph::default()),
+            client: self.client,
+            computed: AtomicU64::new(0),
+            evaluating: AtomicBool::new(false),
+            interrupted: Arc::new(AtomicBool::new(false)),
+            jobs: Mutex::new(HashMap::new()),
+            live_threads: AtomicUsize::new(0),
+            peak_threads: AtomicUsize::new(0),
+            emitted_event_state,
+            #[cfg(test)]
+            spawns_before_failure_for_testing: Mutex::new(None),
+            #[cfg(test)]
+            deterministic_for_testing: AtomicBool::new(false),
+        };
+        {
+            let mut inc = ev.incremental.lock();
+            for (k, v) in self.injected {
+                inc.differencer.inject(k, Delta::just_new(v));
+            }
         }
         ev
     }

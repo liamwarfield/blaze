@@ -10,6 +10,9 @@ publish.workspace = true
 blaze_util = { path = "../blaze_util" }
 blaze_vfs = { path = "../blaze_vfs" }
 blaze_events = { path = "../blaze_events" }
+# The credential helper protocol: its subprocess (lib/shell) and Gson reader.
+blaze_shell = { path = "../blaze_shell" }
+blaze_bzlmod_model = { path = "../blaze_bzlmod_model" }
 thiserror.workspace = true
 indexmap.workspace = true
 parking_lot.workspace = true

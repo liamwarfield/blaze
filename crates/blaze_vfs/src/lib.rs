@@ -11,6 +11,7 @@ pub mod digest_hash_function;
 pub mod dirent;
 pub mod file_status;
 pub mod file_system;
+pub mod modified_file_set;
 pub mod os_path_policy;
 pub mod path;
 pub mod path_fragment;
@@ -22,6 +23,7 @@ pub mod unix_file_system;
 pub use digest_hash_function::DigestHashFunction;
 pub use dirent::{Dirent, DirentType};
 pub use file_status::FileStatus;
+pub use modified_file_set::ModifiedFileSet;
 pub use file_system::{
     FileSymlinkLoopException, FileSystem, FileSystemExt, FileSystemRef, MAX_SYMLINKS,
     NotASymlinkException,

@@ -40,6 +40,8 @@ pub(crate) struct FrameSpan {
     pub(crate) span: FrozenFileSpan,
     /// Parent frames.
     pub(crate) inlined_frames: InlinedFrames,
+    /// BLAZE PATCH 0061: Java's call-site spans of a call expression's span.
+    pub(crate) java_call: crate::eval::runtime::java_call::JavaCall, // BLAZE PATCH 0061
 }
 
 impl FrameSpan {
@@ -47,6 +49,7 @@ impl FrameSpan {
         FrameSpan {
             span,
             inlined_frames: InlinedFrames { frames: None },
+            java_call: crate::eval::runtime::java_call::JavaCall(None), // BLAZE PATCH 0061
         }
     }
 
@@ -71,6 +74,7 @@ impl FrameSpan {
                     return FrameSpan { // BLAZE PATCH 0028
                         span: FrozenFileSpan::new_unchecked(file, colon), // BLAZE PATCH 0028
                         inlined_frames: self.inlined_frames, // BLAZE PATCH 0028
+                        java_call: crate::eval::runtime::java_call::JavaCall(None), // BLAZE PATCH 0061
                     }; // BLAZE PATCH 0028
                 } // BLAZE PATCH 0028
                 _ => {} // BLAZE PATCH 0028
@@ -85,6 +89,7 @@ impl FrameSpan {
         FrameSpan { // BLAZE PATCH 0028
             span: self.span.begin_point(), // BLAZE PATCH 0028
             inlined_frames: self.inlined_frames, // BLAZE PATCH 0028
+            java_call: crate::eval::runtime::java_call::JavaCall(None), // BLAZE PATCH 0061
         } // BLAZE PATCH 0028
     } // BLAZE PATCH 0028
 
@@ -92,6 +97,7 @@ impl FrameSpan {
         FrameSpan {
             span: self.span.end_span(),
             inlined_frames: self.inlined_frames,
+            java_call: crate::eval::runtime::java_call::JavaCall(None), // BLAZE PATCH 0061
         }
     }
 }
@@ -109,6 +115,7 @@ impl FrameSpan {
         FrameSpan {
             span: self.span.merge(&other.span),
             inlined_frames: self.inlined_frames,
+            java_call: crate::eval::runtime::java_call::JavaCall(None), // BLAZE PATCH 0061
         }
     }
 }

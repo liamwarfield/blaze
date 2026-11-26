@@ -100,6 +100,9 @@ pub struct PrerequisiteParameters<'a> {
     /// This is only non-null during aspect evaluation if the aspects path can propagate to
     /// toolchains.
     pub base_target_toolchain_contexts: Option<&'a ToolchainCollection<UnloadedToolchainContext>>,
+    /// Java: the result sink's `acceptTransition` (`DependencyResolver.State` forwards it to its
+    /// `TransitionCollector`).
+    pub transition_collector: Option<crate::dependency_resolver::TransitionCollector>,
 }
 
 impl PrerequisiteParameters<'_> {
@@ -636,13 +639,13 @@ fn plan_dependency(
                 return Ok(PlannedDependency::Missing);
             };
             // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:637 ExecGroupErrorEmitter.postEvent
-            parameters
-                .event_handler
-                .post(Arc::new(AnalysisRootCauseEvent {
-                    configuration_checksum: Some(configuration.checksum().to_owned()),
-                    label: to_label.clone(),
-                    error_message: message.clone(),
-                }));
+            parameters.event_handler.post(Arc::new(
+                AnalysisRootCauseEvent::with_configuration_value(
+                    Some(configuration.clone()),
+                    to_label.clone(),
+                    message.clone(),
+                ),
+            ));
             errors.accept_dependency_error(DependencyError::AspectEvaluation(
                 DependencyEvaluationException::of_creation(
                     ConfiguredValueCreationException::new(
@@ -670,7 +673,11 @@ fn plan_dependency(
                 return Ok(PlannedDependency::Error);
             }
         };
-    // PORT: `sink.acceptTransition` feeds cquery's TransitionCollector (not ported).
+    // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:212 DependencyProducer.computeTransition
+    // (sink.acceptTransition(kind, toLabel, attributeTransition)).
+    if let Some(collector) = &parameters.transition_collector {
+        collector(kind, to_label, &attribute_transition);
+    }
     let (transitioned_configurations, lookup_rounds) = match apply_transition_with_lookup_rounds(
         env,
         parameters.services,

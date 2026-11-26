@@ -1,11 +1,11 @@
 //! `blaze config`: displays details of the configurations in the server's Skyframe graph.
 //!
-//! Ports `runtime/commands/ConfigCommand.java`, `runtime/commands/ConfigCommandOutputFormatter.java`
-//! and the output data of `analysis/config/output/` (`ConfigurationForOutput`,
-//! `FragmentForOutput`, `FragmentOptionsForOutput`).
-//!
-//! PORT: the `analysis.config.output` classes belong to `blaze_build_config`'s package; they are
-//! kept here, next to their only user.
+//! Ports `runtime/commands/ConfigCommand.java` and `runtime/commands/ConfigCommandOutputFormatter.java`.
+//! The output data of `analysis/config/output/` (`ConfigurationForOutput`, `FragmentForOutput`,
+//! `FragmentOptionsForOutput`), the text writer of one configuration and the JSON writer of one
+//! configuration are `blaze_build_config::config_output`'s (shared with cquery's proto output);
+//! the writers it does not have (the ids, the list of configurations as JSON, the diff) are
+//! here.
 //!
 //! PORT: the configurations are the `BuildConfigurationValue`s done in the server's graph, which
 //! earlier commands left there. Blaze keeps no graph between commands (decision D2, see
@@ -19,14 +19,12 @@ use std::sync::Arc;
 use blaze_build_config::bazel_rule_class_provider::BazelRuleClassProvider;
 use blaze_build_config::build_configuration_key::BuildConfigurationKey;
 use blaze_build_config::build_configuration_value::{BuildConfigurationValue, GlobalStateProvider};
-use blaze_build_config::fragment::{FragmentClass, FragmentRegistry, required_options};
-use blaze_build_config::fragment_options_class::FragmentOptionsClass;
+use blaze_build_config::config_output::{self, ConfigurationForOutput, FragmentOptionsForOutput};
+use blaze_build_config::fragment::FragmentRegistry;
 use blaze_events::{Event, EventHandler as _};
 use blaze_optdefs::fragment::config_command::{
     ConfigCommandConfigOptions, ConfigCommandOutputType,
 };
-use blaze_optdefs::fragment::core_options::CoreOptions;
-use blaze_options::value::java_string_of;
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail::Category};
 use blaze_skyframe::{Evaluator, Key};
 
@@ -100,7 +98,10 @@ impl BlazeCommand for ConfigCommand {
                 &JsonOutputFormatter
             };
         let rule_class_provider = BazelRuleClassProvider::create();
-        let fragment_defs = get_fragment_defs(rule_class_provider.get_fragment_registry());
+        // getFragmentDefs(...getFragmentRegistry()): config_output reads the registry's
+        // fragments and their required options in that order.
+        // Java: com/google/devtools/build/lib/runtime/commands/ConfigCommand.java:270 ConfigCommand.getFragmentDefs
+        let fragment_defs = rule_class_provider.get_fragment_registry();
 
         let residue = options.get_residue();
         let result = if residue.is_empty() {
@@ -108,13 +109,13 @@ impl BlazeCommand for ConfigCommand {
                 report_all_configurations(
                     output_formatter,
                     &mut writer,
-                    &for_output(&configurations, &fragment_defs),
+                    &for_output(&configurations, fragment_defs),
                 )
             } else {
                 report_configuration_ids(
                     output_formatter,
                     &mut writer,
-                    &for_output(&configurations, &fragment_defs),
+                    &for_output(&configurations, fragment_defs),
                 )
             }
         } else if residue.len() == 1 {
@@ -123,14 +124,14 @@ impl BlazeCommand for ConfigCommand {
                 output_formatter,
                 &mut writer,
                 env,
-                &for_output(&configurations, &fragment_defs),
+                &for_output(&configurations, fragment_defs),
                 config_hash,
             )
         } else if residue.len() == 2 {
             let config_hash1 = &residue[0];
             let config_hash2 = &residue[1];
             report_configuration_diff(
-                &for_output(&configurations, &fragment_defs),
+                &for_output(&configurations, fragment_defs),
                 config_hash1,
                 config_hash2,
                 output_formatter,
@@ -191,32 +192,6 @@ fn find_configurations(
     configurations
 }
 
-/// The fragments Blaze "knows about" (the rule class provider's registry), each with the
-/// `FragmentOptions` it requires, sorted by class name.
-///
-/// These are the fragments that Blaze "knows about", not necessarily the fragments in a
-/// `BuildConfigurationValue`. Trimming, in particular, strips fragments out of actual
-/// configurations. It's safe to assume untrimmed configuration have all fragments listed here.
-// Java: com/google/devtools/build/lib/runtime/commands/ConfigCommand.java:270 ConfigCommand.getFragmentDefs
-pub fn get_fragment_defs(
-    fragment_registry: &FragmentRegistry,
-) -> Vec<(FragmentClass, Vec<FragmentOptionsClass>)> {
-    let mut defs: Vec<(FragmentClass, Vec<FragmentOptionsClass>)> = fragment_registry
-        .get_all_fragments()
-        .iter()
-        .map(|fragment| {
-            // ImmutableSortedSet.copyOf(comparing(Class::getName), requiredOptions(fragment))
-            let mut options = required_options(fragment);
-            options.sort_by(|a, b| java_compare(a.get_name(), b.get_name()));
-            options.dedup();
-            (fragment, options)
-        })
-        .collect();
-    // FragmentClassSet.LEXICAL_FRAGMENT_SORTER: by class name.
-    defs.sort_by(|a, b| java_compare(a.0.get_name(), b.0.get_name()));
-    defs
-}
-
 /// `String.compareTo`: UTF-16 code units (the class names are ASCII).
 fn java_compare(a: &str, b: &str) -> Ordering {
     a.encode_utf16().cmp(b.encode_utf16())
@@ -226,16 +201,13 @@ fn java_compare(a: &str, b: &str) -> Ordering {
 // Java: com/google/devtools/build/lib/runtime/commands/ConfigCommand.java:286 ConfigCommand.forOutput
 fn for_output(
     as_sky_key_map: &[(BuildConfigurationKey, Arc<BuildConfigurationValue>)],
-    fragment_defs: &[(FragmentClass, Vec<FragmentOptionsClass>)],
+    fragment_defs: &FragmentRegistry,
 ) -> Vec<ConfigurationForOutput> {
     let mut ans: Vec<ConfigurationForOutput> = Vec::new();
-    for (key, config) in as_sky_key_map {
-        let c = ConfigurationForOutput::get_configuration_for_output(
-            key,
-            config.checksum(),
-            config,
-            fragment_defs,
-        );
+    for (_key, config) in as_sky_key_map {
+        // getConfigurationForOutput(key, config.checksum(), config, fragmentDefs): the key is the
+        // configuration's own (`config.get_key()`).
+        let c = ConfigurationForOutput::get_configuration_for_output(config, fragment_defs);
         // ImmutableSortedSet.orderedBy(comparing(e -> e.getConfigHash())): the first of equal
         // elements is kept.
         if !ans.iter().any(|e| e.config_hash == c.config_hash) {
@@ -273,7 +245,7 @@ fn get_configuration<'a>(
             config_prefix,
             matches
                 .iter()
-                .map(|c| c.get_config_hash())
+                .map(|c| c.config_hash.as_str())
                 .collect::<Vec<_>>()
                 .join("\n ")
         )));
@@ -283,7 +255,7 @@ fn get_configuration<'a>(
 
 // Java: com/google/devtools/build/lib/runtime/commands/ConfigCommand.java:337 ConfigCommand.doesConfigMatch
 fn does_config_match(config: &ConfigurationForOutput, config_prefix: &str) -> bool {
-    config.get_config_hash().starts_with(config_prefix)
+    config.config_hash.starts_with(config_prefix)
 }
 
 /// Reports the result of `blaze config --dump_all`.
@@ -384,15 +356,25 @@ fn diff_configurations(
     config2: &ConfigurationForOutput,
 ) -> DiffTable {
     let mut diffs: DiffTable = BTreeMap::new();
+    // Sets.union(config1.fragmentOptionNames(), config2.fragmentOptionNames())
     let fragment_names: BTreeSet<String> = config1
-        .fragment_option_names()
-        .union(&config2.fragment_option_names())
-        .cloned()
+        .fragment_options
+        .iter()
+        .chain(&config2.fragment_options)
+        .map(|f| f.name.clone())
         .collect();
+    // ConfigurationForOutput.fragment(name): the first with that name.
+    let fragment = |config: &'_ ConfigurationForOutput, name: &str| {
+        config
+            .fragment_options
+            .iter()
+            .find(|f| f.name == name)
+            .cloned()
+    };
     for fragment_name in fragment_names {
-        let options1 = config1.fragment(&fragment_name);
-        let options2 = config2.fragment(&fragment_name);
-        let row = diff_options(options1, options2);
+        let options1 = fragment(config1, &fragment_name);
+        let options2 = fragment(config2, &fragment_name);
+        let row = diff_options(options1.as_ref(), options2.as_ref());
         // diffs.row(fragmentName).putAll(...): an empty row adds no cell, so the fragment is not
         // a row key.
         if !row.is_empty() {
@@ -408,15 +390,15 @@ fn diff_options(
     options2: Option<&FragmentOptionsForOutput>,
 ) -> BTreeMap<String, (Option<String>, Option<String>)> {
     let option_names1: BTreeSet<&String> = options1
-        .map(|o| o.option_names().collect())
+        .map(|o| o.options.keys().collect())
         .unwrap_or_default();
     let option_names2: BTreeSet<&String> = options2
-        .map(|o| o.option_names().collect())
+        .map(|o| o.options.keys().collect())
         .unwrap_or_default();
     let mut diffs = BTreeMap::new();
     for option_name in option_names1.union(&option_names2) {
-        let value1 = options1.and_then(|o| o.get_option(option_name)).cloned();
-        let value2 = options2.and_then(|o| o.get_option(option_name)).cloned();
+        let value1 = options1.and_then(|o| o.options.get(*option_name)).cloned();
+        let value2 = options2.and_then(|o| o.options.get(*option_name)).cloned();
         if value1 != value2 {
             diffs.insert((*option_name).clone(), (value1, value2));
         }
@@ -473,278 +455,6 @@ fn create_failure_result(
 }
 
 // ---------------------------------------------------------------------------------------------
-// analysis/config/output
-
-/// Data structure defining a `BuildConfigurationValue` for the purpose of returning user output
-/// about the configuration.
-///
-/// Includes all data representing a "configuration" and defines their relative structure and
-/// list order. A [`ConfigCommandOutputFormatter`] uses this to lightly format output from a
-/// logically consistent core structure.
-// Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:46 ConfigurationForOutput
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ConfigurationForOutput {
-    sky_key: String,
-    config_hash: String,
-    mnemonic: String,
-    is_exec: bool,
-    fragments: Vec<FragmentForOutput>,
-    fragment_options: Vec<FragmentOptionsForOutput>,
-}
-
-impl ConfigurationForOutput {
-    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:54 ConfigurationForOutput.<init>
-    pub fn new(
-        sky_key: String,
-        config_hash: String,
-        mnemonic: String,
-        is_exec: bool,
-        fragments: Vec<FragmentForOutput>,
-        fragment_options: Vec<FragmentOptionsForOutput>,
-    ) -> Self {
-        ConfigurationForOutput {
-            sky_key,
-            config_hash,
-            mnemonic,
-            is_exec,
-            fragments,
-            fragment_options,
-        }
-    }
-
-    pub fn get_sky_key(&self) -> &str {
-        &self.sky_key
-    }
-
-    pub fn get_config_hash(&self) -> &str {
-        &self.config_hash
-    }
-
-    pub fn get_mnemonic(&self) -> &str {
-        &self.mnemonic
-    }
-
-    pub fn is_exec(&self) -> bool {
-        self.is_exec
-    }
-
-    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:86 ConfigurationForOutput.hasTestConfig
-    pub fn has_test_config(&self) -> bool {
-        self.fragment_options
-            .iter()
-            .any(|f| f.get_name().contains("TestConfiguration"))
-    }
-
-    pub fn get_fragments(&self) -> &[FragmentForOutput] {
-        &self.fragments
-    }
-
-    /// The union of `FragmentOptionsForOutput` used by the Fragments associated with this
-    /// configuration, sorted by FragmentOptionsForOutput name.
-    pub fn get_fragment_options(&self) -> &[FragmentOptionsForOutput] {
-        &self.fragment_options
-    }
-
-    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:104 ConfigurationForOutput.fragment
-    pub fn fragment(&self, fragment_name: &str) -> Option<&FragmentOptionsForOutput> {
-        self.fragment_options
-            .iter()
-            .find(|fo| fo.get_name() == fragment_name)
-    }
-
-    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:111 ConfigurationForOutput.fragmentOptionNames
-    pub fn fragment_option_names(&self) -> BTreeSet<String> {
-        self.fragment_options
-            .iter()
-            .map(|f| f.get_name().to_string())
-            .collect()
-    }
-
-    /// Constructs a `ConfigurationForOutput` from the given input data.
-    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:157 ConfigurationForOutput.getConfigurationForOutput
-    pub fn get_configuration_for_output(
-        sky_key: &BuildConfigurationKey,
-        config_hash: &str,
-        config: &BuildConfigurationValue,
-        fragment_defs: &[(FragmentClass, Vec<FragmentOptionsClass>)],
-    ) -> ConfigurationForOutput {
-        // ImmutableSortedSet.orderedBy(comparing(e -> e.getName())): an element equal by name to
-        // one already added is dropped.
-        let mut fragments: Vec<FragmentForOutput> = Vec::new();
-        let mut add_fragment = |f: FragmentForOutput| {
-            if !fragments.iter().any(|e| e.name == f.name) {
-                fragments.push(f);
-            }
-        };
-        for (fragment, options) in fragment_defs {
-            add_fragment(FragmentForOutput::new(
-                fragment.get_name().to_string(),
-                options.iter().map(|c| c.get_name().to_string()).collect(),
-            ));
-        }
-        for (fragment, options) in fragment_defs
-            .iter()
-            .filter(|(fragment, _)| config.has_fragment(fragment))
-        {
-            add_fragment(FragmentForOutput::new(
-                fragment.get_name().to_string(),
-                options.iter().map(|c| c.get_name().to_string()).collect(),
-            ));
-        }
-        fragments.sort_by(|a, b| java_compare(&a.name, &b.name));
-
-        let mut fragment_options: Vec<FragmentOptionsForOutput> = Vec::new();
-        let mut add_options = |f: FragmentOptionsForOutput| {
-            if !fragment_options.iter().any(|e| e.name == f.name) {
-                fragment_options.push(f);
-            }
-        };
-        let build_options = config.get_options();
-        for options_class in build_options.get_fragment_classes() {
-            let fragment_options_instance = build_options
-                .get_dyn(options_class)
-                .expect("BuildOptions.get of one of its classes");
-            // fragmentOptionsInstance.getClass().getName()
-            add_options(FragmentOptionsForOutput::new(
-                options_class.get_name().to_string(),
-                get_ordered_native_options(options_class, fragment_options_instance),
-            ));
-        }
-        add_options(FragmentOptionsForOutput::new(
-            USER_DEFINED_FRAGMENT_DESCRIPTIVE_NAME.to_string(),
-            get_ordered_user_defined_options(config),
-        ));
-        fragment_options.sort_by(|a, b| java_compare(&a.name, &b.name));
-
-        ConfigurationForOutput::new(
-            format!("{:?}", sky_key),
-            config_hash.to_string(),
-            config.get_mnemonic().to_string(),
-            config.is_exec_configuration(),
-            fragments,
-            fragment_options,
-        )
-    }
-}
-
-/// `UserDefinedFragment.DESCRIPTIVE_NAME`: Starlark options don't have configuration
-/// fragments; this keeps their output consistent with native options.
-// Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:259 ConfigurationForOutput.UserDefinedFragment
-const USER_DEFINED_FRAGMENT_DESCRIPTIVE_NAME: &str = "user-defined";
-
-/// Returns a `FragmentOptions`'s native option settings in canonical order.
-///
-/// While actual option values are objects, we serialize them to strings to prevent command
-/// output from interpreting them more deeply than we want for simple "name=value" output.
-// Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:214 ConfigurationForOutput.getOrderedNativeOptions
-fn get_ordered_native_options(
-    options_class: FragmentOptionsClass,
-    options: &dyn blaze_options::definition::OptionsBase,
-) -> BTreeMap<String, String> {
-    let is_core_options = options_class.get_name() == CORE_OPTIONS_CLASS_NAME;
-    let mut map = BTreeMap::new();
-    for (key, value) in options.as_map() {
-        // While technically part of CoreOptions, --define is practically a user-definable flag
-        // so we include it in the user-defined fragment for clarity. See
-        // getOrderedUserDefinedOptions.
-        if is_core_options && key == "define" {
-            continue;
-        }
-        // toImmutableSortedMap throws on a duplicate key; option names are unique.
-        map.insert(key, java_string_of(value.as_ref()));
-    }
-    map
-}
-
-/// `CoreOptions.class.getName()`.
-const CORE_OPTIONS_CLASS_NAME: &str = "com.google.devtools.build.lib.analysis.config.CoreOptions";
-
-/// Returns a configuration's user-definable settings in canonical order.
-// Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:232 ConfigurationForOutput.getOrderedUserDefinedOptions
-fn get_ordered_user_defined_options(config: &BuildConfigurationValue) -> BTreeMap<String, String> {
-    // ImmutableSortedMap.naturalOrder(); buildOrThrow fails on a duplicate key.
-    let mut ans: BTreeMap<String, String> = BTreeMap::new();
-    let mut put = |k: String, v: String| {
-        if ans.insert(k.clone(), v).is_some() {
-            panic!(
-                "IllegalArgumentException: Multiple entries with same key: {}",
-                k
-            );
-        }
-    };
-    // Starlark-defined options:
-    for (label, value) in config.get_options().get_starlark_options() {
-        put(label.to_string(), value.java_to_string());
-    }
-    // --define:
-    let core_options = config
-        .get_options()
-        .get::<CoreOptions>()
-        .expect("NullPointerException: CoreOptions");
-    for (key, value) in core_options.get_normalized_command_line_build_variables() {
-        put(format!("--define:{}", key), value);
-    }
-    ans
-}
-
-/// Data structure defining a `Fragment` for the purpose of creating user output.
-// Java: com/google/devtools/build/lib/analysis/config/output/FragmentForOutput.java:32 FragmentForOutput
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct FragmentForOutput {
-    name: String,
-    /// The names of the FragmentOptions, sorted. (The names, not `FragmentOptionsForOutput`s,
-    /// because multiple fragments may use the same FragmentOptions.)
-    fragment_options: Vec<String>,
-}
-
-impl FragmentForOutput {
-    pub fn new(name: String, fragment_options: Vec<String>) -> Self {
-        FragmentForOutput {
-            name,
-            fragment_options,
-        }
-    }
-
-    pub fn get_name(&self) -> &str {
-        &self.name
-    }
-
-    pub fn get_fragment_options(&self) -> &[String] {
-        &self.fragment_options
-    }
-}
-
-/// Data structure defining a `FragmentOptions` for creating user output.
-// Java: com/google/devtools/build/lib/analysis/config/output/FragmentOptionsForOutput.java:28 FragmentOptionsForOutput
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct FragmentOptionsForOutput {
-    name: String,
-    options: BTreeMap<String, String>,
-}
-
-impl FragmentOptionsForOutput {
-    pub fn new(name: String, options: BTreeMap<String, String>) -> Self {
-        FragmentOptionsForOutput { name, options }
-    }
-
-    pub fn get_name(&self) -> &str {
-        &self.name
-    }
-
-    pub fn get_options(&self) -> &BTreeMap<String, String> {
-        &self.options
-    }
-
-    pub fn option_names(&self) -> impl Iterator<Item = &String> {
-        self.options.keys()
-    }
-
-    pub fn get_option(&self, option_name: &str) -> Option<&String> {
-        self.options.get(option_name)
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
 // ConfigCommandOutputFormatter
 
 /// Formats output for [`ConfigCommand`].
@@ -774,19 +484,6 @@ pub trait ConfigCommandOutputFormatter {
 // Java: com/google/devtools/build/lib/runtime/commands/ConfigCommandOutputFormatter.java:62 ConfigCommandOutputFormatter.TextOutputFormatter
 pub struct TextOutputFormatter;
 
-impl TextOutputFormatter {
-    // Java: com/google/devtools/build/lib/runtime/commands/ConfigCommandOutputFormatter.java:76 ConfigCommandOutputFormatter.TextOutputFormatter.getSuffix
-    fn get_suffix(config: &ConfigurationForOutput) -> &'static str {
-        if config.is_exec() {
-            " (exec)"
-        } else if !config.has_test_config() {
-            " (test-trimmed)"
-        } else {
-            ""
-        }
-    }
-}
-
 impl ConfigCommandOutputFormatter for TextOutputFormatter {
     // Java: com/google/devtools/build/lib/runtime/commands/ConfigCommandOutputFormatter.java:68 ConfigCommandOutputFormatter.TextOutputFormatter.writeConfigurationIDs
     fn write_configuration_ids(
@@ -794,42 +491,12 @@ impl ConfigCommandOutputFormatter for TextOutputFormatter {
         writer: &mut String,
         configurations: &[ConfigurationForOutput],
     ) {
-        writer.push_str("Available configurations:\n");
-        for config in configurations {
-            // printf("%s %s%s%n"): %n is the platform line separator.
-            writer.push_str(&format!(
-                "{} {}{}\n",
-                config.get_config_hash(),
-                config.get_mnemonic(),
-                Self::get_suffix(config)
-            ));
-        }
+        writer.push_str(&config_output::text_write_configuration_ids(configurations));
     }
 
     // Java: com/google/devtools/build/lib/runtime/commands/ConfigCommandOutputFormatter.java:86 ConfigCommandOutputFormatter.TextOutputFormatter.writeConfiguration
     fn write_configuration(&self, writer: &mut String, configuration: &ConfigurationForOutput) {
-        writer.push_str(&format!(
-            "BuildConfigurationValue {}:\n",
-            configuration.get_config_hash()
-        ));
-        writer.push_str(&format!("Skyframe Key: {}\n", configuration.get_sky_key()));
-
-        let mut fragments = String::new();
-        for fragment in configuration.get_fragments() {
-            fragments.push_str(fragment.get_name());
-            fragments.push_str(": [");
-            fragments.push_str(&fragment.get_fragment_options().join(","));
-            fragments.push_str("], ");
-        }
-
-        writer.push_str(&format!("Fragments: {}\n", fragments));
-        for fragment in configuration.get_fragment_options() {
-            writer.push_str(&format!("FragmentOptions {} {{\n", fragment.get_name()));
-            for (key, value) in fragment.get_options() {
-                writer.push_str(&format!("  {}: {}\n", key, value));
-            }
-            writer.push_str("}\n");
-        }
+        writer.push_str(&config_output::text_write_configuration(configuration));
     }
 
     // Java: com/google/devtools/build/lib/runtime/commands/ConfigCommandOutputFormatter.java:108 ConfigCommandOutputFormatter.TextOutputFormatter.writeConfigurations
@@ -868,13 +535,13 @@ impl ConfigCommandOutputFormatter for JsonOutputFormatter {
     ) {
         // gson.toJson(ImmutableMap.of("configuration-IDs", configurationIDs))
         let mut json = String::from("{");
-        gson_string(&mut json, "configuration-IDs");
+        json.push_str(&config_output::gson_string("configuration-IDs"));
         json.push_str(":[");
         for (i, config) in configurations.iter().enumerate() {
             if i > 0 {
                 json.push(',');
             }
-            gson_string(&mut json, config.get_config_hash());
+            json.push_str(&config_output::gson_string(&config.config_hash));
         }
         json.push_str("]}");
         writer.push_str(&json);
@@ -883,18 +550,20 @@ impl ConfigCommandOutputFormatter for JsonOutputFormatter {
 
     // Java: com/google/devtools/build/lib/runtime/commands/ConfigCommandOutputFormatter.java:151 ConfigCommandOutputFormatter.JsonOutputFormatter.writeConfiguration
     fn write_configuration(&self, writer: &mut String, configuration: &ConfigurationForOutput) {
-        gson_configuration(writer, configuration);
-        writer.push('\n');
+        // writer.println(gson.toJson(configuration))
+        writer.push_str(&config_output::json_write_configuration(configuration));
     }
 
     // Java: com/google/devtools/build/lib/runtime/commands/ConfigCommandOutputFormatter.java:156 ConfigCommandOutputFormatter.JsonOutputFormatter.writeConfigurations
     fn write_configurations(&self, writer: &mut String, configurations: &[ConfigurationForOutput]) {
+        // writer.println(gson.toJson(configurations)): a JSON array of the same objects.
         writer.push('[');
         for (i, config) in configurations.iter().enumerate() {
             if i > 0 {
                 writer.push(',');
             }
-            gson_configuration(writer, config);
+            let json = config_output::json_write_configuration(config);
+            writer.push_str(json.strip_suffix('\n').unwrap_or(&json));
         }
         writer.push(']');
         writer.push('\n');
@@ -905,40 +574,40 @@ impl ConfigCommandOutputFormatter for JsonOutputFormatter {
         // Gson's reflective adapter: the declared fields in order. Pair's fields are `first`
         // and `second`.
         writer.push('{');
-        gson_string(writer, "configHash1");
+        writer.push_str(&config_output::gson_string("configHash1"));
         writer.push(':');
-        gson_string(writer, &diff.config_hash1);
+        writer.push_str(&config_output::gson_string(&diff.config_hash1));
         writer.push(',');
-        gson_string(writer, "configHash2");
+        writer.push_str(&config_output::gson_string("configHash2"));
         writer.push(':');
-        gson_string(writer, &diff.config_hash2);
+        writer.push_str(&config_output::gson_string(&diff.config_hash2));
         writer.push(',');
-        gson_string(writer, "fragmentsDiff");
+        writer.push_str(&config_output::gson_string("fragmentsDiff"));
         writer.push_str(":[");
         for (i, fragment_diff) in diff.fragments_diff.iter().enumerate() {
             if i > 0 {
                 writer.push(',');
             }
             writer.push('{');
-            gson_string(writer, "name");
+            writer.push_str(&config_output::gson_string("name"));
             writer.push(':');
-            gson_string(writer, &fragment_diff.name);
+            writer.push_str(&config_output::gson_string(&fragment_diff.name));
             writer.push(',');
-            gson_string(writer, "optionsDiff");
+            writer.push_str(&config_output::gson_string("optionsDiff"));
             writer.push_str(":{");
             for (j, (key, (first, second))) in fragment_diff.options_diff.iter().enumerate() {
                 if j > 0 {
                     writer.push(',');
                 }
-                gson_string(writer, key);
+                writer.push_str(&config_output::gson_string(key));
                 writer.push_str(":{");
-                gson_string(writer, "first");
+                writer.push_str(&config_output::gson_string("first"));
                 writer.push(':');
-                gson_string(writer, first);
+                writer.push_str(&config_output::gson_string(first));
                 writer.push(',');
-                gson_string(writer, "second");
+                writer.push_str(&config_output::gson_string("second"));
                 writer.push(':');
-                gson_string(writer, second);
+                writer.push_str(&config_output::gson_string(second));
                 writer.push('}');
             }
             writer.push_str("}}");
@@ -948,109 +617,12 @@ impl ConfigCommandOutputFormatter for JsonOutputFormatter {
     }
 }
 
-/// `gson.toJson(configuration)`: the reflective adapter writes the declared fields in order
-/// (`skyKey`, `configHash`, `mnemonic`, `isExec`, `fragments`, `fragmentOptions`).
-fn gson_configuration(writer: &mut String, configuration: &ConfigurationForOutput) {
-    writer.push('{');
-    gson_string(writer, "skyKey");
-    writer.push(':');
-    gson_string(writer, &configuration.sky_key);
-    writer.push(',');
-    gson_string(writer, "configHash");
-    writer.push(':');
-    gson_string(writer, &configuration.config_hash);
-    writer.push(',');
-    gson_string(writer, "mnemonic");
-    writer.push(':');
-    gson_string(writer, &configuration.mnemonic);
-    writer.push(',');
-    gson_string(writer, "isExec");
-    writer.push(':');
-    writer.push_str(if configuration.is_exec {
-        "true"
-    } else {
-        "false"
-    });
-    writer.push(',');
-    gson_string(writer, "fragments");
-    writer.push_str(":[");
-    for (i, fragment) in configuration.fragments.iter().enumerate() {
-        if i > 0 {
-            writer.push(',');
-        }
-        writer.push('{');
-        gson_string(writer, "name");
-        writer.push(':');
-        gson_string(writer, &fragment.name);
-        writer.push(',');
-        gson_string(writer, "fragmentOptions");
-        writer.push_str(":[");
-        for (j, name) in fragment.fragment_options.iter().enumerate() {
-            if j > 0 {
-                writer.push(',');
-            }
-            gson_string(writer, name);
-        }
-        writer.push_str("]}");
-    }
-    writer.push_str("],");
-    gson_string(writer, "fragmentOptions");
-    writer.push_str(":[");
-    for (i, fragment_options) in configuration.fragment_options.iter().enumerate() {
-        if i > 0 {
-            writer.push(',');
-        }
-        writer.push('{');
-        gson_string(writer, "name");
-        writer.push(':');
-        gson_string(writer, &fragment_options.name);
-        writer.push(',');
-        gson_string(writer, "options");
-        writer.push_str(":{");
-        for (j, (key, value)) in fragment_options.options.iter().enumerate() {
-            if j > 0 {
-                writer.push(',');
-            }
-            gson_string(writer, key);
-            writer.push(':');
-            gson_string(writer, value);
-        }
-        writer.push_str("}}");
-    }
-    writer.push_str("]}");
-}
-
-/// Gson's `JsonWriter.string` with HTML-safe escaping (the default of `new Gson()`).
-// Java (Gson 2.10): com/google/gson/stream/JsonWriter.java JsonWriter.string
-fn gson_string(writer: &mut String, value: &str) {
-    writer.push('"');
-    for c in value.chars() {
-        match c {
-            '"' => writer.push_str("\\\""),
-            '\\' => writer.push_str("\\\\"),
-            '\t' => writer.push_str("\\t"),
-            '\u{8}' => writer.push_str("\\b"),
-            '\n' => writer.push_str("\\n"),
-            '\r' => writer.push_str("\\r"),
-            '\u{c}' => writer.push_str("\\f"),
-            // HTML_SAFE_REPLACEMENT_CHARS.
-            '<' | '>' | '&' | '=' | '\'' => writer.push_str(&format!("\\u{:04x}", c as u32)),
-            '\u{2028}' => writer.push_str("\\u2028"),
-            '\u{2029}' => writer.push_str("\\u2029"),
-            c if (c as u32) < 0x20 => writer.push_str(&format!("\\u{:04x}", c as u32)),
-            c => writer.push(c),
-        }
-    }
-    writer.push('"');
-}
-
 #[cfg(test)]
 mod tests {
     //! `ConfigCommandTest` (src/test/java/com/google/devtools/build/lib/runtime/commands): every
     //! test runs `build --nobuild` and then `config` in one server, reading the configurations
     //! the build left in the graph.
 
-    use super::*;
 
     const NEEDS_GRAPH: &str =
         "needs the Skyframe graph kept between commands (Blaze discards it, decision D2)";
@@ -1079,16 +651,4 @@ mod tests {
         define_flags_individually_listed_in_user_defined_fragment,
         conflicting_defines_last_wins,
     );
-
-    #[test]
-    fn gson_string_escapes_html_characters() {
-        // Gson's default (HTML-safe) escaping: com/google/gson/stream/JsonWriter.java
-        // HTML_SAFE_REPLACEMENT_CHARS.
-        let mut s = String::new();
-        gson_string(&mut s, "a=<b>&'c'\"\\\n");
-        assert_eq!(
-            s,
-            "\"a\\u003d\\u003cb\\u003e\\u0026\\u0027c\\u0027\\\"\\\\\\n\""
-        );
-    }
 }

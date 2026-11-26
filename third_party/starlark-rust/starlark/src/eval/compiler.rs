@@ -92,6 +92,35 @@ pub(crate) struct Compiler<'v, 'a, 'e, 'x> {
     pub(crate) top_level_stmt_count: usize,
     /// Set with `@starlark-rust: typecheck`.
     pub(crate) typecheck: bool,
+    /// BLAZE PATCH 0061: the innermost enclosing node whose Java evaluation sets the location of
+    /// an error raised inside it without one (`eval::runtime::java_call`); `None` at the top of
+    /// a function body.
+    pub(crate) java_handler: Option<crate::eval::runtime::frozen_file_span::FrozenFileSpan>,
+}
+
+impl Compiler<'_, '_, '_, '_> {
+    /// BLAZE PATCH 0061: runs `f` with `handler` as [`Compiler::java_handler`].
+    pub(crate) fn with_java_handler<R>(
+        &mut self,
+        handler: Option<crate::eval::runtime::frozen_file_span::FrozenFileSpan>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let saved = std::mem::replace(&mut self.java_handler, handler);
+        let r = f(self);
+        self.java_handler = saved;
+        r
+    }
+
+    /// BLAZE PATCH 0061: `needle` between `from` and `to` in this file, as a span.
+    pub(crate) fn java_token(
+        &self,
+        from: crate::codemap::Pos,
+        to: crate::codemap::Pos,
+        needle: &str,
+    ) -> Option<crate::eval::runtime::frozen_file_span::FrozenFileSpan> {
+        crate::eval::runtime::java_call::find_token(&self.codemap, from, to, needle)
+            .map(|s| crate::eval::runtime::frozen_file_span::FrozenFileSpan::new(self.codemap, s))
+    }
 }
 
 impl Compiler<'_, '_, '_, '_> {

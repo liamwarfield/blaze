@@ -388,7 +388,6 @@ impl ThrowingBuildEventArtifactUploaderSupplier {
     }
 }
 
-// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:1029 BuildEventOutputStreamFactoryImpl.create
 // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:1029 BuildEventServiceModule.BuildEventOutputStreamFactoryImpl.create
 // Java: com/google/devtools/build/lib/runtime/LocalInstrumentationOutput.java:64 LocalInstrumentationOutput.createOutputStream
 fn open_output(base: &blaze_vfs::Path, file_path: &str) -> std::io::Result<Box<dyn Write + Send>> {

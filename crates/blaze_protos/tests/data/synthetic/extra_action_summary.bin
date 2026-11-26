@@ -1,0 +1,17 @@
+
+ž›
+	//pkg:gen0123abcd*Genrule2MyAspect:
+p
+v1
+v2Ú>a
+	/bin/bash
+-c
+echo "Ã©" > $@
+PATH/bin"
+pkg/in.txt*&bazel-out/k8-fastbuild/bin/pkg/out.txt
+‰
+pkg/a.cc}
+	//pkg:libffff*
+CppCompileÊ>T
+/usr/bin/gcc-cpkg/a.cc",bazel-out/k8-fastbuild/bin/pkg/_objs/lib/a.o*pkg/a.ccê>
+a.py

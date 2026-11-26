@@ -1500,6 +1500,8 @@ impl<'v> ValueLike<'v> for Value<'v> {
     }
 
     fn write_hash(self, hasher: &mut StarlarkHasher) -> crate::Result<()> {
+        // BLAZE PATCH 0060: hashing a nested tuple recurses like equality does.
+        let _guard = stack_guard::stack_guard()?; // BLAZE PATCH 0060
         self.get_ref().write_hash(hasher)
     }
 

@@ -36,6 +36,14 @@ pub trait InputMetadataProvider: Send + Sync {
     /// The children of a tree artifact (`getTreeMetadata(tree).getChildren()`), or `None` where
     /// Java returns null.
     fn get_tree_children(&self, tree: &Artifact) -> Option<Vec<Artifact>>;
+
+    /// `getInputMetadata(input)` then `getDigest()`: `Ok(None)` where the metadata or its digest
+    /// is null. The default answers `Ok(None)`: a provider that holds no file metadata (the
+    /// analysis-time key fakes of the tests).
+    // Java: com/google/devtools/build/lib/actions/InputMetadataProvider.java:75 InputMetadataProvider.getInputMetadata
+    fn get_input_digest(&self, _input: &Artifact) -> std::io::Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
 }
 
 /// Errors `computeKey` may throw: `CommandLineExpansionException`, `EvalException`,
@@ -572,6 +580,30 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
         NestedSetBuilder::empty_set(Order::STABLE_ORDER)
     }
 
+    /// Returns the information extra actions receive about this action (written to the `.xa`
+    /// file of an extra action, printed by `print_action`). Overrides call
+    /// [`abstract_get_extra_action_info`] where Java calls `super.getExtraActionInfo`.
+    // Java: com/google/devtools/build/lib/actions/Action.java:221 Action.getExtraActionInfo
+    fn get_extra_action_info(
+        &self,
+        action_key_context: &ActionKeyContext,
+    ) -> Result<blaze_protos::blaze::ExtraActionInfo, CommandLineError> {
+        abstract_get_extra_action_info(self, action_key_context)
+    }
+
+    /// Returns input files that need to be present to allow extra_action rules to shadow this
+    /// action correctly when run remotely. This is at least the normal inputs of the action, but
+    /// may include other files as well. For example C(++) compilation may perform include file
+    /// header scanning. This needs to be mirrored by the extra_action rule. Called by
+    /// `ExtraAction.discoverInputs` at execution time.
+    ///
+    /// PORT: Java passes the `ActionExecutionContext` (for include scanning); the actions that
+    /// need it fail loudly here. `None` where Java returns null (a Skyframe restart).
+    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:606 AbstractAction.getInputFilesForExtraAction
+    fn get_input_files_for_extra_action(&self) -> Option<NestedSet<Artifact>> {
+        Some(NestedSetBuilder::empty_set(Order::STABLE_ORDER))
+    }
+
     // ---------------------------------------------------------------------------------------
     // Interface hooks (Java `instanceof` on interfaces)
     // ---------------------------------------------------------------------------------------
@@ -671,6 +703,56 @@ impl From<CommandLineError> for ActionApiError {
             MapFnError::Interrupted(e) => ActionApiError::Interrupted(e),
         }
     }
+}
+
+/// `AbstractAction.getExtraActionInfo`: the owner's label, the action key and the mnemonic,
+/// and the name and parameters of the owner's last aspect.
+// Java: com/google/devtools/build/lib/actions/AbstractAction.java:563 AbstractAction.getExtraActionInfo
+#[allow(deprecated)] // aspect_name, aspect_parameters: Java sets the deprecated fields.
+pub fn abstract_get_extra_action_info<A: Action + ?Sized>(
+    action: &A,
+    action_key_context: &ActionKeyContext,
+) -> Result<blaze_protos::blaze::ExtraActionInfo, CommandLineError> {
+    use blaze_protos::blaze::extra_action_info;
+    let owner = action.get_owner();
+    let mut result = blaze_protos::blaze::ExtraActionInfo {
+        // owner.getLabel().toString()
+        owner: Some(match owner.get_label() {
+            Some(label) => label.to_string(),
+            None => panic!(
+                "NullPointerException: owner label of {}",
+                action.to_string_java()
+            ),
+        }),
+        id: Some(
+            action
+                .get_key(action_key_context, /* input_metadata_provider= */ None)
+                .map_err(MapFnError::Interrupted)?,
+        ),
+        mnemonic: Some(action.get_mnemonic()),
+        ..Default::default()
+    };
+    let aspect_descriptors = owner.get_aspect_descriptors();
+    if let Some(last_aspect) = aspect_descriptors.last() {
+        result.aspect_name = Some(last_aspect.aspect_class_name.clone());
+
+        // getParameters().getAttributes().asMap(): the values grouped by key, keys in first
+        // appearance order.
+        let mut grouped: IndexMap<&str, Vec<String>> = IndexMap::new();
+        for (key, value) in &last_aspect.parameters {
+            grouped.entry(key.as_str()).or_default().push(value.clone());
+        }
+        for (key, values) in grouped {
+            // putAspectParameters: a later put of the same key replaces the entry in place.
+            result
+                .aspect_parameters
+                .push(extra_action_info::AspectParametersEntry {
+                    key: key.to_owned(),
+                    value: Some(extra_action_info::StringList { value: values }),
+                });
+        }
+    }
+    Ok(result)
 }
 
 // Java: com/google/devtools/build/lib/actions/AbstractAction.java:300 AbstractAction.getFirstOrNull

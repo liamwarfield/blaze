@@ -965,7 +965,7 @@ fn file_artifact_value_from_artifact_compatible_with_get_metadata_changed() {
     // ActionOutputMetadataStore.fileArtifactValueFromArtifact(artifact, /* statNoFollow= */ null,
     // SyscallCache.NO_CACHE, /* tsgm= */ null): the IDENTITY resolver.
     let file_artifact_value_from_artifact_result =
-        file_artifact_value_from_artifact(&artifact, None)
+        file_artifact_value_from_artifact(&artifact, None, None)
             .unwrap()
             .file_artifact_value;
 
@@ -993,7 +993,7 @@ fn file_artifact_value_from_artifact_compatible_with_get_metadata_not_changed() 
     // ActionOutputMetadataStore.fileArtifactValueFromArtifact(artifact, /* statNoFollow= */ null,
     // SyscallCache.NO_CACHE, /* tsgm= */ null): the IDENTITY resolver.
     let file_artifact_value_from_artifact_result =
-        file_artifact_value_from_artifact(&artifact, None)
+        file_artifact_value_from_artifact(&artifact, None, None)
             .unwrap()
             .file_artifact_value;
 

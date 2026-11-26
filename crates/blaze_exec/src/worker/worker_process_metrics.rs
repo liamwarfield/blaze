@@ -225,26 +225,74 @@ pub struct ResourceSnapshot {
     pub collection_time_millis: i64,
 }
 
-/// `CgroupsInfoCollector.instance().collectResourceUsage(pidToCgroups, clock)`: the memory of
-/// each existing cgroup.
-// Java: com/google/devtools/build/lib/metrics/CgroupsInfoCollector.java:36 CgroupsInfoCollector.collectResourceUsage
-fn cgroups_info_collector_collect_resource_usage(
-    pid_to_cgroups: &BTreeMap<i64, Arc<dyn crate::sandbox::cgroups::Cgroup>>,
-    clock: &dyn Clock,
-) -> ResourceSnapshot {
-    let mut pid_to_memory_in_kb = HashMap::new();
-    for (pid, cgroup) in pid_to_cgroups {
-        if cgroup.exists() {
-            pid_to_memory_in_kb.insert(*pid, cgroup.get_memory_usage_in_kb());
-        }
+/// The method of `PsInfoCollector` the metrics collector calls (Java's tests mock the class).
+pub trait PsInfoCollectorApi: Send + Sync {
+    /// `collectResourceUsage(processIds, clock)`.
+    fn collect_resource_usage(&self, process_ids: &[i64], clock: &dyn Clock) -> ResourceSnapshot;
+}
+
+impl PsInfoCollectorApi for PsInfoCollector {
+    fn collect_resource_usage(&self, process_ids: &[i64], clock: &dyn Clock) -> ResourceSnapshot {
+        PsInfoCollector::collect_resource_usage(self, process_ids, clock)
     }
-    ResourceSnapshot {
-        pid_to_memory_in_kb,
-        collection_time_millis: clock.current_time_millis(),
+}
+
+/// The method of `CgroupsInfoCollector` the metrics collector calls (Java's tests mock the
+/// class).
+pub trait CgroupsInfoCollectorApi: Send + Sync {
+    /// `collectResourceUsage(pidToCgroups, clock)`.
+    fn collect_resource_usage(
+        &self,
+        pid_to_cgroups: &BTreeMap<i64, Arc<dyn crate::sandbox::cgroups::Cgroup>>,
+        clock: &dyn Clock,
+    ) -> ResourceSnapshot;
+}
+
+/// Collects resource usage of processes from their cgroups.
+// Java: com/google/devtools/build/lib/metrics/CgroupsInfoCollector.java:28 CgroupsInfoCollector
+pub struct CgroupsInfoCollector;
+
+impl CgroupsInfoCollector {
+    // Java: com/google/devtools/build/lib/metrics/CgroupsInfoCollector.java:32 CgroupsInfoCollector.instance
+    pub fn instance() -> &'static CgroupsInfoCollector {
+        static INSTANCE: CgroupsInfoCollector = CgroupsInfoCollector;
+        &INSTANCE
+    }
+}
+
+impl CgroupsInfoCollectorApi for CgroupsInfoCollector {
+    /// The memory of each existing cgroup.
+    // Java: com/google/devtools/build/lib/metrics/CgroupsInfoCollector.java:36 CgroupsInfoCollector.collectResourceUsage
+    fn collect_resource_usage(
+        &self,
+        pid_to_cgroups: &BTreeMap<i64, Arc<dyn crate::sandbox::cgroups::Cgroup>>,
+        clock: &dyn Clock,
+    ) -> ResourceSnapshot {
+        let mut pid_to_memory_in_kb = HashMap::new();
+        for (pid, cgroup) in pid_to_cgroups {
+            if cgroup.exists() {
+                pid_to_memory_in_kb.insert(*pid, cgroup.get_memory_usage_in_kb());
+            }
+        }
+        ResourceSnapshot {
+            pid_to_memory_in_kb,
+            collection_time_millis: clock.current_time_millis(),
+        }
     }
 }
 
 impl ResourceSnapshot {
+    // Java: com/google/devtools/build/lib/metrics/ResourceSnapshot.java:34 ResourceSnapshot.create
+    pub fn create(
+        pid_to_memory_in_kb: HashMap<i64, i32>,
+        collection_time_millis: i64,
+    ) -> ResourceSnapshot {
+        ResourceSnapshot {
+            pid_to_memory_in_kb,
+            collection_time_millis,
+        }
+    }
+
     // Java: com/google/devtools/build/lib/metrics/ResourceSnapshot.java:40 ResourceSnapshot.createEmpty
     pub fn create_empty(collection_time_millis: i64) -> ResourceSnapshot {
         ResourceSnapshot {
@@ -459,8 +507,10 @@ pub struct WorkerProcessMetricsCollector {
     use_cgroups_on_linux: Mutex<bool>,
     /// `pidToCgroups`: the cgroup of each worker process that has one.
     pid_to_cgroups: Mutex<BTreeMap<i64, Arc<dyn crate::sandbox::cgroups::Cgroup>>>,
-    /// For tests: the memory snapshot to report instead of asking `ps`.
-    fake_resource_usage: Mutex<Option<Arc<dyn Fn(&[i64]) -> ResourceSnapshot + Send + Sync>>>,
+    ps_info_collector: Arc<dyn PsInfoCollectorApi>,
+    cgroups_info_collector: Arc<dyn CgroupsInfoCollectorApi>,
+    /// For tests: the result of `collectResourceUsage()` (Java's tests stub the spy's method).
+    fake_resource_usage: Mutex<Option<ResourceSnapshot>>,
 }
 
 impl WorkerProcessMetricsCollector {
@@ -472,13 +522,45 @@ impl WorkerProcessMetricsCollector {
         &INSTANCE
     }
 
-    /// A separate collector (`@VisibleForTesting` constructor).
+    /// A separate collector over the process-wide `PsInfoCollector` and `CgroupsInfoCollector`.
+    // Java: com/google/devtools/build/lib/worker/WorkerProcessMetricsCollector.java:62 WorkerProcessMetricsCollector.<init>
     pub fn new() -> WorkerProcessMetricsCollector {
+        struct Ps;
+        impl PsInfoCollectorApi for Ps {
+            fn collect_resource_usage(
+                &self,
+                process_ids: &[i64],
+                clock: &dyn Clock,
+            ) -> ResourceSnapshot {
+                PsInfoCollector::instance().collect_resource_usage(process_ids, clock)
+            }
+        }
+        struct Cg;
+        impl CgroupsInfoCollectorApi for Cg {
+            fn collect_resource_usage(
+                &self,
+                pid_to_cgroups: &BTreeMap<i64, Arc<dyn crate::sandbox::cgroups::Cgroup>>,
+                clock: &dyn Clock,
+            ) -> ResourceSnapshot {
+                CgroupsInfoCollector::instance().collect_resource_usage(pid_to_cgroups, clock)
+            }
+        }
+        WorkerProcessMetricsCollector::with_collectors(Arc::new(Ps), Arc::new(Cg))
+    }
+
+    /// `@VisibleForTesting WorkerProcessMetricsCollector(psInfoCollector, cgroupsInfoCollector)`.
+    // Java: com/google/devtools/build/lib/worker/WorkerProcessMetricsCollector.java:68 WorkerProcessMetricsCollector.<init>
+    pub fn with_collectors(
+        ps_info_collector: Arc<dyn PsInfoCollectorApi>,
+        cgroups_info_collector: Arc<dyn CgroupsInfoCollectorApi>,
+    ) -> WorkerProcessMetricsCollector {
         WorkerProcessMetricsCollector {
             clock: Mutex::new(Arc::new(JavaClock)),
             pid_to_worker_process_metrics: Mutex::new(BTreeMap::new()),
             use_cgroups_on_linux: Mutex::new(false),
             pid_to_cgroups: Mutex::new(BTreeMap::new()),
+            ps_info_collector,
+            cgroups_info_collector,
             fake_resource_usage: Mutex::new(None),
         }
     }
@@ -493,16 +575,16 @@ impl WorkerProcessMetricsCollector {
         *self.use_cgroups_on_linux.lock() = use_cgroups_on_linux;
     }
 
-    /// For tests: replaces `ps` by `f`.
-    pub fn set_resource_usage_for_testing(
-        &self,
-        f: Option<Arc<dyn Fn(&[i64]) -> ResourceSnapshot + Send + Sync>>,
-    ) {
-        *self.fake_resource_usage.lock() = f;
+    /// For tests: `doReturn(snapshot).when(spyCollector).collectResourceUsage()`.
+    pub fn set_resource_usage_for_testing(&self, snapshot: Option<ResourceSnapshot>) {
+        *self.fake_resource_usage.lock() = snapshot;
     }
 
     // Java: com/google/devtools/build/lib/worker/WorkerProcessMetricsCollector.java:87 WorkerProcessMetricsCollector.collectResourceUsage
     fn collect_resource_usage(&self) -> ResourceSnapshot {
+        if let Some(snapshot) = self.fake_resource_usage.lock().clone() {
+            return snapshot;
+        }
         // Only collect for process we know are alive.
         let alive_pids: Vec<i64> = self
             .pid_to_worker_process_metrics
@@ -511,30 +593,43 @@ impl WorkerProcessMetricsCollector {
             .filter(|(_, m)| !m.get_status().is_killed())
             .map(|(pid, _)| *pid)
             .collect();
-        self.collect_resource_usage_for(&alive_pids)
+        self.collect_resource_usage_for(blaze_shell::util::os::OS::get_current(), &alive_pids)
     }
 
     /// Collects memory usage of all ancestors of processes by pid. If a pid does not allow
     /// collecting memory usage, it is silently ignored.
     // Java: com/google/devtools/build/lib/worker/WorkerProcessMetricsCollector.java:103 WorkerProcessMetricsCollector.collectResourceUsage
-    pub fn collect_resource_usage_for(&self, alive_pids: &[i64]) -> ResourceSnapshot {
+    pub fn collect_resource_usage_for(
+        &self,
+        os: blaze_shell::util::os::OS,
+        alive_pids: &[i64],
+    ) -> ResourceSnapshot {
+        use blaze_shell::util::os::OS;
         let clock = self.clock.lock().clone();
         // TODO(b/181317827): Support Windows.
         if alive_pids.is_empty() {
             return ResourceSnapshot::create_empty(clock.current_time_millis());
         }
-        if let Some(fake) = self.fake_resource_usage.lock().clone() {
-            return fake(alive_pids);
+        if os == OS::Darwin {
+            return self
+                .ps_info_collector
+                .collect_resource_usage(alive_pids, &*clock);
         }
-        // OS.LINUX
-        if *self.use_cgroups_on_linux.lock() {
-            // Remove the killed pids so that we only collect from the cgroups that are alive.
-            let mut pid_to_cgroups = self.pid_to_cgroups.lock();
-            pid_to_cgroups.retain(|pid, _| alive_pids.contains(pid));
-            return cgroups_info_collector_collect_resource_usage(&pid_to_cgroups, &*clock);
+        if os == OS::Linux {
+            if *self.use_cgroups_on_linux.lock() {
+                // Remove the killed pids so that we only collect from the cgroups that are alive.
+                let mut pid_to_cgroups = self.pid_to_cgroups.lock();
+                pid_to_cgroups.retain(|pid, _| alive_pids.contains(pid));
+                return self
+                    .cgroups_info_collector
+                    .collect_resource_usage(&pid_to_cgroups, &*clock);
+            }
+            // Default to using ps if cgroups is not enabled.
+            return self
+                .ps_info_collector
+                .collect_resource_usage(alive_pids, &*clock);
         }
-        // Default to using ps if cgroups is not enabled.
-        PsInfoCollector::instance().collect_resource_usage(alive_pids, &*clock)
+        ResourceSnapshot::create_empty(clock.current_time_millis())
     }
 
     // Java: com/google/devtools/build/lib/worker/WorkerProcessMetricsCollector.java:128 WorkerProcessMetricsCollector.getLiveWorkerProcessMetrics

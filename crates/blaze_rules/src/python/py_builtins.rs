@@ -530,7 +530,7 @@ fn py_builtins_methods(builder: &mut MethodsBuilder) {
     ) -> starlark::Result<NoneType> {
         let _ = this;
         const METHOD: &str = "add_py_extra_pseudo_action";
-        let _rule_context = ctx_param(METHOD, ctx)?;
+        let rule_context = ctx_param(METHOD, ctx)?;
         let Some(depset) = Depset::from_value(dependency_transitive_python_sources) else {
             return Err(param_type_error(
                 METHOD,
@@ -548,10 +548,76 @@ fn py_builtins_methods(builder: &mut MethodsBuilder) {
                  expected a depset of 'File'"
             )));
         }
-        // Java: PyCommon.registerPyExtraActionPseudoAction builds a PyPseudoAction (extra
-        // actions), which is not ported.
-        blaze_util::unported!("PyCommon.registerPyExtraActionPseudoAction")
+        let dependency_transitive_python_sources =
+            blaze_analysis::rule::depsets::depset_to_artifacts(
+                dependency_transitive_python_sources,
+                "dependency_transitive_python_sources",
+            )?;
+        register_py_extra_action_pseudo_action(
+            &rule_context,
+            &dependency_transitive_python_sources,
+        );
+        Ok(NoneType)
     }
+}
+
+// -------------------------------------------------------------------------------------------
+// PyCommon (the extra action pseudo action)
+
+// Java: com/google/devtools/build/lib/rules/python/PyCommon.java:91 PyCommon.PyPseudoAction.ACTION_UUID
+const PY_PSEUDO_ACTION_UUID: &str = "8d720129-bc1a-481f-8c4c-dbe11dcef319";
+
+// Java: com/google/devtools/build/lib/rules/python/PyCommon.java:44 PyCommon.registerPyExtraActionPseudoAction
+fn register_py_extra_action_pseudo_action(
+    rule_context: &blaze_analysis::rule::RuleContext,
+    dependency_transitive_python_sources: &blaze_collect::NestedSet<blaze_actions::Artifact>,
+) {
+    use blaze_analysis::extra::pseudo_action::PseudoAction;
+    rule_context.register_action(std::sync::Arc::new(make_py_extra_action_pseudo_action(
+        rule_context.get_action_owner(),
+        // Has to be unfiltered sources as filtered will give an error for
+        // unsupported file types where as certain tests only expect a warning.
+        rule_context.get_prerequisite_artifacts("srcs").list(),
+        // We must not add the files declared in the srcs of this rule.;
+        dependency_transitive_python_sources,
+        PseudoAction::get_dummy_output(rule_context),
+    )));
+}
+
+/// Creates a `PseudoAction` that is only used for providing information to the blaze
+/// extra_action feature.
+///
+/// PORT: Java's `PyPseudoAction` subclass only fixes the UUID; it is a `PseudoAction` here.
+// Java: com/google/devtools/build/lib/rules/python/PyCommon.java:61 PyCommon.makePyExtraActionPseudoAction
+fn make_py_extra_action_pseudo_action(
+    owner: blaze_actions::ActionOwner,
+    sources: &[blaze_actions::Artifact],
+    dependencies: &blaze_collect::NestedSet<blaze_actions::Artifact>,
+    output: blaze_actions::Artifact,
+) -> blaze_analysis::extra::pseudo_action::PseudoAction {
+    use blaze_analysis::extra::pseudo_action::{PseudoAction, PseudoActionInfo};
+    let info = blaze_protos::blaze::PythonInfo {
+        source_file: sources
+            .iter()
+            .map(|a| a.get_exec_path_string().to_owned())
+            .collect(),
+        dep_file: dependencies
+            .to_list()
+            .iter()
+            .map(|a| a.get_exec_path_string().to_owned())
+            .collect(),
+    };
+    let mut inputs = blaze_collect::NestedSetBuilder::stable_order();
+    inputs.add_all(sources.iter().cloned());
+    inputs.add_transitive(dependencies);
+    PseudoAction::new(
+        PY_PSEUDO_ACTION_UUID,
+        owner,
+        inputs.build(),
+        vec![output],
+        "Python".to_owned(),
+        PseudoActionInfo::Python(info),
+    )
 }
 
 // -------------------------------------------------------------------------------------------

@@ -3,6 +3,7 @@
 
 use std::io;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -89,13 +90,24 @@ pub struct SandboxModule {
     should_cleanup_sandbox_base: bool,
 }
 
+/// The fields of Java's `SandboxModule` that outlive a command: the module is one object per
+/// server, and `sandboxBase` and `treeDeleter` keep the values of the last build (read by the
+/// next build's tree deleter choice and by `cleanStarting` of a `clean` command).
+///
+/// PORT: Blaze makes a `SandboxModule` per build (`blaze_buildtool`'s execution setup); each one
+/// starts from these values and writes them back, so that together they behave as the one
+/// server-lived module.
+static SERVER_FIELDS: LazyLock<parking_lot::Mutex<(Option<Path>, Option<TreeDeleterKind>)>> =
+    LazyLock::new(|| parking_lot::Mutex::new((None, None)));
+
 impl SandboxModule {
     pub fn new() -> SandboxModule {
+        let (sandbox_base, tree_deleter) = SERVER_FIELDS.lock().clone();
         SandboxModule {
             env: None,
-            sandbox_base: None,
+            sandbox_base,
             spawn_runners: Vec::new(),
-            tree_deleter: None,
+            tree_deleter,
             should_cleanup_sandbox_base: false,
         }
     }
@@ -218,6 +230,7 @@ impl SandboxModule {
                 FIRST_BUILD.store(true, Ordering::SeqCst);
             }
         }
+        *SERVER_FIELDS.lock() = (self.sandbox_base.clone(), self.tree_deleter.clone());
         let tree_deleter = self
             .tree_deleter
             .as_ref()
@@ -370,6 +383,13 @@ impl SandboxModule {
             let tree_deleter = self.tree_deleter.as_ref().map(|d| d.as_tree_deleter());
             SandboxStash::clean(tree_deleter.as_deref(), sandbox_base);
         }
+    }
+
+    /// `cleanStarting(CleanStartingEvent)` of the server's module (the `clean` command has no
+    /// `SandboxModule` of its own in Blaze; see [`SERVER_FIELDS`]).
+    // Java: com/google/devtools/build/lib/sandbox/SandboxModule.java:389 SandboxModule.cleanStarting
+    pub fn clean_starting_for_server() {
+        SandboxModule::new().clean_starting();
     }
 
     /// `afterCommand()`.

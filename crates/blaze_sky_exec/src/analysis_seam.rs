@@ -103,6 +103,15 @@ pub trait ConfiguredTargetView: Send + Sync + fmt::Debug {
     fn is_test_suite(&self) -> bool {
         self.get_rule_class_or_kind() == "test_suite"
     }
+
+    /// `getProvider(ExtraActionArtifactsProvider.class)`: its extra action artifacts and its
+    /// transitive extra action artifacts; `None` without the provider (no
+    /// `--experimental_action_listener`).
+    fn get_extra_action_artifacts_provider(
+        &self,
+    ) -> Option<(NestedSet<Artifact>, NestedSet<Artifact>)> {
+        None
+    }
 }
 
 /// A configured aspect (an `AspectKey` with its `AspectValue`) as the execution phase
@@ -130,6 +139,14 @@ pub trait ConfiguredAspectView: Send + Sync {
     // Java: com/google/devtools/build/lib/analysis/AspectValue.java:105 AspectValue.getWritesOutputToMasterLog
     fn get_writes_output_to_master_log(&self) -> bool {
         blaze_util::unported!("AspectValue.getWritesOutputToMasterLog (view)")
+    }
+
+    /// `AspectValue.getProvider(ExtraActionArtifactsProvider.class)`, as for
+    /// [`ConfiguredTargetView::get_extra_action_artifacts_provider`].
+    fn get_extra_action_artifacts_provider(
+        &self,
+    ) -> Option<(NestedSet<Artifact>, NestedSet<Artifact>)> {
+        None
     }
 }
 
@@ -171,5 +188,13 @@ pub trait AnalysisSeam: Send + Sync {
         _env: &mut Environment<'_>,
     ) -> Result<Option<Arc<dyn ConfiguredAspectView>>, ComputeError> {
         blaze_util::unported!("AnalysisSeam.get_configured_aspect", "{key}")
+    }
+
+    /// `extraActionFilterSupplier.get().isIncluded(ownerLabel)`: the
+    /// `--experimental_extra_action_filter` of the current build applied to an extra action
+    /// artifact's owner label (`true` for the default, empty filter).
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:691 BuildDriverFunction.addArtifactsToBuilder
+    fn is_extra_action_owner_included(&self, _owner_label: &str) -> bool {
+        true
     }
 }

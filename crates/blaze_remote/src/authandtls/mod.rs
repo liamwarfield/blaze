@@ -15,12 +15,11 @@ use std::io;
 
 use blaze_repo_fetch::authandtls::{NetrcCredentials, StaticCredentials};
 
+pub use blaze_repo_fetch::authandtls::credentialhelper::CredentialHelperEnvironment;
 pub use call_credentials_provider::{
     CallCredentialsProvider, GoogleAuthCallCredentialsProvider, NO_CREDENTIALS, NoCredentials,
 };
-pub use google_auth_utils::{
-    CredentialHelperEnvironment, GoogleAuthLibraryCallCredentials, ManagedChannel,
-};
+pub use google_auth_utils::{GoogleAuthLibraryCallCredentials, ManagedChannel};
 pub use headers::{
     new_cache_headers_interceptor, new_downloader_headers_interceptor, new_exec_headers_interceptor,
 };

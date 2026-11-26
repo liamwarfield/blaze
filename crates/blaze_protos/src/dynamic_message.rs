@@ -248,8 +248,9 @@ impl UnknownFieldSet {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DynamicMessage {
     descriptor: &'static Descriptor,
-    /// Per field of the descriptor (declaration order): its elements. A singular field holds at
-    /// most one; it is set iff non-empty.
+    /// Per field of the descriptor (declaration order), then per extension of it
+    /// (`Descriptor::extensions`): its elements. A singular field holds at most one; it is set
+    /// iff non-empty.
     fields: Vec<Vec<Value>>,
     unknown_fields: UnknownFieldSet,
 }
@@ -259,7 +260,9 @@ impl DynamicMessage {
     pub fn new(descriptor: &'static Descriptor) -> DynamicMessage {
         DynamicMessage {
             descriptor,
-            fields: descriptor.fields.iter().map(|_| Vec::new()).collect(),
+            fields: (0..descriptor.fields.len() + descriptor.extensions.len())
+                .map(|_| Vec::new())
+                .collect(),
             unknown_fields: UnknownFieldSet::default(),
         }
     }
@@ -281,13 +284,20 @@ impl DynamicMessage {
         &self.unknown_fields
     }
 
-    /// The message `m` as Java holds it: parsed from its Java encoding.
+    /// The message `m` as Java holds it: parsed from its Java encoding, with the compiled
+    /// extensions registered (a generated Java message holds its set extensions as such).
     pub fn from_message<M: JavaMessage>(m: &M) -> DynamicMessage {
         let descriptor = pool()
             .find_message_type_by_name(M::FULL_NAME)
             .unwrap_or_else(|| panic!("no descriptor for {}", M::FULL_NAME));
-        DynamicMessage::parse_from(descriptor, &m.to_byte_array())
-            .unwrap_or_else(|e| panic!("re-parsing {}: {e}", M::FULL_NAME))
+        let data = m.to_byte_array();
+        let mut input = CodedInputStream::new(&data);
+        let mut message = DynamicMessage::new(descriptor);
+        message
+            .merge_from(&mut input, /* extensions= */ true)
+            .and_then(|()| input.check_last_tag_was(0))
+            .unwrap_or_else(|e| panic!("re-parsing {}: {e}", M::FULL_NAME));
+        message
     }
 
     /// `build()` into the generated type: decoded from [`Self::to_byte_array`].
@@ -309,23 +319,25 @@ impl DynamicMessage {
     ) -> Result<DynamicMessage, InvalidProtocolBufferException> {
         let mut input = CodedInputStream::new(data);
         let mut message = DynamicMessage::new(descriptor);
-        message.merge_from(&mut input)?;
+        message.merge_from(&mut input, /* extensions= */ false)?;
         input.check_last_tag_was(0)?;
         Ok(message)
     }
 
-    /// `AbstractMessage.Builder.mergeFrom(CodedInputStream)` through
-    /// `MessageReflection.mergeFieldFrom`.
+    /// `AbstractMessage.Builder.mergeFrom(CodedInputStream, extensionRegistry)` through
+    /// `MessageReflection.mergeFieldFrom`. `extensions`: whether the registry holds the
+    /// compiled extensions (otherwise it is empty).
     fn merge_from(
         &mut self,
         input: &mut CodedInputStream<'_>,
+        extensions: bool,
     ) -> Result<(), InvalidProtocolBufferException> {
         loop {
             let tag = input.read_tag()?;
             if tag == 0 {
                 break;
             }
-            if !self.merge_field_from(input, tag)? {
+            if !self.merge_field_from(input, tag, extensions)? {
                 // end group tag
                 break;
             }
@@ -339,12 +351,18 @@ impl DynamicMessage {
         &mut self,
         input: &mut CodedInputStream<'_>,
         tag: u32,
+        extensions: bool,
     ) -> Result<bool, InvalidProtocolBufferException> {
         let descriptor = self.descriptor;
         let wire_type = tag & 7;
         let field_number = (tag >> 3) as i32;
 
-        let field = descriptor.find_field_by_number(field_number);
+        // `descriptor.isExtensionNumber(fieldNumber)`: the registry's extension, else unknown.
+        let field = match descriptor.find_field_by_number(field_number) {
+            Some(f) => Some(f),
+            None if extensions => descriptor.find_extension_by_number(field_number),
+            None => None,
+        };
 
         let mut unknown = false;
         let mut packed = false;
@@ -401,12 +419,12 @@ impl DynamicMessage {
             let value = match field.type_ {
                 Type::Group => {
                     let mut sub = self.new_merge_target_for_field(field);
-                    input.read_group(field_number, |input| sub.merge_from(input))?;
+                    input.read_group(field_number, |input| sub.merge_from(input, extensions))?;
                     Value::Message(sub)
                 }
                 Type::Message => {
                     let mut sub = self.new_merge_target_for_field(field);
-                    input.read_message(|input| sub.merge_from(input))?;
+                    input.read_message(|input| sub.merge_from(input, extensions))?;
                     Value::Message(sub)
                 }
                 Type::Enum => {
@@ -553,7 +571,7 @@ impl DynamicMessage {
     pub fn get_all_fields(&self) -> Vec<(&'static FieldDescriptor, &[Value])> {
         let descriptor = self.descriptor;
         let mut result: Vec<(&'static FieldDescriptor, &[Value])> = Vec::new();
-        for field in &descriptor.fields {
+        for field in descriptor.fields.iter().chain(descriptor.extensions.iter()) {
             let slot = &self.fields[field.index];
             if field.is_repeated() {
                 if !slot.is_empty() {

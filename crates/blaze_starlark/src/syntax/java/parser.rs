@@ -1068,6 +1068,26 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// The body of `Parser.parseValueOrTypeExpr` for a value expression: an expression,
+    /// possibly preceded or followed by comments or whitespace, then end of input.
+    // Java: net/starlark/java/syntax/Parser.java:259 Parser.parseValueOrTypeExpr
+    pub fn parse_expression_input(&mut self) -> Expr {
+        // Skip preceding doc comments (no-ops for an expression).
+        while self.kind() == T::DocCommentBlock {
+            self.next_token();
+        }
+        let result = self.parse_expr();
+        // Skip following doc comments and newlines (no-ops for an expression).
+        while self.kind() == T::Newline
+            || self.kind() == T::DocCommentBlock
+            || self.kind() == T::DocCommentTrailing
+        {
+            self.next_token();
+        }
+        self.expect(T::Eof);
+        result
+    }
+
     // Java: net/starlark/java/syntax/Parser.java:1350 Parser.parseFileInput
     pub fn parse_file_input(&mut self) -> Vec<Stmt> {
         let mut list = Vec::new();
