@@ -449,3 +449,8 @@ Each entry: date, decision, why, who decided.
   unless the output root holds `.keep-server`; AGENTS.md rule "Memory": `--max_idle_secs=60`
   on every probe server, `shutdown` after each probe, at most two servers, one reused
   workspace per side. All eight running implementers were told. Root.
+- 2026-11-26. Builders reduced to seven after the memory incident; when an implementer reports,
+  its slot is not refilled until fewer than six are building. Queued, in order: the Build Event
+  Service client (the metrics implementer's last item; its thread has the context),
+  `--starlark_cpu_profile` (needs a patch to the vendored interpreter), the remaining profiler
+  sites, include scanning, action rewinding. Root.
