@@ -506,3 +506,13 @@ Each entry: date, decision, why, who decided.
   WebAssembly engine for `repository_ctx.execute_wasm` is the `wasmi` crate (Bazel uses
   Chicory, an interpreter in pure Java). The referee guard at checkpoint 38 (label
   `guard-374c631`, exact binary, dirty tree): rows 39, gained 2, regressed 0. Root.
+- 2026-11-26. Review of I3 (kept graph, invalidation): STOP at ce81d5a on S1-1 (remote output
+  metadata: with a remote or disk cache a deleted output is not restored) and S1-2 (execution
+  salt: nodes kept after `--remote_default_exec_properties` changes); found by reading, not
+  reproduced; no stale path found for local builds; I2's finding closed. Ruling: until both are
+  ported and shown on the oracle's sequences, a command with a remote cache, a disk cache or
+  remote execution discards the kept graph (fail safe). The server stays opt-in until this
+  review passes. Also at ce81d5a: path mapping and the server follow-ups PASS. Referee batch 3
+  is with the auditor; in its daemon mode the binary of 374c631 matches 13,858 of 13,860
+  judged items. Declared deviation: `buildMetrics.memoryMetrics.garbageMetrics` (JVM garbage
+  collector pools) cannot exist in Blaze. Root.
