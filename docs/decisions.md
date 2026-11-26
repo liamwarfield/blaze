@@ -544,3 +544,14 @@ Each entry: date, decision, why, who decided.
   gap: `remote_repo_contents_cache_test.testMemoryPressureRestartDuringCachedFetch` needs JVM
   garbage-collection events. A regression seen in the shared tree at about 16:00 (the daemon
   discards its kept graph after every command) is with the incremental implementer. Root.
+- 2026-11-26, 17:00. The daemon-mode suite run of ce81d5a (label `blaze-ce81d5a-daemon`) was
+  stopped by root after 75 minutes at 130 of 237 targets: it was far slower than the
+  one-process run, eight builders were waiting on it, and the binary has the reported
+  graph-discard regression, so a total from it would mean little. No total is quoted from it.
+  What it showed: five targets that pass in one-process mode timed out or failed in daemon
+  mode (three Java coverage targets, one Java test target, stub_finds_runfiles_test), and one
+  test's daemon reached 5.7 GB of resident memory. Both went to the incremental implementer.
+  Root's error in stopping it: stopping the outer unit left the harness's inner unit running
+  for some minutes (its tests kept starting daemons, memory rose to 23 GiB used); root stopped
+  that unit too. To stop a suite run, stop the `run-*.service` unit whose command names
+  `upstream-tests` as well. The server stays opt-in. Root.
