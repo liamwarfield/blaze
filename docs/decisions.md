@@ -390,3 +390,22 @@ Each entry: date, decision, why, who decided.
   differ from Bazel's by nature; comparison tools treat these keys as volatile. Releasing freed
   memory to the system after each server command (`malloc_trim`) is allowed: it changes no
   output. Root.
+- 2026-11-26. Reviews at 5f68157 (docs/reviews/2026-11-26-*.md and the round-2 files of
+  2026-11-25): PASS for the server, loading/Starlark, Java rules/configuration and the
+  comparison tools (audit round 3; tools committed c99a912); STOP for commands (R1), execution
+  (E2-9, E2-11), reporting (R2-1), remote round 4 (Q1, the v1 certificate verifier), coverage
+  (V1) and cgroups (C1). Each STOP went to the area's running implementer as its first item.
+  Root fixed V1 itself (one guard in commands/build.rs; to be probed when the suite run ends).
+- 2026-11-26. Declared deviations accepted from these reviews: (1) the order of entries in the
+  coverage `_lcov_files.tmp` lists is not reproducible in Bazel with more than one top-level
+  target (Java iterates identity-hashed sets); Blaze's order is its own there and must equal
+  Bazel's with one top-level target. (2) Blaze runs shutdown hooks newest first; Java starts
+  them concurrently in no order. (3) JVM stack-frame lines in a worker's "Exception details"
+  cannot be produced; comparison tools file them as a known gap. (4) `config` and the graph
+  dumps report an empty server until the graph is kept between commands (package I3). Root.
+- 2026-11-26. Queued for the next free builder: execution under `--experimental_output_paths=
+  strip` (Spawn.getPathMapper; suite family `path-mapping`, 14 functions) with finding R1 of
+  the Java/config round 2 (five execution sites pass no input metadata provider, so a
+  collision skips the loud stop), coverage V3 (`coverage_environment` keeps the first of a
+  repeated key, Java the last) and the coverage Starlark accessors; native aspects;
+  `testing.analysis_test`; include scanning; action rewinding. Root.
