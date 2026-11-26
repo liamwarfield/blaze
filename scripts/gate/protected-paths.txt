@@ -65,3 +65,10 @@ scripts/bep-matrix
 scripts/w1/
 scripts/w4/
 scripts/workerd/
+scripts/server/
+scripts/query/
+scripts/tests/
+scripts/workers/
+scripts/repo-gaps/
+scripts/remote/
+scripts/java-param-types/
