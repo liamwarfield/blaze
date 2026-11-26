@@ -461,3 +461,7 @@ Each entry: date, decision, why, who decided.
   three, stopped its background jobs and every probe server, snapshotted the working tree
   (local branch `wip/pause-2026-11-26`, does not compile), and asked the user which instruction
   holds. Checkpoint 37 (e476a59) is the last verified code state on main. Root.
+- 2026-11-26, 14:30. The user corrected the quota rule: pause when 20% of the weekly all-model
+  quota REMAINS (80% used); the user monitors it from another thread and sends the pause
+  instruction; root cannot read the quota itself. The pause of 14:20 is withdrawn; the six
+  implementers were restarted in their threads (three of them had been cancelled twice). Root.

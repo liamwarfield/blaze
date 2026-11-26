@@ -1,8 +1,9 @@
 # Status
 
-Updated 2026-11-26, 14:20 (root). **Paused.** A pause was requested at a weekly-quota reading
-of 21% (threshold 20%); the user had said shortly before that there was plenty of limit left,
-so root asked the user which holds and waits. No agent and no background job is running.
+Updated 2026-11-26, 14:30 (root). Running again: the pause of 14:20 was withdrawn by the user
+(the threshold is 20% of the weekly quota remaining, not used; the user watches the quota from
+another thread and sends the pause instruction). The six implementers were restarted in their
+threads. The list below is what a resumption after any later pause needs.
 
 ## To resume
 
