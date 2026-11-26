@@ -249,6 +249,9 @@ pub struct Evaluator {
     /// incremental builds are not possible, and all evaluations will be at `Version.constant`.
     pub(crate) keep_edges: bool,
     pub(crate) progress_receiver: DirtyAndInflightTrackingProgressReceiver,
+    /// The statistics of `InMemoryMemoizingEvaluator.ProgressReceiver` (kept across
+    /// [`EvaluatorBuilder::build_reusing`], as the Java evaluator's receiver).
+    evaluation_stats: Arc<crate::evaluation_stats::EvaluationStatsCounters>,
     /// Whether the caller gave a progress receiver (`progress_receiver` then forwards to it).
     has_user_progress_receiver: bool,
     event_filter: Arc<dyn EventFilter>,
@@ -363,7 +366,15 @@ impl EvaluatorBuilder {
         let receiver = self
             .progress_receiver
             .unwrap_or_else(|| Arc::new(crate::progress::NULL));
+        let evaluation_stats =
+            Arc::new(crate::evaluation_stats::EvaluationStatsCounters::default());
+        let receiver: Arc<dyn EvaluationProgressReceiver> =
+            Arc::new(crate::evaluation_stats::StatsCollectingProgressReceiver {
+                stats: evaluation_stats.clone(),
+                inner: receiver,
+            });
         let ev = Evaluator {
+            evaluation_stats,
             functions: self.functions,
             graph: InMemoryGraphImpl::new(self.keep_edges),
             keep_edges: self.keep_edges,
@@ -441,11 +452,18 @@ impl EvaluatorBuilder {
             graph,
             keep_edges,
             progress_receiver,
+            evaluation_stats,
             incremental,
             emitted_event_state,
             ..
         } = previous;
+        let receiver: Arc<dyn EvaluationProgressReceiver> =
+            Arc::new(crate::evaluation_stats::StatsCollectingProgressReceiver {
+                stats: evaluation_stats.clone(),
+                inner: receiver,
+            });
         let ev = Evaluator {
+            evaluation_stats,
             functions: self.functions,
             graph,
             keep_edges,
@@ -479,6 +497,19 @@ impl EvaluatorBuilder {
 
 impl Evaluator {
     /// Number of functions computed so far.
+    /// `postLoggingStats(eventHandler)`: the `SkyframeGraphStatsEvent` (graph size and the
+    /// evaluation statistics since the last call, which resets them). Returned instead of
+    /// posted: the caller posts it where Java's `SkyframeExecutor.notifyCommandComplete` does.
+    // Java: com/google/devtools/build/skyframe/InMemoryMemoizingEvaluator.java:184 InMemoryMemoizingEvaluator.postLoggingStats
+    pub fn post_logging_stats(&self) -> crate::evaluation_stats::SkyframeGraphStatsEvent {
+        let evaluation_stats = self.evaluation_stats.aggregate_and_reset();
+        crate::evaluation_stats::SkyframeGraphStatsEvent {
+            // graph.valuesSize(): nodeMap.size()
+            graph_size: self.graph.get_all_node_entries().len() as i32,
+            evaluation_stats,
+        }
+    }
+
     pub fn computed_count(&self) -> u64 {
         self.computed.load(Ordering::Relaxed)
     }

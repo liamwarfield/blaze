@@ -459,6 +459,23 @@ pub trait TargetValidator {
 ///
 /// PORT: the events are built by the command's build event stream support (blaze_runtime
 /// commands/bep.rs), which reads them from these values; this crate sits below it.
+/// `BuildTool.dumpSkyframeStateAfterBuild`: writes the action graph of the build's Skyframe
+/// state to the aquery dump file. `Err` is the message of the `PostExecutionDumpException`.
+///
+/// PORT: the aquery dump (`ActionGraphDump`'s output handlers, `AqueryProcessor.dumpActionGraph`)
+/// is ported in blaze_cquery, which depends on this crate; the build command installs it
+/// ([`BuildTool::with_aquery_dump_after_build`]).
+// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:774 BuildTool.dumpSkyframeStateAfterBuild
+pub trait AqueryDumpAfterBuild {
+    fn dump_skyframe_state_after_build(
+        &self,
+        skyframe_executor: &SkyframeExecutor,
+        request: &BuildRequest,
+        format: &str,
+        output_file_path_fragment: Option<&PathFragment>,
+    ) -> Result<(), String>;
+}
+
 pub trait BuildEventHooks {
     /// At the start of the `try` block of `BuildTool.buildTargets`: `BuildStartingEvent`.
     ///
@@ -521,6 +538,8 @@ pub struct BuildTool<'a> {
     validator: Option<&'a dyn TargetValidator>,
     /// The build event stream's posting points (`None` without a build event stream).
     build_event_hooks: Option<&'a dyn BuildEventHooks>,
+    /// `dumpSkyframeStateAfterBuild` (`--experimental_aquery_dump_after_build_format`).
+    aquery_dump_after_build: Option<&'a dyn AqueryDumpAfterBuild>,
     /// Whether `buildTargets` called `buildTargetsWithMergedAnalysisExecution` (or the
     /// non-Skymeld variant): the target patterns were evaluated and validated and the project
     /// file was applied.
@@ -546,6 +565,7 @@ impl<'a> BuildTool<'a> {
             execution_phase: None,
             validator: None,
             build_event_hooks: None,
+            aquery_dump_after_build: None,
             analysis_and_execution_entered: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -574,6 +594,13 @@ impl<'a> BuildTool<'a> {
     /// A build tool whose requests may execute (`build`, `test`).
     pub fn with_execution_phase(mut self, execution_phase: &'a dyn ExecutionPhase) -> Self {
         self.execution_phase = Some(execution_phase);
+        self
+    }
+
+    /// Installs the implementation of `dumpSkyframeStateAfterBuild` (blaze_cquery ports the aquery
+    /// dump).
+    pub fn with_aquery_dump_after_build(mut self, dump: &'a dyn AqueryDumpAfterBuild) -> Self {
+        self.aquery_dump_after_build = Some(dump);
         self
     }
 
@@ -819,6 +846,42 @@ impl<'a> BuildTool<'a> {
                     message: delayed_failure_detail.message.clone(),
                     failure_detail: delayed_failure_detail.clone(),
                 });
+            }
+
+            // Only run this post-build step for builds with SequencedSkyframeExecutor. Enabling
+            // the aquery dump format feature will disable Skymeld, so it only runs in the
+            // non-Skymeld path.
+            // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:570 BuildTool.buildTargetsWithoutMergedAnalysisExecution
+            let build_options = request.get_build_options();
+            if let Some(format) = &build_options.aquery_dump_after_build_format {
+                let Some(dump) = self.aquery_dump_after_build else {
+                    blaze_util::unported!(
+                        "BuildTool.dumpSkyframeStateAfterBuild",
+                        "no aquery dump implementation for the {} command",
+                        request.command_name
+                    );
+                };
+                if let Err(message) = dump.dump_skyframe_state_after_build(
+                    self.skyframe_executor,
+                    request,
+                    format,
+                    build_options
+                        .aquery_dump_after_build_output_file
+                        .as_ref()
+                        .map(|f| &f.0),
+                ) {
+                    // catch (PostExecutionDumpException e) in processRequest
+                    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:991 BuildTool.processRequest
+                    return Err(BuildToolError::Exit(DetailedExitCode::of(FailureDetail {
+                        message,
+                        category: Some(Category::ActionQuery(
+                            blaze_protos::failure_details::ActionQuery {
+                                code: blaze_protos::failure_details::action_query::Code::SkyframeStateAfterExecution
+                                    as i32,
+                            },
+                        )),
+                    })));
+                }
             }
         } else {
             // executionTool = new ExecutionTool(env, request), created whether or not the request

@@ -49,8 +49,10 @@ impl VendorManager {
     pub fn is_url_vendored(&self, url: &JavaUri) -> Result<bool, UnsupportedEncodingException> {
         let path = self.get_vendor_path_for_url(url)?;
         // Path.isFile(): follows symlinks.
-        Ok(std::fs::metadata(&*internal_to_platform(path.get_path_string()))
-            .is_ok_and(|m| m.is_file()))
+        Ok(
+            std::fs::metadata(&*internal_to_platform(path.get_path_string()))
+                .is_ok_and(|m| m.is_file()),
+        )
     }
 
     /// Vendors the registry URL with the specified content.

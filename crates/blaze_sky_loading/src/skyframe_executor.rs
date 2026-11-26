@@ -40,7 +40,6 @@ use crate::file_state::{
     ExternalFileAction, ExternalFilesHelper, ExternalFilesKnowledgeState, FileStateFunction,
     FileStateKey,
 };
-use blaze_util::io::timestamp_granularity_monitor::TimestampGranularityMonitor;
 use crate::globs::{GlobsKey, globs_function};
 use crate::ignored_subdirectories::{IgnoredSubdirectoriesKey, ignored_subdirectories_function};
 use crate::local_repository_lookup::{LocalRepositoryLookupKey, local_repository_lookup_function};
@@ -73,6 +72,7 @@ use blaze_packages::build::package_factory::PackageFactory;
 use blaze_packages::builtins::{AutoloadSymbols, BazelStarlarkEnvironment};
 use blaze_packages::native_rules::RuleClassProvider;
 use blaze_packages::package::{NoopValidator, PackageSettings};
+use blaze_util::io::timestamp_granularity_monitor::TimestampGranularityMonitor;
 
 /// Hardcoded constants describing bazel-on-skyframe behavior.
 // Java: com/google/devtools/build/lib/skyframe/BazelSkyframeExecutorConstants.java:26 BazelSkyframeExecutorConstants

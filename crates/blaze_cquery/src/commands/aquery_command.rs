@@ -182,7 +182,7 @@ pub fn exec(env: &PostAnalysisCommandEnvironment<'_>) -> DetailedExitCode {
     };
 
     if query_current_skyframe_state {
-        aquery_build_tool.dump_action_graph_from_skyframe();
+        return aquery_build_tool.dump_action_graph_from_skyframe(env.skyframe_executor);
     }
     // PORT: StackOverflowError ("Aquery output was too large to handle") cannot be caught in
     // Rust.

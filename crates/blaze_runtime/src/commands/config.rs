@@ -623,7 +623,6 @@ mod tests {
     //! test runs `build --nobuild` and then `config` in one server, reading the configurations
     //! the build left in the graph.
 
-
     const NEEDS_GRAPH: &str =
         "needs the Skyframe graph kept between commands (Blaze discards it, decision D2)";
 

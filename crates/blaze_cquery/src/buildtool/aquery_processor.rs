@@ -1,7 +1,13 @@
-//! Port of `buildtool/AqueryProcessor.java` (the post-analysis query path; `--skyframe_state`
-//! is not ported).
+//! Port of `buildtool/AqueryProcessor.java` (the post-analysis query path and `--skyframe_state`)
+//! and `SequencedSkyframeExecutor.dumpSkyframeState`.
 
 use std::sync::Arc;
+
+use blaze_actions::skyframe::actiongraph::v2::action_graph_dump::{
+    ActionGraphDump, ActionGraphDumpError, DumpedTarget,
+};
+use blaze_analysis::configured_target::ConfiguredTarget;
+use blaze_protos::failure_details::{ActionQuery, FailureDetail, action_query, failure_detail};
 
 use blaze_cmdline::TargetPatternParser;
 use blaze_events::ExtendedEventHandler;
@@ -73,11 +79,84 @@ impl AqueryProcessor {
 
     /// Outputs the current action graph from Skyframe.
     // Java: com/google/devtools/build/lib/buildtool/AqueryProcessor.java:78 AqueryProcessor.dumpActionGraphFromSkyframe
-    pub fn dump_action_graph_from_skyframe(&self) -> ! {
-        blaze_util::unported!(
-            "AqueryProcessor.dumpActionGraphFromSkyframe",
-            "--skyframe_state"
-        )
+    pub fn dump_action_graph_from_skyframe(
+        &self,
+        skyframe_executor: &SkyframeExecutor,
+    ) -> blaze_query_engine::DetailedExitCode {
+        let aquery_options = &self.aquery_options;
+        // env.getRuntime().getQueryRuntimeHelperFactory().create(env, aqueryOptions)
+        let output = match blaze_query::query::output::query_runtime_helper::create(
+            &self.output,
+            &self.working_directory,
+            &aquery_options.output_file,
+        ) {
+            Ok(output) => output,
+            Err(e) => {
+                self.reporter
+                    .handle(&blaze_events::Event::error(e.get_message().to_owned()));
+                return blaze_query_engine::DetailedExitCode::of(e.get_failure_detail());
+            }
+        };
+
+        let output_type = match blaze_actions::skyframe::actiongraph::v2::aquery_output_handler::OutputType::from_string(
+            &aquery_options.output_format,
+        ) {
+            Ok(t) => t,
+            Err(e) => {
+                let message = format!(
+                    "--skyframe_state must be used with --output=proto|textproto|jsonproto. {e}"
+                );
+                self.reporter
+                    .handle(&blaze_events::Event::error(message.clone()));
+                return get_failure_result(&message, action_query::Code::SkyframeStatePrereqUnmet);
+            }
+        };
+        let mut aquery_output_handler =
+            crate::aquery::action_graph_proto_output_formatter_callback::construct_aquery_output_handler(
+                output_type,
+                output.clone(),
+            );
+        let result = (|| -> Result<(), ActionGraphDumpError> {
+            let mut action_graph_dump = ActionGraphDump::new(
+                aquery_options.include_commandline,
+                aquery_options.include_artifacts,
+                aquery_options.include_pruned_inputs,
+                Some(&self.action_filters),
+                aquery_options.include_param_files,
+                aquery_options.include_file_write_contents,
+                &mut *aquery_output_handler,
+            );
+            dump_action_graph(skyframe_executor, &mut action_graph_dump)?;
+            drop(action_graph_dump);
+            aquery_output_handler.close()?;
+            Ok(())
+        })();
+        let flushed = output.borrow_mut().flush();
+        match result.and(flushed.map_err(ActionGraphDumpError::Io)) {
+            Ok(()) => blaze_query_engine::DetailedExitCode::success(),
+            Err(ActionGraphDumpError::CommandLineExpansion(m)) => {
+                let message = format!("Error while parsing command: {m}");
+                self.reporter
+                    .handle(&blaze_events::Event::error(message.clone()));
+                get_failure_result(&message, action_query::Code::CommandLineExpansionFailure)
+            }
+            Err(ActionGraphDumpError::TemplateExpansion(m)) => {
+                let message = format!("Error while expanding template: {m}");
+                self.reporter
+                    .handle(&blaze_events::Event::error(message.clone()));
+                get_failure_result(&message, action_query::Code::TemplateExpansionFailure)
+            }
+            Err(ActionGraphDumpError::Io(e)) => {
+                let message = format!("Error while emitting output: {e}");
+                self.reporter
+                    .handle(&blaze_events::Event::error(message.clone()));
+                get_failure_result(&message, action_query::Code::OutputFailure)
+            }
+            Err(ActionGraphDumpError::Interrupted) => blaze_util::unported!(
+                "AqueryProcessor.dumpActionGraphFromSkyframe",
+                "InterruptedException in SequencedSkyframeExecutor.dumpSkyframeState                  (IllegalStateException: No interruption in sequenced evaluation)"
+            ),
+        }
     }
 
     // Java: com/google/devtools/build/lib/buildtool/AqueryProcessor.java:149 AqueryProcessor.getQueryEnvironment
@@ -248,5 +327,109 @@ mod tests {
     fn no_expression_has_no_filters() {
         let filters = build_action_filters(None).unwrap();
         assert!(!filters.has_filter_for_function("mnemonic"));
+    }
+}
+
+// Java: com/google/devtools/build/lib/buildtool/AqueryProcessor.java:257 AqueryProcessor.getFailureResult
+fn get_failure_result(
+    message: &str,
+    detailed_code: action_query::Code,
+) -> blaze_query_engine::DetailedExitCode {
+    blaze_query_engine::DetailedExitCode::of(FailureDetail {
+        message: message.to_owned(),
+        category: Some(failure_detail::Category::ActionQuery(ActionQuery {
+            code: detailed_code as i32,
+        })),
+    })
+}
+
+/// Dumps the action graph of every done configured target and aspect of the graph.
+///
+/// PORT: Java's `aqueryOutputHandler instanceof AqueryConsumingOutputHandler` branch
+/// (`dumpSkyframeStateInParallel`) prints the same messages through a consumer thread; Blaze's
+/// streamed handlers print on the calling thread (see `StreamedConsumingOutputHandler`), so both
+/// branches are `dumpSkyframeState`.
+// Java: com/google/devtools/build/lib/buildtool/AqueryProcessor.java:131 AqueryProcessor.dumpActionGraph
+pub fn dump_action_graph(
+    skyframe_executor: &SkyframeExecutor,
+    action_graph_dump: &mut ActionGraphDump<'_>,
+) -> Result<(), ActionGraphDumpError> {
+    dump_skyframe_state(skyframe_executor, action_graph_dump)
+}
+
+// Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:631 SequencedSkyframeExecutor.dumpSkyframeState
+fn dump_skyframe_state(
+    skyframe_executor: &SkyframeExecutor,
+    action_graph_dump: &mut ActionGraphDump<'_>,
+) -> Result<(), ActionGraphDumpError> {
+    let evaluator = skyframe_executor.get_evaluator();
+    // PORT: java-hash-order. Java iterates memoizingEvaluator.getDoneValues(), the entries of
+    // the in-memory graph's ConcurrentHashMap in its hash order; Blaze iterates the graph's
+    // nodes in its own order. The order decides the order of the dumped messages and their ids
+    // when several targets have actions.
+    for key in evaluator.get_all_keys_for_testing() {
+        let Some(sky_value) = evaluator.get_existing_value(&key) else {
+            // The skyValue may be null in case analysis of the previous build failed.
+            continue;
+        };
+        if let Some(configured_target_value) =
+            sky_value
+                .downcast_ref::<blaze_analysis::configured_target_value::ConfiguredTargetValue>()
+        {
+            let configured_target = configured_target_value.get_configured_target();
+            // RuleConfiguredTargetValue
+            if !matches!(configured_target, ConfiguredTarget::Rule(_)) {
+                continue;
+            }
+            // Only dumps the value for non-delegating keys.
+            let lookup_key = configured_target
+                .get_lookup_key()
+                .as_any()
+                .downcast_ref::<blaze_analysis::configured_target_key::ConfiguredTargetKey>(
+            );
+            if lookup_key.is_some()
+                && lookup_key
+                    == key.downcast::<blaze_analysis::configured_target_key::ConfiguredTargetKey>()
+            {
+                let actions: Vec<Arc<dyn blaze_actions::Action>> =
+                    configured_target_value.get_actions().to_vec();
+                action_graph_dump
+                    .dump_configured_target(&dumped_target(configured_target), &actions)?;
+            }
+        } else if let Some(aspect_key) =
+            key.downcast::<blaze_analysis::aspect_key_creator::AspectKey>()
+        {
+            let aspect_value = sky_value
+                .downcast_ref::<blaze_analysis::aspect_value::AspectValue>()
+                .expect("ClassCastException: AspectValue");
+            let configured_target_value = evaluator
+                .get_existing_value(&blaze_skyframe::SkyKey::new(
+                    aspect_key.get_base_configured_target_key().clone(),
+                ))
+                .expect("NullPointerException: the base configured target of an aspect");
+            let configured_target_value = configured_target_value
+                .downcast_ref::<blaze_analysis::configured_target_value::ConfiguredTargetValue>()
+                .expect("ClassCastException: ConfiguredTargetValue");
+            let actions: Vec<Arc<dyn blaze_actions::Action>> = aspect_value.get_actions().to_vec();
+            action_graph_dump.dump_aspect(
+                Some(&actions),
+                &dumped_target(configured_target_value.get_configured_target()),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// The target `ActionGraphDump.dumpSingleAction` records for a configured target: its actual
+/// target (aliases dereferenced), which must be a rule.
+// Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/ActionGraphDump.java:163 ActionGraphDump.dumpSingleAction
+fn dumped_target(configured_target: &ConfiguredTarget) -> DumpedTarget {
+    let actual = configured_target.get_actual();
+    let ConfiguredTarget::Rule(rule_configured_target) = &actual else {
+        panic!("IllegalStateException: not a RuleConfiguredTarget");
+    };
+    DumpedTarget {
+        label: actual.get_label().to_string(),
+        rule_class_string: Some(rule_configured_target.get_rule_class_string().to_owned()),
     }
 }

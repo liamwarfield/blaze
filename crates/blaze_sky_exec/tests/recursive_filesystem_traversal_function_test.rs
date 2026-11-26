@@ -134,6 +134,7 @@ impl Fixture {
             verbose_failures: false,
             output_permissions: OutputPermissions::READONLY,
         }));
+        let builder = blaze_sky_loading::precomputed::BUILD_ID.set(builder, String::new());
         blaze_sky_exec::register_execution_functions(builder, executor, Arc::new(NoAnalysis), None)
             .build()
     }

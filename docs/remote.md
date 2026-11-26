@@ -129,6 +129,20 @@ output goes to the file system of the action that produced it and is read back o
 action's declared outputs, as in Java (review R7, closed). To find the sites, grep for the
 marker text; line numbers are not kept here.
 
+Credential helpers (`--credential_helper`, `--credential_helper_timeout`,
+`--credential_helper_cache_duration`; remote module, downloader and Bzlmod registries) are ported
+in `blaze_repo_fetch::authandtls::credentialhelper` (round 4, docs/reviews/2026-11-19-remote-response.md);
+the credential cache lives as long as the process (Bazel: the server), so without a Blaze server
+a second command calls the helper again. `--experimental_remote_scrubbing_config` is parsed by
+`blaze_optdefs`' `ScrubberConverter` and built by `scrubber.rs`.
+
+Pre-v3 server certificates (round 4): `authandtls/jdk_server_cert_verifier.rs` accepts nothing
+the JDK rejects; its expected verdicts are the oracle JDK's on 46 fixtures
+(`scripts/jdk-certs/run`, `tests/jdk_server_cert_fixtures_test.rs`). It is stricter than the JDK
+for non-DER encodings, wildcard common names, offsets and fractions in times, algorithm
+identifiers that differ only by NULL parameters, and chains with intermediates (each a
+`PORT: stricter` there).
+
 Where Blaze is stricter than Bazel (ruling 2026-11-19, docs/decisions.md): TLS for remote
 endpoints uses rustls with the webpki verifier and no hand-written verifier, so an X.509 v1
 certificate (server or client) is rejected, where Bazel (JDK/Netty) accepts it. Effect: an
@@ -146,8 +160,7 @@ where Bazel would enter it; none is silently ignored.
 
 | Feature / flag | Where it fails |
 |---|---|
-| `--experimental_remote_scrubbing_config` (`Scrubber.parse` is not ported yet; `blaze_protos::text_format` now has the general parser it needs) | `scrubber.rs` `Scrubber.parse`, and `blaze_runtime` `build_remote.rs` before setup |
-| Credential helpers (`--credential_helper`) and Google credentials (`--google_credentials`, `--google_default_credentials`) | `authandtls/google_auth_utils.rs` |
+| Google credentials (`--google_credentials`, `--google_default_credentials`) | `authandtls/google_auth_utils.rs` |
 | HTTP/HTTPS remote cache (`--remote_cache=http(s)://`) | `combined_cache_client_factory.rs` `createHttp`, `remote_module.rs` `createCredentials` |
 | Content-defined chunking (`--experimental_remote_cache_chunking`) | `combined_cache.rs` `Chunking.*`, `uploadChunked`; `grpc_cache_client.rs` split/splice |
 | Remote output service (`--experimental_remote_output_service`); the "must be used with a cache" exit and the `--disk_cache` warning are ported | `remote_module.rs` setup, at Java's channel creation for it |

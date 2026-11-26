@@ -56,7 +56,11 @@ pub fn vendor_repos(
         let is_cached = !marker_under_external.exists();
         let actual_marker_file = if is_cached {
             let cache_repo_dir = repo_under_external.resolve_symbolic_links()?;
-            let name = format!("{}{}", cache_repo_dir.get_base_name(), RECORDED_INPUTS_SUFFIX);
+            let name = format!(
+                "{}{}",
+                cache_repo_dir.get_base_name(),
+                RECORDED_INPUTS_SUFFIX
+            );
             cache_repo_dir
                 .replace_name(&name)
                 .expect("NullPointerException: replaceName")
@@ -87,7 +91,10 @@ pub fn vendor_repos(
         // if this step fails or is interrupted, because the marker file under external is gone
         // anyway.
         if is_cached {
-            copy_trees_below(&repo_under_external.resolve_symbolic_links()?, &repo_under_vendor)?;
+            copy_trees_below(
+                &repo_under_external.resolve_symbolic_links()?,
+                &repo_under_vendor,
+            )?;
         } else if repo_under_external.rename_to(&repo_under_vendor).is_err() {
             fs_utils::move_trees_below(&repo_under_external, &repo_under_vendor)?;
         }
@@ -118,14 +125,17 @@ pub fn vendor_repos(
 /// the one under `<output_base>/external`. This function assumes the marker file under
 /// `<output_base>/external` exists and is up-to-date.
 // Java: com/google/devtools/build/lib/bazel/bzlmod/VendorManager.java:203 VendorManager.isRepoUpToDate
-fn is_repo_up_to_date(marker_under_vendor: &Path, marker_under_external: &Path) -> io::Result<bool> {
+fn is_repo_up_to_date(
+    marker_under_vendor: &Path,
+    marker_under_external: &Path,
+) -> io::Result<bool> {
     if !marker_under_vendor.exists() {
         return Ok(false);
     }
     // FileSystemUtils.readContent(..., UTF_8): both decode the same way, so the bytes compare as
     // the strings do.
-    let vendor_marker_content = String::from_utf8_lossy(&fs_utils::read_content(marker_under_vendor)?)
-        .into_owned();
+    let vendor_marker_content =
+        String::from_utf8_lossy(&fs_utils::read_content(marker_under_vendor)?).into_owned();
     let external_marker_content =
         String::from_utf8_lossy(&fs_utils::read_content(marker_under_external)?).into_owned();
     Ok(vendor_marker_content == external_marker_content)
@@ -135,7 +145,10 @@ fn is_repo_up_to_date(marker_under_vendor: &Path, marker_under_external: &Path) 
 // Java: com/google/devtools/build/lib/vfs/FileSystemUtils.java:575 FileSystemUtils.copyTreesBelow
 pub fn copy_trees_below(from: &Path, to: &Path) -> io::Result<()> {
     if to.starts_with(from) {
-        panic!("IllegalArgumentException: {} is a subdirectory of {}", to, from);
+        panic!(
+            "IllegalArgumentException: {} is a subdirectory of {}",
+            to, from
+        );
     }
     for from_child in from.get_directory_entries()? {
         let to_child = to.get_child(from_child.get_base_name());

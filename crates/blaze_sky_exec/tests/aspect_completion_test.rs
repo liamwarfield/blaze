@@ -220,7 +220,7 @@ impl Fixture {
             output_permissions: OutputPermissions::READONLY,
         }));
         let evaluator = blaze_sky_exec::register_execution_functions(
-            EvaluatorBuilder::new(),
+            with_loading_functions(EvaluatorBuilder::new(), &self.root),
             executor,
             Arc::new(seam),
             None,
@@ -376,4 +376,54 @@ fn aspect_completion_reports_a_missing_source_file() {
         completed[0].root_causes,
         vec![Label::parse_canonical("//pkg:missing.txt").unwrap()]
     );
+}
+
+/// No external repository (the loading functions the FILE dependency of ARTIFACT needs).
+struct NoRepos;
+
+impl blaze_sky_loading::repos::ExternalRepos for NoRepos {
+    fn compute_repository_mapping(
+        &self,
+        _repository_name: &blaze_cmdline::RepositoryName,
+        _env: &mut blaze_skyframe::Environment<'_>,
+    ) -> Result<Option<blaze_sky_loading::repos::RepositoryMappingValue>, blaze_skyframe::ComputeError>
+    {
+        Ok(Some(
+            blaze_sky_loading::repos::RepositoryMappingValue::value_for_empty_root_module(),
+        ))
+    }
+
+    fn compute_repository_directory(
+        &self,
+        repository_name: &blaze_cmdline::RepositoryName,
+        _env: &mut blaze_skyframe::Environment<'_>,
+    ) -> Result<Option<blaze_sky_loading::repos::RepositoryDirectoryValue>, blaze_skyframe::ComputeError>
+    {
+        panic!("no external repository here: {repository_name}")
+    }
+}
+
+/// The loading functions (FILE for source artifacts) and the per-command BUILD_ID that the
+/// execution functions request (Java's test cases register FILE_STATE and FILE).
+fn with_loading_functions(
+    builder: blaze_skyframe::EvaluatorBuilder,
+    workspace: &blaze_vfs::Path,
+) -> blaze_skyframe::EvaluatorBuilder {
+    let config = blaze_sky_loading::skyframe_executor::LoadingFunctionsConfig::for_bazel_default(
+        blaze_sky_loading::directories::LoadingDirectories {
+            workspace: workspace.clone(),
+            output_base: workspace.get_child("output_base_for_loading"),
+            install_base: workspace.get_child("install_base_for_loading"),
+        },
+        std::sync::Arc::new(NoRepos),
+    );
+    let builder =
+        blaze_sky_loading::skyframe_executor::register_loading_functions(builder, &config);
+    let builder = blaze_sky_loading::skyframe_executor::inject_loading_precomputed(
+        builder,
+        &config,
+        blaze_starlark::StarlarkSemantics::from_flags(&Default::default()).unwrap(),
+        indexmap::IndexMap::new(),
+    );
+    blaze_sky_loading::precomputed::BUILD_ID.set(builder, String::new())
 }

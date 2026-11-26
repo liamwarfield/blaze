@@ -206,6 +206,7 @@ mod incremental_in_memory_node_entry;
 mod invalidation;
 mod node_entry;
 mod non_incremental_in_memory_node_entry;
+pub mod evaluation_stats;
 pub mod precomputed;
 mod progress;
 mod reverse_deps_utility;

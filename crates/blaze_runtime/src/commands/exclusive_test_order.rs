@@ -401,19 +401,23 @@ mod order_tests {
         assert_eq!(order, vec![1, 0]);
     }
 
-    // Review exec-2 round 2, E2-9: `test excl_b excl_c` plus a target skipped as incompatible.
-    // Java's result map holds the skipped key's BuildDriverValue too: 4 entries, a copy table of
-    // 8, so excl_b (bucket 2) runs before excl_c (bucket 4). The skipped key's hash (here bucket
-    // 7) does not change that.
+    // Review exec-2 round 2, E2-9: a target skipped as incompatible is an entry of Java's result
+    // map (a skipped BuildDriverValue), so it can change the pre-sized table. Two tests and the
+    // workspace status key: 3 entries, a table of 4 (0x5 in bucket 1, 0x2 in bucket 2); with one
+    // skipped target: 4 entries, a table of 8 (0x2 in bucket 2, 0x5 in bucket 5). Measured on the
+    // oracle with `test excl_c excl_e` (e runs first) and `test excl_c excl_e //skp:all` (c runs
+    // first; `~/.cache/blaze/work/workers-3/e29-oracle.txt`).
     #[test]
     fn order_with_a_skipped_target() {
-        let order = evaluation_result_values_order([
-            (0, Some(EXCL_B)),
-            (1, Some(EXCL_C)),
+        let without = evaluation_result_values_order([(0, Some(0x5)), (1, Some(0x2)), (2, None)]);
+        assert_eq!(without, vec![0, 1]);
+        let with = evaluation_result_values_order([
+            (0, Some(0x5)),
+            (1, Some(0x2)),
             (3, Some(0x7)),
             (2, None),
         ]);
-        assert_eq!(order, vec![0, 1, 3]);
+        assert_eq!(with, vec![1, 0, 3]);
     }
 
     // Six entries: a copy table of 8 (JDK 18 and older: 16).

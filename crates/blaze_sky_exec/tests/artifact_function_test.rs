@@ -72,8 +72,29 @@ impl Fixture {
             verbose_failures: false,
             output_permissions: OutputPermissions::READONLY,
         }));
-        let evaluator = blaze_sky_exec::register_execution_functions(
+        // Java's ArtifactFunctionTestCase registers FILE_STATE and FILE with ARTIFACT, which
+        // requests the FILE value of a source artifact. The package root is the test's root.
+        let config = blaze_sky_loading::skyframe_executor::LoadingFunctionsConfig::for_bazel_default(
+            blaze_sky_loading::directories::LoadingDirectories {
+                workspace: self.root.clone(),
+                output_base: self.root.get_child("output_base"),
+                install_base: self.root.get_child("install_base"),
+            },
+            Arc::new(NoRepos),
+        );
+        let mut builder = blaze_sky_loading::skyframe_executor::register_loading_functions(
             EvaluatorBuilder::new(),
+            &config,
+        );
+        builder = blaze_sky_loading::skyframe_executor::inject_loading_precomputed(
+            builder,
+            &config,
+            blaze_starlark::StarlarkSemantics::from_flags(&Default::default()).unwrap(),
+            IndexMap::new(),
+        );
+        builder = blaze_sky_loading::precomputed::BUILD_ID.set(builder, String::new());
+        let evaluator = blaze_sky_exec::register_execution_functions(
+            builder,
             executor,
             Arc::new(NoAnalysis),
             None,
@@ -152,3 +173,26 @@ fn test_consecutive_spawn_action_templates() {}
 #[test]
 #[ignore = "needs action templates (ACTION_TEMPLATE_EXPANSION), not ported"]
 fn test_action_template_generates_multiple_output_trees_from_different_actions() {}
+
+/// No external repository (the loading functions the FILE dependency of ARTIFACT needs).
+struct NoRepos;
+
+impl blaze_sky_loading::repos::ExternalRepos for NoRepos {
+    fn compute_repository_mapping(
+        &self,
+        _repository_name: &blaze_cmdline::RepositoryName,
+        _env: &mut Environment<'_>,
+    ) -> Result<Option<blaze_sky_loading::repos::RepositoryMappingValue>, ComputeError> {
+        Ok(Some(
+            blaze_sky_loading::repos::RepositoryMappingValue::value_for_empty_root_module(),
+        ))
+    }
+
+    fn compute_repository_directory(
+        &self,
+        repository_name: &blaze_cmdline::RepositoryName,
+        _env: &mut Environment<'_>,
+    ) -> Result<Option<blaze_sky_loading::repos::RepositoryDirectoryValue>, ComputeError> {
+        panic!("no external repository in this test: {repository_name}")
+    }
+}

@@ -95,7 +95,7 @@ pub struct SpawnResult {
 impl SpawnResult {
     /// `new SpawnResult.DelegateSpawnResult(this) { getRunnerName() { return runnerName; }
     /// getMetrics() { return metrics; } }`: every other getter answers as this result does.
-    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:424 SpawnResult.DelegateSpawnResult
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:482 SpawnResult.DelegateSpawnResult
     pub fn delegate_with_runner_name_and_metrics(
         &self,
         runner_name: &str,

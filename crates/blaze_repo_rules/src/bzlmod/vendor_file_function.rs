@@ -164,8 +164,7 @@ impl VendorFileFunction {
         let vendor_file_path =
             RootedPath::to_rooted_path(Root::from_path(vendor_path.clone()), &VENDOR_FILE_NAME);
 
-        let Some(vendor_file_value) = env.get_value(FileKey::key(vendor_file_path.clone()))?
-        else {
+        let Some(vendor_file_value) = env.get_value(FileKey::key(vendor_file_path.clone()))? else {
             return Ok(None);
         };
         if !vendor_file_value.exists() {
@@ -215,10 +214,12 @@ impl VendorFileFunction {
                 if parse_failed {
                     // Java: readAndParseVendorFile, !starlarkFile.ok(): the errors are replayed.
                     starlark_util::replay_syntax_errors_on(handler, errors);
-                    return Err(SkyFunctionException::persistent(BadVendorFileException::new(
-                        "error parsing VENDOR.bazel file",
-                    ))
-                    .into());
+                    return Err(
+                        SkyFunctionException::persistent(BadVendorFileException::new(
+                            "error parsing VENDOR.bazel file",
+                        ))
+                        .into(),
+                    );
                 }
                 // catch (SyntaxError.Exception e): its message is the first error's, with the
                 // count of the others.
@@ -232,10 +233,13 @@ impl VendorFileFunction {
                 } else {
                     first
                 };
-                return Err(SkyFunctionException::persistent(BadVendorFileException::new(
-                    format!("error parsing VENDOR.bazel file: {}", message),
-                ))
-                .into());
+                return Err(
+                    SkyFunctionException::persistent(BadVendorFileException::new(format!(
+                        "error parsing VENDOR.bazel file: {}",
+                        message
+                    )))
+                    .into(),
+                );
             }
         };
         let globals = self
@@ -254,11 +258,13 @@ impl VendorFileFunction {
         starlark_util::replay_starlark_events_on(handler, events.take());
         if let Err(e) = result {
             // catch (SyntaxError.Exception | EvalException e)
-            return Err(SkyFunctionException::persistent(BadVendorFileException::new(format!(
-                "error parsing VENDOR.bazel file: {}",
-                e.message
-            )))
-            .into());
+            return Err(
+                SkyFunctionException::persistent(BadVendorFileException::new(format!(
+                    "error parsing VENDOR.bazel file: {}",
+                    e.message
+                )))
+                .into(),
+            );
         }
         Ok(context
             .take_payload::<VendorThreadContext>()
@@ -291,10 +297,8 @@ impl VendorFileFunction {
     ) -> Result<String, ComputeError> {
         let contents = std::fs::read(&*internal_to_platform(path.get_path_string())).map_err(
             |_| -> ComputeError {
-                SkyFunctionException::transient(IOException::new(
-                    "error reading VENDOR.bazel file",
-                ))
-                .into()
+                SkyFunctionException::transient(IOException::new("error reading VENDOR.bazel file"))
+                    .into()
             },
         )?;
         starlark_util::create_parser_input(

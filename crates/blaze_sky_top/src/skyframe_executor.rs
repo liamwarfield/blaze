@@ -539,10 +539,8 @@ impl SkyframeExecutor {
             builder =
                 blaze_sky_analysis::configured_target_function::register(builder, services.clone());
             // cquery --output=transitions (CqueryTransitionResolver; see the module).
-            builder = blaze_sky_analysis::cquery_transition_resolver::register(
-                builder,
-                services.clone(),
-            );
+            builder =
+                blaze_sky_analysis::cquery_transition_resolver::register(builder, services.clone());
             // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:858 SkyframeExecutor.skyFunctions
             // (ASPECT, TOP_LEVEL_ASPECTS, LOAD_ASPECTS, in Java's order).
             builder = blaze_sky_analysis::aspect_function::register(builder, services.clone());

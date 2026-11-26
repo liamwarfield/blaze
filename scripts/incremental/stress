@@ -660,6 +660,9 @@ def problem_lines(text, ws, out_root):
             if (l.startswith("ERROR:") or l.startswith("WARNING:"))
             # Only an incremental build can discard an analysis cache (Bazel prints it too).
             and "discarding analysis cache" not in l
+            # Printed when TARGET_PATTERN_PHASE runs: Bazel's second build of the same broken
+            # package does not print it either (checked against the oracle, I3 report).
+            and l != "WARNING: Target pattern parsing failed."
         }
     )
 
