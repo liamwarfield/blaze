@@ -272,6 +272,7 @@ fn main() -> ExitCode {
         repo_contents_cache_path: None,
         test_arguments: Vec::new(),
         jobs: None,
+        command_id: String::new(),
     };
     // Java: ExecutionTool.configureResourceManager (--local_resources defaults).
     blaze_exec::actions::resource_manager::configure_resource_manager(

@@ -35,6 +35,7 @@ pub mod cycles_reporter;
 pub mod execution_phase;
 pub mod execution_seam;
 pub mod incremental;
+pub mod incremental_package_roots;
 pub mod instrumentation_filter_support;
 pub mod pattern_expanding_error;
 pub mod project;

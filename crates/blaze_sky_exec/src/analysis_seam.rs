@@ -59,6 +59,19 @@ pub trait ConfiguredTargetView: Send + Sync + fmt::Debug {
     /// `getLabel()`.
     fn get_label(&self) -> Label;
 
+    /// `getTransitivePackages()` of the value: the packages transitively loaded for it, `None`
+    /// when they are not tracked or were cleared.
+    // Java: com/google/devtools/build/lib/skyframe/AbstractConfiguredTargetValue.java:49 AbstractConfiguredTargetValue.getTransitivePackages
+    fn get_transitive_packages(
+        &self,
+    ) -> Option<
+        NestedSet<
+            blaze_actions::analysis::repo_mapping_manifest_action::RepoMappingPackageMetadata,
+        >,
+    > {
+        None
+    }
+
     /// `getOriginalLabel()` (differs from `getLabel()` for aliases).
     fn get_original_label(&self) -> Label {
         self.get_label()
@@ -122,6 +135,19 @@ pub trait ConfiguredTargetView: Send + Sync + fmt::Debug {
 pub trait ConfiguredAspectView: Send + Sync {
     /// `AspectKey.getLabel()`.
     fn get_label(&self) -> Label;
+
+    /// `getTransitivePackages()` of the value: the packages transitively loaded for it, `None`
+    /// when they are not tracked or were cleared.
+    // Java: com/google/devtools/build/lib/analysis/AspectValue.java:124 AspectValue.getTransitivePackages
+    fn get_transitive_packages(
+        &self,
+    ) -> Option<
+        NestedSet<
+            blaze_actions::analysis::repo_mapping_manifest_action::RepoMappingPackageMetadata,
+        >,
+    > {
+        None
+    }
     /// `AspectKey.getAspectClass().getName()`.
     fn get_aspect_class_name(&self) -> String;
     /// `AspectKey.getBaseConfiguredTargetKey()`.

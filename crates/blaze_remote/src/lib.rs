@@ -33,6 +33,7 @@ pub mod remote_execution_service;
 #[allow(deprecated)]
 pub mod remote_execution_service_download;
 pub mod remote_external_overlay_file_system;
+pub mod remote_important_output_handler;
 pub mod remote_grpc_service_config;
 pub mod remote_module;
 pub mod remote_output_checker;

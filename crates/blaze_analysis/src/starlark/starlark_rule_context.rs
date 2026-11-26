@@ -2076,26 +2076,56 @@ pub fn get_var<'v>(this: Value<'v>, heap: Heap<'v>) -> starlark::Result<Value<'v
     if let Some(v) = ctx.cached_make_variables.get() {
         return Ok(v);
     }
-    let vars = {
+    let (vars, key_tracking) = {
         let rc = ctx.context.handle.borrow_mut();
-        if rc.should_include_required_config_fragments_provider() {
-            // When tracking required fragments, use a key-tracking dict to support
-            // lookedUpVariables().
-            blaze_util::unported!("Dict.Builder.buildImmutableWithKeyTracking");
-        }
-        rc.get_configuration_make_variable_context()
+        let vars = rc
+            .get_configuration_make_variable_context()
             .collect_make_variables()
-            .map_err(|e| errorf(e.0))?
+            .map_err(|e| errorf(e.0))?;
+        (vars, rc.should_include_required_config_fragments_provider())
     };
-    // Java: vars.buildImmutable()
-    let dict = alloc_immutable_dict(
-        heap,
-        vars.iter()
-            .map(|(k, v)| (heap.alloc_str(k).to_value(), heap.alloc_str(v).to_value()))
-            .collect(),
-    );
+    let entries: Vec<(Value<'v>, Value<'v>)> = vars
+        .iter()
+        .map(|(k, v)| (heap.alloc_str(k).to_value(), heap.alloc_str(v).to_value()))
+        .collect();
+    // When tracking required fragments, use a key-tracking dict to support lookedUpVariables().
+    let dict = if key_tracking {
+        // vars.buildImmutableWithKeyTracking()
+        let mut content: starlark_map::small_map::SmallMap<Value<'v>, Value<'v>> =
+            starlark_map::small_map::SmallMap::with_capacity(entries.len());
+        for (key, value) in entries {
+            content.insert_hashed(key.get_hashed()?, value);
+        }
+        starlark::values::dict::alloc_immutable_key_tracking_dict(
+            heap,
+            starlark::values::dict::Dict::new(content),
+        )
+    } else {
+        // vars.buildImmutable()
+        alloc_immutable_dict(heap, entries)
+    };
     ctx.cached_make_variables.set(Some(dict));
     Ok(dict)
+}
+
+/// Returns the set of variables accessed through `ctx.var`.
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:853 StarlarkRuleContext.lookedUpVariables
+pub fn looked_up_variables(ctx: &StarlarkRuleContext) -> Vec<String> {
+    blaze_util::check_state!(
+        ctx.context
+            .handle
+            .borrow()
+            .should_include_required_config_fragments_provider(),
+        "lookedUpVariables without required config fragments"
+    );
+    match ctx.cached_make_variables.get() {
+        None => Vec::new(),
+        Some(dict) => starlark::values::dict::dict_accessed_keys(dict)
+            .expect("ImmutableKeyTrackingDict")
+            .into_iter()
+            .map(|k| k.unpack_str().expect("a make variable name").to_owned())
+            .collect(),
+    }
 }
 
 #[cfg(test)]

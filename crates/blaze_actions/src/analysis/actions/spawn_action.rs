@@ -663,6 +663,30 @@ impl Action for SpawnAction {
         Some(self)
     }
 
+    /// `SpawnAction` keeps `AbstractAction`'s empty set; a `StarlarkAction` gives its inputs, an
+    /// `EnhancedStarlarkAction` all its Starlark inputs (after its shadowed action's set, `None`
+    /// when that is `None`).
+    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:606 AbstractAction.getInputFilesForExtraAction
+    // Java: com/google/devtools/build/lib/analysis/actions/StarlarkAction.java:126 StarlarkAction.getInputFilesForExtraAction
+    // Java: com/google/devtools/build/lib/analysis/actions/StarlarkAction.java:454 EnhancedStarlarkAction.getInputFilesForExtraAction
+    fn get_input_files_for_extra_action(&self) -> Option<NestedSet<Artifact>> {
+        match &self.class {
+            SpawnActionClass::Spawn => Some(NestedSetBuilder::empty_set(Order::STABLE_ORDER)),
+            SpawnActionClass::Starlark => Some(self.get_inputs()),
+            SpawnActionClass::EnhancedStarlark(d) => match &d.shadowed_action {
+                None => Some(d.all_starlark_action_inputs.clone()),
+                Some(shadowed) => {
+                    let input_files_for_extra_action =
+                        shadowed.get_input_files_for_extra_action()?;
+                    Some(create_inputs(&[
+                        input_files_for_extra_action,
+                        d.all_starlark_action_inputs.clone(),
+                    ]))
+                }
+            },
+        }
+    }
+
     // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:475 SpawnAction.getExtraActionInfo
     fn get_extra_action_info(
         &self,

@@ -78,7 +78,7 @@ pub fn bazel_modules() -> Vec<Arc<dyn BlazeModule>> {
         Arc::new(BazelWorkspaceStatusModule),
         Arc::new(BazelDiffAwarenessModule),
         Arc::new(RemoteModule),
-        Arc::new(BazelRepositoryModule),
+        Arc::new(BazelRepositoryModule::default()),
         Arc::new(StarlarkRepositoryDebugModule),
         Arc::new(WorkspaceRuleModule),
         Arc::new(BazelCoverageReportModule),
@@ -445,6 +445,19 @@ impl BlazeModule for BazelDiffAwarenessModule {
         "BazelDiffAwarenessModule"
     }
 
+    // Java: com/google/devtools/build/lib/bazel/BazelDiffAwarenessModule.java:30 BazelDiffAwarenessModule.workspaceInit
+    fn workspace_init(
+        &self,
+        _directories: &crate::directories::BlazeDirectories,
+        builder: &mut crate::workspace::WorkspaceBuilder,
+    ) {
+        // Order here is important - LocalDiffAwareness creation always succeeds, so it must be
+        // last.
+        builder.add_diff_awareness_factory(Arc::new(
+            blaze_sky_loading::diff_awareness::LocalDiffAwarenessFactory::new(Vec::new()),
+        ));
+    }
+
     // Java: com/google/devtools/build/lib/bazel/BazelDiffAwarenessModule.java:37 BazelDiffAwarenessModule.getCommonCommandOptions
     fn get_common_command_options(&self) -> Vec<OptionsClassRef> {
         vec![LocalDiffAwarenessOptions::class()]
@@ -479,13 +492,21 @@ impl BlazeModule for RemoteModule {
 }
 
 /// Adds support for fetching external code.
-/// PORT: workspaceInit, initializeRuleClasses, beforeCommand (but for the repo contents cache
-/// garbage collection idle task, below), afterCommand and getPrecomputedValues are ported with
+/// PORT: workspaceInit, initializeRuleClasses, beforeCommand (but for the repo contents cache's
+/// shared lock and garbage collection idle task, below) and getPrecomputedValues are ported with
 /// the command's executor
 /// (`blaze_repo_rules::setup::prepare_repository_functions_with`, called by
 /// `blaze_sky_top::skyframe_executor::SkyframeExecutor::create`).
 // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:127 BazelRepositoryModule
-pub struct BazelRepositoryModule;
+#[derive(Default)]
+pub struct BazelRepositoryModule {
+    /// The repo contents cache whose shared lock this command holds, from `beforeCommand` to
+    /// `afterCommand` (Java: `repositoryCache.getRepoContentsCache()` and its `sharedLock`).
+    /// PORT: Java's module keeps one `RepositoryCache` for the server and sets its paths at each
+    /// `beforeCommand`; here only the cache that holds the lock is kept, and only while it does.
+    repo_contents_cache:
+        parking_lot::Mutex<Option<blaze_repo_fetch::cache::LocalRepoContentsCache>>,
+}
 
 impl BlazeModule for BazelRepositoryModule {
     fn name(&self) -> &'static str {
@@ -517,14 +538,16 @@ impl BlazeModule for BazelRepositoryModule {
         vec![RepositoryOptions::class()]
     }
 
-    /// The repo contents cache part of `beforeCommand`: `env.addIdleTask(repositoryCache
-    /// .getRepoContentsCache().createGcIdleTask(maxAge, idleDelay))` when the cache is enabled.
+    /// The repo contents cache part of `beforeCommand`: when the cache is enabled, its shared
+    /// lock (`acquireSharedLock`, released by `afterCommand`) and
+    /// `env.addIdleTask(repositoryCache.getRepoContentsCache().createGcIdleTask(maxAge,
+    /// idleDelay))`.
     ///
     /// PORT: the rest of `beforeCommand` (download manager, repository cache paths, the checks
-    /// of the repo contents cache path, its shared lock) runs with the command's executor
-    /// (`blaze_repo_rules::setup::prepare_repository_functions_with`), which reports the two
-    /// path errors; the task is not registered in those two cases, as Java throws before it
-    /// registers it.
+    /// of the repo contents cache path) runs with the command's executor
+    /// (`blaze_repo_rules::setup::prepare_repository_functions_with`), which reports the path
+    /// errors; the lock is not taken and the task is not registered in those cases, as Java
+    /// throws before it takes the lock.
     // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:276 BazelRepositoryModule.beforeCommand
     fn before_command(&self, env: &mut CommandEnvironment) -> Result<(), AbruptExitException> {
         use crate::commands::info::module_items::RepositoryCacheInfoItem;
@@ -573,6 +596,25 @@ impl BlazeModule for BazelRepositoryModule {
             // "The repo contents cache [...] is inside the main repo [...]": likewise.
             return Ok(());
         }
+        // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:403 BazelRepositoryModule.beforeCommand
+        {
+            let _profile = blaze_util::profiler::Profiler::instance().profile(
+                blaze_util::profiler::ProfilerTask::REPO_CACHE_GC_WAIT,
+                "waiting to acquire repo cache lock",
+            );
+            let mut held = self.repo_contents_cache.lock();
+            // Preconditions.checkState(sharedLock == null, "this process already has the shared
+            // lock"): the previous command's afterCommand released it.
+            blaze_util::check_state!(held.is_none(), "this process already has the shared lock");
+            let mut repo_contents_cache = blaze_repo_fetch::cache::LocalRepoContentsCache::new();
+            repo_contents_cache.set_path(Some(repo_contents_cache_path.clone()));
+            if repo_contents_cache.acquire_shared_lock().is_err() {
+                return Err(repo_contents_cache_exception(
+                    "could not acquire lock on repo contents cache",
+                ));
+            }
+            *held = Some(repo_contents_cache);
+        }
         env.add_idle_task(Arc::new(
             crate::idle_tasks::RepoContentsCacheGcIdleTask::create(
                 repo_contents_cache_path,
@@ -582,6 +624,35 @@ impl BlazeModule for BazelRepositoryModule {
         ));
         Ok(())
     }
+
+    /// PORT: Java releases the lock when the module's repo contents cache is enabled, which is
+    /// when this command's `beforeCommand` took it; Blaze releases the lock it holds.
+    // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:731 BazelRepositoryModule.afterCommand
+    fn after_command(&self) -> Result<(), AbruptExitException> {
+        if let Some(mut repo_contents_cache) = self.repo_contents_cache.lock().take()
+            && repo_contents_cache.release_shared_lock().is_err()
+        {
+            return Err(repo_contents_cache_exception(
+                "could not release lock on repo contents cache",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// `BazelRepositoryModule.detailedExitCode(message, Code.BAD_REPO_CONTENTS_CACHE)` as an
+/// `AbruptExitException`.
+// Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:181 BazelRepositoryModule.detailedExitCode
+fn repo_contents_cache_exception(message: &str) -> AbruptExitException {
+    use blaze_protos::failure_details::{self, FailureDetail, failure_detail::Category};
+    AbruptExitException::new(crate::exit_code::DetailedExitCode::of(FailureDetail {
+        message: message.to_string(),
+        category: Some(Category::ExternalRepository(
+            failure_details::ExternalRepository {
+                code: failure_details::external_repository::Code::BadRepoContentsCache as i32,
+            },
+        )),
+    }))
 }
 
 /// Module for the Starlark repository debugger: reports back the place an external repository

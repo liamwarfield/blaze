@@ -656,6 +656,12 @@ impl TargetPatternPreloader for SkyframeEnvTargetPatternEvaluator {
                         Ok(Some(pattern_value)) => {
                             let resolved_labels: Vec<Label> =
                                 pattern_value.get_targets().iter().cloned().collect();
+                            // Iterables.concat(resolvedLabels.getTargets(),
+                            // resolvedLabels.getFilteredTargets()): the filtered set of a
+                            // TargetPatternValue is always empty (TargetPatternFunction.compute
+                            // only adds targets, and removes the filtered targets of a set that
+                            // is empty), so Blaze's value keeps the targets only.
+                            // Java: com/google/devtools/build/lib/skyframe/TargetPatternFunction.java:132 TargetPatternFunction.compute
                             for label in &resolved_labels {
                                 package_keys.insert(label.get_package_identifier().clone());
                             }

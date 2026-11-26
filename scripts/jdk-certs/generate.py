@@ -10,7 +10,8 @@ Writes into <out_dir>:
   <case>.der      one end-entity certificate per case (DER, built by hand so that malformed
                   structures can be expressed)
   <case>.root.pem the trust anchors of a case when they are not ca.pem
-  cases.tsv       case, roots file, host name, description (input of JdkCertProbe)
+  cases.tsv       case, roots file, host name, description, and the server's signing key when
+                  it is not keys/ee.key (input of JdkCertProbe, which reads the first three)
 
 The verdicts are not written here: scripts/jdk-certs/run records what the oracle's JDK decides
 for each case (expected.tsv).
@@ -150,6 +151,31 @@ def load_or_create_p256_key(path):
     return key
 
 
+def load_or_create_ec_key(path, curve, accept=lambda key: True):
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            return serialization.load_pem_private_key(f.read(), None)
+    while True:
+        key = ec.generate_private_key(curve)
+        if accept(key):
+            break
+    with open(path, "wb") as f:
+        f.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                  serialization.NoEncryption()))
+    return key
+
+
+def load_or_create_rsa_key(path, bits):
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            return serialization.load_pem_private_key(f.read(), None)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=bits)
+    with open(path, "wb") as f:
+        f.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                  serialization.NoEncryption()))
+    return key
+
+
 def ca_certificate(key, cn, digest):
     n = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
     return (x509.CertificateBuilder().subject_name(n).issuer_name(n).public_key(key.public_key())
@@ -163,6 +189,18 @@ def spki(key):
     return key.public_key().public_bytes(
         serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
     )
+
+
+def rsa_pkcs1_sha1(key, message):
+    """RSASSA-PKCS1-v1_5 with SHA-1, computed with integers (the system's crypto policy may
+    refuse SHA-1 signatures in the library)."""
+    import hashlib
+    numbers = key.private_numbers()
+    n, d = numbers.public_numbers.n, numbers.d
+    k = (n.bit_length() + 7) // 8
+    digest_info = bytes.fromhex("3021300906052b0e03021a05000414") + hashlib.sha1(message).digest()
+    em = b"\x00\x01" + b"\xff" * (k - len(digest_info) - 3) + b"\x00" + digest_info
+    return pow(int.from_bytes(em, "big"), d, n).to_bytes(k, "big")
 
 
 def sign(key, tbs, digest=hashes.SHA256):
@@ -240,13 +278,15 @@ def main(argv):
 
     cases = []
 
-    def case(case_name, der, description, host="localhost", roots=None):
-        """`roots=None`: the trust file is the certificate itself (direct trust)."""
+    def case(case_name, der, description, host="localhost", roots=None, key=None):
+        """`roots=None`: the trust file is the certificate itself (direct trust). `key`: the
+        server's signing key under keys/ when it is not ee.key."""
         with open(os.path.join(out, case_name + ".der"), "wb") as f:
             f.write(der)
         if roots is None:
             roots = root_file(case_name, der)
-        cases.append((case_name, roots, host, description))
+        row = (case_name, roots, host, description)
+        cases.append(row + (key,) if key else row)
 
     def root_file(case_name, *ders):
         path = case_name + ".root.pem"
@@ -309,6 +349,26 @@ def main(argv):
     case("empty_subject_v2", with_subject(seq(), version=explicit_version(1)), "v2, empty subject")
     self_signed = certificate(ee_key, cn_name("localhost"), cn_name("localhost"), ee_key)
     case("self_signed", self_signed, "self-signed v1, trusted directly")
+
+    # A trust-file certificate the JDK cannot parse, as its own root (review round 6, T7). The
+    # TBS structure is checked as the JDK's parser checks it; the rest is declared (D16).
+    ext = tlv(0xA3, seq(seq(oid("2.5.29.19"), tlv(0x04, seq()))))
+    case("direct_v1_extensions", ee(trailing=ext), "v1 (no version) with an extensions block")
+    case("direct_v2_extensions", ee(version=explicit_version(1), trailing=ext),
+         "v2 with an extensions block")
+    case("direct_v2_unique_ids",
+         ee(version=explicit_version(1), trailing=tlv(0x81, b"\x00\x01") + tlv(0x82, b"\x00\x02")),
+         "v2 with issuerUniqueID and subjectUniqueID")
+    case("direct_v2_unique_ids_swapped",
+         ee(version=explicit_version(1), trailing=tlv(0x82, b"\x00\x02") + tlv(0x81, b"\x00\x01")),
+         "v2 with subjectUniqueID before issuerUniqueID")
+    case("direct_time_second_60", ee(validity=seq(utc("200326201860Z"), gen("29990528201814Z"))),
+         "notBefore second 60")
+    case("direct_alg_mismatch", ee(inner_alg=alg(SHA384_RSA)),
+         "inner signature sha384WithRSA, outer (and signature) sha256WithRSA")
+    case("direct_empty_issuer", certificate(ca_key, seq(), cn_name("localhost"), ee_key),
+         "v1, empty issuer")
+
 
     # The end entity's key (the handshake signature is made with keys/ee.key).
     class RawKey:
@@ -381,6 +441,46 @@ def main(argv):
     case("v3_p256_ca", v3("localhost", p256, p256_ca.subject, True),
          "v3 with SAN, issued by a trusted P-256 CA",
          roots=root_file("v3_p256_ca", p256_ca.public_bytes(serialization.Encoding.DER)))
+
+    # Declared stricter-than-JDK cases (review round 6, D1).
+    # A P-256 key whose public point ends in an even byte, so that its BIT STRING can carry one
+    # unused bit and still hold the same key.
+    p256_ee = load_or_create_ec_key(os.path.join(out, "keys", "p256_ee.key"), ec.SECP256R1(),
+                                    accept=lambda k: spki(k)[-1] % 2 == 0)
+    p256_spki = spki(p256_ee)
+    point_at = p256_spki.rindex(b"\x03\x42\x00")
+    p256_alg = p256_spki[2:point_at]
+    case("direct_key_unused_bits",
+         certificate(ca_key, ca_name, cn_name("localhost"),
+                     RawKey(seq(p256_alg, tlv(0x03, b"\x01" + p256_spki[point_at + 3:])))),
+         "v1, P-256 key in a BIT STRING with one (zero) unused bit", key="p256_ee.key")
+    if ca_name[1] < 0x80:
+        ber_issuer = b"\x30\x80" + ca_name[2:] + b"\x00\x00"
+        case("direct_ber_length", certificate(ca_key, ber_issuer, cn_name("localhost"), ee_key),
+             "v1, issuer Name with an indefinite (BER) length")
+    rsa1024 = load_or_create_rsa_key(os.path.join(out, "keys", "rsa1024_ca.key"), 1024)
+    rsa1024_ca = ca_certificate(rsa1024, "Blaze RSA-1024 CA", hashes.SHA256())
+    case("v3_rsa1024_ca", v3("localhost", rsa1024, rsa1024_ca.subject, True),
+         "v3 with SAN, issued by a trusted RSA-1024 CA",
+         roots=root_file("v3_rsa1024_ca", rsa1024_ca.public_bytes(serialization.Encoding.DER)))
+    # `cryptography` refuses to build SHA-1 certificates: the SHA-256 one with the algorithm
+    # identifiers changed (same OID length), signed again with PKCS#1 SHA-1.
+    sha256_cert = x509.load_der_x509_certificate(v3("localhost", ca_key, ca_subject, True))
+    sha256_alg, sha1_alg = alg(SHA256_RSA), alg("1.2.840.113549.1.1.5")
+    sha1_tbs = sha256_cert.tbs_certificate_bytes.replace(sha256_alg, sha1_alg, 1)
+    sha1_der = seq(sha1_tbs, sha1_alg, bit_string(rsa_pkcs1_sha1(ca_key, sha1_tbs)))
+    case("v3_sha1_signed", sha1_der,
+         "v3 with SAN, signed by the trusted CA with sha1WithRSA", roots="ca.pem")
+    p521 = load_or_create_ec_key(os.path.join(out, "keys", "p521_ca.key"), ec.SECP521R1())
+    p521_ca = ca_certificate(p521, "Blaze P-521 CA", hashes.SHA512())
+    case("v3_p521_ca", v3("localhost", p521, p521_ca.subject, True, digest=hashes.SHA512()),
+         "v3 with SAN, issued by a trusted P-521 CA",
+         roots=root_file("v3_p521_ca", p521_ca.public_bytes(serialization.Encoding.DER)))
+    # A trailing-dot host on the webpki route (review round 6, H1; the direct route is
+    # direct_trailing_dot_host).
+    case("v3_issued_trailing_dot_host", v3("localhost", ca_key, ca_subject, True),
+         "v3 with SAN localhost, issued by the trusted CA, host localhost.", host="localhost.",
+         roots="ca.pem")
 
     with open(os.path.join(out, "cases.tsv"), "w") as f:
         f.write("# case\troots\thost\tdescription\n")

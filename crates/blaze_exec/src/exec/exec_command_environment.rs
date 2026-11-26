@@ -54,4 +54,7 @@ pub struct ExecCommandEnvironment {
     /// `getOptions().getOptions(BuildRequestOptions.class).jobs` (read by the dynamic strategy;
     /// `None` for tools that never register it).
     pub jobs: Option<i32>,
+    /// `getCommandId().toString()` (the Docker sandbox labels its containers with it; empty for
+    /// tools without a command).
+    pub command_id: String,
 }

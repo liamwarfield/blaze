@@ -24,72 +24,9 @@ use crate::util::DigestUtil;
 use crate::util::tracing_metadata_utils;
 use crate::util::utils::build_action;
 
-/// The result of a remotely executed command.
-///
-/// PORT: `RepositoryRemoteExecutor` lives in `lib/runtime`, which has no Rust crate that this
-/// one may depend on; the interface and its result are defined here until it does.
-// Java: com/google/devtools/build/lib/runtime/RepositoryRemoteExecutor.java:28 RepositoryRemoteExecutor.ExecutionResult
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExecutionResult {
-    exit_code: i32,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-}
-
-impl ExecutionResult {
-    // Java: com/google/devtools/build/lib/runtime/RepositoryRemoteExecutor.java:34 RepositoryRemoteExecutor.ExecutionResult.<init>
-    pub fn new(exit_code: i32, stdout: Vec<u8>, stderr: Vec<u8>) -> ExecutionResult {
-        ExecutionResult {
-            exit_code,
-            stdout,
-            stderr,
-        }
-    }
-
-    // Java: com/google/devtools/build/lib/runtime/RepositoryRemoteExecutor.java:40 RepositoryRemoteExecutor.ExecutionResult.exitCode
-    pub fn exit_code(&self) -> i32 {
-        self.exit_code
-    }
-
-    // Java: com/google/devtools/build/lib/runtime/RepositoryRemoteExecutor.java:44 RepositoryRemoteExecutor.ExecutionResult.stdout
-    pub fn stdout(&self) -> &[u8] {
-        &self.stdout
-    }
-
-    // Java: com/google/devtools/build/lib/runtime/RepositoryRemoteExecutor.java:48 RepositoryRemoteExecutor.ExecutionResult.stderr
-    pub fn stderr(&self) -> &[u8] {
-        &self.stderr
-    }
-}
-
-/// Interface to support remote execution in repository_ctx.execute().
-///
-/// PORT: see [`ExecutionResult`] for why the interface is defined here.
-// Java: com/google/devtools/build/lib/runtime/RepositoryRemoteExecutor.java:25 RepositoryRemoteExecutor
-pub trait RepositoryRemoteExecutor: Send + Sync {
-    /// Execute a command remotely.
-    ///
-    /// * `arguments`: the command arguments.
-    /// * `input_files`: the files to upload and stage for the command. The key describes where to
-    ///   stage the file on the remote machine. The value is the path of the file on the host
-    ///   machine (where Bazel is running).
-    /// * `execution_properties`: the remote platform the command should run on.
-    /// * `environment`: any environment variables that should be set in the command's
-    ///   environment.
-    /// * `working_directory`: the working directory to run the command under. `""` means that
-    ///   the remote system should choose. (PORT: `None` is Java's `null`.)
-    /// * `timeout`: execution timeout.
-    // Java: com/google/devtools/build/lib/runtime/RepositoryRemoteExecutor.java:66 RepositoryRemoteExecutor.execute
-    fn execute(
-        &self,
-        arguments: &[String],
-        input_files: &BTreeMap<PathFragment, Path>,
-        execution_properties: &IndexMap<String, String>,
-        environment: &IndexMap<String, String>,
-        working_directory: Option<&str>,
-        timeout: Duration,
-    ) -> io::Result<ExecutionResult>;
-}
+/// PORT: the interface (`lib/runtime/RepositoryRemoteExecutor.java`) lives with its caller in
+/// `blaze_repo_rules::repository::remote_helpers`.
+pub use blaze_repo_rules::repository::remote_helpers::{ExecutionResult, RepositoryRemoteExecutor};
 
 /// The remote package's implementation of [`RepositoryRemoteExecutor`].
 // Java: com/google/devtools/build/lib/remote/RemoteRepositoryRemoteExecutor.java:54 RemoteRepositoryRemoteExecutor

@@ -700,7 +700,8 @@ impl AspectFunction {
                 blaze_actions::analysis::repo_mapping_manifest_action::RepoMappingPackageMetadata::new(
                     metadata.package_identifier.clone(),
                     metadata.repository_mapping.clone(),
-                ),
+                )
+                .with_source_root(metadata.source_root.clone()),
             );
             if let Some(p) = transitive_state.transitive_packages() {
                 builder.add_transitive(&p);

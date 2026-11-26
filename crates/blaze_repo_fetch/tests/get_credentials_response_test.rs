@@ -161,4 +161,19 @@ fn repeated_header_name_is_illegal_argument() {
     );
     let response = parse(r#"{"headers": {"a": ["1"]}, "headers": {"b": ["2"]}}"#);
     assert_eq!(response.headers().len(), 2);
+    // Guava places the entries from the last to the first (review round 6, C3).
+    assert_eq!(
+        GetCredentialsResponse::parse(r#"{"headers": {"a": ["1"], "a": ["2"], "a": ["3"]}}"#),
+        Err(ResponseParseError::IllegalArgument(
+            "Multiple entries with same key: a=[3] and a=[2]".to_string()
+        ))
+    );
+    assert_eq!(
+        GetCredentialsResponse::parse(
+            r#"{"headers": {"a": ["1"], "b": ["2"], "a": ["3"], "b": ["4"]}}"#
+        ),
+        Err(ResponseParseError::IllegalArgument(
+            "Multiple entries with same key: b=[4] and b=[2]".to_string()
+        ))
+    );
 }

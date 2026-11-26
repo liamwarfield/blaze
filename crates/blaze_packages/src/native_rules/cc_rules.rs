@@ -58,7 +58,9 @@ pub fn common_alias_rule_build(
         .requires_configuration_fragments(&[fragment_class])
         .remove_attribute("licenses")
         .remove_attribute("distribs")
-        .advertise_provider(&["AliasProvider.LateBoundAliasProvider"])
+        // Java: advertiseProvider(AliasProvider.LateBoundAliasProvider.class); a builtin provider is
+        // named by its simple class name (TransitiveInfoProvider.java_class_name).
+        .advertise_provider(&["LateBoundAliasProvider"])
         .add_attribute(attribute)
         .build()
 }

@@ -5,9 +5,9 @@
 //! `waitForAndReuseOutputs`) is a second `impl RemoteExecutionService` block in
 //! `remote_execution_service_download.rs`.
 //!
-//! PORT: `OutputService` and `wasRewound` (action rewinding) are not ported. The struct has no
-//! fields for them and the code behaves as with no output service and for an action that was not
-//! rewound; each place says so.
+//! PORT: `OutputService` is not ported. The struct has no field for it and the code behaves as
+//! with no output service; each place says so. `wasRewound` (action rewinding) is set after
+//! construction ([`RemoteExecutionService::set_was_rewound`]).
 
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashSet};
@@ -404,6 +404,9 @@ fn report(
     reporter.handle(&evt);
 }
 
+/// `Predicate<ActionAnalysisMetadata> wasRewound`, applied to a spawn's resource owner.
+pub type WasRewound = Arc<dyn Fn(&dyn ActionExecutionMetadata) -> bool + Send + Sync>;
+
 /// A layer between spawn execution and remote execution exposing primitive operations for remote
 /// cache and execution with spawn specific types.
 // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:174 RemoteExecutionService
@@ -446,7 +449,13 @@ pub struct RemoteExecutionService {
     pub(crate) known_missing_cas_digests: Arc<Mutex<HashSet<Digest>>>,
     /// Integration seams (see `crate::hooks`).
     pub(crate) hooks: crate::hooks::RemoteHooks,
-    // PORT: `wasRewound` is not ported (no action is ever rewound).
+    /// `Predicate<ActionAnalysisMetadata> wasRewound` (`env.getSkyframeExecutor()
+    /// ::wasActionRewound`).
+    ///
+    /// PORT: the Skyframe executor is created after the remote module; the command sets the
+    /// predicate once it exists ([`RemoteExecutionService::set_was_rewound`]). Unset (no
+    /// execution, tests), no action was rewound.
+    pub(crate) was_rewound: OnceLock<WasRewound>,
     /// `Boolean useOutputPaths`, initialized on first use.
     pub(crate) use_output_paths: OnceLock<bool>,
 
@@ -994,7 +1003,7 @@ impl RemoteExecutionService {
     ///   `remote_execution_cache` (a `RemoteExecutionCache`); at most one of them is given.
     /// - `scrubber` is an argument (Java reads `remoteOptions.scrubber`; Blaze's `RemoteOptions`
     ///   has no parsed scrubber).
-    /// - `outputService` and `wasRewound` are not ported.
+    /// - `outputService` is not ported; `wasRewound` is set later (`set_was_rewound`).
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:218 RemoteExecutionService.<init>
     pub fn new(
         reporter: Arc<dyn ExtendedEventHandler>,
@@ -1064,6 +1073,7 @@ impl RemoteExecutionService {
             known_missing_cas_digests,
             hooks: crate::hooks::RemoteHooks::new(),
             use_output_paths: OnceLock::new(),
+            was_rewound: OnceLock::new(),
             // `Runtime.getRuntime().availableProcessors()`
             remote_action_building_semaphore: Semaphore::new(
                 std::thread::available_parallelism().map_or(1, |n| n.get()),
@@ -1072,6 +1082,17 @@ impl RemoteExecutionService {
     }
 
     /// Provides the integration seams of this build (see `crate::hooks`).
+    /// Sets the `wasRewound` predicate (`env.getSkyframeExecutor()::wasActionRewound`).
+    // Java: com/google/devtools/build/lib/remote/RemoteActionContextProvider.java:156 RemoteActionContextProvider.getRemoteExecutionService
+    pub fn set_was_rewound(&self, was_rewound: WasRewound) {
+        let _ = self.was_rewound.set(was_rewound);
+    }
+
+    /// `wasRewound.test(owner)`.
+    fn was_rewound(&self, owner: &dyn ActionExecutionMetadata) -> bool {
+        self.was_rewound.get().is_some_and(|f| f(owner))
+    }
+
     pub fn with_hooks(mut self, hooks: crate::hooks::RemoteHooks) -> RemoteExecutionService {
         self.hooks = hooks;
         self
@@ -1581,9 +1602,9 @@ impl RemoteExecutionService {
         // TODO(https://github.com/bazelbuild/remote-apis/pull/386): Allow cache lookup for rewound
         // actions when CacheCapabilities.verifies_action_results is advertised, while still
         // bypassing unverified cache layers.
-        //
-        // PORT: `wasRewound.test(action.getSpawn().getResourceOwner())` is false (rewinding is
-        // not ported).
+        if self.was_rewound(action.get_spawn().get_resource_owner()) {
+            return Ok(None);
+        }
 
         // Java: `ImmutableSet` (insertion order).
         let mut inline_output_files: IndexSet<String> = IndexSet::new();
@@ -1786,10 +1807,7 @@ impl RemoteExecutionService {
         // refreshed action result could still reference missing blobs. Evaluate this here rather
         // than in the upload task, which may run after the build's rewinding state has been
         // discarded.
-        //
-        // PORT: `wasRewound.test(action.getSpawn().getResourceOwner())` is false (rewinding is
-        // not ported).
-        let force = false;
+        let force = self.was_rewound(action.get_spawn().get_resource_owner());
         if self.remote_options.remote_cache_async
             && !action
                 .get_spawn()
@@ -2009,10 +2027,8 @@ impl RemoteExecutionService {
             // TODO(https://github.com/bazelbuild/remote-apis/pull/386): Allow cached execution
             // results for rewound actions when ExecutionCapabilities.verifies_action_results is
             // advertised.
-            //
-            // PORT: `|| wasRewound.test(action.getSpawn().getResourceOwner())` is false
-            // (rewinding is not ported).
-            skip_cache_lookup: !accept_cached_result,
+            skip_cache_lookup: !accept_cached_result
+                || self.was_rewound(action.get_spawn().get_resource_owner()),
             ..Default::default()
         };
         if self.remote_options.remote_result_cache_priority != 0 {

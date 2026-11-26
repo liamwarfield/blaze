@@ -457,17 +457,35 @@ fn compute_platform_mapping(
 }
 
 // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyFunction.java:42 BuildConfigurationKeyFunction.compute
-/// Delegates to `BuildConfigurationKeyProducer` (inlined: the producer's steps run in order,
-/// returning `None` where a Skyframe restart is needed).
+/// Delegates to `BuildConfigurationKeyProducer` ([`build_configuration_key_producer`]).
 fn compute_build_configuration_key(
     key: &BuildConfigurationKeyValueKey,
     env: &mut Environment<'_>,
 ) -> Result<Option<BuildConfigurationKey>, ComputeError> {
-    let options = key.build_options();
-    // Java: com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyProducer.java:122 BuildConfigurationKeyProducer.step
+    build_configuration_key_producer(key.build_options(), key.producer_label(), env)
+}
+
+/// `BuildConfigurationKeyProducer`: the configuration key of one `BuildOptions`, with the
+/// platform-based flags or the platform mapping and the scopes applied. The producer's steps run
+/// in order in the caller's environment, so the caller depends on what they look up (PLATFORM,
+/// PLATFORM_MAPPING, BUILD_OPTIONS_SCOPE, BASELINE_CONFIGURATION), as Java's state machine makes
+/// the configured target that drives it depend on them. `Ok(None)` is "a Skyframe restart is
+/// needed" (or the producer's "Error.": DONE after a missing value).
+///
+/// Errors are thrown as `BuildConfigurationKeyFunction` throws them (a persistent
+/// `SkyFunctionException` whose cause is a [`ConfigurationError`], or the PLATFORM function's
+/// `InvalidPlatformException`); the analysis producers (blaze_sky_analysis `transition_applier`)
+/// catch them from the returned error and hand them to their sinks, as Java's
+/// `BuildConfigurationKeyProducer.ResultSink` does.
+// Java: com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyProducer.java:122 BuildConfigurationKeyProducer.step
+pub fn build_configuration_key_producer(
+    options: &Arc<BuildOptions>,
+    label: Option<&Label>,
+    env: &mut Environment<'_>,
+) -> Result<Option<BuildConfigurationKey>, ComputeError> {
     // Short-circuit if there are no platform options.
     let Some(platform_options) = options.get::<PlatformOptions>() else {
-        return find_build_options_scopes(options.clone(), key.producer_label(), env);
+        return find_build_options_scopes(options.clone(), label, env);
     };
 
     let target_platforms = &platform_options.platforms;
@@ -519,18 +537,14 @@ fn compute_build_configuration_key(
             Some(parsed_flags) => {
                 let post_platform_processed_options =
                     parsed_flags.merge_with(options).get_options().clone();
-                return find_build_options_scopes(
-                    post_platform_processed_options,
-                    key.producer_label(),
-                    env,
-                );
+                return find_build_options_scopes(post_platform_processed_options, label, env);
             }
             None => {}
         }
-        merge_from_platform_mapping(options, key.producer_label(), env)
+        merge_from_platform_mapping(options, label, env)
     } else {
         blaze_util::check_state!(target_platforms.is_empty());
-        merge_from_platform_mapping(options, key.producer_label(), env)
+        merge_from_platform_mapping(options, label, env)
     }
 }
 

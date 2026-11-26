@@ -3,6 +3,7 @@
 use std::sync::{Arc, OnceLock};
 
 use blaze_events::{ExtendedEventHandler, StoredEventHandler};
+use blaze_util::profiler::{Profiler, ProfilerTask};
 use blaze_vfs::PathFragment;
 use indexmap::{IndexMap, IndexSet};
 
@@ -323,11 +324,17 @@ impl IndexRegistry {
                     ))
                 });
         }
-        match download_manager.download_and_read_one_url_for_bzlmod(
-            &url,
-            &self.client_env,
-            checksum.as_ref(),
-        ) {
+        // Java: com/google/devtools/build/lib/bazel/bzlmod/IndexRegistry.java:233 IndexRegistry.doGrabFile
+        let downloaded = {
+            let _c = Profiler::instance()
+                .profile_with(ProfilerTask::BZLMOD, || format!("download file: {raw_url}"));
+            download_manager.download_and_read_one_url_for_bzlmod(
+                &url,
+                &self.client_env,
+                checksum.as_ref(),
+            )
+        };
+        match downloaded {
             Ok(content) => Ok(content),
             Err(RegistryException::NotFound(_)) => {
                 Err(RegistryException::NotFound(format!("{raw_url}: not found")))

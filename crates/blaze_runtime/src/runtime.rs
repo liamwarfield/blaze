@@ -1193,10 +1193,11 @@ impl BlazeRuntime {
     fn init_workspace(&mut self, directories: BlazeDirectories) {
         // PORT: the WorkspaceBuilder (the server's Skyframe executor) is not ported: each
         // command creates its own executor (see BlazeModule::workspace_init).
+        let mut builder = crate::workspace::WorkspaceBuilder::default();
         for module in &self.blaze_modules {
-            module.workspace_init(&directories);
+            module.workspace_init(&directories, &mut builder);
         }
-        let workspace = Arc::new(BlazeWorkspace::new(directories));
+        let workspace = Arc::new(BlazeWorkspace::new(directories, builder));
         if self.workspace.set(workspace).is_err() {
             panic!("IllegalStateException");
         }

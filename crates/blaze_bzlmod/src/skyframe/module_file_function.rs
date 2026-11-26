@@ -18,6 +18,7 @@ use blaze_cmdline::{Label, LabelRepoContextImpl, PackageIdentifier, RepositoryNa
 use blaze_events::{Event, ExtendedEventHandler, StoredEventHandler};
 use blaze_skyframe::{ComputeError, Environment, Transience};
 use blaze_starlark::StarlarkSemantics;
+use blaze_util::profiler::{Profiler, ProfilerTask};
 use blaze_vfs::PathFragment;
 use indexmap::{IndexMap, IndexSet};
 
@@ -103,14 +104,19 @@ pub fn compute(
     let root_module_file_value = root_module_file_value.as_root();
 
     let module_key = sky_key.module_key();
-    // PORT: profiling ("fetch module file: <key>") skipped.
-    let Some(get_module_file_result) = get_module_file(
-        config,
-        module_key,
-        root_module_file_value.overrides.get(module_key.name()),
-        env,
-    )?
-    else {
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleFileFunction.java:194 ModuleFileFunction.compute
+    let get_module_file_result = {
+        let _c = Profiler::instance().profile_with(ProfilerTask::BZLMOD, || {
+            format!("fetch module file: {module_key}")
+        });
+        get_module_file(
+            config,
+            module_key,
+            root_module_file_value.overrides.get(module_key.name()),
+            env,
+        )?
+    };
+    let Some(get_module_file_result) = get_module_file_result else {
         return Ok(None);
     };
 

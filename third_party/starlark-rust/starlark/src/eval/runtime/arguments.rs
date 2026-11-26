@@ -402,7 +402,10 @@ impl<'v, 'a> Arguments<'v, 'a> {
             Some(kwargs) => match DictRef::from_value(kwargs) {
                 // BLAZE PATCH 0052: Java's text (Eval.java:749 evalCall).
                 None => Err(FunctionError::JavaStarStar(format!("argument after ** must be a dict, not {}", kwargs.get_type())).into()), // BLAZE PATCH 0052, 0061
-                Some(x) => Ok(Some(x)),
+                Some(x) => {
+                    crate::values::dict::dict_record_all_keys_accessed(kwargs); // BLAZE PATCH 0063
+                    Ok(Some(x))
+                }
             },
         }
     }

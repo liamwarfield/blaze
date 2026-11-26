@@ -270,9 +270,8 @@ fn add_temporary_direct_deps_in_groups_deps_exhausted_throws_incremental_partial
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:354 InMemoryNodeEntryTest.resetLifecycle
 #[test]
-#[ignore = "rewinding and resetEvaluationFromScratch are not ported (docs/decisions.md 2026-11-19)"]
 fn reset_lifecycle_incremental() {
-    unimplemented!("not ported: InMemoryNodeEntryTest.resetLifecycle")
+    shared::reset_lifecycle(&Kind::incremental());
 }
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:354 InMemoryNodeEntryTest.resetLifecycle
@@ -284,9 +283,8 @@ fn reset_lifecycle_incremental_partial_reevaluation() {
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:399 InMemoryNodeEntryTest.resetTwice_moreDepsRequestedBeforeFirstReset
 #[test]
-#[ignore = "rewinding and resetEvaluationFromScratch are not ported (docs/decisions.md 2026-11-19)"]
 fn reset_twice_more_deps_requested_before_first_reset_incremental() {
-    unimplemented!("not ported: InMemoryNodeEntryTest.resetTwice_moreDepsRequestedBeforeFirstReset")
+    shared::reset_twice_more_deps_requested_before_first_reset(&Kind::incremental());
 }
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:399 InMemoryNodeEntryTest.resetTwice_moreDepsRequestedBeforeFirstReset
@@ -298,9 +296,8 @@ fn reset_twice_more_deps_requested_before_first_reset_incremental_partial_reeval
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:443 InMemoryNodeEntryTest.rewindingLifecycle
 #[test]
-#[ignore = "rewinding and resetEvaluationFromScratch are not ported (docs/decisions.md 2026-11-19)"]
 fn rewinding_lifecycle_incremental() {
-    unimplemented!("not ported: InMemoryNodeEntryTest.rewindingLifecycle")
+    shared::rewinding_lifecycle(&Kind::incremental());
 }
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:443 InMemoryNodeEntryTest.rewindingLifecycle
@@ -312,9 +309,8 @@ fn rewinding_lifecycle_incremental_partial_reevaluation() {
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:491 InMemoryNodeEntryTest.resetAfterRewind
 #[test]
-#[ignore = "rewinding and resetEvaluationFromScratch are not ported (docs/decisions.md 2026-11-19)"]
 fn reset_after_rewind_incremental() {
-    unimplemented!("not ported: InMemoryNodeEntryTest.resetAfterRewind")
+    shared::reset_after_rewind(&Kind::incremental());
 }
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:491 InMemoryNodeEntryTest.resetAfterRewind
@@ -326,9 +322,8 @@ fn reset_after_rewind_incremental_partial_reevaluation() {
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:555 InMemoryNodeEntryTest.concurrentRewindingAllowed
 #[test]
-#[ignore = "rewinding and resetEvaluationFromScratch are not ported (docs/decisions.md 2026-11-19)"]
 fn concurrent_rewinding_allowed_incremental() {
-    unimplemented!("not ported: InMemoryNodeEntryTest.concurrentRewindingAllowed")
+    shared::concurrent_rewinding_allowed(&Kind::incremental());
 }
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:555 InMemoryNodeEntryTest.concurrentRewindingAllowed
@@ -340,9 +335,8 @@ fn concurrent_rewinding_allowed_incremental_partial_reevaluation() {
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:571 InMemoryNodeEntryTest.rewindErrorfulNode_toleratedButNoOp
 #[test]
-#[ignore = "rewinding and resetEvaluationFromScratch are not ported (docs/decisions.md 2026-11-19)"]
 fn rewind_errorful_node_tolerated_but_no_op_incremental() {
-    unimplemented!("not ported: InMemoryNodeEntryTest.rewindErrorfulNode_toleratedButNoOp")
+    shared::rewind_errorful_node_tolerated_but_no_op(&Kind::incremental());
 }
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:571 InMemoryNodeEntryTest.rewindErrorfulNode_toleratedButNoOp

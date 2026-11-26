@@ -171,6 +171,19 @@ pub fn prepare_execution(
             blaze_vfs::PathFragment::create(&format!("{}-out", services.directories.product_name)),
         )));
     let seam = Arc::new(SkyframeAnalysisSeam::new(services.clone()));
+    // SequencedSkyframeExecutor.getGraphInconsistencyReceiverForCommand: a
+    // RewindableGraphInconsistencyReceiver with --rewind_lost_inputs, else THROWING.
+    // PORT: the executor answers `rewindingEnabled()` only when the remote module gave it a
+    // lost-inputs policy; without one no input can be lost, so no inconsistency can arise from
+    // rewinding and THROWING behaves the same.
+    // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:321 SequencedSkyframeExecutor.getGraphInconsistencyReceiverForCommand
+    let builder = if prepared.executor.rewinding_enabled() {
+        builder.graph_inconsistency_receiver(Arc::new(
+            blaze_sky_exec::rewinding::rewindable_graph_inconsistency_receiver::RewindableGraphInconsistencyReceiver::new(),
+        ))
+    } else {
+        builder
+    };
     let builder = blaze_sky_exec::register_execution_functions(
         builder,
         prepared.executor.clone(),

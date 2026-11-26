@@ -92,7 +92,7 @@ impl WorkerExecRoot {
             &mut inputs_to_create,
             &mut dirs_to_create,
             &self.work_dir,
-            tree_deleter,
+            Some(tree_deleter),
             self.sandbox_contents.as_ref(),
         )?;
 

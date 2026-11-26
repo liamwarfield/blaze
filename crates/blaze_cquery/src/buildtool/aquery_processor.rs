@@ -363,11 +363,27 @@ fn dump_skyframe_state(
     action_graph_dump: &mut ActionGraphDump<'_>,
 ) -> Result<(), ActionGraphDumpError> {
     let evaluator = skyframe_executor.get_evaluator();
-    // PORT: java-hash-order. Java iterates memoizingEvaluator.getDoneValues(), the entries of
-    // the in-memory graph's ConcurrentHashMap in its hash order; Blaze iterates the graph's
-    // nodes in its own order. The order decides the order of the dumped messages and their ids
-    // when several targets have actions.
-    for key in evaluator.get_all_keys_for_testing() {
+    // PORT: java-hash-order, not reproduced. Java iterates memoizingEvaluator.getDoneValues(),
+    // the entries of the in-memory graph's ConcurrentHashMap in its table order, which depends
+    // on the table's size (every key of the graph, past commands included) and on the hashCode
+    // of every key class; Blaze's graph is hashed with RandomState. So the keys that can be
+    // dumped (configured targets and aspects) are visited sorted by their Java toString (their
+    // Debug form), which makes the order of the messages and their ids the same for every run
+    // of the same graph. The order and ids differ from Bazel's when several targets have actions.
+    let mut keys: Vec<(String, blaze_skyframe::SkyKey)> = evaluator
+        .get_all_keys_for_testing()
+        .into_iter()
+        .filter(|key| {
+            key.downcast::<blaze_analysis::configured_target_key::ConfiguredTargetKey>()
+                .is_some()
+                || key
+                    .downcast::<blaze_analysis::aspect_key_creator::AspectKey>()
+                    .is_some()
+        })
+        .map(|key| (format!("{key:?}"), key))
+        .collect();
+    keys.sort_by(|a, b| a.0.cmp(&b.0));
+    for (_, key) in keys {
         let Some(sky_value) = evaluator.get_existing_value(&key) else {
             // The skyValue may be null in case analysis of the previous build failed.
             continue;

@@ -137,7 +137,9 @@ pub(crate) fn register_dict(globals: &mut GlobalsBuilder) {
             None => Ok(kwargs),
             Some(pos) => {
                 let mut result: Dict = match DictRef::from_value(pos) {
-                    Some(pos) => {
+                    Some(pos_dict) => {
+                        crate::values::dict::dict_record_all_keys_accessed(pos); // BLAZE PATCH 0063
+                        let pos = pos_dict; // BLAZE PATCH 0063
                         let mut result = (*pos).clone();
                         result.reserve(kwargs.len());
                         result

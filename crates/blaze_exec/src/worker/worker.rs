@@ -85,6 +85,11 @@ pub trait Worker: Send + Sync + fmt::Display {
     /// The common fields.
     fn base(&self) -> &WorkerBase;
 
+    /// `(WorkerProxy) worker` / `(SandboxedWorkerProxy) worker`: the casts of the tests.
+    fn as_worker_proxy(&self) -> Option<&super::worker_proxy::WorkerProxy> {
+        None
+    }
+
     /// Returns a unique id for this worker. This is used to distinguish different worker
     /// processes in logs and messages.
     // Java: com/google/devtools/build/lib/worker/Worker.java:63 Worker.getWorkerId

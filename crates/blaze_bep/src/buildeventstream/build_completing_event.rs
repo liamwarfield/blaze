@@ -104,6 +104,10 @@ impl BuildEvent for BuildCompletingEvent {
     fn event_class(&self) -> BuildEventClass {
         self.class.clone()
     }
+
+    fn build_completing_exit_code(&self) -> Option<i32> {
+        Some(self.exit_code.get_numeric_exit_code())
+    }
 }
 
 /// A log file to report in `BuildToolLogs`: `LogFileEntry(name, localFile)`.

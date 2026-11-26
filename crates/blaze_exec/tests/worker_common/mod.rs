@@ -2,6 +2,8 @@
 //! that the worker tests share.
 #![allow(dead_code)]
 
+pub mod sandbox_helper;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -177,15 +179,20 @@ pub fn create_worker_key_mnemonic(
 /// recorded.
 // Java: src/test/java/com/google/devtools/build/lib/worker/WorkerTestUtils.java:243 WorkerTestUtils.FakeSubprocess
 pub struct FakeSubprocess {
-    input: parking_lot::Mutex<Option<Vec<u8>>>,
+    input: parking_lot::Mutex<Option<Box<dyn std::io::Read + Send>>>,
     pub output: Arc<parking_lot::Mutex<Vec<u8>>>,
     was_destroyed: std::sync::atomic::AtomicBool,
 }
 
 impl FakeSubprocess {
     pub fn new(bytes: Vec<u8>) -> Arc<FakeSubprocess> {
+        FakeSubprocess::with_stream(Box::new(std::io::Cursor::new(bytes)))
+    }
+
+    /// `FakeSubprocess(InputStream responseStream)`.
+    pub fn with_stream(response_stream: Box<dyn std::io::Read + Send>) -> Arc<FakeSubprocess> {
         Arc::new(FakeSubprocess {
-            input: parking_lot::Mutex::new(Some(bytes)),
+            input: parking_lot::Mutex::new(Some(response_stream)),
             output: Arc::new(parking_lot::Mutex::new(Vec::new())),
             was_destroyed: std::sync::atomic::AtomicBool::new(false),
         })
@@ -236,8 +243,14 @@ impl blaze_shell::Subprocess for FakeSubprocessHandle {
         Some(Box::new(SharedWriter(self.0.output.clone())))
     }
     fn get_input_stream(&self) -> Option<Box<dyn std::io::Read + Send>> {
-        let bytes = self.0.input.lock().take().unwrap_or_default();
-        Some(Box::new(std::io::Cursor::new(bytes)))
+        // PORT: Java hands out the same stream on every call; the stream can be taken once.
+        Some(
+            self.0
+                .input
+                .lock()
+                .take()
+                .unwrap_or_else(|| Box::new(std::io::empty())),
+        )
     }
     fn get_error_stream(&self) -> Option<Box<dyn std::io::Read + Send>> {
         Some(Box::new(std::io::empty()))

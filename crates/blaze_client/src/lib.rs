@@ -13,6 +13,7 @@
 )]
 
 pub mod archive_utils;
+pub mod binary_identity;
 pub mod blaze;
 pub mod command_server;
 pub mod cpp_unordered;

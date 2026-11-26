@@ -214,6 +214,7 @@ pub fn file_artifact_value_to_string(md: &FileArtifactValue) -> String {
             location_index,
             expiration_time_millis,
             in_memory_output,
+            ..
         } => {
             // PORT: the seam enum merges RemoteFileArtifactValue and
             // RemoteFileArtifactValueWithMaterializationData; the latter is the one that carries

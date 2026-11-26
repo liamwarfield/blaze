@@ -107,12 +107,16 @@ pub trait BlazeModule: Send + Sync {
     /// Called when Bazel initializes a new workspace; this is only called after `server_init`,
     /// and only if the server initialization was successful.
     ///
-    /// PORT: Java also passes the runtime and the `WorkspaceBuilder` (the server's Skyframe
-    /// executor and its parts); Blaze's executor is created per command, and no ported module
-    /// adds to the builder (the modules whose `workspaceInit` adds to it say so in
-    /// `crate::bazel_modules`).
+    /// PORT: Java also passes the runtime; the `WorkspaceBuilder` holds what Blaze's workspace
+    /// takes from modules (the diff awareness factories); the server's Skyframe executor is
+    /// created per command.
     // Java: com/google/devtools/build/lib/runtime/BlazeModule.java:207 BlazeModule.workspaceInit
-    fn workspace_init(&self, _directories: &crate::directories::BlazeDirectories) {}
+    fn workspace_init(
+        &self,
+        _directories: &crate::directories::BlazeDirectories,
+        _builder: &mut crate::workspace::WorkspaceBuilder,
+    ) {
+    }
 
     // Java: com/google/devtools/build/lib/runtime/BlazeModule.java:218 BlazeModule.beforeCommand
     fn before_command(&self, _env: &mut CommandEnvironment) -> Result<(), AbruptExitException> {

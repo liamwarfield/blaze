@@ -34,6 +34,7 @@ use blaze_bep::buildeventstream::artifact_uploader::{
     BuildEventArtifactUploader, LocalFilesArtifactUploader, PathConverterFuture,
 };
 use blaze_bep::buildeventstream::build_event_id_util;
+use blaze_bep::buildeventstream::transport::BuildEventTransport;
 use blaze_bep::buildeventstream::{
     BuildEvent, BuildToolLogs, LocalFile, LocalFileCompression, LocalFileType, LogFileEntry,
     TransportCloseError,
@@ -103,8 +104,9 @@ use blaze_optdefs::command::ui_options::UiOptions;
 use blaze_optdefs::common::test_size::TestSize;
 use blaze_optdefs::common::test_timeout::TestTimeout;
 use blaze_optdefs::fragment::test_configuration::TestConfigurationTestOptions;
+use blaze_optdefs::misc::auth_and_tls_options::AuthAndTLSOptions;
 use blaze_optdefs::misc::build_event_protocol_options::BuildEventProtocolOptions;
-use blaze_optdefs::misc::build_event_service_options::BuildEventServiceOptions;
+use blaze_optdefs::misc::build_event_service_options::{BesUploadMode, BuildEventServiceOptions};
 use blaze_optdefs::misc::build_event_stream_options::BuildEventStreamOptions;
 use blaze_optdefs::misc::metrics_module::MetricsModuleOptions;
 use blaze_optdefs::misc::package_metrics_module::PackageMetricsModuleOptions;
@@ -935,6 +937,119 @@ pub struct BepCommandSupport {
     /// The execution log `SpawnLogModule.buildComplete` publishes (see
     /// [`BepCommandSupport::add_execution_log`]).
     execution_log_file: Mutex<Option<(String, Path)>>,
+    /// The Build Event Service part of the module's state.
+    bes: BesCommandState,
+}
+
+/// What `BuildEventServiceModule` keeps of the command for the Build Event Service.
+struct BesCommandState {
+    /// `!Strings.isNullOrEmpty(besOptions.besBackend)`.
+    bes_backend_set: bool,
+    /// Whether the Build Event Service transport is one of the transports.
+    #[allow(dead_code)]
+    bes_transport_created: bool,
+    bes_options: BuildEventServiceOptions,
+    /// `invocationId`: `cmdEnv.getCommandId().toString()`.
+    invocation_id: String,
+    /// `uiUsesColor`.
+    ui_uses_color: bool,
+    /// `--keep_backend_connections`.
+    keep_backend_connections: bool,
+}
+
+/// `createBesTransport(cmdEnv, uploaderSupplier, artifactGroupNamer)`: the transport, or `None`
+/// without `--bes_backend` or when it cannot be created (then the error is reported and the
+/// command exits once its modules ran: `reportError`).
+// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:737 BuildEventServiceModule.createBesTransport
+fn create_bes_transport(
+    env: &CommandEnvironment,
+    bes_options: &BuildEventServiceOptions,
+    bep_options: Arc<BuildEventProtocolOptions>,
+    uploader_supplier: &dyn Fn() -> Arc<
+        dyn blaze_bep::buildeventstream::artifact_uploader::BuildEventArtifactUploader,
+    >,
+    artifact_group_namer: Arc<
+        dyn blaze_bep::buildeventstream::build_event_context::ArtifactGroupNamer,
+    >,
+) -> Option<Arc<dyn blaze_bep::buildeventstream::transport::BuildEventTransport>> {
+    let parsing_result = env.get_options();
+    let auth_and_tls_options: AuthAndTLSOptions = parsing_result
+        .get_options()
+        .unwrap_or_else(|| panic!("NullPointerException: AuthAndTLSOptions"));
+    // isRunsPerTestOverTheLimit
+    let is_runs_per_test_over_the_limit = parsing_result
+        .get_options::<TestConfigurationTestOptions>()
+        .is_some_and(|test_options| {
+            test_options.runs_per_test.iter().any(|per_label_options| {
+                let options = per_label_options.get_options();
+                blaze_util::check_argument!(options.len() == 1);
+                options[0]
+                    .parse::<i32>()
+                    .unwrap_or_else(|e| panic!("NumberFormatException: {e}"))
+                    > blaze_bes::module::RUNS_PER_TEST_LIMIT
+            })
+        });
+    let file_system = env.get_output_base().get_file_system().clone();
+    let workspace = env.get_workspace().cloned();
+    let command_line_path_factory =
+        blaze_repo_fetch::authandtls::credentialhelper::command_line_path_factory::CommandLinePathFactory::create_for(
+            file_system.clone(),
+            workspace.clone(),
+            Some(env.get_directories().get_install_base().clone()),
+        );
+    let reporter: Arc<dyn EventHandler> = env.get_reporter().clone();
+    let event_bus: Arc<dyn blaze_events::EventBus> = env.get_event_bus().clone();
+    let result = blaze_bes::module::create_bes_transport(
+        blaze_bes::module::BesTransportEnvironment {
+            credentials: blaze_bes::module::CredentialsEnvironment {
+                reporter,
+                workspace,
+                client_env: env.get_client_env().clone(),
+                command_line_path_factory: &command_line_path_factory,
+                file_system: &file_system,
+            },
+            bes_options,
+            auth_and_tls_options: &auth_and_tls_options,
+            bep_options,
+            is_runs_per_test_over_the_limit,
+            build_request_id: crate::commands::build::build_remote::command_build_request_id(
+                parsing_result,
+            ),
+            invocation_id: env.get_command_id().to_string(),
+            // cmdEnv.getAttemptNumber(). PORT: the environment does not keep the attempt
+            // number; a first attempt is 1, a retried one (remote cache eviction) fails loudly.
+            attempt_number: if crate::commands::build::build_remote::is_retried_attempt() {
+                blaze_util::unported!("CommandEnvironment.getAttemptNumber (retried command)")
+            } else {
+                1
+            },
+            command_name: env.get_command_name().to_string(),
+            command_start_time_millis: env.get_command_start_time(),
+            clock: Arc::new(blaze_bes::uploader::JavaClock),
+            event_bus,
+            artifact_group_namer,
+        },
+        || Ok(uploader_supplier()),
+    );
+    match result {
+        Ok(transport) => transport.map(|t| {
+            Arc::new(t) as Arc<dyn blaze_bep::buildeventstream::transport::BuildEventTransport>
+        }),
+        Err(error) => {
+            // reportError: logging is not ported.
+            if error.report_event {
+                // reportCommandLineError(commandLineReporter, exception)
+                env.get_reporter()
+                    .handle(&Event::error(error.exception_message.clone()));
+            }
+            env.exit(create_abrupt_exit_exception(
+                &error.exception_message,
+                &error.message,
+                error.code,
+            ));
+            None
+        }
+    }
 }
 
 /// `BazelBuildEventServiceModule.ALLOWED_COMMANDS`: the commands that stream build events.
@@ -1170,6 +1285,244 @@ fn create_abrupt_exit_exception(
     }))
 }
 
+/// `e.getMessage()` of the `ExecutionException` whose cause is the `TimeoutException` of
+/// `Futures.withTimeout`.
+///
+/// PORT: Guava's message ends with the `toString()` of the timed-out future (an object identity
+/// and its state), which cannot be reproduced; the port gives the exception's class and the
+/// fixed start of its message.
+const TIMEOUT_EXCEPTION_MESSAGE: &str = "java.util.concurrent.TimeoutException: Timed out";
+
+/// What waiting for a close future with its timeout gave.
+#[derive(Clone, Debug)]
+enum TimedOutcome {
+    Done(Result<(), blaze_bep::buildeventstream::transport::TransportCloseError>),
+    Cancelled,
+    TimedOut,
+}
+
+/// A transport's close (or half-close) future with the timeout of the transport attached
+/// (`constructCloseFuturesMapWithTimeouts`): `Futures.withTimeout(nonCancellationPropagating(
+/// closeFuture), transport.getTimeout())`, whose `cancel` cancels the close future itself.
+#[derive(Clone)]
+struct TimedCloseFuture {
+    future: blaze_bep::buildeventstream::transport::CloseFuture,
+    /// `None` for a zero (or negative) timeout.
+    deadline: Option<std::time::Instant>,
+}
+
+impl TimedCloseFuture {
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:585 BuildEventServiceModule.constructCloseFuturesMapWithTimeouts
+    fn new(
+        future: blaze_bep::buildeventstream::transport::CloseFuture,
+        timeout: std::time::Duration,
+    ) -> TimedCloseFuture {
+        TimedCloseFuture {
+            future,
+            deadline: (!timeout.is_zero()).then(|| std::time::Instant::now() + timeout),
+        }
+    }
+
+    fn outcome(&self, wait_until: Option<std::time::Instant>) -> Option<TimedOutcome> {
+        use blaze_bep::buildeventstream::transport::CloseOutcome;
+        // The earlier of the caller's wait and the timeout.
+        let until = match (wait_until, self.deadline) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let timeout = until.map(|u| u.saturating_duration_since(std::time::Instant::now()));
+        match self.future.get_outcome(timeout) {
+            CloseOutcome::Done(result) => Some(TimedOutcome::Done(result)),
+            CloseOutcome::Cancelled => Some(TimedOutcome::Cancelled),
+            CloseOutcome::TimedOut => match self.deadline {
+                Some(deadline) if std::time::Instant::now() >= deadline => {
+                    Some(TimedOutcome::TimedOut)
+                }
+                _ => None,
+            },
+        }
+    }
+
+    /// Whether the future is done, without waiting (`None`: still pending).
+    fn poll(&self) -> Option<TimedOutcome> {
+        self.outcome(Some(std::time::Instant::now()))
+    }
+
+    /// Waits until the future is done, it times out, or `until` passes (`None`).
+    fn wait(&self, until: Option<std::time::Instant>) -> Option<TimedOutcome> {
+        self.outcome(until)
+    }
+
+    /// `cancel(true)`: cancels the close future.
+    fn cancel(&self) {
+        self.future.cancel();
+    }
+}
+
+/// A transport with its close and half-close futures (the entries of
+/// `closeFuturesWithTimeoutsMap` and `halfCloseFuturesWithTimeoutsMap`).
+#[derive(Clone)]
+struct PendingUpload {
+    transport: Arc<dyn BuildEventTransport>,
+    /// How the UI knows the transport (`None` when the UI is not told).
+    id: Option<TransportId>,
+    close: TimedCloseFuture,
+    half_close: TimedCloseFuture,
+}
+
+impl PendingUpload {
+    fn new(
+        transport: Arc<dyn BuildEventTransport>,
+        id: Option<TransportId>,
+        close: blaze_bep::buildeventstream::transport::CloseFuture,
+        half_close: blaze_bep::buildeventstream::transport::CloseFuture,
+    ) -> PendingUpload {
+        let timeout = transport.get_timeout();
+        PendingUpload {
+            transport,
+            id,
+            close: TimedCloseFuture::new(close, timeout),
+            half_close: TimedCloseFuture::new(half_close, timeout),
+        }
+    }
+
+    fn same_transport(&self, other: &PendingUpload) -> bool {
+        Arc::ptr_eq(&self.transport, &other.transport)
+    }
+}
+
+/// The module's `closeFuturesWithTimeoutsMap` (with the half-close futures): the uploads the
+/// next command waits for. They live as long as the server, as the module does.
+static PENDING_UPLOADS: parking_lot::Mutex<Vec<PendingUpload>> =
+    parking_lot::Mutex::new(Vec::new());
+
+/// Cancels and interrupts any in-flight threads closing BES transports, then resets the maps
+/// tracking in-flight close operations.
+// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:211 BuildEventServiceModule.cancelAndResetPendingUploads
+fn cancel_and_reset_pending_uploads() {
+    let pending = std::mem::take(&mut *PENDING_UPLOADS.lock());
+    for upload in pending {
+        upload.close.cancel();
+    }
+}
+
+// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:218 BuildEventServiceModule.removeFromPendingUploads
+fn remove_from_pending_uploads(uploads: &[PendingUpload]) {
+    for upload in uploads {
+        upload.close.cancel();
+    }
+    PENDING_UPLOADS
+        .lock()
+        .retain(|pending| !uploads.iter().any(|u| u.same_transport(pending)));
+}
+
+/// `waitForPreviousInvocation(isShutdown)`: waits (at most five seconds,
+/// `getMaxWaitForPreviousInvocation`) for the uploads the previous command left running, and
+/// reports how long it waited or why it gave up.
+// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:237 BuildEventServiceModule.waitForPreviousInvocation
+pub(crate) fn wait_for_previous_invocation(reporter: &dyn EventHandler, is_shutdown: bool) {
+    let pending = PENDING_UPLOADS.lock().clone();
+    if pending.is_empty() {
+        return;
+    }
+    // The connectivity status (ConnectivityStatusProvider) is always OK in Bazel.
+
+    // A FULLY_ASYNC transport is waited for until it half-closed (fully closed for shutdown).
+    let waiting: Vec<TimedCloseFuture> = pending
+        .iter()
+        .map(|upload| {
+            if upload.transport.get_bes_upload_mode() == BesUploadMode::FULLY_ASYNC && !is_shutdown
+            {
+                upload.half_close.clone()
+            } else {
+                upload.close.clone()
+            }
+        })
+        .collect();
+    let mut cancel_close_futures: Vec<PendingUpload> = pending
+        .iter()
+        .filter(|upload| upload.transport.get_bes_upload_mode() != BesUploadMode::FULLY_ASYNC)
+        .cloned()
+        .collect();
+
+    let started = std::time::Instant::now();
+    // getMaxWaitForPreviousInvocation()
+    let until = started + std::time::Duration::from_secs(5);
+    // Uninterruptibles.getUninterruptibly(Futures.allAsList(...), 5s): the first failure ends
+    // the wait.
+    let mut failure: Option<TimedOutcome> = None;
+    let mut timed_out = false;
+    'wait: loop {
+        let mut all_done = true;
+        for future in &waiting {
+            match future.poll() {
+                None => all_done = false,
+                Some(TimedOutcome::Done(Ok(()))) => {}
+                Some(other) => {
+                    failure = Some(other);
+                    break 'wait;
+                }
+            }
+        }
+        if all_done {
+            break;
+        }
+        if std::time::Instant::now() >= until {
+            timed_out = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let waited_millis = started.elapsed().as_millis();
+    if timed_out {
+        reporter.handle(&Event::warn(format!(
+            "The background upload of the Build Event Protocol for the previous invocation \
+             failed to complete in {}.{:03} seconds. Cancelling and starting a new invocation...",
+            waited_millis / 1000,
+            waited_millis % 1000
+        )));
+        cancel_close_futures = pending.clone();
+    } else if let Some(failure) = failure {
+        let msg = match failure {
+            // Futures.withTimeout wraps the TimeoutException in an ExecutionException when the
+            // future times out.
+            TimedOutcome::TimedOut => "The background upload of the Build Event Protocol for \
+                the previous invocation failed due to a network timeout. Ignoring the failure \
+                and starting a new invocation..."
+                .to_string(),
+            // PORT: a cancelled future (CancellationException) is not an ExecutionException in
+            // Java and leaves this method; the port reports it as a failure.
+            TimedOutcome::Cancelled => "The background upload of the Build Event Protocol for \
+                the previous invocation failed with the following exception: 'Task was \
+                cancelled.'. Ignoring the failure and starting a new invocation..."
+                .to_string(),
+            // e.getMessage() of the ExecutionException: the cause's toString().
+            TimedOutcome::Done(Err(e)) => format!(
+                "The background upload of the Build Event Protocol for the previous invocation \
+                 failed with the following exception: \
+                 'com.google.devtools.build.lib.util.AbruptExitException: {}'. Ignoring the \
+                 failure and starting a new invocation...",
+                e.message
+            ),
+            TimedOutcome::Done(Ok(())) => unreachable!(),
+        };
+        reporter.handle(&Event::warn(msg));
+        cancel_close_futures = pending.clone();
+    } else if waited_millis > 100 {
+        reporter.handle(&Event::info(format!(
+            "Waited for the background upload of the Build Event Protocol for {}.{:03} seconds.",
+            waited_millis / 1000,
+            waited_millis % 1000
+        )));
+    }
+    // finally
+    for upload in &cancel_close_futures {
+        upload.close.cancel();
+    }
+    // resetPendingUploads()
+    PENDING_UPLOADS.lock().clear();
+}
+
 /// The `AbruptExitException` a transport's close future fails with
 /// (`createAbruptExitException(e, message, BuildProgress.Code)`).
 // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:533 BuildEventServiceModule.waitForBuildEventTransportsToClose
@@ -1202,6 +1555,16 @@ impl BepCommandSupport {
     /// remote module's entry is known.
     // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:337 BuildEventServiceModule.beforeCommand
     pub fn module_before_command(env: &CommandEnvironment) -> Option<Arc<BepCommandSupport>> {
+        // We need to wait for the previous invocation before we check the list of allowed
+        // commands to allow completing previous runs using BES, for example:
+        //   bazel build (..run with async BES..)
+        //   bazel info <-- Doesn't run with BES unless we wait before checking allowedCommands.
+        // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:377 BuildEventServiceModule.beforeCommand
+        let command_is_shutdown = env.get_command_name() == "shutdown";
+        wait_for_previous_invocation(env.get_reporter().as_ref(), command_is_shutdown);
+        // PORT: `uploaderFactoryToCleanup.shutdown()` for `shutdown`: the uploader factories of
+        // the port hold no resources between commands.
+
         // Exit early if the running command isn't supported.
         // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:383 BuildEventServiceModule.beforeCommand
         if !ALLOWED_COMMANDS.contains(&env.get_command_name()) {
@@ -1238,7 +1601,12 @@ impl BepCommandSupport {
         uploader_factory_map.set_strategy(bep_options.build_event_upload_strategy.clone());
         let uploader_factory: Arc<dyn BuildEventArtifactUploaderFactory> =
             uploader_factory_map.clone();
-        let (streamer, errors) = BuildEventStreamerBuilder::from_options_with_uploader_factory(
+        let bes_options: BuildEventServiceOptions = parsing_result
+            .get_options()
+            .unwrap_or_else(|| panic!("NullPointerException: BuildEventServiceOptions"));
+        let ui_uses_color = ui_options.use_color();
+        let mut bes_transport_created = false;
+        let (streamer, errors) = BuildEventStreamerBuilder::from_options_with_bes_transport(
             &bep_options,
             &bes_stream_options,
             &BepCommandContext {
@@ -1246,6 +1614,30 @@ impl BepCommandSupport {
                 oom_message: common_options.oom_message.clone(),
             },
             uploader_factory,
+            |uploader_supplier, artifact_group_namer| {
+                // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:917 BuildEventServiceModule.createBepTransports
+                let transport = create_bes_transport(
+                    env,
+                    &bes_options,
+                    Arc::new(bep_options.clone()),
+                    uploader_supplier,
+                    artifact_group_namer,
+                )?;
+                bes_transport_created = true;
+                blaze_bes::module::construct_and_maybe_report_invocation_id_url(
+                    env.get_reporter().as_ref(),
+                    &bes_options,
+                    env.get_command_id(),
+                    ui_uses_color,
+                );
+                blaze_bes::module::construct_and_maybe_report_build_request_id_url(
+                    env.get_reporter().as_ref(),
+                    &crate::commands::build::build_remote::command_build_request_id(
+                        env.get_options(),
+                    ),
+                );
+                Some(transport)
+            },
         );
         // createBepTransports: each transport that cannot be opened is omitted and reported.
         for error in errors {
@@ -1370,6 +1762,14 @@ impl BepCommandSupport {
                 .is_some_and(|o| !o.aspects.is_empty()),
             ui_subscriber: Mutex::new(None),
             ui_debug_all_events,
+            bes: BesCommandState {
+                bes_backend_set: !bes_options.bes_backend.is_empty(),
+                bes_transport_created,
+                bes_options: bes_options.clone(),
+                invocation_id: env.get_command_id().to_string(),
+                ui_uses_color,
+                keep_backend_connections: bes_stream_options.keep_backend_connections,
+            },
         });
         // reporter.post(new AnnounceBuildEventTransportsEvent(bepTransports)) is posted at the
         // end of beforeCommand; it reaches the UI when the dispatcher replays the events stored
@@ -2108,39 +2508,121 @@ impl BepCommandSupport {
         self.post(Arc::new(event));
     }
 
-    /// `BuildEventServiceModule.closeBepTransports`: every file transport blocks
-    /// (`!mayBeSlow()`), so all are waited for (`waitForBuildEventTransportsToClose`), and the
-    /// UI is told of each transport that finished closing (`BuildEventTransportClosedEvent`).
-    ///
-    /// PORT: the file transports close synchronously in Blaze, so each close future is complete
-    /// when it is read; the UI is notified in the transports' order (Java notifies from the
-    /// `bes-notify-ui` thread as each future completes). A failed close is the module's
-    /// `AbruptExitException` (Java: `Throwables.throwIfInstanceOf(e.getCause(),
-    /// AbruptExitException.class)` of the transport's close failure).
-    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:628 BuildEventServiceModule.closeBepTransports
-    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:533 BuildEventServiceModule.waitForBuildEventTransportsToClose
+    /// `BuildEventServiceModule.closeBepTransports`: the transports that may not be slow, and
+    /// the slow ones in `WAIT_FOR_UPLOAD_COMPLETE` mode, are waited for
+    /// (`waitForBuildEventTransportsToClose`); the UI is told of each transport that finished
+    /// closing (`BuildEventTransportClosedEvent`), and at once of the asynchronous ones, whose
+    /// uploads the next command waits for (`waitForPreviousInvocation`). A failed close is the
+    /// module's `AbruptExitException`.
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:637 BuildEventServiceModule.closeBepTransports
     fn close_bep_transports(&self) -> Result<(), AbruptExitException> {
         let ids = self.transport_ids();
-        let results = self.shared.streamer.streamer().get_close_futures_map();
-        let mut failure = None;
-        for (index, (_name, result)) in results.into_iter().enumerate() {
-            // closeFuture.addListener(() -> reporter.post(new BuildEventTransportClosedEvent(
-            // bepTransport)), executor): the listener runs whether the close failed or not.
-            if let (Some(subscriber), Some(id)) = (&*self.ui_subscriber.lock(), ids.get(index)) {
-                subscriber.build_event_transport_closed(id, self.ui_debug_all_events);
-            }
-            if let Err(e) = result
-                && failure.is_none()
-            {
-                failure = Some(transport_close_exception(&e));
+        let streamer = self.shared.streamer.streamer();
+        let transports: Vec<Arc<dyn BuildEventTransport>> = streamer.get_transports().to_vec();
+        let close_futures = streamer.get_close_futures();
+        // closeFuturesWithTimeoutsMap / halfCloseFuturesWithTimeoutsMap
+        let pending: Vec<PendingUpload> = transports
+            .iter()
+            .zip(close_futures)
+            .enumerate()
+            .map(|(index, (transport, (_name, close_future)))| {
+                PendingUpload::new(
+                    transport.clone(),
+                    ids.get(index).cloned(),
+                    close_future,
+                    transport.get_half_close_future(),
+                )
+            })
+            .collect();
+        *PENDING_UPLOADS.lock() = pending.clone();
+        let mut blocking = Vec::new();
+        for upload in pending {
+            let bes_upload_mode_is_synchronous =
+                upload.transport.get_bes_upload_mode() == BesUploadMode::WAIT_FOR_UPLOAD_COMPLETE;
+            if !upload.transport.may_be_slow() || bes_upload_mode_is_synchronous {
+                blocking.push(upload);
+            } else {
+                // When running asynchronously notify the UI immediately since we won't wait for
+                // the uploads to close.
+                self.notify_transport_closed(upload.id.as_ref());
             }
         }
-        match failure {
-            Some(e) => Err(e),
-            None => Ok(()),
+        if !blocking.is_empty() {
+            self.wait_for_build_event_transports_to_close(&blocking)?;
+        }
+        Ok(())
+    }
+
+    /// `reporter.post(new BuildEventTransportClosedEvent(bepTransport))` to the UI.
+    fn notify_transport_closed(&self, id: Option<&TransportId>) {
+        if let (Some(subscriber), Some(id)) = (&*self.ui_subscriber.lock(), id) {
+            subscriber.build_event_transport_closed(id, self.ui_debug_all_events);
         }
     }
 
+    /// Waits for `uploads` to close: the UI is told of each one as it finishes; a timed-out
+    /// upload fails with `BES_UPLOAD_TIMEOUT_ERROR`, a failed one with its own failure (the
+    /// first to fail, as `Futures.allAsList` does). The waited futures are cancelled and removed
+    /// from the pending uploads afterwards (`removeFromPendingUploads`).
+    ///
+    /// PORT: Java's listeners notify the UI from a `bes-notify-ui` thread as each future
+    /// completes; here the waiting thread polls the futures (every 10 ms) and notifies. A
+    /// cancelled upload ends the wait (`CancellationException`), as in Java.
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:533 BuildEventServiceModule.waitForBuildEventTransportsToClose
+    fn wait_for_build_event_transports_to_close(
+        &self,
+        uploads: &[PendingUpload],
+    ) -> Result<(), AbruptExitException> {
+        let mut notified = vec![false; uploads.len()];
+        let result = loop {
+            let mut all_done = true;
+            let mut outcome = None;
+            for (index, upload) in uploads.iter().enumerate() {
+                match upload.close.poll() {
+                    None => all_done = false,
+                    Some(result) => {
+                        if !notified[index] {
+                            notified[index] = true;
+                            self.notify_transport_closed(upload.id.as_ref());
+                        }
+                        match result {
+                            TimedOutcome::Done(Ok(())) => {}
+                            other => {
+                                outcome = Some(other);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(outcome) = outcome {
+                break match outcome {
+                    // catch (CancellationException e): expected if the upload needs to be
+                    // cancelled for some reason, e.g. an error interrupting the build.
+                    TimedOutcome::Cancelled => Ok(()),
+                    // Futures.withTimeout wraps the TimeoutException in an ExecutionException
+                    // when the future times out.
+                    TimedOutcome::TimedOut => Err(create_abrupt_exit_exception(
+                        TIMEOUT_EXCEPTION_MESSAGE,
+                        "The Build Event Protocol upload timed out.",
+                        failure_details::build_progress::Code::BesUploadTimeoutError,
+                    )),
+                    // Throwables.throwIfInstanceOf(e.getCause(), AbruptExitException.class)
+                    TimedOutcome::Done(Err(e)) => Err(transport_close_exception(&e)),
+                    TimedOutcome::Done(Ok(())) => unreachable!(),
+                };
+            }
+            if all_done {
+                // PORT: BuildEventServiceUploadCompleteEvent (the time the wait took) has no
+                // subscriber in Bazel; it is not posted.
+                break Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        // finally: removeFromPendingUploads(transportFutures)
+        remove_from_pending_uploads(uploads);
+        result
+    }
     /// `BuildEventServiceModule.forceShutdownBuildEventStreamer`: closes the streamer with the
     /// abort reason (each announced event not yet posted gets an `Aborted` event, then the last
     /// message) and waits for the transports to close.
@@ -2148,15 +2630,34 @@ impl BepCommandSupport {
     pub(crate) fn force_shutdown_build_event_streamer(&self, reason: AbortReason) {
         let streamer = &self.shared.streamer;
         streamer.close_on_abort(reason);
-        // closeFuturesWithTimeoutsMap = constructCloseFuturesMapWithTimeouts(...), then
-        // Uninterruptibles.getUninterruptibly(besClosedFuture).
-        // PORT: the file transports close synchronously (see `after_command`); the close results
-        // are the futures' outcomes. For OUT_OF_MEMORY Java waits at most
-        // --bes_oom_finish_upload_timeout, which only matters for a Build Event Service upload.
+        // closeFuturesWithTimeoutsMap = constructCloseFuturesMapWithTimeouts(...)
+        let transports: Vec<Arc<dyn BuildEventTransport>> =
+            streamer.streamer().get_transports().to_vec();
+        let uploads: Vec<PendingUpload> = transports
+            .iter()
+            .zip(streamer.streamer().get_close_futures())
+            .map(|(transport, (_name, close_future))| {
+                PendingUpload::new(
+                    transport.clone(),
+                    None,
+                    close_future,
+                    transport.get_half_close_future(),
+                )
+            })
+            .collect();
+        *PENDING_UPLOADS.lock() = uploads.clone();
+        // GC thrashing during severe OOMs may prevent future completion, so don't wait forever
+        // (--bes_oom_finish_upload_timeout); otherwise getUninterruptibly(besClosedFuture).
+        let deadline = (reason == AbortReason::OutOfMemory).then(|| {
+            std::time::Instant::now() + self.bes.bes_options.bes_oom_finish_upload_timeout
+        });
         // A failed close is only logged by Java (`logger.atSevere()...log("Failed to close a
         // build event transport")`); logging is not ported, so the results are not read.
-        let _ = streamer.streamer().get_close_futures_map();
-        // finally: cancelAndResetPendingUploads() (nothing pending: the closes are synchronous).
+        for upload in &uploads {
+            let _ = upload.close.wait(deadline);
+        }
+        // finally: cancelAndResetPendingUploads()
+        cancel_and_reset_pending_uploads();
     }
 
     /// `BuildEventServiceModule.blazeShutdownOnCrash`: the module's streamer is closed with
@@ -2197,11 +2698,24 @@ impl BepCommandSupport {
 
         self.close_bep_transports()?;
 
-        // PORT: the Build Event Service upload is not ported (--bes_backend fails loudly before
-        // the command runs, crate::unported_options); only the local files are produced.
-        self.reporter.handle(&Event::info(
-            "Build Event Protocol files produced successfully.",
-        ));
+        if self.bes.bes_backend_set {
+            blaze_bes::module::construct_and_maybe_report_invocation_id_url(
+                self.reporter.as_ref(),
+                &self.bes.bes_options,
+                &self.bes.invocation_id,
+                self.bes.ui_uses_color,
+            );
+        } else {
+            // !bepTransports.isEmpty(): a support exists only with transports.
+            self.reporter.handle(&Event::info(
+                "Build Event Protocol files produced successfully.",
+            ));
+        }
+
+        // besStreamOptions can be null if we are crashing. Don't crash here too.
+        if !self.bes.keep_backend_connections {
+            blaze_bes::module::clear_bes_client();
+        }
         Ok(())
     }
 }

@@ -23,17 +23,34 @@ enum State {
 /// Runs `task` and turns its outcome into a result.
 // Java: com/google/devtools/build/lib/server/IdleTaskManager.java:58 IdleTaskWrapper.call
 fn idle_task_wrapper_call(task: &dyn IdleTask) -> IdleTaskResult {
+    const CLASS: &str = "com.google.devtools.build.lib.server.IdleTaskManager$IdleTaskWrapper";
     let name = task.display_name();
     let stopwatch = Instant::now();
-    // PORT: skipped, logging ("%s idle task started" / "finished" / "failed" / "interrupted").
+    blaze_util::server_logger::info(CLASS, "call", &format!("{} idle task started", name));
     match task.run() {
-        Ok(()) => IdleTaskResult::new(name, IdleTaskStatus::SUCCESS, stopwatch.elapsed()),
-        Err(IdleTaskError::IdleTask(_)) => {
+        Ok(()) => {
+            blaze_util::server_logger::info(CLASS, "call", &format!("{} idle task finished", name));
+            IdleTaskResult::new(name, IdleTaskStatus::SUCCESS, stopwatch.elapsed())
+        }
+        Err(IdleTaskError::IdleTask(e)) => {
+            // withCause(e.getCause())
+            blaze_util::server_logger::warning(
+                CLASS,
+                "call",
+                &format!("{} idle task failed", name),
+                Some(&e.get_cause().to_string()),
+            );
             IdleTaskResult::new(name, IdleTaskStatus::FAILURE, stopwatch.elapsed())
         }
         // There's no point in restoring the interrupt bit since this thread belongs to an
         // executor service that is shutting down.
         Err(IdleTaskError::Interrupted(_)) => {
+            blaze_util::server_logger::warning(
+                CLASS,
+                "call",
+                &format!("{} idle task interrupted", name),
+                Some("java.lang.InterruptedException"),
+            );
             IdleTaskResult::new(name, IdleTaskStatus::INTERRUPTED, stopwatch.elapsed())
         }
     }

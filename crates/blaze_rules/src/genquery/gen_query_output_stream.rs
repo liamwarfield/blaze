@@ -13,12 +13,15 @@ use flate2::write::GzEncoder;
 // Java: com/google/devtools/build/lib/rules/genquery/GenQueryOutputStream.java:46 GenQueryOutputStream.COMPRESSION_THRESHOLD
 const COMPRESSION_THRESHOLD: i32 = 1 << 20;
 
-/// `new GZIPOutputStream(out, GZIP_BYTES_BUFFER)`: Java's header (no name, mtime 0, OS byte 255,
-/// `java.util.zip.GZIPOutputStream.writeHeader`) and `Deflater.DEFAULT_COMPRESSION` (zlib level
-/// 6).
+/// `new GZIPOutputStream(out, GZIP_BYTES_BUFFER)`: Java's header (`GZIPOutputStream.writeHeader`:
+/// no flags, mtime 0, XFL 0, OS byte 255) and its `Deflater(Deflater.DEFAULT_COMPRESSION,
+/// true)`: zlib level 6, raw deflate with a 15-bit window, memory level 8, the default strategy
+/// (flate2's `GzBuilder` makes the same `deflateInit2` call; XFL is 0 at level 6).
 ///
-/// PORT: the compressed bytes come from flate2's deflate implementation, not the JDK's zlib; both
-/// are valid gzip streams of the same data, but they are not guaranteed to be byte-identical.
+/// The deflate bytes are zlib's: flate2 is built with its C zlib backend (workspace
+/// `Cargo.toml`), linked to the system `libz.so.1` as the JDK's `libzip.so` that Bazel's server
+/// runs with is. Neither feeds input with a flush, so the stream does not depend on how the bytes
+/// were chunked (`DeflaterOutputStream` writes through an 8192-byte buffer, this stream does not).
 // Java: com/google/devtools/build/lib/rules/genquery/GenQueryOutputStream.java:48 GenQueryOutputStream.GZIP_BYTES_BUFFER
 fn gzip_output_stream(out: Vec<u8>) -> GzEncoder<Vec<u8>> {
     flate2::GzBuilder::new()

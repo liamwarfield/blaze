@@ -2034,3 +2034,58 @@ mod blaze_runtime_idle_tasks {
         assert_eq!(tasks_named(&result, "bar").len(), 1);
     }
 }
+
+/// The repo contents cache's shared lock is the command's: `BazelRepositoryModule` takes it in
+/// `beforeCommand` and releases it in `afterCommand`, so a server holds it only while a command
+/// runs (its garbage collector, an idle task, takes the exclusive lock between commands).
+mod bazel_repository_module {
+    use super::*;
+    use blaze_repo_fetch::file_system_lock::FileSystemLock;
+
+    fn lock_path(cache: &std::path::Path) -> blaze_vfs::Path {
+        blaze_vfs::Path::create(
+            blaze_vfs::PathFragment::create(&format!("{}/gc_lock", cache.display())),
+            &blaze_vfs::UnixFileSystem::create(blaze_vfs::DigestHashFunction::Sha256),
+        )
+    }
+
+    // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:407 BazelRepositoryModule.beforeCommand
+    // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:734 BazelRepositoryModule.afterCommand
+    #[test]
+    fn repo_contents_cache_shared_lock_is_held_for_the_command_only() {
+        let cache: Arc<Mutex<Option<std::path::PathBuf>>> = Arc::new(Mutex::new(None));
+        let held_during_command = Arc::new(AtomicBool::new(false));
+        let probe = {
+            let cache = cache.clone();
+            let held_during_command = held_during_command.clone();
+            command(annotation("bar", no_options, &[]), move |_env, _| {
+                let path = lock_path(cache.lock().as_ref().unwrap());
+                held_during_command.store(
+                    FileSystemLock::held_by_this_process(&path),
+                    Ordering::SeqCst,
+                );
+                BlazeCommandResult::success()
+            })
+        };
+        let fixture = initialize_runtime(vec![
+            Arc::new(crate::bazel_modules::BazelRepositoryModule::default()),
+            commands(vec![probe]),
+        ]);
+        let dir = fixture._dir.path().join("cc");
+        *cache.lock() = Some(dir.clone());
+        let dispatch = dispatcher(&fixture, BlazeCommandDispatcher::UNKNOWN_SERVER_PID);
+        for _ in 0..2 {
+            let out_err = RecordingOutErr::new();
+            let flag = format!("--repo_contents_cache={}", dir.display());
+            let result = exec(&dispatch, &["bar", &flag], "test", &out_err);
+            assert_eq!(
+                result.get_exit_code(),
+                ExitCode::SUCCESS,
+                "{}",
+                out_err.err_as_latin1()
+            );
+            assert!(held_during_command.swap(false, Ordering::SeqCst));
+            assert!(!FileSystemLock::held_by_this_process(&lock_path(&dir)));
+        }
+    }
+}

@@ -92,12 +92,6 @@ impl InterruptibleSemaphore {
             self.available.wait_for(&mut permits, INTERRUPT_POLL);
         }
     }
-
-    /// `availablePermits()`.
-    #[cfg(test)]
-    pub(crate) fn available_permits(&self) -> i32 {
-        *self.permits.lock()
-    }
 }
 
 /// The result a branch's future holds.

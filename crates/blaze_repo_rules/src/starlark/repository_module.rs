@@ -517,8 +517,17 @@ pub fn register_repository_module(builder: &mut GlobalsBuilder) {
         let mut builder = RepoRuleBuilder::default();
         let semantics = blaze_starlark::ThreadContext::get(eval)?.semantics.clone();
         if semantics.experimental_repo_remote_exec {
-            // Java: builder.addAttribute(attr("exec_properties", STRING_DICT).defaultValue({}))
-            blaze_util::unported!("StarlarkRepositoryModule.repositoryRule (exec_properties)");
+            // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkRepositoryModule.java:77 StarlarkRepositoryModule.repositoryRule
+            builder.add_attribute(
+                blaze_packages::attribute::attr(
+                    "exec_properties",
+                    blaze_packages::types::Type::StringDict,
+                )
+                .value(Some(blaze_packages::types::AttrValue::StringDict(
+                    IndexMap::new(),
+                )))
+                .build(),
+            );
         }
         if let NoneOr::Other(attrs) = attrs {
             let mut error = None;

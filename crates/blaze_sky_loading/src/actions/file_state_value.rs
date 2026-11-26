@@ -200,14 +200,13 @@ pub enum FileStateValue {
     Nonexistent,
 }
 
-/// The `FileArtifactValue` held by [`FileStateValue::RegularFileWithMetadata`], with the values
-/// read from it once (Java reads them from the metadata on each call).
+/// The `FileArtifactValue` held by [`FileStateValue::RegularFileWithMetadata`], with its size and
+/// digest read once (they do not change; the contents proxy, which does, is read on each call).
 #[derive(Clone, Debug)]
 pub struct FileStateMetadata {
     metadata: Arc<dyn StatMetadata>,
     size: i64,
     digest: Option<Vec<u8>>,
-    contents_proxy: Option<FileContentsProxy>,
 }
 
 impl FileStateMetadata {
@@ -216,9 +215,6 @@ impl FileStateMetadata {
         FileStateMetadata {
             size: metadata.get_size(),
             digest: metadata.get_digest(),
-            contents_proxy: metadata
-                .get_contents_proxy()
-                .map(|(ctime, mtime, node_id)| FileContentsProxy::new(ctime, mtime, node_id)),
             metadata,
         }
     }
@@ -438,7 +434,7 @@ impl FileStateValue {
                 if this_proxy == other_proxy {
                     return ContentsComparisonResult::Same;
                 }
-                if this_proxy.is_modified(other_proxy) {
+                if this_proxy.is_modified(&other_proxy) {
                     ContentsComparisonResult::Different
                 } else {
                     ContentsComparisonResult::SameExceptChangeTime
@@ -494,12 +490,15 @@ impl FileStateValue {
     }
 
     // Java: com/google/devtools/build/lib/actions/FileStateValue.java:227 FileStateValue.getContentsProxy
-    pub fn get_contents_proxy(&self) -> Option<&FileContentsProxy> {
+    pub fn get_contents_proxy(&self) -> Option<FileContentsProxy> {
         match self {
             FileStateValue::RegularFileWithDigest { .. } | FileStateValue::Symlink { .. } => None,
             FileStateValue::RegularFileWithContentsProxy { contents_proxy, .. }
-            | FileStateValue::SpecialFile { contents_proxy } => Some(contents_proxy),
-            FileStateValue::RegularFileWithMetadata(m) => m.contents_proxy.as_ref(),
+            | FileStateValue::SpecialFile { contents_proxy } => Some(*contents_proxy),
+            FileStateValue::RegularFileWithMetadata(m) => m
+                .metadata
+                .get_contents_proxy()
+                .map(|(ctime, mtime, node_id)| FileContentsProxy::new(ctime, mtime, node_id)),
             FileStateValue::Directory | FileStateValue::Nonexistent => {
                 panic!("UnsupportedOperationException")
             }
@@ -619,5 +618,68 @@ impl fmt::Display for FileStateValue {
             ),
             _ => f.write_str(&self.pretty_print()),
         }
+    }
+}
+
+#[cfg(test)]
+mod regular_file_with_metadata_tests {
+    //! Blaze-only tests (Java has no unit test of RegularFileStateValueWithMetadata).
+    use super::*;
+
+    #[derive(Debug, PartialEq)]
+    struct Remote {
+        digest: Vec<u8>,
+        size: i64,
+    }
+
+    impl StatMetadata for Remote {
+        fn get_size(&self) -> i64 {
+            self.size
+        }
+        fn get_digest(&self) -> Option<Vec<u8>> {
+            Some(self.digest.clone())
+        }
+        fn get_contents_proxy(&self) -> Option<(i64, i64, i64)> {
+            None
+        }
+        fn eq_dyn(&self, other: &dyn StatMetadata) -> bool {
+            other.as_any().downcast_ref::<Remote>() == Some(self)
+        }
+        fn hash_dyn(&self, mut state: &mut dyn std::hash::Hasher) {
+            use std::hash::Hash;
+            self.digest.hash(&mut state);
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    fn value(digest: &[u8], size: i64) -> FileStateValue {
+        FileStateValue::RegularFileWithMetadata(FileStateMetadata::new(Arc::new(Remote {
+            digest: digest.to_vec(),
+            size,
+        })))
+    }
+
+    #[test]
+    fn values_come_from_the_metadata() {
+        let v = value(&[1, 2], 7);
+        assert_eq!(v.get_type(), FileStateType::RegularFile);
+        assert_eq!(v.get_size(), 7);
+        assert_eq!(v.get_digest(), Some(&[1u8, 2][..]));
+        assert_eq!(v.get_contents_proxy(), None);
+        assert_eq!(v, value(&[1, 2], 7));
+        assert_ne!(v, value(&[1, 3], 7));
+        let mut fp = Fingerprint::new();
+        fp.add_long(7);
+        fp.add_bytes(&[1, 2]);
+        assert_eq!(v.get_value_fingerprint(), fp.digest_and_reset());
+        assert_eq!(
+            v.compare_contents(&FileStateValue::RegularFileWithDigest {
+                size: 7,
+                digest: vec![1, 2]
+            }),
+            ContentsComparisonResult::Same
+        );
     }
 }

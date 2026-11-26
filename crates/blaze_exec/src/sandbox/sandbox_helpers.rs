@@ -223,7 +223,7 @@ pub fn clean_existing(
     inputs_to_create: &mut IndexSet<PathFragment>,
     dirs_to_create: &mut IndexSet<PathFragment>,
     work_dir: &Path,
-    tree_deleter: &dyn TreeDeleter,
+    tree_deleter: Option<&dyn TreeDeleter>,
 ) -> io::Result<()> {
     clean_existing_with_contents(
         root,
@@ -244,7 +244,10 @@ pub fn clean_existing_with_contents(
     inputs_to_create: &mut IndexSet<PathFragment>,
     dirs_to_create: &mut IndexSet<PathFragment>,
     work_dir: &Path,
-    tree_deleter: &dyn TreeDeleter,
+    // PORT: Java's parameter is not annotated, but callers pass null (a `WorkerFactory` without a
+    // tree deleter); `cleanRecursively` then deletes directly, and the in-memory variant fails
+    // with a NullPointerException only when it has a tree to delete.
+    tree_deleter: Option<&dyn TreeDeleter>,
     sandbox_contents: Option<&SandboxContents>,
 ) -> io::Result<()> {
     let inaccessible_helper_dir = work_dir.get_relative_str(INACCESSIBLE_HELPER_DIR);
@@ -279,7 +282,7 @@ pub fn clean_existing_with_contents(
             dirs_to_create,
             work_dir,
             &prefix_dirs,
-            Some(tree_deleter),
+            tree_deleter,
         ),
         Some(contents) => clean_recursively_with_in_memory_contents(
             root,
@@ -304,7 +307,7 @@ fn clean_recursively_with_in_memory_contents(
     dirs_to_create: &mut IndexSet<PathFragment>,
     work_dir: &Path,
     prefix_dirs: &HashSet<PathFragment>,
-    tree_deleter: &dyn TreeDeleter,
+    tree_deleter: Option<&dyn TreeDeleter>,
     stash_contents: &SandboxContents,
 ) -> io::Result<()> {
     let execroot = work_dir
@@ -346,7 +349,9 @@ fn clean_recursively_with_in_memory_contents(
             )?;
             dirs_to_create.shift_remove(&path_relative_to_work_dir);
         } else {
-            tree_deleter.delete_tree(&abs_path)?;
+            tree_deleter
+                .expect("NullPointerException: treeDeleter")
+                .delete_tree(&abs_path)?;
         }
     }
     Ok(())

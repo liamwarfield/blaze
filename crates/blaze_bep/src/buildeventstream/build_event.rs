@@ -281,11 +281,29 @@ pub trait BuildEvent: Send + Sync + fmt::Debug {
     fn event_class(&self) -> BuildEventClass {
         BuildEventClass::Other
     }
+
+    /// `event instanceof BuildCompletingEvent e ? e.getExitCode().getNumericExitCode() : …`:
+    /// `Some(numeric exit code)` for a `BuildCompletingEvent` (the Build Event Service
+    /// uploader's `instanceof` test).
+    fn build_completing_exit_code(&self) -> Option<i32> {
+        None
+    }
+
+    /// `event instanceof AbortedEvent` (the Build Event Service uploader's test).
+    fn is_aborted_event(&self) -> bool {
+        false
+    }
 }
 
 impl<T: BuildEvent + ?Sized> BuildEvent for Arc<T> {
     fn get_event_id(&self) -> BuildEventId {
         (**self).get_event_id()
+    }
+    fn build_completing_exit_code(&self) -> Option<i32> {
+        (**self).build_completing_exit_code()
+    }
+    fn is_aborted_event(&self) -> bool {
+        (**self).is_aborted_event()
     }
     fn get_children_events(&self) -> Vec<BuildEventId> {
         (**self).get_children_events()

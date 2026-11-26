@@ -514,6 +514,38 @@ fn new_channel_client_certificate_and_key_must_be_valid() {
     assert!(channel.tls);
 }
 
+/// Not in the Java test (review round 6, M1): Netty reads a client key with the RSA, DSA and EC
+/// key factories only, so an Ed25519 PKCS#8 key is not a valid private key. The oracle
+/// (`--tls_client_key` with an Ed25519 key): `WARNING: Remote Cache: Failed to init TLS
+/// infrastructure using '<crt>' as client certificate: File does not contain valid private key:
+/// <key>`, then the build goes on without the cache.
+#[test]
+fn new_channel_ed25519_client_key_is_refused() {
+    let f = Fixture::new();
+    let cert = format!("{}/client.crt", f.root);
+    let key = format!("{}/client.key", f.root);
+    f.scratch_file(
+        &cert,
+        "-----BEGIN CERTIFICATE-----\nMAA=\n-----END CERTIFICATE-----\n",
+    );
+    f.scratch_file(
+        &key,
+        "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIMJPRDT3tnYa/U3MS8THMSLSvpjAGNIhzdwflzNt42yI\n-----END PRIVATE KEY-----\n",
+    );
+    let mut options = AuthAndTLSOptions::default();
+    options.tls_client_certificate = Some(cert.clone());
+    options.tls_client_key = Some(key.clone());
+
+    let e = new_channel("grpcs://localhost:1234", None, &options, None, None).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        format!(
+            "Failed to init TLS infrastructure using '{cert}' as client certificate: \
+             File does not contain valid private key: {key}"
+        )
+    );
+}
+
 /// Not in the Java test (lead, round 2; root ruling 2026-11-19: X.509 v1 certificates stay
 /// refused). rustls refuses the X.509 v1 client certificate of Bazel's own TLS tests
 /// (`src/test/testdata/test_tls_certificate`, copied to `tests/testdata/x509v1`) when the TLS

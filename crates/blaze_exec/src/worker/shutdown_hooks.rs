@@ -108,6 +108,46 @@ pub fn remove_shutdown_hook(id: ShutdownHookId) -> bool {
     HOOKS.lock().remove(&id.0).is_some()
 }
 
+/// The files of `File.deleteOnExit()`, in registration order (`DeleteOnExitHook.files`, a
+/// `LinkedHashSet`).
+static DELETE_ON_EXIT: LazyLock<Mutex<indexmap::IndexSet<std::path::PathBuf>>> =
+    LazyLock::new(|| Mutex::new(indexmap::IndexSet::new()));
+
+/// `File.deleteOnExit()`: the file or empty directory is deleted when the process shuts down,
+/// after the shutdown hooks (`DeleteOnExitHook` is registered in a later `Shutdown` slot than
+/// the application hooks). Panics with Java's `IllegalStateException` text once shutdown is in
+/// progress.
+// Java: java/io/DeleteOnExitHook.java DeleteOnExitHook.add (JDK)
+pub fn delete_on_exit(path: std::path::PathBuf) {
+    if SHUTTING_DOWN.load(Ordering::SeqCst) {
+        panic!("java.lang.IllegalStateException: Shutdown in progress");
+    }
+    if !INSTALLED.swap(true, Ordering::SeqCst) {
+        // SAFETY: registering a plain extern "C" function.
+        unsafe {
+            libc::atexit(run_hooks_at_exit);
+        }
+    }
+    DELETE_ON_EXIT.lock().insert(path);
+}
+
+/// `DeleteOnExitHook.runHooks`: deletes the files in reverse order of registration, ignoring
+/// failures (`File.delete()`).
+// Java: java/io/DeleteOnExitHook.java DeleteOnExitHook.runHooks (JDK)
+fn run_delete_on_exit() {
+    let files: Vec<std::path::PathBuf> = std::mem::take(&mut *DELETE_ON_EXIT.lock())
+        .into_iter()
+        .rev()
+        .collect();
+    for file in files {
+        let _ = match std::fs::symlink_metadata(&file) {
+            Ok(m) if m.is_dir() => std::fs::remove_dir(&file),
+            Ok(_) => std::fs::remove_file(&file),
+            Err(e) => Err(e),
+        };
+    }
+}
+
 /// Runs every registered hook once, newest first (Java starts them concurrently, in no
 /// particular order; the order here is a declared deviation, see the note below).
 pub fn run_shutdown_hooks() {
@@ -132,6 +172,8 @@ pub fn run_shutdown_hooks() {
     for payload in panics {
         report_hook_panic(&*payload);
     }
+    // The next `Shutdown` slot: `DeleteOnExitHook`.
+    run_delete_on_exit();
 }
 
 /// An uncaught exception of a shutdown hook's thread: the default uncaught exception handler.

@@ -44,6 +44,9 @@ pub struct RepoServices {
     /// Java `RepositoryFetchFunction.remoteRepoContentsCache` (`setRemoteRepoContentsCache`).
     pub remote_repo_contents_cache:
         Option<Arc<dyn crate::repository::remote_helpers::RemoteRepoContentsCache>>,
+    /// Java `RepositoryFetchFunction.repositoryRemoteExecutor` (`setRepositoryRemoteExecutor`).
+    pub remote_executor:
+        Option<Arc<dyn crate::repository::remote_helpers::RepositoryRemoteExecutor>>,
 }
 
 impl RepoServices {

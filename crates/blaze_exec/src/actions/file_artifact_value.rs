@@ -6,6 +6,9 @@
 
 use std::fmt;
 use std::io;
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use blaze_vfs::{FileStatus, Path, PathFragment, Symlinks};
 
@@ -142,6 +145,14 @@ pub enum FileArtifactValue {
         location_index: i32,
         expiration_time_millis: NotInEquality<Option<i64>>,
         in_memory_output: NotInEquality<bool>,
+        /// `RemoteFileArtifactValueWithMaterializationData.proxy`: set when the file contents
+        /// are materialized in the local file system (`setContentsProxy`). `None` for a plain
+        /// `RemoteFileArtifactValue`, whose `setContentsProxy` does nothing.
+        ///
+        /// PORT: Java's value is one mutable object that the file system, Skyframe and the
+        /// prefetcher share; the cell is shared by the clones of this value instead.
+        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:831 RemoteFileArtifactValueWithMaterializationData.proxy
+        contents_proxy: NotInEquality<Option<Arc<Mutex<Option<FileContentsProxy>>>>>,
     },
     /// `ResolvedSymlinkArtifactValue`: a value with the path it was resolved through.
     ResolvedSymlink {
@@ -243,9 +254,35 @@ impl FileArtifactValue {
     pub fn get_contents_proxy(&self) -> Option<FileContentsProxy> {
         match self {
             FileArtifactValue::RegularFile { proxy, .. } => *proxy,
+            // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:873 RemoteFileArtifactValueWithMaterializationData.getContentsProxy
+            FileArtifactValue::RemoteFile {
+                contents_proxy: NotInEquality(Some(cell)),
+                ..
+            } => *cell.lock(),
             FileArtifactValue::ResolvedSymlink { delegate, .. } => delegate.get_contents_proxy(),
             FileArtifactValue::Proxy { delegate, .. } => delegate.get_contents_proxy(),
             _ => None,
+        }
+    }
+
+    /// `setContentsProxy(proxy)`: called when the file contents are materialized in the local
+    /// file system; does nothing but for a remote value with materialization data (and the
+    /// values that delegate to one).
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:131 FileArtifactValue.setContentsProxy
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:883 RemoteFileArtifactValueWithMaterializationData.setContentsProxy
+    pub fn set_contents_proxy(&self, proxy: FileContentsProxy) {
+        match self {
+            FileArtifactValue::RemoteFile {
+                contents_proxy: NotInEquality(Some(cell)),
+                ..
+            } => *cell.lock() = Some(proxy),
+            // Java: FileArtifactValue.java:987 ResolvedSymlinkArtifactValue.setContentsProxy
+            FileArtifactValue::ResolvedSymlink { delegate, .. } => {
+                delegate.set_contents_proxy(proxy)
+            }
+            // Java: FileArtifactValue.java:1347 ProxyFileArtifactValue.setContentsProxy
+            FileArtifactValue::Proxy { delegate, .. } => delegate.set_contents_proxy(proxy),
+            _ => {}
         }
     }
 
@@ -356,6 +393,7 @@ impl FileArtifactValue {
             location_index,
             expiration_time_millis: NotInEquality(None),
             in_memory_output: NotInEquality(false),
+            contents_proxy: NotInEquality(None),
         }
     }
 
@@ -373,6 +411,7 @@ impl FileArtifactValue {
             location_index,
             expiration_time_millis: NotInEquality(expiration_time_millis),
             in_memory_output: NotInEquality(in_memory_output),
+            contents_proxy: NotInEquality(Some(Arc::new(Mutex::new(None)))),
         }
     }
 

@@ -1021,6 +1021,51 @@ impl BuildLanguageInfoItem {
     }
 }
 
+impl BuildLanguageInfoItem {
+    // Java: com/google/devtools/build/lib/runtime/commands/info/BuildLanguageInfoItem.java:85 BuildLanguageInfoItem.loadStarlarkBuiltins
+    fn load_starlark_builtins(
+        env: &CommandEnvironment,
+        executor: &blaze_sky_top::skyframe_executor::SkyframeExecutor,
+    ) -> Result<
+        std::sync::Arc<blaze_sky_loading::starlark_builtins::StarlarkBuiltinsValue>,
+        AbruptExitException,
+    > {
+        use blaze_protos::failure_details::{self, FailureDetail, failure_detail::Category};
+        let key = blaze_sky_loading::starlark_builtins::StarlarkBuiltinsKey::key(false);
+        let reporter: std::sync::Arc<dyn blaze_events::ExtendedEventHandler> =
+            env.get_reporter().clone();
+        let result = executor
+            .evaluate(
+                &[blaze_skyframe::SkyKey::new(key.clone())],
+                /* keep_going= */ false,
+                blaze_sky_top::skyframe_executor::DEFAULT_THREAD_COUNT,
+                reporter,
+            )
+            .map_err(|_| {
+                // InfoCommand.exec: `catch (InterruptedException e)`.
+                AbruptExitException::new(crate::exit_code::DetailedExitCode::of(FailureDetail {
+                    message: "info interrupted".to_string(),
+                    category: Some(Category::Interrupted(failure_details::Interrupted {
+                        code: failure_details::interrupted::Code::Interrupted as i32,
+                    })),
+                }))
+            })?;
+        if result.has_error() {
+            return Err(AbruptExitException::new(
+                crate::exit_code::DetailedExitCode::of(FailureDetail {
+                    message: "Failed to load Starlark builtins".to_string(),
+                    category: Some(Category::InfoCommand(
+                        failure_details::InfoCommand::default(),
+                    )),
+                }),
+            ));
+        }
+        Ok(result
+            .get(&key)
+            .expect("StarlarkBuiltinsValue of a successful evaluation"))
+    }
+}
+
 impl InfoItem for BuildLanguageInfoItem {
     info_item_base!();
 
@@ -1035,12 +1080,24 @@ impl InfoItem for BuildLanguageInfoItem {
     fn get(
         &self,
         _configuration_supplier: &mut dyn ConfigurationSupplier,
-        _env: &mut CommandEnvironment,
+        env: &mut CommandEnvironment,
     ) -> Result<Vec<u8>, AbruptExitException> {
-        blaze_util::unported!(
-            "BuildLanguageInfoItem.get",
-            "needs StarlarkBuiltinsValue and the rule class provider"
-        )
+        // checkNotNull(env): by type.
+        // PORT: Java reads the workspace's SkyframeExecutor, synced by
+        // ensureSyncPackageLoading; Blaze creates the command's executor here.
+        let executor = crate::commands::query::create_skyframe_executor(env, None)
+            .map_err(|r| AbruptExitException::new(r.get_detailed_exit_code().clone()))?;
+        let _after_command = crate::commands::query::AfterCommand(&executor);
+        let builtins = Self::load_starlark_builtins(env, &executor)?;
+        Ok(crate::info_item::print_bytes(
+            super::build_language::get_build_language_definition(
+                &super::build_language::get_builtin_rule_classes(
+                    &builtins,
+                    executor.get_rule_class_provider(),
+                    /* include_macro_wrapped_rules= */ true,
+                ),
+            ),
+        ))
     }
 }
 

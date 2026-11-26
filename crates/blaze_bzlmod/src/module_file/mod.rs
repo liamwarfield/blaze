@@ -31,6 +31,7 @@ use blaze_starlark::error::StackEntry;
 use blaze_starlark::eval::run_on_evaluation_thread;
 use blaze_starlark::thread::StarlarkEvents;
 use blaze_starlark::{EvalError, Phase, ThreadContext};
+use blaze_util::profiler::{Profiler, ProfilerTask};
 use blaze_vfs::PathFragment;
 use indexmap::IndexMap;
 use parking_lot::Mutex;
@@ -157,7 +158,7 @@ impl StarlarkEvents for PrintHandler {
 /// `BAD_MODULE "error executing MODULE.bazel file for <key>"`.
 // PORT: `print()` events are buffered during evaluation (the evaluation thread cannot borrow
 // `event_handler`) and replayed, in order, before the warnings or the error; the order of events
-// on `event_handler` is Java's. The profiler task and `SymbolGenerator` are skipped.
+// on `event_handler` is Java's. The `SymbolGenerator` is skipped.
 // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleFileFunction.java:644 ModuleFileFunction.execModuleFile
 pub fn exec_module_file(
     compiled_root_module_file: &CompiledModuleFile,
@@ -176,6 +177,10 @@ pub fn exec_module_file(
         ignore_dev_deps,
         include_label_to_parsed_module_file,
     );
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleFileFunction.java:659 ModuleFileFunction.execModuleFile
+    let profile_scope = Profiler::instance().profile_with(ProfilerTask::BZLMOD, || {
+        format!("evaluate module file: {module_key}")
+    });
     let print_handler = Arc::new(PrintHandler {
         print_is_noop,
         events: Mutex::new(Vec::new()),
@@ -209,6 +214,8 @@ pub fn exec_module_file(
             Ok(context)
         }
         Err(e) => {
+            // The catch clause runs after the try-with-resources scope is closed.
+            drop(profile_scope);
             event_handler.handle(&Event::error_at(
                 e.innermost_location.clone(),
                 e.message_with_stack.clone(),

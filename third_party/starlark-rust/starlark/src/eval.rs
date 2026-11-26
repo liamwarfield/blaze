@@ -44,6 +44,7 @@ pub use soft_error::SoftErrorHandler;
 pub use starlark_syntax::call_stack::CallStack;
 
 pub use crate::eval::compiler::def::DefModule; // BLAZE PATCH 0017
+pub use crate::eval::runtime::evaluator::with_current_extra; // BLAZE PATCH 0064
 use starlark_syntax::slice_vec_ext::SliceExt;
 use starlark_syntax::syntax::module::AstModule;
 use starlark_syntax::syntax::module::AstModuleFields;
@@ -99,6 +100,13 @@ impl<'v, 'a, 'e> Evaluator<'v, 'a, 'e> {
     /// Evaluate an [`AstModule`] with this [`Evaluator`], modifying the in-scope
     /// [`Module`](crate::environment::Module) as appropriate.
     pub fn eval_module(&mut self, ast: AstModule, globals: &Globals) -> crate::Result<Value<'v>> {
+        // SAFETY: `self.extra` outlives this call, which holds the guard (BLAZE PATCH 0064).
+        let _extra = unsafe {
+            crate::eval::runtime::evaluator::enter_current_extra(std::mem::transmute::<
+                _,
+                crate::eval::runtime::evaluator::CurrentExtraPtr,
+            >(self.extra))
+        }; // BLAZE PATCH 0064
         #[cfg(not(target_arch = "wasm32"))]
         let start = Instant::now();
 
@@ -199,6 +207,13 @@ impl<'v, 'a, 'e> Evaluator<'v, 'a, 'e> {
         positional: &[Value<'v>],
         named: &[(&str, Value<'v>)],
     ) -> crate::Result<Value<'v>> {
+        // SAFETY: `self.extra` outlives this call, which holds the guard (BLAZE PATCH 0064).
+        let _extra = unsafe {
+            crate::eval::runtime::evaluator::enter_current_extra(std::mem::transmute::<
+                _,
+                crate::eval::runtime::evaluator::CurrentExtraPtr,
+            >(self.extra))
+        }; // BLAZE PATCH 0064
         let names = named.map(|(s, _)| (Symbol::new(s), self.heap().alloc_str(s)));
         let named = named.map(|x| x.1);
         let params = Arguments(ArgumentsFull {

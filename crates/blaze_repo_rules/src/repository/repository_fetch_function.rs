@@ -1015,7 +1015,8 @@ impl RepositoryFetchFunction {
                 .with_process_wrapper_options(
                     services.process_wrapper_kill_delay,
                     services.process_wrapper_graceful_sigterm,
-                );
+                )
+                .with_remote_executor(services.remote_executor.clone());
                 let mut context = ExternalContext {
                     base,
                     kind: ExternalContextKind::Repository(StarlarkRepositoryContext::new(

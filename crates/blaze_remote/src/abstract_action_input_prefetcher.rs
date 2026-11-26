@@ -545,15 +545,12 @@ pub trait AbstractActionInputPrefetcher: Send + Sync {
     }
 }
 
-/// `metadata.setContentsProxy(proxy)`.
-///
-/// PORT: missing hook. Java's `RemoteFileArtifactValue` keeps a mutable contents proxy (the base
-/// class's `setContentsProxy` is a no-op). blaze_exec's `FileArtifactValue::RemoteFile` is an
-/// immutable value without that field, and the metadata reaches the prefetcher as a copy, so
-/// there is nothing to set: the proxy only makes later modification checks cheaper
-/// (`shouldDownloadFile` then falls back to a digest comparison, which gives the same answer).
+/// `metadata.setContentsProxy(proxy)`: the cell is shared by every copy of the metadata (the
+/// file system's, Skyframe's and the input map's), as Java's one object is.
 // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:883 RemoteFileArtifactValueWithMaterializationData.setContentsProxy
-fn set_contents_proxy(_metadata: &FileArtifactValue, _proxy: FileContentsProxy) {}
+fn set_contents_proxy(metadata: &FileArtifactValue, proxy: FileContentsProxy) {
+    metadata.set_contents_proxy(proxy);
+}
 
 /// The `blaze_actions` artifact behind an `ActionInput` that is an `Artifact`.
 fn blaze_artifact(input: &dyn ActionInput) -> Option<&BlazeArtifact> {

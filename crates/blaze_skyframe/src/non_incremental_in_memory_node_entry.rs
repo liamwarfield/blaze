@@ -152,15 +152,26 @@ impl NonIncrementalInMemoryNodeEntry {
         }
     }
 
-    /// PORT: not ported (rewinding, docs/decisions.md 2026-11-19).
     // Java: com/google/devtools/build/skyframe/NonIncrementalInMemoryNodeEntry.java:116 NonIncrementalInMemoryNodeEntry.resetEvaluationFromScratch
-    #[allow(dead_code)] // ported API, used by tests or not reached without rewinding
     pub(crate) fn reset_evaluation_from_scratch(&mut self) {
-        blaze_util::unported!("NonIncrementalInMemoryNodeEntry.resetEvaluationFromScratch")
+        check_state!(!self.has_unsignaled_deps(), "{:?}", self);
+        let old = self
+            .base
+            .dirty_building_state
+            .take()
+            .expect("NullPointerException: dirtyBuildingState");
+        let rewound_value = old.base.get_last_build_value().cloned();
+        let mut new_building_state = match rewound_value {
+            None => NonIncrementalBuildingState::new(),
+            Some(rewound_value) => NonIncrementalBuildingState::new_rewound(rewound_value),
+        };
+        new_building_state.reverse_deps = old.reverse_deps;
+        new_building_state.base.mark_rebuilding();
+        new_building_state.base.start_evaluating();
+        self.base.dirty_building_state = Some(new_building_state);
     }
 
     // Java: com/google/devtools/build/skyframe/NonIncrementalInMemoryNodeEntry.java:130 NonIncrementalInMemoryNodeEntry.getResetDirectDeps
-    #[allow(dead_code)] // ported API, used by tests or not reached without rewinding
     pub(crate) fn get_reset_direct_deps(&self) -> IndexSet<SkyKey> {
         IndexSet::new() // No accounting necessary since rdeps are not stored.
     }
@@ -172,9 +183,15 @@ impl NonIncrementalInMemoryNodeEntry {
             "Unexpected dirty type: {:?}",
             dirty_type
         );
-        // PORT: rewinding is not ported (docs/decisions.md 2026-11-19): Java tolerates
-        // concurrent requests, ignores errors, and installs a RewoundNonIncrementalBuildingState.
-        blaze_util::unported!("NonIncrementalInMemoryNodeEntry.markDirty(DirtyType.REWIND)")
+        if !self.is_done() {
+            return None; // Tolerate concurrent requests to rewind.
+        }
+        if self.get_error_info().is_some() {
+            return None; // Rewinding errors is no-op.
+        }
+        let value = self.base.value.take().expect("done");
+        self.base.dirty_building_state = Some(NonIncrementalBuildingState::new_rewound(value));
+        Some(MarkedDirtyResult::for_rewinding())
     }
 
     // Java: com/google/devtools/build/skyframe/NonIncrementalInMemoryNodeEntry.java:159 NonIncrementalInMemoryNodeEntry.getInProgressReverseDeps
@@ -348,6 +365,17 @@ impl NonIncrementalBuildingState {
         }
     }
 
+    /// State for a non-incremental node that was previously done but was rewound
+    /// (`RewoundNonIncrementalBuildingState`).
+    // Java: com/google/devtools/build/skyframe/NonIncrementalInMemoryNodeEntry.java:292 RewoundNonIncrementalBuildingState.<init>
+    fn new_rewound(rewound_value: ValueWithMetadata) -> NonIncrementalBuildingState {
+        NonIncrementalBuildingState {
+            base: DirtyBuildingState::new_rewound_non_incremental_building_state(rewound_value),
+            direct_deps: None,
+            reverse_deps: None,
+        }
+    }
+
     /// PORT: Java passes the entry for `entry.newGroupedDeps()`; the entry owns this state, so it
     /// passes the new (empty) `GroupedDeps` instead, used only if none exists yet.
     // Java: com/google/devtools/build/skyframe/NonIncrementalInMemoryNodeEntry.java:246 NonIncrementalBuildingState.getTemporaryDirectDeps
@@ -391,13 +419,19 @@ impl NonIncrementalBuildingState {
 impl fmt::Debug for NonIncrementalBuildingState {
     // Java: com/google/devtools/build/skyframe/NonIncrementalInMemoryNodeEntry.java:276 NonIncrementalBuildingState.getStringHelper
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("NonIncrementalBuildingState{")?;
+        f.write_str(if self.base.is_rewound_non_incremental() {
+            "RewoundNonIncrementalBuildingState{"
+        } else {
+            "NonIncrementalBuildingState{"
+        })?;
         self.base.fmt_string_helper_fields(f)?;
         write!(
             f,
-            ", directDeps={:?}, reverseDeps={:?}}}",
+            ", directDeps={:?}, reverseDeps={:?}",
             Nullable(self.direct_deps.as_ref()),
             Nullable(self.reverse_deps.as_ref())
-        )
+        )?;
+        self.base.fmt_rewound_value(f)?;
+        f.write_str("}")
     }
 }

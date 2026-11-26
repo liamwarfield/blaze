@@ -266,6 +266,7 @@ impl AnalysisSeam for SkyframeAnalysisSeam {
             .map(|t| blaze_sky_loading::starlark_util::event_location(&t.get_location()));
         Ok(Some(Arc::new(SkyframeConfiguredTargetView {
             configured_target,
+            transitive_packages: value.get_transitive_packages().cloned(),
             configuration_mnemonic,
             location,
         }) as Arc<dyn ConfiguredTargetView>))
@@ -328,6 +329,12 @@ impl AnalysisSeam for SkyframeAnalysisSeam {
 #[derive(Debug)]
 pub struct SkyframeConfiguredTargetView {
     configured_target: ConfiguredTarget,
+    /// `ConfiguredTargetValue.getTransitivePackages()` (`None` for a view without the value).
+    transitive_packages: Option<
+        NestedSet<
+            blaze_actions::analysis::repo_mapping_manifest_action::RepoMappingPackageMetadata,
+        >,
+    >,
     configuration_mnemonic: Option<String>,
     /// The target's location (`ConfiguredTargetAndData.getLocation()`).
     location: Option<blaze_events::location::Location>,
@@ -337,6 +344,7 @@ impl SkyframeConfiguredTargetView {
     pub fn new(configured_target: ConfiguredTarget) -> SkyframeConfiguredTargetView {
         SkyframeConfiguredTargetView {
             configured_target,
+            transitive_packages: None,
             configuration_mnemonic: None,
             location: None,
         }
@@ -472,6 +480,17 @@ impl ConfiguredTargetView for SkyframeConfiguredTargetView {
     // Java: com/google/devtools/build/lib/analysis/ConfiguredTarget.java:37 ConfiguredTarget.getLabel
     fn get_label(&self) -> Label {
         self.configured_target.get_label()
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/AbstractConfiguredTargetValue.java:49 AbstractConfiguredTargetValue.getTransitivePackages
+    fn get_transitive_packages(
+        &self,
+    ) -> Option<
+        NestedSet<
+            blaze_actions::analysis::repo_mapping_manifest_action::RepoMappingPackageMetadata,
+        >,
+    > {
+        self.transitive_packages.clone()
     }
 
     // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:600 BuildDriverFunction.requestConfiguredTargetExecution
@@ -623,6 +642,17 @@ impl ConfiguredAspectView for SkyframeConfiguredAspectView {
     // Java: com/google/devtools/build/lib/skyframe/AspectKeyCreator.java:171 AspectKeyCreator.AspectKey.getLabel
     fn get_label(&self) -> Label {
         self.key.get_label().clone()
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/AspectValue.java:124 AspectValue.getTransitivePackages
+    fn get_transitive_packages(
+        &self,
+    ) -> Option<
+        NestedSet<
+            blaze_actions::analysis::repo_mapping_manifest_action::RepoMappingPackageMetadata,
+        >,
+    > {
+        self.value.get_transitive_packages().cloned()
     }
 
     // Java: com/google/devtools/build/lib/skyframe/AspectKeyCreator.java:185 AspectKeyCreator.AspectKey.getAspectClass

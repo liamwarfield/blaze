@@ -55,6 +55,7 @@ use blaze_exec::exec::action_execution_context::{ActionExecutionContext, get_con
 use blaze_exec::exec::spawn_strategy_resolver::SpawnStrategyResolver;
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail::Category};
 use blaze_shell::ShellEscaper;
+use blaze_util::profiler::{Profiler, ProfilerTask};
 use blaze_util::{Fingerprint, check_argument, check_state};
 use blaze_vfs::{Path, PathFragment};
 use indexmap::IndexMap;
@@ -1741,7 +1742,8 @@ impl CppCompileAction {
                 .map_or_else(|| "null".to_owned(), |s| s.to_string()),
             self.to_string_java()
         );
-        // PORT: skipped, profiling (ACTION_UPDATE).
+        // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1248 CppCompileAction.updateActionInputs
+        let _c = Profiler::instance().profile_with(ProfilerTask::ACTION_UPDATE, || self.describe());
         let mut inputs_builder = NestedSetBuilder::<Artifact>::stable_order();
         inputs_builder.add_transitive(&self.mandatory_inputs);
         if let Some(discovered_inputs) = &discovered_inputs {

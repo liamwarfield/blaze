@@ -117,7 +117,6 @@ simple_rule(name = "simple")
 
 // Java: RequiredConfigFragmentsTest.starlarkCtxVar
 #[test]
-#[ignore = "needs the key-tracking ctx.var dict (Dict.Builder.buildImmutableWithKeyTracking: a starlark-rust patch)"]
 fn starlark_ctx_var() {
     let mut t = BuildViewTestCase::new();
     t.use_configuration(&[
@@ -437,13 +436,11 @@ r(
 }
 
 #[test]
-#[ignore = "needs the key-tracking ctx.var dict (Dict.Builder.buildImmutableWithKeyTracking: a starlark-rust patch)"]
 fn aspect_inherits_transitive_fragments_from_required_aspect_direct() {
     aspect_inherits_transitive_fragments_from_required_aspect("DIRECT");
 }
 
 #[test]
-#[ignore = "needs the key-tracking ctx.var dict (Dict.Builder.buildImmutableWithKeyTracking: a starlark-rust patch)"]
 fn aspect_inherits_transitive_fragments_from_required_aspect_transitive() {
     aspect_inherits_transitive_fragments_from_required_aspect("TRANSITIVE");
 }
@@ -474,7 +471,6 @@ my_rule(name = "example")
 
 // Java: RequiredConfigFragmentsTest.aspectInErrorWithAllowAnalysisFailures
 #[test]
-#[ignore = "needs the key-tracking ctx.var dict (Dict.Builder.buildImmutableWithKeyTracking: a starlark-rust patch)"]
 fn aspect_in_error_with_allow_analysis_failures() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(
@@ -517,7 +513,6 @@ my_rule(
 
 // Java: RequiredConfigFragmentsTest.configuredTargetInErrorWithAllowAnalysisFailures
 #[test]
-#[ignore = "needs the key-tracking ctx.var dict (Dict.Builder.buildImmutableWithKeyTracking: a starlark-rust patch)"]
 fn configured_target_in_error_with_allow_analysis_failures() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(

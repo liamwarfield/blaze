@@ -439,6 +439,9 @@ pub(crate) fn java_param_accepts<'v>(
         "iterable" => matches!(ty, "list" | "tuple" | "dict" | "set" | "range" | "depset"),
         "callable" => v.vtable().starlark_value.HAS_invoke,
         "unknown" | "Object" => true,
+        // BLAZE PATCH 0062 (round 2): a Java interface is not a Starlark type name: every class
+        // implementing `CqueryNode` (the configured target classes) has the type `Target`.
+        "CqueryNode" => ty == "Target", // BLAZE PATCH 0062 (round 2)
         other => ty == other,
     }))
 }

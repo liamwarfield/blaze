@@ -18,6 +18,7 @@ use blaze_actions::analysis::source_manifest_action::{
     INVALID_RUNFILES_TREE_MESSAGE, SourceManifestAction,
 };
 use blaze_protos::failure_details::{self, failure_detail::Category};
+use blaze_util::profiler::{Profiler, ProfilerTask};
 
 use super::failure_detail;
 use super::file_write_action_context::FileWriteActionContext;
@@ -34,8 +35,11 @@ pub fn execute_file_write<'w, A: AbstractFileWriteAction>(
     new_deterministic_writer: impl FnOnce() -> Result<Box<dyn DeterministicWriter + 'w>, ExecException>,
 ) -> Result<ActionResult, ActionExecutionException> {
     let run = || -> Result<ActionResult, ExecException> {
-        // PORT: skipped, profiling ("setupDeterministicWriter").
-        let deterministic_writer = new_deterministic_writer()?;
+        // Java: com/google/devtools/build/lib/analysis/actions/AbstractFileWriteAction.java:64 AbstractFileWriteAction.execute
+        let deterministic_writer = {
+            let _c = Profiler::instance().profile(ProfilerTask::INFO, "setupDeterministicWriter");
+            new_deterministic_writer()?
+        };
         let context = super::get_required_context::<dyn FileWriteActionContext>(
             action_execution_context,
             "FileWriteActionContext",

@@ -680,6 +680,7 @@ impl PackageCollector {
                 pkg.package_identifier.clone(),
                 pkg.repository_mapping.clone(),
             )
+            .with_source_root(pkg.source_root.clone())
         }));
         for (_, package_set) in &self.configured_target_packages {
             result.add_transitive(package_set);

@@ -163,14 +163,15 @@ in, not re-reviewed). Missing:
   still missing: Skymeld's interleaving of `targetConfigured` / `targetCompleted` and the late
   `convenienceSymlinksIdentified`, the Build Event Service upload (`--bes_backend` fails
   loudly).
-- `buildMetrics`: two groups are absent from the last `buildMetrics` message (not zeroed, not
-  sent): the Skyframe graph statistics of `buildGraphMetrics` (`builtValues`,
-  `evaluatedValues`, `postInvocationSkyframeNodeCount`, and on a warm server the
-  dirtied/changed/cleaned counts), and `memoryMetrics` (JVM heap and garbage collection; Blaze
-  has no JVM). `artifactMetrics` is produced since 2026-11-26 (counts equal to Bazel's on a
-  brotli build). `cumulativeMetrics` counts only commands that have a build event transport
-  (Bazel counts every command). The referee does not compare `buildMetrics` sub-messages yet,
-  so these do not show in its scores.
+- `buildMetrics`: `memoryMetrics` is absent (JVM heap and garbage collection; Blaze has no JVM).
+  The other groups are sent: `artifactMetrics` (counts equal to Bazel's on a brotli build),
+  `cumulativeMetrics` (counted for every command, as in Bazel) and the Skyframe graph
+  statistics of `buildGraphMetrics` (`builtValues`, `evaluatedValues`,
+  `postInvocationSkyframeNodeCount`, dirtied/changed/cleaned on a warm server).
+  `evaluatedValues` is a tool-specific measurement, like the timings: it counts `compute()`
+  calls, and Blaze's evaluator does not restart functions, so it is close to `builtValues` where
+  Bazel's is about twice as large; comparison tools must exclude it by name. The referee does
+  not compare `buildMetrics` sub-messages yet, so none of this shows in its scores.
 - 4 build-event items per project still differ on brotli and re2: `buildToolLogs` (no
   `command.profile.gz`), and the three command lines (`--install_md5` is Blaze's own install
   key; `--restart_reason=no_daemon` because Blaze starts a server per command).

@@ -3,8 +3,10 @@
 //   1. CertificateFactory "X.509" parses the DER (X509Factory -> X509CertImpl -> X509CertInfo),
 //   2. the PKIX trust manager over the given roots validates the one-certificate chain
 //      (Validator.TYPE_PKIX -> PKIXValidator, then the EndEntityChecker),
-//   3. endpoint identification "HTTPS": HostnameChecker.getInstance(TYPE_TLS).match(host, cert,
-//      chainsToPublicCA) with chainsToPublicCA = AnchorCertificates.contains(anchor).
+//   3. endpoint identification "HTTPS" as X509TrustManagerImpl.checkIdentity(session, ...) does it
+//      for Bazel's channel (no SNI host name for a name SNIHostName refuses, so the peer host): one
+//      trailing dot removed from the host, then HostnameChecker.getInstance(TYPE_TLS).match(host,
+//      cert, chainsToPublicCA) with chainsToPublicCA = AnchorCertificates.contains(anchor).
 // Usage: java --add-exports java.base/sun.security.util=ALL-UNNAMED \
 //             --add-exports java.base/sun.security.validator=ALL-UNNAMED JdkCertProbe <dir>
 // Reads <dir>/cases.tsv, prints one line per case: case<TAB>ACCEPT|REJECT<TAB>step: message.
@@ -81,6 +83,11 @@ public class JdkCertProbe {
     }
     try {
       boolean chainsToPublicCA = AnchorCertificates.contains(anchor);
+      // X509TrustManagerImpl.checkIdentity: "Remove the ending dot, which is not allowed in
+      // SNIHostName."
+      if (host.endsWith(".")) {
+        host = host.substring(0, host.length() - 1);
+      }
       HostnameChecker.getInstance(HostnameChecker.TYPE_TLS).match(host, cert, chainsToPublicCA);
     } catch (Exception e) {
       return "REJECT\thost: " + e;

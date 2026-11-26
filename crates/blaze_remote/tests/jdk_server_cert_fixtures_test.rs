@@ -6,10 +6,12 @@
 //!
 //! Each case is a full TLS handshake (TLS 1.3, then TLS 1.2) between a rustls client with the
 //! verifier and a rustls server presenting the case's certificate and signing with
-//! `keys/ee.key`, so the end entity's key is part of the decision, as it is in Bazel's handshake.
+//! `keys/ee.key` (or the key the case names), so the end entity's key is part of the decision, as
+//! it is in Bazel's handshake.
 //!
-//! The rule: Blaze accepts nothing the JDK rejects. Where the JDK accepts, Blaze accepts too,
-//! except for the cases in [`STRICTER`], each a declared deviation.
+//! The rule: Blaze accepts nothing the JDK rejects, except for the cases in [`LENIENT`] (ruling
+//! D16). Where the JDK accepts, Blaze accepts too, except for the cases in [`STRICTER`], each a
+//! declared deviation.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -44,6 +46,39 @@ const STRICTER: &[(&str, &str)] = &[
         "v3_ed25519_ca",
         "Ed25519 is not in the oracle's TLS signature list (Netty's \
          LOCAL_SUPPORTED_SIGNATURE_ALGORITHMS); the probe has no TLS engine",
+    ),
+    (
+        "direct_key_unused_bits",
+        "a key BIT STRING with unused bits is not read (DER rules)",
+    ),
+    ("direct_ber_length", "BER (indefinite) lengths are not read"),
+    ("v3_rsa1024_ca", "webpki refuses RSA keys under 2048 bits"),
+    (
+        "v3_sha1_signed",
+        "SHA-1 signatures are not in the provider (the oracle accepts them)",
+    ),
+    (
+        "v3_p521_ca",
+        "P-521 is not in the provider (the oracle accepts it)",
+    ),
+];
+
+/// Cases the JDK rejects and Blaze accepts: ruling D16 (docs/decisions.md). A certificate that is
+/// both the trust file and the server's certificate is trusted by identity; Blaze does not
+/// re-validate the validity contents, the outer algorithm identifier or an empty issuer, where
+/// the JDK cannot parse the trust file (Bazel refuses to start with it).
+const LENIENT: &[(&str, &str)] = &[
+    (
+        "direct_time_second_60",
+        "D16: the validity of a directly trusted certificate is not read",
+    ),
+    (
+        "direct_alg_mismatch",
+        "D16: the outer signature algorithm of a directly trusted certificate is not read",
+    ),
+    (
+        "direct_empty_issuer",
+        "D16: the issuer of a directly trusted certificate is not checked for emptiness",
     ),
 ];
 
@@ -80,6 +115,7 @@ fn handshake(
     case: &str,
     roots_file: &str,
     host: &str,
+    key_file: &str,
     version: &'static SupportedProtocolVersion,
 ) -> Result<(), String> {
     let pem = std::fs::read(dir.join(roots_file)).unwrap();
@@ -103,7 +139,8 @@ fn handshake(
 
     let cert = CertificateDer::from(std::fs::read(dir.join(format!("{case}.der"))).unwrap());
     let key =
-        PrivateKeyDer::from_pem_slice(&std::fs::read(dir.join("keys/ee.key")).unwrap()).unwrap();
+        PrivateKeyDer::from_pem_slice(&std::fs::read(dir.join("keys").join(key_file)).unwrap())
+            .unwrap();
     let signing_key = provider().key_provider.load_private_key(key).unwrap();
     let server_config = ServerConfig::builder_with_provider(provider())
         .with_protocol_versions(&[version])
@@ -146,17 +183,20 @@ fn verdicts_match_the_jdk() {
         })
         .collect();
     let stricter: HashMap<&str, &str> = STRICTER.iter().copied().collect();
+    let lenient: HashMap<&str, &str> = LENIENT.iter().copied().collect();
     assert_eq!(cases.len(), expected.len(), "every case has a JDK verdict");
 
     let mut failures = Vec::new();
     for row in &cases {
         let (case, roots, host) = (&row[0], &row[1], &row[2]);
+        let key = row.get(4).map(String::as_str).unwrap_or("ee.key");
         let (jdk, jdk_reason) = &expected[case];
         let tls13 = handshake(
             &dir,
             case,
             roots,
             host,
+            key,
             &tokio_rustls::rustls::version::TLS13,
         );
         let tls12 = handshake(
@@ -164,6 +204,7 @@ fn verdicts_match_the_jdk() {
             case,
             roots,
             host,
+            key,
             &tokio_rustls::rustls::version::TLS12,
         );
         if tls13.is_ok() != tls12.is_ok() {
@@ -173,8 +214,11 @@ fn verdicts_match_the_jdk() {
             continue;
         }
         match (jdk.as_str(), &tls13) {
-            ("REJECT", Ok(())) => failures.push(format!(
+            ("REJECT", Ok(())) if !lenient.contains_key(case.as_str()) => failures.push(format!(
                 "{case}: the JDK rejects ({jdk_reason}), Blaze accepts"
+            )),
+            ("REJECT", Err(e)) if lenient.contains_key(case.as_str()) => failures.push(format!(
+                "{case}: listed as lenient (D16), but Blaze rejects as the JDK does: {e}"
             )),
             ("ACCEPT", Err(e)) if !stricter.contains_key(case.as_str()) => {
                 failures.push(format!("{case}: the JDK accepts, Blaze rejects: {e}"))
@@ -196,6 +240,7 @@ fn v1_chain_is_refused_with_blazes_text() {
         "chain_v1",
         "ca.pem",
         "localhost",
+        "ee.key",
         &tokio_rustls::rustls::version::TLS13,
     )
     .unwrap_err();

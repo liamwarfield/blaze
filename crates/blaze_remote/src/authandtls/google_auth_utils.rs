@@ -568,10 +568,14 @@ fn pem_sections(pem: &str, label: impl Fn(&str) -> bool) -> Vec<(&str, Vec<u8>)>
 /// `SslContextBuilder` reports as `"File does not contain valid certificates: " + file`.
 ///
 /// PORT: Netty also parses every certificate (`CertificateFactory.generateCertificate`); here
-/// the file must hold at least one `CERTIFICATE` section in base64, and rustls parses the
-/// certificates when the connection configuration is built. A section rustls cannot parse is
-/// not a trust root, so a file of unusable certificates trusts nothing (the connection fails)
-/// instead of failing here.
+/// the file must hold at least one `CERTIFICATE` section in base64, and the certificates are
+/// read when the connection configuration is built. A certificate webpki cannot parse is not a
+/// trust anchor; but every certificate of the file is also trusted directly, by byte identity
+/// (`JdkServerCertVerifier`, ruling D16), so a certificate the JDK cannot parse (and with which
+/// Bazel does not start) is still trusted when the server presents exactly these bytes. Its TBS
+/// structure must be what the JDK's parser allows; its validity contents, outer signature
+/// algorithm and an empty issuer are not checked (a declared deviation of D16, see
+/// `jdk_server_cert_verifier`).
 // Java: io/netty/handler/ssl/SslContext.java SslContext.toX509Certificates
 fn to_x509_certificates(file: &str) -> Result<Vec<u8>, ()> {
     // PORT: `new File(path)` of a relative path resolves against the working directory of the
@@ -595,18 +599,75 @@ fn to_x509_certificates(file: &str) -> Result<Vec<u8>, ()> {
 ///
 /// PORT: Netty takes the first `... PRIVATE KEY` section and decodes it as PKCS#8
 /// (`PKCS8EncodedKeySpec`), so a PKCS#1 (`RSA PRIVATE KEY`), SEC1 (`EC PRIVATE KEY`) or
-/// encrypted key is refused; the port refuses them by their section label.
+/// encrypted key is refused; the port refuses them by their section label. Netty then reads the
+/// key with the RSA, DSA and EC key factories only ("Neither RSA, DSA nor EC worked"), so a key
+/// of another algorithm (Ed25519, RSASSA-PSS) is refused too; the port reads the algorithm
+/// identifier of the PKCS#8 structure (the key itself is read by rustls).
 // Java: io/netty/handler/ssl/SslContext.java SslContext.toPrivateKey
+// Java: io/netty/handler/ssl/SslContext.java SslContext.getPrivateKeyFromByteArray
 fn to_private_key(key_file: &str) -> Result<Vec<u8>, ()> {
     let pem = std::fs::read(blaze_util::string_encoding::internal_to_platform(key_file))
         .map_err(|_| ())?;
     let text = std::str::from_utf8(&pem).map_err(|_| ())?;
     let sections = pem_sections(text, |label| label.ends_with("PRIVATE KEY"));
     match sections.first() {
-        Some((label, _)) if *label == "PRIVATE KEY" => Ok(pem),
+        Some((label, der))
+            if *label == "PRIVATE KEY"
+                && pkcs8_algorithm(der)
+                    .is_some_and(|oid| PKCS8_KEY_FACTORY_ALGORITHMS.contains(&oid)) =>
+        {
+            Ok(pem)
+        }
         // KeyException("could not find a PKCS #8 private key in input stream ...") or the
         // InvalidKeySpecException of a key in another format.
         _ => Err(()),
+    }
+}
+
+/// The key algorithms of the key factories Netty tries: rsaEncryption, id-dsa, id-ecPublicKey
+/// (the contents of the OIDs).
+const PKCS8_KEY_FACTORY_ALGORITHMS: [&[u8]; 3] = [
+    &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01],
+    &[0x2a, 0x86, 0x48, 0xce, 0x38, 0x04, 0x01],
+    &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01],
+];
+
+/// The contents of the algorithm OID of a PKCS#8 `PrivateKeyInfo`
+/// (`SEQUENCE { INTEGER, SEQUENCE { OID, ... }, ... }`); `None` if the structure does not start
+/// so.
+fn pkcs8_algorithm(der: &[u8]) -> Option<&[u8]> {
+    /// One DER element: (tag, contents, rest).
+    fn tlv(input: &[u8]) -> Option<(u8, &[u8], &[u8])> {
+        let tag = *input.first()?;
+        let first = *input.get(1)? as usize;
+        let (len, header) = if first < 0x80 {
+            (first, 2)
+        } else {
+            let n = first & 0x7f;
+            if n == 0 || n > 4 {
+                return None;
+            }
+            let mut len = 0usize;
+            for i in 0..n {
+                len = (len << 8) | *input.get(2 + i)? as usize;
+            }
+            (len, 2 + n)
+        };
+        let end = header.checked_add(len)?;
+        Some((tag, input.get(header..end)?, input.get(end..)?))
+    }
+    let (0x30, info, _) = tlv(der)? else {
+        return None;
+    };
+    let (0x02, _, rest) = tlv(info)? else {
+        return None;
+    };
+    let (0x30, algorithm, _) = tlv(rest)? else {
+        return None;
+    };
+    match tlv(algorithm)? {
+        (0x06, oid, _) => Some(oid),
+        _ => None,
     }
 }
 

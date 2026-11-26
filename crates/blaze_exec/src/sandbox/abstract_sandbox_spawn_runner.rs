@@ -10,6 +10,7 @@ use blaze_protos::failure_details::{FailureDetail, failure_detail, sandbox::Code
 use blaze_shell::{
     CommandFailureUtils, DescribableExecutionUnit, JavaFile, SubprocessBuilder, TerminationStatus,
 };
+use blaze_util::profiler::{Profiler, ProfilerTask};
 use blaze_vfs::{FileSystemExt, Path};
 use indexmap::{IndexMap, IndexSet};
 
@@ -126,7 +127,11 @@ impl AbstractSandboxSpawnRunner {
         context.report(ProgressStatus::Scheduling(hooks.runner_name()));
 
         let result: Result<SpawnResult, SandboxRunnerError> = (|| {
-            context.prefetch_inputs_and_wait()?;
+            // Java: com/google/devtools/build/lib/sandbox/AbstractSandboxSpawnRunner.java:102 AbstractSandboxSpawnRunner.exec
+            {
+                let _c = Profiler::instance().profile(ProfilerTask::INFO, "context.prefetchInputs");
+                context.prefetch_inputs_and_wait()?;
+            }
 
             let local_resources = spawn.get_local_resources()?;
             let _ignored = self.resource_manager.acquire_resources(
@@ -173,7 +178,13 @@ impl AbstractSandboxSpawnRunner {
         context: &dyn SpawnExecutionContext,
     ) -> Result<SpawnResult, SandboxRunnerError> {
         let result: Result<SpawnResult, SandboxRunnerError> = (|| {
-            if let Err(e) = sandbox.create_file_system() {
+            // Java: com/google/devtools/build/lib/sandbox/AbstractSandboxSpawnRunner.java:142 AbstractSandboxSpawnRunner.runSpawn
+            let created = {
+                let _c =
+                    Profiler::instance().profile(ProfilerTask::INFO, "sandbox.createFileSystem");
+                sandbox.create_file_system()
+            };
+            if let Err(e) = created {
                 if is_interrupted_error(&e) {
                     return Err(ExecException::Interrupted.into());
                 }
@@ -187,8 +198,17 @@ impl AbstractSandboxSpawnRunner {
                 ))
                 .into());
             }
-            let result = self.run(hooks, original_spawn, &*sandbox, context)?;
-            hooks.verify_post_condition(original_spawn, &*sandbox, context)?;
+            // Java: com/google/devtools/build/lib/sandbox/AbstractSandboxSpawnRunner.java:151 AbstractSandboxSpawnRunner.runSpawn
+            let result = {
+                let _c = Profiler::instance().profile(ProfilerTask::INFO, "subprocess.run");
+                self.run(hooks, original_spawn, &*sandbox, context)?
+            };
+            // Java: com/google/devtools/build/lib/sandbox/AbstractSandboxSpawnRunner.java:154 AbstractSandboxSpawnRunner.runSpawn
+            {
+                let _c =
+                    Profiler::instance().profile(ProfilerTask::INFO, "sandbox.verifyPostCondition");
+                hooks.verify_post_condition(original_spawn, &*sandbox, context)?;
+            }
 
             context.lock_output_files(
                 result.exit_code(),
@@ -198,8 +218,13 @@ impl AbstractSandboxSpawnRunner {
                     .unwrap_or(""),
                 Some(context.get_file_out_err()),
             )?;
-            // We copy the outputs even when the command failed.
-            if let Err(e) = sandbox.copy_outputs(&self.exec_root) {
+            // Java: com/google/devtools/build/lib/sandbox/AbstractSandboxSpawnRunner.java:162 AbstractSandboxSpawnRunner.runSpawn
+            let copied = {
+                let _c = Profiler::instance().profile(ProfilerTask::INFO, "sandbox.copyOutputs");
+                // We copy the outputs even when the command failed.
+                sandbox.copy_outputs(&self.exec_root)
+            };
+            if let Err(e) = copied {
                 if is_interrupted_error(&e) {
                     return Err(ExecException::Interrupted.into());
                 }
@@ -217,6 +242,8 @@ impl AbstractSandboxSpawnRunner {
         })();
         // finally
         if !self.sandbox_options.sandbox_debug {
+            // Java: com/google/devtools/build/lib/sandbox/AbstractSandboxSpawnRunner.java:174 AbstractSandboxSpawnRunner.runSpawn
+            let _c = Profiler::instance().profile(ProfilerTask::INFO, "sandbox.delete");
             sandbox.delete();
         }
         result

@@ -10,6 +10,32 @@ use blaze_vfs::Path;
 
 use crate::directories::BlazeDirectories;
 
+/// Builder class to create a `BlazeWorkspace`: what the modules add in `workspaceInit`.
+///
+/// PORT: of Java's builder only the diff awareness factories (`addDiffAwarenessFactory`); the
+/// rest builds the server's Skyframe executor, which Blaze creates per command.
+// Java: com/google/devtools/build/lib/runtime/WorkspaceBuilder.java:48 WorkspaceBuilder
+#[derive(Default)]
+pub struct WorkspaceBuilder {
+    diff_awareness_factories:
+        Vec<std::sync::Arc<dyn blaze_sky_loading::diff_awareness::DiffAwarenessFactory>>,
+}
+
+impl WorkspaceBuilder {
+    /// Add a `DiffAwareness` factory. These will be used to determine which files, if any,
+    /// changed between Blaze commands. Note that these factories are attempted in the order in
+    /// which they are added to this class, so order matters - in order to guarantee a specific
+    /// order, only a single module should add such factories.
+    // Java: com/google/devtools/build/lib/runtime/WorkspaceBuilder.java:202 WorkspaceBuilder.addDiffAwarenessFactory
+    pub fn add_diff_awareness_factory(
+        &mut self,
+        factory: std::sync::Arc<dyn blaze_sky_loading::diff_awareness::DiffAwarenessFactory>,
+    ) -> &mut Self {
+        self.diff_awareness_factories.push(factory);
+        self
+    }
+}
+
 /// This class represents a workspace, and contains operations and data related to it.
 // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:68 BlazeWorkspace
 pub struct BlazeWorkspace {
@@ -24,13 +50,14 @@ impl BlazeWorkspace {
     pub const DO_NOT_BUILD_FILE_NAME: &'static str = "DO_NOT_BUILD_HERE";
 
     // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:156 BlazeWorkspace.<init>
-    pub fn new(directories: BlazeDirectories) -> Self {
+    pub fn new(directories: BlazeDirectories, builder: WorkspaceBuilder) -> Self {
         let ws = BlazeWorkspace {
             directories,
             // PORT: Blaze-only (decision D6): `BLAZE_INCREMENTAL` of the server's environment.
             incremental_state: std::sync::Arc::new(
                 blaze_sky_top::incremental::SkyframeIncrementalState::new(
                     blaze_sky_top::incremental::KeepGraphMode::from_process_environment(),
+                    builder.diff_awareness_factories,
                 ),
             ),
         };

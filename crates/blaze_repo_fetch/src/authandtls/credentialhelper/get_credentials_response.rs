@@ -235,19 +235,27 @@ impl GetCredentialsResponse {
                 _ => {}
             }
         }
-        // response.build(): ImmutableMap.Builder.buildOrThrow.
-        let mut headers = Headers::new();
-        for (name, values) in headers_builder {
-            if let Some(earlier) = headers.get(&name) {
-                // Guava: conflictException("key", entry, earlierEntry).
+        // response.build(): ImmutableMap.Builder.buildOrThrow. Guava's
+        // RegularImmutableMap.fromEntryArrayCheckingBucketOverflow places the entries from the
+        // last to the first and reports the first conflict it meets:
+        // conflictException("key", entryAlreadyPlaced, entryBeingAdded).
+        let mut placed: std::collections::HashMap<&str, &Vec<String>> =
+            std::collections::HashMap::new();
+        for (name, values) in headers_builder.iter().rev() {
+            if let Some(already_placed) = placed.get(name.as_str()) {
                 return Err(ResponseParseError::IllegalArgument(format!(
                     "Multiple entries with same key: {}={} and {}={}",
                     name,
-                    java_list_to_string(&values),
+                    java_list_to_string(already_placed),
                     name,
-                    java_list_to_string(earlier)
+                    java_list_to_string(values)
                 )));
             }
+            placed.insert(name, values);
+        }
+        // No repeated name: the map keeps the entries in the builder's order.
+        let mut headers = Headers::new();
+        for (name, values) in headers_builder {
             headers.insert(name, values);
         }
         Ok(GetCredentialsResponse { headers, expires })

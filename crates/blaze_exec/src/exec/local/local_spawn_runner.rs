@@ -7,6 +7,7 @@ use std::time::{Duration, Instant, SystemTime};
 use blaze_optdefs::misc::local_execution_options::LocalExecutionOptions;
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail, spawn::Code};
 use blaze_shell::{JavaFile, SubprocessBuilder, TerminationStatus};
+use blaze_util::profiler::{Profiler, ProfilerTask};
 use blaze_vfs::Path;
 
 use crate::actions::resource_manager::{ResourceManager, ResourcePriority};
@@ -103,7 +104,11 @@ impl SpawnRunner for LocalSpawnRunner {
         }
         spawn_metrics.setup_time_in_ms += to_ms(setup_time_stopwatch.elapsed());
 
-        // PORT: skipped, profiling.
+        // Java: com/google/devtools/build/lib/exec/local/LocalSpawnRunner.java:135 LocalSpawnRunner.exec
+        let _c = Profiler::instance().profile(
+            ProfilerTask::LOCAL_EXECUTION,
+            &spawn.get_resource_owner().get_mnemonic(),
+        );
         let owner = spawn.get_resource_owner();
         context.report(ProgressStatus::Scheduling(self.get_name()));
 
@@ -318,16 +323,18 @@ impl<'a> SubprocessHandler<'a> {
             }
         }
 
-        // PORT: skipped, profiling.
-        // Java: com/google/devtools/build/lib/exec/local/LocalSpawnRunner.java:354 LocalSpawnRunner.SubprocessHandler.start
-        runner
-            .runfiles_tree_updater
-            .update_runfiles(&runfiles_trees)
-            .map_err(|e| match e {
-                UpdateRunfilesError::Exec(e) => e,
-                // An IOException leaves `exec` as one (AbstractSpawnStrategy's handler).
-                UpdateRunfilesError::Io(e) => exec_io_exception(&e),
-            })?;
+        // Java: com/google/devtools/build/lib/exec/local/LocalSpawnRunner.java:353 LocalSpawnRunner.SubprocessHandler.start
+        let updated = {
+            let _s = Profiler::instance().profile(ProfilerTask::INFO, "updateRunfiles");
+            runner
+                .runfiles_tree_updater
+                .update_runfiles(&runfiles_trees)
+        };
+        updated.map_err(|e| match e {
+            UpdateRunfilesError::Exec(e) => e,
+            // An IOException leaves `exec` as one (AbstractSpawnStrategy's handler).
+            UpdateRunfilesError::Io(e) => exec_io_exception(&e),
+        })?;
 
         let tmp_dir = runner
             .create_action_temp(exec_root)
@@ -415,9 +422,14 @@ impl<'a> SubprocessHandler<'a> {
 
         spawn_result_builder.set_start_time(SystemTime::now());
         let execution_stopwatch = Instant::now();
-        // PORT: skipped, profiling.
+        // Java: com/google/devtools/build/lib/exec/local/LocalSpawnRunner.java:405 LocalSpawnRunner.SubprocessHandler.start
+        let process_time_scope = Profiler::instance().profile(
+            ProfilerTask::LOCAL_PROCESS_TIME,
+            &self.spawn.get_resource_owner().get_mnemonic(),
+        );
         self.need_cleanup = true;
-        let termination_status = match subprocess_builder.start() {
+        let started = subprocess_builder.start();
+        let termination_status = match started {
             Ok(subprocess) => {
                 // subprocess.getOutputStream().close()
                 drop(subprocess.get_output_stream());
@@ -431,12 +443,15 @@ impl<'a> SubprocessHandler<'a> {
                     // PORT: skipped, tracing (Java log) ("Interrupted but didn't throw; status ...").
                     return Err(ExecException::Interrupted);
                 }
+                drop(process_time_scope);
                 termination_status
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {
                 return Err(ExecException::Interrupted);
             }
             Err(e) => {
+                // The catch clause runs after the try-with-resources scope is closed.
+                drop(process_time_scope);
                 let msg = e.to_string();
                 out_err
                     .write_err(

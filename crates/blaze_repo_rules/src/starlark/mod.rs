@@ -10,3 +10,4 @@ pub mod repo_metadata;
 pub mod repository_context;
 pub mod repository_module;
 pub mod thread;
+pub mod wasm;

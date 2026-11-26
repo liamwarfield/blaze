@@ -251,6 +251,31 @@ impl BuildEventStreamerBuilder {
         ctx: &BepCommandContext,
         uploader_factory: Arc<dyn BuildEventArtifactUploaderFactory>,
     ) -> (Option<BepStreamer>, Vec<BepTransportError>) {
+        Self::from_options_with_bes_transport(
+            bep_options,
+            bes_stream_options,
+            ctx,
+            uploader_factory,
+            |_, _| None,
+        )
+    }
+
+    /// [`Self::from_options_with_uploader_factory`] with the Build Event Service transport:
+    /// `create_bes_transport` runs after the file transports were created
+    /// (`createBepTransports` calls `createBesTransport` last) and gets the shared uploader
+    /// supplier (`uploaderSupplier.get()`) and artifact group namer; the transport it returns
+    /// is added after the file transports.
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:825 BuildEventServiceModule.createBepTransports
+    pub fn from_options_with_bes_transport(
+        bep_options: &BuildEventProtocolOptions,
+        bes_stream_options: &BuildEventStreamOptions,
+        ctx: &BepCommandContext,
+        uploader_factory: Arc<dyn BuildEventArtifactUploaderFactory>,
+        create_bes_transport: impl FnOnce(
+            &dyn Fn() -> Arc<dyn BuildEventArtifactUploader>,
+            Arc<dyn crate::buildeventstream::build_event_context::ArtifactGroupNamer>,
+        ) -> Option<Arc<dyn BuildEventTransport>>,
+    ) -> (Option<BepStreamer>, Vec<BepTransportError>) {
         let uploader_supplier = ThrowingBuildEventArtifactUploaderSupplier::new(uploader_factory);
         let bep_options = Arc::new(bep_options.clone());
         let artifact_group_namer = Arc::new(CountingArtifactGroupNamer::new());
@@ -323,6 +348,11 @@ impl BuildEventStreamerBuilder {
                     exception,
                 }),
             }
+        }
+        let namer: Arc<dyn crate::buildeventstream::build_event_context::ArtifactGroupNamer> =
+            artifact_group_namer.clone();
+        if let Some(bes_transport) = create_bes_transport(&|| uploader_supplier.get(), namer) {
+            transports.push(bes_transport);
         }
         if transports.is_empty() {
             return (None, errors);

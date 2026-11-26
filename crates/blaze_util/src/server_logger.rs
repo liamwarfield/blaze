@@ -23,3 +23,27 @@ pub fn info(source_class_name: &str, source_method_name: &str, message: &str) {
         sink(source_class_name, source_method_name, message);
     }
 }
+
+/// `(source class name, source method name, message, cause)` of a `WARNING` record; the cause is
+/// the `toString()` of the throwable Java attaches with `withCause`.
+pub type WarningSink = fn(&str, &str, &str, Option<&str>);
+
+static WARNING_SINK: OnceLock<WarningSink> = OnceLock::new();
+
+/// Sets the sink of `WARNING` records (once per process).
+pub fn set_warning_sink(sink: WarningSink) {
+    let _ = WARNING_SINK.set(sink);
+}
+
+/// `logger.atWarning().withCause(cause).log(message)` of class `source_class_name`, method
+/// `source_method_name` (`cause`: `None` without `withCause`).
+pub fn warning(
+    source_class_name: &str,
+    source_method_name: &str,
+    message: &str,
+    cause: Option<&str>,
+) {
+    if let Some(sink) = WARNING_SINK.get() {
+        sink(source_class_name, source_method_name, message, cause);
+    }
+}

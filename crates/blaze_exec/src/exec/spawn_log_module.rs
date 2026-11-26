@@ -298,3 +298,93 @@ pub fn create_spawn_log_context(
     module.executor_init(env)?;
     Ok(module.register_action_contexts())
 }
+
+/// Whether the command asked for an execution log (`initOutputs` creates a context): one of
+/// `--execution_log_compact_file`, `--execution_log_binary_file`, `--execution_log_json_file`.
+/// More than one is `initOutputs`' error, which also ends with no context registered.
+// Java: com/google/devtools/build/lib/bazel/SpawnLogModule.java:70 SpawnLogModule.initOutputs
+pub fn execution_log_requested(execution_options: Option<&ExecutionOptions>) -> bool {
+    execution_options.is_some_and(|o| {
+        o.execution_log_compact_file.is_some()
+            || o.execution_log_binary_file.is_some()
+            || o.execution_log_json_file.is_some()
+    })
+}
+
+/// The `SpawnLogContext` the command's executor registers before `SpawnLogModule.executorInit`
+/// has run.
+///
+/// PORT: Java builds its executor (and runs every module's `executorInit`, which creates the
+/// log file) in `new ExecutionTool(env, request)`, after the target patterns are evaluated (and,
+/// without merged analysis and execution, after the analysis); a build that fails earlier
+/// writes no log. Blaze builds the executor with the command's Skyframe executor, before
+/// loading, so it registers this context there, when a log is requested
+/// ([`execution_log_requested`]), and [`Self::set`] installs the module's context where Java runs
+/// `executorInit`. Until then (no spawn runs before it) the calls do nothing.
+#[derive(Default)]
+pub struct DeferredSpawnLogContext {
+    inner: std::sync::OnceLock<Option<Arc<dyn SpawnLogContext>>>,
+}
+
+impl DeferredSpawnLogContext {
+    pub fn new() -> DeferredSpawnLogContext {
+        DeferredSpawnLogContext::default()
+    }
+
+    /// Installs the context `executorInit` created (`registerActionContexts`), once.
+    pub fn set(&self, context: Option<Arc<dyn SpawnLogContext>>) {
+        blaze_util::check_state!(
+            self.inner.set(context).is_ok(),
+            "the execution log was initialized twice"
+        );
+    }
+
+    fn get(&self) -> Option<&Arc<dyn SpawnLogContext>> {
+        self.inner.get().and_then(|c| c.as_ref())
+    }
+}
+
+impl SpawnLogContext for DeferredSpawnLogContext {
+    fn log_spawn(
+        &self,
+        spawn: &dyn crate::actions::Spawn,
+        input_metadata_provider: &dyn crate::actions::InputMetadataProvider,
+        input_map: &dyn Fn() -> Arc<crate::actions::InputMapping>,
+        file_system: &FileSystemRef,
+        timeout: std::time::Duration,
+        result: &crate::actions::SpawnResult,
+    ) -> Result<(), crate::actions::ExecException> {
+        match self.get() {
+            Some(c) => c.log_spawn(
+                spawn,
+                input_metadata_provider,
+                input_map,
+                file_system,
+                timeout,
+                result,
+            ),
+            None => Ok(()),
+        }
+    }
+
+    fn log_symlink_action(
+        &self,
+        action: &dyn super::spawn_log_context::SpawnLogAction,
+    ) -> io::Result<()> {
+        match self.get() {
+            Some(c) => c.log_symlink_action(action),
+            None => Ok(()),
+        }
+    }
+
+    fn close(&self) -> io::Result<()> {
+        match self.get() {
+            Some(c) => c.close(),
+            None => Ok(()),
+        }
+    }
+
+    fn should_publish(&self) -> bool {
+        self.get().is_some_and(|c| c.should_publish())
+    }
+}

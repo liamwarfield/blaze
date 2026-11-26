@@ -72,6 +72,8 @@ pub struct ExecutionToolConfig {
     pub verbose_failures: bool,
     /// `--jobs`.
     pub jobs: usize,
+    /// `CommandEnvironment.getCommandId().toString()` (empty for tools without a command).
+    pub command_id: String,
     /// The command's `ExecutionOptions`, `SandboxOptions` and `LocalExecutionOptions` (`None`:
     /// the defaults, with `verbose_failures` from above).
     pub execution_options: Option<ExecutionOptions>,
@@ -615,6 +617,7 @@ pub fn prepare_for_execution_with_action_cache(
         repo_contents_cache_path: config.repo_contents_cache_path.clone(),
         test_arguments: config.test_arguments.clone(),
         jobs: Some(config.jobs as i32),
+        command_id: config.command_id.clone(),
     };
     // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:1010 ExecutionTool.configureResourceManager
     configure_resource_manager(&env.resource_manager, &env.execution_options);

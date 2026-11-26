@@ -511,20 +511,11 @@ pub fn prepare_repository_functions_with(
     }
     let mut repo_contents_cache = LocalRepoContentsCache::new();
     repo_contents_cache.set_path(repo_contents_cache_path.clone());
-    if repo_contents_cache.is_enabled() {
-        // PORT: Java takes the shared lock in BazelRepositoryModule.beforeCommand and releases
-        // it in afterCommand. Blaze takes it with each command's repository functions, which
-        // hold it (`FileSystemLock`'s drop releases it) until they are dropped with the
-        // command's executors at the end of the command, so a server holds it only while a
-        // command runs, as Java's does (checked in /proc/locks between commands of a Blaze
-        // server). The GC idle task (env.addIdleTask) is not ported (package S4).
-        repo_contents_cache.acquire_shared_lock().map_err(|_| {
-            RepositorySetupError::new(
-                "could not acquire lock on repo contents cache",
-                "BAD_REPO_CONTENTS_CACHE",
-            )
-        })?;
-    }
+    // PORT: the shared lock of the repo contents cache (acquireSharedLock) and its garbage
+    // collection idle task belong to the runtime's BazelRepositoryModule.beforeCommand, which
+    // takes the lock for the command, and afterCommand, which releases it (blaze_runtime
+    // `bazel_modules.rs`); the repository functions do not hold it, so a graph kept between
+    // commands does not keep it either.
 
     let mut download_manager = DownloadManager::new(
         repository_cache.get_download_cache().clone(),
@@ -682,6 +673,8 @@ pub fn prepare_repository_functions_with(
         // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:654 BazelRepositoryModule.beforeCommand
         remote_repo_contents_cache:
             crate::repository::remote_helpers::create_remote_repo_contents_cache(),
+        // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:658 BazelRepositoryModule.beforeCommand
+        remote_executor: crate::repository::remote_helpers::create_repository_remote_executor(),
     });
 
     // Java: moduleFileFunction / repoSpecFunction / yankedVersionsFunction

@@ -420,11 +420,15 @@ fn run_lock_probe_if_requested() {
     });
 }
 
+/// The repository functions do not hold the repo contents cache's shared lock: the runtime's
+/// `BazelRepositoryModule` takes it in `beforeCommand` and releases it in `afterCommand`
+/// (blaze_runtime `dispatcher_tests::bazel_repository_module`), so a Skyframe graph kept
+/// between commands with its functions does not keep the lock (package I3).
 // Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:407 BazelRepositoryModule.beforeCommand
 #[test]
-fn repo_contents_cache_shared_lock_is_held_for_the_command() {
+fn repository_functions_do_not_hold_the_repo_contents_cache_lock() {
     run_lock_probe_if_requested();
-    const NAME: &str = "repo_contents_cache_shared_lock_is_held_for_the_command";
+    const NAME: &str = "repository_functions_do_not_hold_the_repo_contents_cache_lock";
     let s = Scratch::new();
     let root = root_of(&s);
     let command = Command::new(&s);
@@ -435,40 +439,11 @@ fn repo_contents_cache_shared_lock_is_held_for_the_command() {
         PathFragment::create(&format!("{}/cc/gc_lock", root.display())),
         &fs(),
     );
-    assert!(lock_path.exists());
     // What the garbage collector of another server does (LocalRepoContentsCache's GC idle task
-    // takes the exclusive lock): it cannot while this command runs ...
-    assert!(!other_process_can_lock(NAME, &lock_path, "exclusive"));
-    // ... but other commands share the cache.
-    assert!(other_process_can_lock(NAME, &lock_path, "shared"));
-    // PORT: Java releases it in afterCommand; here it goes with the command's services.
+    // takes the exclusive lock).
+    assert!(other_process_can_lock(NAME, &lock_path, "exclusive"));
+    assert!(!FileSystemLock::held_by_this_process(&lock_path));
     drop(functions);
-    assert!(other_process_can_lock(NAME, &lock_path, "exclusive"));
-}
-
-/// Two command setups in one process share the lock file (review 2026-11-18 round 2, N3): the
-/// lock is a per-process record lock, so the file must stay locked until the last of them is
-/// done, not until the first is.
-#[test]
-fn repo_contents_cache_shared_lock_outlives_the_first_of_two_setups() {
-    run_lock_probe_if_requested();
-    const NAME: &str = "repo_contents_cache_shared_lock_outlives_the_first_of_two_setups";
-    let s = Scratch::new();
-    let root = root_of(&s);
-    let command = Command::new(&s);
-    let args = ["--repository_cache=", "--repo_contents_cache=../cc2"];
-    let first = command.prepare(&args).unwrap();
-    let second = command.prepare(&args).unwrap();
-    let lock_path = Path::create(
-        PathFragment::create(&format!("{}/cc2/gc_lock", root.display())),
-        &fs(),
-    );
-    assert!(!other_process_can_lock(NAME, &lock_path, "exclusive"));
-    drop(first);
-    assert!(!other_process_can_lock(NAME, &lock_path, "exclusive"));
-    assert!(other_process_can_lock(NAME, &lock_path, "shared"));
-    drop(second);
-    assert!(other_process_can_lock(NAME, &lock_path, "exclusive"));
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -125,6 +125,9 @@ struct MultiplexerState {
     /// The workDir of the multiplexer. We should clean this up on destroy if it's a sandboxed
     /// multiplex worker.
     work_dir: Option<Path>,
+    /// PORT: a test's subclass overriding `createProcess` (see
+    /// [`WorkerMultiplexer::override_create_process_for_testing`]).
+    create_process_override: Option<Arc<dyn Fn() -> Arc<dyn Subprocess> + Send + Sync>>,
 }
 
 /// An intermediate worker that sends requests and receives responses from the worker
@@ -188,6 +191,7 @@ impl WorkerMultiplexer {
                 reporter: None,
                 shutdown_hook: None,
                 work_dir: None,
+                create_process_override: None,
             }),
             this: this.clone(),
         })
@@ -222,7 +226,7 @@ impl WorkerMultiplexer {
         work_dir: &Path,
         worker_files: &BTreeSet<PathFragment>,
         input_files: &SandboxInputs,
-        tree_deleter: &dyn TreeDeleter,
+        tree_deleter: Option<&dyn TreeDeleter>,
         client_env: &IndexMap<String, String>,
     ) -> io::Result<()> {
         // TODO: Make blaze clean remove the workdir.
@@ -284,6 +288,10 @@ impl WorkerMultiplexer {
         work_dir: &Path,
         client_env: &IndexMap<String, String>,
     ) -> io::Result<()> {
+        if let Some(create) = &st.create_process_override {
+            st.process = Some(create());
+            return Ok(());
+        }
         if st.process.is_none() {
             if self.status.is_killed() {
                 return Err(
@@ -667,6 +675,20 @@ impl WorkerMultiplexer {
     // Java: com/google/devtools/build/lib/worker/WorkerMultiplexer.java:506 WorkerMultiplexer.setProcessFactory
     pub fn set_process_factory(&self, factory: Arc<dyn SubprocessFactory>) {
         self.state.lock().subprocess_factory = Some(factory);
+    }
+
+    /// `createProcess` overridden by a test's anonymous subclass: the override sets `process` to
+    /// what `create` returns and starts no threads.
+    pub fn override_create_process_for_testing(
+        &self,
+        create: Arc<dyn Fn() -> Arc<dyn Subprocess> + Send + Sync>,
+    ) {
+        self.state.lock().create_process_override = Some(create);
+    }
+
+    /// `pendingRequests.take()` (the field is `@VisibleForTesting`).
+    pub fn take_pending_request_for_testing(&self) -> Option<WorkRequest> {
+        self.pending_requests.take()
     }
 
     /// `pendingRequests.size()` (`@VisibleForTesting`).

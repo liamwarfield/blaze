@@ -691,6 +691,7 @@ fn main() -> ExitCode {
         keep_going,
         verbose_failures: false,
         jobs,
+        command_id: String::new(),
         execution_options: None,
         sandbox_options: None,
         local_execution_options: None,

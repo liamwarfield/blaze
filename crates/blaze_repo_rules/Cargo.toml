@@ -38,6 +38,7 @@ libc.workspace = true
 uuid.workspace = true
 regex.workspace = true
 num-bigint.workspace = true
+wasmi.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

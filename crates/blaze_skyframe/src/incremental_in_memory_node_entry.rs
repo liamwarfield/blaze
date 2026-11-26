@@ -387,16 +387,10 @@ impl IncrementalInMemoryNodeEntry {
 
     // Java: com/google/devtools/build/skyframe/IncrementalInMemoryNodeEntry.java:287 IncrementalInMemoryNodeEntry.markDirty
     pub(crate) fn mark_dirty(&mut self, dirty_type: DirtyType) -> Option<MarkedDirtyResult> {
-        if dirty_type == DirtyType::Rewind {
-            // PORT: rewinding is not ported (docs/decisions.md 2026-11-19): Java's no-op on a node
-            // that is not done or is in error, and the rewind of a done node
-            // (`ReverseDepsUtility.consolidateData`, `MarkedDirtyResult.forRewinding`).
-            blaze_util::unported!("IncrementalInMemoryNodeEntry.markDirty(DirtyType.REWIND)");
-        }
-
         if self.is_done() {
-            // Java: `if (dirtyType == DirtyType.REWIND && getErrorInfo() != null)`: rewinding,
-            // handled above.
+            if dirty_type == DirtyType::Rewind && self.get_error_info().is_some() {
+                return None; // Rewinding errors is no-op.
+            }
             let direct_deps = self.get_compressed_direct_deps_for_done_entry().clone();
             check_state!(
                 dirty_type != DirtyType::Dirty || !direct_deps.is_empty(),
@@ -411,6 +405,15 @@ impl IncrementalInMemoryNodeEntry {
             ));
             // Java: value = null (taken above).
             self.direct_deps = None;
+            if dirty_type == DirtyType::Rewind {
+                // For rewinding, the reverse deps don't need to be included in the
+                // MarkedDirtyResult, but they do need to be consolidated so that
+                // ReverseDepsUtility considers only rdep operations that occur after the rewind
+                // to be "new elements." This is important because only rdeps registered after the
+                // rewind should be signalled when the rewound evaluation completes.
+                ReverseDepsUtility::consolidate_data(self);
+                return Some(MarkedDirtyResult::for_rewinding());
+            }
             return Some(MarkedDirtyResult::with_reverse_deps(
                 ReverseDepsUtility::consolidate_and_get_reverse_deps(
                     self, /* check_consistency= */ true,
@@ -450,7 +453,7 @@ impl IncrementalInMemoryNodeEntry {
             }
             DirtyType::Rewind => {
                 // Rewinding is legal at any time in the node's lifecycle, but is no-op when it is
-                // not done. (Not reached: see the PORT note above.)
+                // not done.
             }
         }
         None
@@ -534,11 +537,34 @@ impl IncrementalInMemoryNodeEntry {
             .force_rebuild(num_temporary_direct_deps);
     }
 
-    /// PORT: not ported (rewinding, docs/decisions.md 2026-11-19).
     // Java: com/google/devtools/build/skyframe/IncrementalInMemoryNodeEntry.java:390 IncrementalInMemoryNodeEntry.resetEvaluationFromScratch
-    #[allow(dead_code)] // rewinding, Skyfocus and graph compaction are not ported
     pub(crate) fn reset_evaluation_from_scratch(&mut self) {
-        blaze_util::unported!("IncrementalInMemoryNodeEntry.resetEvaluationFromScratch")
+        check_state!(!self.has_unsignaled_deps(), "{:?}", self);
+
+        let mut reset_deps: IndexSet<SkyKey> = self.get_reset_direct_deps(); // In case this isn't the first reset.
+        reset_deps.extend(
+            self.get_temporary_direct_deps()
+                .get_all_elements_as_iterable()
+                .cloned(),
+        );
+
+        let dirty_building_state = self
+            .base
+            .dirty_building_state
+            .take()
+            .expect("checked by getResetDirectDeps");
+        self.base.dirty_building_state = Some(match dirty_building_state.take_incremental_parts() {
+            Some((last_build_direct_deps, last_build_value, dirty_direct_dep_index)) => {
+                DirtyBuildingState::new_reset_incremental_building_state(
+                    last_build_direct_deps,
+                    last_build_value,
+                    dirty_direct_dep_index,
+                    reset_deps,
+                )
+            }
+            None => DirtyBuildingState::new_reset_initial_building_state(reset_deps),
+        });
+        self.direct_deps = None;
     }
 
     // Java: com/google/devtools/build/skyframe/IncrementalInMemoryNodeEntry.java:414 IncrementalInMemoryNodeEntry.getResetDirectDeps

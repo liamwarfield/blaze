@@ -5,6 +5,7 @@ use std::io;
 
 use blaze_actions::actions::artifact::Artifact;
 use blaze_protos::failure_details::execution::Code;
+use blaze_util::profiler::{Profiler, ProfilerTask};
 use blaze_vfs::{DirentType, Path, PathFragment, Symlinks};
 
 use crate::actions::ExecException;
@@ -132,7 +133,8 @@ impl SymlinkTreeHelper {
         //
         // 3. For every remaining entry in the node, create the corresponding file, symlink, or
         //    directory on disk. If it is a directory, recurse into that directory.
-        // PORT: skipped, profiling ("Create symlink tree").
+        // Java: com/google/devtools/build/lib/exec/SymlinkTreeHelper.java:131 SymlinkTreeHelper.createSymlinks
+        let _c = Profiler::instance().profile(ProfilerTask::INFO, "Create symlink tree");
         let run = || -> io::Result<()> {
             let mut root: Directory<T> = Directory::new();
             for (path, value) in symlink_map {
@@ -164,7 +166,8 @@ impl SymlinkTreeHelper {
     /// Deletes the contents of the runfiles directory.
     // Java: com/google/devtools/build/lib/exec/SymlinkTreeHelper.java:156 SymlinkTreeHelper.clearRunfilesDirectory
     fn clear_runfiles_directory(&self) -> Result<(), ExecException> {
-        // PORT: skipped, profiling ("Clear symlink tree").
+        // Java: com/google/devtools/build/lib/exec/SymlinkTreeHelper.java:160 SymlinkTreeHelper.clearRunfilesDirectory
+        let _c = Profiler::instance().profile(ProfilerTask::INFO, "Clear symlink tree");
         self.symlink_tree_root
             .delete_trees_below()
             .map_err(|e| environmental_exec_exception(&e, Code::SymlinkTreeDeletionIoException))

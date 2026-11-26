@@ -59,6 +59,8 @@ enum DependenciesError {
     Evaluate(String),
     /// `IncompatibleTargetChecker.IncompatibleTargetException`.
     IncompatibleTarget,
+    /// `InterruptedException`.
+    Interrupted,
 }
 
 /// Output formatter that prints `ConfigurationTransition` information for rule configured
@@ -68,6 +70,9 @@ pub struct TransitionsOutputFormatterCallback<'a> {
     base: CqueryThreadsafeCallback<'a>,
     skyframe_executor: &'a SkyframeExecutor,
     label_printer: LabelPrinter,
+    /// Whether a CQUERY_TRANSITION_RESOLVER node was evaluated (see
+    /// [`Self::delete_resolver_nodes`]).
+    resolved_any: std::cell::Cell<bool>,
 }
 
 impl<'a> TransitionsOutputFormatterCallback<'a> {
@@ -81,6 +86,32 @@ impl<'a> TransitionsOutputFormatterCallback<'a> {
             base,
             skyframe_executor,
             label_printer,
+            resolved_any: std::cell::Cell::new(false),
+        }
+    }
+
+    /// Removes the CQUERY_TRANSITION_RESOLVER nodes from the graph once the output is done.
+    ///
+    /// PORT: Java's resolver runs outside Skyframe and leaves nothing in the graph; Blaze's
+    /// nodes are deleted here (marked, then removed by an evaluation of no roots, which applies
+    /// pending deletions), so they neither count in the graph size the command reports
+    /// (`post_invocation_skyframe_node_count`) nor survive into later commands. The evaluation
+    /// statistics of the command still count their evaluations (docs/reviews/
+    /// 2026-11-26-query-2-response.md, S2-2).
+    fn delete_resolver_nodes(&self) -> Result<(), OutputFormatterError> {
+        self.skyframe_executor.get_evaluator().delete(|key, _| {
+            key.function_name() == <CqueryTransitionResolverKey as blaze_skyframe::Key>::FUNCTION
+        });
+        match self.skyframe_executor.evaluate(
+            &[],
+            /* keep_going= */ false,
+            DEFAULT_THREAD_COUNT,
+            self.base.event_handler.clone(),
+        ) {
+            Ok(_) => Ok(()),
+            Err(blaze_skyframe::Interrupted) => Err(OutputFormatterError::Interrupted(
+                blaze_query_engine::InterruptedException::new(),
+            )),
         }
     }
 
@@ -125,6 +156,12 @@ impl<'a> TransitionsOutputFormatterCallback<'a> {
             .get_configuration(configured_target.get_configuration_key().as_ref());
 
         let key = CqueryTransitionResolverKey(configured_target_key_from_configured_target(ct));
+        // Java's DependencyResolver reads a lookup environment over the graph analysis left
+        // and computes nothing: a value it requests that is not done makes `evaluate` return
+        // false. Blaze's evaluation of CQUERY_TRANSITION_RESOLVER computes such a value
+        // instead, so a node computed besides the resolver's own one is that case.
+        let evaluator = self.skyframe_executor.get_evaluator();
+        let computed_before = evaluator.computed_count();
         let result = match self.skyframe_executor.evaluate(
             &[SkyKey::new(key.clone())],
             /* keep_going= */ false,
@@ -132,17 +169,21 @@ impl<'a> TransitionsOutputFormatterCallback<'a> {
             self.base.event_handler.clone(),
         ) {
             Ok(result) => result,
-            Err(_) => blaze_util::unported!(
-                "CqueryTransitionResolver.dependencies",
-                "interrupted while resolving the dependencies of {:?}",
-                key
-            ),
+            Err(blaze_skyframe::Interrupted) => return Err(DependenciesError::Interrupted),
         };
+        self.resolved_any.set(true);
+        if evaluator.computed_count() - computed_before > 1 {
+            // Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:147 CqueryTransitionResolver.dependencies
+            return Err(DependenciesError::Evaluate(
+                "DependencyResolver.evaluate did not complete".to_owned(),
+            ));
+        }
         let Some(value) = result.get(&key) else {
             blaze_util::unported!(
                 "CqueryTransitionResolver.dependencies",
-                "no value for {:?}",
-                key
+                "no value for {:?}: {:?}",
+                key,
+                result.get_error(&SkyKey::new(key.clone()))
             );
         };
         let (deps, transitions) = match &*value {
@@ -386,6 +427,11 @@ impl OutputFormatterCallback<CqueryNode> for TransitionsOutputFormatterCallback<
                     )));
                     return Ok(());
                 }
+                Err(DependenciesError::Interrupted) => {
+                    return Err(OutputFormatterError::Interrupted(
+                        blaze_query_engine::InterruptedException::new(),
+                    ));
+                }
                 Err(DependenciesError::IncompatibleTarget) => {
                     self.base.event_handler.handle(&Event::warn(format!(
                         "Skipping dependencies of incompatible target {}",
@@ -426,6 +472,9 @@ impl OutputFormatterCallback<CqueryNode> for TransitionsOutputFormatterCallback<
     }
 
     fn close(&self, fail_fast: bool) -> Result<(), OutputFormatterError> {
+        if self.resolved_any.get() {
+            self.delete_resolver_nodes()?;
+        }
         self.base
             .close(fail_fast)
             .map_err(OutputFormatterError::from)

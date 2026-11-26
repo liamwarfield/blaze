@@ -35,6 +35,7 @@ pub mod keys;
 pub mod metadata_consumer_for_metrics;
 pub mod output_checker;
 pub mod recursive_filesystem_traversal_function;
+pub mod rewinding;
 pub mod skyframe_action_executor;
 pub mod test_completion_function;
 
@@ -83,7 +84,19 @@ pub fn register_execution_functions(
     );
     let build_driver = Arc::new(build_driver_function::BuildDriverFunction::new(seam));
     builder
-        .typed_function::<ActionExecutionKey, _>(move |k, env| action_execution.compute(k, env))
+        // ActionExecutionFunction may return a `Reset` (action rewinding), so it is registered
+        // untyped.
+        .function(
+            <ActionExecutionKey as blaze_skyframe::Key>::FUNCTION,
+            move |k: &blaze_skyframe::SkyKey, env: &mut blaze_skyframe::Environment<'_>| {
+                let k = k
+                    .downcast::<ActionExecutionKey>()
+                    .expect("key type matches function name");
+                Ok(action_execution
+                    .compute(k, env)?
+                    .map(action_execution_function::ActionExecutionFunctionValue::into_sky_value))
+            },
+        )
         .typed_function::<ArtifactKey, _>(move |k, env| {
             artifact_function::compute_artifact(&artifact_executor, &*seam_artifact, k, env)
         })

@@ -421,6 +421,15 @@ pub fn init(output_base: &blaze_vfs::Path) {
             message,
         )
     });
+    blaze_util::server_logger::set_warning_sink(|class, method, message, cause| {
+        log_with_cause(
+            blaze_options::converters::LogLevel::WARNING,
+            class,
+            method,
+            message,
+            cause,
+        )
+    });
 }
 
 /// `LogManager.getLogManager().reset()`: closes the server log.
@@ -494,6 +503,20 @@ pub fn log(
     source_method_name: &str,
     message: &str,
 ) {
+    log_with_cause(level, source_class_name, source_method_name, message, None)
+}
+
+/// [`log`] of a record with a throwable (`withCause`): `cause` is the throwable's `toString()`.
+///
+/// PORT: Java prints the throwable's stack trace after the record (`printStackTrace`); Blaze has
+/// no Java stack, so the record carries the throwable's first line only.
+pub fn log_with_cause(
+    level: blaze_options::converters::LogLevel,
+    source_class_name: &str,
+    source_method_name: &str,
+    message: &str,
+    cause: Option<&str>,
+) {
     // Logger.isLoggable: the effective level of the logger.
     let logger_level = TEMPLATE_LOGGER_LEVEL
         .lock()
@@ -516,6 +539,7 @@ pub fn log(
         source_class_name,
         source_method_name,
         message,
+        cause,
     );
     let mut handler = SERVER_LOG_HANDLER.lock();
     if let Some(handler) = handler.as_mut() {
@@ -523,7 +547,7 @@ pub fn log(
     }
 }
 
-/// `SingleLineFormatter.format` of a record without a throwable.
+/// `SingleLineFormatter.format`.
 // Java: com/google/devtools/build/lib/util/SingleLineFormatter.java:49 SingleLineFormatter.format
 fn single_line_format(
     millis: i64,
@@ -532,6 +556,7 @@ fn single_line_format(
     source_class_name: &str,
     source_method_name: &str,
     message: &str,
+    thrown: Option<&str>,
 ) -> String {
     let mut buf = String::new();
     // Timestamp: "yyMMdd HH:mm:ss.SSS" in UTC.
@@ -563,6 +588,10 @@ fn single_line_format(
     } else {
         'X'
     });
+    // The stack trace, if any
+    if thrown.is_some() {
+        buf.push('T');
+    }
     buf.push(' ');
     // Information about the source of the exception
     buf.push_str(&format!(
@@ -572,12 +601,88 @@ fn single_line_format(
     // The actual message
     buf.push_str(message);
     buf.push('\n');
+    if let Some(thrown) = thrown {
+        buf.push_str(thrown);
+        buf.push('\n');
+    }
     buf
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Ported from src/test/java/com/google/devtools/build/lib/util/SingleLineFormatterTest.java.
+    // TIMESTAMP: 2017-04-01T17:03:43.142Z.
+    const TIMESTAMP_MILLIS: i64 = 1_491_066_223_142;
+
+    fn format_record(
+        level: blaze_options::converters::LogLevel,
+        millis: i64,
+        thrown: Option<&str>,
+    ) -> String {
+        single_line_format(
+            millis,
+            level,
+            543,
+            "SomeSourceClass",
+            "aSourceMethod",
+            "some message",
+            thrown,
+        )
+    }
+
+    #[test]
+    fn test_format() {
+        assert_eq!(
+            format_record(
+                blaze_options::converters::LogLevel::SEVERE,
+                TIMESTAMP_MILLIS,
+                None
+            ),
+            "170401 17:03:43.142:X 543 [SomeSourceClass.aSourceMethod] some message\n"
+        );
+    }
+
+    #[test]
+    fn test_level() {
+        let formatted = format_record(
+            blaze_options::converters::LogLevel::WARNING,
+            TIMESTAMP_MILLIS,
+            None,
+        );
+        assert!(formatted.contains('W'));
+        assert!(!formatted.contains('X'));
+    }
+
+    #[test]
+    fn test_time() {
+        // 1999-11-30T03:04:05.722Z
+        assert!(
+            format_record(
+                blaze_options::converters::LogLevel::SEVERE,
+                943_931_045_722,
+                None
+            )
+            .contains("991130 03:04:05.722")
+        );
+    }
+
+    /// PORT: Blaze has no Java stack trace; the record carries the throwable's first line.
+    #[test]
+    fn test_stack_trace() {
+        assert!(
+            format_record(
+                blaze_options::converters::LogLevel::SEVERE,
+                TIMESTAMP_MILLIS,
+                Some("java.lang.RuntimeException: something wrong")
+            )
+            .starts_with(
+                "170401 17:03:43.142:XT 543 [SomeSourceClass.aSourceMethod] some message\n\
+                 java.lang.RuntimeException: something wrong\n"
+            )
+        );
+    }
 
     // Java: src/test/java/com/google/devtools/build/lib/util/SimpleLogHandlerTest.java
     #[test]

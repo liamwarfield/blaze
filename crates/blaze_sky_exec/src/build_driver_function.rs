@@ -11,6 +11,7 @@ use parking_lot::Mutex;
 use crate::analysis_seam::{AnalysisSeam, ConfiguredAspectView, ConfiguredTargetView};
 use crate::events::{
     SomeExecutionStartedEvent, TestAnalyzedEvent, TopLevelTargetPendingExecutionEvent,
+    TopLevelTargetReadyForSymlinkPlanting,
 };
 use crate::keys::{
     AspectCompletionKey, BuildDriverKey, TargetCompletionKey, TestCompletionKey, TestType,
@@ -61,6 +62,7 @@ pub struct BuildDriverValue {
 #[allow(non_camel_case_types)]
 enum TopLevelStatusEventsType {
     TOP_LEVEL_TARGET_PENDING_EXECUTION,
+    TOP_LEVEL_TARGET_READY_FOR_SYMLINK_PLANTING,
     SOME_EXECUTION_STARTED,
     TEST_ANALYZED,
 }
@@ -100,6 +102,23 @@ impl BuildDriverFunction {
         if newly_added {
             env.listener().post(event);
         }
+    }
+
+    /// `postedEventsTypes.contains(type)`.
+    fn event_posted(&self, key: &BuildDriverKey, type_: TopLevelStatusEventsType) -> bool {
+        self.key_to_posted_events
+            .lock()
+            .get(key)
+            .is_some_and(|posted| posted.contains(&type_))
+    }
+
+    /// `postedEventsTypes.add(type)`.
+    fn mark_event_posted(&self, key: &BuildDriverKey, type_: TopLevelStatusEventsType) {
+        self.key_to_posted_events
+            .lock()
+            .entry(key.clone())
+            .or_default()
+            .insert(type_);
     }
 
     /// The extra action artifacts to build (`ImmutableSet.Builder<Artifact>`: no duplicates,
@@ -144,7 +163,8 @@ impl BuildDriverFunction {
     // PORT: action conflict checks (checkActionConflicts), target compatibility
     // (isConfiguredTargetCompatible: incompatible targets are skipped), extra actions, top-level
     // aspects and the TopLevelStatusEvents other than TopLevelTargetPendingExecutionEvent,
-    // SomeExecutionStartedEvent and TestAnalyzedEvent are the
+    // TopLevelTargetReadyForSymlinkPlanting, SomeExecutionStartedEvent and TestAnalyzedEvent are
+    // the
     // analysis side's (blaze_sky_top) and are not ported here.
     pub fn compute(
         &self,
@@ -168,6 +188,22 @@ impl BuildDriverFunction {
             return Ok(None);
         }
         let test_type = key.test_type;
+        // It's possible that this code path is triggered AFTER the analysis cache clean up and
+        // the transitive packages for package root resolution is already cleared. In such a
+        // case, the symlinks should have already been planted.
+        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:235 BuildDriverFunction.compute
+        if let Some(transitive_packages_for_symlink_planting) =
+            configured_target.get_transitive_packages()
+        {
+            self.post_event_if_necessary(
+                key,
+                env,
+                TopLevelStatusEventsType::TOP_LEVEL_TARGET_READY_FOR_SYMLINK_PLANTING,
+                Arc::new(TopLevelTargetReadyForSymlinkPlanting {
+                    transitive_packages_for_symlink_planting,
+                }),
+            );
+        }
         // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:598 BuildDriverFunction.requestConfiguredTargetExecution
         let mut keys_to_request: Vec<SkyKey> = self
             .add_extra_actions_if_requested(
@@ -268,8 +304,7 @@ impl BuildDriverFunction {
     /// `BuildDriverFunction.compute` for a `TopLevelAspectsKey` (the `else` branch of
     /// `topLevelSkyValue instanceof ConfiguredTargetValue`).
     ///
-    /// PORT: as for configured targets, BUILD_ID, the action conflict check, extra actions
-    /// (`addExtraActionsIfRequested`), `TopLevelTargetReadyForSymlinkPlanting`,
+    /// PORT: as for configured targets, BUILD_ID, the action conflict check,
     /// `TopLevelEntityAnalysisConcludedEvent` and
     /// `additionalPostAnalysisDepsRequestedAndAvailable` are not ported here; the
     /// `announceTopLevelAspectAnalyzed` events (`ToplevelAspectsIdentifiedEvent`,
@@ -298,16 +333,43 @@ impl BuildDriverFunction {
             indexmap::IndexSet::new();
         let mut aspect_completion_keys: Vec<SkyKey> = Vec::new();
         // Do not trigger Skyframe restarts in this loop.
+        let symlink_planting_posted = self.event_posted(
+            key,
+            TopLevelStatusEventsType::TOP_LEVEL_TARGET_READY_FOR_SYMLINK_PLANTING,
+        );
         for aspect in &top_level_aspects {
             artifacts_to_build.extend(self.add_extra_actions_if_requested(
                 aspect.get_extra_action_artifacts_provider(),
                 key.extra_action_top_level_only,
             ));
+
+            // It's possible that this code path is triggered AFTER the analysis cache clean up
+            // and the transitive packages for package root resolution is already cleared. In
+            // such a case, the symlinks should have already been planted.
+            // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:338 BuildDriverFunction.compute
+            if let Some(transitive_packages_for_symlink_planting) = aspect.get_transitive_packages()
+            {
+                // This event should be sent out exactly once per aspect in this
+                // BuildDriverKey, even with resets. We achieve this by marking the event type as
+                // sent only after sending the event for all aspects, but must avoid triggering
+                // Skyframe restarts while doing so.
+                if !symlink_planting_posted {
+                    env.listener()
+                        .post(Arc::new(TopLevelTargetReadyForSymlinkPlanting {
+                            transitive_packages_for_symlink_planting,
+                        }));
+                }
+            }
             aspect_completion_keys.push(SkyKey::new(AspectCompletionKey::create(
                 aspect.get_aspect_key(),
                 key.output_groups.clone(),
             )));
         }
+        // Java: postedEventsTypes.add(TOP_LEVEL_TARGET_READY_FOR_SYMLINK_PLANTING)
+        self.mark_event_posted(
+            key,
+            TopLevelStatusEventsType::TOP_LEVEL_TARGET_READY_FOR_SYMLINK_PLANTING,
+        );
 
         // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:369 BuildDriverFunction.compute
         self.post_event_if_necessary(

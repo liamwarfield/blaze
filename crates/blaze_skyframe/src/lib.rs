@@ -134,12 +134,10 @@
 //! * `Environment.registerDependencies` ([`Environment::register_dependencies`]).
 //! * `SkyframeLookupResult.queryDep` ([`SkyframeLookupResult::query_dep`]).
 //! * `Environment.dependOnFuture` and external deps ([`Environment::depend_on_future`]).
-//! * `SkyFunction.Reset`, node rewinding (`DirtyType.REWIND`), partial reevaluation.
+//! * Partial reevaluation.
 //! * The per-key keep_going predicate (`ParallelEvaluatorContext.keepGoing(SkyKey)`): keep_going
 //!   is one flag per evaluation.
 //! * `ShortCircuitingCycleDetector` (`EvaluationContext::detect_cycles == false`).
-//! * `GraphInconsistencyReceiver`: an inconsistency panics with the text of Java's default
-//!   (`THROWING`).
 //! * Max transitive source versions, Skyfocus, graph statistics (`postLoggingStats`), key
 //!   interning.
 //! * Interrupting invalidation: the invalidators run to completion; `evaluate` then sees the
@@ -198,6 +196,7 @@ pub mod evaluation_stats;
 mod evaluator;
 mod event_filter;
 mod function_hermeticity;
+pub mod graph_inconsistency_receiver;
 #[cfg(test)]
 mod graph_listener;
 mod grouped_deps;
@@ -209,6 +208,7 @@ mod node_entry;
 mod non_incremental_in_memory_node_entry;
 pub mod precomputed;
 mod progress;
+mod reset;
 mod reverse_deps_utility;
 mod simple_cycle_detector;
 pub mod testing;
@@ -232,6 +232,7 @@ pub use progress::{
     CompoundEvaluationProgressReceiver, CompoundEvaluationProgressReceiverBase,
     EvaluationProgressReceiver, EvaluationState, NodeState,
 };
+pub use reset::{Reset, RewindGraph};
 pub use version::{IntVersion, NodeVersion, Version};
 pub use walkable_graph::WalkableGraph;
 

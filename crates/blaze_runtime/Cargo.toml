@@ -28,6 +28,7 @@ blaze_bzlmod = { path = "../blaze_bzlmod" }
 blaze_bzlmod_model = { path = "../blaze_bzlmod_model" }
 blaze_repo_rules = { path = "../blaze_repo_rules" }
 blaze_bep = { path = "../blaze_bep" }
+blaze_bes = { path = "../blaze_bes" }
 blaze_packages = { path = "../blaze_packages" }
 blaze_skyframe = { path = "../blaze_skyframe" }
 blaze_buildtool = { path = "../blaze_buildtool" }
@@ -42,6 +43,9 @@ blaze_cmdline = { path = "../blaze_cmdline" }
 blaze_server = { path = "../blaze_server" }
 # FileSystemLock (BlazeRuntime.newRuntime's install base lock).
 blaze_repo_fetch = { path = "../blaze_repo_fetch" }
+# `info build-language` (frozen builtins values, the BuildLanguage message).
+starlark.workspace = true
+prost.workspace = true
 indexmap.workspace = true
 parking_lot.workspace = true
 libc.workspace = true

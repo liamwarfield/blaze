@@ -154,9 +154,13 @@ impl<'a> ExtraActionsVisitor<'a> {
         }
     }
 
-    /// `original instanceof Action`: every Blaze action is one.
     // Java: com/google/devtools/build/lib/analysis/ExtraActionsVisitor.java:47 ExtraActionsVisitor.maybeAddExtraAction
     fn maybe_add_extra_action(&mut self, original: &ActionRef) -> Result<(), InterruptedException> {
+        // `original instanceof Action`: an action template (an `ActionAnalysisMetadata` that is
+        // not an `ActionExecutionMetadata`) gets no extra action.
+        if !original.is_action_execution_metadata() {
+            return Ok(());
+        }
         if let Some(extra_actions) = self
             .mnemonic_to_extra_action_map
             .get(&original.get_mnemonic())

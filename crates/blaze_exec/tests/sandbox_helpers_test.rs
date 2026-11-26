@@ -654,7 +654,7 @@ fn clean_existing_updates_dirs() {
         &mut inputs_to_create,
         &mut dirs_to_create,
         &f.exec_root,
-        &f.tree_deleter,
+        Some(&f.tree_deleter),
     )
     .unwrap();
     assert_eq!(
@@ -796,7 +796,7 @@ fn clean_existing_with_in_memory_contents_tracks_empty_inputs(keep_empty_input: 
         &mut inputs_to_create,
         &mut dirs_to_create,
         &f.exec_root,
-        &f.tree_deleter,
+        Some(&f.tree_deleter),
         Some(&sandbox_contents),
     )
     .unwrap();

@@ -1,6 +1,7 @@
 //! Port of `lib/sandbox/LinuxSandboxedSpawnRunner.java`.
 
 use crate::sandbox::cgroups::{Cgroup, VirtualCgroup, VirtualCgroupFactory};
+use crate::sandbox::cgroups_info::CgroupsInfo;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::sync::Arc;
@@ -350,10 +351,22 @@ impl LinuxSandboxedSpawnRunner {
         } else if sandbox_options.memory_limit_mb > 0 {
             // We put the sandbox inside a unique subdirectory using the context's ID. This ID is
             // unique per spawn run by this spawn runner.
-            blaze_util::unported!(
-                "CgroupsInfo.getBlazeSpawnsCgroup",
-                "--experimental_sandbox_memory_limit_mb"
-            );
+            let sandbox_cgroup = CgroupsInfo::get_blaze_spawns_cgroup()
+                .create_individual_spawn_cgroup(
+                    &format!("sandbox_{}", context.get_id()),
+                    sandbox_options.memory_limit_mb,
+                );
+            if sandbox_cgroup.exists() {
+                command_line_builder.set_cgroups_dirs(
+                    [sandbox_cgroup
+                        .get_cgroup_dir()
+                        .expect("cgroupDir")
+                        .get_path()
+                        .to_string()]
+                    .into_iter()
+                    .collect(),
+                );
+            }
         }
 
         if !timeout.is_zero() {

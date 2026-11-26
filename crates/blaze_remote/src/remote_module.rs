@@ -1460,6 +1460,12 @@ impl RemoteActionContextProvider {
         }
     }
 
+    /// `(RemoteExecutionCache) getCombinedCache()`: the cache when remote execution is
+    /// configured.
+    pub fn get_remote_execution_cache(&self) -> Option<&Arc<RemoteExecutionCache>> {
+        self.remote_execution_cache.as_ref()
+    }
+
     /// `getRemoteExecutionClient()`.
     pub fn get_remote_execution_client(&self) -> Option<&Arc<dyn RemoteExecutionClient>> {
         self.remote_executor.as_ref()

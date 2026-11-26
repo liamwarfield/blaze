@@ -817,6 +817,61 @@ impl ReferenceCountedChannel {
             }
         }
     }
+
+    /// A bidirectional-streaming call (`ClientCalls.asyncBidiStreamingCall`): sends every item
+    /// of `requests` (the call half-closes when the stream ends) and returns the responses.
+    /// Dropping the returned stream cancels the call.
+    ///
+    /// PORT: added for the Build Event Service client
+    /// (`PublishBuildEvent.PublishBuildToolEventStream`, blaze_bes). The channel-level listeners
+    /// see the responses and the close, not the requests (no interceptor of that channel
+    /// observes messages).
+    pub async fn bidi_streaming<Req, Resp, S>(
+        &self,
+        method: Method,
+        requests: S,
+        options: CallOptions,
+    ) -> Result<ResponseStream<Resp>, tonic::Status>
+    where
+        Req: prost::Message + Send + Sync + 'static,
+        Resp: prost::Message + Default + Send + Sync + 'static,
+        S: Stream<Item = Req> + Send + 'static,
+    {
+        let (headers, mut listeners) = self.start_call(&method, &options).await?;
+        let deadline = self.deadline_for(&method, &options);
+        let deadline_at = deadline.map(|d| tokio::time::Instant::now() + d);
+        let call = async {
+            let mut grpc = self.grpc();
+            grpc.ready()
+                .await
+                .map_err(|e| not_ready(e, &self.inner.authority, self.lifecycle()))?;
+            let codec: ProstCodec<Req, Resp> = ProstCodec::default();
+            grpc.streaming(
+                Self::request(requests, headers, deadline),
+                PathAndQuery::from_static(method.path),
+                codec,
+            )
+            .await
+        };
+        match with_deadline_at(deadline_at, call)
+            .await
+            .map_err(|status| transport_status(status, &self.inner.authority, self.lifecycle()))
+        {
+            Ok(response) => Ok(ResponseStream {
+                authority: self.inner.authority.clone(),
+                lifecycle: self.inner.transport_lifecycle.clone(),
+                inner: response.into_inner(),
+                listeners,
+                deadline: deadline_at,
+                idle_timeout: None,
+                method,
+            }),
+            Err(status) => {
+                listeners.on_close(&status);
+                Err(status)
+            }
+        }
+    }
 }
 
 /// One `methodConfig[]` name with its timeout: `service` empty is the default config, `method`

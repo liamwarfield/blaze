@@ -698,6 +698,7 @@ impl<'v> ParametersSpec<Value<'v>> {
                 };
                 let keys: Vec<Value<'v>> = dict.keys().collect();
                 drop(dict);
+                crate::values::dict::dict_record_all_keys_accessed(kwargs); // BLAZE PATCH 0063
                 for k in keys {
                     let Some(k) = k.unpack_str() else {
                         return Err(FunctionError::JavaStarStar(format!(
@@ -847,6 +848,7 @@ impl<'v> ParametersSpec<Value<'v>> {
         if let Some(param_kwargs) = args.kwargs() {
             match DictRef::from_value(param_kwargs) {
                 Some(y) => {
+                    crate::values::dict::dict_record_all_keys_accessed(param_kwargs); // BLAZE PATCH 0063
                     for (k, v) in y.iter_hashed() {
                         match StringValue::new(*k.key()) {
                             None => return Err(FunctionError::ArgsValueIsNotString.into()),

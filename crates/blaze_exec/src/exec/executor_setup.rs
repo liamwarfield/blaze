@@ -66,6 +66,10 @@ pub struct RemoteModuleContributions {
     /// `RemoteOutputService.finalizeAction` when `--output_tree_tracking` is set (see
     /// [`ActionFinalizer`](crate::exec::action_execution_context::ActionFinalizer)).
     pub action_finalizer: Option<Arc<dyn crate::exec::action_execution_context::ActionFinalizer>>,
+    /// `RemoteModule.registerActionContexts`: the `RemoteImportantOutputHandler` (see
+    /// [`ImportantOutputHandler`](crate::exec::action_execution_context::ImportantOutputHandler)).
+    pub important_output_handler:
+        Option<Arc<dyn crate::exec::action_execution_context::ImportantOutputHandler>>,
     /// How the action executor treats the lost inputs of a build with a remote cache (see
     /// [`LostInputsPolicy`]); `None` without one (no input can be lost then).
     pub lost_inputs_policy: Option<LostInputsPolicy>,
@@ -85,19 +89,6 @@ pub struct LostInputsPolicy {
     /// `post(new LostInputsEvent(missingDigests))`: the subscribers' handler (the digests are
     /// `hash/size`).
     pub on_lost_inputs: Arc<dyn Fn(&[String]) + Send + Sync>,
-    /// With `rewinding_enabled`: removes the remote metadata from the persistent action cache
-    /// and writes it to disk (`LeaseService.handleMissingInputs` on the action cache), run
-    /// before the executor fails loudly on the action rewinding that Java would start.
-    ///
-    /// PORT: Java rewinds here (and creates no `LeaseService` when rewinding is enabled).
-    /// Rewinding is not ported and the build then crashes, so nothing saves the action cache
-    /// afterwards; without this purge a rerun would trust the same stale remote metadata again.
-    /// The argument is the executor's own action cache (the instance of this build, `None`
-    /// with `--nouse_action_cache`); the executor runs the purge while no action can write to
-    /// that cache and drops every later write. `None`: no purge (tests).
-    #[allow(clippy::type_complexity)]
-    pub purge_before_unported_rewinding:
-        Option<Arc<dyn Fn(Option<&dyn crate::actions::cache::ActionCache>) + Send + Sync>>,
 }
 
 impl fmt::Debug for LostInputsPolicy {
@@ -137,6 +128,14 @@ impl RemoteModuleContributions {
         }
         if let Some(tree) = &self.remote_output_tree {
             register(std::any::TypeId::of::<RemoteOutputTree>(), tree.clone());
+        }
+        if let Some(handler) = &self.important_output_handler {
+            register(
+                std::any::TypeId::of::<
+                    Arc<dyn crate::exec::action_execution_context::ImportantOutputHandler>,
+                >(),
+                Arc::new(handler.clone()),
+            );
         }
         if let Some(finalizer) = &self.action_finalizer {
             register(

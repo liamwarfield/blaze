@@ -128,6 +128,10 @@ pub(crate) struct MutableDictData<'v> {
     pub(crate) cell: RefCell<Dict<'v>>,
     #[allocative(skip)]
     pub(crate) immutable: Cell<bool>,
+    /// BLAZE PATCH 0063: for a key-tracking dict (Java `Dict.ImmutableKeyTrackingDict`), the
+    /// indexes of the keys accessed so far, in order of first access; `None` for other dicts.
+    #[allocative(skip)]
+    pub(crate) accessed_keys: RefCell<Option<Vec<usize>>>, // BLAZE PATCH 0063
 }
 
 // BLAZE PATCH 0018: same output as the `RefCell<Dict>` payload before.
@@ -149,6 +153,17 @@ impl<'v> MutableDictData<'v> {
         MutableDictData {
             cell: RefCell::new(dict),
             immutable: Cell::new(false),
+            accessed_keys: RefCell::new(None), // BLAZE PATCH 0063
+        }
+    }
+
+    /// BLAZE PATCH 0063: records an access of the key at `index` (Java
+    /// `ImmutableKeyTrackingDict.accessedKeys.add`, an `ImmutableSet.Builder`).
+    fn record_index(&self, index: usize) {
+        if let Some(accessed) = self.accessed_keys.borrow_mut().as_mut() {
+            if !accessed.contains(&index) {
+                accessed.push(index);
+            }
         }
     }
 }
@@ -182,6 +197,45 @@ pub fn dict_is_immutable(x: Value) -> Option<bool> {
         Some(true)
     } else {
         None
+    }
+}
+
+/// BLAZE PATCH 0063: an immutable dict that records the keys accessed through it (Java
+/// net/starlark/java/eval/Dict.java:789 `Dict.ImmutableKeyTrackingDict`, made by
+/// `Dict.Builder.buildImmutableWithKeyTracking`). Only keys present in the dict are tracked:
+/// `in` and `[]` and `get` record the key looked up when it is present (Java `containsKey`,
+/// `get`); iterating, `repr`/`str`, copying (`dict(d)`, `|`, `|=`, `update(d)`) and `**d` record
+/// every key (Java `keySet`, `entrySet`). `keys()`, `items()`, `values()`, `len` and `==` record
+/// nothing (Java reads its `contents` there). Unlike Java's, an empty dict is a tracking dict too
+/// (there is nothing to track in it).
+pub fn alloc_immutable_key_tracking_dict<'v>(heap: Heap<'v>, dict: Dict<'v>) -> Value<'v> {
+    let data = MutableDictData::new(dict);
+    data.immutable.set(true);
+    *data.accessed_keys.borrow_mut() = Some(Vec::new());
+    heap.alloc_complex(DictGen(data))
+}
+
+/// BLAZE PATCH 0063: the keys accessed so far of a dict made by
+/// [`alloc_immutable_key_tracking_dict`], in order of first access (Java
+/// `ImmutableKeyTrackingDict.getAccessedKeys`); `None` for any other value.
+pub fn dict_accessed_keys<'v>(x: Value<'v>) -> Option<Vec<Value<'v>>> {
+    let d = x.downcast_ref::<MutableDict<'v>>()?;
+    let accessed = d.0.accessed_keys.borrow();
+    let accessed = accessed.as_ref()?;
+    let content = d.0.cell.borrow();
+    Some(
+        accessed
+            .iter()
+            .map(|&i| *content.content.get_index(i).expect("a key of the dict").0)
+            .collect(),
+    )
+}
+
+/// BLAZE PATCH 0063: records every key of `x` as accessed when it is a key-tracking dict (Java
+/// `keySet()` / `entrySet()` of `ImmutableKeyTrackingDict`).
+pub fn dict_record_all_keys_accessed(x: Value) {
+    if let Some(d) = x.downcast_ref::<MutableDict>() {
+        d.0.record_all_keys_access();
     }
 }
 
@@ -403,6 +457,10 @@ trait DictLike<'v>: Debug + Allocative {
     unsafe fn content_unchecked(&self) -> &SmallMap<Value<'v>, Value<'v>>;
     unsafe fn iter_stop(&self);
     fn set_at(&self, index: Hashed<Value<'v>>, value: Value<'v>) -> crate::Result<()>;
+    /// BLAZE PATCH 0063: records an access of the key at `index` (key-tracking dicts only).
+    fn record_key_index_access(&self, _index: usize) {}
+    /// BLAZE PATCH 0063: records an access of every key (key-tracking dicts only).
+    fn record_all_keys_access(&self) {}
 }
 
 // BLAZE PATCH 0018: implemented on `MutableDictData` (was `RefCell<Dict>`, now `self.cell`).
@@ -434,6 +492,21 @@ impl<'v> DictLike<'v> for MutableDictData<'v> {
         unsafe {
             // SAFETY: this function contract is, caller must ensure that the value is borrowed.
             &self.cell.try_borrow_unguarded().ok().unwrap_unchecked().content
+        }
+    }
+
+    // BLAZE PATCH 0063
+    fn record_key_index_access(&self, index: usize) {
+        self.record_index(index);
+    }
+
+    // BLAZE PATCH 0063
+    fn record_all_keys_access(&self) {
+        if self.accessed_keys.borrow().is_some() {
+            let len = self.cell.borrow().content.len();
+            for i in 0..len {
+                self.record_index(i);
+            }
         }
     }
 
@@ -493,6 +566,7 @@ where
     }
 
     fn collect_repr(&self, r: &mut String) {
+        self.0.record_all_keys_access(); // BLAZE PATCH 0063: Java repr reads entrySet()
         // Fast path as repr() for dicts is quite hot
         r.push('{');
         for (i, (name, value)) in self.0.content().iter().enumerate() {
@@ -527,11 +601,17 @@ where
         // BLAZE PATCH 0051: Java Dict.getIndex (Dict.java:696): an unhashable key is not found.
         let content = self.0.content();
         let found = match index.get_hashed() {
-            Ok(k) => content.get_hashed_by_value(k),
+            Ok(k) => content.get_index_of_hashed_by_value(k), // BLAZE PATCH 0063
             Err(_) => None,
         };
         match found {
-            Some(v) => Ok(v.to_value()),
+            Some(i) => {
+                // BLAZE PATCH 0063: Java ImmutableKeyTrackingDict.get records a present key.
+                let v = content.get_index(i).expect("index of a key").1.to_value();
+                drop(content);
+                self.0.record_key_index_access(i);
+                Ok(v)
+            }
             None => Err(ValueError::Bazel(format!(
                 "key {} not found in dictionary",
                 index.to_repr()
@@ -545,13 +625,22 @@ where
     }
 
     fn is_in(&self, other: Value<'v>) -> crate::Result<bool> {
-        Ok(self
+        // BLAZE PATCH 0063: Java ImmutableKeyTrackingDict.containsKey records a present key.
+        let found = self
             .0
             .content()
-            .contains_key_hashed_by_value(other.get_hashed()?))
+            .get_index_of_hashed_by_value(other.get_hashed()?);
+        match found {
+            Some(i) => {
+                self.0.record_key_index_access(i);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     unsafe fn iterate(&self, me: Value<'v>, _heap: Heap<'v>) -> crate::Result<Value<'v>> {
+        self.0.record_all_keys_access(); // BLAZE PATCH 0063: Java iterator() reads keySet()
         unsafe {
             self.0.iter_start();
             Ok(me)
@@ -580,8 +669,12 @@ where
     }
 
     fn bit_or(&self, rhs: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
+        let rhs_value = rhs; // BLAZE PATCH 0063
         let rhs = DictRef::from_value(rhs)
             .map_or_else(|| ValueError::unsupported_with(self, "|", rhs), Ok)?;
+        // BLAZE PATCH 0063: Java copies both operands through entrySet().
+        self.0.record_all_keys_access();
+        dict_record_all_keys_accessed(rhs_value);
         if self.0.content().is_empty() {
             return Ok(heap.alloc((*rhs).clone()));
         }

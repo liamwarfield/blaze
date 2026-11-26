@@ -57,6 +57,31 @@ fn eval_err(e: impl fmt::Display) -> starlark::Error {
     starlark::Error::new_other(anyhow::anyhow!("{e}"))
 }
 
+impl LabelValue {
+    /// The fields of `Label` that read the semantics; `Ok(None)` for any other name.
+    fn get_field(
+        &self,
+        attribute: &str,
+        sibling_repository_layout: bool,
+    ) -> starlark::Result<Option<String>> {
+        match attribute {
+            // Java: com/google/devtools/build/lib/cmdline/Label.java:392 Label.getWorkspaceRootForStarlarkOnly
+            "workspace_root" => self
+                .0
+                .get_workspace_root_for_starlark_only(sibling_repository_layout)
+                .map(Some)
+                .map_err(|e| eval_err(e.get_message())),
+            // Java: com/google/devtools/build/lib/cmdline/Label.java:420 Label.getRepoRootForStarlarkOnly
+            "repo_root" => self
+                .0
+                .get_repo_root_for_starlark_only(sibling_repository_layout)
+                .map(Some)
+                .map_err(|e| eval_err(e.get_message())),
+            _ => Ok(None),
+        }
+    }
+}
+
 #[starlark_value(type = "Label")]
 impl<'v> StarlarkValue<'v> for LabelValue {
     fn get_methods() -> Option<&'static Methods> {
@@ -71,10 +96,51 @@ impl<'v> StarlarkValue<'v> for LabelValue {
         ));
     }
 
-    // Java: Label.str with --incompatible_unambiguous_label_stringification (default true; the
-    // value cannot see the thread's semantics here).
+    // Java: Label.str(printer, semantics): the semantics of the thread that converts, read
+    // from the running evaluation's ThreadContext (starlark-rust BLAZE PATCH 0064); outside an
+    // evaluation (or for an evaluator without a ThreadContext) the flag's default, true.
+    // Java: com/google/devtools/build/lib/cmdline/Label.java:740 Label.str
     fn collect_str(&self, collector: &mut String) {
-        collector.push_str(&self.0.str(true));
+        let unambiguous = starlark::eval::with_current_extra(|extra| {
+            extra
+                .and_then(|e| e.downcast_ref::<crate::thread::ThreadContext>())
+                .map(|cx| cx.semantics.incompatible_unambiguous_label_stringification)
+        })
+        .unwrap_or(true);
+        collector.push_str(&self.0.str(unambiguous));
+    }
+
+    /// Rust callers without an evaluator: the default semantics (no sibling repository
+    /// layout), `None` where Java throws.
+    fn get_attr(&self, attribute: &str, heap: starlark::values::Heap<'v>) -> Option<Value<'v>> {
+        self.get_field(attribute, false)
+            .ok()
+            .flatten()
+            .map(|s| heap.alloc_str(&s).to_value())
+    }
+
+    /// `workspace_root` and `repo_root` read `--experimental_sibling_repository_layout` of the
+    /// thread's semantics (Java passes the `StarlarkSemantics` to these methods), so they are
+    /// served here rather than by the methods table, which cannot see the evaluator.
+    fn get_attr_fallible(
+        &self,
+        attribute: starlark::collections::Hashed<&str>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<Option<Value<'v>>> {
+        let sibling_repository_layout = crate::thread::ThreadContext::get(eval)
+            .map(|ctx| ctx.semantics.experimental_sibling_repository_layout)
+            .unwrap_or(false);
+        Ok(self
+            .get_field(attribute.key(), sibling_repository_layout)?
+            .map(|s| eval.heap().alloc_str(&s).to_value()))
+    }
+
+    fn has_attr(&self, attribute: &str, _heap: starlark::values::Heap<'v>) -> bool {
+        matches!(attribute, "workspace_root" | "repo_root")
+    }
+
+    fn dir_attr(&self) -> Vec<String> {
+        vec!["repo_root".to_owned(), "workspace_root".to_owned()]
     }
 
     fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
@@ -137,24 +203,6 @@ fn label_methods(builder: &mut MethodsBuilder) {
     fn repo_name(this: &LabelValue) -> starlark::Result<String> {
         this.0
             .get_repo_name()
-            .map_err(|e| eval_err(e.get_message()))
-    }
-
-    /// Java: Label.getWorkspaceRootForStarlarkOnly (Label.java:380). Reads
-    /// --experimental_sibling_repository_layout as its default (false); attributes cannot see
-    /// the thread.
-    #[starlark(attribute)]
-    fn workspace_root(this: &LabelValue) -> starlark::Result<String> {
-        this.0
-            .get_workspace_root_for_starlark_only(false)
-            .map_err(|e| eval_err(e.get_message()))
-    }
-
-    /// Java: Label.getRepoRootForStarlarkOnly (Label.java:409)
-    #[starlark(attribute)]
-    fn repo_root(this: &LabelValue) -> starlark::Result<String> {
-        this.0
-            .get_repo_root_for_starlark_only(false)
             .map_err(|e| eval_err(e.get_message()))
     }
 

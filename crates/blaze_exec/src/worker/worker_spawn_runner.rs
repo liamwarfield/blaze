@@ -66,7 +66,8 @@ pub struct WorkerSpawnRunner {
 }
 
 /// What `execInWorker` and `executeRequest` throw.
-enum RunnerError {
+#[derive(Debug)]
+pub enum RunnerError {
     /// `ExecException` (including `UserExecException` and `InterruptedException`).
     Exec(ExecException),
     /// `IOException`.
@@ -307,6 +308,31 @@ impl WorkerSpawnRunner {
             request_builder.request_id = REQUEST_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
         }
         Ok(request_builder)
+    }
+
+    /// `execInWorker`, which Java marks `@VisibleForTesting` (package-private).
+    #[allow(clippy::too_many_arguments)]
+    pub fn exec_in_worker_for_testing(
+        &self,
+        spawn: &dyn Spawn,
+        key: Arc<WorkerKey>,
+        context: &dyn SpawnExecutionContext,
+        input_files: &SandboxInputs,
+        outputs: &SandboxOutputs,
+        flag_files: &[String],
+        input_file_cache: &dyn InputMetadataProvider,
+        spawn_metrics: &mut SpawnMetrics,
+    ) -> Result<WorkResponse, RunnerError> {
+        self.exec_in_worker(
+            spawn,
+            key,
+            context,
+            input_files,
+            outputs,
+            flag_files,
+            input_file_cache,
+            spawn_metrics,
+        )
     }
 
     // Java: com/google/devtools/build/lib/worker/WorkerSpawnRunner.java:375 WorkerSpawnRunner.execInWorker

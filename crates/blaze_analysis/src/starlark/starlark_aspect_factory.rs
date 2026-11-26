@@ -151,6 +151,16 @@ impl StarlarkAspectFactory {
                             };
                         // Java: finally { requiredConfigFragments =
                         //   ruleContext.getRequiredConfigFragments(); ruleContext.close(); }
+                        // (getRequiredConfigFragments reads ctx.lookedUpVariables()).
+                        // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1168 RuleContext.getRequiredConfigFragments
+                        if handle
+                            .borrow()
+                            .should_include_required_config_fragments_provider()
+                        {
+                            let variables =
+                                crate::starlark::starlark_rule_context::looked_up_variables(ctx);
+                            handle.borrow().set_starlark_looked_up_variables(variables);
+                        }
                         required_config_fragments = handle.borrow().get_required_config_fragments();
                         ctx.close();
                     }

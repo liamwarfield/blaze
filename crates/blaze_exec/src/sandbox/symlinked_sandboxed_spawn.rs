@@ -114,7 +114,7 @@ impl ContainerizingSandboxedSpawnHooks for SymlinkedSandboxedSpawn {
                         inputs_to_create,
                         dirs_to_create,
                         &self.base.sandbox_exec_root,
-                        &*self.base.tree_deleter,
+                        Some(&*self.base.tree_deleter),
                         Some(&contents),
                     )?;
                 }
@@ -128,7 +128,7 @@ impl ContainerizingSandboxedSpawnHooks for SymlinkedSandboxedSpawn {
                         inputs_to_create,
                         dirs_to_create,
                         &self.base.sandbox_exec_root,
-                        &*self.base.tree_deleter,
+                        Some(&*self.base.tree_deleter),
                     )?;
                     return Ok(());
                 }

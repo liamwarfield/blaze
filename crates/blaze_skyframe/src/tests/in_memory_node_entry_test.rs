@@ -10,7 +10,7 @@
 
 use super::*;
 use crate::in_memory_node_entry::InMemoryNodeEntry;
-use crate::node_entry::{DependencyState, LifecycleState, NodeEntry};
+use crate::node_entry::{DependencyState, DirtyType, LifecycleState, NodeEntry};
 use crate::value_with_metadata::{ValueWithMetadata, no_events};
 use crate::version::Version;
 use indexmap::IndexSet;
@@ -486,4 +486,256 @@ pub(super) fn add_temporary_direct_deps_in_groups_deps_exhausted_throws(kind: &K
 fn in_memory_node_entry_is_send() {
     fn assert_send<T: Send>() {}
     assert_send::<InMemoryNodeEntry>();
+}
+
+// Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:354 InMemoryNodeEntryTest.resetLifecycle
+pub(super) fn reset_lifecycle(kind: &Kind) {
+    let initial_version = kind.initial_version;
+    let mut entry = kind.create_entry();
+    entry.add_reverse_dep_and_check_if_done(None); // Start evaluation.
+    entry.mark_rebuilding();
+    // Rdep added before reset.
+    let parent1 = key("parent1");
+    assert_eq!(
+        entry.add_reverse_dep_and_check_if_done(Some(parent1.clone())),
+        DependencyState::AlreadyEvaluating
+    );
+    // Dep added before reset.
+    let dep1 = key("dep1");
+    entry.add_singleton_temporary_direct_dep(dep1.clone());
+    assert!(entry.signal_dep(initial_version, Some(&dep1)));
+    assert!(entry.get_reset_direct_deps().is_empty());
+    // Reset clears temporary direct deps.
+    entry.reset_evaluation_from_scratch();
+    assert_eq!(entry.get_lifecycle_state(), LifecycleState::Rebuilding);
+    assert!(temporary_direct_deps(&mut entry).is_empty());
+    // Rdep added after reset.
+    let parent2 = key("parent2");
+    assert_eq!(
+        entry.add_reverse_dep_and_check_if_done(Some(parent2.clone())),
+        DependencyState::AlreadyEvaluating
+    );
+    // Add back same dep.
+    entry.add_singleton_temporary_direct_dep(dep1.clone());
+    assert!(entry.signal_dep(initial_version, Some(&dep1)));
+    assert_eq!(temporary_direct_deps(&mut entry), vec![dep1.clone()]);
+    // Dep added after reset.
+    let dep2 = key("dep2");
+    entry.add_singleton_temporary_direct_dep(dep2.clone());
+    assert!(entry.signal_dep(initial_version, Some(&dep2)));
+    assert_eq!(
+        temporary_direct_deps(&mut entry),
+        vec![dep1.clone(), dep2.clone()]
+    );
+    // Deps registered before the reset must be tracked if keeping edges.
+    if entry.keeps_edges() {
+        assert_contains_exactly(
+            &entry.get_reset_direct_deps().into_iter().collect::<Vec<_>>(),
+            &[dep1],
+        );
+    }
+    // Set value and check that both parents will be signaled.
+    assert_contains_exactly(
+        &set_value(&mut entry, Some(integer_value(1)), None, initial_version)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        &[parent1, parent2],
+    );
+}
+
+// Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:399 InMemoryNodeEntryTest.resetTwice_moreDepsRequestedBeforeFirstReset
+pub(super) fn reset_twice_more_deps_requested_before_first_reset(kind: &Kind) {
+    let initial_version = kind.initial_version;
+    let mut entry = kind.create_entry();
+    entry.add_reverse_dep_and_check_if_done(None); // Start evaluation.
+    entry.mark_rebuilding();
+    // Rdep added before any reset.
+    let parent = key("parent");
+    assert_eq!(
+        entry.add_reverse_dep_and_check_if_done(Some(parent.clone())),
+        DependencyState::AlreadyEvaluating
+    );
+    // Two deps added before first reset.
+    let dep1 = key("dep1");
+    entry.add_singleton_temporary_direct_dep(dep1.clone());
+    assert!(entry.signal_dep(initial_version, Some(&dep1)));
+    let dep2 = key("dep2");
+    entry.add_singleton_temporary_direct_dep(dep2.clone());
+    assert!(entry.signal_dep(initial_version, Some(&dep2)));
+    // First reset.
+    entry.reset_evaluation_from_scratch();
+    assert!(temporary_direct_deps(&mut entry).is_empty());
+    // Add back only one dep.
+    entry.add_singleton_temporary_direct_dep(dep1.clone());
+    assert!(entry.signal_dep(initial_version, Some(&dep1)));
+    assert_eq!(temporary_direct_deps(&mut entry), vec![dep1.clone()]);
+    // Second reset.
+    entry.reset_evaluation_from_scratch();
+    assert!(temporary_direct_deps(&mut entry).is_empty());
+    // Both deps added back.
+    entry.add_singleton_temporary_direct_dep(dep1.clone());
+    assert!(entry.signal_dep(initial_version, Some(&dep1)));
+    entry.add_singleton_temporary_direct_dep(dep2.clone());
+    assert!(entry.signal_dep(initial_version, Some(&dep2)));
+    assert_eq!(
+        temporary_direct_deps(&mut entry),
+        vec![dep1.clone(), dep2.clone()]
+    );
+    // If tracking of reset deps is required, make sure both deps are reported even though only
+    // dep1 was registered during the most recent evaluation attempt.
+    if entry.keeps_edges() {
+        assert_contains_exactly(
+            &entry.get_reset_direct_deps().into_iter().collect::<Vec<_>>(),
+            &[dep1, dep2],
+        );
+    }
+    // Set value and check that parent will be signaled.
+    assert_contains_exactly(
+        &set_value(&mut entry, Some(integer_value(1)), None, initial_version)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        &[parent],
+    );
+}
+
+/// The first half of `rewindingLifecycle` and `resetAfterRewind`: the node is rewound after it
+/// completed with `IntegerValue(1)` (and `dep`, if given), and its parent declares it again.
+fn rewind_done_entry(kind: &Kind, dep: Option<&SkyKey>) -> (InMemoryNodeEntry, SkyKey) {
+    let initial_version = kind.initial_version;
+    let mut entry = kind.create_entry();
+    // Rdep that will eventually rewind the entry.
+    let reset_parent = key("resetParent");
+    assert_eq!(
+        entry.add_reverse_dep_and_check_if_done(Some(reset_parent.clone())),
+        DependencyState::NeedsScheduling
+    );
+    entry.mark_rebuilding();
+
+    if let Some(dep) = dep {
+        // One dep declared.
+        entry.add_singleton_temporary_direct_dep(dep.clone());
+        entry.signal_dep(initial_version, Some(dep));
+    }
+
+    // Node completes.
+    assert_contains_exactly(
+        &set_value(&mut entry, Some(integer_value(1)), None, initial_version)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        std::slice::from_ref(&reset_parent),
+    );
+    assert!(!entry.is_dirty());
+    assert!(entry.is_done());
+
+    // Rewinding initiated.
+    entry.mark_dirty(DirtyType::Rewind);
+    assert!(entry.is_dirty());
+    assert!(entry.is_changed());
+    assert!(!entry.is_done());
+    assert_eq!(as_integer(entry.to_value()), Some(1));
+
+    // Parent declares dep again after resetting.
+    let dependency_state = if entry.keeps_edges() {
+        entry.check_if_done_for_dirty_reverse_dep(reset_parent.clone())
+    } else {
+        entry.add_reverse_dep_and_check_if_done(Some(reset_parent.clone()))
+    };
+    assert_eq!(dependency_state, DependencyState::NeedsScheduling);
+    assert_eq!(entry.get_lifecycle_state(), LifecycleState::NeedsRebuilding);
+    assert!(entry.is_ready_to_evaluate());
+    assert!(!entry.has_unsignaled_deps());
+    assert!(temporary_direct_deps(&mut entry).is_empty());
+    entry.mark_rebuilding();
+    assert_eq!(entry.get_lifecycle_state(), LifecycleState::Rebuilding);
+    (entry, reset_parent)
+}
+
+// Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:443 InMemoryNodeEntryTest.rewindingLifecycle
+pub(super) fn rewinding_lifecycle(kind: &Kind) {
+    let initial_version = kind.initial_version;
+    let (mut entry, reset_parent) = rewind_done_entry(kind, None);
+
+    // Rewound evaluation completes. The parent that initiated rewinding is signalled.
+    assert_contains_exactly(
+        &set_value(&mut entry, Some(integer_value(2)), None, initial_version)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        &[reset_parent],
+    );
+    assert_eq!(as_integer(entry.get_value()), Some(2));
+    assert_eq!(as_integer(entry.to_value()), Some(2));
+    assert_eq!(entry.get_version(), initial_version);
+}
+
+// Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:491 InMemoryNodeEntryTest.resetAfterRewind
+pub(super) fn reset_after_rewind(kind: &Kind) {
+    let initial_version = kind.initial_version;
+    let dep = key("dep");
+    let (mut entry, reset_parent) = rewind_done_entry(kind, Some(&dep));
+
+    // Dep declared again, then there's a reset.
+    entry.add_singleton_temporary_direct_dep(dep.clone());
+    entry.signal_dep(initial_version, Some(&dep));
+    entry.reset_evaluation_from_scratch();
+    assert_eq!(as_integer(entry.to_value()), Some(1));
+
+    // Dep declared again post-reset.
+    entry.add_singleton_temporary_direct_dep(dep.clone());
+    entry.signal_dep(initial_version, Some(&dep));
+    assert_eq!(as_integer(entry.to_value()), Some(1));
+
+    // Rewound evaluation completes. The parent that initiated rewinding is signalled.
+    assert_contains_exactly(
+        &set_value(&mut entry, Some(integer_value(2)), None, initial_version)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        &[reset_parent],
+    );
+    assert_eq!(as_integer(entry.get_value()), Some(2));
+    assert_eq!(as_integer(entry.to_value()), Some(2));
+    assert_eq!(entry.get_version(), initial_version);
+}
+
+// Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:555 InMemoryNodeEntryTest.concurrentRewindingAllowed
+pub(super) fn concurrent_rewinding_allowed(kind: &Kind) {
+    let mut entry = kind.create_entry();
+    entry.add_reverse_dep_and_check_if_done(None); // Start evaluation.
+    entry.mark_rebuilding();
+    set_value(&mut entry, Some(new_sky_value()), None, kind.initial_version);
+    assert!(!entry.is_dirty());
+    assert!(entry.is_done());
+    assert!(entry.mark_dirty(DirtyType::Rewind).is_some());
+    assert!(entry.mark_dirty(DirtyType::Rewind).is_none());
+    assert!(entry.is_dirty());
+    assert!(entry.is_changed());
+    assert!(!entry.is_done());
+    assert_eq!(entry.get_lifecycle_state(), LifecycleState::NeedsRebuilding);
+}
+
+// Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:571 InMemoryNodeEntryTest.rewindErrorfulNode_toleratedButNoOp
+// (@TestParameter Transience transience: both values)
+pub(super) fn rewind_errorful_node_tolerated_but_no_op(kind: &Kind) {
+    for transience in [Transience::Transient, Transience::Persistent] {
+        let mut entry = kind.create_entry();
+        entry.add_reverse_dep_and_check_if_done(None); // Start evaluation.
+        entry.mark_rebuilding();
+
+        let error_info = error_info("oops", transience, transience == Transience::Transient);
+        assert!(
+            set_value(
+                &mut entry,
+                /* value= */ None,
+                Some(error_info.clone()),
+                kind.initial_version
+            )
+            .is_empty()
+        );
+
+        assert!(entry.mark_dirty(DirtyType::Rewind).is_none());
+        assert!(entry.is_done());
+        assert_eq!(entry.get_lifecycle_state(), LifecycleState::Done);
+        assert!(entry.get_value().is_none());
+        assert!(entry.to_value().is_none());
+        assert_error_info_eq(entry.get_error_info(), &error_info);
+    }
 }

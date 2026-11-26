@@ -40,7 +40,9 @@ use blaze_buildtool::runtime::test_command_support::{
 };
 use blaze_events::{Clock, Event, EventHandler, ExtendedEventHandler, JavaClock, OutErr};
 use blaze_exec::actions::action_execution::ActionExecutionException;
-use blaze_exec::exec::spawn_log_module::{SpawnLogModule, SpawnLogModuleEnv};
+use blaze_exec::exec::spawn_log_module::{
+    DeferredSpawnLogContext, SpawnLogModule, SpawnLogModuleEnv,
+};
 use blaze_optdefs::command::build_language_options::BuildLanguageOptions;
 use blaze_optdefs::command::build_request_options::{BuildRequestOptions, ConvenienceSymlinksMode};
 use blaze_optdefs::command::execution_options::ExecutionOptions;
@@ -433,33 +435,36 @@ fn run_build_with_bep(
     let exec_root = env.get_exec_root();
     let file_system = env.get_output_base().get_file_system().clone();
 
-    // SpawnLogModule.executorInit (--execution_log_*_file).
-    let mut spawn_log_module = SpawnLogModule::new();
-    let spawn_log_context = match blaze_exec::exec::spawn_log_module::create_spawn_log_context(
-        &mut spawn_log_module,
-        &SpawnLogModuleEnv {
-            execution_options: Some(&execution_options),
-            // env.getOptions().getOptions(RemoteOptions.class)
-            remote_options: options
-                .get_options::<blaze_optdefs::misc::remote_options::RemoteOptions>()
-                .map(Arc::new),
-            sibling_repository_layout: build_language_options
-                .experimental_sibling_repository_layout,
-            file_system: &file_system,
-            output_base: env.get_output_base(),
-            exec_root: &exec_root,
-            workspace: Some(&workspace),
-            working_directory: env.get_working_directory(),
-            workspace_name: env.get_workspace_name(),
-            command_id: env.get_command_id(),
-            reporter: env.get_reporter().clone() as Arc<dyn EventHandler>,
-        },
-    ) {
-        Ok(c) => c,
-        Err(e) => {
-            return BlazeCommandResult::detailed_exit_code(DetailedExitCode::of(e.failure_detail));
-        }
+    // SpawnLogModule (--execution_log_*_file): its executorInit runs where Java constructs the
+    // ExecutionTool (`ExecutionToolConstruction`); the executor registers the deferred context
+    // it fills (see `DeferredSpawnLogContext`).
+    let spawn_log = SpawnLogSetup {
+        module: RefCell::new(SpawnLogModule::new()),
+        deferred: blaze_exec::exec::spawn_log_module::execution_log_requested(Some(
+            &execution_options,
+        ))
+        .then(|| Arc::new(DeferredSpawnLogContext::new())),
+        initialized: Cell::new(false),
+        execution_options: execution_options.clone(),
+        // env.getOptions().getOptions(RemoteOptions.class)
+        remote_options: options
+            .get_options::<blaze_optdefs::misc::remote_options::RemoteOptions>()
+            .map(Arc::new),
+        sibling_repository_layout: build_language_options.experimental_sibling_repository_layout,
+        file_system: file_system.clone(),
+        output_base: env.get_output_base().clone(),
+        exec_root: exec_root.clone(),
+        workspace: workspace.clone(),
+        working_directory: env.get_working_directory().clone(),
+        workspace_name: env.get_workspace_name().to_string(),
+        command_id: env.get_command_id().to_string(),
+        reporter: env.get_reporter().clone() as Arc<dyn EventHandler>,
+        module_environment: env.get_blaze_module_environment().clone(),
     };
+    let spawn_log_context = spawn_log
+        .deferred
+        .clone()
+        .map(|d| d as Arc<dyn blaze_exec::exec::spawn_log_context::SpawnLogContext>);
 
     // OutputFilteringModule: the reporter's filter (see `output_filter`).
     let reporter_output_filter = output_filter(options, &build_request_options);
@@ -481,6 +486,7 @@ fn run_build_with_bep(
         keep_going,
         verbose_failures: execution_options.verbose_failures,
         jobs,
+        command_id: env.get_command_id().to_string(),
         // The modules' registerSpawnStrategies read `env.getOptions()`: the options of the
         // first round of parsing, which the CommandEnvironment keeps (the dispatcher re-parses
         // into a new parser with the main repo mapping, which only the command sees). Its labels
@@ -647,6 +653,12 @@ fn run_build_with_bep(
             .len(),
     );
     request.set_merged_analysis_and_execution(merged_analysis_and_execution);
+    if let Some(remote) = remote {
+        remote.set_merged_analysis_and_execution(merged_analysis_and_execution);
+        if let Some(execution) = skyframe_executor.get_execution() {
+            remote.set_was_rewound(execution.prepared.executor.clone());
+        }
+    }
     if let Some(bep) = bep {
         bep.set_merged_analysis_and_execution(merged_analysis_and_execution);
     }
@@ -796,9 +808,12 @@ fn run_build_with_bep(
                 >(),
             ),
         non_merged_coverage_artifacts: std::cell::RefCell::new(None),
+        event_bus: env.get_event_bus().clone(),
+        incremental_package_roots: RefCell::new(None),
     };
     let post_processor = ExecutionToolConstruction {
         execution_phase: &execution_phase,
+        spawn_log: &spawn_log,
     };
     let build_tool = BuildTool::new(
         &skyframe_executor,
@@ -1025,7 +1040,7 @@ fn run_build_with_bep(
     // build tool logs of the BuildToolLogs event below (after BuildSummaryStatsModule's entries,
     // see BepCommandSupport::add_execution_log).
     // Java: com/google/devtools/build/lib/bazel/SpawnLogModule.java:205 SpawnLogModule.buildComplete
-    if let Some((name, path)) = spawn_log_module.build_complete()
+    if let Some((name, path)) = spawn_log.module.borrow_mut().build_complete()
         && let Some(bep) = bep
     {
         bep.add_execution_log(name, path);
@@ -1072,7 +1087,8 @@ fn run_build_with_bep(
     if let Some(execution) = skyframe_executor.get_execution() {
         execution.after_command();
     }
-    if let Err(e) = spawn_log_module.after_command() {
+    let spawn_log_after_command = spawn_log.module.borrow_mut().after_command();
+    if let Err(e) = spawn_log_after_command {
         reporter.handle(&Event::error(e.failure_detail.message.clone()));
         // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:795 BlazeRuntime.afterCommand
         if let Some(run_result) = &run_result
@@ -1210,13 +1226,117 @@ fn executor_init_build_summary_stats(
     );
 }
 
+/// `SpawnLogModule` and what its `executorInit` reads of the command environment.
+struct SpawnLogSetup {
+    module: RefCell<SpawnLogModule>,
+    /// The context the executor registered (when a log is requested).
+    deferred: Option<Arc<DeferredSpawnLogContext>>,
+    /// Whether `executorInit` ran (the ExecutionTool was constructed).
+    initialized: Cell<bool>,
+    execution_options: ExecutionOptions,
+    remote_options: Option<Arc<blaze_optdefs::misc::remote_options::RemoteOptions>>,
+    sibling_repository_layout: bool,
+    file_system: blaze_vfs::FileSystemRef,
+    output_base: Path,
+    exec_root: Path,
+    workspace: Path,
+    working_directory: Path,
+    workspace_name: String,
+    command_id: String,
+    reporter: Arc<dyn EventHandler>,
+    module_environment: crate::command_environment::BlazeModuleEnvironment,
+}
+
+impl SpawnLogSetup {
+    /// `SpawnLogModule.executorInit` and `registerActionContexts`, run by
+    /// `new ExecutionTool(env, request)` (once per command). An error is the module's
+    /// `env.getBlazeModuleEnvironment().exit(...)`: a pending exit, which the build does not see
+    /// until it is thrown (before a merged analysis, or when the command completes).
+    // Java: com/google/devtools/build/lib/bazel/SpawnLogModule.java:188 SpawnLogModule.executorInit
+    // Java: com/google/devtools/build/lib/bazel/SpawnLogModule.java:178 SpawnLogModule.registerActionContexts
+    fn executor_init(&self) {
+        if self.initialized.replace(true) {
+            return;
+        }
+        let env = SpawnLogModuleEnv {
+            execution_options: Some(&self.execution_options),
+            remote_options: self.remote_options.clone(),
+            sibling_repository_layout: self.sibling_repository_layout,
+            file_system: &self.file_system,
+            output_base: &self.output_base,
+            exec_root: &self.exec_root,
+            workspace: Some(&self.workspace),
+            working_directory: &self.working_directory,
+            workspace_name: &self.workspace_name,
+            command_id: &self.command_id,
+            reporter: self.reporter.clone(),
+        };
+        let created = blaze_exec::exec::spawn_log_module::create_spawn_log_context(
+            &mut self.module.borrow_mut(),
+            &env,
+        );
+        let context = match created {
+            Ok(context) => context,
+            Err(e) => {
+                self.module_environment
+                    .exit(crate::module::AbruptExitException::new(
+                        DetailedExitCode::of(e.failure_detail),
+                    ));
+                None
+            }
+        };
+        if let Some(deferred) = &self.deferred {
+            deferred.set(context);
+        }
+    }
+}
+
 // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:520 BuildTool.buildTargetsWithoutMergedAnalysisExecution
 // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:613 BuildTool.buildTargetsWithMergedAnalysisExecution
 struct ExecutionToolConstruction<'a> {
     execution_phase: &'a RuntimeExecutionPhase,
+    spawn_log: &'a SpawnLogSetup,
 }
 
 impl AnalysisPostProcessor for ExecutionToolConstruction<'_> {
+    /// Skymeld constructs the ExecutionTool before the analysis: the modules' `executorInit`
+    /// that Blaze runs there (`SpawnLogModule`'s; the others run in [`Self::construct`]), then
+    /// `AnalysisAndExecutionPhaseRunner.execute`'s `env.throwPendingException()`.
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:613 BuildTool.buildTargetsWithMergedAnalysisExecution
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:113 AnalysisAndExecutionPhaseRunner.execute
+    fn before_merged_analysis(
+        &self,
+        _request: &BuildRequest,
+        skyframe_executor: &SkyframeExecutor,
+    ) -> Result<(), BuildToolError> {
+        // ExecutionTool.prepareForExecution ("preparingExecroot"), which Skymeld runs before the
+        // analysis (BuildTool.buildTargetsWithMergedAnalysisExecution).
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:270 ExecutionTool.prepareForExecution
+        self.execution_phase
+            .prepare_incremental_package_roots(skyframe_executor)?;
+        self.spawn_log.executor_init();
+        if let Err(e) = self.spawn_log.module_environment.throw_pending_exception() {
+            // catch (AbruptExitException e): result.setCatastrophe().
+            // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:987 BuildTool.processRequest
+            self.execution_phase
+                .build_result
+                .borrow_mut()
+                .set_catastrophe();
+            let failure_detail = e
+                .get_detailed_exit_code()
+                .get_failure_detail()
+                .cloned()
+                .expect("an AbruptExitException has a FailureDetail");
+            return Err(BuildToolError::Exit(
+                blaze_query_engine::DetailedExitCode::of_exit_code(
+                    blaze_query_engine::DetailedExitCode::get_exit_code_for(&failure_detail),
+                    failure_detail,
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     fn process(
         &self,
         request: &BuildRequest,
@@ -1268,6 +1388,8 @@ impl ExecutionToolConstruction<'_> {
         let state = skyframe_executor
             .get_execution()
             .expect("IllegalStateException: the executor was created without execution");
+        // SpawnLogModule.executorInit (already run before a merged analysis).
+        self.spawn_log.executor_init();
         // ExecutionTool.<init>: each module's executorInit (BuildSummaryStatsModule's registers
         // the CriticalPathComputer) runs before the spawn strategy registry is built.
         // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:171 ExecutionTool.<init>
@@ -1676,9 +1798,87 @@ struct RuntimeExecutionPhase {
     /// computed when the analysis returned (`BuildView.update` adds them to `artifactsToBuild`).
     // Java: com/google/devtools/build/lib/analysis/BuildView.java:941 BuildView.memoizedGetCoverageArtifactsHelper
     non_merged_coverage_artifacts: std::cell::RefCell<Option<Vec<blaze_actions::Artifact>>>,
+    /// The command's event bus, on which the Skymeld package roots are registered.
+    event_bus: Arc<crate::command_environment::CommandEventBus>,
+    /// `ExecutionTool.prepareForExecution`'s `IncrementalPackageRoots` (merged analysis and
+    /// execution only).
+    incremental_package_roots: RefCell<
+        Option<Arc<blaze_sky_top::incremental_package_roots::IncrementalPackageRoots>>,
+    >,
 }
 
 impl RuntimeExecutionPhase {
+    /// The `IncrementalPackageRoots` part of `ExecutionTool.prepareForExecution`: eagerly plants
+    /// the symlinks to the single source root's entries, registers the roots on the event bus
+    /// (they plant the external repositories as top-level targets finish their analysis) and
+    /// makes them the artifact factory's package roots.
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:270 ExecutionTool.prepareForExecution
+    fn prepare_incremental_package_roots(
+        &self,
+        skyframe_executor: &SkyframeExecutor,
+    ) -> Result<(), BuildToolError> {
+        let state = skyframe_executor
+            .get_execution()
+            .expect("IllegalStateException: the executor was created without execution");
+        let path_entries = skyframe_executor.get_package_locator().get_path_entries();
+        // Single package path is a Skymeld prerequisite.
+        if path_entries.len() != 1 {
+            panic!(
+                "IllegalArgumentException: expected one element but was: {:?}",
+                path_entries
+            );
+        }
+        let ignored_paths = skyframe_executor
+            .get_ignored_paths(self.reporter.clone())
+            .map_err(|_| BuildToolError::Interrupted)?;
+        let incremental_package_roots =
+            blaze_sky_top::incremental_package_roots::IncrementalPackageRoots::create(
+                state.config.exec_root.clone(),
+                path_entries[0].clone(),
+                format!("{}-", self.product_name),
+                ignored_paths,
+                self.sibling_repository_layout,
+                // runtime.getWorkspace().doesAllowExternalRepositories(): true in Bazel.
+                true,
+                Some(skyframe_executor.get_root_for_done_package()),
+            );
+        self.event_bus.register(incremental_package_roots.clone());
+        let planted = state
+            .config
+            .exec_root
+            .create_directory_and_parents()
+            .map_err(
+                |e| blaze_sky_top::incremental_package_roots::SymlinkForestAbruptExit {
+                    failure_detail: FailureDetail {
+                        message: format!(
+                            "Failed to prepare the symlink forest: java.io.IOException: {e}"
+                        ),
+                        category: Some(Category::SymlinkForest(failure_details::SymlinkForest {
+                            code: failure_details::symlink_forest::Code::CreationFailed as i32,
+                        })),
+                    },
+                },
+            )
+            .and_then(|()| {
+                incremental_package_roots.eagerly_plant_symlinks_to_single_source_root()
+            });
+        if let Err(e) = planted {
+            return Err(BuildToolError::Exit(
+                blaze_query_engine::DetailedExitCode::of_exit_code(
+                    blaze_query_engine::DetailedExitCode::get_exit_code_for(&e.failure_detail),
+                    e.failure_detail,
+                ),
+            ));
+        }
+        if let Some(services) = skyframe_executor.get_analysis_services() {
+            services
+                .artifact_factory
+                .set_package_roots(incremental_package_roots.clone());
+        }
+        *self.incremental_package_roots.borrow_mut() = Some(incremental_package_roots);
+        Ok(())
+    }
+
     /// `BuildView.memoizedGetCoverageArtifactsHelper(configuredTargets, allTargetsToTest,
     /// eventHandler, eventBus)` of `BuildView.update` (no merged analysis and execution): the
     /// coverage report actions are created (and their errors reported) when the analysis
@@ -2141,18 +2341,24 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         // The loading and analysis BEP events are posted by BuildTool's hooks
         // (blaze_sky_top BuildEventHooks, crate::commands::bep).
 
-        // ExecutionTool.prepareForExecution: plant the symlink forest of the exec root.
-        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:296 ExecutionTool.prepareForExecution
+        // Without merged analysis and execution, ExecutionTool.executeBuild plants the symlink
+        // forest of the exec root ("plantSymlinkForest"); Skymeld planted it incrementally
+        // (prepare_incremental_package_roots).
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:620 ExecutionTool.executeBuild
         let exec_root = state.config.exec_root.clone();
-        let planted = exec_root.create_directory_and_parents().and_then(|_| {
-            SymlinkForest::with_sibling_repository_layout(
-                skyframe_executor.get_package_roots(),
-                exec_root.clone(),
-                &self.product_name,
-                self.sibling_repository_layout,
-            )
-            .plant_symlink_forest()
-        });
+        let planted = if request.with_merged_analysis_and_execution_source_of_truth() {
+            Ok(Vec::new())
+        } else {
+            exec_root.create_directory_and_parents().and_then(|_| {
+                SymlinkForest::with_sibling_repository_layout(
+                    skyframe_executor.get_package_roots(),
+                    exec_root.clone(),
+                    &self.product_name,
+                    self.sibling_repository_layout,
+                )
+                .plant_symlink_forest()
+            })
+        };
         if let Err(e) = planted {
             let message = format!("Source forest creation failed: {e}");
             return Err(BuildToolError::Exit(
@@ -2361,6 +2567,12 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         // targets built so far are shown.
         // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:620 BuildTool.buildTargetsWithMergedAnalysisExecution
         let mut interrupted = evaluated.is_err();
+        // IncrementalPackageRoots.analysisFinished(AnalysisPhaseCompleteEvent): every top-level
+        // key's BuildDriverFunction has run (and posted its planting event) by now.
+        // Java: com/google/devtools/build/lib/skyframe/IncrementalPackageRoots.java:303 IncrementalPackageRoots.analysisFinished
+        if let Some(incremental_package_roots) = self.incremental_package_roots.borrow().as_ref() {
+            incremental_package_roots.analysis_finished();
+        }
         let evaluation = match evaluated {
             Ok(result) => result.evaluation,
             Err(blaze_skyframe::Interrupted) => blaze_skyframe::EvaluationResult {
@@ -2475,7 +2687,10 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             // RemoteOutputService.onExecutionPhaseCompleteEvent → LeaseService
             // .finalizeExecution (Java: after the save, on the server's in-memory cache).
             if let Some(remote) = &self.remote {
-                remote.finalize_execution(state.prepared.action_cache.as_deref());
+                remote.finalize_execution(
+                    state.prepared.action_cache.as_deref(),
+                    skyframe_executor.get_evaluator(),
+                );
             }
             state.prepared.save_action_cache(reporter.as_ref());
         }

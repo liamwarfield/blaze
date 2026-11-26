@@ -991,7 +991,6 @@ fn prefetch_files_file_exists_do_not_download() {
 }
 
 #[test]
-#[ignore = "needs a mutable contents proxy on FileArtifactValue::RemoteFile (FileArtifactValue.setContentsProxy): blaze_exec's seam copy has no such field, so getContentsProxy() stays null"]
 fn prefetch_files_file_exists_records_contents_proxy() {
     let f = Fixture::set_up();
     let mut metadata = MetadataMap::new();

@@ -330,7 +330,11 @@ impl BlazeCommandDispatcher {
                     }
                 ));
             } else if self.release_build_arena {
-                release_build_arena();
+                // The kept graph's last executor is gone with the command: its functions, and
+                // the command's state they hold, go now (not with the next command's executor).
+                let incremental = self.runtime.get_workspace().get_incremental_state();
+                incremental.release_command_functions();
+                release_build_arena(incremental.has_kept_graph());
             }
             result
         })();
@@ -541,6 +545,7 @@ impl BlazeCommandDispatcher {
         }
         // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:549 BlazeCommandDispatcher.execExclusively
         crate::server_log::setup_logging(common_options.verbosity);
+        inject_panic_on_detached_thread_if_requested(command_annotation.name());
         let handler = Arc::new(UiEventHandler::new(
             out_err.clone(),
             &ui_event_handler_options(&event_handler_options),
@@ -1114,6 +1119,25 @@ impl BlazeCommandDispatcher {
             .unwrap_or_else(|e| e.throw())
     }
 
+    // Java: com/google/devtools/build/lib/runtime/BlazeOptionHandler.java:642 BlazeOptionHandler.getNotInRealWorkspaceError
+    fn get_not_in_real_workspace_error(&self, do_not_build_file: &blaze_vfs::Path) -> String {
+        let product_name = self.runtime.get_product_name();
+        let mut message =
+            format!("{product_name} should not be called from a {product_name} output directory. ");
+        // FileSystemUtils.readContentAsLatin1: one char per byte.
+        let mut content = Vec::new();
+        if let Ok(mut input) = do_not_build_file.get_input_stream() {
+            if std::io::Read::read_to_end(&mut input, &mut content).is_ok() {
+                let real_workspace = blaze_util::string_encoding::latin1_decode(&content);
+                message.push_str(&format!(
+                    "The pertinent workspace directory is: '{real_workspace}'"
+                ));
+            }
+            // We are exiting anyway.
+        }
+        message
+    }
+
     // Java: com/google/devtools/build/lib/runtime/BlazeOptionHandler.java:156 BlazeOptionHandler.checkCwdInWorkspace
     fn check_cwd_in_workspace(
         &self,
@@ -1143,7 +1167,12 @@ impl BlazeCommandDispatcher {
             let do_not_build =
                 parent.get_relative_str(crate::workspace::BlazeWorkspace::DO_NOT_BUILD_FILE_NAME);
             if do_not_build.exists() {
-                blaze_util::unported!("BlazeOptionHandler.getNotInRealWorkspaceError");
+                let message = self.get_not_in_real_workspace_error(&do_not_build);
+                event_handler.handle(HandlerEvent::error(message.clone()));
+                return create_options_detailed_exit_code(
+                    &message,
+                    failure_details::command::Code::InOutputDirectory,
+                );
             }
         }
         DetailedExitCode::success()
@@ -1230,8 +1259,20 @@ fn set_shutdown_reason(reason: &Mutex<Option<String>>, shutdown_reason: String) 
 /// the next command shares this arena, as in a process that never releases it; the server log
 /// says so (review 2026-11-26 O2). Then the allocator returns the freed memory to the system
 /// (`malloc_trim`, allowed by ruling D15; it changes no output).
-fn release_build_arena() {
-    if !blaze_util::build_arena::release_if_unused() {
+///
+/// With a graph kept for the next command (`BLAZE_INCREMENTAL`, package I3) the graph's values
+/// point into the arena and its lease keeps it: nothing is released, as Java's collector frees
+/// nothing the graph references. The heaps of values the graph no longer references stay
+/// until the graph is dropped (open item of package I3).
+fn release_build_arena(kept_graph: bool) {
+    if kept_graph && blaze_util::build_arena::active_leases() == 1 {
+        crate::server_log::log(
+            blaze_options::converters::LogLevel::INFO,
+            "com.google.devtools.build.lib.runtime.BlazeCommandDispatcher",
+            "releaseBuildArena",
+            "build arena kept with the Skyframe graph kept for the next command",
+        );
+    } else if !blaze_util::build_arena::release_if_unused() {
         crate::server_log::log(
             blaze_options::converters::LogLevel::WARNING,
             "com.google.devtools.build.lib.runtime.BlazeCommandDispatcher",
@@ -1723,4 +1764,35 @@ impl EventHandler for ReportedOnceFilter {
     fn as_extended_event_handler(&self) -> Option<&dyn blaze_events::ExtendedEventHandler> {
         self.delegate.as_extended_event_handler()
     }
+}
+
+/// The environment variable of [`inject_panic_on_detached_thread_if_requested`].
+pub const INJECT_PANIC_ENV: &str = "BLAZE_DEBUG_INJECT_PANIC";
+
+/// A test hook for the default uncaught exception handler (`BlazeRuntime
+/// .setupUncaughtHandlerAtStartup`): when the server process's environment has
+/// `BLAZE_DEBUG_INJECT_PANIC=<command name>`, a command of that name starts a detached thread
+/// (wrapped as the server's other detached threads are, `run_catching`) that panics, so the
+/// handler's crash path (exit code file, `blazeShutdownOnCrash`, halt with 37, the client's
+/// "Server terminated abruptly") can be checked end to end.
+///
+/// PORT: Blaze-only, no Java counterpart. Read only in debug builds (`debug_assertions`); a
+/// release build ignores the variable.
+fn inject_panic_on_detached_thread_if_requested(command_name: &str) {
+    #[cfg(debug_assertions)]
+    {
+        let requested = std::env::var_os(INJECT_PANIC_ENV)
+            .is_some_and(|v| v.as_encoded_bytes() == command_name.as_bytes());
+        if requested {
+            let _ = std::thread::Builder::new()
+                .name("injected-panic".to_string())
+                .spawn(|| {
+                    blaze_util::uncaught_exception::run_catching(|| {
+                        panic!("injected panic ({INJECT_PANIC_ENV})");
+                    });
+                });
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = command_name;
 }

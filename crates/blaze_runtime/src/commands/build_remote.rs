@@ -56,8 +56,10 @@ pub(crate) struct RemoteSupport {
     /// `RemoteModule.executorInit`'s `LeaseService` (a combined cache without
     /// `--rewind_lost_inputs`).
     lease_service: Option<Arc<blaze_remote::lease_service::LeaseService>>,
-    /// The command's reporter, for [`purge_action_cache`].
-    reporter: Arc<dyn ExtendedEventHandler>,
+    /// `env.withMergedAnalysisAndExecutionSourceOfTruth()`, which decides whether
+    /// `registerActionContexts` registers the `RemoteImportantOutputHandler`; set by
+    /// [`RemoteSupport::set_merged_analysis_and_execution`].
+    merged_analysis_and_execution: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// `env.addIdleTask(gcIdleTask)` of `RemoteModule.beforeCommand`, for the task the module
@@ -133,39 +135,50 @@ pub(crate) fn before_command(
     Ok(Some(RemoteSupport {
         module: Mutex::new(module),
         lease_service,
-        reporter: env.get_reporter().clone(),
+        merged_analysis_and_execution: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     }))
 }
 
-/// `LeaseService.handleMissingInputs` on this build's action cache, written to disk at once:
-/// every entry with output files or output trees (remote metadata) is removed.
-///
-/// PORT: no Java counterpart. Java answers lost inputs under `--rewind_lost_inputs` (Bazel's
-/// default) with action rewinding, which is not ported: the executor fails loudly right after
-/// this runs (`SkyframeActionExecutor::handle_lost_inputs`). The build then crashes and nothing
-/// saves the action cache of this command, so the purge saves it: the executor's own instance
-/// (the one `ExecutionTool` loaded from `<output_base>/action_cache`, whose journal the running
-/// actions append to), which is what the next command loads; without it a rerun would trust the
-/// same stale remote metadata again (review 2026-11-19 N5). The executor runs this while no
-/// action writes the cache and drops every write after it. `None`: `--nouse_action_cache`.
-// Java: com/google/devtools/build/lib/remote/LeaseService.java:66 LeaseService.handleMissingInputs
-fn purge_action_cache(
-    action_cache: Option<&dyn blaze_exec::actions::cache::ActionCache>,
-    reporter: &dyn ExtendedEventHandler,
-) {
-    let Some(action_cache) = action_cache else {
-        return;
-    };
-    // A LeaseService that saw a LostInputsEvent, finalized on this cache.
-    let lease_service = blaze_remote::lease_service::LeaseService::new(false);
-    lease_service.on_lost_inputs();
-    lease_service.finalize_execution(Some(action_cache));
-    // ExecutionTool.saveActionCache's error text.
-    if let Err(e) = action_cache.save() {
-        reporter.handle(&Event::error(format!(
-            "I/O error while writing action log: {e}"
-        )));
-    }
+/// `memoizingEvaluator.delete(...)` of `LeaseService.handleMissingInputs`: the
+/// `ACTION_EXECUTION` values with remote metadata leave the graph (at the start of the next
+/// evaluation, which a retried invocation is), so that their actions run again.
+// Java: com/google/devtools/build/lib/remote/LeaseService.java:88 LeaseService.handleMissingInputs
+fn delete_remote_action_execution_values(memoizing_evaluator: &blaze_skyframe::Evaluator) {
+    memoizing_evaluator.delete(|key, value| {
+        if key.function_name() == <blaze_sky_exec::keys::ActionExecutionKey as blaze_skyframe::Key>::FUNCTION {
+            // Java: memoizingEvaluator.getExistingValue(key) instanceof ActionExecutionValue.
+            return value
+                .and_then(|v| {
+                    v.downcast_ref::<blaze_sky_exec::action_execution_value::ActionExecutionValue>()
+                })
+                .is_some_and(is_remote);
+        }
+        false
+    });
+}
+
+// Java: com/google/devtools/build/lib/remote/LeaseService.java:112 LeaseService.isRemote
+fn is_remote(value: &blaze_sky_exec::action_execution_value::ActionExecutionValue) -> bool {
+    value
+        .get_all_file_values()
+        .values()
+        .any(|file_artifact_value| file_artifact_value.is_remote())
+        || value
+            .get_all_tree_artifact_values()
+            .values()
+            .any(|tree| is_remote_tree(tree))
+}
+
+// Java: com/google/devtools/build/lib/remote/LeaseService.java:117 LeaseService.isRemoteTree
+fn is_remote_tree(tree_artifact_value: &blaze_exec::actions::TreeArtifactValue) -> bool {
+    tree_artifact_value
+        .child_values
+        .iter()
+        .any(|(_, file_artifact_value)| file_artifact_value.is_remote())
+        || tree_artifact_value
+            .archived_representation
+            .as_ref()
+            .is_some_and(|(_, archived_file_value)| archived_file_value.is_remote())
 }
 
 /// `RemoteModule.beforeCommand(env)` up to the end of `setup` (including
@@ -223,6 +236,7 @@ fn set_up_module(
     let accept_cached = remote_options.remote_accept_cached;
     let upload_local_results = remote_options.remote_upload_local_results;
     let remote_cache_ttl = remote_options.remote_cache_ttl;
+    let remote_instance_name = remote_options.remote_instance_name.clone();
     let verbose_failures = execution_options.verbose_failures;
     let reporter: Arc<dyn ExtendedEventHandler> = env.get_reporter().clone();
     let mut module = RemoteModule::before_command(RemoteModuleEnvironment {
@@ -270,6 +284,7 @@ fn set_up_module(
         env,
         &module,
         &build_request_id_for_repo_helpers,
+        &remote_instance_name,
         accept_cached,
         upload_local_results,
         verbose_failures,
@@ -292,12 +307,26 @@ fn remote_external_overlay_file_system(
     )
 }
 
-/// `evaluator.delete(REPOSITORY_DIRECTORY nodes)` for the overlay file system.
+/// `invalidateRepoDirectories(evaluator, repoNames)` for the overlay file system: Java deletes
+/// the `REPOSITORY_DIRECTORY` nodes of the repos (and their reverse dependencies) from the
+/// server's graph.
 ///
-/// PORT: Blaze's Skyframe evaluator does not outlive the command that created it, so there is
-/// nothing to invalidate after the command.
-fn invalidate_repo_directories() -> Arc<dyn Fn(&std::collections::HashSet<String>) + Send + Sync> {
-    Arc::new(|_repo_names| {})
+/// PORT: the server's graph is the graph `SkyframeIncrementalState` keeps between commands
+/// (crates/blaze_sky_top/src/incremental.rs), which offers no targeted `delete`; Blaze drops the
+/// whole kept graph instead (`resetEvaluator`). The next command then re-evaluates everything,
+/// which re-fetches exactly the repos Java's delete would, but also reloads the other nodes
+/// (visible only in the "N packages loaded" counts of the progress messages).
+// Java: com/google/devtools/build/lib/remote/RemoteExternalOverlayFileSystem.java:195 RemoteExternalOverlayFileSystem.invalidateRepoDirectories
+fn invalidate_repo_directories(
+    env: &CommandEnvironment,
+) -> Arc<dyn Fn(&std::collections::HashSet<String>) + Send + Sync> {
+    let incremental_state = env.get_blaze_workspace().get_incremental_state().clone();
+    Arc::new(move |repo_names| {
+        if repo_names.is_empty() {
+            return;
+        }
+        incremental_state.reset_evaluator();
+    })
 }
 
 /// `remoteFs.notifyNoCacheAvailable(env.getSkyframeExecutor().getEvaluator())` when the output
@@ -305,7 +334,7 @@ fn invalidate_repo_directories() -> Arc<dyn Fn(&std::collections::HashSet<String
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:403 RemoteModule.beforeCommand
 fn notify_no_cache_available(env: &CommandEnvironment) {
     if let Some(remote_fs) = remote_external_overlay_file_system(env) {
-        remote_fs.notify_no_cache_available(&*invalidate_repo_directories());
+        remote_fs.notify_no_cache_available(&*invalidate_repo_directories(env));
     }
 }
 
@@ -316,6 +345,7 @@ fn init_repo_helpers_and_overlay_fs(
     env: &CommandEnvironment,
     module: &RemoteModule,
     build_request_id: &str,
+    remote_instance_name: &str,
     accept_cached: bool,
     upload_local_results: bool,
     verbose_failures: bool,
@@ -340,8 +370,22 @@ fn init_repo_helpers_and_overlay_fs(
                 install_base: directories.get_install_base().clone(),
             },
             combined_cache.clone(),
+            // actionContextProvider.getRemoteExecutionClient(); the cache is then a
+            // RemoteExecutionCache.
+            action_context_provider
+                .get_remote_execution_client()
+                .zip(action_context_provider.get_remote_execution_cache())
+                .map(|(remote_executor, cache)| {
+                    blaze_remote::repository_remote_helpers_factory_impl::RemoteExecutionHelpers {
+                        cache: cache.clone(),
+                        remote_executor: remote_executor.clone(),
+                        exec_root: env.get_exec_root(),
+                    }
+                }),
             build_request_id.to_owned(),
             invocation_id.clone(),
+            env.get_workspace_name().to_owned(),
+            remote_instance_name.to_owned(),
             accept_cached,
             upload_local_results,
             verbose_failures,
@@ -358,7 +402,7 @@ fn init_repo_helpers_and_overlay_fs(
                 reporter: env.get_reporter().clone(),
                 build_request_id: build_request_id.to_owned(),
                 command_id: invocation_id,
-                invalidate_repo_directories: invalidate_repo_directories(),
+                invalidate_repo_directories: invalidate_repo_directories(env),
                 remote_cache_ttl,
             },
         );
@@ -393,8 +437,26 @@ fn build_request_id(options: &OptionsParsingResult) -> String {
     )
 }
 
+/// `env.getBuildRequestId()`: the build request id of this attempt of the command, shared by
+/// the modules that read it (the Build Event Service module and the remote module).
+pub(crate) fn command_build_request_id(options: &OptionsParsingResult) -> String {
+    build_request_id(options)
+}
+
+/// Whether this attempt of the command is a retry (`buildRequestIdOverride != null`).
+pub(crate) fn is_retried_attempt() -> bool {
+    BUILD_REQUEST_ID_OVERRIDE.lock().is_some()
+}
+
 /// [`build_request_id`] given `--build_request_id`.
+///
+/// PORT: Java computes `env.getBuildRequestId()` once, when the command's environment is
+/// created; here the first module that asks computes it and the later ones get the same value
+/// (cleared at the start of each command by [`reset_build_request_id_override`]).
 fn build_request_id_for(explicit: Option<String>) -> String {
+    if let Some(last) = LAST_BUILD_REQUEST_ID.lock().clone() {
+        return last;
+    }
     let build_request_id = explicit
         .or_else(|| BUILD_REQUEST_ID_OVERRIDE.lock().clone())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -605,6 +667,14 @@ pub(crate) fn placeholder_contributions(
 }
 
 impl RemoteSupport {
+    /// The build's Skymeld decision (`SkymeldModule.beforeCommand`), which Java makes before
+    /// `registerActionContexts` and Blaze after it (see
+    /// `ImportantOutputHandler::is_registered`).
+    pub(crate) fn set_merged_analysis_and_execution(&self, merged: bool) {
+        self.merged_analysis_and_execution
+            .store(merged, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// `RemoteModule.registerSpawnStrategies` (`registerRemoteSpawnStrategy`),
     /// `registerActionContexts` (`registerSpawnCache`) and `executorInit`
     /// (`setActionInputPrefetcher`, `setActionExecutionSalt`), as the executor's contributions.
@@ -664,26 +734,28 @@ impl RemoteSupport {
                             .lock()
                             .extend(missing_digests.iter().cloned());
                     }),
-                    // PORT: with --rewind_lost_inputs Java rewinds the action (no LeaseService);
-                    // rewinding is not ported and fails loudly, so the persistent action cache is
-                    // purged first (see purge_action_cache).
-                    purge_before_unported_rewinding: rewind_lost_inputs.then(|| {
-                        let reporter = self.reporter.clone();
-                        Arc::new(
-                            move |action_cache: Option<
-                                &dyn blaze_exec::actions::cache::ActionCache,
-                            >| {
-                                purge_action_cache(action_cache, &*reporter)
-                            },
-                        )
-                            as Arc<
-                                dyn Fn(Option<&dyn blaze_exec::actions::cache::ActionCache>)
-                                    + Send
-                                    + Sync,
-                            >
-                    }),
                 }
             }),
+            // For skymeld, a non-toplevel target might become a toplevel after it has been
+            // executed. This is the last chance to download the missing toplevel outputs in this
+            // case before sending out TargetCompleteEvent. See
+            // https://github.com/bazelbuild/bazel/issues/20737.
+            // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1202 RemoteModule.registerActionContexts
+            important_output_handler: module
+                .get_action_input_fetcher()
+                .zip(module.get_remote_output_checker())
+                .map(|(fetcher, checker)| {
+                    Arc::new(
+                        blaze_remote::remote_important_output_handler::RemoteImportantOutputHandler::new(
+                            checker.clone(),
+                            fetcher.clone(),
+                            self.merged_analysis_and_execution.clone(),
+                        ),
+                    )
+                        as Arc<
+                            dyn blaze_exec::exec::action_execution_context::ImportantOutputHandler,
+                        >
+                }),
             action_finalizer: if finalize_actions {
                 module.get_action_input_fetcher().map(|f| {
                     f.clone()
@@ -787,6 +859,23 @@ impl RemoteSupport {
         checker.coverage_artifacts_known(&inputs, &is_owned_by_coverage_report);
     }
 
+    /// `env.getSkyframeExecutor()::wasActionRewound`, the `wasRewound` predicate
+    /// `RemoteActionContextProvider` gives the `RemoteExecutionService`, once the command's
+    /// Skyframe executor exists.
+    // Java: com/google/devtools/build/lib/remote/RemoteActionContextProvider.java:156 RemoteActionContextProvider.getRemoteExecutionService
+    pub(crate) fn set_was_rewound(
+        &self,
+        executor: Arc<blaze_sky_exec::skyframe_action_executor::SkyframeActionExecutor>,
+    ) {
+        if let Some(provider) = self.module.lock().get_action_context_provider() {
+            provider
+                .get_remote_execution_service()
+                .set_was_rewound(Arc::new(move |owner| {
+                    executor.was_rewound_resource_owner(owner)
+                }));
+        }
+    }
+
     /// `RemoteExecutionService.onBuildInterrupted(BuildInterruptedEvent)`.
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:2091 RemoteExecutionService.onBuildInterrupted
     pub(crate) fn build_interrupted(&self) {
@@ -806,9 +895,12 @@ impl RemoteSupport {
     pub(crate) fn finalize_execution(
         &self,
         action_cache: Option<&dyn blaze_exec::actions::cache::ActionCache>,
+        memoizing_evaluator: &blaze_skyframe::Evaluator,
     ) {
         if let Some(lease_service) = &self.lease_service {
-            lease_service.finalize_execution(action_cache);
+            lease_service.finalize_execution(action_cache, &|| {
+                delete_remote_action_execution_values(memoizing_evaluator)
+            });
         }
     }
 

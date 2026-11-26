@@ -8,16 +8,18 @@ use crate::differencer::{
 use crate::environment::{BubbleErrorInfo, EnvState, Environment, PendingDep};
 use crate::evaluation_result::EvaluationResult;
 use crate::event_filter::EventFilter;
+use crate::graph_inconsistency_receiver::{GraphInconsistencyReceiver, Inconsistency};
 #[cfg(test)]
 use crate::graph_listener::Context;
 use crate::in_memory_graph::InMemoryGraphImpl;
 pub(crate) use crate::in_memory_graph::{DoneEntry, DoneKind, Node};
 use crate::invalidation::{DeletingInvalidationState, EagerInvalidator, InvalidationState};
-use crate::node_entry::{DependencyState, LifecycleState, NodeEntry};
+use crate::node_entry::{DependencyState, DirtyType, LifecycleState, NodeEntry};
 use crate::progress::{
     DirtyAndInflightTrackingProgressReceiver, EvaluationProgressReceiver, EvaluationState,
     InflightTrackingProgressReceiver, NodeState,
 };
+use crate::reset::Reset;
 use crate::reverse_deps_utility::java_list;
 use crate::simple_cycle_detector::SimpleCycleDetector;
 use crate::value_with_metadata::{StoredReportable, ValueWithMetadata};
@@ -29,6 +31,7 @@ use crate::{
 use blaze_collect::{NestedSet, NestedSetNode, NestedSetVisitor, NestedSetVisitorVisitedState};
 use blaze_events::{Event, EventHandler, EventKind, ExtendedEventHandler, Postable, Reportable};
 use blaze_shell::ThreadInterrupt;
+use blaze_util::profiler::{Profiler, ProfilerTask};
 use blaze_util::{check_argument, check_state};
 use indexmap::{IndexMap, IndexSet};
 use parking_lot::{Condvar, Mutex};
@@ -255,6 +258,9 @@ pub struct Evaluator {
     /// Whether the caller gave a progress receiver (`progress_receiver` then forwards to it).
     has_user_progress_receiver: bool,
     event_filter: Arc<dyn EventFilter>,
+    /// Java: `ParallelEvaluatorContext.getGraphInconsistencyReceiver()` (the command's receiver,
+    /// `SequencedSkyframeExecutor.inconsistencyReceiver`'s delegate).
+    graph_inconsistency_receiver: Arc<dyn GraphInconsistencyReceiver>,
     incremental: Mutex<IncrementalState>,
     waits: Mutex<WaitGraph>,
     client: Arc<dyn Any + Send + Sync>,
@@ -278,6 +284,7 @@ pub struct Evaluator {
 }
 
 /// Builder for an [`Evaluator`].
+#[derive(Clone)]
 pub struct EvaluatorBuilder {
     functions: HashMap<SkyFunctionName, Arc<dyn SkyFunction>>,
     injected: Vec<(SkyKey, SkyValue)>,
@@ -285,6 +292,7 @@ pub struct EvaluatorBuilder {
     keep_edges: bool,
     progress_receiver: Option<Arc<dyn EvaluationProgressReceiver>>,
     event_filter: Arc<dyn EventFilter>,
+    graph_inconsistency_receiver: Arc<dyn GraphInconsistencyReceiver>,
 }
 
 impl Default for EvaluatorBuilder {
@@ -302,7 +310,18 @@ impl EvaluatorBuilder {
             keep_edges: true,
             progress_receiver: None,
             event_filter: Arc::new(<dyn EventFilter>::NO_STORAGE),
+            graph_inconsistency_receiver: Arc::new(crate::graph_inconsistency_receiver::Throwing),
         }
+    }
+    /// The receiver of graph inconsistencies (Java's `GraphInconsistencyReceiver`, default
+    /// `THROWING`). Java's `SequencedSkyframeExecutor` picks one per command
+    /// (`getGraphInconsistencyReceiverForCommand`); Blaze builds an evaluator per command.
+    pub fn graph_inconsistency_receiver(
+        mut self,
+        receiver: Arc<dyn GraphInconsistencyReceiver>,
+    ) -> Self {
+        self.graph_inconsistency_receiver = receiver;
+        self
     }
     /// Registers the function for `name`. Panics on duplicates.
     pub fn function(mut self, name: SkyFunctionName, f: impl SkyFunction) -> Self {
@@ -383,6 +402,7 @@ impl EvaluatorBuilder {
             progress_receiver: DirtyAndInflightTrackingProgressReceiver::new(receiver),
             has_user_progress_receiver,
             event_filter: self.event_filter,
+            graph_inconsistency_receiver: self.graph_inconsistency_receiver,
             incremental: Mutex::new(IncrementalState {
                 values_to_delete: IndexSet::new(),
                 values_to_dirty: IndexSet::new(),
@@ -470,6 +490,7 @@ impl EvaluatorBuilder {
             progress_receiver: progress_receiver.with_receiver(receiver),
             has_user_progress_receiver,
             event_filter: self.event_filter,
+            graph_inconsistency_receiver: self.graph_inconsistency_receiver,
             incremental,
             waits: Mutex::new(WaitGraph::default()),
             client: self.client,
@@ -661,6 +682,8 @@ impl Evaluator {
         // is done (or a cached error stops a no-keep-going evaluation) the result is returned
         // even with an interrupt pending; otherwise the evaluation sees the interrupt
         // (`wait_for_completion_and_construct_result`).
+        // Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:156 AbstractInMemoryMemoizingEvaluator.evaluate
+        let _c = Profiler::instance().profile(ProfilerTask::INFO, "ParallelEvaluator.eval");
         // Java: com/google/devtools/build/skyframe/ParallelEvaluator.java:641 ParallelEvaluator.eval
         let run = Run::new(self, ctx, graph_version);
         run.eval(roots)
@@ -871,6 +894,25 @@ impl Evaluator {
         self.committed_entry(key).and_then(|e| e.value.clone())
     }
 
+    /// `getInMemoryGraph().getIfPresent(key).toValue()`: the value of a done node, or the last
+    /// built value of a dirty one (for the diff checkers that compare with the file system).
+    // Java: com/google/devtools/build/skyframe/AbstractInMemoryNodeEntry.java:137 AbstractInMemoryNodeEntry.toValue
+    pub fn get_node_value_for_diff(&self, key: &SkyKey) -> Option<SkyValue> {
+        self.graph
+            .get_if_present(key)
+            .and_then(|n| n.lock().entry.to_value())
+    }
+
+    /// The keys of every node in the graph (Java `getInMemoryGraph().parallelForEach(entry ->
+    /// entry.getKey())`).
+    pub fn get_all_keys(&self) -> Vec<SkyKey> {
+        self.graph
+            .get_all_node_entries()
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect()
+    }
+
     // Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:281 AbstractInMemoryMemoizingEvaluator.getExistingErrorForTesting
     pub fn get_existing_error_for_testing(&self, key: &SkyKey) -> Option<ErrorInfo> {
         self.committed_entry(key)
@@ -917,6 +959,11 @@ impl Evaluator {
     /// The snapshot or this evaluation's outcome of `key`.
     pub(crate) fn done_entry(&self, key: &SkyKey) -> Option<Arc<DoneEntry>> {
         self.graph.get_if_present(key).and_then(|n| n.done_entry())
+    }
+
+    /// Java: `evaluatorContext.getGraphInconsistencyReceiver()`.
+    pub(crate) fn graph_inconsistency_receiver(&self) -> &dyn GraphInconsistencyReceiver {
+        &*self.graph_inconsistency_receiver
     }
 
     /// The entry of `key` if it is done in the graph (Java `NodeEntry.isDone()`).
@@ -1230,6 +1277,9 @@ impl<'e> Run<'e> {
         }
 
         // PORT: SkyKeyComputeState is not ported (unnecessaryTemporaryStateDropperReceiver).
+        // Java: com/google/devtools/build/skyframe/ParallelEvaluator.java:692 ParallelEvaluator.eval
+        let _c = Profiler::instance()
+            .profile(ProfilerTask::SKYFRAME_EVAL, "Parallel Evaluator evaluation");
         self.do_mutating_evaluation(&roots, &done_before_evaluation)
     }
 
@@ -1743,8 +1793,34 @@ impl<'e> Run<'e> {
     }
 
     /// An action that evaluates a value: the owning thread's run of a node it claimed.
+    ///
+    /// PORT: blocking engine. Where Java re-enqueues the node (`enqueueEvaluation(skyKey, null)`
+    /// after a `Reset`, an undone previously requested dep, or an undone dep found while
+    /// registering the deps of a done function), the claiming thread runs it again here.
     // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:415 Evaluate.run
     fn evaluate_node(&self, key: &SkyKey, node: &Arc<Node>) -> Arc<DoneEntry> {
+        loop {
+            if let Some(outcome) = self.evaluate_node_once(key, node) {
+                return outcome;
+            }
+            if self.ev.interrupted.load(Ordering::SeqCst) {
+                self.saw_interrupt.store(true, Ordering::SeqCst);
+                return Arc::new(DoneEntry::undone(DoneKind::Interrupted));
+            }
+            if self.aborting.load(Ordering::SeqCst) {
+                // Java: the visitor accepts no new evaluation once it prevents them; the node
+                // stays in flight.
+                self.enqueue_evaluation(key);
+                return Arc::new(DoneEntry::undone(DoneKind::Aborted));
+            }
+            // Java: evaluatorContext.getVisitor().enqueueEvaluation(skyKey, null).
+            self.enqueue_evaluation(key);
+        }
+    }
+
+    /// One run of [`Run::evaluate_node`]: `None` when the node must run again.
+    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:415 Evaluate.run
+    fn evaluate_node_once(&self, key: &SkyKey, node: &Arc<Node>) -> Option<Arc<DoneEntry>> {
         // PORT: Java's `!nodeEntry.isReadyToEvaluate()` check is for partial reevaluation (not
         // ported): a node is claimed here once, ready. The test hook still sees the call.
         notify_graph_listener!(self.ev.graph, key, IsReady, Before, Context::Entry);
@@ -1759,10 +1835,22 @@ impl<'e> Run<'e> {
             outcome
         };
         if let DirtyOutcome::AlreadyProcessed(outcome) = dirty_outcome {
-            return outcome;
+            return Some(outcome);
         }
 
-        let old_deps: IndexSet<SkyKey> = node.lock().entry.get_all_remaining_dirty_direct_deps();
+        // PORT: Java keeps the deps registered before a reset (`getResetDirectDeps`) apart from
+        // `oldDeps` and unites them where it registers new deps (`alreadyRegisteredDeps`:
+        // `enqueueChild` with `depAlreadyExists`, `maybeHandleRegisteringNewlyDiscoveredDeps
+        // ForDoneEntry`) and where it commits (`depsToRemove`); the environment's `old_deps`
+        // serve exactly those, so they hold both. (Java's child-error edge of a no-keep-going
+        // failure is added with `addReverseDepAndCheckIfDone` for a reset dep; here with
+        // `checkIfDoneForDirtyReverseDep`, as for an old dep.)
+        let old_deps: IndexSet<SkyKey> = {
+            let mut state = node.lock();
+            let mut old_deps = state.entry.get_all_remaining_dirty_direct_deps();
+            old_deps.extend(state.entry.get_reset_direct_deps());
+            old_deps
+        };
         let function = self.function_for(key, node);
         let mut env = {
             let _state = StateGuard::new(self.progress(), key, NodeState::InitializingEnvironment);
@@ -1775,21 +1863,169 @@ impl<'e> Run<'e> {
                     deps.clone()
                 }
             };
-            Environment::create(
+            match Environment::create(
                 self,
                 key,
                 node,
                 &*function,
                 previously_requested_deps,
                 old_deps,
-            )
+            ) {
+                Ok(env) => env,
+                Err(_undone_previously_requested_deps) => {
+                    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:448 Evaluate.run
+                    self.handle_undone_previously_requested_dep(key, node);
+                    return None;
+                }
+            }
         };
         self.ev.computed.fetch_add(1, Ordering::Relaxed);
         let r = {
+            // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:466 Evaluate.run
+            let _s = Profiler::instance().profile(ProfilerTask::SKYFUNCTION, key.function_name().0);
             let _state = StateGuard::new(self.progress(), key, NodeState::Compute);
             function.compute(key, &mut env)
         };
-        self.resolve(key, node, env, r)
+
+        // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:569 Evaluate.run
+        if let Ok(Some(value)) = &r
+            && let Some(reset) = value.downcast_ref::<Reset>()
+        {
+            if node.lock().entry.has_unsignaled_deps() {
+                // PORT: Java's case is a partial reevaluation (not ported). Here a dep the
+                // function waited for ended undone (the evaluation stops): the node stays in
+                // flight, as Java's does when the visitor accepts no new evaluation.
+                return Some(Arc::new(DoneEntry::undone(DoneKind::Aborted)));
+            }
+            // PORT: the deps the function requested since it last blocked (`pending`) were never
+            // registered; like Java's newly requested deps of a run that returns a Reset, they
+            // are dropped.
+            drop(env);
+            self.dirty_rewind_graph_and_reset_entry(key, node, reset);
+            // PORT: stateCache.invalidate (SkyKeyComputeState) and cancelExternalDeps
+            // (dependOnFuture) are not ported.
+            return None;
+        }
+
+        if node.lock().restart_requested {
+            // A dep registered while the function ran was found undone (rewound); the thread that
+            // registered it evaluated it, and it signalled this node. The run is discarded and the
+            // function runs again (Java: the node is not committed, and is re-enqueued when the
+            // dep signals it). The deps requested since the function last blocked are registered
+            // first, as Java registers a function's new deps before it finds an undone one.
+            let (mut st, _values_missing, _listener) = env.into_parts();
+            let requester = Requester {
+                key,
+                node,
+                old_deps: &st.old_deps,
+            };
+            self.register_pending_deps(&requester, &mut st.pending, &mut st.pending_group_sizes);
+            node.lock().restart_requested = false;
+            return None;
+        }
+
+        let outcome = self.resolve(key, node, env, r);
+        let mut state = node.lock();
+        if state.restart_requested && !state.entry.is_done() {
+            // An undone dep found while the function's deps were registered at commit
+            // (`maybeHandleRegisteringNewlyDiscoveredDepsForDoneEntry`): nothing was committed.
+            state.restart_requested = false;
+            return None;
+        }
+        state.restart_requested = false;
+        Some(outcome)
+    }
+
+    /// If a previously requested dep is no longer done, restart this node from scratch.
+    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:787 Evaluate.handleUndonePreviouslyRequestedDep
+    fn handle_undone_previously_requested_dep(&self, key: &SkyKey, node: &Arc<Node>) {
+        // PORT: stateCache.invalidate (SkyKeyComputeState) is not ported.
+        self.reset_entry(key, node);
+    }
+
+    /// Resets `entry`, and the other nodes specified by `restart.rewind_graph()` will be marked
+    /// changed via postorder DFS.
+    ///
+    /// `restart.rewind_graph()` must contain `key`.
+    ///
+    /// Nodes must be marked changed via postorder DFS. To see why, suppose we have this graph:
+    ///
+    /// ```text
+    ///   FailedNode   SomeOtherRdepOfR1
+    ///       |       /
+    ///       |  -----
+    ///       | /
+    ///       R1
+    ///       |
+    ///       R2
+    /// ```
+    ///
+    /// Suppose FailedNode (FN) fails and requires that R1 and R2 must be dirtied and run again.
+    /// Suppose they aren't dirtied via postorder DFS, so R1 is dirtied first.
+    ///
+    /// Then, the evaluation thread working on dirtying these nodes is suspended.
+    ///
+    /// On a separate evaluation thread, SomeOtherRdepOfR1 requests R1. R1 is scheduled for
+    /// evaluation, checks its dep R2, and because R2 is done, R1 completes without scheduling R2
+    /// for evaluation.
+    ///
+    /// Then, the evaluation thread working on dirtying these nodes continues its work. It dirties
+    /// R2 and schedules FN for evaluation.
+    ///
+    /// When FN next evaluates, it requests R1, and because R1 is done, R2 is not scheduled for
+    /// evaluation, contrary to FN's expectations.
+    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:876 AbstractParallelEvaluator.dirtyRewindGraphAndResetEntry
+    fn dirty_rewind_graph_and_reset_entry(&self, key: &SkyKey, node: &Arc<Node>, restart: &Reset) {
+        let rewind_graph = restart.rewind_graph();
+        check_state!(
+            rewind_graph.contains(key),
+            "Rewind graph missing evaluating key {:?}: {:?}",
+            key,
+            rewind_graph
+        );
+
+        let children_to_restart: Vec<SkyKey> = rewind_graph
+            .depth_first_post_order(key)
+            .into_iter()
+            .filter(|k| k != key)
+            .collect();
+        if !children_to_restart.is_empty() {
+            self.ev
+                .graph_inconsistency_receiver()
+                .note_inconsistency_and_maybe_throw(
+                    key,
+                    Some(&children_to_restart),
+                    Inconsistency::ParentForceRebuildOfChild,
+                );
+
+            for child_to_restart in &children_to_restart {
+                let child_entry = check_not_null!(
+                    self.ev.graph.get_if_present(child_to_restart),
+                    "Missing child for rewinding: {:?} (parent={:?})",
+                    child_to_restart,
+                    key
+                );
+                let marked = {
+                    let mut state = child_entry.lock();
+                    let marked = state.entry.mark_dirty(DirtyType::Rewind);
+                    state.refresh_snapshot();
+                    marked
+                };
+                if marked.is_some() {
+                    self.progress().dirtied(child_to_restart, DirtyType::Rewind);
+                }
+            }
+        }
+
+        self.reset_entry(key, node);
+    }
+
+    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:912 AbstractParallelEvaluator.resetEntry
+    fn reset_entry(&self, key: &SkyKey, node: &Arc<Node>) {
+        self.ev
+            .graph_inconsistency_receiver()
+            .note_inconsistency_and_maybe_throw(key, None, Inconsistency::ResetRequested);
+        node.lock().entry.reset_evaluation_from_scratch();
     }
 
     /// `nodeEntry.getLifecycleState()`, with the test hook's events.
@@ -2172,7 +2408,9 @@ impl<'e> Run<'e> {
             return false;
         }
         let pending = deps;
-        let mut versions: Vec<Version> = Vec::with_capacity(pending.len());
+        let mut versions: Vec<Option<Version>> = Vec::with_capacity(pending.len());
+        // Deps found undone, with what registering the node with them answered.
+        let mut undone: Vec<(&PendingDep, DependencyState)> = Vec::new();
         for dep in pending.iter() {
             #[cfg(test)]
             let listened_call = if requester.old_deps.contains(&dep.key) {
@@ -2198,15 +2436,30 @@ impl<'e> Run<'e> {
                     .add_reverse_dep_and_check_if_done(Some(requester.key.clone()))
             };
             if tri_state != DependencyState::Done {
-                // Java: maybeHandleUndoneDepForDoneEntry notes the inconsistency with the
-                // GraphInconsistencyReceiver, THROWING by default.
-                panic!(
-                    "IllegalStateException: Unexpected inconsistency: {:?}, [{:?}], \
-                     BUILDING_PARENT_FOUND_UNDONE_CHILD",
-                    requester.key, dep.key
+                drop(dep_state);
+                // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:1115 AbstractParallelEvaluator.maybeHandleUndoneDepForDoneEntry
+                // The dep may have transitioned from done to dirty (rewound) between when the
+                // function read it and now. Notify the graph inconsistency receiver so that we
+                // can crash if that's unexpected.
+                self.ev
+                    .graph_inconsistency_receiver()
+                    .note_inconsistency_and_maybe_throw(
+                        requester.key,
+                        Some(std::slice::from_ref(&dep.key)),
+                        Inconsistency::BuildingParentFoundUndoneChild,
+                    );
+                versions.push(None);
+                undone.push((dep, tri_state));
+                #[cfg(test)]
+                self.ev.graph.listeners_for_testing.notify(
+                    &dep.key,
+                    listened_call,
+                    crate::graph_listener::Order::After,
+                    Context::Key(requester.key.clone()),
                 );
+                continue;
             }
-            versions.push(dep_state.entry.get_version());
+            versions.push(Some(dep_state.entry.get_version()));
             drop(dep_state);
             #[cfg(test)]
             self.ev.graph.listeners_for_testing.notify(
@@ -2230,7 +2483,9 @@ impl<'e> Run<'e> {
         {
             let mut state = requester.node.lock();
             for (dep, version) in pending.iter().zip(versions) {
-                self_signalled = state.entry.signal_dep(version, Some(&dep.key));
+                if let Some(version) = version {
+                    self_signalled = state.entry.signal_dep(version, Some(&dep.key));
+                }
             }
         }
         #[cfg(test)]
@@ -2243,7 +2498,62 @@ impl<'e> Run<'e> {
                 Context::Key(dep.key.clone())
             );
         }
+        if !undone.is_empty() {
+            // Java: DEP_NOT_DONE. The node is not committed; a dep that needs scheduling is
+            // enqueued, and the node runs again when its undone deps signal it.
+            // PORT: blocking engine: this thread evaluates (or waits for) each undone dep now,
+            // which signals the node when it is done, and the node's thread runs its function
+            // again (`NodeState::restart_requested`).
+            requester.node.lock().restart_requested = true;
+            for (dep, dependency_state) in undone {
+                self.eval_undone_dep(&dep.key, &dep.node, dependency_state, requester.key);
+            }
+            return false;
+        }
         self_signalled
+    }
+
+    /// Evaluates or waits for `key`, which the node `requester` was just registered with and
+    /// which answered `dependency_state` (`NEEDS_SCHEDULING` or `ALREADY_EVALUATING`): the
+    /// steps of [`Run::eval_dep`] after the registration.
+    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:1129 AbstractParallelEvaluator.maybeHandleUndoneDepForDoneEntry
+    fn eval_undone_dep(
+        &self,
+        key: &SkyKey,
+        node: &Arc<Node>,
+        dependency_state: DependencyState,
+        requester: &SkyKey,
+    ) -> Arc<DoneEntry> {
+        let mut state = node.lock();
+        match dependency_state {
+            DependencyState::NeedsScheduling => {
+                state.owner = Some(std::thread::current().id());
+                state.outcome = None;
+                state.cycle_rdeps.clear();
+                drop(state);
+                // Java: evaluatorContext.getVisitor().enqueueEvaluation(depKey, null).
+                self.enqueue_evaluation(key);
+                if DEPTH.with(Cell::get) >= self.ctx.max_inline_depth {
+                    self.compute_on_fresh_thread(key, node)
+                } else {
+                    self.compute_claimed(key, node)
+                }
+            }
+            DependencyState::AlreadyEvaluating => {
+                if let Some(outcome) = state.outcome.clone() {
+                    return outcome;
+                }
+                check_state!(
+                    state.owner.is_some(),
+                    "node in flight from an earlier evaluation: {:?} {:?}",
+                    key,
+                    state.entry
+                );
+                drop(state);
+                self.wait_for(key, node, Some(requester))
+            }
+            DependencyState::Done => unreachable!("an undone dep"),
+        }
     }
 
     /// Removes from the node the deps the function requested that were not done when it read
@@ -2313,7 +2623,13 @@ impl<'e> Run<'e> {
         };
         let self_signalled =
             self.register_pending_deps(&requester, &mut st.pending, &mut st.pending_group_sizes);
-        check_state!(self_signalled, "{:?} {:?}", sky_key, node.lock().entry);
+        let dirty_dep_found = node.lock().restart_requested;
+        check_state!(
+            self_signalled || dirty_dep_found,
+            "{:?} {:?}",
+            sky_key,
+            node.lock().entry
+        );
         !self_signalled
     }
 
@@ -2584,6 +2900,11 @@ impl<'e> Run<'e> {
                 old_deps: &st.old_deps,
             };
             self.register_pending_deps(&requester, &mut st.pending, &mut st.pending_group_sizes);
+        }
+        if node.lock().restart_requested {
+            // A dep found undone (rewound) when registered: the node runs again
+            // (`evaluate_node`).
+            return Arc::new(DoneEntry::undone(DoneKind::Aborted));
         }
 
         // Java enqueues the deps that are not done and returns; the node is restarted when they

@@ -26,8 +26,11 @@ const NOT_EVALUATING_SENTINEL: i32 = -1;
 /// `IncrementalInMemoryNodeEntry.IncrementalBuildingState` are one struct whose
 /// [`DirtyBuildingStateKind`] holds what the subclass adds. `NonIncrementalBuildingState`
 /// (which extends `InitialBuildingState`) wraps an `Initial` state in
-/// `non_incremental_in_memory_node_entry.rs`. The `Reset*BuildingState` and
-/// `RewoundNonIncrementalBuildingState` subclasses are not ported (rewinding).
+/// `non_incremental_in_memory_node_entry.rs`. The subclasses that only override
+/// `getResetDirectDeps` (`IncrementalInMemoryNodeEntry.ResetInitialBuildingState` and
+/// `ResetIncrementalBuildingState`) or `getLastBuildValue`
+/// (`NonIncrementalInMemoryNodeEntry.RewoundNonIncrementalBuildingState`) are the fields
+/// `reset_deps` and `rewound_value`.
 // Java: com/google/devtools/build/skyframe/DirtyBuildingState.java:38 DirtyBuildingState
 pub(crate) struct DirtyBuildingState {
     /// The state of a dirty node.
@@ -68,6 +71,14 @@ pub(crate) struct DirtyBuildingState {
     dirty_direct_dep_index: i32,
 
     kind: DirtyBuildingStateKind,
+
+    /// `Reset*BuildingState.resetDeps`: `Some` for a state made by
+    /// `resetEvaluationFromScratch` of an `IncrementalInMemoryNodeEntry`.
+    reset_deps: Option<IndexSet<SkyKey>>,
+
+    /// `RewoundNonIncrementalBuildingState.rewoundValue`: the value of a done non-incremental
+    /// node that was rewound, kept for the sole purpose of servicing `toValue`.
+    rewound_value: Option<ValueWithMetadata>,
 }
 
 /// What the Java subclass of `DirtyBuildingState` adds.
@@ -92,6 +103,71 @@ impl DirtyBuildingState {
             external_deps: 0,
             dirty_direct_dep_index: 0,
             kind,
+            reset_deps: None,
+            rewound_value: None,
+        }
+    }
+
+    /// Used to track already registered deps when there is a reset on a node's initial build.
+    // Java: com/google/devtools/build/skyframe/IncrementalInMemoryNodeEntry.java:493 ResetInitialBuildingState.<init>
+    pub(crate) fn new_reset_initial_building_state(
+        reset_deps: IndexSet<SkyKey>,
+    ) -> DirtyBuildingState {
+        let mut state = DirtyBuildingState::new_initial_building_state();
+        state.reset_deps = Some(reset_deps);
+        state.mark_rebuilding();
+        state.start_evaluating();
+        state
+    }
+
+    /// Used to track already registered deps when there is a reset on a node's incremental
+    /// build.
+    // Java: com/google/devtools/build/skyframe/IncrementalInMemoryNodeEntry.java:518 ResetIncrementalBuildingState.<init>
+    pub(crate) fn new_reset_incremental_building_state(
+        last_build_direct_deps: GroupedDeps,
+        last_build_value: ValueWithMetadata,
+        dirty_direct_dep_index: i32,
+        reset_deps: IndexSet<SkyKey>,
+    ) -> DirtyBuildingState {
+        // CHANGE (not DIRTY) since we already know it needs rebuilding.
+        let mut state = DirtyBuildingState::new_incremental_building_state(
+            DirtyType::Change,
+            last_build_direct_deps,
+            last_build_value,
+        );
+        state.dirty_direct_dep_index = dirty_direct_dep_index;
+        state.reset_deps = Some(reset_deps);
+        state.mark_rebuilding();
+        state.start_evaluating();
+        state
+    }
+
+    /// The state of a non-incremental node that was previously done but was rewound
+    /// (`RewoundNonIncrementalBuildingState`, an `InitialBuildingState`): stores the previously
+    /// built value for the sole purpose of servicing `toValue`.
+    // Java: com/google/devtools/build/skyframe/NonIncrementalInMemoryNodeEntry.java:292 RewoundNonIncrementalBuildingState.<init>
+    pub(crate) fn new_rewound_non_incremental_building_state(
+        rewound_value: ValueWithMetadata,
+    ) -> DirtyBuildingState {
+        let mut state = DirtyBuildingState::new_initial_building_state();
+        state.rewound_value = Some(rewound_value);
+        state
+    }
+
+    /// The incremental parts of this state, for `resetEvaluationFromScratch`:
+    /// `(lastBuildDirectDeps, lastBuildValue, dirtyDirectDepIndex)`, or `None` on an initial
+    /// build.
+    pub(crate) fn take_incremental_parts(self) -> Option<(GroupedDeps, ValueWithMetadata, i32)> {
+        match self.kind {
+            DirtyBuildingStateKind::Initial => None,
+            DirtyBuildingStateKind::Incremental {
+                last_build_direct_deps,
+                last_build_value,
+            } => Some((
+                last_build_direct_deps,
+                last_build_value,
+                self.dirty_direct_dep_index,
+            )),
         }
     }
 
@@ -153,9 +229,10 @@ impl DirtyBuildingState {
     // Java: com/google/devtools/build/skyframe/DirtyBuildingState.java:115 DirtyBuildingState.getLastBuildValue
     // Java: com/google/devtools/build/skyframe/InitialBuildingState.java:42 InitialBuildingState.getLastBuildValue
     // Java: com/google/devtools/build/skyframe/IncrementalInMemoryNodeEntry.java:463 IncrementalBuildingState.getLastBuildValue
+    // Java: com/google/devtools/build/skyframe/NonIncrementalInMemoryNodeEntry.java:297 RewoundNonIncrementalBuildingState.getLastBuildValue
     pub(crate) fn get_last_build_value(&self) -> Option<&ValueWithMetadata> {
         match &self.kind {
-            DirtyBuildingStateKind::Initial => None,
+            DirtyBuildingStateKind::Initial => self.rewound_value.as_ref(),
             DirtyBuildingStateKind::Incremental {
                 last_build_value, ..
             } => Some(last_build_value),
@@ -372,11 +449,11 @@ impl DirtyBuildingState {
         result
     }
 
-    /// PORT: only the base implementation (`ImmutableSet.of()`); the `Reset*BuildingState`
-    /// overrides are not ported (rewinding).
     // Java: com/google/devtools/build/skyframe/DirtyBuildingState.java:270 DirtyBuildingState.getResetDirectDeps
+    // Java: com/google/devtools/build/skyframe/IncrementalInMemoryNodeEntry.java:499 ResetInitialBuildingState.getResetDirectDeps
+    // Java: com/google/devtools/build/skyframe/IncrementalInMemoryNodeEntry.java:530 ResetIncrementalBuildingState.getResetDirectDeps
     pub(crate) fn get_reset_direct_deps(&self) -> IndexSet<SkyKey> {
-        IndexSet::new()
+        self.reset_deps.clone().unwrap_or_default()
     }
 
     // Java: com/google/devtools/build/skyframe/DirtyBuildingState.java:274 DirtyBuildingState.markRebuilding
@@ -414,7 +491,7 @@ impl DirtyBuildingState {
             self.state, self.signaled_deps, self.external_deps, self.dirty_direct_dep_index
         )?;
         match &self.kind {
-            DirtyBuildingStateKind::Initial => Ok(()),
+            DirtyBuildingStateKind::Initial => {}
             // Java: com/google/devtools/build/skyframe/IncrementalInMemoryNodeEntry.java:478 IncrementalBuildingState.getStringHelper
             DirtyBuildingStateKind::Incremental {
                 last_build_direct_deps,
@@ -422,17 +499,40 @@ impl DirtyBuildingState {
             } => write!(
                 f,
                 ", lastBuildDirectDeps={last_build_direct_deps:?}, lastBuildValue={last_build_value:?}"
-            ),
+            )?,
         }
+        if let Some(reset_deps) = &self.reset_deps {
+            // Java: com/google/devtools/build/skyframe/IncrementalInMemoryNodeEntry.java:505 ResetInitialBuildingState.getStringHelper
+            write!(f, ", resetDeps={reset_deps:?}")?;
+        }
+        Ok(())
+    }
+
+    /// The fields `RewoundNonIncrementalBuildingState` adds after those of its superclass.
+    // Java: com/google/devtools/build/skyframe/NonIncrementalInMemoryNodeEntry.java:302 RewoundNonIncrementalBuildingState.getStringHelper
+    pub(crate) fn fmt_rewound_value(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.rewound_value {
+            Some(rewound_value) => write!(f, ", rewoundValue={rewound_value:?}"),
+            None => Ok(()),
+        }
+    }
+
+    /// Whether this is a `RewoundNonIncrementalBuildingState`.
+    pub(crate) fn is_rewound_non_incremental(&self) -> bool {
+        self.rewound_value.is_some()
     }
 }
 
 impl fmt::Debug for DirtyBuildingState {
     // Java: com/google/devtools/build/skyframe/DirtyBuildingState.java:303 DirtyBuildingState.toString
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match &self.kind {
-            DirtyBuildingStateKind::Initial => "InitialBuildingState{",
-            DirtyBuildingStateKind::Incremental { .. } => "IncrementalBuildingState{",
+        f.write_str(match (&self.kind, &self.reset_deps) {
+            (DirtyBuildingStateKind::Initial, None) => "InitialBuildingState{",
+            (DirtyBuildingStateKind::Incremental { .. }, None) => "IncrementalBuildingState{",
+            (DirtyBuildingStateKind::Initial, Some(_)) => "ResetInitialBuildingState{",
+            (DirtyBuildingStateKind::Incremental { .. }, Some(_)) => {
+                "ResetIncrementalBuildingState{"
+            }
         })?;
         self.fmt_string_helper_fields(f)?;
         f.write_str("}")

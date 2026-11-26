@@ -196,6 +196,12 @@ impl<'v> StarlarkValue<'v> for FeatureConfigurationValue {
             "<unknown object com.google.devtools.build.lib.rules.cpp.FeatureConfigurationForStarlark>",
         );
     }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/FeatureConfigurationForStarlark.java:55 FeatureConfigurationForStarlark.str
+    // PORT: Java's debugPrint (`print()`) has no starlark-rust hook; `print()` uses this `str`.
+    fn collect_str(&self, collector: &mut String) {
+        collector.push_str(&self.0.str());
+    }
 }
 
 #[starlark_module]

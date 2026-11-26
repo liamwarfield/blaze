@@ -1,6 +1,7 @@
 //! Port of `SkyFunction.Environment` (`SkyFunctionEnvironment`) and `SkyframeLookupResult`.
 
 use crate::evaluator::{DoneEntry, DoneKind, ERROR_TRANSIENCE_KEY, Node, Requester, Run};
+use crate::graph_inconsistency_receiver::Inconsistency;
 use crate::node_entry::NodeEntry;
 use crate::value_with_metadata::{StoredReportable, no_events};
 use crate::{ErrorInfo, GroupedDeps, Interrupted, Key, SkyError, SkyFunction, SkyKey, SkyValue};
@@ -115,6 +116,7 @@ impl<'a> Environment<'a> {
                 key,
                 function,
                 events_to_report: Mutex::new(vec![]),
+                suppress_progress_events: AtomicBool::new(false),
             },
             bubble_error_info,
             previously_requested_deps,
@@ -123,8 +125,8 @@ impl<'a> Environment<'a> {
     }
 
     /// The environment of a node's function in normal evaluation. The previously requested
-    /// deps (a dirty node's checked groups) are done: their values are read now (Java:
-    /// `batchPrefetch`).
+    /// deps (a dirty node's checked groups, or the deps of a run discarded because one of them
+    /// was rewound) must be done: their values are read now (Java: `batchPrefetch`).
     // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:168 SkyFunctionEnvironment.create
     pub(crate) fn create(
         run: &'a Run<'a>,
@@ -133,7 +135,7 @@ impl<'a> Environment<'a> {
         function: &'a dyn SkyFunction,
         previously_requested_deps: GroupedDeps,
         old_deps: IndexSet<SkyKey>,
-    ) -> Self {
+    ) -> Result<Self, UndonePreviouslyRequestedDeps> {
         let mut env = Environment::new(
             run,
             key,
@@ -143,10 +145,10 @@ impl<'a> Environment<'a> {
             old_deps,
             None,
         );
-        env.batch_prefetch();
+        env.batch_prefetch()?;
         // The deps this run requests follow the previously requested ones.
         env.st.deps = env.previously_requested_deps.clone();
-        env
+        Ok(env)
     }
 
     /// The environment a node on the error-bubbling path is re-run with: dependency requests
@@ -174,34 +176,63 @@ impl<'a> Environment<'a> {
 
     /// Reads the values of the previously requested deps.
     ///
-    /// PORT: in normal evaluation they are the groups a dirty node checked, all done (a node does
-    /// not run before its registered deps signalled, and nothing dirties a node during an
-    /// evaluation). Java's `UndonePreviouslyRequestedDeps` (rewinding) cannot happen; a dep
-    /// missing or not done is the graph inconsistency Java's `THROWING` receiver reports.
+    /// A previously requested dep may have transitioned from done to dirty (rewound) between
+    /// when it was read during a previous attempt to build this node and now; then the node is
+    /// reset (`Err`).
+    ///
+    /// PORT: a missing dep cannot happen (Java's `ALREADY_DECLARED_CHILD_MISSING` comes from
+    /// dropped nodes, not ported); it is reported to the receiver as Java does.
     // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:234 SkyFunctionEnvironment.batchPrefetch
-    fn batch_prefetch(&self) {
+    fn batch_prefetch(&self) -> Result<(), UndonePreviouslyRequestedDeps> {
         if self.previously_requested_deps.is_empty() {
-            return;
+            return Ok(());
         }
         let mut requested = self.st.requested.lock();
+        let mut missing_requested_deps: Vec<SkyKey> = vec![];
         for dep_key in self
             .previously_requested_deps
             .get_all_elements_as_iterable()
         {
-            let snapshot = self.run.ev.committed_entry(dep_key).unwrap_or_else(|| {
-                panic!(
-                    "IllegalStateException: Unexpected inconsistency: {:?}, [{:?}], \
-                         BUILDING_PARENT_FOUND_UNDONE_CHILD",
-                    self.key, dep_key
-                )
-            });
+            let Some(node) = self.run.ev.node(dep_key) else {
+                missing_requested_deps.push(dep_key.clone());
+                continue;
+            };
+            let Some(snapshot) = node.snapshot() else {
+                // A previously requested dep may have transitioned from done to dirty between
+                // when the node was read during a previous attempt to build this node and now.
+                // Notify the graph inconsistency receiver so that we can crash if that's
+                // unexpected.
+                self.run
+                    .ev
+                    .graph_inconsistency_receiver()
+                    .note_inconsistency_and_maybe_throw(
+                        self.key,
+                        Some(std::slice::from_ref(dep_key)),
+                        Inconsistency::BuildingParentFoundUndoneChild,
+                    );
+                return Err(UndonePreviouslyRequestedDeps(vec![dep_key.clone()]));
+            };
             requested.insert(dep_key.clone(), snapshot);
+        }
+        if !missing_requested_deps.is_empty() {
+            // Notify `GraphInconsistencyReceiver` when there are some dependencies missing from
+            // the graph to check whether this is expected.
+            self.run
+                .ev
+                .graph_inconsistency_receiver()
+                .note_inconsistency_and_maybe_throw(
+                    self.key,
+                    Some(&missing_requested_deps),
+                    Inconsistency::AlreadyDeclaredChildMissing,
+                );
+            return Err(UndonePreviouslyRequestedDeps(missing_requested_deps));
         }
         check_state!(
             !requested.contains_key(&*ERROR_TRANSIENCE_KEY),
             "{:?} cannot have a dep on ErrorTransienceValue during building",
             self.key
         );
+        Ok(())
     }
 
     pub(crate) fn into_parts(self) -> (EnvState, bool, EnvListener<'a>) {
@@ -225,6 +256,19 @@ impl<'a> Environment<'a> {
     // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:805 SkyFunctionEnvironment.getListener
     pub fn listener(&self) -> &dyn ExtendedEventHandler {
         &self.listener
+    }
+
+    /// From now on, [`Environment::listener`] drops the posts that are not stored for replay
+    /// (progress events): the environment becomes Java's `ProgressEventSuppressingEnvironment`,
+    /// whose listener is a `ProgressSuppressingEventHandler`.
+    ///
+    /// PORT: Java wraps the environment (`new ProgressEventSuppressingEnvironment(env)`); a
+    /// function here holds `&mut Environment` and switches it.
+    // Java: com/google/devtools/build/lib/skyframe/ProgressSuppressingEventHandler.java:33 ProgressSuppressingEventHandler.post
+    pub fn suppress_progress_events(&self) {
+        self.listener
+            .suppress_progress_events
+            .store(true, Ordering::SeqCst);
     }
 
     /// Java: Environment.valuesMissing
@@ -852,6 +896,8 @@ pub(crate) struct EnvListener<'a> {
     function: &'a dyn SkyFunction,
     /// Java: `eventsToReport`.
     events_to_report: Mutex<Vec<StoredReportable>>,
+    /// See [`Environment::suppress_progress_events`].
+    suppress_progress_events: AtomicBool,
 }
 
 impl EnvListener<'_> {
@@ -1031,9 +1077,21 @@ impl EventHandler for EnvListener<'_> {
 impl ExtendedEventHandler for EnvListener<'_> {
     // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:825 SkyFunctionEnvironment.post
     fn post(&self, obj: Arc<dyn Postable>) {
+        if self.suppress_progress_events.load(Ordering::SeqCst) && !obj.store_for_replay() {
+            return;
+        }
         self.report_event(StoredReportable::Post(obj));
     }
 }
 
 #[allow(unused_imports)]
 use Reportable as _;
+
+/// Thrown during environment construction if previously requested deps are no longer done.
+/// See `Environment::batch_prefetch`.
+// Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:1146 SkyFunctionEnvironment.UndonePreviouslyRequestedDeps
+#[derive(Debug)]
+pub(crate) struct UndonePreviouslyRequestedDeps(
+    #[allow(dead_code)] // Java's getDepKeys, read by nothing the blocking engine ports
+    pub(crate) Vec<SkyKey>,
+);

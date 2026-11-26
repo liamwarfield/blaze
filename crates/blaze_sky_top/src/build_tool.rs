@@ -413,6 +413,22 @@ pub trait AnalysisPostProcessor {
         analysis_result: &AnalysisResult,
     ) -> Result<(), BuildToolError>;
 
+    /// `new ExecutionTool(env, request)` at the start of
+    /// `buildTargetsWithMergedAnalysisExecution` (Skymeld), before the analysis: the modules'
+    /// `executorInit` that must run there (`SpawnLogModule`'s creates the execution log), and the
+    /// pending exit they request, which `AnalysisAndExecutionPhaseRunner.execute` throws before
+    /// it analyzes (`env.throwPendingException()`). The default is for post-processors that
+    /// create no execution tool.
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:613 BuildTool.buildTargetsWithMergedAnalysisExecution
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:113 AnalysisAndExecutionPhaseRunner.execute
+    fn before_merged_analysis(
+        &self,
+        _request: &BuildRequest,
+        _skyframe_executor: &SkyframeExecutor,
+    ) -> Result<(), BuildToolError> {
+        Ok(())
+    }
+
     /// `new ExecutionTool(env, request)` of a request without merged analysis and execution
     /// that does not analyze (`--noanalyze`): Java creates the tool after
     /// `AnalysisPhaseRunner.execute` returned, outside `if (performAnalysisPhase)`. The default
@@ -801,6 +817,10 @@ impl<'a> BuildTool<'a> {
         // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:496 BuildTool.buildTargetsWithoutMergedAnalysisExecution
         self.analysis_and_execution_entered
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        if request.with_merged_analysis_and_execution_source_of_truth() {
+            self.analysis_post_processor
+                .before_merged_analysis(request, self.skyframe_executor)?;
+        }
         let analysis_result = analysis_phase_runner::execute(
             self.skyframe_executor,
             &self.reporter,

@@ -1,14 +1,19 @@
 //! Port of `lib/sandbox` (Linux parts).
 //!
-//! Not ported: Darwin, Windows and Docker runners (`unported!` where a flag asks for them),
-//! `CopyingSandboxedSpawn`, and cgroups (`CgroupsInfo` for `--experimental_sandbox_memory_limit_mb`
-//! and `VirtualCgroupFactory` for `--experimental_sandbox_use_new_cgroup_implementation` are
-//! `unported!` at their use sites).
+//! Not ported: the Darwin and Windows runners (`unported!` where a flag asks for them). Both
+//! cgroups implementations are ported: `cgroups` (`VirtualCgroupFactory`,
+//! `--incompatible_use_new_cgroup_implementation`, the default) and `cgroups_info` (`CgroupsInfo`,
+//! the old one).
 
 pub mod abstract_containerizing_sandboxed_spawn;
 pub mod abstract_sandbox_spawn_runner;
 pub mod asynchronous_tree_deleter;
 pub mod cgroups;
+pub mod cgroups_info;
+pub mod copying_sandboxed_spawn;
+pub mod docker_command_line_builder;
+pub mod docker_sandboxed_spawn_runner;
+pub mod docker_sandboxed_strategy;
 mod fs_utils;
 pub mod hardlinked_sandboxed_spawn;
 pub mod linux_sandbox_command_line_builder;

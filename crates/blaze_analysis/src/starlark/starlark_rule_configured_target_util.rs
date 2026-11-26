@@ -215,8 +215,16 @@ fn evaluate(
             // ctx.outputs.executable is accessed in the implementation. This fragile mechanism
             // should be revised and removed
             is_default_executable_created = ctx.is_default_executable_created();
-            // PORT: R's RuleContext records the variables read through ctx.var itself
-            // (`starlark_looked_up_variables`); `ctx.looked_up_variables()` is not needed here.
+            // RuleContext.getRequiredConfigFragments reads starlarkRuleContext
+            // .lookedUpVariables(); the variables are handed to the rule context first.
+            // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1168 RuleContext.getRequiredConfigFragments
+            if handle
+                .borrow()
+                .should_include_required_config_fragments_provider()
+            {
+                let variables = crate::starlark::starlark_rule_context::looked_up_variables(ctx);
+                handle.borrow().set_starlark_looked_up_variables(variables);
+            }
             required_config_fragments_provider = handle.borrow().get_required_config_fragments();
             // Java: finally { ruleContext.close(); }
             ctx.close();

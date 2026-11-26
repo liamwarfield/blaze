@@ -4,6 +4,7 @@ use std::io;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use blaze_util::profiler::{Profiler, ProfilerTask};
 use blaze_vfs::{Path, PathFragment};
 use indexmap::{IndexMap, IndexSet};
 
@@ -133,24 +134,42 @@ impl AbstractContainerizingSandboxedSpawn {
             .chain(self.inputs.get_symlinks().keys())
             .cloned()
             .collect();
-        sandbox_helpers::populate_inputs_and_dirs_to_create(
-            &writable_sandbox_dirs,
-            &mut inputs_to_create,
-            &mut dirs_to_create,
-            &input_files,
-            &self.outputs,
-        );
+        // Java: com/google/devtools/build/lib/sandbox/AbstractContainerizingSandboxedSpawn.java:121 AbstractContainerizingSandboxedSpawn.createFileSystem
+        {
+            let _c = Profiler::instance()
+                .profile(ProfilerTask::INFO, "sandbox.populateInputsAndDirsToCreate");
+            sandbox_helpers::populate_inputs_and_dirs_to_create(
+                &writable_sandbox_dirs,
+                &mut inputs_to_create,
+                &mut dirs_to_create,
+                &input_files,
+                &self.outputs,
+            );
+        }
 
-        // Allow subclasses to filter out inputs and dirs that don't need to be created.
-        hooks.filter_inputs_and_dirs_to_create(&mut inputs_to_create, &mut dirs_to_create)?;
+        // Java: com/google/devtools/build/lib/sandbox/AbstractContainerizingSandboxedSpawn.java:131 AbstractContainerizingSandboxedSpawn.createFileSystem
+        {
+            let _c = Profiler::instance()
+                .profile(ProfilerTask::INFO, "sandbox.filterInputsAndDirsToCreate");
+            // Allow subclasses to filter out inputs and dirs that don't need to be created.
+            hooks.filter_inputs_and_dirs_to_create(&mut inputs_to_create, &mut dirs_to_create)?;
+        }
 
         // Finally create what needs creating.
-        sandbox_helpers::create_directories(
-            &dirs_to_create,
-            &self.sandbox_exec_root,
-            /* strict= */ true,
-        )?;
-        self.create_inputs(hooks, &inputs_to_create, &self.inputs)?;
+        // Java: com/google/devtools/build/lib/sandbox/AbstractContainerizingSandboxedSpawn.java:137 AbstractContainerizingSandboxedSpawn.createFileSystem
+        {
+            let _c = Profiler::instance().profile(ProfilerTask::INFO, "sandbox.createDirectories");
+            sandbox_helpers::create_directories(
+                &dirs_to_create,
+                &self.sandbox_exec_root,
+                /* strict= */ true,
+            )?;
+        }
+        // Java: com/google/devtools/build/lib/sandbox/AbstractContainerizingSandboxedSpawn.java:140 AbstractContainerizingSandboxedSpawn.createFileSystem
+        {
+            let _c = Profiler::instance().profile(ProfilerTask::INFO, "sandbox.createInputs");
+            self.create_inputs(hooks, &inputs_to_create, &self.inputs)?;
+        }
         let now_millis = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)

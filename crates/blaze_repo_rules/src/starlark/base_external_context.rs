@@ -248,6 +248,9 @@ pub struct StarlarkBaseExternalContext {
     pub process_wrapper_kill_delay: Option<Duration>,
     /// Java `ProcessWrapper.gracefulSigterm` (`--experimental_process_wrapper_graceful_sigterm`).
     pub process_wrapper_graceful_sigterm: bool,
+    /// Java `remoteExecutor` (null unless remote execution is configured).
+    pub remote_executor:
+        Option<Arc<dyn crate::repository::remote_helpers::RepositoryRemoteExecutor>>,
     pub starlark_semantics: Arc<StarlarkSemantics>,
     pub identifying_string_for_logging: String,
     os_object: StarlarkOS,
@@ -291,6 +294,8 @@ impl StarlarkBaseExternalContext {
             // (`with_process_wrapper_options`).
             process_wrapper_kill_delay: None,
             process_wrapper_graceful_sigterm: false,
+            // PORT: Java's constructor takes it; callers set it with `with_remote_executor`.
+            remote_executor: None,
             starlark_semantics,
             identifying_string_for_logging,
             os_object,
@@ -312,6 +317,18 @@ impl StarlarkBaseExternalContext {
     ) -> Self {
         self.process_wrapper_kill_delay = kill_delay;
         self.process_wrapper_graceful_sigterm = graceful_sigterm;
+        self
+    }
+
+    /// Sets Java's `remoteExecutor` constructor argument.
+    // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:178 StarlarkBaseExternalContext.<init>
+    pub fn with_remote_executor(
+        mut self,
+        remote_executor: Option<
+            Arc<dyn crate::repository::remote_helpers::RepositoryRemoteExecutor>,
+        >,
+    ) -> Self {
+        self.remote_executor = remote_executor;
         self
     }
 
@@ -1193,6 +1210,39 @@ impl IntParam {
             ))),
         }
     }
+}
+
+/// A `long` parameter: Java's interpreter accepts any `StarlarkInt`; the body's `toLong` fails
+/// for values outside the 64-bit range.
+enum LongParam {
+    Long(i64),
+    OutOfRange(String),
+}
+
+impl LongParam {
+    // Java: net/starlark/java/eval/StarlarkInt.java:343 StarlarkInt.toLong
+    fn to_long(&self, what: &str) -> starlark::Result<i64> {
+        match self {
+            LongParam::Long(l) => Ok(*l),
+            LongParam::OutOfRange(s) => Err(eval_error(format!(
+                "got {} for {}, want value in the signed 64-bit range",
+                s, what
+            ))),
+        }
+    }
+}
+
+/// `FileSystemUtils.readContent(p.getPath())`: the file's bytes.
+// Java: com/google/devtools/build/lib/vfs/FileSystemUtils.java FileSystemUtils.readContent
+fn read_content(p: &StarlarkPath) -> Result<Vec<u8>, JavaThrowable> {
+    let mut stream = p
+        .get_path()
+        .get_input_stream()
+        .map_err(|e| JavaThrowable::from_stream_open(&e))?;
+    let mut bytes = Vec::new();
+    io::Read::read_to_end(&mut stream, &mut bytes)
+        .map_err(|e| JavaThrowable::from_stream_io(&e))?;
+    Ok(bytes)
 }
 
 /// Java `String.valueOf(o)` / string concatenation of a Starlark value.
@@ -2096,10 +2146,106 @@ impl ExternalContext {
     // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:1861 StarlarkBaseExternalContext.canExecuteRemote
     fn can_execute_remote(&self) -> bool {
         let feature_enabled = self.base.starlark_semantics.experimental_repo_remote_exec;
-        // PORT: Blaze has no RepositoryRemoteExecutor (remote execution is not supported), so
-        // Java's `remoteExecutor != null` is always false.
-        let remote_exec_enabled = false;
+        let remote_exec_enabled = self.base.remote_executor.is_some();
         feature_enabled && self.is_remotable() && remote_exec_enabled
+    }
+
+    // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:1870 StarlarkBaseExternalContext.getRemotePathFromLabel
+    fn get_remote_path_from_label(
+        &mut self,
+        label: &Label,
+    ) -> starlark::Result<(PathFragment, blaze_vfs::Path)> {
+        let local_path = self.get_path_from_label(label)?.get_path().clone();
+        let remote_path = label
+            .get_package_identifier()
+            .get_source_root()
+            .get_relative_str(label.get_name());
+        Ok((remote_path, local_path))
+    }
+
+    // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:1878 StarlarkBaseExternalContext.executeRemote
+    fn execute_remote(
+        &mut self,
+        arguments_unchecked: Vec<ExecArg>, // <String> or <Label> expected
+        timeout: i32,
+        environment: &IndexMap<String, String>,
+        quiet: bool,
+        working_directory: &str,
+    ) -> starlark::Result<StarlarkExecutionResult> {
+        blaze_util::check_state!(self.can_execute_remote());
+
+        // Java: ImmutableSortedMap.Builder.naturalOrder() (buildOrThrow: no duplicate keys).
+        let mut inputs_builder: std::collections::BTreeMap<PathFragment, blaze_vfs::Path> =
+            std::collections::BTreeMap::new();
+        let mut arguments: Vec<String> = Vec::new();
+        for argument_unchecked in arguments_unchecked {
+            match argument_unchecked {
+                ExecArg::Label(label) => {
+                    let (remote_path, local_path) = self.get_remote_path_from_label(&label)?;
+                    arguments.push(remote_path.to_string());
+                    if let Some(existing) = inputs_builder.get(&remote_path) {
+                        // Java: ImmutableSortedMap.Builder.buildOrThrow.
+                        panic!(
+                            "IllegalArgumentException: Multiple entries with same key: {}={} and {}={}",
+                            remote_path, existing, remote_path, local_path
+                        );
+                    }
+                    inputs_builder.insert(remote_path, local_path);
+                }
+                ExecArg::Str(s) => arguments.push(s),
+                ExecArg::Path(_) | ExecArg::Other => unreachable!("validated as remotable"),
+            }
+        }
+
+        // PORT: skipped, profiling (STARLARK_REPOSITORY_FN "remote").
+        let execution_properties = self
+            .get_remote_exec_properties()
+            .map_err(|e| eval_error(e.to_string()))?;
+        let remote_executor = self
+            .base
+            .remote_executor
+            .clone()
+            .expect("canExecuteRemote checked remoteExecutor");
+        let result = remote_executor.execute(
+            &arguments,
+            &inputs_builder,
+            &execution_properties,
+            environment,
+            Some(working_directory),
+            // PORT: Java's Duration.ofSeconds takes a negative timeout as is; a Rust Duration
+            // cannot be negative, so it is zero (no timeout in the Action) here.
+            Duration::from_secs(timeout.max(0) as u64),
+        );
+        match result {
+            Ok(result) => {
+                // Java: new String(bytes, StandardCharsets.US_ASCII): a byte above 0x7F decodes
+                // to U+FFFD.
+                let ascii = |bytes: &[u8]| -> String {
+                    bytes
+                        .iter()
+                        .map(|&b| if b < 0x80 { b as char } else { '\u{FFFD}' })
+                        .collect()
+                };
+                let stdout = ascii(result.stdout());
+                let stderr = ascii(result.stderr());
+
+                if !quiet {
+                    let out_err = blaze_events::io::OutErr::system_out_err();
+                    out_err.print_out(&stdout);
+                    out_err.print_err(&stderr);
+                }
+
+                Ok(StarlarkExecutionResult::new(
+                    result.exit_code(),
+                    stdout,
+                    stderr,
+                ))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                Err(self.abort(EvaluationAbort::Interrupted))
+            }
+            Err(e) => Err(eval_error(format!("remote_execute failed: {}", e))),
+        }
     }
 
     // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:1930 StarlarkBaseExternalContext.validateExecuteArguments
@@ -2155,7 +2301,13 @@ impl ExternalContext {
         if self.can_execute_remote() {
             // Remote execution only sees the explicitly set environment variables, so removing
             // env vars isn't necessary.
-            blaze_util::unported!("StarlarkBaseExternalContext.executeRemote");
+            return self.execute_remote(
+                arguments,
+                timeout,
+                &force_repo_env_variables,
+                quiet,
+                override_working_directory,
+            );
         }
 
         // Execute on the local/host machine
@@ -2555,8 +2707,7 @@ pub fn base_external_context_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named, default = "allocate")] allocate_fn: &str,
         #[starlark(require = named, default = "auto")] watch: &str,
         eval: &mut Evaluator<'v, '_, '_>,
-    ) -> starlark::Result<NoneType> {
-        let _ = (path, allocate_fn, watch);
+    ) -> starlark::Result<Value<'v>> {
         // Java: enableOnlyWithFlag = EXPERIMENTAL_REPOSITORY_CTX_EXECUTE_WASM.
         // PORT: starlark-rust cannot hide a method; it fails when called instead.
         let enabled = {
@@ -2568,7 +2719,14 @@ pub fn base_external_context_methods(builder: &mut MethodsBuilder) {
         if !enabled {
             return Err(no_such_method(this, "load_wasm"));
         }
-        blaze_util::unported!("StarlarkBaseExternalContext.loadWasm")
+        check_path_param("load_wasm", "path", path)?;
+        let heap = eval.heap();
+        let mut ctx = ExternalContext::from_eval(eval)?;
+        let p = ctx.get_path(path)?;
+        // PORT: WorkspaceRuleEvent.newLoadWasmEvent not posted (see module docs).
+        ctx.maybe_watch(&p, ShouldWatch::from_string(watch)?)?;
+        let module_content = read_content(&p).map_err(repository_function_exception)?;
+        super::wasm::new_wasm_module(heap, p, path, &module_content, allocate_fn)
     }
 
     /// Instantiate a WebAssembly module and execute the specified function.
@@ -2582,8 +2740,7 @@ pub fn base_external_context_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] memory_limit: Option<Value<'v>>,
         #[starlark(require = named, default = "auto")] watch: &str,
         eval: &mut Evaluator<'v, '_, '_>,
-    ) -> starlark::Result<NoneType> {
-        let _ = (module, function, input, timeout, memory_limit, watch);
+    ) -> starlark::Result<Value<'v>> {
         // Java: enableOnlyWithFlag = EXPERIMENTAL_REPOSITORY_CTX_EXECUTE_WASM.
         let enabled = {
             let ctx = ExternalContext::from_eval(eval)?;
@@ -2594,7 +2751,77 @@ pub fn base_external_context_methods(builder: &mut MethodsBuilder) {
         if !enabled {
             return Err(no_such_method(this, "execute_wasm"));
         }
-        blaze_util::unported!("StarlarkBaseExternalContext.executeWasm")
+        // The interpreter checks every argument against its `@Param` before the method runs.
+        let wasm_module = super::wasm::wasm_module_of(module);
+        if wasm_module.is_none() {
+            check_path_param("execute_wasm", "module", module).map_err(|_| {
+                param_type_error(
+                    "execute_wasm",
+                    "module",
+                    module,
+                    "string, Label, path, or wasm_module",
+                )
+            })?;
+        }
+        let Some(function) = function.unpack_str() else {
+            return Err(param_type_error(
+                "execute_wasm",
+                "function",
+                function,
+                "string",
+            ));
+        };
+        let Some(input) = input.unpack_str() else {
+            return Err(param_type_error("execute_wasm", "input", input, "string"));
+        };
+        let timeout_i = int_param("execute_wasm", "timeout", timeout, 600)?;
+        let mem_limit_i = match memory_limit {
+            None => LongParam::Long(67108864),
+            Some(v) => match <i64 as starlark::values::UnpackValue>::unpack_value(v)
+                .ok()
+                .flatten()
+            {
+                Some(l) => LongParam::Long(l),
+                None if v.get_type() == "int" => LongParam::OutOfRange(v.to_str()),
+                None => {
+                    return Err(param_type_error("execute_wasm", "memory_limit", v, "int"));
+                }
+            },
+        };
+
+        let heap = eval.heap();
+        let mut ctx = ExternalContext::from_eval(eval)?;
+        let path = match &wasm_module {
+            Some(m) => m.get_path().clone(),
+            None => ctx.get_path(module)?,
+        };
+
+        // StringUnsafe.getInternalStringBytes(input): the internal (Latin-1) bytes.
+        let input_bytes = blaze_util::string_encoding::latin1_encode(input).into_owned();
+        let timeout_seconds = timeout_i.to_int("timeout")?;
+        let mem_limit = mem_limit_i.to_long("memory_limit")?;
+
+        // PORT: WorkspaceRuleEvent.newExecuteWasmEvent not posted (see module docs).
+
+        // Math.round(timeoutSeconds * 1000L * timeoutScaling)
+        let timeout_millis = ((timeout_seconds as i64 * 1000) as f64 * ctx.base.timeout_scaling
+            + 0.5)
+            .floor() as i64;
+        let timeout = std::time::Duration::from_millis(timeout_millis.max(0) as u64);
+
+        let result = match wasm_module {
+            Some(m) => m.execute(function, &input_bytes, timeout, mem_limit)?,
+            None => {
+                ctx.maybe_watch(&path, ShouldWatch::from_string(watch)?)?;
+                let module_content = read_content(&path).map_err(repository_function_exception)?;
+                let loaded =
+                    super::wasm::new_wasm_module(heap, path, module, &module_content, "allocate")?;
+                super::wasm::wasm_module_of(loaded)
+                    .expect("a wasm_module")
+                    .execute(function, &input_bytes, timeout, mem_limit)?
+            }
+        };
+        Ok(heap.alloc(result))
     }
 
     /// Returns the `path` of the corresponding program or `None` if there is no such program in

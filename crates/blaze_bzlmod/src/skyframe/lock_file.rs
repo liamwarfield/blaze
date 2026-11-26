@@ -10,6 +10,7 @@ use blaze_bzlmod_model::{
 };
 use blaze_cmdline::label_constants::MODULE_LOCKFILE_NAME;
 use blaze_skyframe::{ComputeError, Environment, Evaluator, Key, SkyKey, Transience};
+use blaze_util::profiler::{Profiler, ProfilerTask};
 use indexmap::IndexMap;
 
 use super::keys::{
@@ -49,7 +50,15 @@ pub fn compute(
         return Ok(None);
     }
 
-    // PORT: profiling ("parse lockfile") skipped.
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelLockFileFunction.java:86 BazelLockFileFunction.compute
+    let _c = Profiler::instance().profile(
+        ProfilerTask::BZLMOD,
+        if for_hidden_lockfile {
+            "parse hidden lockfile"
+        } else {
+            "parse lockfile"
+        },
+    );
     // FileSystemUtils.readContent(path, UTF_8): the lockfile is Unicode text (malformed input is
     // replaced); the Gson adapters convert its strings to internal strings.
     let contents = match std::fs::read(&lockfile_path) {

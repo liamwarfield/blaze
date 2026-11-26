@@ -305,9 +305,7 @@ impl WorkerModule {
                 VirtualCgroup::get_instance().memory().is_some()
             } else {
                 // The old implementation (--noincompatible_use_new_cgroup_implementation).
-                blaze_util::unported!(
-                    "CgroupsInfo.isSupported (--experimental_worker_use_cgroups_on_linux)"
-                )
+                crate::sandbox::cgroups_info::CgroupsInfo::is_supported()
             };
         WorkerProcessMetricsCollector::instance().set_use_cgroups_on_linux(use_cgroups_on_linux);
 

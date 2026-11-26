@@ -815,6 +815,15 @@ fn compute_completion(
     let mut action_causes: Vec<CompletionRootCause> = Vec::new();
     let mut label_causes: Vec<CompletionRootCause> = Vec::new();
 
+    // The full `inputMap` (Java keeps it for the important output handler and the event; here it
+    // is built only when a handler is registered), and the artifacts of its runfiles trees
+    // (`inputMap.getRunfilesTrees()`).
+    let important_output_handler = skyframe_action_executor.important_output_handler();
+    let full_input_map = important_output_handler.as_ref().map(|_| {
+        crate::skyframe_action_executor::ActionInputMetadata::new(skyframe_action_executor)
+    });
+    let mut runfiles_tree_artifacts: Vec<blaze_exec::actions::ActionInputRef> = Vec::new();
+
     let mut first_action_execution_exception: Option<ActionExecutionException> = None;
     let mut root_causes = Vec::new();
     for (input, k) in all_artifacts.iter().zip(&keys) {
@@ -855,6 +864,14 @@ fn compute_completion(
                 // ActionInputMapHelper.addToMap(inputMap, input, artifactValue, currentConsumer):
                 // the full input map is not kept; its metrics are.
                 accumulate_metrics(input, &input_value, &current_consumer);
+                if let Some(full_input_map) = &full_input_map {
+                    add_to_full_input_map(
+                        full_input_map,
+                        &mut runfiles_tree_artifacts,
+                        input,
+                        &input_value,
+                    );
+                }
                 if all_artifacts_are_important || important_artifacts.contains(input) {
                     add_to_map(&mut important_input_map, input, &input_value);
                 }
@@ -922,10 +939,27 @@ fn compute_completion(
     }
 
     if !root_causes.is_empty() || first_action_execution_exception.is_some() {
-        // In error bubbling, we may be interrupted by Skyframe. Java ensures that the interrupt
-        // doesn't prevent staging built artifacts (informImportantOutputHandler: remote outputs,
-        // not ported) and posting the failed event (CompletionFunction.java:248). Nothing below
-        // polls the interrupt (no `env.check_interrupted()?`), so the event is always posted.
+        // In error bubbling, we may be interrupted by Skyframe. Ensure that the interrupt doesn't
+        // prevent us from staging built artifacts and posting the failed event.
+        // PORT: nothing here polls the interrupt (no `env.check_interrupted()?`), so the event
+        // is always posted; the handler's own interruption is ignored here as Java restores it.
+        if let (Some(handler), Some(full_input_map)) = (&important_output_handler, &full_input_map)
+            && !built_artifacts.is_empty()
+        {
+            let important: Vec<&Artifact> = all_artifacts
+                .iter()
+                .filter(|a| built_artifacts.contains(*a))
+                .filter(|a| all_artifacts_are_important || important_artifacts.contains(*a))
+                .collect();
+            match inform_important_output_handler(
+                &**handler,
+                &important,
+                &runfiles_tree_artifacts,
+                full_input_map,
+            ) {
+                Ok(()) | Err(blaze_skyframe::Interrupted) => {}
+            }
+        }
         // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:329 CompletionFunction.postFailedEvent
         let built_outputs = SuccessfulArtifactFilter::new(&built_artifacts)
             .filter_artifacts_in_output_group(artifacts_by_output_group);
@@ -986,6 +1020,21 @@ fn compute_completion(
         return Ok(None);
     }
 
+    if let (Some(handler), Some(full_input_map)) = (&important_output_handler, &full_input_map) {
+        let important: Vec<&Artifact> = if all_artifacts_are_important {
+            all_artifacts.iter().collect()
+        } else {
+            important_artifacts.iter().collect()
+        };
+        inform_important_output_handler(
+            &**handler,
+            &important,
+            &runfiles_tree_artifacts,
+            full_input_map,
+        )
+        .map_err(ComputeError::Interrupted)?;
+    }
+
     let event = completor.create_succeeded(
         CompletionOutcome {
             root_causes: Vec::new(),
@@ -1002,6 +1051,79 @@ fn compute_completion(
         .top_level_artifacts_metric
         .merge_in(&current_consumer);
     Ok(Some(()))
+}
+
+/// `ActionInputMapHelper.addToMap(inputMap, input, artifactValue, ...)` into the full input map,
+/// noting the artifacts of a runfiles tree (`inputMap.getRunfilesTrees()`, whose
+/// `getArtifacts()` the important output handler walks).
+// Java: com/google/devtools/build/lib/skyframe/ActionInputMapHelper.java:31 ActionInputMapHelper.addToMap
+fn add_to_full_input_map(
+    full_input_map: &crate::skyframe_action_executor::ActionInputMetadata,
+    runfiles_tree_artifacts: &mut Vec<blaze_exec::actions::ActionInputRef>,
+    input: &Artifact,
+    value: &InputValue,
+) {
+    use crate::action_execution_function::InputValue as MapValue;
+    let map_value = match value {
+        InputValue::Artifact(artifact_value) => MapValue::Artifact(artifact_value.clone()),
+        InputValue::Action(action_execution_value) => {
+            MapValue::Action(action_execution_value.clone())
+        }
+    };
+    crate::action_execution_function::add_to_map(full_input_map, input, &map_value);
+    if let InputValue::Action(action_execution_value) = value
+        && input.is_runfiles_tree()
+        && let Some(runfiles) = action_execution_value.get_rich_artifact_data()
+    {
+        // PORT: Java walks `RunfilesTree.getArtifacts()` (the runfiles' nested set order);
+        // the value holds its files and its tree artifacts apart, which are walked in that
+        // order. Only the order of the downloads differs.
+        runfiles.for_each_file(|artifact, _| runfiles_tree_artifacts.push(artifact.clone()));
+        runfiles.for_each_tree(|tree, _| runfiles_tree_artifacts.push(tree.clone()));
+    }
+}
+
+/// `informImportantOutputHandler`: `Ok(())` is Java's `null` (no rewind plan), `Err` its
+/// `InterruptedException`.
+///
+/// PORT: filesets are not expanded (`key.topLevelArtifactContext().expandFilesets()` is not
+/// ported; no fileset reaches a completion, see `add_to_map`). Lost top-level outputs need
+/// action rewinding, which is not ported, and a failed download (`ImportantOutputException`) is
+/// not ported either: both stop loudly.
+// Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:385 CompletionFunction.informImportantOutputHandler
+fn inform_important_output_handler(
+    handler: &dyn blaze_exec::exec::action_execution_context::ImportantOutputHandler,
+    important_artifacts: &[&Artifact],
+    runfiles_tree_artifacts: &[blaze_exec::actions::ActionInputRef],
+    full_input_map: &crate::skyframe_action_executor::ActionInputMetadata,
+) -> Result<(), blaze_skyframe::Interrupted> {
+    use blaze_exec::exec::action_execution_context::ImportantOutputError;
+    // The only handler (the remote module's) requires the hidden output metadata: the full
+    // input map, `new ActionInputMetadataProvider(inputMap)`.
+    blaze_util::check_state!(handler.requires_hidden_output_metadata());
+    let important: Vec<blaze_exec::actions::ActionInputRef> = important_artifacts
+        .iter()
+        .filter(|artifact| !artifact.is_fileset())
+        .map(|artifact| blaze_exec::actions::action_adapters::artifact_input(artifact))
+        .collect();
+    match handler.process_outputs_and_get_lost_artifacts(
+        &important,
+        runfiles_tree_artifacts,
+        &full_input_map.action_input_map_only(),
+    ) {
+        Ok(lost_outputs) if lost_outputs.is_empty() => Ok(()),
+        Ok(lost_outputs) => blaze_util::unported!(
+            "ActionRewindStrategy.prepareRewindPlanForLostTopLevelOutputs",
+            "lost top-level outputs: {:?}",
+            lost_outputs.by_digest.keys().collect::<Vec<_>>()
+        ),
+        Err(ImportantOutputError::Interrupted) => Err(blaze_skyframe::Interrupted),
+        Err(ImportantOutputError::Exception(e)) => blaze_util::unported!(
+            "CompletionFunction.informImportantOutputHandler",
+            "ImportantOutputException (TopLevelOutputException): {}",
+            e.message
+        ),
+    }
 }
 
 /// `NestedSetBuilder.add`: an element already present is kept once.

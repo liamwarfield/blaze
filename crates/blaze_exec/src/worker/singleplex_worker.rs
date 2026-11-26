@@ -28,6 +28,7 @@ use super::worker_protocol::{
 use crate::actions::execution_requirements::WorkerProtocolFormat;
 use crate::exec::tree_deleter::TreeDeleter;
 use crate::sandbox::cgroups::VirtualCgroupFactory;
+use crate::sandbox::cgroups_info::CgroupsInfo;
 use crate::sandbox::linux_sandbox_command_line_builder::{
     LinuxSandboxCommandLineBuilder, NetworkNamespace,
 };
@@ -246,7 +247,11 @@ impl SingleplexWorker {
                 // In the event that the memory limit is 0, we defer to using Blaze's
                 // WorkerLifecycleManager to kill workers rather than cgroup's OOM killer.
                 // (The old implementation, --noincompatible_use_new_cgroup_implementation.)
-                blaze_util::unported!("CgroupsInfo.getBlazeSpawnsCgroup");
+                let cgroup = CgroupsInfo::get_blaze_spawns_cgroup().create_individual_spawn_cgroup(
+                    &format!("worker_sandbox_{}", self.base.worker_id),
+                    hardened.map_or(0, |h| h.memory_limit),
+                );
+                *self.base.cgroup.lock() = Some(Arc::new(cgroup));
             }
 
             // TODO(larsrc): Check that execRoot and outputBase are not under /tmp
@@ -312,10 +317,13 @@ impl SingleplexWorker {
         if let Some(factory) = &self.cgroup_factory {
             let cgroup = factory.create(self.base.worker_id, &IndexMap::new())?;
             *self.base.cgroup.lock() = Some(cgroup);
-        } else if self.options.use_cgroups_on_linux {
-            // CgroupsInfo.isSupported() of the old implementation
-            // (--noincompatible_use_new_cgroup_implementation).
-            blaze_util::unported!("CgroupsInfo.isSupported");
+        } else if self.options.use_cgroups_on_linux && CgroupsInfo::is_supported() {
+            // The old implementation (--noincompatible_use_new_cgroup_implementation).
+            let cgroup = CgroupsInfo::get_blaze_spawns_cgroup().create_individual_spawn_cgroup(
+                /* dir_name= */ &format!("worker_{}", self.base.worker_id),
+                /* memory_limit_mb= */ 0,
+            );
+            *self.base.cgroup.lock() = Some(Arc::new(cgroup));
         }
         self.add_process_to_cgroup(&*process)?;
         Ok(process)

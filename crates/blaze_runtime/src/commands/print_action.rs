@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use blaze_actions::actions::action::CommandLineError;
 use blaze_actions::{ActionKeyContext, ActionRef, Artifact};
+use blaze_analysis::aspect_key_creator::{AspectKey, TopLevelAspectsKey, TopLevelAspectsValue};
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::configured_target_key::ConfiguredTargetKey;
 use blaze_analysis::providers::file_provider::FileProvider;
@@ -20,6 +21,9 @@ use blaze_packages::starlark_defs::builtin_providers::OUTPUT_GROUP_INFO;
 use blaze_packages::target::Target;
 use blaze_protos::blaze::{DetailedExtraActionInfo, ExtraActionSummary};
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail::Category};
+use blaze_sky_exec::action_template_expansion_value::{
+    ActionTemplateExpansionKey, ActionTemplateExpansionValue,
+};
 use blaze_sky_loading::package_manager::{NoSuchThingOrInterrupted, TargetProvider as _};
 use blaze_sky_top::skyframe_executor::SkyframeExecutor;
 use blaze_skyframe::SkyKey;
@@ -382,8 +386,11 @@ impl PrintActionRunner {
         visitor.visit_white_nodes(&files_to_build[..]);
 
         for action in visitor.get_actions() {
-            // `action instanceof Action`: every Blaze action is an `Action`.
-            add_extra_action_info(summary, &action, action_key_context)?;
+            // `action instanceof Action`: not an action template (an `ActionAnalysisMetadata`
+            // that is not an `ActionExecutionMetadata`).
+            if action.is_action_execution_metadata() {
+                add_extra_action_info(summary, &action, action_key_context)?;
+            }
         }
         Ok(())
     }
@@ -416,7 +423,10 @@ impl PrintActionRunner {
                 env,
                 action_graph.skyframe_executor,
             )? {
-                if let Some(action) = &action {
+                // `action instanceof Action`
+                if let Some(action) = &action
+                    && action.is_action_execution_metadata()
+                {
                     add_extra_action_info(summary, action, action_key_context)?;
                 }
             }
@@ -522,9 +532,10 @@ impl SkyframeActionGraph<'_> {
     /// `SkyframeExecutor.getGeneratingAction`: the action at the artifact's generating action
     /// key in its owner's value.
     ///
-    /// PORT: Java evaluates the owner's key (done after the analysis, so the evaluation only
-    /// reads it); the value is read from the graph. Owners that are not configured targets
-    /// (aspects, action templates) fail loudly.
+    /// PORT: Java evaluates the owner's key (done after the analysis and the build, so the
+    /// evaluation only reads it); the value is read from the graph, for the owners whose values
+    /// the build creates: configured targets, aspects, top-level aspects, action template
+    /// expansions and the workspace status. Other owners (the coverage report) fail loudly.
     // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2702 SkyframeExecutor.getGeneratingAction
     fn get_generating_action(&self, artifact: &Artifact) -> Option<ActionRef> {
         if artifact.is_source_artifact() {
@@ -532,21 +543,56 @@ impl SkyframeActionGraph<'_> {
         }
         let generating_action_key = artifact.get_generating_action_key();
         let lookup_key = generating_action_key.get_action_lookup_key();
-        let Some(configured_target_key) = lookup_key.as_any().downcast_ref::<ConfiguredTargetKey>()
-        else {
+        let graph = self.skyframe_executor.get_walkable_graph();
+        // ActionLookupValue.getActions() of the key's value (result.hasError(): null).
+        let any = lookup_key.as_any();
+        let actions: Vec<ActionRef> = if let Some(key) = any.downcast_ref::<ConfiguredTargetKey>() {
+            blaze_sky_top::skyframe_executor::get_configured_target_value(
+                &*graph,
+                &SkyKey::new(key.clone()),
+            )?
+            .get_actions()
+            .to_vec()
+        } else if let Some(key) = any.downcast_ref::<AspectKey>() {
+            graph
+                .get_value(&SkyKey::new(key.clone()))?
+                .downcast::<blaze_analysis::aspect_value::AspectValue>()
+                .unwrap_or_else(|_| panic!("ASPECT value of {key:?}"))
+                .get_actions()
+                .to_vec()
+        } else if let Some(key) = any.downcast_ref::<TopLevelAspectsKey>() {
+            graph
+                .get_value(&SkyKey::new(key.clone()))?
+                .downcast::<TopLevelAspectsValue>()
+                .unwrap_or_else(|_| panic!("TOP_LEVEL_ASPECTS value of {key:?}"))
+                .get_actions()
+                .to_vec()
+        } else if let Some(key) = any.downcast_ref::<ActionTemplateExpansionKey>() {
+            use blaze_sky_exec::analysis_seam::ActionLookupValue as _;
+            graph
+                .get_value(&SkyKey::new(key.clone()))?
+                .downcast::<ActionTemplateExpansionValue>()
+                .unwrap_or_else(|_| panic!("ACTION_TEMPLATE_EXPANSION value of {key:?}"))
+                .get_actions()
+                .to_vec()
+        } else if any.is::<blaze_analysis::analysis_services::WorkspaceStatusKey>() {
+            graph
+                .get_value(&SkyKey::new(
+                    blaze_analysis::analysis_services::WorkspaceStatusKey,
+                ))?
+                .downcast::<blaze_analysis::analysis_services::WorkspaceStatusValue>()
+                .unwrap_or_else(|_| panic!("BUILD_INFO value"))
+                .actions
+                .clone()
+        } else {
             blaze_util::unported!(
                 "SkyframeExecutor.getGeneratingAction",
-                "generating action owned by {} (not a configured target)",
-                lookup_key
+                "generating action owned by {} ({})",
+                lookup_key,
+                lookup_key.function_name()
             );
         };
-        let graph = self.skyframe_executor.get_walkable_graph();
-        // result.hasError(): null.
-        let value = blaze_sky_top::skyframe_executor::get_configured_target_value(
-            &*graph,
-            &SkyKey::new(configured_target_key.clone()),
-        )?;
-        Some(value.get_actions()[generating_action_key.get_action_index() as usize].clone())
+        Some(actions[generating_action_key.get_action_index() as usize].clone())
     }
 }
 

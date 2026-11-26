@@ -25,6 +25,10 @@ The memory rule (AGENTS.md "Memory") shapes the stand-in:
     systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0
     so the servers and the worker die with it.
 
+BLAZE_SERVER_MODE (Blaze's server mode, see crates/blaze_client/src/server.rs) is passed through
+to the binary: set it to `daemon` for Blaze, since the test functions assume a server that keeps
+its state between commands, as Bazel's does.
+
 Results: ~/.cache/blaze/work/remote-6/rrc/<side-name>/results.tsv (name, PASS/FAIL/SKIP, first
 line of the failure) and log.txt (every command with exit code, stdout and stderr).
 """
@@ -251,6 +255,8 @@ def make_test_base():
         def _EnvMap(self, env_remove=None, env_add=None):
             env = {"HOME": os.path.join(self._temp, "home"), "PATH": "/usr/bin:/bin",
                    "TEST_TMPDIR": State.tmp, "TMP": self._temp}
+            if os.environ.get("BLAZE_SERVER_MODE"):
+                env["BLAZE_SERVER_MODE"] = os.environ["BLAZE_SERVER_MODE"]
             for e in env_remove or []:
                 env.pop(e, None)
             for k, v in (env_add or {}).items():
@@ -313,6 +319,8 @@ def reset_workspace():
     """Expunges the previous function's output bases, then empties the workspace."""
     env = {"HOME": os.path.join(State.tmp, "home"), "PATH": "/usr/bin:/bin",
            "TEST_TMPDIR": State.tmp, "TMP": State.tmp}
+    if os.environ.get("BLAZE_SERVER_MODE"):
+        env["BLAZE_SERVER_MODE"] = os.environ["BLAZE_SERVER_MODE"]
     for cwd in sorted(State.used_cwds):
         if os.path.isdir(cwd) and os.path.exists(os.path.join(cwd, "MODULE.bazel")):
             for args in (["clean", "--expunge"], ["shutdown"]):
@@ -344,6 +352,7 @@ def main(argv):
         cmd = ["systemd-run", "--user", "--collect", "--wait", "--quiet", "--pipe",
                "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0",
                "--setenv=HOME=" + os.environ["HOME"], "--setenv=PATH=/usr/bin:/bin",
+               "--setenv=BLAZE_SERVER_MODE=" + os.environ.get("BLAZE_SERVER_MODE", ""),
                sys.executable, os.path.abspath(__file__), "--unit"] + argv
         return subprocess.call(cmd)
 
@@ -354,6 +363,8 @@ def main(argv):
     State.tmp = os.path.join(State.base, "tmp")
     os.makedirs(os.path.join(State.tmp, "home"), exist_ok=True)
     os.makedirs(State.ur, exist_ok=True)
+    # Read by some functions (tempfile.mkdtemp(dir=os.environ['TEST_TMPDIR'])).
+    os.environ["TEST_TMPDIR"] = State.tmp
     State.bazelrc = os.path.join(State.base, "test_bazelrc")
     with open(State.bazelrc, "w") as f:
         f.write("startup --output_user_root=%s\n" % State.ur)

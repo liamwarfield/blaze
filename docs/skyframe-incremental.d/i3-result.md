@@ -46,6 +46,11 @@ Per command, in Java's order (`J:com/google/devtools/build/lib/skyframe/Sequence
    (`BlazeRuntime.afterCommand`); `clean` resets it (`BlazeWorkspace.resetEvaluator`); the
    `TimestampGranularityMonitor` wait.
 
+At the end of every command (after `afterCommand`, its executors gone) the server strips the
+kept evaluator's functions (`SkyframeIncrementalState::release_command_functions`, called by the
+dispatcher before its build arena release), so nothing of the command outlives it but the graph;
+see "What a kept graph keeps alive" below.
+
 Events: with tracking, the evaluator stores events with `DEFAULT_EVENT_FILTER_WITH_ACTIONS` and
 replays them for nodes it does not re-run (decision 9.2 of docs/skyframe-incremental.md).
 
@@ -76,6 +81,50 @@ replays them for nodes it does not re-run (decision 9.2 of docs/skyframe-increme
 | `--discard_analysis_cache` | Java's next-command deletion and message |
 | Interrupt, failed build | in-flight nodes and their reverse closure deleted at the next evaluation (I1) |
 | `--watchfs` | no diff awareness: every root is checked (Java's path without diff information); correct, not faster |
+
+## What a kept graph keeps alive between commands
+
+Root's item (server agent's finding): the repo contents cache's shared lock was held between
+commands, because Blaze took it with each executor's repository functions and the kept graph
+kept the last executor's functions until the next command; its garbage collector hung (an
+exclusive request overlapping this process's own lock), and the build arena kept two leases.
+
+Fix: the lock is taken where Java takes it, `BazelRepositoryModule.beforeCommand`
+(`J:com/google/devtools/build/lib/bazel/BazelRepositoryModule.java:403`, after the two path
+checks, profiled as `REPO_CACHE_GC_WAIT`, error "could not acquire lock on repo contents cache",
+`BAD_REPO_CONTENTS_CACHE`), and released in `afterCommand` (`:731`, "could not release lock on
+repo contents cache"): blaze_runtime `bazel_modules.rs` `BazelRepositoryModule` now keeps the
+locked cache between its two hooks. `blaze_repo_rules::setup` no longer takes it. In addition the
+kept evaluator's functions are dropped at the end of each command (above), not at the start of the
+next one.
+
+Measured on a daemon server after two builds (genrule actions in the linux-sandbox, then a no-op),
+kept graph against `BLAZE_INCREMENTAL=none`: 10 threads and 20 descriptors on both (the same
+names: gRPC, signal, pid-file watcher, idle-task, subprocess-fork threads; the install base lock,
+java.log, jvm.out, sockets, pipes, eventfds), no lock on the repo contents cache's `gc_lock` in
+`/proc/locks`, and the server log's arena line reports exactly one lease, the graph's.
+
+| Resource | Java lifecycle | Blaze with a kept graph |
+| --- | --- | --- |
+| Repo contents cache shared lock | `BazelRepositoryModule.beforeCommand` to `afterCommand` | same (module hooks); the GC idle task runs between commands |
+| Output base lock, command lock | the server's command lifecycle (client / `BlazeCommandDispatcher`) | unchanged (not held by the graph) |
+| Install base lock (`<install>.lock`, shared) | held for the server's life | same, with or without a graph |
+| Repository services (download manager, HTTP downloader, credential helpers, `.netrc`, URL rewriter) | module fields reset at each `beforeCommand` | captured by the executor's functions; dropped at the end of the command |
+| Action cache, output service handles, execution thread pools, sandbox and worker setups | `ExecutionTool` / modules, closed or reset at `afterCommand` / `BuildCompleteEvent` | owned by the command's executor and its execution state; dropped with it (persistent workers stay with the `WorkerModule`'s pool, as in Java) |
+| Evaluator worker threads | Skyframe's pool, alive with the server | scoped to each evaluation, joined before it returns |
+| Progress receiver, event handlers, reporter of the command | replaced at each command (`setReporter`, progress receiver per command) | the kept evaluator gets a fresh receiver when its functions are stripped; the command's bus is cleared at `afterCommand` |
+| Stored events (`DEFAULT_EVENT_FILTER_WITH_ACTIONS`) | in the graph's node entries | same |
+| Graph values (packages, .bzl modules, configured targets, actions, action results) | the graph, while kept | same |
+| Build arena (frozen Starlark heaps, memo tables) | no counterpart: the JVM frees a heap once nothing references it | one lease, the kept graph's: the arena is released only once the graph is dropped (`clean`, `--nokeep_state_after_build`, a discarding change, `BLAZE_INCREMENTAL=none`). Heaps of values the graph no longer references (an edited `.bzl` file's old module) stay until then: memory can grow with the number of distinct `.bzl` versions evaluated (not measured; open item below) |
+
+Acceptance (root): the three GC functions of `src/test/py/bazel/bzlmod/repo_contents_cache_test.py`
+replayed command by command on daemon servers by `scripts/incremental/repo-contents-cache-gc run`
+(the oracle first, then Blaze with the kept graph): every assertion holds on both sides and the
+observations are identical (`testGc_singleServer_gcAfterCacheHit` 5 steps,
+`testGc_singleServer_gcAfterCacheMiss` 3, `testGc_multipleServers` 6; 0 differences). The refetch
+after the collection goes through the kept graph (the `FILE_STATE` dependency on the cache entry,
+`J:com/google/devtools/build/lib/bazel/repository/RepositoryFetchFunction.java:390`): Blaze and the oracle both print "5 packages loaded, 7 targets
+configured" for it and "0 packages loaded, 0 targets configured" for the build after.
 
 ## Audit: reads outside the graph (root's S2-1 item)
 
@@ -126,7 +175,11 @@ blaze_actions, blaze_exec, blaze_starlark).
 3. `getDirtyActionValues` tests of `FilesystemValueCheckerTest` (tree artifacts, remote files,
    batch stat) not ported; `BatchStat` (no Bazel output service provides one) not ported; remote
    outputs missing locally are always treated as modified (re-evaluated; never stale).
-4. The counters of `ExecutionFinishedEvent` (modified output files) and the incremental build
+4. Arena growth with a kept graph: the build arena is not released while a graph is kept, so the
+   frozen heaps of `.bzl` modules and packages the graph no longer references accumulate until
+   the graph is dropped. Outputs are unaffected; memory of a long-lived server with many edits
+   can grow (not measured). Needs per-heap ownership by the values (decision D7 revisited) — root's call.
+5. The counters of `ExecutionFinishedEvent` (modified output files) and the incremental build
    monitor are not ported (metrics).
 
 ## Known count differences against Bazel (D9), outputs and spawns equal

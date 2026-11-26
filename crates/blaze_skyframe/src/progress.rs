@@ -5,7 +5,6 @@
 
 use crate::node_entry::DirtyType;
 use crate::{ErrorInfo, GroupedDeps, SkyKey, SkyValue};
-use blaze_util::unported;
 use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -331,17 +330,12 @@ impl InflightTrackingProgressReceiver for InflightOnlyTrackingProgressReceiver {
 }
 
 /// A delegating [`InflightTrackingProgressReceiver`] that tracks both inflight and dirty keys.
-///
-/// PORT: rewinding is not ported (docs/skyframe-incremental.md section 6), so the
-/// `unsuccessfullyRewoundKeys` set has no port: [`DirtyType::Rewind`] reaching
-/// `addToDirtySet` fails with `unported!`, and
-/// [`DirtyAndInflightTrackingProgressReceiver::get_and_clear_unsuccessfully_rewound_keys`]
-/// returns the empty set (which is what Java returns when nothing was rewound).
 // Java: com/google/devtools/build/skyframe/DirtyAndInflightTrackingProgressReceiver.java:27 DirtyAndInflightTrackingProgressReceiver
 pub(crate) struct DirtyAndInflightTrackingProgressReceiver {
     progress_receiver: Arc<dyn EvaluationProgressReceiver>,
     dirty_keys: ConcurrentSet,
     inflight_keys: ConcurrentSet,
+    unsuccessfully_rewound_keys: ConcurrentSet,
 }
 
 /// Java: `Sets.newConcurrentHashSet()`, a set many evaluator threads update at once.
@@ -411,6 +405,7 @@ impl DirtyAndInflightTrackingProgressReceiver {
             progress_receiver,
             dirty_keys: ConcurrentSet::new(),
             inflight_keys: ConcurrentSet::new(),
+            unsuccessfully_rewound_keys: ConcurrentSet::new(),
         }
     }
 
@@ -428,6 +423,7 @@ impl DirtyAndInflightTrackingProgressReceiver {
             progress_receiver,
             dirty_keys: self.dirty_keys,
             inflight_keys: self.inflight_keys,
+            unsuccessfully_rewound_keys: self.unsuccessfully_rewound_keys,
         }
     }
 
@@ -463,8 +459,7 @@ impl DirtyAndInflightTrackingProgressReceiver {
     /// * evaluated to an error
     // Java: com/google/devtools/build/skyframe/DirtyAndInflightTrackingProgressReceiver.java:159 DirtyAndInflightTrackingProgressReceiver.getAndClearUnsuccessfullyRewoundKeys
     pub(crate) fn get_and_clear_unsuccessfully_rewound_keys(&self) -> HashSet<SkyKey> {
-        // PORT: rewinding is not ported; no key is ever rewound, so the set is always empty.
-        HashSet::new()
+        self.unsuccessfully_rewound_keys.take()
     }
 
     /// Returns the set of all dirty keys that have not been enqueued. This is useful for garbage
@@ -485,8 +480,7 @@ impl DirtyAndInflightTrackingProgressReceiver {
     // Java: com/google/devtools/build/skyframe/DirtyAndInflightTrackingProgressReceiver.java:174 DirtyAndInflightTrackingProgressReceiver.addToDirtySet
     fn add_to_dirty_set(&self, sky_key: &SkyKey, dirty_type: DirtyType) {
         if dirty_type == DirtyType::Rewind {
-            // PORT: rewinding is not ported (Java adds the key to unsuccessfullyRewoundKeys).
-            unported!("DirtyAndInflightTrackingProgressReceiver.addToDirtySet (DirtyType.REWIND)");
+            self.unsuccessfully_rewound_keys.insert(sky_key);
         } else {
             self.dirty_keys.insert(sky_key);
         }
@@ -498,8 +492,7 @@ impl DirtyAndInflightTrackingProgressReceiver {
         // only called after successful NodeEntry#markDirty calls, i.e. a call that transitioned
         // the node from done to dirty.
         if !self.dirty_keys.remove(sky_key) {
-            // PORT: Java removes the key from unsuccessfullyRewoundKeys here; rewinding is not
-            // ported and that set is always empty.
+            self.unsuccessfully_rewound_keys.remove(sky_key);
         }
     }
 }

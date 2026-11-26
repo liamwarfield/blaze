@@ -3,14 +3,17 @@
 mod bzl_compile_function_test;
 mod bzl_load_function_test;
 mod containing_package_lookup_function_test;
+mod diff_awareness_manager_test;
 mod environment_group_test;
 mod eval_macro_function_test;
 mod exports_files_test;
 mod file_contents_proxy_test;
 mod file_function_test;
+mod filesystem_value_checker_inferring_ancestors_test;
 mod filesystem_value_checker_test;
 mod ignored_subdirectories_test;
 mod input_file_test;
+mod local_diff_awareness_test;
 mod native_existing_rules_test;
 mod native_glob_test;
 mod native_subpackages_test;

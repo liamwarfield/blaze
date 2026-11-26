@@ -1,5 +1,6 @@
 //! `blaze info`.
 
+pub mod build_language;
 pub mod info_item_handler;
 pub mod items;
 pub mod module_items;

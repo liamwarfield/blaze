@@ -25,6 +25,13 @@ subject_printable_bad	subject_printable_bad.root.pem	localhost	O PrintableString
 subject_utf8_bad	subject_utf8_bad.root.pem	localhost	O UTF8String invalid
 empty_subject_v2	empty_subject_v2.root.pem	localhost	v2, empty subject
 self_signed	self_signed.root.pem	localhost	self-signed v1, trusted directly
+direct_v1_extensions	direct_v1_extensions.root.pem	localhost	v1 (no version) with an extensions block
+direct_v2_extensions	direct_v2_extensions.root.pem	localhost	v2 with an extensions block
+direct_v2_unique_ids	direct_v2_unique_ids.root.pem	localhost	v2 with issuerUniqueID and subjectUniqueID
+direct_v2_unique_ids_swapped	direct_v2_unique_ids_swapped.root.pem	localhost	v2 with subjectUniqueID before issuerUniqueID
+direct_time_second_60	direct_time_second_60.root.pem	localhost	notBefore second 60
+direct_alg_mismatch	direct_alg_mismatch.root.pem	localhost	inner signature sha384WithRSA, outer (and signature) sha256WithRSA
+direct_empty_issuer	direct_empty_issuer.root.pem	localhost	v1, empty issuer
 ee_key_alg_bad_null	ee_key_alg_bad_null.root.pem	localhost	key AlgorithmIdentifier with NULL of length 1
 ee_key_unknown_alg	ee_key_unknown_alg.root.pem	localhost	key of an unknown algorithm
 ee_key_garbage_rsa	ee_key_garbage_rsa.root.pem	localhost	rsaEncryption with garbage key bits
@@ -40,3 +47,9 @@ v3_self_noca_san	v3_self_noca_san.root.pem	localhost	v3_self_noca_san, trusted d
 v3_self_expired	v3_self_expired.root.pem	localhost	v3 self-signed, trusted directly, expired
 v3_ed25519_ca	v3_ed25519_ca.root.pem	localhost	v3 with SAN, issued by a trusted Ed25519 CA
 v3_p256_ca	v3_p256_ca.root.pem	localhost	v3 with SAN, issued by a trusted P-256 CA
+direct_key_unused_bits	direct_key_unused_bits.root.pem	localhost	v1, P-256 key in a BIT STRING with one (zero) unused bit	p256_ee.key
+direct_ber_length	direct_ber_length.root.pem	localhost	v1, issuer Name with an indefinite (BER) length
+v3_rsa1024_ca	v3_rsa1024_ca.root.pem	localhost	v3 with SAN, issued by a trusted RSA-1024 CA
+v3_sha1_signed	ca.pem	localhost	v3 with SAN, signed by the trusted CA with sha1WithRSA
+v3_p521_ca	v3_p521_ca.root.pem	localhost	v3 with SAN, issued by a trusted P-521 CA
+v3_issued_trailing_dot_host	ca.pem	localhost.	v3 with SAN localhost, issued by the trusted CA, host localhost.

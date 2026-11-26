@@ -50,6 +50,7 @@ pub mod bzl_compile;
 pub mod bzl_load;
 pub mod compile_one_dependency_transformer;
 pub mod containing_package_lookup;
+pub mod diff_awareness;
 pub mod directories;
 pub mod directory_listing;
 pub mod environment;
@@ -58,6 +59,7 @@ pub mod file;
 pub mod file_chain_uniqueness;
 pub mod file_state;
 pub mod filesystem_value_checker;
+pub mod filesystem_value_checker_inferring_ancestors;
 pub mod globs;
 pub mod ignored_subdirectories;
 pub mod io;
@@ -83,6 +85,7 @@ pub mod target_pattern_eval;
 pub mod target_pattern_function;
 pub mod transitive_target;
 pub mod unix_glob;
+pub mod watch_service;
 
 #[cfg(test)]
 mod test_util;

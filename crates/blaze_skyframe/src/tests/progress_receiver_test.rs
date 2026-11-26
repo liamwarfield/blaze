@@ -142,13 +142,45 @@ fn dirty_and_inflight_failed_evaluation_leaves_dirty_set() {
     assert!(r.get_unenqueued_dirty_keys().is_empty());
 }
 
+/// `DirtyAndInflightTrackingProgressReceiver.addToDirtySet` / `removeFromDirtySet` /
+/// `getAndClearUnsuccessfullyRewoundKeys`: a rewound key is not an unenqueued dirty key; it stays
+/// "unsuccessfully rewound" until it is evaluated successfully, including when enqueued and when
+/// evaluated to an error.
 #[test]
-#[should_panic(expected = "not ported yet")]
-fn dirty_and_inflight_rewind_is_unported() {
+fn dirty_and_inflight_tracks_unsuccessfully_rewound_keys() {
     let r = DirtyAndInflightTrackingProgressReceiver::new(Arc::new(TrackingProgressReceiver::new(
         false,
     )));
-    r.dirtied(&key("a"), DirtyType::Rewind);
+    for k in ["a", "b", "c", "d"] {
+        r.dirtied(&key(k), DirtyType::Rewind);
+    }
+    assert!(r.get_unenqueued_dirty_keys().is_empty());
+    // a: rewound and evaluated successfully.
+    r.enqueueing(&key("a"));
+    r.evaluated(
+        &key("a"),
+        EvaluationState::SuccessVersionChanged,
+        None,
+        None,
+        None,
+    );
+    // b: enqueued but not evaluated.
+    r.enqueueing(&key("b"));
+    // c: evaluated to an error.
+    r.enqueueing(&key("c"));
+    r.evaluated(
+        &key("c"),
+        EvaluationState::FailVersionChanged,
+        None,
+        None,
+        None,
+    );
+    // d: not yet enqueued.
+    assert_eq!(
+        r.get_and_clear_unsuccessfully_rewound_keys(),
+        set(&["b", "c", "d"])
+    );
+    assert!(r.get_and_clear_unsuccessfully_rewound_keys().is_empty());
 }
 
 #[test]

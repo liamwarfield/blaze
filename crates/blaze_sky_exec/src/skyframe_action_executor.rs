@@ -62,6 +62,7 @@ use blaze_protos::failure_details::{FailureDetail, execution};
 use blaze_skyframe::Environment;
 use blaze_util::check_state;
 use blaze_util::io::timestamp_granularity_monitor::TimestampGranularityMonitor;
+use blaze_util::profiler::{Profiler, ProfilerTask};
 use blaze_vfs::{DirentType, Path, PathFragment, Root, Symlinks};
 use indexmap::{IndexMap, IndexSet};
 use parking_lot::{Mutex, RwLock};
@@ -201,6 +202,84 @@ const MAX_LOST_INPUTS_RECORDED: usize = 5;
 pub enum ExecutionFailure {
     Exception(ActionExecutionException),
     Interrupted,
+    /// Java's `LostInputsActionExecutionException`, which leaves the executor unreported for
+    /// `ActionExecutionFunction.handleLostInputs` to rewind (only with `--rewind_lost_inputs`;
+    /// without it the executor reports the failure itself, see
+    /// `SkyframeActionExecutor::handle_lost_inputs`).
+    LostInputs(Box<LostInputsActionExecutionException>),
+}
+
+/// An `ActionExecutionException` thrown when an action fails to execute because one or more of
+/// its inputs was lost. In some cases, Bazel may know how to fix this on its own.
+// Java: com/google/devtools/build/lib/actions/LostInputsActionExecutionException.java:28 LostInputsActionExecutionException
+#[derive(Clone, Debug)]
+pub struct LostInputsActionExecutionException {
+    /// The exception, whose `get_lost_inputs()` is set.
+    pub exception: ActionExecutionException,
+    /// `primaryAction` (set by `enrichLostInputsException`): the action whose execution lost
+    /// the inputs.
+    pub primary_action: ActionRef,
+    /// `primaryOutputPath`.
+    pub primary_output_path: Path,
+    /// `fileOutErr`.
+    pub file_out_err: FileOutErr,
+    /// `fromInputDiscovery`.
+    pub from_input_discovery: bool,
+    /// `actionStartedEventAlreadyEmitted`.
+    pub action_started_event_already_emitted: bool,
+}
+
+impl LostInputsActionExecutionException {
+    /// `isPrimaryAction(actionLookupData)`: whether the lost inputs belong to the action of
+    /// `action_lookup_data` (a shared action's other copy gets the primary action's result).
+    // Java: com/google/devtools/build/lib/actions/LostInputsActionExecutionException.java:93 LostInputsActionExecutionException.isPrimaryAction
+    pub fn is_primary_action(&self, action_lookup_data: &ActionLookupData) -> bool {
+        self.primary_action
+            .get_primary_output()
+            .get_generating_action_key()
+            == action_lookup_data
+    }
+}
+
+/// Java: `ActionExecutionState.obsolete` and the `completionFuture` the non-owning copies of a
+/// shared action wait on: how a state that ended with lost inputs is resolved.
+///
+/// PORT: blocking engine. Java's non-owning node depends on the owner's `completionFuture` and
+/// restarts when it is set (`obsolete`), then finds the state `Obsolete` (or gone) and runs the
+/// action itself. Here its thread waits for the owner's result; when that result is lost inputs
+/// it waits for the owner to rewind (`Obsolete`) and tries again. If the owner's rewinding
+/// fails, Java's copy waits for ever (it stays in flight); here it fails with the owner's error.
+#[derive(Default)]
+struct RewindSignal {
+    outcome: Mutex<Option<RewindOutcome>>,
+    changed: parking_lot::Condvar,
+}
+
+#[derive(Clone)]
+enum RewindOutcome {
+    Obsolete,
+    Failed(ExecutionFailure),
+}
+
+impl RewindSignal {
+    fn set(&self, outcome: RewindOutcome) {
+        let mut slot = self.outcome.lock();
+        if slot.is_none() {
+            *slot = Some(outcome);
+        }
+        drop(slot);
+        self.changed.notify_all();
+    }
+
+    fn wait(&self) -> RewindOutcome {
+        let mut slot = self.outcome.lock();
+        loop {
+            if let Some(outcome) = &*slot {
+                return outcome.clone();
+            }
+            self.changed.wait(&mut slot);
+        }
+    }
 }
 
 impl From<ActionExecutionException> for ExecutionFailure {
@@ -240,6 +319,73 @@ struct ActionExecutionState {
     /// The action of `action_lookup_data` (Java reaches it through the state's `ActionRunner`).
     action: ActionRef,
     result: Arc<OnceLock<SharedResult>>,
+    /// See [`RewindSignal`].
+    rewind_signal: Arc<RewindSignal>,
+}
+
+impl ActionExecutionState {
+    /// Removes this state from `build_action_map`, unless it is not done and `requester` is not
+    /// its owner (then the dep is already doing what it needs to).
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:205 ActionExecutionState.obsolete
+    fn obsolete(
+        &self,
+        requester: &ActionLookupData,
+        build_action_map: &mut HashMap<OwnerlessArtifactWrapper, ActionExecutionState>,
+        ownerless_artifact_wrapper: &OwnerlessArtifactWrapper,
+    ) {
+        // PORT: Java's state is done when it holds a result; a state that ended with lost inputs
+        // is not done (the exception left the state machine undone).
+        let done = matches!(
+            self.result.get(),
+            Some(r) if !matches!(r, Err(ExecutionFailure::LostInputs(_)))
+        );
+        if self.action_lookup_data == *requester {
+            // An action state's owner only obsoletes it when rewinding. The lost inputs exception
+            // thrown from ActionStepOrResult#run left its state undone.
+            check_state!(
+                !done,
+                "owner unexpectedly obsoleted done state: {}",
+                self.action_lookup_data
+            );
+            let removed_state = build_action_map.remove(ownerless_artifact_wrapper);
+            check_state!(
+                removed_state
+                    .as_ref()
+                    .is_some_and(|s| Arc::ptr_eq(&s.result, &self.result)),
+                "owner removed unexpected state from buildActionMap; owner: {}, removed: {:?}",
+                self.action_lookup_data,
+                removed_state
+                    .as_ref()
+                    .map(|s| s.action_lookup_data.to_string())
+            );
+            self.rewind_signal.set(RewindOutcome::Obsolete);
+            return;
+        }
+        if !done {
+            // An action obsoletes other actions' states when rewinding its dependencies. It may
+            // race with other actions to do so. Removing the buildActionMap entry must only be
+            // done by the race's winner, to ensure the removal only happens once and removes this
+            // state.
+            //
+            // An action may also attempt to obsolete a dependency's not-done state, if it lost the
+            // race with another rewinding action, and the dep started evaluating. If so, then do
+            // nothing, because that dep is already doing what it needs to.
+            return;
+        }
+        let removed_state = build_action_map.remove(ownerless_artifact_wrapper);
+        check_state!(
+            removed_state
+                .as_ref()
+                .is_some_and(|s| Arc::ptr_eq(&s.result, &self.result)),
+            "removed unexpected state from buildActionMap; requester: {}, this: {}, removed: {:?}",
+            requester,
+            self.action_lookup_data,
+            removed_state
+                .as_ref()
+                .map(|s| s.action_lookup_data.to_string())
+        );
+        self.rewind_signal.set(RewindOutcome::Obsolete);
+    }
 }
 
 /// Returns true iff the two actions can be shared: an equivalence relationship across actions,
@@ -346,15 +492,13 @@ pub struct SkyframeActionExecutor {
     show_subcommands: ShowSubcommands,
     /// See [`SkyframeActionExecutor::with_lost_inputs_policy`].
     lost_inputs_policy: Option<LostInputsPolicy>,
-    /// Whether the policy's `purge_before_unported_rewinding` purged this build's action cache.
-    /// The purge holds the write lock; [`SkyframeActionExecutor::update_action_cache`] holds the
-    /// read lock while it writes the cache and writes nothing once this is set.
-    ///
-    /// PORT: no Java counterpart (Java rewinds instead of failing loudly; see
-    /// `handle_lost_inputs`). The build crashes after the purge, but actions in flight on other
-    /// evaluator threads still finish while the evaluation is torn down; an entry they put would
-    /// reach the cache's journal on disk and bring remote metadata back for the next command.
-    action_cache_purged: RwLock<bool>,
+    /// Java: `rewoundActions`: the actions rewound during the current build after they
+    /// completed (`prepareDepForRewinding`).
+    rewound_actions: Mutex<HashSet<OwnerlessArtifactWrapper>>,
+    /// Java: `actionsWithLostOutputs`: the actions that lost their own outputs.
+    actions_with_lost_outputs: Mutex<HashSet<OwnerlessArtifactWrapper>>,
+    /// Java: `SkyframeExecutor.actionRewindStrategy`.
+    action_rewind_strategy: crate::rewinding::action_rewind_strategy::ActionRewindStrategy,
     /// Java: `perBuildFileCache` (`getPerBuildFileCache()`), set by
     /// [`SkyframeActionExecutor::configure_file_cache`]. It also carries
     /// `directories.getRelativeOutputPath()`, which `ActionExecutionFunction` hands the
@@ -435,7 +579,10 @@ impl SkyframeActionExecutor {
             output_filter: None,
             show_subcommands: ShowSubcommands::FALSE,
             lost_inputs_policy: None,
-            action_cache_purged: RwLock::new(false),
+            rewound_actions: Mutex::new(HashSet::new()),
+            actions_with_lost_outputs: Mutex::new(HashSet::new()),
+            action_rewind_strategy:
+                crate::rewinding::action_rewind_strategy::ActionRewindStrategy::new(),
             per_build_file_cache: OnceLock::new(),
             tsgm: OnceLock::new(),
             build_action_map: Mutex::new(HashMap::new()),
@@ -519,15 +666,17 @@ impl SkyframeActionExecutor {
     }
 
     /// `ActionExecutionFunction.handleLostInputs` →
-    /// `ActionRewindStrategy.prepareRewindPlanForLostInputs` for an action whose execution lost
-    /// inputs, with the `ActionRewindException` it throws turned into the action's failure
-    /// (`new ActionExecutionException(rewindingFailedException, action, false,
+    /// `ActionRewindStrategy.prepareRewindPlanForLostInputs` →
+    /// `ActionRewindStrategy.checkRewindingEnabled` for an action whose execution lost inputs
+    /// without `--rewind_lost_inputs`, with the `ActionRewindException` it throws turned into the
+    /// action's failure (`new ActionExecutionException(rewindingFailedException, action, false,
     /// rewindingFailedException.getDetailedExitCode())`).
     ///
     /// PORT: Java's `SkyframeActionExecutor` rethrows a `LostInputsActionExecutionException`
-    /// unreported and `ActionExecutionFunction` handles it; here the executor handles it where
-    /// it would report the failure, with the same result. Action rewinding itself
-    /// (`--rewind_lost_inputs`, Bazel's default) is not ported and fails loudly.
+    /// unreported and `ActionExecutionFunction` handles it. With rewinding enabled it does so
+    /// here too ([`ExecutionFailure::LostInputs`], see [`Self::signal_lost_inputs`]); without
+    /// rewinding, where `checkRewindingEnabled` throws before anything else happens, the
+    /// executor handles it where it would report the failure, with the same result.
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:460 ActionExecutionFunction.handleLostInputs
     // Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindStrategy.java:229 ActionRewindStrategy.prepareRewindPlanForLostInputs
     // Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindStrategy.java:307 ActionRewindStrategy.checkRewindingEnabled
@@ -550,24 +699,13 @@ impl SkyframeActionExecutor {
                 action.pretty_print()
             );
         };
-        if policy.rewinding_enabled {
-            // PORT: Java rewinds here. Before failing loudly, forget the remote metadata of this
-            // build's action cache (what LeaseService.handleMissingInputs does without
-            // rewinding) and save it, so that a rerun does not trust the same stale entry again.
-            // No action writes the cache while the purge runs, and none after it (see
-            // action_cache_purged).
-            if let Some(purge) = &policy.purge_before_unported_rewinding {
-                let mut purged = self.action_cache_purged.write();
-                purge(self.action_cache_checker.get_action_cache());
-                *purged = true;
-            }
-            blaze_util::unported!(
-                "ActionRewindStrategy.prepareRewindPlanForLostInputs",
-                "action rewinding (--rewind_lost_inputs, the default) for the lost inputs of {}; \
-                 --norewind_lost_inputs retries the build instead",
-                action.pretty_print()
-            );
-        }
+        // With rewinding, the executor hands the exception to ActionExecutionFunction
+        // (signal_lost_inputs) and never comes here.
+        check_state!(
+            !policy.rewinding_enabled,
+            "lost inputs of {} reported without rewinding them",
+            action.pretty_print()
+        );
         let pretty_print = |input: &ActionInputRef| match as_blaze_artifact(input) {
             Some(a) => a.pretty_print(),
             None => input.get_exec_path().get_path_string().to_string(),
@@ -631,6 +769,43 @@ impl SkyframeActionExecutor {
         ActionExecutionException::new(message, Some(action), false, Some(failure_detail))
     }
 
+    /// A `LostInputsActionExecutionException` leaving the executor: with `--rewind_lost_inputs`
+    /// it goes unreported to `ActionExecutionFunction.handleLostInputs`
+    /// ([`ExecutionFailure::LostInputs`]), decorated as `enrichLostInputsException` (primary
+    /// action, primary output path, out/err) and `setActionStartedEventAlreadyEmitted` /
+    /// `setFromInputDiscovery` do; without it, it is the reported failure of
+    /// [`Self::handle_lost_inputs_of_completion`].
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1557 SkyframeActionExecutor.enrichLostInputsException
+    fn signal_lost_inputs(
+        &self,
+        listener: &dyn ExtendedEventHandler,
+        primary_output_path: &Path,
+        action: &ActionRef,
+        lost_inputs_exception: ActionExecutionException,
+        out_err_buffer: &FileOutErr,
+        from_input_discovery: bool,
+        action_started_event_already_emitted: bool,
+    ) -> ExecutionFailure {
+        if self.rewinding_enabled() {
+            return ExecutionFailure::LostInputs(Box::new(LostInputsActionExecutionException {
+                exception: lost_inputs_exception,
+                primary_action: action.clone(),
+                primary_output_path: primary_output_path.clone(),
+                file_out_err: out_err_buffer.clone(),
+                from_input_discovery,
+                action_started_event_already_emitted,
+            }));
+        }
+        self.handle_lost_inputs_of_completion(
+            listener,
+            primary_output_path,
+            action,
+            &lost_inputs_exception,
+            out_err_buffer,
+        )
+        .into()
+    }
+
     /// A `LostInputsActionExecutionException` that leaves `ActionRunner.actuallyCompleteAction`
     /// (outputs or inputs lost while completing the action) and reaches
     /// `ActionExecutionFunction.handleLostInputs`: the rewinding failure, reported as
@@ -664,13 +839,8 @@ impl SkyframeActionExecutor {
     ///
     /// PORT: `lostInputsException.setActionStartedEventAlreadyEmitted()` and
     /// `enrichLostInputsException` (primary action, primary output path, out/err) decorate the
-    /// exception for `ActionExecutionFunction.handleLostInputs`; the callers here pass the
-    /// primary output path and out/err to [`Self::handle_lost_inputs`]'s report directly, and
-    /// the `ActionCompletionEvent` is posted by `run_action` either way (Java's `handleLostInputs`
-    /// posts it when rewinding fails). The primary-action check and the started-event flag only
-    /// matter to action rewinding, which is not ported.
+    /// exception in [`Self::signal_lost_inputs`], which the callers call with `Err`.
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1220 ActionRunner.maybeSignalLostInputs
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1557 SkyframeActionExecutor.enrichLostInputsException
     fn maybe_signal_lost_inputs(
         e: ActionExecutionException,
         action: &dyn Action,
@@ -816,6 +986,174 @@ impl SkyframeActionExecutor {
         self.had_execution_error() && !self.keep_going
     }
 
+    /// `rewindingEnabled()`: `--rewind_lost_inputs`.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:440 SkyframeActionExecutor.rewindingEnabled
+    pub fn rewinding_enabled(&self) -> bool {
+        self.lost_inputs_policy
+            .as_ref()
+            .is_some_and(|p| p.rewinding_enabled)
+    }
+
+    /// `SkyframeExecutor.actionRewindStrategy`.
+    pub fn action_rewind_strategy(
+        &self,
+    ) -> &crate::rewinding::action_rewind_strategy::ActionRewindStrategy {
+        &self.action_rewind_strategy
+    }
+
+    /// Determines whether the given action was rewound during the current build, either because
+    /// a consumer lost its outputs or because it lost its own outputs itself.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:513 SkyframeActionExecutor.wasRewound
+    pub fn was_rewound(&self, action: &dyn Action) -> bool {
+        // PORT: Java's null primary output (only GrepIncludesAction, from include scanning) has
+        // no counterpart: every action here has a primary output.
+        let ownerless_artifact_wrapper = OwnerlessArtifactWrapper(action.get_primary_output());
+        self.rewound_actions
+            .lock()
+            .contains(&ownerless_artifact_wrapper)
+            || self
+                .actions_with_lost_outputs
+                .lock()
+                .contains(&ownerless_artifact_wrapper)
+    }
+
+    /// [`Self::was_rewound`] for a spawn's resource owner (the `wasRewound` predicate of the
+    /// remote module, `SkyframeExecutor::wasActionRewound`).
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3118 SkyframeExecutor.wasActionRewound
+    pub fn was_rewound_resource_owner(
+        &self,
+        owner: &dyn blaze_exec::actions::ActionExecutionMetadata,
+    ) -> bool {
+        let Some(primary_output) = as_blaze_artifact(&owner.get_primary_output()).cloned() else {
+            return false;
+        };
+        let ownerless_artifact_wrapper = OwnerlessArtifactWrapper(primary_output);
+        self.rewound_actions
+            .lock()
+            .contains(&ownerless_artifact_wrapper)
+            || self
+                .actions_with_lost_outputs
+                .lock()
+                .contains(&ownerless_artifact_wrapper)
+    }
+
+    /// Returns the count of actions rewound during the current build after they completed.
+    ///
+    /// If an action is rewound multiple times, it is only counted once.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:547 SkyframeActionExecutor.getRewoundActionCount
+    pub fn get_rewound_action_count(&self) -> usize {
+        self.rewound_actions.lock().len()
+    }
+
+    /// Determines whether the action should have its progress events emitted.
+    ///
+    /// Returns `false` for actions rewound after they completed, indicating that their progress
+    /// events should be suppressed.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:557 SkyframeActionExecutor.shouldEmitProgressEvents
+    pub fn should_emit_progress_events(&self, action: &dyn Action) -> bool {
+        !self
+            .rewound_actions
+            .lock()
+            .contains(&OwnerlessArtifactWrapper(action.get_primary_output()))
+    }
+
+    /// Called to prepare action execution states for rewinding after `failed_action` observed
+    /// lost inputs.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:567 SkyframeActionExecutor.prepareForRewinding
+    pub fn prepare_for_rewinding(
+        &self,
+        failed_key: &ActionLookupData,
+        failed_action: &ActionRef,
+        deps_to_rewind: &[ActionRef],
+        lost_own_outputs: bool,
+    ) {
+        let ownerless_artifact_wrapper =
+            OwnerlessArtifactWrapper(failed_action.get_primary_output());
+        if lost_own_outputs {
+            self.actions_with_lost_outputs
+                .lock()
+                .insert(ownerless_artifact_wrapper.clone());
+            if self.action_cache_checker.enabled() {
+                self.action_cache_checker
+                    .remove_cache_entry(&CacheCheckActionAdapter::new(
+                        failed_action.as_ref(),
+                        &self.action_key_context,
+                    ));
+            }
+        }
+        {
+            let mut build_action_map = self.build_action_map.lock();
+            if let Some(state) = build_action_map.get(&ownerless_artifact_wrapper).cloned() {
+                // If an action failed from lost inputs during input discovery then it won't have
+                // a state to obsolete.
+                state.obsolete(
+                    failed_key,
+                    &mut build_action_map,
+                    &ownerless_artifact_wrapper,
+                );
+            }
+        }
+        if !self.action_file_system_type_in_memory_file_system() {
+            self.output_directory_helper
+                .invalidate_tree_artifact_directory_creation(&failed_action.get_outputs());
+        }
+        for dep in deps_to_rewind {
+            self.prepare_dep_for_rewinding(failed_key, dep);
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:593 SkyframeActionExecutor.prepareDepForRewinding
+    pub fn prepare_dep_for_rewinding(&self, failed_key: &ActionLookupData, dep: &ActionRef) {
+        let ownerless_artifact_wrapper = OwnerlessArtifactWrapper(dep.get_primary_output());
+        if blaze_exec::actions::action_template::as_action_template(dep.as_ref()).is_some() {
+            // ActionTemplate does not have an ActionExecutionState and it is not executed, so we
+            // just mark it as rewound.
+            self.rewound_actions
+                .lock()
+                .insert(ownerless_artifact_wrapper);
+            return;
+        }
+        {
+            let mut build_action_map = self.build_action_map.lock();
+            if let Some(state) = build_action_map.get(&ownerless_artifact_wrapper).cloned() {
+                state.obsolete(
+                    failed_key,
+                    &mut build_action_map,
+                    &ownerless_artifact_wrapper,
+                );
+            }
+        }
+        self.rewound_actions
+            .lock()
+            .insert(ownerless_artifact_wrapper);
+        if !self.action_file_system_type_in_memory_file_system() {
+            self.output_directory_helper
+                .invalidate_tree_artifact_directory_creation(&dep.get_outputs());
+        }
+        // Evict the rewinding action from the action cache to ensure that it is executed.
+        if self.action_cache_checker.enabled() {
+            self.action_cache_checker
+                .remove_cache_entry(&CacheCheckActionAdapter::new(
+                    dep.as_ref(),
+                    &self.action_key_context,
+                ));
+        }
+    }
+
+    /// ActionExecutionFunction.handleLostInputs could not rewind `failed_action`: the copies of a
+    /// shared action waiting for its state get `failure` (see [`RewindSignal`]).
+    pub fn rewinding_failed(&self, failed_action: &dyn Action, failure: ExecutionFailure) {
+        let ownerless_artifact_wrapper =
+            OwnerlessArtifactWrapper(failed_action.get_primary_output());
+        if let Some(state) = self
+            .build_action_map
+            .lock()
+            .get(&ownerless_artifact_wrapper)
+        {
+            state.rewind_signal.set(RewindOutcome::Failed(failure));
+        }
+    }
+
     /// `probeActionExecution`: whether this action's (shared) execution already started.
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:505 SkyframeActionExecutor.probeActionExecution
     pub fn probe_action_execution(&self, action: &dyn Action) -> bool {
@@ -931,6 +1269,26 @@ impl SkyframeActionExecutor {
         ))
     }
 
+    /// `getActionContextRegistry().getContext(ImportantOutputHandler.class)`: `None` when no
+    /// handler is registered for this build.
+    // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:396 CompletionFunction.informImportantOutputHandler
+    pub fn important_output_handler(
+        &self,
+    ) -> Option<Arc<dyn blaze_exec::exec::action_execution_context::ImportantOutputHandler>> {
+        self.contexts
+            .get_any(TypeId::of::<
+                Arc<dyn blaze_exec::exec::action_execution_context::ImportantOutputHandler>,
+            >())
+            .and_then(|c| {
+                c.downcast::<
+                    Arc<dyn blaze_exec::exec::action_execution_context::ImportantOutputHandler>,
+                >()
+                .ok()
+            })
+            .map(|handler| (*handler).clone())
+            .filter(|handler| handler.is_registered())
+    }
+
     /// Executes `action` (shared actions run once), returning its value; `Ok(None)` when Skyframe
     /// values were missing during post-processing.
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:622 SkyframeActionExecutor.executeAction
@@ -959,74 +1317,86 @@ impl SkyframeActionExecutor {
             return Err(e.into());
         }
 
-        // Use computeIfAbsent to handle concurrent attempts to execute the same shared action.
-        let ActionExecutionState {
-            action_lookup_data: owner,
-            action: owning_action,
-            result: cell,
-        } = {
-            let mut map = self.build_action_map.lock();
-            map.entry(OwnerlessArtifactWrapper(action.get_primary_output()))
-                .or_insert_with(|| ActionExecutionState {
-                    action_lookup_data: action_lookup_data.clone(),
-                    action: action.clone(),
-                    result: Arc::new(OnceLock::new()),
-                })
-                .clone()
-        };
-        // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:87 ActionExecutionState.getResultOrDependOnFuture
-        if owner == *action_lookup_data {
-            // This object is owned by the Skyframe node executed by the current thread, so we use
-            // it to run the state machine.
-            return cell
-                .get_or_init(|| {
-                    self.run_action(
-                        env,
-                        action,
-                        input_metadata,
-                        output_metadata_store,
-                        action_start_time,
-                        action_lookup_data,
-                        postprocessing,
-                    )
-                })
-                .clone();
-        }
+        // PORT: the loop is Java's restart of a shared action's node whose primary action's
+        // state was obsoleted by rewinding (see RewindSignal).
+        loop {
+            // Use computeIfAbsent to handle concurrent attempts to execute the same shared action.
+            let ActionExecutionState {
+                action_lookup_data: owner,
+                action: owning_action,
+                result: cell,
+                rewind_signal,
+            } = {
+                let mut map = self.build_action_map.lock();
+                map.entry(OwnerlessArtifactWrapper(action.get_primary_output()))
+                    .or_insert_with(|| ActionExecutionState {
+                        action_lookup_data: action_lookup_data.clone(),
+                        action: action.clone(),
+                        result: Arc::new(OnceLock::new()),
+                        rewind_signal: Arc::new(RewindSignal::default()),
+                    })
+                    .clone()
+            };
+            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:87 ActionExecutionState.getResultOrDependOnFuture
+            if owner == *action_lookup_data {
+                // This object is owned by the Skyframe node executed by the current thread, so we use
+                // it to run the state machine.
+                return cell
+                    .get_or_init(|| {
+                        self.run_action(
+                            env,
+                            action,
+                            input_metadata,
+                            output_metadata_store,
+                            action_start_time,
+                            action_lookup_data,
+                            postprocessing,
+                        )
+                    })
+                    .clone();
+            }
 
-        // This is a shared action, and the primary action is owned by another Skyframe node.
-        // PORT: Java relies on the analysis-time ArtifactConflictFinder ("file '<x>' is generated
-        // by these conflicting actions") for the two actions of one primary output to be
-        // shareable, and would hand the second one the first one's outputs. Until that guarantee
-        // is established before execution, a second action that cannot be shared with the one
-        // that runs is an illegal state here.
-        if !can_be_shared(
-            &self.action_key_context,
-            owning_action.as_ref(),
-            action.as_ref(),
-        )? {
-            panic!(
-                "IllegalStateException: Cannot share {} and {}: file '{}' is generated by these \
+            // This is a shared action, and the primary action is owned by another Skyframe node.
+            // PORT: Java relies on the analysis-time ArtifactConflictFinder ("file '<x>' is generated
+            // by these conflicting actions") for the two actions of one primary output to be
+            // shareable, and would hand the second one the first one's outputs. Until that guarantee
+            // is established before execution, a second action that cannot be shared with the one
+            // that runs is an illegal state here.
+            if !can_be_shared(
+                &self.action_key_context,
+                owning_action.as_ref(),
+                action.as_ref(),
+            )? {
+                panic!(
+                    "IllegalStateException: Cannot share {} and {}: file '{}' is generated by these \
                  conflicting actions: {} and {}",
-                owner,
-                action_lookup_data,
-                action.get_primary_output().pretty_print(),
-                owning_action.pretty_print(),
-                action.pretty_print()
-            );
-        }
-        // PORT: Java registers a dependency on the primary action's completion future and
-        // restarts; Blaze's evaluator does not restart, so this thread waits for the result.
-        // SharedActionCallback (progress) and SharedActionEvent (ExecutionGraphModule) are not
-        // ported.
-        match cell.wait().clone() {
-            Ok(Some(result)) => match result.transform_for_shared_action(action.as_ref()) {
-                Ok(transformed) => Ok(Some(transformed)),
-                Err(e) => panic!(
-                    "IllegalStateException: Cannot share {:?} and {:?}: {}",
-                    owner, action_lookup_data, e
-                ),
-            },
-            other => other,
+                    owner,
+                    action_lookup_data,
+                    action.get_primary_output().pretty_print(),
+                    owning_action.pretty_print(),
+                    action.pretty_print()
+                );
+            }
+            // PORT: Java registers a dependency on the primary action's completion future and
+            // restarts; Blaze's evaluator does not restart, so this thread waits for the result.
+            // SharedActionCallback (progress) and SharedActionEvent (ExecutionGraphModule) are not
+            // ported.
+            return match cell.wait().clone() {
+                Ok(Some(result)) => match result.transform_for_shared_action(action.as_ref()) {
+                    Ok(transformed) => Ok(Some(transformed)),
+                    Err(e) => panic!(
+                        "IllegalStateException: Cannot share {:?} and {:?}: {}",
+                        owner, action_lookup_data, e
+                    ),
+                },
+                // Java: the primary action lost inputs and its state is not done; this node waits for
+                // its completion future (`obsolete` sets it) and restarts.
+                Err(ExecutionFailure::LostInputs(_)) => match rewind_signal.wait() {
+                    RewindOutcome::Obsolete => continue,
+                    RewindOutcome::Failed(failure) => Err(failure),
+                },
+                other => other,
+            };
         }
     }
 
@@ -1061,6 +1431,8 @@ impl SkyframeActionExecutor {
             rich_artifact_data: Mutex::new(None),
             clock: JavaClock,
         };
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1103 ActionRunner.run
+        let action_scope = profile_action_scope(action.as_ref());
         // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1111 ActionRunner.run
         if let Some(message) = action.get_progress_message(None) {
             // reporter.startTask(null, prependExecPhaseStats(message))
@@ -1106,7 +1478,12 @@ impl SkyframeActionExecutor {
             // Java also passes the path resolver (to delete the outputs on the action file system,
             // whose remote output tree is still empty here), the bulk deleter and
             // cleanupArchivedArtifacts.
-            if let Err(e) = executable.prepare(context.get_exec_root()) {
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1131 ActionRunner.run
+            let prepared = {
+                let _d = Profiler::instance().profile(ProfilerTask::INFO, "action.prepare");
+                executable.prepare(context.get_exec_root())
+            };
+            if let Err(e) = prepared {
                 return Err(self
                     .to_action_execution_exception(
                         "failed to delete output files before executing action",
@@ -1134,12 +1511,17 @@ impl SkyframeActionExecutor {
         if let Some(status_reporter) = &status_reporter {
             status_reporter.remove(action);
         }
-        env.listener().post(Arc::new(ActionCompletionEvent {
-            related_time_start: action_start_time,
-            finish_time: Instant::now(),
-            action: action.clone(),
-            action_lookup_data: action_lookup_data.clone(),
-        }));
+        // notifyActionCompletion(env.getListener(), !lostInputs): an action that lost inputs
+        // posts no ActionCompletionEvent, hoping rewinding fixes things
+        // (ActionExecutionFunction.handleLostInputs posts one if it does not).
+        if !matches!(result, Err(ExecutionFailure::LostInputs(_))) {
+            env.listener().post(Arc::new(ActionCompletionEvent {
+                related_time_start: action_start_time,
+                finish_time: Instant::now(),
+                action: action.clone(),
+                action_lookup_data: action_lookup_data.clone(),
+            }));
+        }
         // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1211 ActionRunner.notifyActionCompletion
         if let Some(message) = action.get_progress_message(None) {
             let completion_receiver = self.progress_reporting.read().completion_receiver.clone();
@@ -1154,18 +1536,22 @@ impl SkyframeActionExecutor {
                 self.prepend_exec_phase_stats(&message),
             ));
         }
+        drop(action_scope);
         let value = result?;
 
         // A closure to post-process the executed action, doing work like updating cached state
         // with any newly discovered inputs, and writing the result to the action cache.
         // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1424 ActionPostprocessingStep.run
-        postprocessing(
-            env,
-            action,
-            &input_metadata,
-            &output_metadata_store,
-            &self.client_env,
-        )?;
+        {
+            let _c = Profiler::instance().profile(ProfilerTask::INFO, "postprocessing.run");
+            postprocessing(
+                env,
+                action,
+                &input_metadata,
+                &output_metadata_store,
+                &self.client_env,
+            )?;
+        }
         if env.values_missing() {
             return Ok(None);
         }
@@ -1192,7 +1578,9 @@ impl SkyframeActionExecutor {
                 action.get_mnemonic()
             ));
         };
-        let result = match self
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1257 ActionRunner.executeAction
+        let execute_scope = Profiler::instance().profile(ProfilerTask::INFO, "Action.execute");
+        let executed = self
             .check_for_unsound_directory_inputs(
                 action.as_ref(),
                 context.get_input_metadata_provider(),
@@ -1209,7 +1597,9 @@ impl SkyframeActionExecutor {
                     action.as_ref(),
                 )?;
                 Ok(r)
-            }) {
+            });
+        drop(execute_scope);
+        let result = match executed {
             Ok(r) => r,
             // Java: InterruptedException is not caught here; it leaves Action.execute and this
             // method unreported.
@@ -1218,11 +1608,19 @@ impl SkyframeActionExecutor {
                 let primary_output_path = context.get_input_path(&action.get_primary_output());
                 // maybeSignalLostInputs(e, primaryOutputPath): a LostInputsActionExecutionException
                 // leaves this method unreported and ActionExecutionFunction.handleLostInputs
-                // handles it (see handle_lost_inputs).
+                // handles it (see signal_lost_inputs).
                 let e = match Self::maybe_signal_lost_inputs(e, action.as_ref(), context) {
                     Ok(e) => e,
                     Err(lost_inputs_exception) => {
-                        self.handle_lost_inputs(action.as_ref(), &lost_inputs_exception)
+                        return Err(self.signal_lost_inputs(
+                            listener,
+                            &primary_output_path,
+                            action,
+                            lost_inputs_exception,
+                            context.get_file_out_err(),
+                            /* from_input_discovery= */ false,
+                            /* action_started_event_already_emitted= */ true,
+                        ));
                     }
                 };
                 return Err(self
@@ -1237,6 +1635,9 @@ impl SkyframeActionExecutor {
                     .into());
             }
         };
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1283 ActionRunner.executeAction
+        let _c =
+            Profiler::instance().profile(ProfilerTask::ACTION_COMPLETE, "actuallyCompleteAction");
         self.actually_complete_action(listener, action, context, result)
     }
 
@@ -1297,15 +1698,15 @@ impl SkyframeActionExecutor {
             let e = match Self::maybe_signal_lost_inputs(e, action.as_ref(), context) {
                 Ok(e) => e,
                 Err(lost_inputs_exception) => {
-                    return Err(self
-                        .handle_lost_inputs_of_completion(
-                            listener,
-                            &primary_output_path,
-                            action,
-                            &lost_inputs_exception,
-                            out_err_buffer,
-                        )
-                        .into());
+                    return Err(self.signal_lost_inputs(
+                        listener,
+                        &primary_output_path,
+                        action,
+                        lost_inputs_exception,
+                        out_err_buffer,
+                        /* from_input_discovery= */ false,
+                        /* action_started_event_already_emitted= */ true,
+                    ));
                 }
             };
             // Success in execution but failure in completion.
@@ -1332,9 +1733,13 @@ impl SkyframeActionExecutor {
             let outputs: Vec<ActionInputRef> =
                 action.get_outputs().iter().map(artifact_input).collect();
             let metadata = ActionMetadataSnapshot::of(action.as_ref());
-            if let Err(e) =
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1340 ActionRunner.actuallyCompleteAction
+            let finalized = {
+                let _c = Profiler::instance()
+                    .profile(ProfilerTask::INFO, "outputService.finalizeAction");
                 finalizer.finalize_action(&*metadata, &outputs, &**output_metadata_store)
-            {
+            };
+            if let Err(e) = finalized {
                 use blaze_exec::exec::action_execution_context::SpawnCacheError;
                 let e: std::io::Error = match e {
                     // catch (LostInputsExecException e): the remote cache has lost an output of the
@@ -1349,15 +1754,15 @@ impl SkyframeActionExecutor {
                             None,
                             action.as_ref(),
                         );
-                        return Err(self
-                            .handle_lost_inputs_of_completion(
-                                listener,
-                                &primary_output_path,
-                                action,
-                                &lost_inputs_exception,
-                                out_err_buffer,
-                            )
-                            .into());
+                        return Err(self.signal_lost_inputs(
+                            listener,
+                            &primary_output_path,
+                            action,
+                            lost_inputs_exception,
+                            out_err_buffer,
+                            /* from_input_discovery= */ false,
+                            /* action_started_event_already_emitted= */ true,
+                        ));
                     }
                     // InterruptedException (see below).
                     SpawnCacheError::Exec(ExecException::Interrupted) => {
@@ -1451,6 +1856,8 @@ impl SkyframeActionExecutor {
         is_action_cache_hit_for_metrics: bool,
     ) -> bool {
         let mut success = true;
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1634 SkyframeActionExecutor.checkOutputs
+        let _c = Profiler::instance().profile(ProfilerTask::INFO, "checkOutputs");
         for output in action.get_outputs() {
             // getOutputMetadata() has the side effect of adding the artifact to the cache if it's
             // not there already (e.g., due to a previous call to OutputMetadataStore.injectFile()),
@@ -1722,6 +2129,9 @@ impl SkyframeActionExecutor {
         // PORT: cacheHitSemaphore (--experimental_throttle_action_cache_check) only throttles
         // concurrent cache checks; its wait time is a BEP metric. Not ported.
         self.check_action_cache_inputs_supported(action.as_ref());
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:781 SkyframeActionExecutor.checkActionCache
+        let _c =
+            Profiler::instance().profile_with(ProfilerTask::ACTION_CHECK, || action.describe());
         let adapter = CacheCheckActionAdapter::new(action.as_ref(), &self.action_key_context);
         // Java passes state.actionInputMetadataProvider: the input map alone.
         let map_only = input_metadata_provider.action_input_map_only();
@@ -1881,12 +2291,6 @@ impl SkyframeActionExecutor {
         if !self.action_cache_checker.enabled() {
             return Ok(());
         }
-        // PORT: no Java counterpart: after the purge before the unported action rewinding, this
-        // build's action cache takes no new entry (see action_cache_purged).
-        let purged = self.action_cache_purged.read();
-        if *purged {
-            return Ok(());
-        }
         let adapter = CacheCheckActionAdapter::new(action.as_ref(), &self.action_key_context);
         match self.action_cache_checker.update_action_cache(
             &adapter,
@@ -2041,24 +2445,18 @@ impl SkyframeActionExecutor {
                     // If inputs were lost during input discovery, then enrich the exception,
                     // informing action rewinding machinery that these lost inputs are now Skyframe
                     // deps of the action.
-                    // PORT: setFromInputDiscovery() and enrichLostInputsException decorate the
-                    // exception for ActionExecutionFunction.handleLostInputs; the flag only
-                    // chooses the failed action's deps for the rewind plan, which is prepared
-                    // after checkRewindingEnabled (ActionExecutionFunction.java:471,
-                    // ActionRewindStrategy.java:239), and rewinding is not ported. The exception
-                    // goes to handleLostInputs here, as the execution path does (see
-                    // handle_lost_inputs), with the primary output path and out/err it would carry.
+                    // (setFromInputDiscovery(), then enrichLostInputsException; see
+                    // signal_lost_inputs.)
                     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:983 SkyframeActionExecutor.discoverInputs
-                    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:509 ActionExecutionFunction.handleLostInputs
-                    return Err(self
-                        .handle_lost_inputs_of_completion(
-                            listener,
-                            &primary_output_path,
-                            action,
-                            &e,
-                            context.get_file_out_err(),
-                        )
-                        .into());
+                    return Err(self.signal_lost_inputs(
+                        listener,
+                        &primary_output_path,
+                        action,
+                        e,
+                        context.get_file_out_err(),
+                        /* from_input_discovery= */ true,
+                        /* action_started_event_already_emitted= */ false,
+                    ));
                 }
                 Err(self
                     .process_and_get_exception_to_throw(
@@ -2082,7 +2480,7 @@ impl SkyframeActionExecutor {
 
     /// Must not be called with a `LostInputsActionExecutionException`.
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1512 SkyframeActionExecutor.processAndGetExceptionToThrow
-    fn process_and_get_exception_to_throw(
+    pub(crate) fn process_and_get_exception_to_throw(
         &self,
         listener: &dyn ExtendedEventHandler,
         primary_output_path: &Path,
@@ -3571,6 +3969,23 @@ impl ActionInputMetadata {
     /// `ActionInputMap.getInputMetadata(input) != null`: whether the map (not the Skyframe
     /// provider) knows `input`.
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1256 InputDiscoveryState.getKnownDiscoveredInputMetadata
+    /// `getRunfilesTrees()` with each tree's input (`getInput(runfilesTree.getExecPath())`) and
+    /// metadata (`getRunfilesMetadata`): the runfiles trees of the action input map.
+    ///
+    /// PORT: in the map's (hash) order, where Java keeps them in insertion order; the only
+    /// caller (`ActionRewindStrategy.calculateLostInputOwners`) builds a set from them.
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:274 ActionInputMap.getRunfilesTrees
+    pub fn get_runfiles_trees(&self) -> Vec<(ActionInputRef, Arc<RunfilesArtifactValue>)> {
+        self.map
+            .read()
+            .values()
+            .filter_map(|(input, value)| match value {
+                ActionInputMapValue::Runfiles(runfiles) => Some((input.clone(), runfiles.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn is_known(&self, input: &Artifact) -> bool {
         self.action_input_map_get_input_metadata_checked(&artifact_input(input))
             .is_some()
@@ -5547,4 +5962,30 @@ mod action_input_map_tests {
     fn stress() {
         unimplemented!("not ported: ActionInputMapTest.stress")
     }
+}
+
+/// `profiler.profileAction(ProfilerTask.ACTION, mnemonic, describe(), primary output exec path,
+/// getOwnerLabelAsString(action), getOwnerConfigurationAsString(action))`.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1103 ActionRunner.run
+fn profile_action_scope(action: &dyn Action) -> blaze_util::profiler::SilentCloseable {
+    let profiler = Profiler::instance();
+    if !(profiler.is_active() && profiler.is_profiling(ProfilerTask::ACTION)) {
+        return blaze_util::profiler::SilentCloseable::nop();
+    }
+    let owner = action.get_owner();
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1174 ActionRunner.getOwnerLabelAsString
+    let owner_label = owner
+        .get_label()
+        .map(|l| l.get_canonical_form())
+        .unwrap_or_default();
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1186 ActionRunner.getOwnerConfigurationAsString
+    let owner_configuration = owner.get_configuration_checksum().to_string();
+    profiler.profile_action(
+        ProfilerTask::ACTION,
+        Some(&action.get_mnemonic()),
+        &action.describe(),
+        Some(action.get_primary_output().get_exec_path_string()),
+        Some(&owner_label),
+        Some(&owner_configuration),
+    )
 }

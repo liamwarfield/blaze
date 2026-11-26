@@ -46,6 +46,9 @@ const MY_UUID_LEAST_SIGNIFICANT: i64 = 0xb927da6cddd4737f_u64 as i64;
 pub struct RepoMappingPackageMetadata {
     package_identifier: PackageIdentifier,
     repository_mapping: RepositoryMapping,
+    /// `Package.Metadata.sourceRoot()`: `None` only where the creator does not know it (tests of
+    /// the manifest action, which does not read it).
+    source_root: Option<blaze_vfs::Root>,
 }
 
 impl RepoMappingPackageMetadata {
@@ -56,7 +59,20 @@ impl RepoMappingPackageMetadata {
         RepoMappingPackageMetadata {
             package_identifier,
             repository_mapping,
+            source_root: None,
         }
+    }
+
+    /// The metadata with `Package.Metadata.sourceRoot()`.
+    pub fn with_source_root(mut self, source_root: blaze_vfs::Root) -> RepoMappingPackageMetadata {
+        self.source_root = Some(source_root);
+        self
+    }
+
+    /// `Package.Metadata.sourceRoot()`.
+    // Java: com/google/devtools/build/lib/packages/Package.java:1389 Package.Metadata.sourceRoot
+    pub fn source_root(&self) -> Option<&blaze_vfs::Root> {
+        self.source_root.as_ref()
     }
 
     /// `Package.Metadata.packageIdentifier()`.

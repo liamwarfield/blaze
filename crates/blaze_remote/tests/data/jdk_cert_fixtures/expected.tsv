@@ -6,7 +6,7 @@ direct_v2	ACCEPT
 direct_v1_expired	ACCEPT	
 direct_wrong_host	REJECT	host: java.security.cert.CertificateException: No name matching example.com found
 direct_ip_host	REJECT	host: java.security.cert.CertificateException: No subject alternative names present
-direct_trailing_dot_host	REJECT	host: java.security.cert.CertificateException: Illegal given domain name: localhost.
+direct_trailing_dot_host	ACCEPT	
 direct_underscore	REJECT	host: java.security.cert.CertificateException: Illegal given domain name: local_host
 direct_wildcard	ACCEPT	
 two_cn_first	ACCEPT	
@@ -25,6 +25,13 @@ subject_printable_bad	ACCEPT
 subject_utf8_bad	ACCEPT	
 empty_subject_v2	REJECT	host: java.security.cert.CertificateException: No name matching localhost found
 self_signed	ACCEPT	
+direct_v1_extensions	REJECT	parse: java.security.cert.CertificateParsingException: no more data allowed for version 1 certificate
+direct_v2_extensions	REJECT	parse: java.security.cert.CertificateParsingException: Extensions not allowed in v2 certificate
+direct_v2_unique_ids	ACCEPT	
+direct_v2_unique_ids_swapped	REJECT	parse: java.security.cert.CertificateParsingException: Extensions not allowed in v2 certificate
+direct_time_second_60	REJECT	parse: java.security.cert.CertificateParsingException: java.io.IOException: Parse UTC time, invalid format
+direct_alg_mismatch	REJECT	parse: java.security.cert.CertificateException: Signature algorithm mismatch
+direct_empty_issuer	REJECT	parse: java.security.cert.CertificateParsingException: Empty issuer DN not allowed in X509Certificates
 ee_key_alg_bad_null	REJECT	parse: java.security.cert.CertificateParsingException: java.io.IOException: invalid NULL
 ee_key_unknown_alg	ACCEPT	
 ee_key_garbage_rsa	REJECT	parse: java.security.cert.CertificateParsingException: java.io.IOException: subject key, java.security.InvalidKeyException: Invalid RSA public key
@@ -40,3 +47,9 @@ v3_self_noca_san	ACCEPT
 v3_self_expired	ACCEPT	
 v3_ed25519_ca	ACCEPT	
 v3_p256_ca	ACCEPT	
+direct_key_unused_bits	ACCEPT	
+direct_ber_length	ACCEPT	
+v3_rsa1024_ca	ACCEPT	
+v3_sha1_signed	ACCEPT	
+v3_p521_ca	ACCEPT	
+v3_issued_trailing_dot_host	ACCEPT	

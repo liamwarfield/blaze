@@ -27,10 +27,11 @@ use blaze_sky_loading::containing_package_lookup::ContainingPackageLookupKey;
 use blaze_sky_loading::io::IOException;
 use blaze_sky_loading::precomputed::STARLARK_SEMANTICS;
 use blaze_skyframe::{
-    ComputeError, Environment, Interrupted, SkyFunctionException, SkyKey, SkyValue,
+    ComputeError, Environment, Interrupted, Reset, SkyFunctionException, SkyKey, SkyValue,
     SkyframeLookupResult, Transience,
 };
 use blaze_util::check_state;
+use blaze_util::profiler::{Profiler, ProfilerTask};
 use blaze_vfs::{PathFragment, Root};
 use indexmap::IndexSet;
 
@@ -41,11 +42,13 @@ use crate::artifact_function::{
     execution_failure, get_input_dep_or_throw,
 };
 use crate::completion_function::create_source_error_code_and_message_of;
+use crate::events::{ActionCompletionEvent, ErrorTiming};
 use crate::keys::{
     ActionExecutionKey, ArtifactKey, ArtifactNestedSetKey, ArtifactNestedSetValue, artifact_key,
 };
 use crate::skyframe_action_executor::{
-    ActionInputMetadata, ContainingPackageRootLookup, ExecutionFailure, SkyframeActionExecutor,
+    ActionInputMetadata, ContainingPackageRootLookup, ExecutionFailure,
+    LostInputsActionExecutionException, SkyframeActionExecutor,
 };
 
 /// `ActionExecutionFunction`: executes an action once all its inputs are available.
@@ -96,6 +99,12 @@ fn to_compute_error(e: ExecutionFailure) -> ComputeError {
     match e {
         ExecutionFailure::Exception(e) => action_execution_function_exception(e).into(),
         ExecutionFailure::Interrupted => ComputeError::Interrupted(Interrupted),
+        // Lost inputs reach ActionExecutionFunction.handleLostInputs only from executing the
+        // action (computeInternal's catch), never from the steps that use this conversion.
+        ExecutionFailure::LostInputs(e) => panic!(
+            "IllegalStateException: unexpected lost inputs: {}",
+            e.exception.get_message()
+        ),
     }
 }
 
@@ -350,13 +359,37 @@ pub fn package_root_exception_for_inconsistent_filesystem(
     )
 }
 
+/// What `ActionExecutionFunction.compute` returns: the action's value, or a `Reset` that rewinds
+/// the actions that generate its lost inputs.
+pub enum ActionExecutionFunctionValue {
+    Value(ActionExecutionValue),
+    Reset(Reset),
+}
+
+impl ActionExecutionFunctionValue {
+    /// The `SkyValue` for the evaluator.
+    pub fn into_sky_value(self) -> SkyValue {
+        match self {
+            ActionExecutionFunctionValue::Value(v) => Arc::new(v),
+            ActionExecutionFunctionValue::Reset(r) => Arc::new(r),
+        }
+    }
+}
+
+/// Java's `UndoneInputsException` and the `ActionExecutionException` `checkInputs` throws.
+enum CheckInputsFailure {
+    Exception(ActionExecutionException),
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1343 ActionExecutionFunction.UndoneInputsException
+    UndoneInputs(IndexSet<Artifact>),
+}
+
 impl ActionExecutionFunction {
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:175 ActionExecutionFunction.compute
     pub fn compute(
         &self,
         key: &ActionExecutionKey,
         env: &mut Environment<'_>,
-    ) -> Result<Option<ActionExecutionValue>, ComputeError> {
+    ) -> Result<Option<ActionExecutionFunctionValue>, ComputeError> {
         let action_lookup_data = &key.0;
         // PORT: skipped, incremental (remote analysis caching, retrieveRemoteSkyValue: retrieval
         // is enabled only with a remote analysis cache service, which is Google-internal).
@@ -378,7 +411,7 @@ impl ActionExecutionFunction {
         action_lookup_data: &ActionLookupData,
         action: &ActionRef,
         env: &mut Environment<'_>,
-    ) -> Result<Option<ActionExecutionValue>, ComputeError> {
+    ) -> Result<Option<ActionExecutionFunctionValue>, ComputeError> {
         if depends_on_build_id(action) {
             if blaze_sky_loading::precomputed::BUILD_ID.get(env)?.is_none() {
                 return Ok(None);
@@ -410,6 +443,17 @@ impl ActionExecutionFunction {
             .skyframe_action_executor
             .probe_action_execution(action.as_ref());
 
+        // If this action was previously completed this build, then this evaluation must be
+        // happening because of rewinding. Prevent any progress events from being published a
+        // second time for this action; downstream consumers of action events reasonably don't
+        // expect them.
+        if !self
+            .skyframe_action_executor
+            .should_emit_progress_events(action.as_ref())
+        {
+            env.suppress_progress_events();
+        }
+
         let all_inputs = match self.collect_inputs(action, env) {
             Ok(Some(all_inputs)) => all_inputs,
             // Missing deps.
@@ -435,7 +479,26 @@ impl ActionExecutionFunction {
                 &input_dep_keys,
             )? {
                 Ok(m) => checked_inputs = m,
-                Err(e) => return Err(action_execution_function_exception(e).into()),
+                Err(CheckInputsFailure::Exception(e)) => {
+                    return Err(action_execution_function_exception(e).into());
+                }
+                // Java: catch (UndoneInputsException e) in compute (not counted as an execution
+                // error).
+                // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:206 ActionExecutionFunction.compute
+                Err(CheckInputsFailure::UndoneInputs(undone_inputs)) => {
+                    let executor = &*self.skyframe_action_executor;
+                    return Ok(Some(ActionExecutionFunctionValue::Reset(
+                        executor
+                            .action_rewind_strategy()
+                            .patch_nested_set_graph_to_propagate_error(
+                                executor,
+                                action_lookup_data,
+                                action,
+                                &undone_inputs,
+                                &input_dep_keys,
+                            ),
+                    )));
+                }
             }
         }
         if env.values_missing() {
@@ -484,13 +547,138 @@ impl ActionExecutionFunction {
                 .into());
             }
             Err(e @ ExecutionFailure::Interrupted) => return Err(to_compute_error(e)),
+            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:347 ActionExecutionFunction.computeInternal
+            Err(ExecutionFailure::LostInputs(e)) => {
+                return Ok(self
+                    .handle_lost_inputs(
+                        *e,
+                        action_lookup_data,
+                        action,
+                        action_start_time,
+                        env,
+                        &input_dep_keys,
+                        &state,
+                    )?
+                    .map(ActionExecutionFunctionValue::Reset));
+            }
         };
 
         if env.values_missing() {
             // This usually happens only for input-discovering actions.
             return Ok(None);
         }
-        Ok(result)
+        Ok(result.map(ActionExecutionFunctionValue::Value))
+    }
+
+    /// Cleans up state associated with the current action execution attempt and returns a
+    /// `Reset` value which rewinds the actions that generate the lost inputs. `Ok(None)` if there
+    /// were missing dependencies (not with `allowSkyframeRestarts()` false).
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:453 ActionExecutionFunction.handleLostInputs
+    #[allow(clippy::too_many_arguments)]
+    fn handle_lost_inputs(
+        &self,
+        e: LostInputsActionExecutionException,
+        action_lookup_data: &ActionLookupData,
+        action: &ActionRef,
+        action_start_time: Instant,
+        env: &mut Environment<'_>,
+        input_dep_keys: &IndexSet<SkyKey>,
+        state: &InputDiscoveryState,
+    ) -> Result<Option<Reset>, ComputeError> {
+        let executor = &*self.skyframe_action_executor;
+        check_state!(
+            e.is_primary_action(action_lookup_data),
+            "Non-primary action handling lost inputs exception: {} {}",
+            action_lookup_data,
+            e.exception.get_message()
+        );
+        let lost_inputs = e
+            .exception
+            .get_lost_inputs()
+            .expect("a LostInputsActionExecutionException")
+            .clone();
+
+        // inputDepKeys only contains keys in the initial, pre-input-discovery Skyframe request.
+        // If the action discovers inputs, we must combine them with discovered input keys.
+        let failed_action_deps: IndexSet<SkyKey> = if e.from_input_discovery {
+            // The action failed during input discovery. We don't know the discovered inputs, so
+            // just add keys of lost inputs in case any of them were discovered.
+            let mut deps = input_dep_keys.clone();
+            deps.extend(lost_inputs.entries().into_iter().map(|(_, input)| {
+                artifact_key(
+                    blaze_exec::actions::action_adapters::as_blaze_artifact(input)
+                        .expect("(Artifact) input"),
+                )
+            }));
+            deps
+        } else if let Some(discovered_inputs) = &state.discovered_inputs {
+            let mut deps = input_dep_keys.clone();
+            deps.extend(discovered_inputs.to_list().iter().map(artifact_key));
+            deps
+        } else {
+            input_dep_keys.clone()
+        };
+
+        let rewind_plan_result = executor
+            .action_rewind_strategy()
+            .prepare_rewind_plan_for_lost_inputs(
+                executor,
+                &*self.seam,
+                action_lookup_data,
+                action,
+                &failed_action_deps,
+                &lost_inputs,
+                e.action_started_event_already_emitted,
+                &state.input_artifact_data,
+                env,
+                action_start_time,
+            );
+        // finally: if (e.isActionStartedEventAlreadyEmitted() && rewindPlanResult == null)
+        let post_completion_event_if_unsuccessful = |env: &mut Environment<'_>| {
+            if e.action_started_event_already_emitted {
+                // Rewinding was unsuccessful. SkyframeActionExecutor's ActionRunner didn't emit
+                // an ActionCompletionEvent because it hoped rewinding would fix things. Because it
+                // won't, this must emit one to compensate.
+                env.listener().post(Arc::new(ActionCompletionEvent {
+                    related_time_start: action_start_time,
+                    finish_time: Instant::now(),
+                    action: action.clone(),
+                    action_lookup_data: action_lookup_data.clone(),
+                }));
+            }
+        };
+        match rewind_plan_result {
+            Ok(Ok(rewind_plan_result)) => {
+                Ok(rewind_plan_result.to_null_if_missing_dependencies_else_reset())
+            }
+            Ok(Err(compute_error)) => {
+                post_completion_event_if_unsuccessful(env);
+                executor.rewinding_failed(action.as_ref(), ExecutionFailure::Interrupted);
+                Err(compute_error)
+            }
+            Err(rewinding_failed_exception) => {
+                let reported = executor.process_and_get_exception_to_throw(
+                    env.listener(),
+                    &e.primary_output_path,
+                    action,
+                    ActionExecutionException::new(
+                        rewinding_failed_exception.get_message().to_owned(),
+                        Some(action.as_ref()),
+                        /* catastrophe= */ false,
+                        Some(rewinding_failed_exception.get_failure_detail()),
+                    ),
+                    &e.file_out_err,
+                    ErrorTiming::AFTER_EXECUTION,
+                );
+                post_completion_event_if_unsuccessful(env);
+                let already_reported = ActionExecutionException::already_reported(reported);
+                executor.rewinding_failed(
+                    action.as_ref(),
+                    ExecutionFailure::Exception(already_reported.clone()),
+                );
+                Err(action_execution_function_exception(already_reported).into())
+            }
+        }
     }
 
     /// An action's inputs needed for execution; `None` if some dependencies were missing.
@@ -609,6 +797,9 @@ impl ActionExecutionFunction {
                 // its only override (CppCompileAction) clears additional inputs left over from an
                 // earlier build, and actions are created fresh for each build here.
                 let discovered_inputs = {
+                    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:736 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
+                    let _c = Profiler::instance()
+                        .profile(ProfilerTask::DISCOVER_INPUTS, "discoverInputs");
                     let _skyframe_allowed = state.input_artifact_data.with_skyframe_allowed();
                     // state.actionFileSystem: the one the output metadata store holds, which
                     // execution in this same call uses as well. PORT: Java keeps it in the
@@ -815,7 +1006,8 @@ impl ActionExecutionFunction {
     /// known to be missing.
     ///
     /// Returns `Ok(Ok(None))` if `env.values_missing()` is true and no inputs result in
-    /// `ActionExecutionException`s; `Ok(Err(e))` is Java's thrown `ActionExecutionException`.
+    /// `ActionExecutionException`s; `Ok(Err(e))` is Java's thrown `ActionExecutionException` or
+    /// `UndoneInputsException`.
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:968 ActionExecutionFunction.checkInputs
     fn check_inputs(
         &self,
@@ -824,7 +1016,7 @@ impl ActionExecutionFunction {
         input_deps_result: &SkyframeLookupResult,
         all_inputs: &NestedSet<Artifact>,
         input_dep_keys: &IndexSet<SkyKey>,
-    ) -> Result<Result<Option<ActionInputMetadata>, ActionExecutionException>, ComputeError> {
+    ) -> Result<Result<Option<ActionInputMetadata>, CheckInputsFailure>, ComputeError> {
         let is_mandatory_input = make_mandatory_input_predicate(action);
 
         let mut action_execution_function_exception_handler =
@@ -840,7 +1032,7 @@ impl ActionExecutionFunction {
             .accumulate_and_maybe_throw_exceptions()
         {
             Ok(has_missing_inputs) => has_missing_inputs,
-            Err(e) => return Ok(Err(e)),
+            Err(e) => return Ok(Err(CheckInputsFailure::Exception(e))),
         };
 
         if env.values_missing() {
@@ -852,6 +1044,7 @@ impl ActionExecutionFunction {
         // When there are no missing values or there was an error, we can start checking
         // individual files. We don't bother to optimize the error-ful case since it's rare.
         let input_artifact_data = ActionInputMetadata::new(&self.skyframe_action_executor);
+        let mut undone_inputs: IndexSet<Artifact> = IndexSet::new();
 
         for input in all_inputs_list.iter() {
             let value = self.get_and_check_input_sky_value(
@@ -865,10 +1058,18 @@ impl ActionExecutionFunction {
 
             if let Some(value) = value {
                 add_to_map(&input_artifact_data, input, &value);
+            } else if !has_missing_inputs && input.has_known_generating_action() {
+                // Derived inputs are mandatory, but we did not detect any missing inputs. This is
+                // only possible for indirect inputs (beneath an ArtifactNestedSetKey) when, between
+                // the time the associated direct dependency ArtifactNestedSetKey completes
+                // successfully and the call to lookupInput, the input's key was rewound and
+                // completed with an error.
+                undone_inputs.insert(input.clone());
             }
-            // PORT: skipped, action rewinding (`undoneInputs` / UndoneInputsException): a derived
-            // input without a value whose generating action was rewound. Without rewinding
-            // getAndCheckInputSkyValue has already failed for an undone mandatory input.
+        }
+
+        if !undone_inputs.is_empty() {
+            return Ok(Err(CheckInputsFailure::UndoneInputs(undone_inputs)));
         }
 
         // If there were no errors, we don't go through the scheduling dependencies because the
@@ -912,7 +1113,7 @@ impl ActionExecutionFunction {
         // After accumulating the inputs, we might find some mandatory artifact with
         // SourceFileInErrorArtifactValue.
         if let Err(e) = action_execution_function_exception_handler.maybe_throw_exception() {
-            return Ok(Err(e));
+            return Ok(Err(CheckInputsFailure::Exception(e)));
         }
 
         Ok(Ok(Some(input_artifact_data)))
@@ -932,9 +1133,11 @@ impl ActionExecutionFunction {
     ) -> Result<Option<InputValue>, ComputeError> {
         let Some(value) = lookup_input(input, input_dep_keys, input_deps_result, env)? else {
             // Undone mandatory inputs are only expected for generated artifacts when rewinding is
-            // enabled (it is not ported: `skyframeActionExecutor.rewindingEnabled()` is false).
+            // enabled. Returning null allows the caller to use UndoneInputsException to recover.
             check_state!(
-                !is_mandatory_input(input),
+                !is_mandatory_input(input)
+                    || (input.has_known_generating_action()
+                        && self.skyframe_action_executor.rewinding_enabled()),
                 "Unexpected undone mandatory input: {}",
                 input
             );
@@ -1050,7 +1253,7 @@ fn get_input_dep_keys(
 
 /// The `SkyValue` of an input: the value of `Artifact.key(input)`, or the
 /// `FileArtifactValue.MISSING_FILE_MARKER` that stands for a missing non-mandatory input.
-enum InputValue {
+pub(crate) enum InputValue {
     Artifact(ArtifactValue),
     Action(Arc<ActionExecutionValue>),
     File(FileArtifactValue),
@@ -1094,7 +1297,7 @@ fn lookup_input(
 
 /// Adds a value obtained by an Artifact SkyValue lookup to the action input map.
 // Java: com/google/devtools/build/lib/skyframe/ActionInputMapHelper.java:31 ActionInputMapHelper.addToMap
-fn add_to_map(input_map: &ActionInputMetadata, key: &Artifact, value: &InputValue) {
+pub(crate) fn add_to_map(input_map: &ActionInputMetadata, key: &Artifact, value: &InputValue) {
     match value {
         InputValue::Artifact(ArtifactValue::Tree(tree_artifact_value)) => {
             expand_tree_artifact_and_populate_artifact_data(
@@ -2254,7 +2457,6 @@ mod timestamp_builder_tests {
                     on_lost_inputs: Arc::new(move |digests: &[String]| {
                         seen_in_handler.lock().extend(digests.iter().cloned())
                     }),
-                    purge_before_unported_rewinding: None,
                 }),
                 loading: false,
                 prefetcher: None,
@@ -2289,19 +2491,14 @@ mod timestamp_builder_tests {
         }
     }
 
-    /// The `FileWriteActionContext` of a build in which one action (`losing`) loses an input
-    /// while another one (`late`) is still in flight: `late` finishes only after the purge
-    /// before the unported rewinding ran, and its output is a remote cache hit (remote metadata
-    /// injected, as [`InjectingFileWrite`]); every other write is one too.
-    struct PurgeRaceFileWrite {
-        losing: LosingFileWrite,
-        losing_output: Artifact,
-        late: Artifact,
-        purged: Arc<std::sync::atomic::AtomicBool>,
-        late_finished_after_purge: Arc<std::sync::atomic::AtomicBool>,
+    /// A `FileWriteActionContext` that writes remotely ([`InjectingFileWrite`]) and counts the
+    /// writes of `counted`.
+    struct CountingFileWrite {
+        counted: Artifact,
+        writes: Arc<std::sync::atomic::AtomicUsize>,
     }
 
-    impl FileWriteActionContext for PurgeRaceFileWrite {
+    impl FileWriteActionContext for CountingFileWrite {
         fn write_output_to_file_with_output(
             &self,
             action: &dyn blaze_actions::actions::action::Action,
@@ -2312,166 +2509,178 @@ mod timestamp_builder_tests {
             output: &Artifact,
         ) -> Result<Vec<blaze_exec::actions::SpawnResult>, blaze_exec::actions::ExecException>
         {
-            if output == &self.losing_output {
-                return self.losing.write_output_to_file_with_output(
-                    action,
-                    ctx,
-                    deterministic_writer,
-                    make_executable,
-                    is_remotable,
-                    output,
-                );
+            if output == &self.counted {
+                self.writes
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
-            let late = output == &self.late;
-            if late {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-                while !self.purged.load(std::sync::atomic::Ordering::SeqCst)
-                    && std::time::Instant::now() < deadline
-                {
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                }
-            }
-            let result = InjectingFileWrite.write_output_to_file_with_output(
+            InjectingFileWrite.write_output_to_file_with_output(
                 action,
                 ctx,
                 deterministic_writer,
                 make_executable,
                 is_remotable,
                 output,
-            );
-            if late && self.purged.load(std::sync::atomic::Ordering::SeqCst) {
-                self.late_finished_after_purge
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-            }
-            result
+            )
         }
     }
 
-    /// Review 2026-11-19 N5: with `--rewind_lost_inputs` (Bazel's default) Java rewinds the
-    /// action; rewinding is not ported, so the executor fails loudly with a message that names
-    /// `--norewind_lost_inputs`, after purging the persistent action cache (the policy's
-    /// `purge_before_unported_rewinding`, a PORT) and without posting a `LostInputsEvent`
-    /// (`ActionRewindStrategy.checkRewindingEnabled` returns before posting when rewinding is
-    /// enabled).
-    ///
-    /// Review 2026-11-19 round 3 P7: the purge works on the executor's own action cache (the
-    /// instance the build's actions write), applies `LeaseService.handleMissingInputs`'s
-    /// predicate (`LeaseService.java:96-104`) and saves it; an action that finishes after the
-    /// purge, while the evaluation is torn down, does not bring a remote-metadata entry back,
-    /// neither into that instance nor onto disk.
-    #[test]
-    fn lost_inputs_with_rewinding_purge_the_action_cache_before_failing_loudly() {
-        let f = Fixture::new();
-        let lost = f.create_derived_artifact("lost.o");
-        let prev = f.create_derived_artifact("prev");
-        let out = f.create_derived_artifact("out");
-        let late = f.create_derived_artifact("late");
-        let actions = f.register_actions(vec![
-            write_action(&f, &prev, "previous"),
-            write_action(&f, &out, "content"),
-            write_action(&f, &late, "late"),
-        ]);
-        let cache = f.create_cache("cache");
-        let key = |a: &Artifact| a.get_exec_path_string().to_string();
+    /// The remote input fetcher of [`FakeRemotePrefetcher`] that loses the input for its first
+    /// `losses` prefetches and downloads it afterwards.
+    struct LosingPrefetcher {
+        losing: FakeRemotePrefetcher,
+        downloading: FakeRemotePrefetcher,
+        losses: usize,
+        prefetches: std::sync::atomic::AtomicUsize,
+    }
 
-        // An earlier build left a remote-metadata entry in the action cache.
-        let first = RemoteSetup {
-            output_checker: Some(Arc::new(TrustAll) as Arc<dyn OutputChecker>),
-            tree: Some(Arc::new(RemoteOutputTree::new())),
-            file_write: Some(Arc::new(InjectingFileWrite)),
-            lost_inputs_policy: None,
-            loading: false,
-            prefetcher: None,
-        };
-        assert_eq!(f.build_with(&actions, &cache, &prev, &first), BUILT);
-        assert!(
-            !cache
-                .get(&key(&prev))
-                .expect("a cache entry")
-                .get_output_files()
-                .is_empty()
-        );
+    impl ActionInputPrefetcher for LosingPrefetcher {
+        fn prefetch_files(
+            &self,
+            action: &dyn blaze_exec::actions::ActionExecutionMetadata,
+            inputs: &[blaze_exec::actions::ActionInputRef],
+            metadata_provider: &dyn blaze_exec::actions::InputMetadataProvider,
+        ) -> std::io::Result<()> {
+            let attempt = self
+                .prefetches
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if attempt < self.losses {
+                self.losing
+                    .prefetch_files(action, inputs, metadata_provider)
+            } else {
+                self.downloading
+                    .prefetch_files(action, inputs, metadata_provider)
+            }
+        }
+    }
 
-        let seen: Arc<parking_lot::Mutex<Vec<String>>> = Arc::default();
-        let seen_in_handler = seen.clone();
-        let purged = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let purged_in_policy = purged.clone();
-        let purged_own_cache = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let purged_own_cache_in_policy = purged_own_cache.clone();
-        let own_cache = Arc::as_ptr(&cache) as *const () as usize;
-        let late_finished_after_purge = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let remote = RemoteSetup {
-            output_checker: Some(Arc::new(TrustAll) as Arc<dyn OutputChecker>),
-            tree: Some(Arc::new(RemoteOutputTree::new())),
-            file_write: Some(Arc::new(PurgeRaceFileWrite {
-                losing: LosingFileWrite {
-                    lost: lost.clone(),
-                    digest: "0f3d/40520".to_string(),
-                },
-                losing_output: out.clone(),
-                late: late.clone(),
-                purged: purged.clone(),
-                late_finished_after_purge: late_finished_after_purge.clone(),
-            })),
-            lost_inputs_policy: Some(blaze_exec::exec::executor_setup::LostInputsPolicy {
-                rewinding_enabled: true,
-                invocation_retries_enabled: true,
-                on_lost_inputs: Arc::new(move |digests: &[String]| {
-                    seen_in_handler.lock().extend(digests.iter().cloned())
-                }),
-                purge_before_unported_rewinding: Some(Arc::new(
-                    move |action_cache: Option<&dyn ActionCache>| {
-                        let action_cache = action_cache.expect("the build's action cache");
-                        purged_own_cache_in_policy.store(
-                            action_cache as *const dyn ActionCache as *const () as usize
-                                == own_cache,
-                            std::sync::atomic::Ordering::SeqCst,
-                        );
-                        // LeaseService.handleMissingInputs, then saved.
-                        action_cache.remove_if(&|entry| {
-                            !entry.get_output_files().is_empty()
-                                || !entry.get_output_trees().is_empty()
-                        });
-                        action_cache.save().unwrap();
-                        purged_in_policy.store(true, std::sync::atomic::Ordering::SeqCst)
-                    },
-                )),
+    fn rewinding_policy(
+        seen: Arc<parking_lot::Mutex<Vec<String>>>,
+    ) -> blaze_exec::exec::executor_setup::LostInputsPolicy {
+        blaze_exec::exec::executor_setup::LostInputsPolicy {
+            rewinding_enabled: true,
+            invocation_retries_enabled: true,
+            on_lost_inputs: Arc::new(move |digests: &[String]| {
+                seen.lock().extend(digests.iter().cloned())
             }),
-            loading: false,
-            prefetcher: None,
-        };
-        let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            f.evaluate_roots_with(&actions, &cache, &[&prev, &out, &late], &remote)
-        })) else {
-            panic!("action rewinding is not ported: the build must fail loudly");
-        };
-        let message = panic
-            .downcast_ref::<String>()
-            .cloned()
-            .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
-            .unwrap_or_default();
-        assert!(
-            message.contains(
-                "blaze: not ported yet: ActionRewindStrategy.prepareRewindPlanForLostInputs"
-            ) && message.contains("--norewind_lost_inputs"),
-            "{message}"
-        );
-        assert!(purged.load(std::sync::atomic::Ordering::SeqCst));
-        assert!(purged_own_cache.load(std::sync::atomic::Ordering::SeqCst));
-        assert!(seen.lock().is_empty());
+        }
+    }
 
-        // The late action ran to the end after the purge; nothing it did is in the cache.
-        assert!(late_finished_after_purge.load(std::sync::atomic::Ordering::SeqCst));
-        assert!(cache.get(&key(&prev)).is_none());
+    /// `RewindingTest.generatedHeaderRewound_lostInInputDiscovery`, with the fixture's
+    /// discovering action in place of a C++ compile: the input `mod.map` (a remote cache hit that
+    /// was not downloaded) is lost when discovery reads it. With `--rewind_lost_inputs` the
+    /// action's node returns a `Reset` that rewinds the generating action of `mod.map`
+    /// (`ActionRewindStrategy.prepareRewindPlanForLostInputs`), which runs again; the
+    /// discovering action then reads the input and the build succeeds. No `LostInputsEvent` is
+    /// posted (`checkRewindingEnabled` returns before posting when rewinding is enabled).
+    #[test]
+    fn generated_header_rewound_lost_in_input_discovery() {
+        let f = Fixture::new();
+        let lost_digest = "5b1d/6".to_string();
+        let prefetcher = LosingPrefetcher {
+            losing: FakeRemotePrefetcher {
+                exec_root: f.exec_root.clone(),
+                content: None,
+                lost_digest: lost_digest.clone(),
+            },
+            downloading: FakeRemotePrefetcher {
+                exec_root: f.exec_root.clone(),
+                content: Some("a.pcm\n".to_string()),
+                lost_digest: String::new(),
+            },
+            losses: 1,
+            prefetches: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let seen: Arc<parking_lot::Mutex<Vec<String>>> = Arc::default();
+        let placeholder = FakeRemotePrefetcher {
+            exec_root: f.exec_root.clone(),
+            content: None,
+            lost_digest: String::new(),
+        };
+        let (actions, modmap, out, read_content, mut remote) =
+            discovery_fixture(&f, placeholder, Some(rewinding_policy(seen.clone())));
+        remote.prefetcher = Some(Arc::new(prefetcher));
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        remote.file_write = Some(Arc::new(CountingFileWrite {
+            counted: modmap.clone(),
+            writes: writes.clone(),
+        }));
+        let cache = f.create_cache("cache");
+        let (result, events) = f.evaluate_with(&actions, &cache, &out, &remote);
         assert!(
-            cache.get(&key(&late)).is_none(),
-            "{:?}",
-            cache.get(&key(&late))
+            !result.has_error(),
+            "{:?} {:?}",
+            result.error_map(),
+            events
+                .get_events()
+                .iter()
+                .map(|e| e.get_message().to_string())
+                .collect::<Vec<_>>()
         );
-        // Nor on disk (the next command loads the saved cache and replays its journal).
-        let reloaded = f.create_cache("cache");
-        assert!(reloaded.get(&key(&prev)).is_none());
-        assert!(reloaded.get(&key(&late)).is_none());
+        assert_eq!(read_content.lock().as_deref(), Some("a.pcm\n"));
+        assert!(out.get_path().exists());
+        // The generating action of the lost input ran twice: once before, once rewound.
+        assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(seen.lock().is_empty(), "{:?}", seen.lock());
+        // No error was reported.
+        assert!(
+            !events
+                .get_events()
+                .iter()
+                .any(|e| e.get_kind() == blaze_events::EventKind::Error),
+            "{:?}",
+            events
+                .get_events()
+                .iter()
+                .map(|e| e.get_message().to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// `RewindingTest.ineffectiveRewindingResultsInLostInputTooManyTimes`: an input that is
+    /// lost again after every rewind fails the action once it has been lost more than
+    /// `ActionRewindStrategy.MAX_REPEATED_LOST_INPUTS` (20) times, with Java's message
+    /// ("lost input too many times (#21) for the same action. lostInput: <input>, lostInput
+    /// digest: <digest>, failedAction: <action>") and `LOST_INPUT_TOO_MANY_TIMES`.
+    #[test]
+    fn ineffective_rewinding_results_in_lost_input_too_many_times() {
+        let f = Fixture::new();
+        let prefetcher = FakeRemotePrefetcher {
+            exec_root: f.exec_root.clone(),
+            content: None,
+            lost_digest: "5b1d/6".to_string(),
+        };
+        let seen: Arc<parking_lot::Mutex<Vec<String>>> = Arc::default();
+        let (actions, modmap, out, _read_content, mut remote) =
+            discovery_fixture(&f, prefetcher, Some(rewinding_policy(seen.clone())));
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        remote.file_write = Some(Arc::new(CountingFileWrite {
+            counted: modmap.clone(),
+            writes: writes.clone(),
+        }));
+        let cache = f.create_cache("cache");
+        let (result, events) = f.evaluate_with(&actions, &cache, &out, &remote);
+        assert!(result.has_error());
+        let errors: Vec<String> = events
+            .get_events()
+            .iter()
+            .filter(|e| e.get_kind() == blaze_events::EventKind::Error)
+            .map(|e| e.get_message().to_string())
+            .collect();
+        assert!(
+            errors.iter().any(|m| m.contains(&format!(
+                "lost input too many times (#{}) for the same action. lostInput: {}, lostInput \
+                 digest: 5b1d/6, failedAction: ",
+                crate::rewinding::action_rewind_strategy::MAX_REPEATED_LOST_INPUTS + 1,
+                modmap
+            ))),
+            "{errors:?}"
+        );
+        // The first execution, then one per rewind before the last loss.
+        assert_eq!(
+            writes.load(std::sync::atomic::Ordering::SeqCst),
+            crate::rewinding::action_rewind_strategy::MAX_REPEATED_LOST_INPUTS + 1
+        );
+        assert!(seen.lock().is_empty());
     }
 
     /// An input-discovering action whose discovery reads one input in process, as
@@ -2699,7 +2908,6 @@ mod timestamp_builder_tests {
                 rewinding_enabled: false,
                 invocation_retries_enabled: false,
                 on_lost_inputs: Arc::new(|_: &[String]| {}),
-                purge_before_unported_rewinding: None,
             }),
         );
         let cache = f.create_cache("cache");

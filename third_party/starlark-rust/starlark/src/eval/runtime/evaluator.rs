@@ -1406,3 +1406,46 @@ mod tests {
         })
     }
 }
+
+// BLAZE PATCH 0064: the `extra` of the evaluator that is evaluating on this thread, for code that
+// has no evaluator at hand (a value's `collect_str`): Java's `Starlark.str(x, semantics)` reads
+// the semantics of the thread that converts. Set by `eval_module` and `eval_function` for the
+// duration of the call, restored when it returns or unwinds (evaluations nest).
+type ExtraPtr = *const (dyn AnyLifetime<'static> + 'static); // BLAZE PATCH 0064
+
+thread_local! {
+    static CURRENT_EXTRA: std::cell::Cell<Option<ExtraPtr>> = const { std::cell::Cell::new(None) }; // BLAZE PATCH 0064
+}
+
+/// BLAZE PATCH 0064: restores the previous current `extra` when dropped.
+pub(crate) struct CurrentExtraGuard(Option<ExtraPtr>);
+
+impl Drop for CurrentExtraGuard {
+    fn drop(&mut self) {
+        CURRENT_EXTRA.with(|c| c.set(self.0)); // BLAZE PATCH 0064
+    }
+}
+
+/// BLAZE PATCH 0064: makes `extra` (an evaluator's `extra` with its lifetimes erased) the current
+/// `extra` until the guard is dropped.
+///
+/// # Safety
+///
+/// The referent must stay alive and unmoved while the guard is alive; `with_current_extra` reads
+/// it back only as a shared reference that cannot leave its callback.
+pub(crate) unsafe fn enter_current_extra(extra: Option<ExtraPtr>) -> CurrentExtraGuard {
+    CurrentExtraGuard(CURRENT_EXTRA.with(|c| c.replace(extra)))
+}
+
+/// BLAZE PATCH 0064: an `extra` reference as the pointer [`enter_current_extra`] stores.
+pub(crate) type CurrentExtraPtr = Option<ExtraPtr>;
+
+/// BLAZE PATCH 0064: calls `f` with the `extra` of the evaluation running on this thread
+/// (`None` outside an evaluation, or when the evaluator has none).
+pub fn with_current_extra<R>(f: impl FnOnce(Option<&dyn AnyLifetime<'static>>) -> R) -> R {
+    let ptr = CURRENT_EXTRA.with(|c| c.get());
+    // SAFETY: see `enter_current_extra`; the pointer is set only while its referent is borrowed
+    // by a running evaluation on this thread, and the reference cannot leave `f`.
+    let extra = ptr.map(|p| unsafe { &*p });
+    f(extra)
+}

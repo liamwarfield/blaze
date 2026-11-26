@@ -161,7 +161,7 @@ pub fn get_platform(
 /// `PlatformUtils.getPlatformProto(spawn, remoteOptions)`, returning the sorted properties of the
 /// `build.bazel.remote.execution.v2.Platform`.
 // Java: com/google/devtools/build/lib/analysis/platform/PlatformUtils.java:102 PlatformUtils.getPlatformProto
-fn get_platform_proto(
+pub(crate) fn get_platform_proto(
     spawn: &dyn Spawn,
     remote_options: Option<&RemoteOptions>,
 ) -> Result<Option<Vec<(String, String)>>, ExecException> {

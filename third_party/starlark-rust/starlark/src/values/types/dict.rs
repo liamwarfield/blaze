@@ -36,3 +36,6 @@ pub use crate::values::dict::unpack::UnpackDictEntries;
 pub use crate::values::dict::value::Dict;
 pub use crate::values::dict::value::alloc_immutable_dict; // BLAZE PATCH 0018
 pub use crate::values::dict::value::dict_is_immutable; // BLAZE PATCH 0018
+pub use crate::values::dict::value::alloc_immutable_key_tracking_dict; // BLAZE PATCH 0063
+pub use crate::values::dict::value::dict_accessed_keys; // BLAZE PATCH 0063
+pub use crate::values::dict::value::dict_record_all_keys_accessed; // BLAZE PATCH 0063

@@ -132,6 +132,8 @@ mod tests {
         assert!(usage.get_used() > 0);
         assert!(usage.get_committed() > 0);
         assert!(usage.get_max() >= usage.get_committed());
-        assert!(peak_resident_bytes().unwrap() >= total_memory());
+        // Resident memory first: the peak read after it is at least as large.
+        let total = total_memory();
+        assert!(peak_resident_bytes().unwrap() >= total);
     }
 }

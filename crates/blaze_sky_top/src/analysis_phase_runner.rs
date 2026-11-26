@@ -16,6 +16,7 @@ use blaze_sky_analysis::top_level_status_events::{
 use blaze_sky_exec::analysis_seam::ConfiguredTargetView;
 use blaze_sky_exec::events::TestAnalyzedEvent;
 use blaze_sky_loading::package_manager::RepositoryMappingResolutionOrInterrupted;
+use blaze_util::profiler::{ProfilePhase, Profiler, ProfilerTask};
 use blaze_vfs::PathFragment;
 use indexmap::IndexSet;
 
@@ -83,14 +84,32 @@ pub fn execute(
 
     let mut analysis_result = None;
     if request.perform_analysis_phase {
-        let result = run_analysis_phase(
-            skyframe_executor,
-            reporter,
-            relative_working_directory,
-            request,
-            target_pattern_phase_value,
-            build_options,
-        )?;
+        // PORT: the "runAnalysisAndExecutionPhase" scope of the merged phase also spans the
+        // execution, which the build command runs after this returns; only the marker is set.
+        // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:117 AnalysisAndExecutionPhaseRunner.execute
+        // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:140 AnalysisPhaseRunner.execute
+        let merged = request.with_merged_analysis_and_execution_source_of_truth();
+        Profiler::instance().mark_phase(if merged {
+            ProfilePhase::ANALYZE_AND_EXECUTE
+        } else {
+            ProfilePhase::ANALYZE
+        });
+        let result = {
+            // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:142 AnalysisPhaseRunner.execute
+            let _c = if merged {
+                blaze_util::profiler::SilentCloseable::nop()
+            } else {
+                Profiler::instance().profile(ProfilerTask::INFO, "runAnalysisPhase")
+            };
+            run_analysis_phase(
+                skyframe_executor,
+                reporter,
+                relative_working_directory,
+                request,
+                target_pattern_phase_value,
+                build_options,
+            )?
+        };
 
         // PORT: BlazeModule.afterAnalysis has no ported implementer (the modules that override
         // it are Google-internal or the remote module).

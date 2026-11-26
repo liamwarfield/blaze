@@ -426,8 +426,13 @@ pub fn update_with_aspects_parameters(
         options.keep_going,
         options.check_for_action_conflicts,
     )?;
-    // Java: setArtifactRoots(skyframeAnalysisResult.getPackageRoots()).
-    set_artifact_roots(skyframe_executor);
+    // Java: setArtifactRoots(skyframeAnalysisResult.getPackageRoots()) of the path without
+    // merged analysis and execution; Skymeld's package roots are the IncrementalPackageRoots of
+    // ExecutionTool.prepareForExecution.
+    // Java: com/google/devtools/build/lib/analysis/BuildView.java:434 BuildView.update
+    if !options.include_execution_phase {
+        set_artifact_roots(skyframe_executor);
+    }
 
     // PORT: with the execution phase, Java's `analyzeAndExecuteTargets` has checked the
     // compatibility of each top-level target in its `BuildDriverFunction` by now (module comment).

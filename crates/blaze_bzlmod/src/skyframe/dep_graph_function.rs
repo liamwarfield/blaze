@@ -6,6 +6,7 @@ use blaze_bzlmod_model::{
 };
 use blaze_events::Event;
 use blaze_skyframe::{ComputeError, Environment, SkyKey, Transience};
+use blaze_util::profiler::{Profiler, ProfilerTask};
 use indexmap::{IndexMap, IndexSet};
 
 use super::keys::{
@@ -25,7 +26,8 @@ pub fn compute_dep_graph(
     }
     let selection_result = selection_result.expect("values are not missing");
     let dep_graph = &selection_result.resolved_dep_graph;
-    // PORT: profiling ("finalize dep graph") skipped.
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelDepGraphFunction.java:69 BazelDepGraphFunction.compute
+    let _c = Profiler::instance().profile(ProfilerTask::BZLMOD, "finalize dep graph");
     BazelDepGraphFunction::compute(dep_graph)
         .map(Some)
         .map_err(|e| throw(e, Transience::Persistent))

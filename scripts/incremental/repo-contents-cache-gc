@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+"""The garbage collection functions of the repo contents cache test on persistent servers.
+
+usage: scripts/incremental/repo-contents-cache-gc help
+       scripts/incremental/repo-contents-cache-gc run [--blaze B] [--oracle O] [--only NAME]
+                                                      [--keep]
+
+Replays the three GC functions of src/test/py/bazel/bzlmod/repo_contents_cache_test.py
+(testGc_singleServer_gcAfterCacheHit, testGc_singleServer_gcAfterCacheMiss,
+testGc_multipleServers) command by command, first with the oracle
+(~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64), then with Blaze (BLAZE_SERVER_MODE=daemon,
+the graph kept between commands, the default), each side in its own directory under
+~/.cache/blaze/work/i3/rccgc/<side>/ (workspaces, the repo contents cache, the output user
+root). Every step prints the test's assertion on it (JUST FETCHED printed or not, no WARNING,
+the cache emptied by the collector within 5 seconds) and whether it held; at the end, one line
+per step where the two sides differ. Exit 1 if any assertion failed on Blaze or the sides
+differ.
+
+Servers: startup options --max_idle_secs=60 --nohome_rc --nosystem_rc; the test's .bazelrc
+sets --repo_contents_cache; commands add --repository_cache=~/.cache/blaze/repo-cache.
+testGc_multipleServers keeps two servers of one side alive at once (the sides run one after the
+other). Every server is shut down at the end of its function. The side directories are deleted
+at the end unless --keep.
+"""
+
+import argparse
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+HOME = os.path.expanduser("~")
+WORK = os.path.join(HOME, ".cache/blaze/work/i3/rccgc")
+ORACLE = os.path.join(HOME, ".cache/blaze/oracle/bazel-9.3.2-linux-x86_64")
+REPO_CACHE = os.path.join(HOME, ".cache/blaze/repo-cache")
+DEFAULT_BLAZE = os.path.join(HOME, ".cache/blaze/work/i3/bin/blaze")
+
+GC_FLAGS = [
+    "--repo_contents_cache_gc_max_age=1ms",
+    "--repo_contents_cache_gc_idle_delay=1ms",
+]
+MODULE = ['repo = use_repo_rule("//:repo.bzl", "repo")', 'repo(name = "my_repo")']
+REPO_BZL = [
+    "def _repo_impl(rctx):",
+    "  rctx.file(\"BUILD\", \"filegroup(name='haha')\")",
+    '  print("JUST FETCHED")',
+    "  return rctx.repo_metadata(reproducible=True)",
+    "repo = repository_rule(_repo_impl)",
+]
+
+
+def write(path, lines):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + ("\n" if lines else ""))
+
+
+class Side:
+    def __init__(self, name, binary, daemon):
+        self.name = name
+        self.binary = binary
+        self.root = os.path.join(WORK, name)
+        self.out_root = os.path.join(self.root, "ur")
+        self.cache = os.path.join(self.root, "rcc")
+        self.env = {"HOME": HOME, "PATH": "/usr/bin:/bin"}
+        if daemon:
+            self.env["BLAZE_SERVER_MODE"] = "daemon"
+        self.workspaces = []
+
+    def workspace(self, rel):
+        ws = os.path.join(self.root, "ws", rel) if rel else os.path.join(self.root, "ws")
+        os.makedirs(ws, exist_ok=True)
+        write(
+            os.path.join(ws, ".bazelrc"),
+            ["build --verbose_failures", "common --repo_contents_cache=%s" % self.cache],
+        )
+        write(os.path.join(ws, "MODULE.bazel"), MODULE)
+        write(os.path.join(ws, "BUILD.bazel"), [])
+        write(os.path.join(ws, "repo.bzl"), REPO_BZL)
+        self.workspaces.append(ws)
+        return ws
+
+    def run(self, ws, args, timeout=600):
+        cmd = [
+            self.binary,
+            "--output_user_root=" + self.out_root,
+            "--max_idle_secs=60",
+            "--nohome_rc",
+            "--nosystem_rc",
+        ] + args
+        if args[0] == "build":
+            cmd += ["--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no", "--jobs=4"]
+        p = subprocess.run(cmd, cwd=ws, env=self.env, capture_output=True, timeout=timeout)
+        return p.returncode, p.stderr.decode("utf-8", "replace")
+
+    def has_cache_entry(self):
+        if not os.path.isdir(self.cache):
+            return False
+        for l1 in os.listdir(self.cache):
+            p = os.path.join(self.cache, l1)
+            if l1 != "_trash" and os.path.isdir(p):
+                for l2 in os.listdir(p):
+                    if l2.endswith(".recorded_inputs"):
+                        return True
+        return False
+
+    def sleep_until_cache_empty(self):
+        for _ in range(10):
+            if not self.has_cache_entry():
+                return True
+            time.sleep(0.5)
+        return False
+
+    def shutdown_all(self):
+        for ws in self.workspaces:
+            try:
+                subprocess.run(
+                    [self.binary, "--output_user_root=" + self.out_root, "--nohome_rc",
+                     "--nosystem_rc", "shutdown"],
+                    cwd=ws, env=self.env, capture_output=True, timeout=120,
+                )
+            except Exception:
+                pass
+        if os.path.isdir(self.out_root):
+            for d in os.listdir(self.out_root):
+                pid_file = os.path.join(self.out_root, d, "server", "server.pid.txt")
+                try:
+                    pid = int(open(pid_file).read().strip())
+                    with open("/proc/%d/cmdline" % pid, "rb") as f:
+                        if self.out_root.encode() in f.read():
+                            os.kill(pid, signal.SIGKILL)
+                except Exception:
+                    pass
+        self.workspaces = []
+
+    def reset(self):
+        self.shutdown_all()
+        if os.path.isdir(self.root):
+            subprocess.run(["chmod", "-R", "u+w", self.root], capture_output=True)
+            shutil.rmtree(self.root)
+
+
+class Steps:
+    """Records each step's observations and the test's assertions on them."""
+
+    def __init__(self, side):
+        self.side = side
+        self.rows = []
+
+    def build(self, label, ws, extra, expect_fetched, expect_no_warning=False):
+        code, err = self.side.run(ws, ["build"] + extra + ["@my_repo//:haha"])
+        fetched = "JUST FETCHED" in err
+        warning = "WARNING" in err
+        ok = code == 0 and fetched == expect_fetched and not (expect_no_warning and warning)
+        obs = "exit=%d fetched=%s warning=%s" % (code, fetched, warning)
+        self.rows.append((label, obs, ok))
+        if not ok or warning:
+            for line in err.splitlines():
+                if "WARNING" in line or "ERROR" in line or "FATAL" in line:
+                    self.rows.append((label + " (stderr)", line.strip()[:300], True))
+
+    def clean_expunge(self, label, ws):
+        code, _ = self.side.run(ws, ["clean", "--expunge"])
+        self.rows.append((label, "exit=%d" % code, code == 0))
+
+    def wait_empty(self, label):
+        ok = self.side.sleep_until_cache_empty()
+        self.rows.append((label, "cache emptied=%s" % ok, ok))
+        return ok
+
+
+def gc_after_cache_hit(side):
+    s = Steps(side)
+    ws = side.workspace("")
+    s.build("first fetch", ws, [], True)
+    s.clean_expunge("clean --expunge", ws)
+    s.build("after expunge, quick GC: cached", ws, GC_FLAGS, False)
+    if s.wait_empty("GC'd while the server is alive"):
+        s.build("refetch, no crash", ws, [], True, expect_no_warning=True)
+    return s.rows
+
+
+def gc_after_cache_miss(side):
+    s = Steps(side)
+    ws = side.workspace("")
+    s.build("first fetch with quick GC", ws, GC_FLAGS, True)
+    if s.wait_empty("GC'd while the server is alive"):
+        s.build("refetch, no crash", ws, [], True, expect_no_warning=True)
+    return s.rows
+
+
+def gc_multiple_servers(side):
+    s = Steps(side)
+    a = side.workspace("a")
+    b = side.workspace("b")
+    s.build("A: first fetch", a, [], True)
+    s.build("B: cached, quick GC", b, GC_FLAGS, False)
+    if not s.wait_empty("GC'd while A's server is alive"):
+        return s.rows
+    s.build("A: refetch, quick GC", a, GC_FLAGS, True, expect_no_warning=True)
+    if s.wait_empty("GC'd while B's server is alive"):
+        s.build("B: refetch, no crash", b, [], True, expect_no_warning=True)
+    return s.rows
+
+
+FUNCTIONS = [
+    ("testGc_singleServer_gcAfterCacheHit", gc_after_cache_hit),
+    ("testGc_singleServer_gcAfterCacheMiss", gc_after_cache_miss),
+    ("testGc_multipleServers", gc_multiple_servers),
+]
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("help", "-h", "--help"):
+        print(__doc__)
+        return 0
+    if sys.argv[1] != "run":
+        print(__doc__)
+        return 2
+    p = argparse.ArgumentParser()
+    p.add_argument("--blaze", default=DEFAULT_BLAZE)
+    p.add_argument("--oracle", default=ORACLE)
+    p.add_argument("--only")
+    p.add_argument("--keep", action="store_true")
+    a = p.parse_args(sys.argv[2:])
+    sides = [Side("oracle", a.oracle, False), Side("blaze", a.blaze, True)]
+    failed = False
+    differences = []
+    for name, fn in FUNCTIONS:
+        if a.only and a.only != name:
+            continue
+        results = {}
+        for side in sides:
+            side.reset()
+            try:
+                results[side.name] = fn(side)
+            finally:
+                side.shutdown_all()
+            print("== %s [%s]" % (name, side.name))
+            for label, obs, ok in results[side.name]:
+                print("  %-4s %-40s %s" % ("ok" if ok else "FAIL", label, obs))
+            if side.name == "blaze" and not all(ok for _, _, ok in results[side.name]):
+                failed = True
+        o, b = results["oracle"], results["blaze"]
+        for i in range(max(len(o), len(b))):
+            ro = o[i] if i < len(o) else ("-", "-", True)
+            rb = b[i] if i < len(b) else ("-", "-", True)
+            if ro[:2] != rb[:2]:
+                differences.append("%s: oracle %s: %s | blaze %s: %s" % (name, ro[0], ro[1], rb[0], rb[1]))
+    print("== differences: %d" % len(differences))
+    for d in differences:
+        print("  " + d)
+    if not a.keep:
+        for side in sides:
+            side.reset()
+    return 1 if failed or differences else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

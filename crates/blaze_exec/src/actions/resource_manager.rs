@@ -24,6 +24,7 @@ use std::time::Duration;
 
 use blaze_optdefs::command::execution_options::ExecutionOptions;
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail, local_execution};
+use blaze_util::profiler::{AutoProfiler, Profiler, ProfilerTask};
 use indexmap::IndexMap;
 use parking_lot::{Condvar, Mutex};
 
@@ -284,6 +285,12 @@ pub struct ResourceHandle {
     manager: Option<Arc<ResourceManager>>,
     request: Option<ResourceRequest>,
     worker: Option<Arc<dyn Worker>>,
+    /// `resourceAcquiredTime`: `BlazeClock.instance().nanoTime()` at creation.
+    ///
+    /// PORT: the profiler's clock (`Profiler.nanoTimeMaybe`), which is `BlazeClock` while the
+    /// profiler is active; the value is only read by `Profiler.completeTask`, which does
+    /// nothing while the profiler is inactive.
+    resource_acquired_time: i64,
 }
 
 impl std::fmt::Debug for ResourceHandle {
@@ -316,8 +323,14 @@ impl ResourceHandle {
                 manager.release_resources_with_worker(&request, worker)
             }
             _ => Ok(()),
-        }
-        // PORT: skipped, profiling.
+        }?;
+        // Java: com/google/devtools/build/lib/actions/ResourceManager.java:117 ResourceManager.ResourceHandle.close
+        Profiler::instance().complete_task(
+            self.resource_acquired_time,
+            ProfilerTask::LOCAL_ACTION_COUNTS,
+            "Resources acquired",
+        );
+        Ok(())
     }
 
     // Java: com/google/devtools/build/lib/actions/ResourceManager.java:122 ResourceManager.ResourceHandle.invalidateAndClose
@@ -379,6 +392,13 @@ impl Drop for ResourceHandle {
                 let _ = manager.release_locked_and_unlock_thread(&request, worker);
             } else {
                 let _ = manager.release_resources_with_worker(&request, worker);
+                // try-with-resources closes the handle on every path: `close()`.
+                // Java: com/google/devtools/build/lib/actions/ResourceManager.java:117 ResourceManager.ResourceHandle.close
+                Profiler::instance().complete_task(
+                    self.resource_acquired_time,
+                    ProfilerTask::LOCAL_ACTION_COUNTS,
+                    "Resources acquired",
+                );
             }
         }
     }
@@ -579,8 +599,19 @@ impl ResourceManager {
             id: REQUEST_ID_GENERATOR.fetch_add(1, Ordering::SeqCst),
         };
 
-        // PORT: skipped, profiling.
-        let resource_latch = self.acquire(&request)?;
+        // Java: com/google/devtools/build/lib/actions/ResourceManager.java:381 ResourceManager.acquireResources
+        let p = AutoProfiler::profiled(
+            format!("Acquiring resources for: {}", owner.describe()),
+            ProfilerTask::ACTION_LOCK,
+        );
+        let resource_latch = match self.acquire(&request) {
+            Ok(resource_latch) => resource_latch,
+            Err(e) => {
+                // The AutoProfiler is left unclosed: nothing is recorded.
+                p.abandon();
+                return Err(e.into());
+            }
+        };
         if let Some(latch) = &resource_latch.latch
             && latch.await_interruptibly().is_err()
         {
@@ -594,6 +625,8 @@ impl ResourceManager {
                 // Inform other side that resources shouldn't be acquired.
                 latch.count_down();
             }
+            // The AutoProfiler is left unclosed: nothing is recorded.
+            p.abandon();
             return Err(ExecException::Interrupted.into());
         }
 
@@ -604,10 +637,20 @@ impl ResourceManager {
             resource_latch.worker.0.lock().take()
         };
 
+        // Profile acquisition only if it waited for resource to become available.
+        // Java: com/google/devtools/build/lib/actions/ResourceManager.java:415 ResourceManager.acquireResources
+        if resource_latch.latch.is_some() {
+            p.complete();
+        } else {
+            p.abandon();
+        }
+
+        // Java: com/google/devtools/build/lib/actions/ResourceManager.java:96 ResourceManager.ResourceHandle.<init>
         Ok(ResourceHandle {
             manager: Some(self.clone()),
             request: Some(request),
             worker,
+            resource_acquired_time: Profiler::nano_time_maybe(),
         })
     }
 

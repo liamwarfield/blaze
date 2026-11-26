@@ -81,12 +81,16 @@ pub(crate) fn dict_methods(registry: &mut MethodsBuilder) {
     /// ```
     #[starlark(speculative_exec_safe)]
     fn get<'v>(
-        this: DictRef<'v>,
+        this: Value<'v>, // BLAZE PATCH 0063 (was DictRef)
         #[starlark(require = pos)] key: Value<'v>,
         // BLAZE PATCH 0019: `default` may be passed by name (Java Dict.get: `named = true`).
         default: Option<Value<'v>>,
     ) -> starlark::Result<Value<'v>> {
-        match this.get(key)? {
+        // BLAZE PATCH 0063: Java ImmutableKeyTrackingDict.get records a present key; the
+        // lookup is the `in` operator's.
+        this.is_in(key)?; // BLAZE PATCH 0063: `key in this` records it
+        let found = DictRef::from_value(this).expect("a dict method on a dict").get(key)?; // BLAZE PATCH 0063
+        match found {
             None => Ok(default.unwrap_or_else(Value::new_none)),
             Some(x) => Ok(x),
         }
@@ -326,6 +330,7 @@ pub(crate) fn dict_methods(registry: &mut MethodsBuilder) {
         if let Some(pairs) = pairs {
             match DictRef::from_value(pairs) {
                 Some(dict) => {
+                    crate::values::dict::dict_record_all_keys_accessed(pairs); // BLAZE PATCH 0063
                     for (k, v) in dict.iter_hashed() {
                         this.aref.insert_hashed(k, v);
                     }

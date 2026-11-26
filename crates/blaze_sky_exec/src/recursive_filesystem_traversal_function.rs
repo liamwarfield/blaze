@@ -29,6 +29,7 @@ use blaze_skyframe::{
     SkyKey,
 };
 use blaze_util::fingerprint::Fingerprint;
+use blaze_util::profiler::{Profiler, ProfilerTask};
 use blaze_vfs::{DirentType, Path, PathFragment, Root, RootedPath};
 
 /// A flag to enable / disable tracking of source directories.
@@ -714,8 +715,14 @@ impl RecursiveFilesystemTraversalFunction {
         env: &mut Environment<'_>,
     ) -> Result<Option<RecursiveFilesystemTraversalValue>, ComputeError> {
         let mut traversal = traversal.clone();
-        // PORT: skipped, profiling (Profiler FILESYSTEM_TRAVERSAL).
-        let e = match self.compute_internal(&mut traversal, env)? {
+        // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalFunction.java:183 RecursiveFilesystemTraversalFunction.compute
+        let computed = {
+            let _c = Profiler::instance().profile_with(ProfilerTask::FILESYSTEM_TRAVERSAL, || {
+                traversal.root().to_string()
+            });
+            self.compute_internal(&mut traversal, env)?
+        };
+        let e = match computed {
             Ok(v) => return Ok(v),
             Err(e) => e,
         };

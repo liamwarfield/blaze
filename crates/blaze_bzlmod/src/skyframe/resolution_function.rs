@@ -12,6 +12,7 @@ use blaze_bzlmod_model::{
 };
 use blaze_events::StoredEventHandler;
 use blaze_skyframe::{ComputeError, Environment, Interrupted, SkyKey, Transience};
+use blaze_util::profiler::{Profiler, ProfilerTask};
 use indexmap::{IndexMap, IndexSet};
 
 use super::config::BzlmodConfig;
@@ -204,14 +205,17 @@ pub fn compute(
         }
     }
 
-    // PORT: profiling ("compute final dep graph") skipped.
-    let final_dep_graph = BazelModuleResolutionFunction::compute_final_dep_graph(
-        &discover_and_select_result
-            .selection_result
-            .resolved_dep_graph,
-        &root.overrides,
-        &remote_repo_specs,
-    );
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelModuleResolutionFunction.java:134 BazelModuleResolutionFunction.compute
+    let final_dep_graph = {
+        let _c = Profiler::instance().profile(ProfilerTask::BZLMOD, "compute final dep graph");
+        BazelModuleResolutionFunction::compute_final_dep_graph(
+            &discover_and_select_result
+                .selection_result
+                .resolved_dep_graph,
+            &root.overrides,
+            &remote_repo_specs,
+        )
+    };
 
     Ok(Some(BazelModuleResolutionValue {
         resolved_dep_graph: final_dep_graph,

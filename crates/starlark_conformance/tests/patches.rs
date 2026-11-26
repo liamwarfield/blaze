@@ -454,6 +454,32 @@ mod probe {
             ))
         }
 
+        /// Patch 0063: Java `Dict.Builder.buildImmutableWithKeyTracking` of the entries of `x`.
+        fn key_tracking_dict<'v>(x: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+            let d = starlark::values::dict::DictRef::from_value(x)
+                .ok_or_else(|| anyhow::anyhow!("not a dict"))?;
+            let content = d.iter_hashed().collect();
+            Ok(starlark::values::dict::alloc_immutable_key_tracking_dict(
+                heap,
+                starlark::values::dict::Dict::new(content),
+            ))
+        }
+
+        /// Patch 0063: `ImmutableKeyTrackingDict.getAccessedKeys()`, None for other values.
+        fn accessed_keys<'v>(x: Value<'v>) -> anyhow::Result<NoneOr<Vec<Value<'v>>>> {
+            Ok(NoneOr::from_option(
+                starlark::values::dict::dict_accessed_keys(x),
+            ))
+        }
+
+        /// Patch 0064: whether the running evaluation's `extra` is visible from native code
+        /// without the evaluator, and is the test's marker.
+        fn current_extra_is_marker() -> anyhow::Result<NoneOr<bool>> {
+            Ok(NoneOr::from_option(starlark::eval::with_current_extra(
+                |extra| extra.map(|e| e.downcast_ref::<super::ExtraMarker>().is_some()),
+            )))
+        }
+
         /// Patch 0018: `Dict.isImmutable`, None for non-dicts.
         fn dict_is_immutable<'v>(x: Value<'v>) -> anyhow::Result<NoneOr<bool>> {
             Ok(NoneOr::from_option(
@@ -2549,4 +2575,100 @@ fn patch_0060_guard_follows_the_thread_stack() {
     );
     let deep_hash = "def f(n):\n    t = ()\n    for i in range(n):\n        t = (t,)\n    return len({t: 1})\nr = f(5000)\n";
     assert_eq!(run(256 << 20, deep_hash), Ok("1".to_owned()));
+}
+
+/// Patch 0064: the `extra` of the running evaluator (Blaze: the `ThreadContext`).
+#[derive(starlark::any::ProvidesStaticType)]
+struct ExtraMarker;
+
+/// Java `Dict.ImmutableKeyTrackingDict` (net/starlark/java/eval/Dict.java:789): only present
+/// keys are tracked; `containsKey` and `get` (`in`, `[]`, `get`) record the key, `keySet` and
+/// `entrySet` (iteration, `repr`, copies, `**`) record every key; `keys()`, `items()`,
+/// `values()`, `len` and `==` read the contents and record nothing.
+#[test]
+fn patch_0063_key_tracking_dict() {
+    let ok = |body: &str, want: &str| {
+        let src: &'static str = Box::leak(
+            format!("d = key_tracking_dict({{'a': 1, 'b': 2, 'c': 3}})\n{body}").into_boxed_str(),
+        );
+        assert_eq!(eval_with_probe(src), Ok(want.to_owned()), "{body}");
+    };
+    ok("r = accessed_keys(d)", "[]");
+    ok(
+        "x = ('z' in d, d.get('y'), d.get('y', 0))\nr = accessed_keys(d)",
+        "[]",
+    );
+    ok(
+        "x = ('c' in d, d['a'], d.get('c'), 'a' in d)\nr = accessed_keys(d)",
+        r#"["c", "a"]"#,
+    );
+    ok(
+        "x = (d.keys(), d.items(), d.values(), len(d), d == {}, dict_is_immutable(d))\nr = accessed_keys(d)",
+        "[]",
+    );
+    ok(
+        "x = d['b']\nx = [k for k in d]\nr = accessed_keys(d)",
+        r#"["b", "a", "c"]"#,
+    );
+    ok("x = repr(d)\nr = accessed_keys(d)", r#"["a", "b", "c"]"#);
+    ok("x = str(d)\nr = accessed_keys(d)", r#"["a", "b", "c"]"#);
+    ok("x = dict(d)\nr = accessed_keys(d)", r#"["a", "b", "c"]"#);
+    ok("x = {} | d\nr = accessed_keys(d)", r#"["a", "b", "c"]"#);
+    ok("x = {}\nx |= d\nr = accessed_keys(d)", r#"["a", "b", "c"]"#);
+    ok(
+        "x = {}\nx.update(d)\nr = accessed_keys(d)",
+        r#"["a", "b", "c"]"#,
+    );
+    ok(
+        "def f(**kw):\n    return kw\nx = f(**d)\nr = accessed_keys(d)",
+        r#"["a", "b", "c"]"#,
+    );
+    ok("r = accessed_keys({'a': 1})", "None");
+    // Immutable as patch 0018's dicts.
+    assert_eq!(
+        eval_with_probe("d = key_tracking_dict({'a': 1})\nd['b'] = 2"),
+        Err("trying to mutate a frozen dict value".into())
+    );
+    assert_eq!(
+        eval_with_probe("d = key_tracking_dict({'a': 1})\nr = d['z']"),
+        Err("key \"z\" not found in dictionary".into())
+    );
+}
+
+/// `Starlark.str(x, semantics)` reads the semantics of the thread that converts; a value's
+/// `collect_str` reaches it through the running evaluator's `extra`, set for the duration of
+/// `eval_module` and `eval_function` and restored afterwards.
+#[test]
+fn patch_0064_current_extra() {
+    assert_eq!(
+        eval_with_probe("r = current_extra_is_marker()"),
+        Ok("None".into())
+    );
+    let r = std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(move || {
+            let (mut builder, _, _) = dialect::bazel_universe_builder();
+            probe::globals(&mut builder);
+            let globals = builder.build();
+            let ast = AstModule::parse(
+                "t.bzl",
+                "def f():\n    return current_extra_is_marker()\nr = (current_extra_is_marker(), f())".to_owned(),
+                &dialect::bzl_dialect(),
+            )
+            .unwrap();
+            let marker = ExtraMarker;
+            let outside_before = starlark::eval::with_current_extra(|e| e.is_some());
+            let r = Module::with_temp_heap(|module| {
+                let mut e = Evaluator::new(&module);
+                e.extra = Some(&marker);
+                e.eval_module(ast, &globals).map_err(|e| bare_message(&e))?;
+                Ok::<_, String>(module.get("r").map(|v| v.to_repr()).unwrap_or_default())
+            });
+            let outside_after = starlark::eval::with_current_extra(|e| e.is_some());
+            (outside_before, r, outside_after)
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(r, (false, Ok("(True, True)".to_owned()), false));
 }

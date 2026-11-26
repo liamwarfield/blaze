@@ -193,7 +193,7 @@ fn cgroup_v2_directory() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
 }
 
 /// The directories from this process's cgroup up to (excluding) the hierarchy root, leaf first.
-/// JDK 23+ (JDK-8322420) looks for the lowest limit along this path.
+/// HotSpot (JDK 23+, JDK-8322420) looks for the lowest CPU limit along this path.
 fn cgroup_v2_hierarchy() -> Vec<std::path::PathBuf> {
     let Some((mount_point, leaf)) = cgroup_v2_directory() else {
         return Vec::new();
@@ -211,22 +211,24 @@ fn cgroup_v2_hierarchy() -> Vec<std::path::PathBuf> {
     result
 }
 
-/// The lowest `memory.max` in this process's cgroup v2 hierarchy, in bytes (`None`: unlimited).
+/// The `memory.max` of this process's own cgroup v2 directory, in bytes (`None`: unlimited).
+///
+/// The JDK's `OperatingSystemMXBean.getTotalPhysicalMemorySize()` (which
+/// `LocalHostResource` reads) takes the container limit from `jdk.internal.platform`'s cgroup
+/// metrics, which read `memory.max` of the process's own cgroup only; limits of parent cgroups
+/// are not considered (unlike HotSpot's processor count, which `available_processors` ports).
+/// PORT: established on the oracle (JDK 25.0.2 embedded in Bazel 9.3.2): with
+/// `app-t3code-agents.slice/memory.max` = 25 GiB and `max` in the process's own scope it reports
+/// the host's memory (`RAM=31225MB`); under `systemd-run -p MemoryMax=12G` (the limit on the
+/// process's own cgroup) it reports `RAM=12288MB`.
 fn cgroup_memory_limit() -> Option<i64> {
-    let mut lowest: Option<i64> = None;
-    for dir in cgroup_v2_hierarchy() {
-        let Ok(text) = std::fs::read_to_string(dir.join("memory.max")) else {
-            continue;
-        };
-        let text = text.trim();
-        if text == "max" {
-            continue;
-        }
-        if let Ok(limit) = text.parse::<i64>() {
-            lowest = Some(lowest.map_or(limit, |l| l.min(limit)));
-        }
+    let (_, leaf) = cgroup_v2_directory()?;
+    let text = std::fs::read_to_string(leaf.join("memory.max")).ok()?;
+    let text = text.trim();
+    if text == "max" {
+        return None;
     }
-    lowest
+    text.parse::<i64>().ok()
 }
 
 /// `ceil(quota / period)` of the lowest `cpu.max` quota in this process's cgroup v2 hierarchy

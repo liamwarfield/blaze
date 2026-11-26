@@ -248,9 +248,8 @@ fn add_temporary_direct_deps_in_groups_deps_exhausted_throws_non_incremental_par
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:354 InMemoryNodeEntryTest.resetLifecycle
 #[test]
-#[ignore = "rewinding and resetEvaluationFromScratch are not ported (docs/decisions.md 2026-11-19)"]
 fn reset_lifecycle_non_incremental() {
-    unimplemented!("not ported: InMemoryNodeEntryTest.resetLifecycle")
+    shared::reset_lifecycle(&Kind::non_incremental());
 }
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:354 InMemoryNodeEntryTest.resetLifecycle
@@ -262,9 +261,8 @@ fn reset_lifecycle_non_incremental_partial_reevaluation() {
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:399 InMemoryNodeEntryTest.resetTwice_moreDepsRequestedBeforeFirstReset
 #[test]
-#[ignore = "rewinding and resetEvaluationFromScratch are not ported (docs/decisions.md 2026-11-19)"]
 fn reset_twice_more_deps_requested_before_first_reset_non_incremental() {
-    unimplemented!("not ported: InMemoryNodeEntryTest.resetTwice_moreDepsRequestedBeforeFirstReset")
+    shared::reset_twice_more_deps_requested_before_first_reset(&Kind::non_incremental());
 }
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:399 InMemoryNodeEntryTest.resetTwice_moreDepsRequestedBeforeFirstReset
@@ -276,9 +274,8 @@ fn reset_twice_more_deps_requested_before_first_reset_non_incremental_partial_re
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:443 InMemoryNodeEntryTest.rewindingLifecycle
 #[test]
-#[ignore = "rewinding and resetEvaluationFromScratch are not ported (docs/decisions.md 2026-11-19)"]
 fn rewinding_lifecycle_non_incremental() {
-    unimplemented!("not ported: InMemoryNodeEntryTest.rewindingLifecycle")
+    shared::rewinding_lifecycle(&Kind::non_incremental());
 }
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:443 InMemoryNodeEntryTest.rewindingLifecycle
@@ -290,9 +287,8 @@ fn rewinding_lifecycle_non_incremental_partial_reevaluation() {
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:491 InMemoryNodeEntryTest.resetAfterRewind
 #[test]
-#[ignore = "rewinding and resetEvaluationFromScratch are not ported (docs/decisions.md 2026-11-19)"]
 fn reset_after_rewind_non_incremental() {
-    unimplemented!("not ported: InMemoryNodeEntryTest.resetAfterRewind")
+    shared::reset_after_rewind(&Kind::non_incremental());
 }
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:491 InMemoryNodeEntryTest.resetAfterRewind
@@ -304,9 +300,8 @@ fn reset_after_rewind_non_incremental_partial_reevaluation() {
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:555 InMemoryNodeEntryTest.concurrentRewindingAllowed
 #[test]
-#[ignore = "rewinding and resetEvaluationFromScratch are not ported (docs/decisions.md 2026-11-19)"]
 fn concurrent_rewinding_allowed_non_incremental() {
-    unimplemented!("not ported: InMemoryNodeEntryTest.concurrentRewindingAllowed")
+    shared::concurrent_rewinding_allowed(&Kind::non_incremental());
 }
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:555 InMemoryNodeEntryTest.concurrentRewindingAllowed
@@ -318,9 +313,8 @@ fn concurrent_rewinding_allowed_non_incremental_partial_reevaluation() {
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:571 InMemoryNodeEntryTest.rewindErrorfulNode_toleratedButNoOp
 #[test]
-#[ignore = "rewinding and resetEvaluationFromScratch are not ported (docs/decisions.md 2026-11-19)"]
 fn rewind_errorful_node_tolerated_but_no_op_non_incremental() {
-    unimplemented!("not ported: InMemoryNodeEntryTest.rewindErrorfulNode_toleratedButNoOp")
+    shared::rewind_errorful_node_tolerated_but_no_op(&Kind::non_incremental());
 }
 
 // Java: src/test/java/com/google/devtools/build/skyframe/InMemoryNodeEntryTest.java:571 InMemoryNodeEntryTest.rewindErrorfulNode_toleratedButNoOp

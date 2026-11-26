@@ -1054,6 +1054,59 @@ impl SkyframeExecutor {
             })
     }
 
+    /// The package locator of the command (Java `pkgLocator.get()`).
+    pub fn get_package_locator(&self) -> &PathPackageLocator {
+        &self.pkg_locator
+    }
+
+    /// The source root of a package whose `PackageValue` is done in the graph, else `None`.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2443 SkyframeExecutor.getRootForDonePackage
+    pub fn get_root_for_done_package(
+        &self,
+    ) -> Arc<dyn blaze_actions::actions::artifact_factory::PackageRootLookup> {
+        Arc::new(DonePackageRootLookup {
+            evaluator: self.evaluator.clone(),
+        })
+    }
+
+    /// The ignored subdirectories of the main repository, as paths below the root of the file
+    /// system (`IgnoredSubdirectoriesValue.withPrefix(workspace)`), when the single package path
+    /// entry is the workspace; otherwise empty.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1628 SkyframeExecutor.getIgnoredPaths
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3790 SkyframeExecutor.getIgnoredPackagePrefixesDiffs
+    // PORT: Java computes it when it syncs the package path (`getIgnoredPackagePrefixesDiffs`,
+    // with a DiffAwarenessManager, i.e. always in a server); Blaze evaluates the value here.
+    pub fn get_ignored_paths(
+        &self,
+        event_handler: Arc<dyn ExtendedEventHandler>,
+    ) -> Result<blaze_sky_loading::ignored_subdirectories::IgnoredSubdirectories, Interrupted> {
+        use blaze_sky_loading::ignored_subdirectories::{
+            IgnoredSubdirectories, IgnoredSubdirectoriesKey,
+        };
+        let key = IgnoredSubdirectoriesKey::key_main();
+        let result = self.evaluate(
+            &[SkyKey::new(key.clone())],
+            /* keep_going= */ false,
+            DEFAULT_THREAD_COUNT,
+            event_handler,
+        )?;
+        let mut ignored_paths = IgnoredSubdirectories::empty();
+        if let Some(value) = result.get(&key) {
+            let workspace = PathFragment::create(&self.workspace.to_string_lossy());
+            for path_entry in self.pkg_locator.get_path_entries() {
+                // Ignored subdirectories are specified relative to the workspace root by
+                // definition of .bazelignore. So, we only use ignored paths when the package
+                // root is equal to the workspace path.
+                if path_entry.as_path().map(Path::as_fragment) == Some(&workspace) {
+                    ignored_paths = value
+                        .as_ignored_subdirectories()
+                        .with_prefix(&workspace.to_relative());
+                }
+            }
+        }
+        Ok(ignored_paths)
+    }
+
     /// Evaluates the target patterns of a build (Java `loadTargetPatternsWithFilters`).
     // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3179 SkyframeExecutor.loadTargetPatternsWithFilters
     pub fn load_target_patterns_with_filters(
@@ -1280,6 +1333,27 @@ impl SkyframeExecutor {
             return Err(InvalidConfigurationException::with_code(
                 e.get_message(),
                 toolchain_code_of_invalid_configuration(e.get_detailed_code()),
+            ));
+        }
+        // The same `DetailedException` case for an `ExternalDepsException` (for example a
+        // repository mapping error of the main repository): its ExternalDeps code is kept.
+        if !wrap_any_exception
+            && let Some(e) = error
+                .exception_as::<blaze_bzlmod_model::external_deps_exception::ExternalDepsException>(
+                )
+        {
+            let code_name =
+                blaze_protos::failure_details::external_deps::Code::try_from(e.get_code().number())
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "IllegalArgumentException: ExternalDeps.Code {:?}",
+                            e.get_code()
+                        )
+                    })
+                    .as_str_name();
+            return Err(InvalidConfigurationException::with_wrapped_failure_code(
+                e.get_message(),
+                format!("ExternalDeps.{code_name}"),
             ));
         }
         if wrap_any_exception {
@@ -2157,5 +2231,25 @@ fn adjust_for_exec_with_evaluator(
             "ExecutionTransitionFactory.create",
             "no Starlark exec transition (native exec transition is not in Bazel 9)"
         ),
+    }
+}
+
+/// `SkyframeExecutor::getRootForDonePackage` as a package root lookup (Java passes the method
+/// reference `skyframeExecutor::getRootForDonePackage`).
+struct DonePackageRootLookup {
+    evaluator: Arc<Evaluator>,
+}
+
+impl blaze_actions::actions::artifact_factory::PackageRootLookup for DonePackageRootLookup {
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2443 SkyframeExecutor.getRootForDonePackage
+    fn get_root_for_package(
+        &self,
+        package_identifier: &PackageIdentifier,
+    ) -> Option<blaze_vfs::Root> {
+        let value = self
+            .evaluator
+            .get_existing_value(&SkyKey::new(PackageKey::key(package_identifier.clone())))?;
+        let package_value = value.downcast::<PackageValue>().ok()?;
+        Some(package_value.get_package().get_source_root().clone())
     }
 }

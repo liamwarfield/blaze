@@ -230,6 +230,9 @@ impl BuildEvent for AbortedEvent {
     fn get_event_id(&self) -> BuildEventId {
         self.id.clone()
     }
+    fn is_aborted_event(&self) -> bool {
+        true
+    }
     fn get_children_events(&self) -> Vec<BuildEventId> {
         self.children.clone()
     }

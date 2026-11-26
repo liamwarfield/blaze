@@ -194,8 +194,6 @@ fn build_starting_restarts_on_outputbase_changes() {
 
 // Java: src/test/java/com/google/devtools/build/lib/worker/WorkerModuleTest.java:142 WorkerModuleTest.buildStarting_restartsOnUseCgroupsOnLinuxChanges
 #[test]
-#[ignore = "with a null SandboxOptions Java asks the old cgroup implementation \
-            (CgroupsInfo.isSupported), which is not ported (unported!)"]
 fn build_starting_restarts_on_use_cgroups_on_linux_changes() {
     let _s = SEQUENTIAL.lock();
     let mut f = Fixture::new();

@@ -67,10 +67,13 @@ struct StderrPrint;
 
 impl StarlarkEvents for StderrPrint {
     fn debug(&self, location: Option<&Location>, message: &str) {
-        match location {
-            Some(location) => eprintln!("{location}: {message}"),
-            None => eprintln!("<builtin>: {message}"),
-        }
+        // System.err.println(thread.getCallerLocation() + ": " + msg); a builtin caller is
+        // Location.BUILTIN ("<builtin>").
+        let line = match location {
+            Some(location) => format!("{location}: {message}"),
+            None => format!("<builtin>: {message}"),
+        };
+        blaze_events::io::system_err_println(&line);
     }
 
     fn warn(&self, location: Option<&Location>, message: &str) {

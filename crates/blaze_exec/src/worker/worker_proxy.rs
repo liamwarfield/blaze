@@ -92,11 +92,25 @@ impl WorkerProxy {
         });
         proxy
     }
+
+    /// The package-private field `workerMultiplexer` (read by the tests).
+    pub fn get_worker_multiplexer(&self) -> &Arc<WorkerMultiplexer> {
+        &self.worker_multiplexer
+    }
+
+    /// The package-private field `workDir` (read by the tests).
+    pub fn get_work_dir(&self) -> &Path {
+        &self.work_dir
+    }
 }
 
 impl Worker for WorkerProxy {
     fn base(&self) -> &WorkerBase {
         &self.base
+    }
+
+    fn as_worker_proxy(&self) -> Option<&WorkerProxy> {
+        Some(self)
     }
 
     // Java: com/google/devtools/build/lib/worker/WorkerProxy.java:49 WorkerProxy.getCgroup
@@ -137,10 +151,7 @@ impl Worker for WorkerProxy {
             &self.work_dir,
             worker_files,
             input_files,
-            &**sandboxed
-                .tree_deleter
-                .as_ref()
-                .expect("NullPointerException: treeDeleter"),
+            sandboxed.tree_deleter.as_deref(),
             client_env,
         )?;
 
@@ -167,10 +178,7 @@ impl Worker for WorkerProxy {
             &mut inputs_to_create,
             &mut dirs_to_create,
             &sandboxed.sandbox_dir,
-            &**sandboxed
-                .tree_deleter
-                .as_ref()
-                .expect("NullPointerException: treeDeleter"),
+            sandboxed.tree_deleter.as_deref(),
         )?;
         // Finally, create anything that is still missing. This is non-strict only for historical
         // reasons, we haven't seen what would break if we make it strict.

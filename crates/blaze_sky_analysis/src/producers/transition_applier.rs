@@ -14,15 +14,13 @@ use blaze_analysis::config::starlark_transition::{
 };
 use blaze_analysis::config::transitions::{ConfigurationTransition, restrict};
 use blaze_analysis::toolchains::{ToolchainException, ToolchainExceptionKind};
-use blaze_build_config::build_configuration_key::{
-    BuildConfigurationKey, BuildConfigurationKeyValueKey,
-};
+use blaze_build_config::build_configuration_key::BuildConfigurationKey;
 use blaze_build_config::build_options::{BuildOptions, ScopeType};
-use blaze_build_config::skyframe::ConfigurationError;
+use blaze_build_config::skyframe::{ConfigurationError, build_configuration_key_producer};
 use blaze_cmdline::Label;
 use blaze_events::StoredEventHandler;
 use blaze_optdefs::fragment::platform_options::PlatformOptions;
-use blaze_skyframe::{Environment, Interrupted, SkyKey};
+use blaze_skyframe::{ComputeError, Environment, Interrupted};
 use indexmap::IndexMap;
 
 /// The errors `TransitionApplier.ResultSink` (and `BuildConfigurationKeyMapProducer.ResultSink`)
@@ -53,7 +51,7 @@ impl TransitionApplierError {
     }
 }
 
-/// What `build_configuration_key_map` catches from a BUILD_CONFIGURATION_KEY dependency.
+/// What `build_configuration_key_map` catches from a `BuildConfigurationKeyProducer`.
 enum CaughtBuildConfigurationKeyError {
     Configuration(ConfigurationError),
     /// An `InvalidPlatformException`: its message.
@@ -95,7 +93,7 @@ pub fn apply_transition(
 /// and state machines that run concurrently (the `DependencyProducer`s of a target) advance
 /// round by round; the round in which a producer's transition is done decides where its
 /// configured target lookups are in the target's dependency order. The blocking port computes
-/// each configuration key through one BUILD_CONFIGURATION_KEY node, so the count is derived
+/// each configuration key with straight-line producers, so the count is derived
 /// here from the conditions under which Java's machines look something up.
 // Java: com/google/devtools/build/lib/analysis/producers/TransitionApplier.java:76 TransitionApplier.step
 pub fn apply_transition_with_lookup_rounds(
@@ -184,7 +182,7 @@ fn build_configuration_key_lookup_rounds(options: &BuildOptions) -> usize {
         if platform_options.platforms.len() == 1 {
             // The PlatformProducer's PLATFORM lookup. `checkTargetPlatformFlags` then goes to
             // `mergeFromPlatformMapping`: a platform with flags (`ParsedFlagsValue.mergeWith`) is
-            // not ported, BUILD_CONFIGURATION_KEY fails loudly for it.
+            // not ported, the producer fails loudly for it.
             lookup_rounds += 1;
         }
         // `mergeFromPlatformMapping`: the PLATFORM_MAPPING lookup.
@@ -214,53 +212,54 @@ pub fn build_configuration_key_map(
     options: IndexMap<String, BuildOptions>,
     label: &Label,
 ) -> Produced<Result<IndexMap<String, BuildConfigurationKey>, TransitionApplierError>> {
-    // Java enqueues one BuildConfigurationKeyProducer per entry; they run in parallel.
-    // PORT: BuildConfigurationKeyProducer's work (platform flags, platform mappings, scopes) is
-    // what BUILD_CONFIGURATION_KEY computes (BuildConfigurationKeyFunction delegates to the same
-    // producer), so each option set is mapped through that node.
-    let keys: Vec<(String, BuildConfigurationKeyValueKey)> = options
-        .into_iter()
-        .map(|(context, build_options)| {
-            (
-                context,
-                // Java: new BuildConfigurationKeyProducer(.., label)
-                BuildConfigurationKeyValueKey::create_for_producer(
-                    Arc::new(build_options),
-                    Some(label),
-                ),
-            )
-        })
-        .collect();
-    let sky_keys: Vec<SkyKey> = keys.iter().map(|(_, k)| SkyKey::new(k.clone())).collect();
-    let lookup = env.get_values_and_exceptions(&sky_keys)?;
-
-    // Java: com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyMapProducer.java:87 BuildConfigurationKeyMapProducer.combineResults
+    // Java enqueues one BuildConfigurationKeyProducer per entry; they run in parallel, each
+    // looking up the platform (PLATFORM), the platform mapping (PLATFORM_MAPPING) and the scopes
+    // (BUILD_OPTIONS_SCOPE) for the configured target that drives them, which therefore depends
+    // on those nodes directly (an edit of the platform mappings file re-runs every configured
+    // target that applied a transition).
+    // PORT: the producers run one after the other in this function's environment
+    // (`blaze_build_config::skyframe::build_configuration_key_producer`); a missing value is a
+    // restart (blocking evaluator), as the Driver's restart after its batch.
     let mut output: IndexMap<String, BuildConfigurationKey> = IndexMap::new();
     let mut first_error: Option<TransitionApplierError> = None;
     let mut missing = false;
-    for (transition_key, key) in &keys {
-        // Java: the BuildConfigurationKeyProducer's sink accepts an OptionsParsingException, a
-        // PlatformMappingException, an InvalidPlatformException (of its PlatformProducer) or a
-        // BuildOptionsScopeFunctionException. BUILD_CONFIGURATION_KEY rethrows the first three
-        // (BuildConfigurationKeyFunction.compute); InvalidPlatformException is a
-        // ToolchainException of kind InvalidPlatform.
-        match lookup.get_or_throw_with(key, |e| {
-            if let Some(c) = e.downcast_ref::<ConfigurationError>() {
-                return Some(CaughtBuildConfigurationKeyError::Configuration(c.clone()));
-            }
-            e.downcast_ref::<ToolchainException>()
-                .filter(|t| t.kind() == ToolchainExceptionKind::InvalidPlatform)
-                .map(|t| {
-                    CaughtBuildConfigurationKeyError::InvalidPlatform(t.get_message().to_owned())
-                })
-        }) {
+    for (transition_key, build_options) in options {
+        // Java: new BuildConfigurationKeyProducer(.., label)
+        let produced =
+            match build_configuration_key_producer(&Arc::new(build_options), Some(label), env) {
+                Ok(produced) => Ok(produced),
+                Err(ComputeError::Interrupted(i)) => return Err(i),
+                Err(ComputeError::Exception(e)) => Err(e),
+            };
+        // Java: com/google/devtools/build/lib/analysis/producers/BuildConfigurationKeyMapProducer.java:87 BuildConfigurationKeyMapProducer.combineResults
+        match produced {
             Ok(Some(result_key)) => {
-                output.insert(transition_key.clone(), (*result_key).clone());
+                output.insert(transition_key, result_key);
             }
             Ok(None) => missing = true,
             Err(e) => {
+                // Java: the BuildConfigurationKeyProducer's sink accepts an
+                // OptionsParsingException, a PlatformMappingException, an
+                // InvalidPlatformException (of its PlatformProducer) or a
+                // BuildOptionsScopeFunctionException; the producer function throws them as
+                // BuildConfigurationKeyFunction does.
+                let caught = if let Some(c) = e.cause.downcast_ref::<ConfigurationError>() {
+                    CaughtBuildConfigurationKeyError::Configuration(c.clone())
+                } else if let Some(t) = e
+                    .cause
+                    .downcast_ref::<ToolchainException>()
+                    .filter(|t| t.kind() == ToolchainExceptionKind::InvalidPlatform)
+                {
+                    CaughtBuildConfigurationKeyError::InvalidPlatform(t.get_message().to_owned())
+                } else {
+                    panic!(
+                        "IllegalStateException: unexpected exception of \
+                         BuildConfigurationKeyProducer: {}",
+                        e.cause
+                    )
+                };
                 if first_error.is_none() {
-                    first_error = Some(match e {
+                    first_error = Some(match caught {
                         CaughtBuildConfigurationKeyError::Configuration(
                             ConfigurationError::OptionsParsing(o),
                         ) => TransitionApplierError::OptionsParsing(o.get_message().to_owned()),
@@ -271,12 +270,12 @@ pub fn build_configuration_key_map(
                         CaughtBuildConfigurationKeyError::InvalidPlatform(m) => {
                             TransitionApplierError::PlatformFlags(m)
                         }
-                        // BuildConfigurationKeyFunction throws nothing else (a
-                        // BuildOptionsScopeFunctionException is not caught there: see
-                        // `find_build_options_scopes` in blaze_build_config).
+                        // The producer throws nothing else (a BuildOptionsScopeFunctionException
+                        // is not caught there: see `find_build_options_scopes` in
+                        // blaze_build_config).
                         CaughtBuildConfigurationKeyError::Configuration(other) => panic!(
                             "IllegalStateException: unexpected exception of \
-                             BUILD_CONFIGURATION_KEY: {other}"
+                             BuildConfigurationKeyProducer: {other}"
                         ),
                     });
                 }

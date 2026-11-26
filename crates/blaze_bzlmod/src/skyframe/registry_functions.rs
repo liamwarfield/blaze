@@ -9,6 +9,7 @@ use blaze_bzlmod_model::{
 };
 use blaze_events::{Event, StoredEventHandler};
 use blaze_skyframe::{ComputeError, Environment, Interrupted, Transience};
+use blaze_util::profiler::{Profiler, ProfilerTask};
 use blaze_vfs::PathFragment;
 use indexmap::IndexSet;
 
@@ -81,13 +82,19 @@ pub fn compute_repo_spec(
     };
 
     let download_events = StoredEventHandler::new();
-    // PORT: profiling ("compute repo spec: <key>") skipped.
-    let repo_spec = match registry.get_repo_spec(
-        &key.module_key,
-        &module_file_value.registry_file_hashes(),
-        &download_events,
-        &*config.registry_fetcher,
-    ) {
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/RepoSpecFunction.java:57 RepoSpecFunction.compute
+    let repo_spec_result = {
+        let _c = Profiler::instance().profile_with(ProfilerTask::BZLMOD, || {
+            format!("compute repo spec: {}", key.module_key)
+        });
+        registry.get_repo_spec(
+            &key.module_key,
+            &module_file_value.registry_file_hashes(),
+            &download_events,
+            &*config.registry_fetcher,
+        )
+    };
+    let repo_spec = match repo_spec_result {
         Ok(r) => r,
         Err(RegistryException::Interrupted) => return Err(Interrupted.into()),
         // IOException (NotFound is a FileNotFoundException here).
@@ -123,9 +130,14 @@ pub fn compute_yanked_versions(
         return Ok(None);
     };
 
-    // PORT: profiling ("getting yanked versions: <name>") skipped.
-    match registry.get_yanked_versions(&key.module_name, env.listener(), &*config.registry_fetcher)
-    {
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/YankedVersionsFunction.java:48 YankedVersionsFunction.compute
+    let yanked_versions = {
+        let _c = Profiler::instance().profile_with(ProfilerTask::BZLMOD, || {
+            format!("getting yanked versions: {}", key.module_name)
+        });
+        registry.get_yanked_versions(&key.module_name, env.listener(), &*config.registry_fetcher)
+    };
+    match yanked_versions {
         Ok(v) => Ok(Some(YankedVersionsValue::create(v))),
         Err(RegistryException::Interrupted) => Err(Interrupted.into()),
         Err(e) => {

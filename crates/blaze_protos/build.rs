@@ -50,6 +50,9 @@ const PROTOS: &[&str] = &[
     "src/main/protobuf/remote_scrubbing.proto",
     // Extra actions (`ExtraActionInfo` and its extensions; `print_action`, `.xa` files).
     "src/main/protobuf/extra_actions_base.proto",
+    // Build Event Service (`--bes_backend`): `google.devtools.build.v1.PublishBuildEvent` of
+    // googleapis.
+    "google/devtools/build/v1/publish_build_event.proto",
     // Well-known types JsonFormat prints specially; compiled so that `Any` can hold them.
     "google/protobuf/wrappers.proto",
     "google/protobuf/field_mask.proto",

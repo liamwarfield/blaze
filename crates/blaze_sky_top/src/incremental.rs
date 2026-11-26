@@ -26,16 +26,29 @@ use blaze_build_config::build_configuration_key::BuildConfigurationKey;
 use blaze_build_config::build_options::BuildOptions;
 use blaze_cmdline::{PackageIdentifier, RepositoryMapping};
 use blaze_events::{Event, EventHandler, ExtendedEventHandler};
+use blaze_optdefs::command::local_diff_awareness::LocalDiffAwarenessOptions;
 use blaze_optdefs::command::package_options::PackageOptions;
 use blaze_optdefs::misc::repository_options::RepositoryOptions;
 use blaze_options::{OptionsClass, OptionsParser, Value};
+use blaze_sky_loading::diff_awareness::{
+    DiffAwarenessFactory, DiffAwarenessManager, ProcessableModifiedFileSet,
+};
 use blaze_sky_loading::directories::LoadingDirectories;
+use blaze_sky_loading::directory_listing::DirectoryListingStateKey;
+use blaze_sky_loading::file_state::FileStateKey;
 use blaze_sky_loading::file_state::{
     ExternalFileAction, ExternalFilesHelper, ExternalFilesKnowledgeState, FileType,
 };
+use blaze_sky_loading::filesystem_value_checker::FileDirtinessChecker;
 use blaze_sky_loading::filesystem_value_checker::{
     ExternalDirtinessChecker, FilesystemValueChecker, MissingDiffDirtinessChecker,
     SkyValueDirtinessChecker, UnionDirtinessChecker,
+};
+use blaze_sky_loading::filesystem_value_checker_inferring_ancestors::{
+    InferredDiff, StatFailedException, get_diff_with_inferred_ancestors,
+};
+use blaze_sky_loading::ignored_subdirectories::{
+    IgnoredSubdirectories, IgnoredSubdirectoriesKey, IgnoredSubdirectoriesValue,
 };
 use blaze_sky_loading::package_lookup::PackageLookupKey;
 use blaze_sky_loading::pkgcache::PathPackageLocator;
@@ -44,7 +57,7 @@ use blaze_skyframe::{
 };
 use blaze_starlark::StarlarkSemantics;
 use blaze_util::io::timestamp_granularity_monitor::TimestampGranularityMonitor;
-use blaze_vfs::{ModifiedFileSet, Path, Root};
+use blaze_vfs::{ModifiedFileSet, Path, Root, RootedPath};
 use indexmap::IndexSet;
 use parking_lot::{Mutex, RwLock};
 
@@ -238,6 +251,16 @@ pub struct SkyframeIncrementalState {
     /// Java `externalFilesHelper`'s knowledge (one helper per server in Java).
     external_files_knowledge: Arc<ExternalFilesKnowledgeState>,
     inner: Mutex<Inner>,
+    /// Java `diffAwarenessManager` and `ignoredPaths` (`--watchfs`).
+    diff_awareness: Mutex<DiffAwarenessSync>,
+}
+
+/// The diff awareness of the server's package path entries.
+struct DiffAwarenessSync {
+    manager: DiffAwarenessManager,
+    /// `SkyframeExecutor.ignoredPaths`: the ignored subdirectories of the workspace root as the
+    /// last `handleDiffs` computed them (`IgnoredSubdirectories.EMPTY` at first).
+    ignored_paths: IgnoredSubdirectories,
 }
 
 struct Inner {
@@ -281,10 +304,19 @@ pub struct ExecutorHandle {
 }
 
 impl SkyframeIncrementalState {
-    pub fn new(mode: KeepGraphMode) -> SkyframeIncrementalState {
+    /// `diff_awareness_factories`: the workspace's (Java `WorkspaceBuilder.addDiffAwarenessFactory`,
+    /// `BazelDiffAwarenessModule.workspaceInit`).
+    pub fn new(
+        mode: KeepGraphMode,
+        diff_awareness_factories: Vec<Arc<dyn DiffAwarenessFactory>>,
+    ) -> SkyframeIncrementalState {
         SkyframeIncrementalState {
             mode,
             external_files_knowledge: Arc::default(),
+            diff_awareness: Mutex::new(DiffAwarenessSync {
+                manager: DiffAwarenessManager::new(diff_awareness_factories),
+                ignored_paths: IgnoredSubdirectories::empty(),
+            }),
             inner: Mutex::new(Inner {
                 track_incremental_state: true,
                 kept: None,
@@ -339,6 +371,49 @@ impl SkyframeIncrementalState {
         }
     }
 
+    /// Drops the functions of the last executor of a command that has completely ended (its
+    /// executors are gone), keeping only the graph; the server calls it after `afterCommand`.
+    /// Unlike [`Self::strip_kept_graph`], a graph something still references stays kept as it
+    /// is (the next executor's strip decides).
+    ///
+    /// PORT: Blaze only. Java's SkyframeExecutor and its functions live with the server and
+    /// hold the state of a command only between `beforeCommand` and `afterCommand` (the modules
+    /// clear it there); a Blaze executor's functions capture that state, so dropping them ends
+    /// it: the repository services, the download manager, the action cache and output service
+    /// handles, the execution thread pools, and the arena lease of the `BzlLoadFunction`.
+    pub fn release_command_functions(&self) {
+        let mut inner = self.inner.lock();
+        let Some(kept) = inner.kept.take() else {
+            return;
+        };
+        let KeptGraph {
+            evaluator,
+            _lease,
+            signature,
+        } = kept;
+        let evaluator = match Arc::try_unwrap(evaluator) {
+            Ok(evaluator) => Arc::new(
+                EvaluatorBuilder::new()
+                    .keep_edges(true)
+                    .build_reusing(evaluator),
+            ),
+            Err(shared) => {
+                debug("kept evaluator still referenced after the command: functions kept");
+                shared
+            }
+        };
+        inner.kept = Some(KeptGraph {
+            evaluator,
+            _lease,
+            signature,
+        });
+    }
+
+    /// Whether a graph is kept for the next command.
+    pub fn has_kept_graph(&self) -> bool {
+        self.inner.lock().kept.is_some()
+    }
+
     /// Whether an executor's graph goes to the next executor (of this command and of later
     /// ones): the mode keeps graphs and the current command tracks incremental state.
     pub fn passes_graph_between_executors(&self) -> bool {
@@ -352,6 +427,8 @@ impl SkyframeIncrementalState {
     /// Drops the kept graph (Java `resetEvaluator`: `clean`, `--nokeep_state_after_build`).
     // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1176 SkyframeExecutor.resetEvaluator
     pub fn reset_evaluator(&self) {
+        // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:212 SequencedSkyframeExecutor.resetEvaluator
+        self.diff_awareness.lock().manager.reset();
         let mut inner = self.inner.lock();
         inner.kept = None;
         // skyframeBuildView.reset(): configuration = null, skyframeAnalysisWasDiscarded = false.
@@ -403,7 +480,7 @@ impl SkyframeIncrementalState {
         let first_in_command = inner.synced_command.as_deref() != Some(&command.command_id);
         if first_in_command {
             inner.synced_command = Some(command.command_id.clone());
-            Self::decide_keep_incremental_state(&mut inner, command);
+            Self::decide_keep_incremental_state(state, &mut inner, command);
         }
         let analyzed = inputs.top_level_build_options.is_some();
         let handle = ExecutorHandle {
@@ -440,26 +517,35 @@ impl SkyframeIncrementalState {
             // A new graph: nothing of an earlier command is in it.
             Self::note_new_graph(&mut inner, &inputs, command);
             drop(inner);
-            return (builder.build(), handle);
+            let evaluator = builder.build();
+            if first_in_command {
+                Self::diff_awareness_on_new_graph(state, &evaluator, &inputs);
+            }
+            return (evaluator, handle);
         };
 
-        let previous = match Self::sync(
+        // The sync runs on the executor's evaluator (its functions and its precomputed values
+        // injected, as Java's preparePackageLoading injects them before handleDiffs evaluates);
+        // a sync that cannot keep the graph falls back to a new one.
+        let fallback = builder.clone();
+        let evaluator = builder.build_reusing(previous);
+        let evaluator = match Self::sync(
             state,
             &mut inner,
             command,
-            previous,
+            evaluator,
             &inputs,
             first_in_command,
         ) {
-            Some(previous) => previous,
+            Some(evaluator) => evaluator,
             None => {
                 Self::note_new_graph(&mut inner, &inputs, command);
                 drop(inner);
-                return (builder.build(), handle);
+                return (fallback.build(), handle);
             }
         };
         drop(inner);
-        (builder.build_reusing(previous), handle)
+        (evaluator, handle)
     }
 
     /// Records what a new (empty) graph was built from.
@@ -481,7 +567,11 @@ impl SkyframeIncrementalState {
     /// The bookkeeping part of `decideKeepIncrementalState` (the warnings are printed by
     /// blaze_runtime's `CommandEnvironment.decide_keep_incremental_state`).
     // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:399 SequencedSkyframeExecutor.decideKeepIncrementalState
-    fn decide_keep_incremental_state(inner: &mut Inner, command: &IncrementalCommand) {
+    fn decide_keep_incremental_state(
+        state: &SkyframeIncrementalState,
+        inner: &mut Inner,
+        command: &IncrementalCommand,
+    ) {
         let old_value_of_track_incremental_state = inner.track_incremental_state;
         // First check if the incrementality state should be kept around during the build.
         let explicitly_requested_no_incremental_data = !command.track_incremental_state;
@@ -496,6 +586,7 @@ impl SkyframeIncrementalState {
             || !inner.track_incremental_state;
         if evaluator_needs_reset {
             // SequencedSkyframeExecutor.sync: resetEvaluator().
+            state.diff_awareness.lock().manager.reset();
             inner.kept = None;
             inner.has_configuration = false;
             inner.original_configuration_options = None;
@@ -654,6 +745,223 @@ impl SkyframeIncrementalState {
         evaluator: Evaluator,
         inputs: &SyncInputs<'_>,
     ) -> Option<Evaluator> {
+        let ctx = EvaluationContext {
+            keep_going: false,
+            parallelism: crate::skyframe_executor::DEFAULT_THREAD_COUNT,
+            event_handler: inputs.reporter.clone(),
+            ..EvaluationContext::default()
+        };
+        let mut diff_awareness = state.diff_awareness.lock();
+        let Some(diffs) = Self::get_diffs(state, &mut diff_awareness, &evaluator, &ctx, inputs)
+        else {
+            // Interrupted: the graph is not known to be consistent with the file system.
+            debug("interrupted while computing the ignored subdirectories: graph discarded");
+            return None;
+        };
+        let mut modified_files_by_path_entry = Vec::new();
+        let mut path_entries_without_diff_information = Vec::new();
+        for (path_entry, modified_file_set) in diffs {
+            if modified_file_set
+                .get_modified_file_set()
+                .treat_everything_as_modified()
+            {
+                path_entries_without_diff_information.push((path_entry, modified_file_set));
+            } else {
+                modified_files_by_path_entry.push((path_entry, modified_file_set));
+            }
+        }
+
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3923 SkyframeExecutor.handleDiffsWithCompleteDiffInformation
+        {
+            let _c = blaze_util::profiler::Profiler::instance().profile(
+                blaze_util::profiler::ProfilerTask::INFO,
+                "handleDiffsWithCompleteDiffInformation",
+            );
+            for (path_entry, processable_modified_file_set) in &modified_files_by_path_entry {
+                let modified_file_set = processable_modified_file_set.get_modified_file_set();
+                blaze_util::check_state!(
+                    !modified_file_set.treat_everything_as_modified(),
+                    "{}",
+                    path_entry
+                );
+                let diff = match Self::get_diff(
+                    &command.tsgm,
+                    modified_file_set,
+                    path_entry,
+                    &evaluator,
+                ) {
+                    Ok(diff) => diff,
+                    Err(e) => {
+                        // PORT: Java throws the AbruptExitException (DIFF_STAT_FAILED) out of the
+                        // sync and the command fails; Blaze's sync has no failure path, so the
+                        // graph is discarded (fail safe) and the message goes to the log.
+                        debug(&format!("{}: graph discarded", e.abrupt_exit_message()));
+                        return None;
+                    }
+                };
+                // handleChangedFiles(ImmutableList.of(pathEntry), diff, 0)
+                Self::handle_changed_files(
+                    &evaluator,
+                    diff.values_to_invalidate,
+                    diff.values_to_inject,
+                );
+                diff_awareness
+                    .manager
+                    .mark_processed(processable_modified_file_set);
+            }
+        }
+
+        let evaluator = Self::handle_diffs_with_missing_diff_information(
+            state,
+            command,
+            evaluator,
+            inputs,
+            &path_entries_without_diff_information,
+        )?;
+        for (_, processable_modified_file_set) in &path_entries_without_diff_information {
+            diff_awareness
+                .manager
+                .mark_processed(processable_modified_file_set);
+        }
+        Some(evaluator)
+    }
+
+    /// The part of `handleDiffs` that asks the diff awareness of each package path entry for its
+    /// changes: the evaluation of the ignored subdirectories (`.bazelignore`), then
+    /// `diffAwarenessManager.getDiff` per entry. `None` when the evaluation was interrupted.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3775 SkyframeExecutor.handleDiffs
+    fn get_diffs(
+        state: &SkyframeIncrementalState,
+        diff_awareness: &mut DiffAwarenessSync,
+        evaluator: &Evaluator,
+        ctx: &EvaluationContext,
+        inputs: &SyncInputs<'_>,
+    ) -> Option<Vec<(Root, ProcessableModifiedFileSet)>> {
+        let pkg_roots: Vec<Root> = inputs.pkg_locator.read().get_path_entries().to_vec();
+        let workspace_path = Some(inputs.directories.get_workspace().clone());
+        // evaluateSkyKeys(eventHandler, ImmutableList.of(IgnoredSubdirectoriesValue.key()))
+        let ignored_key = IgnoredSubdirectoriesKey::key_main();
+        let evaluation_result = evaluator
+            .evaluate(&[SkyKey::new(ignored_key.clone())], ctx)
+            .ok()?;
+        let ignored_subdirectories_value: Option<Arc<IgnoredSubdirectoriesValue>> =
+            evaluation_result.get(&ignored_key);
+        let _ = state;
+        let options = inputs
+            .options
+            .get_options::<LocalDiffAwarenessOptions>()
+            .unwrap_or_else(blaze_options::Options::<LocalDiffAwarenessOptions>::get_defaults);
+        let mut diffs = Vec::new();
+        for path_entry in pkg_roots {
+            // Ignored subdirectories are specified relative to the workspace root by definition
+            // of .bazelignore. So, we only use ignored paths when the package root is equal to
+            // the workspace path.
+            if let (Some(workspace_path), Some(entry_path)) =
+                (&workspace_path, path_entry.as_path())
+                && workspace_path == entry_path
+                && let Some(ignored) = &ignored_subdirectories_value
+            {
+                diff_awareness.ignored_paths = ignored
+                    .as_ignored_subdirectories()
+                    .with_prefix(&entry_path.as_fragment().to_relative());
+            }
+            let ignored_paths = diff_awareness.ignored_paths.clone();
+            let modified_file_set = diff_awareness.manager.get_diff(
+                inputs.reporter.as_ref() as &dyn EventHandler,
+                &path_entry,
+                &ignored_paths,
+                &options,
+            );
+            // PORT: with one package path entry Java hands the diff's workspace info to its
+            // WorkspaceInfoFromDiffReceiver; Bazel's ignores it.
+            diffs.push((path_entry, modified_file_set));
+        }
+        Some(diffs)
+    }
+
+    /// The first command on a new graph: `handleDiffs` asks the diff awareness for its view
+    /// (which starts watching), and the empty graph has nothing to invalidate.
+    fn diff_awareness_on_new_graph(
+        state: &SkyframeIncrementalState,
+        evaluator: &Evaluator,
+        inputs: &SyncInputs<'_>,
+    ) {
+        if state.mode != KeepGraphMode::Keep {
+            return;
+        }
+        let ctx = EvaluationContext {
+            keep_going: false,
+            parallelism: crate::skyframe_executor::DEFAULT_THREAD_COUNT,
+            event_handler: inputs.reporter.clone(),
+            ..EvaluationContext::default()
+        };
+        let mut diff_awareness = state.diff_awareness.lock();
+        let Some(diffs) = Self::get_diffs(state, &mut diff_awareness, evaluator, &ctx, inputs)
+        else {
+            return;
+        };
+        for (_, modified_file_set) in &diffs {
+            diff_awareness.manager.mark_processed(modified_file_set);
+        }
+    }
+
+    /// The invalidations and injections of the files a complete diff names.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1640 SkyframeExecutor.getDiff
+    fn get_diff(
+        tsgm: &Arc<TimestampGranularityMonitor>,
+        modified_file_set: &ModifiedFileSet,
+        path_entry: &Root,
+        evaluator: &Evaluator,
+    ) -> Result<InferredDiff, StatFailedException> {
+        if modified_file_set.modified_source_files().is_empty() {
+            return Ok(InferredDiff::default());
+        }
+        let dirty_file_state_sky_keys: Vec<FileStateKey> = modified_file_set
+            .modified_source_files()
+            .iter()
+            .map(|path_fragment| {
+                blaze_util::check_state!(
+                    !path_fragment.is_absolute(),
+                    "found absolute PathFragment: {}",
+                    path_fragment
+                );
+                FileStateKey::key(RootedPath::to_rooted_path(
+                    path_entry.clone(),
+                    path_fragment,
+                ))
+            })
+            .collect();
+        get_diff_with_inferred_ancestors(
+            Some(tsgm),
+            evaluator,
+            dirty_file_state_sky_keys,
+            &FileDirtinessChecker,
+        )
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:4121 SkyframeExecutor.handleChangedFiles
+    fn handle_changed_files(
+        evaluator: &Evaluator,
+        keys_to_be_changed_later_in_this_build: impl IntoIterator<Item = SkyKey>,
+        changed_keys_with_new_values: impl IntoIterator<Item = (SkyKey, SkyValue)>,
+    ) {
+        // PORT: logDiffInfo (logging) and the modified-files counter are not ported.
+        evaluator.invalidate(keys_to_be_changed_later_in_this_build);
+        for (key, value) in changed_keys_with_new_values {
+            evaluator.inject_dyn(key, value);
+        }
+    }
+
+    /// Finds and invalidates changed files under path entries whose corresponding diff awareness
+    /// said all files may have been modified, and the external and output files.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3950 SkyframeExecutor.handleDiffsWithMissingDiffInformation
+    fn handle_diffs_with_missing_diff_information(
+        state: &SkyframeIncrementalState,
+        command: &IncrementalCommand,
+        evaluator: Evaluator,
+        inputs: &SyncInputs<'_>,
+        path_entries_without_diff_information: &[(Root, ProcessableModifiedFileSet)],
+    ) -> Option<Evaluator> {
         let package_options = inputs.options.get_options::<PackageOptions>();
         let check_output_files = package_options
             .as_ref()
@@ -665,6 +973,9 @@ impl SkyframeIncrementalState {
             .options
             .get_options::<RepositoryOptions>()
             .is_some_and(|o| o.check_external_repository_files);
+        // SkyframeExecutor.allowExternalRepositories: true for Bazel
+        // (BazelRepositoryModule / SequencedSkyframeExecutorFactory).
+        let allow_external_repositories = true;
 
         let external_files_helper = Arc::new(ExternalFilesHelper::create_with_knowledge(
             inputs.pkg_locator.clone(),
@@ -673,95 +984,148 @@ impl SkyframeIncrementalState {
             inputs.repo_contents_cache_path.clone(),
             state.external_files_knowledge.clone(),
         ));
-        // We freshly compute knowledge of the presence of external files in the skyframe graph.
-        // We use a fresh ExternalFilesHelper instance and only set the real instance's knowledge
-        // *after* we are done with the graph scan, lest an interrupt during the graph scan
-        // causes us to incorrectly think there are no longer any external files.
-        let tmp_external_files_helper =
-            Arc::new(external_files_helper.clone_with_fresh_external_files_knowledge());
-
-        // Before running the FilesystemValueChecker ensure that all values marked for
-        // invalidation have actually been invalidated, because checking those is a waste of
-        // time.
-        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:4098 SkyframeExecutor.applyInvalidation
-        let ctx = EvaluationContext {
-            keep_going: false,
-            parallelism: crate::skyframe_executor::DEFAULT_THREAD_COUNT,
-            event_handler: inputs.reporter.clone(),
-            ..EvaluationContext::default()
-        };
-        if evaluator.evaluate(&[], &ctx).is_err() {
-            // Interrupted: the graph is not known to be consistent with the file system.
-            debug("interrupted while applying invalidations: graph discarded");
-            return None;
-        }
-
-        let fsvc =
-            FilesystemValueChecker::new(Some(command.tsgm.clone()), fsvc_threads(inputs.options));
-        let diff_package_roots_under_which_to_check: HashSet<Root> = inputs
-            .pkg_locator
-            .read()
-            .get_path_entries()
-            .iter()
-            .cloned()
-            .collect();
-        let mut dirtiness_checkers: Vec<Arc<dyn SkyValueDirtinessChecker>> = Vec::new();
-        if !diff_package_roots_under_which_to_check.is_empty() {
-            dirtiness_checkers.push(Arc::new(MissingDiffDirtinessChecker::new(
-                diff_package_roots_under_which_to_check,
-            )));
-        }
-        let mut file_types_to_check: Vec<FileType> = Vec::new();
-        if check_external_repository_files {
-            file_types_to_check = vec![FileType::ExternalRepo];
-        }
         let external_files_knowledge = external_files_helper.get_external_files_knowledge();
-        if check_external_other_files
-            && (external_files_knowledge.too_many_external_other_files_seen
-                || !external_files_knowledge
-                    .external_other_files_seen
-                    .is_empty())
+        if !path_entries_without_diff_information.is_empty()
+            || (check_output_files && external_files_knowledge.any_output_files_seen)
+            || (check_external_repository_files && allow_external_repositories)
+            || (check_external_repository_files
+                && external_files_knowledge.any_files_in_external_repos_seen)
+            || (check_external_other_files
+                && external_files_knowledge.too_many_external_other_files_seen)
         {
-            file_types_to_check.push(FileType::ExternalOther);
+            // We freshly compute knowledge of the presence of external files in the skyframe
+            // graph. We use a fresh ExternalFilesHelper instance and only set the real instance's
+            // knowledge *after* we are done with the graph scan, lest an interrupt during the
+            // graph scan causes us to incorrectly think there are no longer any external files.
+            let tmp_external_files_helper =
+                Arc::new(external_files_helper.clone_with_fresh_external_files_knowledge());
+
+            // Before running the FilesystemValueChecker ensure that all values marked for
+            // invalidation have actually been invalidated, because checking those is a waste of
+            // time.
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:4098 SkyframeExecutor.applyInvalidation
+            let ctx = EvaluationContext {
+                keep_going: false,
+                parallelism: crate::skyframe_executor::DEFAULT_THREAD_COUNT,
+                event_handler: inputs.reporter.clone(),
+                ..EvaluationContext::default()
+            };
+            if evaluator.evaluate(&[], &ctx).is_err() {
+                // Interrupted: the graph is not known to be consistent with the file system.
+                debug("interrupted while applying invalidations: graph discarded");
+                return None;
+            }
+
+            let fsvc = FilesystemValueChecker::new(
+                Some(command.tsgm.clone()),
+                fsvc_threads(inputs.options),
+            );
+            // getDiffPackageRootsUnderWhichToCheck
+            let diff_package_roots_under_which_to_check: HashSet<Root> =
+                path_entries_without_diff_information
+                    .iter()
+                    .map(|(root, _)| root.clone())
+                    .collect();
+            let mut dirtiness_checkers: Vec<Arc<dyn SkyValueDirtinessChecker>> = Vec::new();
+            if !diff_package_roots_under_which_to_check.is_empty() {
+                dirtiness_checkers.push(Arc::new(MissingDiffDirtinessChecker::new(
+                    diff_package_roots_under_which_to_check,
+                )));
+            }
+            let mut file_types_to_check: Vec<FileType> = Vec::new();
+            if check_external_repository_files {
+                file_types_to_check = vec![FileType::ExternalRepo];
+            }
+            if check_external_other_files
+                && (external_files_knowledge.too_many_external_other_files_seen
+                    || !external_files_knowledge
+                        .external_other_files_seen
+                        .is_empty())
+            {
+                file_types_to_check.push(FileType::ExternalOther);
+            }
+            // See the comment for FileType.OUTPUT for why we need to consider output files here.
+            if check_output_files {
+                file_types_to_check.push(FileType::Output);
+            }
+            let external_dirtiness_checker = (!file_types_to_check.is_empty()).then(|| {
+                // FileType.REPO_CONTENTS_CACHE_DIRS is intentionally never checked here.
+                Arc::new(ExternalDirtinessChecker::new(
+                    tmp_external_files_helper.clone(),
+                    file_types_to_check,
+                ))
+            });
+            if let Some(checker) = &external_dirtiness_checker {
+                dirtiness_checkers.push(checker.clone());
+            }
+            blaze_util::check_argument!(!dirtiness_checkers.is_empty());
+            let batch_dirty_result = fsvc.get_dirty_keys(
+                &evaluator.get_done_values(),
+                &UnionDirtinessChecker::new(dirtiness_checkers),
+            );
+            if let Some(checker) = &external_dirtiness_checker {
+                evaluator.invalidate(external_files_helper.get_extra_keys_to_invalidate(
+                    &checker.get_dirty_external_repos(),
+                    inputs.reporter.as_ref() as &dyn EventHandler,
+                ));
+            }
+            Self::handle_changed_files(
+                &evaluator,
+                batch_dirty_result
+                    .changed_keys_without_new_values()
+                    .iter()
+                    .cloned(),
+                batch_dirty_result
+                    .changed_keys_with_new_values()
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone())),
+            );
+            // We use the knowledge gained during the graph scan that just completed. Otherwise,
+            // naively, once an external file gets into the Skyframe graph, we'll
+            // overly-conservatively always think the graph needs to be scanned.
+            external_files_helper.set_external_files_knowledge(
+                tmp_external_files_helper.get_external_files_knowledge(),
+            );
+        } else if check_external_other_files
+            && !external_files_knowledge
+                .external_other_files_seen
+                .is_empty()
+        {
+            // PORT: logger.atInfo() "About to scan %d external files" is not ported.
+            let fsvc = FilesystemValueChecker::new(
+                Some(command.tsgm.clone()),
+                fsvc_threads(inputs.options),
+            );
+            let mut external_dirty_nodes = std::collections::HashMap::new();
+            for path in &external_files_knowledge.external_other_files_seen {
+                let key = SkyKey::new(FileStateKey::key(path.clone()));
+                if let Some(value) = evaluator.get_existing_value(&key) {
+                    external_dirty_nodes.insert(key, value);
+                }
+                let key = SkyKey::new(DirectoryListingStateKey::key(path.clone()));
+                if let Some(value) = evaluator.get_existing_value(&key) {
+                    external_dirty_nodes.insert(key, value);
+                }
+            }
+            let batch_dirty_result = fsvc.get_dirty_keys(
+                &external_dirty_nodes,
+                &ExternalDirtinessChecker::new(
+                    external_files_helper.clone(),
+                    vec![FileType::ExternalOther],
+                ),
+            );
+            Self::handle_changed_files(
+                &evaluator,
+                batch_dirty_result
+                    .changed_keys_without_new_values()
+                    .iter()
+                    .cloned(),
+                batch_dirty_result
+                    .changed_keys_with_new_values()
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone())),
+            );
         }
-        // See the comment for FileType.OUTPUT for why we need to consider output files here.
-        if check_output_files {
-            file_types_to_check.push(FileType::Output);
-        }
-        let external_dirtiness_checker = (!file_types_to_check.is_empty()).then(|| {
-            // FileType.REPO_CONTENTS_CACHE_DIRS is intentionally never checked here.
-            Arc::new(ExternalDirtinessChecker::new(
-                tmp_external_files_helper.clone(),
-                file_types_to_check,
-            ))
-        });
-        if let Some(checker) = &external_dirtiness_checker {
-            dirtiness_checkers.push(checker.clone());
-        }
-        let batch_dirty_result = fsvc.get_dirty_keys(
-            &evaluator.get_done_values(),
-            &UnionDirtinessChecker::new(dirtiness_checkers),
-        );
-        if let Some(checker) = &external_dirtiness_checker {
-            evaluator.invalidate(external_files_helper.get_extra_keys_to_invalidate(
-                &checker.get_dirty_external_repos(),
-                inputs.reporter.as_ref() as &dyn EventHandler,
-            ));
-        }
-        // handleChangedFiles
-        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:4121 SkyframeExecutor.handleChangedFiles
-        evaluator.invalidate(
-            batch_dirty_result
-                .changed_keys_without_new_values()
-                .iter()
-                .cloned(),
-        );
-        for (key, value) in batch_dirty_result.changed_keys_with_new_values() {
-            evaluator.inject_dyn(key.clone(), value.clone());
-        }
-        // We use the knowledge gained during the graph scan that just completed.
-        external_files_helper
-            .set_external_files_knowledge(tmp_external_files_helper.get_external_files_knowledge());
         Some(evaluator)
     }
 

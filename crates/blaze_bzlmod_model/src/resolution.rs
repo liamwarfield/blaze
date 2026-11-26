@@ -6,6 +6,7 @@ use std::fmt;
 
 use blaze_cmdline::repository_name::is_valid_module_name;
 use blaze_events::{Event, EventHandler};
+use blaze_util::profiler::{Profiler, ProfilerTask};
 use indexmap::{IndexMap, IndexSet};
 
 use crate::checksum::Checksum;
@@ -259,27 +260,48 @@ impl BazelModuleResolutionFunction {
         current_bazel_version: &str,
         event_handler: &dyn EventHandler,
     ) -> Result<DiscoverAndSelectResult, ExternalDepsException> {
-        let discovery_result = Discovery::run(loader, root)?;
+        // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelModuleResolutionFunction.java:157 BazelModuleResolutionFunction.discoverAndSelect
+        let discovery_result = {
+            let _c = Profiler::instance().profile(ProfilerTask::BZLMOD, "discovery");
+            Discovery::run(loader, root)?
+        };
         Self::verify_all_overrides_are_on_existent_modules(
             &discovery_result.dep_graph,
             &root.overrides,
         )?;
-        let selection_result = Selection::run(&discovery_result.dep_graph, &root.overrides)?;
+        // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelModuleResolutionFunction.java:169 BazelModuleResolutionFunction.discoverAndSelect
+        let selection_result = {
+            let _c = Profiler::instance().profile(ProfilerTask::BZLMOD, "selection");
+            Selection::run(&discovery_result.dep_graph, &root.overrides)?
+        };
         let resolved_dep_graph = &selection_result.resolved_dep_graph;
-        let yanked_versions_values =
-            Self::collect_yanked_versions_values(yanked_versions, resolved_dep_graph.values());
-        Self::verify_root_module_direct_deps_are_accurate(
-            &discovery_result.dep_graph[&ModuleKey::root()],
-            &resolved_dep_graph[&ModuleKey::root()],
-            check_direct_dependencies,
-            event_handler,
-        )?;
-        Self::check_bazel_compatibility(
-            resolved_dep_graph.values(),
-            bazel_compatibility_mode,
-            current_bazel_version,
-            event_handler,
-        )?;
+        // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelModuleResolutionFunction.java:177 BazelModuleResolutionFunction.discoverAndSelect
+        let yanked_versions_values = {
+            let _c = Profiler::instance().profile(ProfilerTask::BZLMOD, "collect yanked versions");
+            Self::collect_yanked_versions_values(yanked_versions, resolved_dep_graph.values())
+        };
+        // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelModuleResolutionFunction.java:185 BazelModuleResolutionFunction.discoverAndSelect
+        {
+            let _c = Profiler::instance()
+                .profile(ProfilerTask::BZLMOD, "verify root module direct deps");
+            Self::verify_root_module_direct_deps_are_accurate(
+                &discovery_result.dep_graph[&ModuleKey::root()],
+                &resolved_dep_graph[&ModuleKey::root()],
+                check_direct_dependencies,
+                event_handler,
+            )?;
+        }
+        // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelModuleResolutionFunction.java:194 BazelModuleResolutionFunction.discoverAndSelect
+        {
+            let _c =
+                Profiler::instance().profile(ProfilerTask::BZLMOD, "check bazel compatibility");
+            Self::check_bazel_compatibility(
+                resolved_dep_graph.values(),
+                bazel_compatibility_mode,
+                current_bazel_version,
+                event_handler,
+            )?;
+        }
         let selected_yanked_versions =
             Self::check_no_yanked_versions(&yanked_versions_values, allowed_yanked_versions)?;
         Ok(DiscoverAndSelectResult {

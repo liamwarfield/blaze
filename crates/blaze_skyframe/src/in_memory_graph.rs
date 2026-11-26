@@ -160,6 +160,13 @@ pub(crate) struct NodeState {
     /// PORT: blocking engine. Requesters whose request closed a dependency cycle through this
     /// node (they are below it and got "not done" back at once).
     pub(crate) cycle_rdeps: Vec<SkyKey>,
+    /// PORT: blocking engine. A dep this node registered was found undone when it registered it
+    /// (it had been done when the node's function read it, and was rewound since): Java's
+    /// `maybeHandleUndoneDepForDoneEntry` (`DEP_NOT_DONE`), after which the node is not
+    /// committed and its function runs again when the dep signals it. The thread that
+    /// registered the dep evaluated it; the node's own thread runs its function again
+    /// ([`crate::evaluator`]'s `evaluate_node`).
+    pub(crate) restart_requested: bool,
 }
 
 impl NodeState {
@@ -192,6 +199,7 @@ impl Node {
                 snapshot: None,
                 outcome: None,
                 cycle_rdeps: vec![],
+                restart_requested: false,
             }),
             done: Condvar::new(),
         })

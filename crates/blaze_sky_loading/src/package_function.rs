@@ -40,6 +40,7 @@ use blaze_starlark::eval::{CompiledFile, EvalOptions};
 use blaze_starlark::loader::{LoadMap, LoadRequest};
 use blaze_starlark::{FileKind, Location, Phase, StarlarkSemantics, SyntaxError, ThreadContext};
 use blaze_util::Fingerprint;
+use blaze_util::profiler::{Profiler, ProfilerTask};
 use blaze_vfs::{Path, PathFragment, Root, RootedPath};
 use indexmap::{IndexMap, IndexSet};
 use parking_lot::{Mutex, RwLock};
@@ -1092,6 +1093,9 @@ impl PackageFunction {
 
         // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1080 PackageFunction.loadPackage
         crate::package_progress_receiver::PACKAGE_PROGRESS.start_read_package(package_id);
+        // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1084 PackageFunction.loadPackage
+        let _c =
+            Profiler::instance().profile(ProfilerTask::CREATE_PACKAGE, &package_id.to_string());
         if self.config.show_loading_progress {
             env.listener()
                 .handle(&Event::progress(format!("Loading package: {}", package_id)));

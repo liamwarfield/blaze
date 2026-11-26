@@ -129,6 +129,25 @@ impl BlazeModuleEnvironment {
             self.command_thread.interrupt();
         }
     }
+
+    /// `CommandEnvironment.throwPendingException()`, for the code of a command that holds the
+    /// module environment rather than the command environment (the build command's
+    /// `ExecutionTool` construction).
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:835 CommandEnvironment.throwPendingException
+    pub(crate) fn throw_pending_exception(&self) -> Result<(), AbruptExitException> {
+        let pending = self.pending_exception.lock().clone().flatten();
+        if let Some(exception) = pending {
+            if blaze_shell::thread_interrupt::ThreadInterrupt::current()
+                .same_thread(&self.command_thread)
+            {
+                // Throwing this exception counts as the requested interruption. Clear the
+                // interrupted bit.
+                blaze_shell::thread_interrupt::interrupted();
+            }
+            return Err(exception);
+        }
+        Ok(())
+    }
 }
 
 impl CommandEnvironment {

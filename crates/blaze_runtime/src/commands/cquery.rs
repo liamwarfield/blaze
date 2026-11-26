@@ -258,6 +258,7 @@ pub(crate) fn construct_execution_tool(
         keep_going,
         verbose_failures: execution_options.verbose_failures,
         jobs,
+        command_id: env.get_command_id().to_string(),
         execution_options: Some(execution_options.clone()),
         sandbox_options: Some(options_or_default::<SandboxOptions>(options)),
         local_execution_options: Some(options_or_default::<LocalExecutionOptions>(options)),

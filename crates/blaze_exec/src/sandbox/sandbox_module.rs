@@ -17,6 +17,8 @@ use blaze_vfs::{FileSystemExt, Path, PathFragment};
 use indexmap::IndexMap;
 
 use super::asynchronous_tree_deleter::{AsynchronousTreeDeleter, MOVED_TRASH_DIR};
+use super::docker_sandboxed_spawn_runner::DockerSandboxedSpawnRunner;
+use super::docker_sandboxed_strategy::DockerSandboxedStrategy;
 use super::linux_sandboxed_spawn_runner::LinuxSandboxedSpawnRunner;
 use super::linux_sandboxed_strategy::LinuxSandboxedStrategy;
 use super::process_wrapper_sandboxed_spawn_runner::ProcessWrapperSandboxedSpawnRunner;
@@ -78,6 +80,9 @@ pub struct SandboxModule {
     /// completion but to avoid wiping the whole sandbox base itself, which could be problematic
     /// across builds.
     spawn_runners: Vec<Arc<dyn SpawnRunner>>,
+    /// The Docker runners among `spawn_runners`, which Java registers on the command's event bus
+    /// for `CommandCompleteEvent`.
+    docker_runners: Vec<Arc<DockerSandboxedSpawnRunner>>,
     /// Handler to process expensive tree deletions, potentially outside of the critical path.
     ///
     /// Sandboxing creates one separate tree for each action, and this tree is used to run the
@@ -107,6 +112,7 @@ impl SandboxModule {
             env: None,
             sandbox_base,
             spawn_runners: Vec::new(),
+            docker_runners: Vec::new(),
             tree_deleter,
             should_cleanup_sandbox_base: false,
         }
@@ -327,10 +333,34 @@ impl SandboxModule {
         if options.enable_docker_sandbox {
             // This strategy uses Docker to execute spawns. It should work on all platforms that
             // support Docker.
-            blaze_util::unported!(
-                "DockerSandboxedSpawnRunner",
-                "--experimental_enable_docker_sandbox"
-            );
+            let path_to_docker = SandboxModule::get_path_to_docker_client(cmd_env);
+            // DockerSandboxedSpawnRunner.isSupported is expensive! It runs docker as a
+            // subprocess, and docker hangs sometimes.
+            if let Some(path_to_docker) = path_to_docker
+                && DockerSandboxedSpawnRunner::is_supported(cmd_env, &path_to_docker)
+            {
+                let default_image = options.docker_image.clone();
+                let use_customized_images = options.docker_use_customized_images;
+                let docker_runner = Arc::new(DockerSandboxedSpawnRunner::new(
+                    cmd_env,
+                    path_to_docker,
+                    sandbox_base.clone(),
+                    default_image,
+                    use_customized_images,
+                    tree_deleter.clone(),
+                ));
+                self.docker_runners.push(docker_runner.clone());
+                let spawn_runner: Arc<dyn SpawnRunner> = docker_runner;
+                self.spawn_runners.push(spawn_runner.clone());
+                builder.register_strategy(
+                    Arc::new(DockerSandboxedStrategy::new(
+                        cmd_env.exec_root.clone(),
+                        spawn_runner,
+                        execution_options.clone(),
+                    )),
+                    &["docker"],
+                );
+            }
         } else if options.docker_verbose {
             cmd_env.reporter.handle(&Event::info(
                 "Docker sandboxing disabled. Use the '--experimental_enable_docker_sandbox' command line option to enable it",
@@ -392,9 +422,49 @@ impl SandboxModule {
         SandboxModule::new().clean_starting();
     }
 
+    /// Returns the path of the `docker` client found on the client's PATH, or `None`.
+    // Java: com/google/devtools/build/lib/sandbox/SandboxModule.java:360 SandboxModule.getPathToDockerClient
+    fn get_path_to_docker_client(cmd_env: &ExecCommandEnvironment) -> Option<Path> {
+        let path = cmd_env.client_env.get("PATH").cloned().unwrap_or_default();
+
+        // TODO(philwo): Does this return the correct result if one of the elements intentionally
+        // ends in white space?
+        // Splitter.on(':').trimResults().omitEmptyStrings(): CharMatcher.whitespace() is the
+        // Unicode White_Space set, as char::is_whitespace.
+        let fs = &cmd_env.file_system;
+
+        for path_element in path
+            .split(':')
+            .map(|e| e.trim_matches(char::is_whitespace))
+            .filter(|e| !e.is_empty())
+        {
+            // Sometimes the PATH contains the non-absolute entry "." - this resolves it against
+            // the current working directory.
+            let path_element = blaze_shell::JavaFile::new(path_element).get_absolute_path();
+            // An IOException is intentionally ignored.
+            if let Ok(entries) = fs.get_path(&path_element).get_directory_entries() {
+                for dentry in entries {
+                    if dentry.get_base_name().replace(".exe", "") == "docker" {
+                        return Some(dentry);
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
     /// `afterCommand()`.
     // Java: com/google/devtools/build/lib/sandbox/SandboxModule.java:436 SandboxModule.afterCommand
     pub fn after_command(&mut self) {
+        // PORT: the Docker runners' `commandComplete(CommandCompleteEvent)`. Java posts the event
+        // before the modules' afterCommand; `CommandCompleteEvent` belongs to blaze_runtime, so
+        // the runners are told here, first.
+        // Java: com/google/devtools/build/lib/sandbox/DockerSandboxedSpawnRunner.java:461 DockerSandboxedSpawnRunner.commandComplete
+        for docker_runner in std::mem::take(&mut self.docker_runners) {
+            docker_runner.command_complete();
+        }
+
         let env = self
             .env
             .clone()

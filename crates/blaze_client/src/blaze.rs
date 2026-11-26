@@ -144,6 +144,9 @@ pub struct BlazeServer {
     lock_install_base_: bool,
     install_base_: Path,
     output_base_: Path,
+    /// PORT: Blaze-only. The identity of this client's executable when the server is this
+    /// binary (`ServerMode::Daemon`; see `crate::binary_identity`).
+    binary_identity_: Option<String>,
 }
 
 impl BlazeServer {
@@ -195,6 +198,7 @@ impl BlazeServer {
             lock_install_base_: startup_options.lock_install_base,
             install_base_: startup_options.install_base.clone(),
             output_base_: startup_options.output_base.clone(),
+            binary_identity_: None,
         }
     }
 
@@ -1991,6 +1995,17 @@ fn start_server_and_connect(
         &server_dir.get_relative("cmdline"),
         0o644,
     );
+    // PORT: Blaze-only: the identity of the executable the server runs (see
+    // crate::binary_identity).
+    match &blaze_server.binary_identity_ {
+        Some(identity) => {
+            crate::binary_identity::record(server_dir, identity);
+        }
+        None => {
+            let _ =
+                unlink_path_path(&server_dir.get_relative(crate::binary_identity::IDENTITY_FILE));
+        }
+    }
 
     // Do this here instead of in the daemon so the user can see if it fails.
     go_to_workspace(workspace_layout, workspace);
@@ -2230,6 +2245,29 @@ fn ensure_correct_running_version(
     // Read the previous installation's semaphore symlink in output_base. If the target dirs
     // don't match, or if the symlink was not present, then kill any running servers. Lastly,
     // symlink to our installation so others know which installation is running.
+    // PORT: Blaze-only: a server started by another Blaze executable uses another version of
+    // Blaze even with the same install base (see crate::binary_identity); it is replaced as a
+    // server of another install base is.
+    if let Some(identity) = &blaze_server.binary_identity_
+        && blaze_server.connected()
+        && !crate::binary_identity::server_has_identity(
+            &startup_options.output_base.get_relative("server"),
+            identity,
+        )
+    {
+        bazel_log(
+            LogLevel::Info,
+            BLAZE_CC,
+            1163,
+            format!(
+                "Killing running server because it is using another version of {}",
+                startup_options.product_name
+            ),
+        );
+        blaze_server.kill_running_server();
+        logging_info.restart_reason = RestartReason::NewVersion;
+    }
+
     let install_base_symlink = startup_options.output_base.get_relative("install");
     let prev_install_base = read_directory_symlink(&install_base_symlink);
     let same = match &prev_install_base {
@@ -2875,6 +2913,12 @@ fn run_launcher(
         startup_options,
         logging_info,
     );
+
+    // PORT: Blaze-only: the daemon is this executable; see crate::binary_identity.
+    if mode == ServerMode::Daemon {
+        blaze_server.binary_identity_ =
+            crate::binary_identity::identity(self_path, &startup_options.install_base);
+    }
 
     blaze_server.connect();
 

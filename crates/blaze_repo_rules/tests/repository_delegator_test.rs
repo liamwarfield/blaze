@@ -52,6 +52,7 @@ fn setup_delegator() -> Fixture {
         process_wrapper_graceful_sigterm: false,
         repo_contents_cache: Arc::new(LocalRepoContentsCache::new()),
         remote_repo_contents_cache: None,
+        remote_executor: None,
     });
     let fetch_function = Arc::new(RepositoryFetchFunction::new(services));
     let builder = STARLARK_SEMANTICS.set(EvaluatorBuilder::new(), StarlarkSemantics::default());

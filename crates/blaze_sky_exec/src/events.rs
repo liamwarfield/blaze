@@ -171,6 +171,16 @@ impl TargetCompleteEvent {
     }
 }
 
+/// Posted when a top-level target or aspect finished analysis (Skymeld), with the packages it
+/// transitively loaded, so that the execroot symlinks to their roots can be planted.
+// Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:68 TopLevelStatusEvents.TopLevelTargetReadyForSymlinkPlanting
+#[derive(Clone, Debug)]
+pub struct TopLevelTargetReadyForSymlinkPlanting {
+    pub transitive_packages_for_symlink_planting: blaze_collect::NestedSet<
+        blaze_actions::analysis::repo_mapping_manifest_action::RepoMappingPackageMetadata,
+    >,
+}
+
 /// Posted when a top-level target finished analysis and starts execution (Skymeld).
 // Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:80 TopLevelStatusEvents.TopLevelTargetPendingExecutionEvent
 #[derive(Clone, Debug)]
@@ -335,6 +345,7 @@ impl Postable for TargetCompleteEvent {}
 impl Postable for AspectCompleteEvent {}
 impl Postable for TopLevelTargetPendingExecutionEvent {}
 impl Postable for TopLevelTargetBuiltEvent {}
+impl Postable for TopLevelTargetReadyForSymlinkPlanting {}
 impl Postable for TestAnalyzedEvent {}
 
 /// Downcasts a posted event (`Arc<dyn Postable>`) to `T`.

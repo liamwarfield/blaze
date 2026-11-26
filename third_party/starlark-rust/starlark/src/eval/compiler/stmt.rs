@@ -605,6 +605,7 @@ pub(crate) fn bit_or_assign<'v>(
             } // BLAZE PATCH 0014
         } // BLAZE PATCH 0014
         let mut dict = DictMut::from_value(lhs)?;
+        crate::values::dict::dict_record_all_keys_accessed(rhs); // BLAZE PATCH 0063: Java putAll(entrySet)
         if lhs.ptr_eq(rhs) {
             // Nothing to do as union is idempotent
         } else {

@@ -106,9 +106,6 @@ pub enum DirtyType {
     ///
     /// Rewinding is tolerated but no-op if the node is already dirty or is done with an error
     /// (regardless of the error's `Transience`).
-    ///
-    /// PORT: rewinding is not ported (docs/decisions.md 2026-11-19); marking a node `Rewind`
-    /// fails with `unported!`.
     Rewind,
 }
 
@@ -139,7 +136,6 @@ pub(crate) enum MarkedDirtyResult {
     // Java: com/google/devtools/build/skyframe/NodeEntry.java:209 MarkedDirtyResult.ResultWithReverseDeps
     ResultWithReverseDeps(Vec<SkyKey>),
     // Java: com/google/devtools/build/skyframe/NodeEntry.java:189 MarkedDirtyResult.RESULT_FOR_REWINDING
-    #[allow(dead_code)] // rewinding is not ported
     ResultForRewinding,
 }
 
@@ -150,7 +146,6 @@ impl MarkedDirtyResult {
     }
 
     // Java: com/google/devtools/build/skyframe/NodeEntry.java:201 MarkedDirtyResult.forRewinding
-    #[allow(dead_code)] // rewinding is not ported
     pub(crate) fn for_rewinding() -> MarkedDirtyResult {
         MarkedDirtyResult::ResultForRewinding
     }
@@ -528,19 +523,22 @@ pub(crate) trait NodeEntry: fmt::Debug + Send {
     /// Prepares this node to reset its evaluation from scratch in order to recover from an
     /// inconsistency.
     ///
-    /// PORT: not ported (rewinding, docs/decisions.md 2026-11-19); fails with `unported!`.
+    /// Called in the following scenario:
+    ///
+    /// 1. This node is evaluating (`SkyFunction.compute`).
+    /// 2. The function returns a `SkyFunction.Reset` value: this node and the nodes of its rewind
+    ///    graph must be evaluated again.
+    ///
+    /// Temporary direct deps are cleared, and the deps registered so far become the reset deps
+    /// (`getResetDirectDeps`). The node is ready to be evaluated again.
     // Java: com/google/devtools/build/skyframe/NodeEntry.java:606 NodeEntry.resetEvaluationFromScratch
-    #[allow(dead_code)] // ported API; not called by the blocking engine (restarts, rewinding, external deps)
     fn reset_evaluation_from_scratch(&mut self);
 
     /// If the graph keeps dependency edges and `resetEvaluationFromScratch` has been called on
     /// this node since it was last done, returns the set of temporary direct deps that were
     /// registered prior to the restart. Otherwise, returns an empty set.
     ///
-    /// PORT: resets are not ported, so this is always the empty set (Java's value for a node
-    /// that was never reset).
     // Java: com/google/devtools/build/skyframe/NodeEntry.java:627 NodeEntry.getResetDirectDeps
-    #[allow(dead_code)] // ported API; not called by the blocking engine (restarts, rewinding, external deps)
     fn get_reset_direct_deps(&self) -> IndexSet<SkyKey>;
 
     /// Adds a temporary direct dep in its own group.

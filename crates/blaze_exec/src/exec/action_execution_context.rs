@@ -345,6 +345,52 @@ pub trait ActionInputPrefetcher: Send + Sync {
     ) -> io::Result<()>;
 }
 
+/// `ImportantOutputHandler`: the context the completion functions inform of the top-level
+/// outputs of a target or aspect (`processOutputsAndGetLostArtifacts`). Registered as the
+/// context `Arc<dyn ImportantOutputHandler>` (Bazel's only one is the remote module's
+/// `RemoteImportantOutputHandler`).
+// Java: com/google/devtools/build/lib/actions/ImportantOutputHandler.java:29 ImportantOutputHandler
+pub trait ImportantOutputHandler: Send + Sync {
+    /// Whether the context is registered for this build.
+    ///
+    /// PORT: Java registers the remote handler only for a Skymeld build, which Blaze decides
+    /// after the executor's contexts exist; the handler answers here instead (`false`: Java's
+    /// `getContext(ImportantOutputHandler.class) == null`).
+    fn is_registered(&self) -> bool;
+
+    /// `requiresHiddenOutputMetadata()`: whether the metadata provider must carry the hidden
+    /// top-level outputs (the full input map of the completion, with its runfiles trees).
+    // Java: com/google/devtools/build/lib/actions/ImportantOutputHandler.java:46 ImportantOutputHandler.requiresHiddenOutputMetadata
+    fn requires_hidden_output_metadata(&self) -> bool;
+
+    /// `processOutputsAndGetLostArtifacts(importantOutputs, metadataProvider)`.
+    /// `runfiles_tree_artifacts` are the artifacts of `metadataProvider.getRunfilesTrees()`, in
+    /// order.
+    // Java: com/google/devtools/build/lib/actions/ImportantOutputHandler.java:68 ImportantOutputHandler.processOutputsAndGetLostArtifacts
+    fn process_outputs_and_get_lost_artifacts(
+        &self,
+        important_outputs: &[ActionInputRef],
+        runfiles_tree_artifacts: &[ActionInputRef],
+        metadata_provider: &dyn InputMetadataProvider,
+    ) -> Result<crate::actions::LostArtifacts, ImportantOutputError>;
+}
+
+/// What `processOutputsAndGetLostArtifacts` throws.
+#[derive(Debug, Clone)]
+pub enum ImportantOutputError {
+    Exception(ImportantOutputException),
+    /// `InterruptedException`.
+    Interrupted,
+}
+
+/// `ImportantOutputHandler.ImportantOutputException`.
+// Java: com/google/devtools/build/lib/actions/ImportantOutputHandler.java:163 ImportantOutputHandler.ImportantOutputException
+#[derive(Debug, Clone)]
+pub struct ImportantOutputException {
+    pub message: String,
+    pub failure_detail: blaze_protos::failure_details::FailureDetail,
+}
+
 /// `OutputService.finalizeAction(action, outputMetadataStore)` of an output service that does
 /// something there (`RemoteOutputService`: `actionInputFetcher.finalizeAction`, which downloads
 /// the outputs the remote output checker wants local). `SkyframeActionExecutor` calls it after
