@@ -71,8 +71,8 @@ Updated 2026-11-19. Three columns, three different claims:
 
 "Reviewed" is the verdict of the read-only review of 2026-11-25 at `e8b79c0` (reports in
 `docs/reviews/`). A STOP names blocking findings that are being fixed. Comparison numbers are
-quoted in the wording the auditor approved (`docs/reviews/2026-11-25-audit-4r2.md`); "none
-quotable" means the comparison tool has to be rerun or fixed first.
+quoted in the wording the auditor approved (`docs/reviews/2026-11-26-audit-4r3.md`, tools PASS);
+they were measured on the binary of `e8b79c0` (sha256 `7455128a…`), before the review fixes.
 
 | Feature | Compared with Bazel | Reviewed |
 | --- | --- | --- |
@@ -80,15 +80,15 @@ quotable" means the comparison tool has to be rerun or fixed first.
 | Bazel's byte-string semantics for non-ASCII text | 127 items: 112 identical; 3 stderr files differ only in lines the tool files under Bazel's warm server; 12 differ (Blaze exits 37 on the flag-off workspace) | PASS (2026-11-20) |
 | Disk cache, gRPC remote cache, remote execution, build without the bytes | lead-measured against Bazel's own remote worker on brotli and re2 | STOP in round 3; blocking fix in, re-review pending |
 | Incremental evaluator (dirtiness, change pruning, invalidation); not used by a build yet | 426 unit tests ported from Bazel; randomized model test | PASS |
-| Persistent server and client (opt-in, `BLAZE_SERVER_MODE=daemon`) | none quotable | STOP: stale per-command state, event-bus leak |
-| `run` | 20 cases: 2 identical; 12 differ only in lines that depend on Bazel's warm server; 6 differ | STOP: one summary-line defect |
-| `help`, `fetch`, `canonicalize-flags`, `license`, invocation policy | 199 invocations: exit code, stdout and stderr equal after normalisation in 174 (27 by declared exit code); 24 fail the same way on both sides; 1 differs | STOP (same review as `run`) |
-| `mod dump_repo_mapping`, `show_repo`, `tidy` | 133 cases: equal in 89 after the tool's listed exclusion rules; 40 fail the same way on both sides (not counted as matches); 4 differ | STOP (same review) |
-| Symbolic macros, autoloads, Bazel's syntax front end and error texts | macros, 52 cases: equal in 19; 23 fail the same way on both sides (not counted); 10 differ | STOP: one `load()` error text |
-| Java rules (library, binary, test, plugins, deploy jars, toolchains) | none quotable | STOP: one action-key defect under path stripping |
-| Platform mappings, platform flags, `--target_environment`, project flag scoping | 31 of the tool's 68 cases: none identical; 15 differ only in warm-server lines; 15 differ; 1 stops at a function not ported | no blocking finding in this part |
-| Persistent workers; exclusive tests, streamed test output, test filters | none quotable | STOP: exclusive-test order, worker error text, non-UTF-8 `test.xml` |
-| `unused_inputs_list`, C++ compile action templates | 12 steps: 9 identical, 3 differ (aquery text and stderr) | no blocking finding in this part |
+| Persistent server and client (opt-in, `BLAZE_SERVER_MODE=daemon`) | interop with Bazel's client, 16 steps: 13 identical, 3 differ. With Bazel's server, 890 steps: 250 identical; 152 fail the same way (not counted); 487 differ; 1 declared deviation | STOP: stale per-command state, event-bus leak |
+| `run` | 20 cases: 2 identical; 13 differ only in lines that depend on Bazel's warm server; 5 differ | STOP: one summary-line defect |
+| `help`, `fetch`, `canonicalize-flags`, `license`, invocation policy | 199 invocations: 174 identical (failures only where the case declares the exit code); 1 differs only in the crash trace; 24 fail the same way on both sides (not counted) | STOP (same review as `run`) |
+| `mod dump_repo_mapping`, `show_repo`, `tidy` | 133 cases: 89 identical; 43 fail the same way on both sides (not counted); 1 differs | STOP (same review) |
+| Symbolic macros, autoloads, Bazel's syntax front end and error texts | macros, 52 cases: 24 identical; 23 fail the same way on both sides (not counted); 5 differ. Interpreter, 566 cases, 1,135 rows: 1,128 identical; 7 differ | STOP: one `load()` error text |
+| Java rules (library, binary, test, plugins, deploy jars, toolchains) | 18 rows: 5 identical; 9 differ only in warm-server lines; 4 differ | STOP: one action-key defect under path stripping |
+| Platform mappings, platform flags, `--target_environment`, project flag scoping | 68 cases: 1 identical; 56 differ only in warm-server lines; 9 fail the same way on both sides (not counted); 1 differs; 1 stops at a function not ported | no blocking finding in this part |
+| Persistent workers; exclusive tests, streamed test output, test filters | workers, 34 cases: 25 identical; 2 differ only in the Java stack frames Blaze cannot print; 1 compared in reduced form; 6 differ. Tests, 21 cases: none identical; 6 differ only in warm-server lines; 11 fail the same way (not counted); 4 differ | STOP: exclusive-test order, worker error text, non-UTF-8 `test.xml` |
+| `unused_inputs_list`, C++ compile action templates | 12 steps: 11 identical, 1 differs | no blocking finding in this part |
 | Build events for `run`, `fetch`, `query`; target summaries; text-format output; `command.profile.gz`; progress bar; query `graph`/`xml`/rank outputs | text format on Bazel's own outputs: build events identical per record, cquery byte-identical, aquery by reprint and round trip only | STOP: `buildMetrics` event incomplete; stream unterminated after a crash |
 | Starlark core error texts | implementer's probe only | see the syntax front end row |
 
@@ -103,7 +103,6 @@ quotable" means the comparison tool has to be rerun or fixed first.
 | `config`, `dump`, `print_action` | being ported |
 | Build Event Service upload | being ported |
 | Dynamic execution | being ported |
-| Comparison tools | audit round 2: STOP on five findings; the numbers above are the ones the auditor allows |
 
 ### Not started
 
@@ -122,9 +121,10 @@ Windows and macOS; JVM-only features (heap `info` keys, thread dumps); remote an
 - **Bazel's own integration suite** (`docs/upstream-tests.md`): at tag v0.1.0, 63 of 211 targets
   and 1,401 of 2,878 test functions that pass on Bazel pass on Blaze (label `blaze-v0.1.0-r3`).
   At `e8b79c0`: 120 of 211 targets and 2,220 of 2,878 functions (label `blaze-e8b79c0`).
-- **Error and UI transcripts** (`scripts/w4/probe`): of 664 probe steps that run the binary, 40
-  give the same exit code, stdout and stderr as the recorded Bazel transcripts (most are error
-  cases; equal failures count; the Bazel transcripts name no binary).
+- **Error and UI transcripts** (`scripts/w4/probe`, binary of `e8b79c0`): 777 steps of 42
+  scenarios. Of 664 that run the binary: 30 identical; 249 equal only after the masks for the
+  warm server and the critical path; 2 equal only as sorted messages; 256 are failing steps
+  equal in some view (not counted); 127 differ. Of 113 file checks: 112 identical.
 - **Rust tests**: 6,615 passed, 0 failed, 2,021 ignored at the last full run (remote lead,
   dirty tree at `cc7373c`); the accepted baseline is 5,487 passed.
 
