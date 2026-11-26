@@ -21,6 +21,7 @@ from normalise import Context  # noqa: E402
 USAGE = """\
 usage: scripts/oracle/record --binary <path> --label <name> --project <name|all>
                              [--surfaces mod,build,query,cquery,aquery] [--force]
+                             [--blaze-server inprocess|daemon] [--max-idle-secs N]
                              [--renormalise] [--no-scope] [--summary|--no-summary]
        scripts/oracle/record help
 
@@ -52,6 +53,14 @@ bazel-* and .git, then restored to the checkout's git HEAD), wipes the per-label
           --include_file_write_contents
   then `info` (paths for the normaliser) and `shutdown`.
 
+All commands of a project use the same startup options, so a binary with a persistent server
+(Bazel; Blaze with --blaze-server daemon) runs them on one server: `mod graph` starts it, the
+others find it warm. Blaze's default is one process per command (no server). The manifest says,
+per command, whether it ran on a cold or a warm server (`server`: the pid in
+<output base>/server/server.pid.txt before and after, whether the client printed its
+server-start line, and `state`), and, per recording, the mode, which servers were stopped before
+the run, the exit code of the final `shutdown` and any server still alive after it (stopped then).
+
 A command that fails does not stop the run: its surfaces are recorded as FAILED with the stderr
 tail, and the exit code is itself compared (surface exit_codes).
 
@@ -72,6 +81,13 @@ Options:
   --renormalise     do not run anything; rebuild norm/ and items/ from raw/ (after a normaliser
                     change). The new directories replace the old ones only when the rebuild
                     is complete; the manifest keeps a `renormalised` history.
+  --blaze-server MODE
+                    run the binary with BLAZE_SERVER_MODE=MODE: `daemon` is Blaze's persistent
+                    server (one server per project for the whole sequence, as Bazel); `inprocess`
+                    is Blaze's default, one process per command. Not given: the variable is
+                    unset (Bazel ignores it). Stored in the manifest (`server.blaze_server_mode`).
+  --max-idle-secs N startup option --max_idle_secs=N on every command (AGENTS.md "Memory").
+                    Default: 60 with --blaze-server daemon, not passed otherwise.
   --no-scope        do not wrap the run in `systemd-run --user --scope -p MemoryMax=12G
                     -p MemorySwapMax=0` (the default wraps it; Bazel servers live in that scope)
   --summary         write corpus/oracle/<project>.json (default only for label oracle-9.3.2)
@@ -80,10 +96,15 @@ Options:
 
 MEMORY_MAX = "12G"
 COMMAND_TIMEOUT = 3 * 3600
+# --max_idle_secs of a daemon-mode recording (AGENTS.md "Memory": 60 on every probe server).
+DAEMON_MAX_IDLE_SECS = 60
 
 
-def clean_env():
-    return {"HOME": oc.HOME, "PATH": "/usr/bin:/bin"}
+def clean_env(blaze_server_mode=None):
+    env = {"HOME": oc.HOME, "PATH": "/usr/bin:/bin"}
+    if blaze_server_mode:
+        env["BLAZE_SERVER_MODE"] = blaze_server_mode
+    return env
 
 
 def maybe_reexec_in_scope(args):
@@ -100,11 +121,11 @@ def maybe_reexec_in_scope(args):
     os.execvp(argv[0], argv)
 
 
-def run(cmd, cwd, stdout_path, stderr_path, timeout=COMMAND_TIMEOUT):
+def run(cmd, cwd, stdout_path, stderr_path, timeout=COMMAND_TIMEOUT, env=None):
     t0 = time.monotonic()
     with open(stdout_path, "wb") as out, open(stderr_path, "wb") as err:
         try:
-            p = subprocess.run(cmd, cwd=cwd, env=clean_env(), stdout=out, stderr=err,
+            p = subprocess.run(cmd, cwd=cwd, env=env or clean_env(), stdout=out, stderr=err,
                                stdin=subprocess.DEVNULL, timeout=timeout)
             rc = p.returncode
         except subprocess.TimeoutExpired:
@@ -125,19 +146,42 @@ def make_writable_and_remove(path):
         subprocess.run(["rm", "-rf", path])
 
 
-def kill_servers(root):
+def live_servers(root):
+    """{output base name: pid} of the servers under the output user root `root`: the pid in
+    <output base>/server/server.pid.txt of a live process whose command line names `root` (a
+    stale pid file whose number was reused by another process does not count)."""
+    out = {}
     if not os.path.isdir(root):
-        return
-    for name in os.listdir(root):
+        return out
+    for name in sorted(os.listdir(root)):
         pidfile = os.path.join(root, name, "server", "server.pid.txt")
         try:
-            pid = int(open(pidfile).read().strip())
+            with open(pidfile) as f:
+                pid = int(f.read().strip())
+            with open("/proc/%d/cmdline" % pid, "rb") as f:
+                cmdline = f.read()
         except (OSError, ValueError):
             continue
+        if root.encode() in cmdline:
+            out[name] = pid
+    return out
+
+
+def server_pid(root):
+    """The pid of the one live server under `root`, or None (several: the lowest output base)."""
+    live = live_servers(root)
+    return live[sorted(live)[0]] if live else None
+
+
+def kill_servers(root):
+    """Stop every server under `root` (SIGTERM, SIGKILL after 10 s). Returns what it stopped."""
+    stopped = []
+    for name, pid in live_servers(root).items():
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
             continue
+        stopped.append({"output_base": name, "pid": pid})
         for _ in range(100):
             try:
                 os.kill(pid, 0)
@@ -149,6 +193,7 @@ def kill_servers(root):
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+    return stopped
 
 
 def prepare_workspace(checkout, ws):
@@ -320,7 +365,9 @@ def record_project(args, project, spec, steps):
                     "blaze_repo": old.get("blaze_repo")}
     make_writable_and_remove(rd)
     os.makedirs(raw)
-    kill_servers(root)
+    # Any server of an earlier run in this output user root goes first (a rebuilt Blaze would
+    # replace it by itself, binary identity; Bazel only for another install base).
+    stopped_before = kill_servers(root)
     make_writable_and_remove(root)
     os.makedirs(root)
     fixed = prepare_workspace(checkout, ws)
@@ -342,6 +389,9 @@ def record_project(args, project, spec, steps):
     host = socket.gethostname().split(".")[0]
 
     startup = [binary, "--output_user_root=" + root, "--nohome_rc", "--nosystem_rc"]
+    if args.max_idle_secs is not None:
+        startup.append("--max_idle_secs=%d" % args.max_idle_secs)
+    env = clean_env(args.blaze_server)
     common = ["--repository_cache=" + oc.REPO_CACHE, "--color=no", "--curses=no"]
     cmds = []
     if "mod" in steps:
@@ -376,9 +426,16 @@ def record_project(args, project, spec, steps):
         verb_i = argv[0]
         full = startup + [verb_i] + common + argv[1:]
         print("[record] %s/%s: %s" % (label, project, name), flush=True)
-        rc, dur = run(full, ws, os.path.join(raw, name + ".stdout"), os.path.join(raw, name + ".stderr"))
-        print("[record]   exit %d in %.1fs" % (rc, dur), flush=True)
-        commands.append({"name": name, "argv": full, "exit_code": rc, "duration_s": dur})
+        pid_before = server_pid(root)
+        rc, dur = run(full, ws, os.path.join(raw, name + ".stdout"), os.path.join(raw, name + ".stderr"), env=env)
+        pid_after = server_pid(root)
+        with open(os.path.join(raw, name + ".stderr"), errors="replace") as f:
+            start_line = oc.client_started_server(f.read())
+        state = oc.server_state(pid_before, pid_after, start_line)
+        print("[record]   exit %d in %.1fs (%s server)" % (rc, dur, state), flush=True)
+        commands.append({"name": name, "argv": full, "exit_code": rc, "duration_s": dur,
+                         "server": {"pid_before": pid_before, "pid_after": pid_after,
+                                    "start_line": start_line, "state": state}})
         if name == "mod_graph":
             lock = os.path.join(ws, "MODULE.bazel.lock")
             if os.path.isfile(lock):
@@ -398,7 +455,15 @@ def record_project(args, project, spec, steps):
                 if info.get(key) and info[key] != paths[pkey]:
                     print("[record]   note: info %s=%s (computed %s)" % (key, info[key], paths[pkey]))
                     paths[pkey] = info[key]
-    rc, _ = run(startup + ["shutdown"], ws, os.devnull, os.devnull, timeout=120)
+    shutdown_rc, _ = run(startup + ["shutdown"], ws, os.devnull, os.devnull, timeout=120, env=env)
+    # Audit 3, B1 item 4: the shutdown's exit code, and no server of the label alive after it
+    # (10 s for a server that is still exiting).
+    deadline = time.monotonic() + 10
+    while live_servers(root) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    alive_after = kill_servers(root)
+    if alive_after:
+        print("[record]   WARNING: a server was alive after shutdown (stopped now): %s" % alive_after, file=sys.stderr)
     total = round(time.monotonic() - t_start, 2)
 
     if os.path.isfile(os.path.join(ws, "MODULE.bazel.lock")):
@@ -423,6 +488,9 @@ def record_project(args, project, spec, steps):
         "context": Context(paths, user, host).to_dict(),
         "commands": commands,
         "total_duration_s": total,
+        "server": {"blaze_server_mode": args.blaze_server, "max_idle_secs": args.max_idle_secs,
+                   "stopped_before": stopped_before, "shutdown_exit_code": shutdown_rc,
+                   "alive_after_shutdown": alive_after},
     }
     if replaced is not None:
         manifest["replaced"] = replaced
@@ -527,6 +595,8 @@ def main():
     ap.add_argument("--renormalise", action="store_true")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--no-scope", action="store_true")
+    ap.add_argument("--blaze-server", choices=["inprocess", "daemon"])
+    ap.add_argument("--max-idle-secs", type=int)
     ap.add_argument("--summary", dest="summary", action="store_true", default=None)
     ap.add_argument("--no-summary", dest="summary", action="store_false")
     args = ap.parse_args()
@@ -541,6 +611,10 @@ def main():
         if s not in oc.STEPS:
             oc.die("unknown step %r (have: %s)" % (s, ", ".join(oc.STEP_ORDER)))
     summary = args.summary if args.summary is not None else args.label == oc.REFERENCE_LABEL
+    if args.max_idle_secs is None and args.blaze_server == "daemon":
+        args.max_idle_secs = DAEMON_MAX_IDLE_SECS
+    if args.max_idle_secs is not None and args.max_idle_secs < 0:
+        oc.die("--max-idle-secs must not be negative")
 
     if args.renormalise:
         for n in names:

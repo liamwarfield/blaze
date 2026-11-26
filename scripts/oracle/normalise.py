@@ -127,24 +127,31 @@ _STDERR_DROP = [
     re.compile(r"^INFO: Build Event Protocol files produced successfully"),
     re.compile(r"^INFO: From "),  # action output banners; order is scheduling-dependent
 ]
+# The client's line when it starts a server ("Starting local Bazel server (9.3.2) and connecting
+# to it..."). It has no prefix, so _STDERR_KEEP drops it. A recording made in daemon mode
+# (`record --blaze-server daemon`) keeps it: there a server start in the middle of the command
+# sequence is a difference to the oracle (audit 3, B1). One-process recordings print it on every
+# command by construction, so it stays dropped for them. oracle_common.server_states reads it too.
+SERVER_START_RE = re.compile(r"^Starting local \S+ server\b", re.M)
 _DURATION_RE = re.compile(r"\b\d+(?:\.\d+)?\s?(?:ms|s|min|h)\b")
 _PID_RE = re.compile(r"\b(pid[ =:]?)\d+", re.IGNORECASE)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 
-def stderr_summary(ctx, text):
+def stderr_summary(ctx, text, keep_server_start=False):
     """Normalised, de-duplicated summary lines of a Bazel command's stderr, sorted.
 
     Keeps INFO/WARNING/ERROR/DEBUG lines and the test summary; drops progress, banners and lines
     that only carry timing or identity. Durations and PIDs become placeholders. Returns a dict
     line -> count (the order of these lines depends on scheduling, so it is not compared).
+    keep_server_start: also keep the client's server-start line (SERVER_START_RE).
     """
     out = {}
     for raw in text.splitlines():
         line = _ANSI_RE.sub("", raw).rstrip()
         if "\r" in line:
             line = line.split("\r")[-1]
-        if not _STDERR_KEEP.search(line):
+        if not (_STDERR_KEEP.search(line) or (keep_server_start and SERVER_START_RE.search(line))):
             continue
         if any(rx.search(line) for rx in _STDERR_DROP):
             continue

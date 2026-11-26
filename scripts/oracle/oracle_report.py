@@ -42,6 +42,42 @@ def tree_text(p):
     return "repo commit %s clean, %s" % (short(p["repo_commit"]), v)
 
 
+def server_text(p):
+    """'server mode daemon; cold: mod_graph; warm: build, ...' (states read from stderr are marked)."""
+    states = p.get("server_states") or {}
+    by = {}
+    for cmd, st in states.items():
+        name = "unknown" if not st else st[0] + (" (from stderr)" if st[1] == "stderr" else "")
+        by.setdefault(name, []).append(cmd)
+    parts = ["server mode %s" % (p.get("server_mode") or "unset")]
+    parts += ["%s: %s" % (k, ", ".join(v)) for k, v in sorted(by.items())]
+    return "; ".join(parts)
+
+
+def server_state_lines(cmp):
+    """Commands that ran on a cold server on one side and a warm one on the other (audit 3, B1;
+    decision D12), and a final shutdown that failed or left a server alive."""
+    out = []
+    for project in cmp.projects:
+        a, b = cmp.provenance[project]["a"], cmp.provenance[project]["b"]
+        if not (a["recorded"] and b["recorded"]):
+            continue
+        sa, sb = a.get("server_states") or {}, b.get("server_states") or {}
+        differ = [c for c in sa if c in sb and sa[c] and sb[c] and sa[c][0] != sb[c][0]]
+        if differ:
+            out.append("%s: commands on a %s server in %s and a %s one in %s: %s" % (
+                project, sa[differ[0]][0], cmp.a, sb[differ[0]][0], cmp.b, ", ".join(differ))
+                if all(sa[c][0] == sa[differ[0]][0] for c in differ) else
+                "%s: server states differ between %s and %s: %s" % (
+                    project, cmp.a, cmp.b, ", ".join("%s %s/%s" % (c, sa[c][0], sb[c][0]) for c in differ)))
+        for side, label in (("a", cmp.a), ("b", cmp.b)):
+            sd = cmp.provenance[project][side].get("shutdown") or {}
+            if sd.get("shutdown_exit_code") not in (None, 0) or sd.get("alive_after_shutdown"):
+                out.append("%s/%s: final shutdown exited %s; servers alive after it: %s" % (
+                    label, project, sd.get("shutdown_exit_code"), sd.get("alive_after_shutdown") or "none"))
+    return out
+
+
 def recording_problems(cmp):
     """Why the candidate's recordings cannot back an accepted score (audit R2A-3): a project
     recorded without a commit, from a dirty tree, or with a binary whose origin was not verified.
@@ -81,9 +117,25 @@ def provenance_lines(cmp):
     return lines
 
 
+def server_lines(cmp):
+    """Per side and project: the server mode and which commands ran on a cold or warm server."""
+    lines = []
+    for side, label in (("a", cmp.a), ("b", cmp.b)):
+        for project in cmp.projects:
+            p = cmp.provenance[project][side]
+            if p["recorded"]:
+                lines.append("server %s/%s: %s" % (label, project, server_text(p)))
+    return lines
+
+
 def warning_lines(cmp):
     """Things that weaken a comparison without changing an item: mixed binaries, stale items."""
     out = []
+    if oc.STAGE:
+        out.append("staged: recordings read from %s, the reference checked against %s "
+                   "(BLAZE_ORACLE_STAGE), not the shared recordings and the committed summaries" % (
+                       home_relative(oc.RECORDS), home_relative(oc.CORPUS_SUMMARIES)))
+    out.extend(server_state_lines(cmp))
     for side, label in (("a", cmp.a), ("b", cmp.b)):
         recorded = [cmp.provenance[p][side] for p in cmp.projects if cmp.provenance[p][side]["recorded"]]
         for field, what in (("binary_sha256", "binaries"), ("repo_commit", "repository commits"),
@@ -251,8 +303,8 @@ def score_json(doc):
 def _prov_text(p):
     if not p["recorded"]:
         return "NOT RECORDED"
-    return "binary sha256 `%s` `%s`; recorded %s; %s" % (
-        short(p.get("binary_sha256")), p.get("binary"), p.get("created"), tree_text(p))
+    return "binary sha256 `%s` `%s`; recorded %s; %s; %s" % (
+        short(p.get("binary_sha256")), p.get("binary"), p.get("created"), tree_text(p), server_text(p))
 
 
 def score_text(doc):

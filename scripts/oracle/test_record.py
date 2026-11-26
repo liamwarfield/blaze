@@ -10,6 +10,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -268,6 +269,145 @@ class RecordRunTest(unittest.TestCase):
             record.finish(rd, renormalise=True)
         self.assertFalse(os.path.exists(os.path.join(rd, ".stage")))
         self.assertTrue(os.path.isfile(os.path.join(rd, "raw", "query_label_kind.stdout")))
+
+
+# A stand-in for a client with a persistent server. With BLAZE_SERVER_MODE=daemon it starts a
+# "server" (a sleeping process whose command line names the output user root) and writes its pid
+# to <root>/ob/server/server.pid.txt, printing Bazel's start line; later commands find it alive.
+# Without the variable it prints the start line on every command and leaves no server (Blaze's
+# one-process mode). `shutdown` stops the server unless FAKE_KEEP exists next to the root. Every
+# call is logged to <root>/../calls.log: verb, BLAZE_SERVER_MODE, startup --max_idle_secs.
+FAKE_SERVER = r"""#!/usr/bin/python3
+import os, signal, subprocess, sys, time
+args = sys.argv[1:]
+root = [a.split("=", 1)[1] for a in args if a.startswith("--output_user_root=")][0]
+verb = [a for a in args if not a.startswith("-")][0]
+mode = os.environ.get("BLAZE_SERVER_MODE")
+with open(os.path.join(os.path.dirname(root), "calls.log"), "a") as log:
+    log.write("%s %s %s\n" % (verb, mode, " ".join(a for a in args if a.startswith("--max_idle_secs"))))
+pidfile = os.path.join(root, "ob", "server", "server.pid.txt")
+def alive():
+    try:
+        pid = int(open(pidfile).read())
+        return pid if root.encode() in open("/proc/%d/cmdline" % pid, "rb").read() else None
+    except (OSError, ValueError):
+        return None
+if verb == "shutdown":
+    pid = alive()
+    if pid and not os.path.exists(os.path.join(os.path.dirname(root), "FAKE_KEEP")):
+        os.kill(pid, signal.SIGTERM)
+        while alive():
+            time.sleep(0.05)
+    sys.exit(0)
+if mode == "daemon":
+    if not alive():
+        os.makedirs(os.path.dirname(pidfile), exist_ok=True)
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)", root], start_new_session=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        open(pidfile, "w").write(str(p.pid))
+        sys.stderr.write("Starting local Bazel server (9.3.2) and connecting to it...\n")
+else:
+    sys.stderr.write("Starting local Bazel server (9.3.2) and connecting to it...\n")
+if verb == "query":
+    print("cc_library rule //:a")
+"""
+
+
+class ServerModeTest(unittest.TestCase):
+    """Referee batch 3, item 4: daemon mode (one server for the sequence, --max_idle_secs, a
+    final shutdown), the per-command cold/warm state, and the servers stopped before and after."""
+
+    fake_binary = RecordRunTest.fake_binary
+
+    def setUp(self):
+        RecordRunTest.setUp(self)
+        self.server = os.path.join(self.rec.root, "bin-server")
+        write(self.server, FAKE_SERVER)
+        os.chmod(self.server, 0o755)
+        self.root = os.path.join(oc.OUTPUT_ROOTS, "rec-blaze-x")
+        self.addCleanup(self.stop_leftovers)
+
+    def stop_leftovers(self):
+        for pid in record.live_servers(self.root).values():
+            os.kill(pid, 9)
+
+    def run_record(self, *argv):
+        return run_main(record, list(argv))
+
+    def calls(self):
+        with open(os.path.join(oc.OUTPUT_ROOTS, "calls.log")) as f:
+            return [l.split(" ", 2) for l in f.read().splitlines()]
+
+    def states(self, m):
+        return [(c["name"], c["server"]["state"]) for c in m["commands"]]
+
+    def test_daemon_mode_runs_the_sequence_on_one_server(self):
+        rc, out, err = self.run_record("--binary", self.server, "--label", "blaze-x", "--project", "toy",
+                                       "--surfaces", "query", "--blaze-server", "daemon")
+        self.assertEqual(rc, 0, out + err)
+        m = oc.load_manifest("blaze-x", "toy")
+        self.assertEqual(self.states(m), [("query_label_kind", "cold"), ("query_deps_label_kind", "warm"),
+                                          ("query_jsonproto", "warm"), ("query_deps_jsonproto", "warm"),
+                                          ("info", "warm")])
+        first, second = m["commands"][0]["server"], m["commands"][1]["server"]
+        self.assertEqual((first["pid_before"], first["start_line"]), (None, True))
+        self.assertIsNotNone(first["pid_after"])
+        self.assertEqual(second, {"pid_before": first["pid_after"], "pid_after": first["pid_after"],
+                                  "start_line": False, "state": "warm"})
+        self.assertEqual(m["server"], {"blaze_server_mode": "daemon", "max_idle_secs": 60, "stopped_before": [],
+                                       "shutdown_exit_code": 0, "alive_after_shutdown": []})
+        # Every command, the final shutdown included, got the variable and the startup option.
+        self.assertEqual(self.calls(), [[v, "daemon", "--max_idle_secs=60"] for v in
+                                        ("query",) * 4 + ("info", "shutdown")])
+        self.assertTrue(all("--max_idle_secs=60" in c["argv"] for c in m["commands"]))
+        self.assertEqual(record.live_servers(self.root), {})
+        self.assertEqual(oc.server_states("blaze-x", "toy", m)["query_jsonproto"], ["warm", "pid"])
+
+    def test_one_process_mode_is_unchanged(self):
+        rc, out, err = self.run_record("--binary", self.server, "--label", "blaze-x", "--project", "toy",
+                                       "--surfaces", "query")
+        self.assertEqual(rc, 0, out + err)
+        m = oc.load_manifest("blaze-x", "toy")
+        self.assertEqual({s for _, s in self.states(m)}, {"cold"})
+        self.assertEqual(m["server"]["blaze_server_mode"], None)
+        self.assertEqual(m["server"]["max_idle_secs"], None)
+        self.assertEqual(self.calls()[0], ["query", "None", ""])
+        self.assertFalse(any(a.startswith("--max_idle_secs") for c in m["commands"] for a in c["argv"]))
+
+    def test_max_idle_secs_can_be_set(self):
+        self.assertEqual(self.run_record("--binary", self.server, "--label", "blaze-x", "--project", "toy",
+                                         "--surfaces", "query", "--blaze-server", "daemon",
+                                         "--max-idle-secs", "30")[0], 0)
+        self.assertEqual(self.calls()[0], ["query", "daemon", "--max_idle_secs=30"])
+
+    def test_a_server_of_an_earlier_run_is_stopped_first_and_a_stranger_is_left_alone(self):
+        os.makedirs(os.path.join(self.root, "ob", "server"))
+        old = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)", self.root])
+        stranger = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        for proc in (stranger, old):
+            self.addCleanup(proc.wait)
+            self.addCleanup(proc.kill)
+        write(os.path.join(self.root, "ob", "server", "server.pid.txt"), str(old.pid))
+        os.makedirs(os.path.join(self.root, "other", "server"))
+        write(os.path.join(self.root, "other", "server", "server.pid.txt"), str(stranger.pid))
+        rc, out, err = self.run_record("--binary", self.server, "--label", "blaze-x", "--project", "toy",
+                                       "--surfaces", "query", "--blaze-server", "daemon")
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(oc.load_manifest("blaze-x", "toy")["server"]["stopped_before"],
+                         [{"output_base": "ob", "pid": old.pid}])
+        self.assertIsNotNone(old.wait(timeout=10))
+        # A pid file naming a process that is not a server of this root (a reused pid) is ignored.
+        self.assertIsNone(stranger.poll())
+
+    def test_a_server_alive_after_shutdown_is_reported_and_stopped(self):
+        write(os.path.join(oc.OUTPUT_ROOTS, "FAKE_KEEP"), "")
+        rc, out, err = self.run_record("--binary", self.server, "--label", "blaze-x", "--project", "toy",
+                                       "--surfaces", "query", "--blaze-server", "daemon")
+        self.assertEqual(rc, 0, out + err)
+        m = oc.load_manifest("blaze-x", "toy")
+        self.assertEqual(len(m["server"]["alive_after_shutdown"]), 1)
+        self.assertIn("a server was alive after shutdown", err)
+        self.assertEqual(record.live_servers(self.root), {})
 
 
 class ExceptionsTest(unittest.TestCase):

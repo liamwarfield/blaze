@@ -31,11 +31,41 @@ TIMING_OPTIONS = ("startup_time", "command_wait_time", "extract_data_time", "con
 TIMING_OPTION_RE = re.compile(r"^--(%s)=\S*$" % "|".join(TIMING_OPTIONS))
 # workspaceStatus keys whose values are host, user or clock.
 VOLATILE_STATUS_KEYS = {"BUILD_HOST", "BUILD_USER", "BUILD_TIMESTAMP", "FORMATTED_DATE"}
-# buildMetrics sub-messages that only measure the machine (memory, time, network, workers).
-BEP_METRICS_DROP = {
-    "memoryMetrics", "timingMetrics", "cumulativeMetrics", "networkMetrics", "workerMetrics",
-    "workerPoolMetrics", "dynamicExecutionMetrics", "artifactMetrics",
+# Startup options whose value is the installation's identity, not behaviour: Bazel's
+# --install_md5 is the md5 of its embedded install files, Blaze's is its own install key.
+# The value becomes a placeholder; the option itself is still compared.
+MASKED_OPTION_VALUES = {"install_md5": "<INSTALL_MD5>"}
+MASKED_OPTION_RE = re.compile(r"^--(%s)=\S*$" % "|".join(MASKED_OPTION_VALUES))
+# Startup options the recorder sets for its own sake: --max_idle_secs (README "Server mode",
+# AGENTS.md "Memory"). The reference was recorded without it, so it is removed on both sides from
+# every BEP startup-option list (parsed, explicit, canonical with Bazel's default value, and the
+# original command line). There the client follows every startup option by an empty one
+# (blaze.cc BlazeServer::Communicate calls request.add_startup_options() twice, so Bazel prints
+# `{}` after each), and that empty entry goes with it.
+# The client also names every explicit startup option in --option_sources
+# (name:source:name:source..., names escaped by EscapeForOptionSource: "_" -> "_U", ":" -> "_C";
+# blaze.cc), so the option's pair is removed from that value too.
+# Likewise the recorder's environment variable BLAZE_SERVER_MODE (daemon mode): the client
+# forwards its environment as --client_env=NAME=VALUE (Bazel's client forwards every variable),
+# so that option is removed wherever it appears.
+RECORDER_STARTUP_OPTIONS = ("max_idle_secs",)
+RECORDER_CLIENT_ENV = ("BLAZE_SERVER_MODE",)
+RECORDER_OPTION_RE = re.compile(r"^--((%s)=|client_env=(%s)=)\S*$" % (
+    "|".join(RECORDER_STARTUP_OPTIONS), "|".join(RECORDER_CLIENT_ENV)))
+RECORDER_OPTION_SOURCE_KEYS = {o.replace("_", "_U").replace(":", "_C") for o in RECORDER_STARTUP_OPTIONS}
+# buildMetrics sub-messages that only measure the machine (memory, time, network, workers):
+# compared by presence (which fields are set), not by value (referee batch 3; review
+# 2026-11-25-reporting S1-1: dropping them let an empty message score as identical).
+BEP_METRICS_PRESENCE = {
+    "memoryMetrics", "timingMetrics", "networkMetrics", "workerMetrics", "workerPoolMetrics",
+    "dynamicExecutionMetrics",
 }
+# artifactMetrics groups whose sizeInBytes depends on the output root path (runfiles manifests
+# name absolute execroot paths) or on test timing (test logs and test.xml are outputs): the three
+# oracle recordings differ there (brotli outputArtifactsSeen 7671064/7671088/7671088, re2
+# 89006013/89050518/89050526). Their counts, and sourceArtifactsRead (sizes equal in all three),
+# are compared as they are.
+ARTIFACT_SIZE_MASKED = {"outputArtifactsSeen", "outputArtifactsFromActionCache", "topLevelArtifacts"}
 
 
 # query runs with --keep_going: exit 3 means "partial result" (e.g. a select() branch whose
@@ -372,7 +402,9 @@ def s_build_stderr(rd, manifest, ctx):
         raise SurfaceFailed("command build was not run")
     text = _read(rd, "build.stderr")
     _write_norm(rd, "build.stderr.txt", ctx.text(text))
-    return stderr_summary(ctx, text)
+    # The server-start line is compared only for a recording made on Blaze's persistent server
+    # (see normalise.SERVER_START_RE); every other recording drops it, as before batch 3.
+    return stderr_summary(ctx, text, keep_server_start=oc.blaze_server_mode(manifest) == "daemon")
 
 
 def normalise_spawn(ctx, spawn):
@@ -417,6 +449,114 @@ def _drop_timing(obj):
     if isinstance(obj, str) and TIMING_OPTION_RE.match(obj):
         return obj.split("=", 1)[0] + "=<DUR>"
     return obj
+
+
+def mask_option_values(obj):
+    """MASKED_OPTION_VALUES: `--install_md5=<hex>` becomes `--install_md5=<INSTALL_MD5>`, as a
+    string and in an option message (optionValue and combinedForm)."""
+    if isinstance(obj, dict):
+        out = {k: mask_option_values(v) for k, v in obj.items()}
+        ph = MASKED_OPTION_VALUES.get(out.get("optionName"))
+        if ph is not None:
+            if "optionValue" in out:
+                out["optionValue"] = ph
+            if "combinedForm" in out:
+                out["combinedForm"] = "--%s=%s" % (out["optionName"], ph)
+        return out
+    if isinstance(obj, list):
+        return [mask_option_values(x) for x in obj]
+    if isinstance(obj, str) and MASKED_OPTION_RE.match(obj):
+        name = obj[2:].split("=", 1)[0]
+        return "--%s=%s" % (name, MASKED_OPTION_VALUES[name])
+    return obj
+
+
+def _is_recorder_option(x):
+    if isinstance(x, str):
+        return bool(RECORDER_OPTION_RE.match(x))
+    if isinstance(x, dict):
+        return (x.get("optionName") in RECORDER_STARTUP_OPTIONS
+                or bool(RECORDER_OPTION_RE.match(x.get("combinedForm") or "")))
+    return False
+
+
+def _strip_option_sources(value):
+    """The --option_sources value without the pairs of RECORDER_STARTUP_OPTIONS."""
+    tokens = value.split(":")
+    if len(tokens) % 2:
+        return value
+    pairs = [(tokens[i], tokens[i + 1]) for i in range(0, len(tokens), 2)]
+    return ":".join("%s:%s" % p for p in pairs if p[0] not in RECORDER_OPTION_SOURCE_KEYS)
+
+
+def drop_recorder_options(obj):
+    """Remove RECORDER_STARTUP_OPTIONS and RECORDER_CLIENT_ENV from every list (`--max_idle_secs=N`
+    and `--client_env=BLAZE_SERVER_MODE=...` strings and option messages, and the empty option
+    that follows an original-command-line entry: {"combinedForm": "--max_idle_secs=N"}, {}), and
+    their pairs from --option_sources."""
+    if isinstance(obj, dict):
+        out = {k: drop_recorder_options(v) for k, v in obj.items()}
+        if out.get("optionName") == "option_sources":
+            if "optionValue" in out:
+                out["optionValue"] = _strip_option_sources(out["optionValue"])
+            if "combinedForm" in out:
+                out["combinedForm"] = "--option_sources=" + _strip_option_sources(
+                    out["combinedForm"][len("--option_sources="):])
+        return out
+    if isinstance(obj, str) and obj.startswith("--option_sources="):
+        return "--option_sources=" + _strip_option_sources(obj[len("--option_sources="):])
+    if isinstance(obj, list):
+        out, after_original = [], False
+        for x in obj:
+            if after_original and x == {}:
+                after_original = False
+                continue
+            after_original = False
+            if _is_recorder_option(x):
+                after_original = isinstance(x, dict) and set(x) == {"combinedForm"}
+                continue
+            out.append(drop_recorder_options(x))
+        return out
+    return obj
+
+
+def presence(obj):
+    """The shape of a measurement: which fields are set. Scalars become "<measured>", a list
+    (proto3 JSON prints only non-empty ones) "<list>"; message fields are kept by name."""
+    if isinstance(obj, dict):
+        return {k: presence(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return "<list>"
+    return "<measured>"
+
+
+def normalise_build_metrics(ctx, bm):
+    """buildMetrics: counters compared, machine measurements compared by presence.
+
+    actionSummary, targetMetrics, packageMetrics, buildGraphMetrics, cumulativeMetrics and the
+    rest: compared as they are, without wall-clock keys (BEP_TIMING_KEY_RE). The varying
+    buildGraphMetrics and action-cache fields are the allow list's business
+    (build-metrics-volatile-counters), evaluatedValues among them by name (decisions
+    2026-11-26). artifactMetrics: counts compared, sizes as ARTIFACT_SIZE_MASKED says.
+    BEP_METRICS_PRESENCE: presence() only (taken before the wall-clock keys are dropped).
+    """
+    counters, shapes = {}, {}
+    for k, v in bm.items():
+        if k in BEP_METRICS_PRESENCE:
+            shapes[k] = presence(v)
+        elif k == "artifactMetrics" and isinstance(v, dict):
+            am = {}
+            for group, g in v.items():
+                g = dict(g) if isinstance(g, dict) else g
+                if group in ARTIFACT_SIZE_MASKED and isinstance(g, dict) and "sizeInBytes" in g:
+                    g["sizeInBytes"] = "<path-dependent>"
+                am[group] = g
+            counters[k] = am
+        else:
+            counters[k] = v
+    out = _drop_timing(ctx.deep(counters))
+    out.update(shapes)
+    return out
 
 
 def _rc_group(value):
@@ -511,8 +651,7 @@ def normalise_bep(ctx, events):
                     it["value"] = "<%s>" % it["key"]
         if "buildToolLogs" in p:
             p["buildToolLogs"] = {"log": sorted(l.get("name", "") for l in p["buildToolLogs"].get("log", []))}
-        if "buildMetrics" in p:
-            p["buildMetrics"] = {k: v for k, v in p["buildMetrics"].items() if k not in BEP_METRICS_DROP}
+        metrics = p.pop("buildMetrics", None)
         if "completed" in p:
             for g in p["completed"].get("outputGroup", []):
                 if "fileSets" in g:
@@ -534,7 +673,9 @@ def normalise_bep(ctx, events):
             for f in tr.get("testActionOutput", []):
                 f.pop("digest", None)
                 f.pop("length", None)
-        p = _sort_overrides_deep(_drop_timing(ctx.deep(p)))
+        p = drop_recorder_options(mask_option_values(_sort_overrides_deep(_drop_timing(ctx.deep(p)))))
+        if metrics is not None:
+            p["buildMetrics"] = normalise_build_metrics(ctx, metrics)
         out[_unique_key(out, oc.canonical(ctx.deep(eid)))] = p
     return out
 

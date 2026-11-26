@@ -516,3 +516,24 @@ Each entry: date, decision, why, who decided.
   is with the auditor; in its daemon mode the binary of 374c631 matches 13,858 of 13,860
   judged items. Declared deviation: `buildMetrics.memoryMetrics.garbageMetrics` (JVM garbage
   collector pools) cannot exist in Blaze. Root.
+- 2026-11-26. Referee batch 3 adopted (auditor PASS, docs/reviews/2026-11-26-audit-referee-3.md;
+  the fixer's report is 2026-11-26-referee-batch-3.md). It masks the value of `--install_md5`,
+  compares the deterministic fields of `buildMetrics` (the old referee dropped the groups and
+  was blind to an empty `artifactMetrics`), and adds a daemon recording mode
+  (`record --blaze-server daemon`). Root followed the auditor's steps: file hashes checked, the
+  auditor's allow-list entry applied, 148 referee tests pass, the shared records renormalised
+  in place (`oracle-9.3.2`, `-rerun`, `-check`, `blaze-ef66f55e904e`), reference summaries
+  brotli `bb73e232…`, re2 `76272118…`, workerd `6bc70b00…` as expected, the three
+  oracle-against-itself comparisons 100% MATCH (13,858 matching, 58 allowed), the accepted
+  label rescored unstaged: matching 13,850, allowed 56, failed 145,082, rows equal to the
+  fixer's staged file. From now on the base for `compare-scores` is
+  `corpus/scores/blaze-ef66f55e904e.referee3.json` (referee `4afe2977…`); `referee2.json`
+  stays for history. Against referee 2 only the two `bep` rows change: the `buildMetrics`
+  event moves from allowed to failed. Rulings recorded with it: (A4) Blaze's default
+  `--max_idle_secs` is no longer compared in any mode because the recorder sets the option on
+  both sides; `buildMetrics.memoryMetrics.garbageMetrics` (JVM garbage-collector pools) is
+  allow-listed as a declared deviation of Blaze, counted as allowed, never as matching; no
+  daemon-mode recording is accepted as a score before batch 3b (A1: a cold/warm mismatch or a
+  failed shutdown must fail in daemon mode; A2: the strict rules must follow the observed
+  server state; A3: an empty `only_fields_in_daemon_mode` list must excuse nothing). A
+  candidate recorded with the older extractor needs `record --renormalise` first. Root.

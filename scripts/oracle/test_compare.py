@@ -642,5 +642,137 @@ class ToolsTest(unittest.TestCase):
             self.assertIn("usage: scripts/oracle/", out)
 
 
+class ServerStateTest(unittest.TestCase):
+    """Referee batch 3, item 4: which commands ran on a cold or a warm server, on each side."""
+
+    def setUp(self):
+        self.rec = Records(self)
+
+    def add_with_stderr(self, label, stderr):
+        """A recording made before batch 3: no `server` fields, only raw/<command>.stderr."""
+        rd = self.rec.add(label, "brotli", QUERY, manifest=dict(CLEAN, commands=[
+            {"name": n, "exit_code": 0} for n in stderr]))
+        os.makedirs(os.path.join(rd, "raw"))
+        for name, text in stderr.items():
+            with open(os.path.join(rd, "raw", name + ".stderr"), "w") as f:
+                f.write(text)
+
+    def add_with_pids(self, label, states, mode="daemon"):
+        self.rec.add(label, "brotli", QUERY, manifest=dict(CLEAN, server={"blaze_server_mode": mode}, commands=[
+            {"name": n, "exit_code": 0, "server": {"pid_before": 1, "pid_after": 1, "start_line": False,
+                                                    "state": st}} for n, st in states]))
+
+    START = "Starting local Bazel server (9.3.2) and connecting to it...\n"
+
+    def test_states_from_stderr_for_older_recordings(self):
+        self.add_with_stderr(REF, {"mod_graph": self.START, "build": "INFO: x\n", "info": ""})
+        m = oc.load_manifest(REF, "brotli")
+        self.assertEqual(oc.server_states(REF, "brotli", m),
+                         {"mod_graph": ["cold", "stderr"], "build": ["warm", "stderr"], "info": ["warm", "stderr"]})
+
+    def test_one_process_against_a_server_is_named(self):
+        self.add_with_stderr(REF, {"mod_graph": self.START, "build": "", "info": ""})
+        self.add_with_stderr("cand", {"mod_graph": self.START, "build": self.START, "info": self.START})
+        cmp = ocmp.compare_labels(REF, "cand")
+        self.assertIn("brotli: commands on a warm server in %s and a cold one in cand: build, info" % REF,
+                      orep.warning_lines(cmp))
+        self.assertIn("server cand/brotli: server mode unset; cold (from stderr): mod_graph, build, info",
+                      orep.server_lines(cmp))
+        doc = orep.score_document(cmp, ocmp.AllowList(None))
+        self.assertEqual(doc["provenance"]["brotli"]["candidate"]["server_states"]["build"], ["cold", "stderr"])
+
+    def test_daemon_mode_against_a_server_has_no_warning(self):
+        self.add_with_stderr(REF, {"mod_graph": self.START, "build": "", "info": ""})
+        self.add_with_pids("cand", [("mod_graph", "cold"), ("build", "warm"), ("info", "warm")])
+        cmp = ocmp.compare_labels(REF, "cand")
+        self.assertFalse([w for w in orep.warning_lines(cmp) if "server" in w])
+        self.assertIn("server cand/brotli: server mode daemon; cold: mod_graph; warm: build, info",
+                      orep.server_lines(cmp))
+
+    def test_a_failed_shutdown_is_a_warning(self):
+        self.rec.add(REF, "brotli", QUERY)
+        self.rec.add("cand", "brotli", QUERY, manifest=dict(CLEAN, server={
+            "blaze_server_mode": "daemon", "shutdown_exit_code": 0, "alive_after_shutdown": [{"pid": 7}]}))
+        self.assertIn("cand/brotli: final shutdown exited 0; servers alive after it: [{'pid': 7}]",
+                      orep.warning_lines(ocmp.compare_labels(REF, "cand")))
+
+    def test_a_staged_comparison_says_so(self):
+        self.rec.add(REF, "brotli", QUERY)
+        self.rec.add("cand", "brotli", QUERY)
+        saved = oc.STAGE
+        oc.STAGE = self.rec.root
+        self.addCleanup(setattr, oc, "STAGE", saved)
+        w = orep.warning_lines(ocmp.compare_labels(REF, "cand"))
+        self.assertTrue(any(x.startswith("staged: recordings read from ") for x in w), w)
+
+
+class DaemonModeAllowTest(unittest.TestCase):
+    """Referee batch 3, item 4: the buildGraphMetrics fields that the oracle never varies in
+    (built, changed, cleaned counts, the node count) are excused only for a one-process
+    candidate; a daemon-mode candidate is held to the fields the oracle does vary in."""
+
+    BM = '{"buildMetrics":{}}'
+
+    def metrics(self, built, evaluated):
+        return {self.BM: {"buildMetrics": {"buildGraphMetrics": {
+            "builtValues": [{"skyfunctionName": "FILE", "count": built}],
+            "evaluatedValues": [{"skyfunctionName": "FILE", "count": evaluated}]}}}}
+
+    def setUp(self):
+        self.rec = Records(self)
+        self.rec.add(REF, "brotli", {"bep": self.metrics("10", "20")})
+
+    def status(self, mode, built, evaluated):
+        self.rec.add("cand-%s-%s-%s" % (mode, built, evaluated), "brotli", {"bep": self.metrics(built, evaluated)},
+                     manifest={"server": {"blaze_server_mode": mode}})
+        r = by_surface(ocmp.compare_labels(REF, "cand-%s-%s-%s" % (mode, built, evaluated), surfaces=["bep"]),
+                       "brotli")["bep"]
+        return r["status"], r["counts"]["ALLOWED"], r["counts"]["DIFF"]
+
+    def test_one_process_candidate_scores_as_before(self):
+        self.assertEqual(self.status(None, "15", "25"), ("MATCH", 1, 0))
+        self.assertEqual(self.status("inprocess", "15", "25"), ("MATCH", 1, 0))
+
+    def test_daemon_candidate_is_not_excused_for_built_values(self):
+        self.assertEqual(self.status("daemon", "15", "25"), ("DIFF", 0, 1))
+
+    def test_daemon_candidate_is_excused_where_the_oracle_varies(self):
+        self.assertEqual(self.status("daemon", "10", "25"), ("MATCH", 1, 0))
+
+    def test_the_real_entry_drops_the_four_cold_server_fields_in_daemon_mode(self):
+        for path in ("buildMetrics.buildGraphMetrics.evaluatedValues[3].count",
+                     "buildMetrics.buildGraphMetrics.dirtiedValues[2].skyfunctionName",
+                     "buildMetrics.actionSummary.actionCacheStatistics.sizeInBytes"):
+            self.assertIsNotNone(ocmp.AllowList().match("re2", "bep", self.BM, "DIFF", [path], "daemon"), path)
+        for path in ("buildMetrics.buildGraphMetrics.builtValues[0].count",
+                     "buildMetrics.buildGraphMetrics.postInvocationSkyframeNodeCount",
+                     "buildMetrics.buildGraphMetrics.changedValues", "buildMetrics.buildGraphMetrics.cleanedValues"):
+            self.assertIsNotNone(ocmp.AllowList().match("re2", "bep", self.BM, "DIFF", [path]), path)
+            self.assertIsNone(ocmp.AllowList().match("re2", "bep", self.BM, "DIFF", [path], "daemon"), path)
+
+
+class StageTest(unittest.TestCase):
+    """BLAZE_ORACLE_STAGE moves the records, the reference summaries and the written scores."""
+
+    def paths(self, env):
+        code = "import oracle_common as oc; print(oc.STAGE); print(oc.RECORDS); print(oc.CORPUS_SUMMARIES); " \
+               "print(oc.CORPUS_SCORES)"
+        import subprocess
+        import sys
+        out = subprocess.run([sys.executable, "-I", "-c", "import sys; sys.path.insert(0, %r); %s" % (
+            os.path.dirname(os.path.abspath(__file__)), code)], env=env, stdout=subprocess.PIPE, check=True)
+        return out.stdout.decode().splitlines()
+
+    def test_unset(self):
+        got = self.paths({"HOME": oc.HOME, "PATH": "/usr/bin:/bin"})
+        self.assertEqual(got, ["None", os.path.join(oc.CACHE, "oracle-records"),
+                               os.path.join(oc.REPO_ROOT, "corpus", "oracle"),
+                               os.path.join(oc.REPO_ROOT, "corpus", "scores")])
+
+    def test_set(self):
+        got = self.paths({"HOME": oc.HOME, "PATH": "/usr/bin:/bin", "BLAZE_ORACLE_STAGE": "/x/stage"})
+        self.assertEqual(got, ["/x/stage", "/x/stage/oracle-records", "/x/stage/corpus-oracle", "/x/stage/scores"])
+
+
 if __name__ == "__main__":
     unittest.main()

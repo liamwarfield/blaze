@@ -177,6 +177,258 @@ class BepTest(unittest.TestCase):
         self.assertEqual(opt, {"combinedForm": "--startup_time=<DUR>", "optionName": "startup_time", "optionValue": "<DUR>"})
 
 
+def _canonical_cmdline(md5, extra=()):
+    """A canonical structured command line as Bazel prints it (startup section with install_md5)."""
+    return {"id": {"structuredCommandLine": {"commandLineLabel": "canonical"}}, "structuredCommandLine": {
+        "commandLineLabel": "canonical", "sections": [
+            {"sectionLabel": "startup options", "optionList": {"option": [
+                {"combinedForm": "--install_md5=" + md5, "optionName": "install_md5", "optionValue": md5,
+                 "source": "default"}]}},
+            {"sectionLabel": "command options", "optionList": {"option": [
+                {"combinedForm": x, "optionName": x[2:].split("=")[0], "optionValue": x.split("=")[1]}
+                for x in extra]}}]}}
+
+
+class InstallMd5Test(unittest.TestCase):
+    """Referee batch 3, item 1: --install_md5 is the binary's install key, masked on both sides."""
+
+    def test_install_md5_value_is_masked(self):
+        oracle = surfaces.normalise_bep(CTX, [_canonical_cmdline("58cf1ecbff441bac762b0050d6da21e9")])
+        blaze = surfaces.normalise_bep(CTX, [_canonical_cmdline("cc2457ee0d00a1c1fc407bc25512f038")])
+        self.assertEqual(oracle, blaze)
+        opt = list(oracle.values())[0]["structuredCommandLine"]["sections"][0]["optionList"]["option"][0]
+        self.assertEqual(opt, {"combinedForm": "--install_md5=<INSTALL_MD5>", "optionName": "install_md5",
+                               "optionValue": "<INSTALL_MD5>", "source": "default"})
+
+    def test_string_form_is_masked(self):
+        ev = [{"id": {"unstructuredCommandLine": {}},
+               "unstructuredCommandLine": {"args": ["build", "--install_md5=0123abcd", "--x=1"]}}]
+        got = list(surfaces.normalise_bep(CTX, ev).values())[0]["unstructuredCommandLine"]["args"]
+        self.assertEqual(got, ["build", "--install_md5=<INSTALL_MD5>", "--x=1"])
+
+    def test_the_option_itself_is_still_compared(self):
+        with_md5 = surfaces.normalise_bep(CTX, [_canonical_cmdline("58cf")])
+        ev = _canonical_cmdline("58cf")
+        ev["structuredCommandLine"]["sections"][0]["optionList"]["option"] = []
+        self.assertNotEqual(with_md5, surfaces.normalise_bep(CTX, [ev]))
+
+    def test_restart_reason_is_not_masked(self):
+        # Item 2: --restart_reason is compared as it is; a daemon-mode recording must match.
+        ev = [_canonical_cmdline("58cf", ["--restart_reason=no_daemon"]),
+              {"id": {"unstructuredCommandLine": {}},
+               "unstructuredCommandLine": {"args": ["build", "--restart_reason=no_daemon"]}}]
+        got = surfaces.normalise_bep(CTX, ev)
+        self.assertEqual(got['{"unstructuredCommandLine":{}}']["unstructuredCommandLine"]["args"],
+                         ["build", "--restart_reason=no_daemon"])
+        opt = got['{"structuredCommandLine":{"commandLineLabel":"canonical"}}']["structuredCommandLine"][
+            "sections"][1]["optionList"]["option"][0]
+        self.assertEqual(opt["combinedForm"], "--restart_reason=no_daemon")
+
+
+class RecorderStartupOptionTest(unittest.TestCase):
+    """Referee batch 3, item 4: the recorder's --max_idle_secs (daemon mode) is removed on both
+    sides, so a recording with it compares with the reference recorded without it."""
+
+    @staticmethod
+    def events(explicit):
+        root = "--output_user_root=/r"
+        orig = [{"combinedForm": root}, {}, {"combinedForm": "--nohome_rc"}, {}]
+        canon = {"combinedForm": "--max_idle_secs=10800", "optionName": "max_idle_secs", "optionValue": "10800",
+                 "effectTags": ["EAGERNESS_TO_EXIT"], "source": "default"}
+        parsed = ["--max_idle_secs=10800", "--noclient_debug"]
+        if explicit:
+            orig += [{"combinedForm": "--max_idle_secs=60"}, {}]
+            canon = dict(canon, combinedForm="--max_idle_secs=60", optionValue="60", source="command line")
+            parsed = ["--max_idle_secs=60", "--noclient_debug"]
+        return [
+            {"id": {"optionsParsed": {}}, "optionsParsed": {
+                "startupOptions": parsed, "explicitStartupOptions": [root] + (["--max_idle_secs=60"] if explicit else [])}},
+            {"id": {"structuredCommandLine": {"commandLineLabel": "original"}}, "structuredCommandLine": {"sections": [
+                {"sectionLabel": "startup options", "optionList": {"option": orig}}]}},
+            {"id": {"structuredCommandLine": {"commandLineLabel": "canonical"}}, "structuredCommandLine": {"sections": [
+                {"sectionLabel": "startup options", "optionList": {"option": [
+                    canon, {"combinedForm": "--noclient_debug", "optionName": "client_debug", "optionValue": "0"}]}}]}},
+        ]
+
+    def test_with_and_without_the_option_compare_equal(self):
+        self.assertEqual(surfaces.normalise_bep(CTX, self.events(False)), surfaces.normalise_bep(CTX, self.events(True)))
+
+    def test_only_the_option_and_its_empty_companion_go(self):
+        got = surfaces.normalise_bep(CTX, self.events(True))
+        orig = got['{"structuredCommandLine":{"commandLineLabel":"original"}}']["structuredCommandLine"]
+        self.assertEqual(orig["sections"][0]["optionList"]["option"],
+                         [{"combinedForm": "--output_user_root=/r"}, {}, {"combinedForm": "--nohome_rc"}, {}])
+        parsed = got['{"optionsParsed":{}}']["optionsParsed"]
+        self.assertEqual(parsed, {"startupOptions": ["--noclient_debug"],
+                                  "explicitStartupOptions": ["--output_user_root=/r"]})
+        canon = got['{"structuredCommandLine":{"commandLineLabel":"canonical"}}']["structuredCommandLine"]
+        self.assertEqual([o["optionName"] for o in canon["sections"][0]["optionList"]["option"]], ["client_debug"])
+
+    def test_option_sources_and_client_env_of_the_recorder_go(self):
+        def ev(sources, env):
+            return [{"id": {"structuredCommandLine": {"commandLineLabel": "canonical"}}, "structuredCommandLine": {
+                "sections": [{"optionList": {"option": [
+                    {"combinedForm": "--option_sources=" + sources, "optionName": "option_sources",
+                     "optionValue": sources},
+                    {"combinedForm": "--client_env=PATH=/usr/bin:/bin", "optionName": "client_env",
+                     "optionValue": "PATH=/usr/bin:/bin"}] + [
+                    {"combinedForm": "--client_env=" + e, "optionName": "client_env", "optionValue": e} for e in env]}}]}},
+                {"id": {"unstructuredCommandLine": {}}, "unstructuredCommandLine": {
+                    "args": ["build", "--client_env=PATH=/usr/bin:/bin"] + ["--client_env=" + e for e in env]}}]
+        oracle = surfaces.normalise_bep(CTX, ev("home_Urc::output_Uuser_Uroot::system_Urc:", []))
+        daemon = surfaces.normalise_bep(CTX, ev("home_Urc::max_Uidle_Usecs::output_Uuser_Uroot::system_Urc:",
+                                                ["BLAZE_SERVER_MODE=daemon"]))
+        self.assertEqual(oracle, daemon)
+        opt = oracle['{"structuredCommandLine":{"commandLineLabel":"canonical"}}']["structuredCommandLine"][
+            "sections"][0]["optionList"]["option"][0]
+        self.assertEqual(opt["optionValue"], "home_Urc::output_Uuser_Uroot::system_Urc:")
+        # Any other source or variable is still compared.
+        self.assertNotEqual(oracle, surfaces.normalise_bep(CTX, ev("home_Urc::batch::output_Uuser_Uroot::system_Urc:", [])))
+        self.assertNotEqual(oracle, surfaces.normalise_bep(CTX, ev("home_Urc::output_Uuser_Uroot::system_Urc:",
+                                                                   ["BLAZE_OTHER=1"])))
+
+    def test_other_startup_options_still_differ(self):
+        ev = self.events(True)
+        ev[0]["optionsParsed"]["explicitStartupOptions"].append("--batch")
+        self.assertNotEqual(surfaces.normalise_bep(CTX, self.events(False)), surfaces.normalise_bep(CTX, ev))
+
+
+# The oracle's buildMetrics of brotli (oracle-9.3.2, raw/bep.json), shortened.
+ORACLE_METRICS = {
+    "actionSummary": {"actionsCreated": "61", "actionsExecuted": "53", "actionData": [
+        {"mnemonic": "CppCompile", "actionsExecuted": "36", "firstStartedMs": "1794967231810",
+         "lastEndedMs": "1794967232831", "systemTime": "0.825s", "userTime": "4.003s", "actionsCreated": "36"}],
+        "actionCacheStatistics": {"sizeInBytes": "9367", "misses": 53, "loadTimeInMs": "1"}},
+    "memoryMetrics": {"garbageMetrics": [{"type": "G1 Eden Space", "garbageCollected": "266338304"},
+                                         {"type": "G1 Survivor Space", "garbageCollected": "6498544"}]},
+    "targetMetrics": {"targetsConfigured": "595", "targetsConfiguredNotIncludingAspects": "594"},
+    "packageMetrics": {"packagesLoaded": "89"},
+    "timingMetrics": {"cpuTimeInMs": "7620", "wallTimeInMs": "2063", "analysisPhaseTimeInMs": "679",
+                      "executionPhaseTimeInMs": "1674", "actionsExecutionStartInMs": "382",
+                      "criticalPathTime": "1.041423539s"},
+    "cumulativeMetrics": {"numAnalyses": 1, "numBuilds": 1},
+    "artifactMetrics": {"sourceArtifactsRead": {"sizeInBytes": "2328125", "count": 115},
+                        "outputArtifactsSeen": {"sizeInBytes": "7671064", "count": 89},
+                        "outputArtifactsFromActionCache": {},
+                        "topLevelArtifacts": {"sizeInBytes": "11766429", "count": 165}},
+    "networkMetrics": {"systemNetworkStats": {"bytesSent": "10", "bytesRecv": "12"}},
+    "workerPoolMetrics": {},
+    "dynamicExecutionMetrics": {},
+    "buildGraphMetrics": {"actionCount": 61, "postInvocationSkyframeNodeCount": 7305,
+                          "evaluatedValues": [{"skyfunctionName": "FILE", "count": "641"}]},
+}
+
+
+def _metrics(bm):
+    ev = [{"id": {"buildMetrics": {}}, "buildMetrics": bm}]
+    return surfaces.normalise_bep(CTX, ev)['{"buildMetrics":{}}']["buildMetrics"]
+
+
+def _changed(**paths):
+    """ORACLE_METRICS with the dotted paths set to new values (None deletes)."""
+    bm = json.loads(json.dumps(ORACLE_METRICS))
+    for path, value in paths.items():
+        parts = path.split("__")
+        d = bm
+        for p in parts[:-1]:
+            d = d[p]
+        if value is None:
+            del d[parts[-1]]
+        else:
+            d[parts[-1]] = value
+    return bm
+
+
+class BuildMetricsTest(unittest.TestCase):
+    """Referee batch 3, item 3 (review 2026-11-25-reporting S1-1): buildMetrics sub-messages are
+    no longer dropped. Counters are compared; machine measurements by presence."""
+
+    def test_empty_artifact_metrics_is_a_difference(self):
+        # The review's case: Blaze printed `artifactMetrics: {}` and the referee called it equal.
+        self.assertNotEqual(_metrics(ORACLE_METRICS), _metrics(_changed(artifactMetrics={})))
+
+    def test_artifact_counts_are_compared(self):
+        bm = _changed(artifactMetrics__outputArtifactsSeen={"sizeInBytes": "7671064", "count": 88})
+        self.assertNotEqual(_metrics(ORACLE_METRICS), _metrics(bm))
+        bm = _changed(artifactMetrics__sourceArtifactsRead={"sizeInBytes": "2328126", "count": 115})
+        self.assertNotEqual(_metrics(ORACLE_METRICS), _metrics(bm), "source sizes do not depend on paths")
+
+    def test_path_dependent_sizes_are_masked(self):
+        bm = _changed(artifactMetrics__outputArtifactsSeen={"sizeInBytes": "7671088", "count": 89},
+                      artifactMetrics__topLevelArtifacts={"sizeInBytes": "11766441", "count": 165})
+        self.assertEqual(_metrics(ORACLE_METRICS), _metrics(bm))
+        got = _metrics(ORACLE_METRICS)["artifactMetrics"]
+        self.assertEqual(got["topLevelArtifacts"], {"sizeInBytes": "<path-dependent>", "count": 165})
+        self.assertEqual(got["sourceArtifactsRead"], {"sizeInBytes": "2328125", "count": 115})
+        self.assertEqual(got["outputArtifactsFromActionCache"], {})
+
+    def test_machine_measurements_are_compared_by_presence(self):
+        bm = _changed(timingMetrics__wallTimeInMs="9999", timingMetrics__criticalPathTime="3s",
+                      memoryMetrics__garbageMetrics=[{"type": "x", "garbageCollected": "1"}],
+                      networkMetrics__systemNetworkStats={"bytesSent": "1", "bytesRecv": "2"})
+        self.assertEqual(_metrics(ORACLE_METRICS), _metrics(bm))
+        got = _metrics(ORACLE_METRICS)
+        self.assertEqual(got["timingMetrics"]["wallTimeInMs"], "<measured>")
+        self.assertEqual(got["memoryMetrics"], {"garbageMetrics": "<list>"})
+        self.assertEqual(got["workerPoolMetrics"], {})
+        for absent in (dict(timingMetrics__wallTimeInMs=None), dict(timingMetrics={"analysisPhaseTimeInMs": "1"}),
+                       dict(memoryMetrics={}), dict(networkMetrics=None), dict(dynamicExecutionMetrics=None)):
+            self.assertNotEqual(_metrics(ORACLE_METRICS), _metrics(_changed(**absent)), absent)
+
+    def test_cumulative_metrics_are_compared(self):
+        self.assertNotEqual(_metrics(ORACLE_METRICS),
+                            _metrics(_changed(cumulativeMetrics={"numAnalyses": 2, "numBuilds": 1})))
+
+    def test_counters_compared_as_before_and_wall_clock_keys_dropped(self):
+        got = _metrics(ORACLE_METRICS)
+        self.assertEqual(got["actionSummary"]["actionData"],
+                         [{"mnemonic": "CppCompile", "actionsExecuted": "36", "actionsCreated": "36"}])
+        self.assertEqual(got["actionSummary"]["actionCacheStatistics"], {"sizeInBytes": "9367", "misses": 53})
+        self.assertEqual(got["targetMetrics"], ORACLE_METRICS["targetMetrics"])
+        self.assertNotEqual(got, _metrics(_changed(packageMetrics={"packagesLoaded": "88"})))
+
+    def allow_result(self, bm):
+        a = surfaces.normalise_bep(CTX, [{"id": {"buildMetrics": {}}, "buildMetrics": ORACLE_METRICS}])
+        b = surfaces.normalise_bep(CTX, [{"id": {"buildMetrics": {}}, "buildMetrics": bm}])
+        return ocmp.compare_surface("brotli", "bep", {"status": "OK", "items": a}, {"status": "OK", "items": b},
+                                    ocmp.AllowList())
+
+    def test_volatile_counters_stay_allowed_by_name_and_nothing_else(self):
+        # evaluatedValues is a declared deviation (decisions 2026-11-26): excused by name only.
+        r = self.allow_result(_changed(buildGraphMetrics__evaluatedValues=[{"skyfunctionName": "FILE", "count": "9"}],
+                                       buildGraphMetrics__postInvocationSkyframeNodeCount=6377))
+        self.assertEqual((r["status"], r["counts"]["ALLOWED"]), ("MATCH", 1))
+        r = self.allow_result(_changed(buildGraphMetrics__evaluatedValues=[{"skyfunctionName": "FILE", "count": "9"}],
+                                       artifactMetrics={}))
+        self.assertEqual((r["status"], r["counts"]["DIFF"]), ("DIFF", 1))
+
+
+class BuildStderrModeTest(unittest.TestCase):
+    """Referee batch 3, item 4: the server-start line counts in build_stderr only for a recording
+    made on Blaze's persistent server; one-process and older recordings drop it as before."""
+
+    def extract(self, manifest):
+        import os
+        import shutil
+        import tempfile
+        rd = tempfile.mkdtemp(prefix="oracle-test-")
+        self.addCleanup(shutil.rmtree, rd)
+        for sub in ("raw", "norm"):
+            os.makedirs(os.path.join(rd, sub))
+        with open(os.path.join(rd, "raw", "build.stderr"), "w") as f:
+            f.write("Starting local Bazel server (9.3.2) and connecting to it...\nINFO: Found 1 target...\n")
+        return surfaces.s_build_stderr(rd, dict(manifest, commands=[{"name": "build", "exit_code": 0}]), CTX)
+
+    def test_dropped_without_a_daemon(self):
+        for m in ({}, {"server": {"blaze_server_mode": None}}, {"server": {"blaze_server_mode": "inprocess"}}):
+            self.assertEqual(self.extract(m), {"INFO: Found 1 target...": 1}, m)
+
+    def test_kept_in_daemon_mode(self):
+        self.assertEqual(self.extract({"server": {"blaze_server_mode": "daemon"}}),
+                         {"Starting local Bazel server (9.3.2) and connecting to it...": 1,
+                          "INFO: Found 1 target...": 1})
+
+
 class DefaultOverrideTest(unittest.TestCase):
     def test_groups_sorted_order_within_group_kept(self):
         a = ["test", "--x", "--default_override=1:build:macos=--m", "--default_override=1:build=--a",

@@ -19,6 +19,17 @@ REPO_CACHE = os.path.join(CACHE, "repo-cache")
 CORPUS_MANIFEST = os.path.join(REPO_ROOT, "corpus", "projects.json")
 CORPUS_SUMMARIES = os.path.join(REPO_ROOT, "corpus", "oracle")
 CORPUS_SCORES = os.path.join(REPO_ROOT, "corpus", "scores")
+# Staging a referee change (README "Staging a referee change"): with BLAZE_ORACLE_STAGE=<dir>,
+# recordings are read from and renormalised in <dir>/oracle-records, the reference is checked
+# against the summaries in <dir>/corpus-oracle and `scoreboard --write` writes to <dir>/scores,
+# so that copies can be renormalised and scored without touching the shared recordings or the
+# committed files. Every report says so (oracle_report.warning_lines).
+STAGE = os.environ.get("BLAZE_ORACLE_STAGE") or None
+if STAGE:
+    STAGE = os.path.abspath(os.path.expanduser(STAGE))
+    RECORDS = os.path.join(STAGE, "oracle-records")
+    CORPUS_SUMMARIES = os.path.join(STAGE, "corpus-oracle")
+    CORPUS_SCORES = os.path.join(STAGE, "scores")
 ALLOW_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "allow.json")
 REFERENCE_LABEL = "oracle-9.3.2"
 
@@ -232,3 +243,51 @@ def head_version_differs(path):
             return f.read() != head
     except OSError:
         return True
+
+
+# ---------------------------------------------------------------------------------------------
+# server state (audit 3, B1; referee batch 3)
+
+
+
+def blaze_server_mode(manifest):
+    """The BLAZE_SERVER_MODE the recorder gave the binary ("daemon"), or None (unset)."""
+    return ((manifest or {}).get("server") or {}).get("blaze_server_mode")
+
+
+def client_started_server(stderr_text):
+    """Whether the client printed its server-start line ("Starting local Bazel server (9.3.2) and
+    connecting to it..."; Blaze's one-process mode prints it on every command)."""
+    from normalise import SERVER_START_RE
+    return bool(SERVER_START_RE.search(stderr_text or ""))
+
+
+def server_state(pid_before, pid_after, start_line):
+    """"warm" when the same server process was alive before and after the command and the client
+    did not start one; "cold" otherwise (a new server, a restarted one, or no server at all)."""
+    if pid_before is not None and pid_before == pid_after and not start_line:
+        return "warm"
+    return "cold"
+
+
+def server_states(label, project, manifest):
+    """{command: [state, source]} for every command of a recording, in order.
+
+    source "pid": recorded by `record` (batch 3 or later) from the server's pid file before and
+    after the command and the client's server-start line. source "stderr": a recording made
+    before that; the state is read from raw/<command>.stderr (cold when the client printed its
+    server-start line, warm otherwise). None: neither is available.
+    """
+    out = {}
+    for c in (manifest or {}).get("commands", []):
+        s = c.get("server")
+        if isinstance(s, dict) and s.get("state"):
+            out[c["name"]] = [s["state"], "pid"]
+            continue
+        path = os.path.join(record_dir(label, project), "raw", c["name"] + ".stderr")
+        if os.path.isfile(path):
+            with open(path, errors="replace") as f:
+                out[c["name"]] = ["cold" if client_started_server(f.read()) else "warm", "stderr"]
+        else:
+            out[c["name"]] = None
+    return out

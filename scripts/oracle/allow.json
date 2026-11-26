@@ -30,14 +30,22 @@
    "only_fields": [
     "buildMetrics\\.buildGraphMetrics\\.(evaluatedValues|builtValues|changedValues|cleanedValues|dirtiedValues)(\\[\\d+\\](\\.count|\\.skyfunctionName)?)?",
     "buildMetrics\\.buildGraphMetrics\\.postInvocationSkyframeNodeCount",
-    "buildMetrics\\.actionSummary\\.actionCacheStatistics\\.sizeInBytes"
+    "buildMetrics\\.actionSummary\\.actionCacheStatistics\\.sizeInBytes",
+    "buildMetrics\\.memoryMetrics\\.garbageMetrics"
+   ],
+   "only_fields_in_daemon_mode": [
+    "buildMetrics\\.buildGraphMetrics\\.(evaluatedValues|dirtiedValues)(\\[\\d+\\](\\.count|\\.skyfunctionName)?)?",
+    "buildMetrics\\.actionSummary\\.actionCacheStatistics\\.sizeInBytes",
+    "buildMetrics\\.memoryMetrics\\.garbageMetrics"
    ],
    "max_items": {
     "brotli": 1,
     "re2": 1
    },
-   "condition": "The item is the buildMetrics event and the only differing fields are the per-SkyFunction evaluated/built/changed/cleaned/dirtied counts (and their list order), the post-invocation Skyframe node count, or the action cache's sizeInBytes.",
-   "reason": "Skyframe evaluates in parallel, so how many nodes of each SkyFunction are evaluated or dirtied in one invocation varies between identical runs (re2: a few per cent). The serialized action cache size also varies by a few hundred bytes on re2 (161890 vs 161688) with identical actions and outputs. Action, artifact, target, package and per-mnemonic action counts in the same event are still compared."
+   "condition": "The item is the buildMetrics event and the only differing fields are the per-SkyFunction evaluated/built/changed/cleaned/dirtied counts (and their list order), the post-invocation Skyframe node count, or the action cache's sizeInBytes; or memoryMetrics.garbageMetrics is set on one side only (memoryMetrics itself must be present on both).",
+   "reason": "Skyframe evaluates in parallel, so how many nodes of each SkyFunction are evaluated or dirtied in one invocation varies between identical runs (re2: a few per cent). The serialized action cache size also varies by a few hundred bytes on re2 (161890 vs 161688) with identical actions and outputs. Action, artifact, target, package and per-mnemonic action counts in the same event are still compared.",
+   "jvm_reason": "Root's ruling 2026-11-26 (same class as D15): garbageMetrics lists the JVM's garbage-collector memory pools (G1 Eden Space, Metaspace, ...). Blaze has no JVM and prints memoryMetrics without it. A declared deviation of Blaze, not a variation of the oracle: the item counts as allowed, never as matching. Every other memoryMetrics field is still compared by presence.",
+   "daemon_mode_reason": "Referee batch 3: in oracle-9.3.2, -rerun and -check (brotli, re2) only the evaluatedValues counts, the order of dirtiedValues and (re2) the action cache sizeInBytes vary; builtValues, changedValues and cleanedValues are equal per SkyFunction and in order, and postInvocationSkyframeNodeCount is equal (brotli 7305, re2 23543). Those four fields excuse only a one-process Blaze, which runs the build on a cold server while the oracle's runs on the warm server mod graph started; they are inactive for a candidate recorded in daemon mode."
   }
  ]
 }

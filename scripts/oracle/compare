@@ -140,6 +140,8 @@ def main():
     print("compare %s (A) vs %s (B)\n" % (args.a, args.b))
     for line in orep.provenance_lines(cmp):
         print(line)
+    for line in orep.server_lines(cmp):
+        print(line)
     for line in orep.warning_lines(cmp):
         print("WARNING: " + line)
     for line in orep.exception_lines(cmp):

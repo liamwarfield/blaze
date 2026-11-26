@@ -139,5 +139,20 @@ class StderrSummaryTest(unittest.TestCase):
         self.assertEqual(stderr_summary(ctx(), text), {"INFO: server pid=<PID> x": 2})
 
 
+class ServerStartLineTest(unittest.TestCase):
+    """Referee batch 3: the client's server-start line has no prefix and is dropped, except for a
+    recording made on Blaze's persistent server, which asks to keep it."""
+
+    TEXT = "Starting local Bazel server (9.3.2) and connecting to it...\nINFO: Found 3 targets...\n"
+
+    def test_dropped_by_default(self):
+        self.assertEqual(stderr_summary(ctx(), self.TEXT), {"INFO: Found 3 targets...": 1})
+
+    def test_kept_on_request(self):
+        self.assertEqual(stderr_summary(ctx(), self.TEXT, keep_server_start=True),
+                         {"Starting local Bazel server (9.3.2) and connecting to it...": 1,
+                          "INFO: Found 3 targets...": 1})
+
+
 if __name__ == "__main__":
     unittest.main()

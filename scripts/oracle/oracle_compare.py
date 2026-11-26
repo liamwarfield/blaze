@@ -48,6 +48,12 @@ class AllowList:
                   it is reported as violated and its items count as differences.
       condition   the condition above, in words
       reason      why real Bazel differs from itself here
+      only_fields_in_daemon_mode
+                  optional (referee batch 3): the only_fields that apply when the candidate was
+                  recorded on Blaze's persistent server (`record --blaze-server daemon`). An
+                  only_fields regex left out of it exists only because a one-process Blaze runs
+                  every command on a cold server while the oracle's build runs on a warm one, and
+                  is inactive in daemon mode. Every other mode uses only_fields.
     """
 
     def __init__(self, path=oc.ALLOW_FILE):
@@ -69,13 +75,16 @@ class AllowList:
                 "{project: non-negative integer}" % e.get("id"))
         e["_item_re"] = re.compile(e.get("item", ".*"))
         e["_field_res"] = [re.compile(f) for f in e.get("only_fields", [])]
+        if "only_fields_in_daemon_mode" in e:
+            e["_daemon_field_res"] = [re.compile(f) for f in e["only_fields_in_daemon_mode"]]
         return e
 
     @staticmethod
     def cap(entry, project):
         return entry["max_items"].get(project, 0)
 
-    def match(self, project, surface, key, kind, diff_paths):
+    def match(self, project, surface, key, kind, diff_paths, mode=None):
+        """The entry that excuses this item, or None. mode: the candidate's blaze_server_mode."""
         for e in self.entries:
             if e.get("surface") != surface:
                 continue
@@ -86,8 +95,9 @@ class AllowList:
                 continue
             if not e["_item_re"].search(key):
                 continue
-            if kind == "DIFF" and e["_field_res"]:
-                if not diff_paths or not all(any(r.fullmatch(p) for r in e["_field_res"]) for p in diff_paths):
+            field_res = e["_daemon_field_res"] if mode == "daemon" and "_daemon_field_res" in e else e["_field_res"]
+            if kind == "DIFF" and field_res:
+                if not diff_paths or not all(any(r.fullmatch(p) for r in field_res) for p in diff_paths):
                     continue
             return e
         return None
@@ -227,11 +237,12 @@ def _empty_check(surface, exits_a, exits_b):
     return None
 
 
-def compare_surface(project, surface, a, b, allow, exits_a=None, exits_b=None):
+def compare_surface(project, surface, a, b, allow, exits_a=None, exits_b=None, mode_b=None):
     """Compare two loaded surface files. Returns a result dict with counts and per-item details.
 
     exits_a/exits_b: {command: exit code} of each side (its exit_codes items), used to decide
-    whether an empty-vs-empty surface is genuine.
+    whether an empty-vs-empty surface is genuine. mode_b: the candidate's blaze_server_mode
+    (AllowList.match).
     """
     res = {"project": project, "surface": surface, "status_a": a.get("status"), "status_b": b.get("status"),
            "counts": {k: 0 for k in RESULT_KINDS}, "total_a": len(a.get("items", {})),
@@ -260,7 +271,7 @@ def compare_surface(project, surface, a, b, allow, exits_a=None, exits_b=None):
             kind = "MISSING" if key in ia else "EXTRA"
             paths = []
         # The allow list sees every differing path; only the stored and printed list is cut.
-        entry = allow.match(project, surface, key, kind, paths)
+        entry = allow.match(project, surface, key, kind, paths, mode_b)
         detail = {"key": key, "kind": kind, "paths": paths[:50], "paths_total": len(paths)}
         if entry is not None:
             per_entry.setdefault(entry["id"], []).append(detail)
@@ -329,6 +340,12 @@ def provenance(label, project, manifest):
         "extractor_sha256": manifest.get("extractor_sha256"),
         "steps": manifest.get("steps"),
         "exceptions": manifest_exceptions(manifest),
+        # Referee batch 3: BLAZE_SERVER_MODE the recorder set (None: unset), what it saw of the
+        # server per command (oc.server_states), and the final shutdown.
+        "server_mode": oc.blaze_server_mode(manifest),
+        "server_states": oc.server_states(label, project, manifest),
+        "shutdown": {k: v for k, v in (manifest.get("server") or {}).items()
+                     if k in ("shutdown_exit_code", "alive_after_shutdown")} or None,
     }
 
 
@@ -410,7 +427,7 @@ def compare_labels(label_a, label_b, projects=None, surfaces=None, allow=None):
         excs = [(side, e) for side in ("a", "b") for e in cmp.provenance[p][side].get("exceptions", [])]
         for s in scope_surfaces:
             r = compare_surface(p, s, load_surface(label_a, p, s, ma, sa), load_surface(label_b, p, s, mb, sb),
-                                allow, exits_a, exits_b)
+                                allow, exits_a, exits_b, oc.blaze_server_mode(mb))
             r["exceptions"] = [{"side": side, "id": e["id"]} for side, e in excs if s in e["surfaces"]]
             cmp.results.append(r)
     return cmp
