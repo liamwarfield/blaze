@@ -200,3 +200,143 @@ The tool classes `args` and `re2-test` as IDENTICAL, and `batch`, `re2-test-args
   executor creation. Not changed.
 - `build.rs:414`: the `Usage: … build <options> <targets>` warning is `BuildCommand.exec`'s
   only. Before, `print_action` with no targets printed it; the oracle does not.
+
+## Round 2
+
+Implementer `commands-fix-2` (Opus 5.5), 2026-11-26. Answers
+`docs/reviews/2026-11-25-commands-round2.md` (STOP at `f71e692` on R1).
+
+Tree: HEAD `316720a` plus uncommitted work; other agents' uncommitted changes are in the same
+working tree. Binary: `target/debug/blaze` of that tree, copied to
+`~/.cache/blaze/work/commands-fix-2/bin/blaze`.
+
+- The R1, R2 and R4 recordings were taken on sha256 `18a546a439e744d3…`.
+- They were recorded again on `d54ff2b8cbd98d87…` (after the last change of this round) with
+  the same results. The one exception is the `fetch` case below.
+- Oracle: the pinned `bazel-9.3.2-linux-x86_64`, with `--batch` and one output user root per
+  side.
+- "Filtered stderr" drops:
+  - the oracle's JVM warning;
+  - Blaze's server-start and install-extraction lines;
+  - the timer-driven progress lines (`Loading:`, `Computing main repo mapping:`,
+    `Analyzing:`, `currently loading`, empty lines);
+  - the times (replaced by `Ns`).
+- Raw files: `~/.cache/blaze/work/commands-fix-2/out/`.
+
+### R1 (S1): `INFO: Analyzed 0 targets (...)` with an empty target set
+
+The event, and everything that hangs on it, is now posted only where Java posts it.
+
+- `crates/blaze_sky_top/src/build_view.rs:92`: `AnalysisResult::has_top_level_keys` (new).
+  `build_view.rs:568` records the number of top-level keys: configured-target keys plus
+  top-level aspect keys, Java's `topLevelKeys` (`SkyframeBuildView.java:695`).
+- `crates/blaze_sky_top/src/analysis_phase_runner.rs:244`:
+  `analysis_phase_complete_event_posted`.
+  - Without merged analysis and execution (`--nobuild`, `cquery`), always: as
+    `AnalysisPhaseRunner.java:429`.
+  - With it, only when there is a top-level key. `AnalysisOperationWatcher.java:70-86` calls
+    `analysisFinishedCallback` (which posts `AnalysisGraphStatsEvent` and
+    `AnalysisPhaseCompleteEvent`, `SkyframeBuildView.java:911-957`) only when the last expected
+    key concludes. With an empty set it returns at once and never calls it.
+  - `analysis_phase_runner.rs:206` posts the event (the UI's `Analyzed ...` line) under that
+    condition.
+- `crates/blaze_runtime/src/commands/bep.rs:1704`: the metrics collector's analysis-phase data
+  (`onAnalysisPhaseComplete`) and the graph stats are recorded under the same condition. The
+  `AnalysisPhaseStartedEvent` (`BuildView.update`) is still always posted.
+
+Evidence: workspace `commands-fix-1/ws`. Each command was run with no targets and with
+`-- //pkg:all -//pkg:all` (a pattern that expands to nothing).
+
+| Command | Exit (oracle = Blaze) | stdout | filtered stderr |
+| --- | --- | --- | --- |
+| build | 0, 0 | identical | identical |
+| test | 4, 4 | identical | identical |
+| run | 2, 2 | identical | identical |
+| fetch | 0, 0 | identical | identical (see the note) |
+| cquery | 2, 0 | identical | identical |
+| print_action | 1, 1 | identical | identical |
+
+- Neither side prints `Analyzed` for `build`, `test` or `print_action`.
+- Both print `INFO: Analyzed 0 targets (...)` for `fetch` with a pattern and for `cquery` with
+  a pattern. Those requests are not merged (`fetch` injects `--nobuild`), so
+  `AnalysisPhaseRunner` posts the event, as the Java reads.
+- Note: on the re-recording, `fetch` with no targets differs by two `DEBUG:` lines about
+  `pybind11`. The oracle's output base fetched that repository on its first run; Blaze's
+  output base had fetched it in the first recording, which was identical. This is a difference
+  of output-base state, not of the code.
+
+### R2: `build --noanalyze --nobuild` printed no `Critical Path`
+
+- Oracle probe: `INFO: Elapsed time: 0.904s, Critical Path: 0.00s`, then `INFO: 0 processes.`
+  The finding stands.
+- Change:
+  - `crates/blaze_sky_top/src/build_tool.rs:421`: `AnalysisPostProcessor::process_without_analysis`
+    (new, default no-op).
+  - `build_tool.rs:828` calls it when the request does not analyze, as
+    `new ExecutionTool(env, request)` runs outside `if (performAnalysisPhase)`
+    (`BuildTool.java:520`).
+  - `crates/blaze_runtime/src/commands/build.rs:1172`: `ExecutionToolConstruction` implements
+    it with the same construction `process` does (`BuildSummaryStatsModule.executorInit` and the
+    construction checks).
+- Evidence: same probe on Blaze. `INFO: Elapsed time: 0.171s, Critical Path: 0.00s`, exit 0
+  on both sides, filtered stderr identical, stdout identical (empty).
+
+### R4: project-file flags posted no `CanonicalCommandLineEvent`
+
+- `crates/blaze_runtime/src/commands/bep.rs:1494`: `post_project_canonical_command_line`.
+  - It posts a non-replaceable `CanonicalCommandLineEvent` of the updated parser, as
+    `BuildTool.java:375-390`. The streamer drops the dispatcher's tentative one.
+  - `UpdateOptionsEvent` has no subscriber at the pin (searched: only its declaration and
+    `BuildTool` name it), so it is not posted.
+- `crates/blaze_runtime/src/project_options.rs:67`: the applier calls that poster after the
+  native and Starlark flags are parsed. `build.rs` builds the poster when the command has a
+  stream.
+- The `project_evaluated` hook (`build_tool.rs`, `bep.rs:2227`, `cquery.rs`) now takes whether
+  project flags were applied. It releases the tentative event only when none were
+  (`ReleaseReplaceableBuildEvent`, `BuildTool.java:391-397`). Before, it always released it.
+- Evidence:
+  - Workspace `commands-fix-1/wsproj2`: PROJECT.scl buildable unit with
+    `--compilation_mode=opt` and `--run_under=echo under`; `build //test:g
+    --build_event_json_file=...`.
+  - Both streams have the same 25 events in the same order (ids compared).
+  - The canonical command line's sections are identical after the side's paths and install
+    hash. The command options end in `--compilation_mode=opt`, `--run_under=echo under` on both
+    sides; the only other difference is `--startup_time` (2 against 6 ms).
+
+### R3
+
+Ruled by root: `config` and the graph dumps keep reporting an empty server until the kept graph
+(package I3) exists. No change.
+
+### S4: two ports of the `config` output classes
+
+They are equivalent for every reachable input, so the duplicate is gone. The differences, all
+unreachable:
+
+- Mine failed on a duplicate user-defined key: Starlark labels and `--define:` keys cannot
+  collide.
+- `blaze_build_config` checks the simple class name `CoreOptions` where mine compared the full
+  name: there is one such class.
+- Mine sorted by UTF-16 code units: the names are ASCII.
+
+`crates/blaze_runtime/src/commands/config.rs` now uses
+`blaze_build_config::config_output` (`ConfigurationForOutput`, `FragmentForOutput`,
+`FragmentOptionsForOutput`, `text_write_configuration_ids`, `text_write_configuration`,
+`json_write_configuration`, `gson_string`). It keeps only what that module lacks:
+
+- the JSON list of configurations;
+- the JSON ids object;
+- the text and JSON diff writers;
+- the selection and diff logic of `ConfigCommand`.
+
+`config.rs` went from 1,094 to 654 lines.
+
+### Found while working on Part B
+
+On the non-merged path (`--nobuild`), Blaze never set the result's configuration, actual
+targets and test targets. Java sets them once the analysis returns
+(`BuildTool.java:540-542`).
+
+- Change: `crates/blaze_runtime/src/commands/build.rs:1159`.
+- Before the fix, `vendor <targets>` (`TargetFetcher` injects `--nobuild`) vendored nothing.
+  This was 6 of the 19 functions of `bazel_vendor_test.py`.

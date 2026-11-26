@@ -1703,3 +1703,144 @@ the downloader: 18 across the suite), credential helper (10 across the suite), r
   unchanged); `compare-grpc-log` takes `$BLAZE_GRPC_LOG_DUMP`.
 - Disk: my output roots are removed; `~/.cache/blaze/work/remote-r3/` keeps 4.8 GB of run results,
   workspace copies and worker caches.
+
+# Round 4
+
+Response to the round-4 review (STOP at `5f68157` on Q1). Code: the shared working tree, now in
+root's checkpoint `f71fc675` (HEAD `18b4d4f6`, unchanged since for these files). Binary for the
+end-to-end runs: `~/.cache/blaze/work/remote-4/blaze-1` (sha256 `4b67c340e0c968b8…`, release build
+of the shared tree at 12:50 on 2026-11-26, which holds every change listed here).
+
+## The referee for pre-v3 certificates: the oracle's own JDK
+
+The JDK 25 sources are not on this machine (the review read JDK 11's `src.zip`). Instead of
+reasoning from JDK 11, every check below was put to the JDK that Bazel 9.3.2 runs on: the
+oracle's embedded Zulu 25.0.2 (`<install base>/embedded_tools/jdk`).
+
+- `scripts/jdk-certs/generate.py` (new; `help`) builds 46 end-entity certificates by hand (DER
+  written field by field, so that malformed structures can be made), signed by a test CA or by
+  themselves, each with a host name to check.
+- `scripts/jdk-certs/JdkCertProbe.java` runs, per certificate, what
+  `X509TrustManagerImpl.checkTrusted` runs for a TLS client: `CertificateFactory("X.509")`
+  (X509Factory, X509CertImpl, X509CertInfo), the PKIX trust manager over the case's roots
+  (`checkServerTrusted`: PKIXValidator, EndEntityChecker), then
+  `HostnameChecker.getInstance(TYPE_TLS).match(host, cert, AnchorCertificates.contains(anchor))`.
+  `scripts/jdk-certs/run` records the verdicts in
+  `crates/blaze_remote/tests/data/jdk_cert_fixtures/expected.tsv` (36 ACCEPT/REJECT lines with
+  the JDK's exception text).
+- `crates/blaze_remote/tests/jdk_server_cert_fixtures_test.rs` `verdicts_match_the_jdk` fails
+  if Blaze accepts any case the JDK rejects, or rejects a case the JDK accepts that is not in
+  its list of documented stricter cases. Result: 46 of 46 consistent (36 identical verdicts,
+  10 stricter, listed below).
+
+This also found a defect the review did not name: rustls' `ServerName` drops a trailing dot, so
+the verifier saw `localhost` for `localhost.`, which the JDK refuses ("Illegal given domain
+name"). The channel now hands the verifier the host as written
+(`JdkServerCertVerifier::with_requested_host`, `google_auth_utils.rs` `rustls_client_config`).
+
+## Q1 (S1). FIXED
+
+- (a) `parse_pre_v3_certificate` (`jdk_server_cert_verifier.rs:499`) parses the whole
+  `tbsCertificate`: nothing may follow the key of a v1 certificate (:562); a v2 certificate may
+  have `[1]` then `[2]` and nothing else (:570-582). Cases `v1_extensions`,
+  `v1_explicit_extensions` ("no more data allowed for version 1 certificate"), `v2_extensions`,
+  `v2_unique_ids_reversed`, `v2_trailing_integer` ("Extensions not allowed in v2 certificate"),
+  `v1_unique_id`: the JDK rejects, Blaze rejects; `v2_unique_ids`: both accept.
+- (b) the inner and outer AlgorithmIdentifiers are compared (:587). `alg_mismatch` (inner
+  sha384, outer and signature sha256) and `alg_mismatch_outer` (the reverse): "Signature
+  algorithm mismatch" on the JDK, rejected by Blaze. The comparison is by encoding: the JDK
+  takes absent parameters as equal to NULL (`alg_params_absent_inner`, JDK accepts), Blaze
+  rejects (stricter).
+- A pre-v3 certificate that fails to parse is now a `BadEncoding` failure; it no longer falls
+  through to another path (`route`, :206, :230, :251, :271).
+
+## Q2 (S2). FIXED
+
+`parse_time` (:641) works on bytes: the last byte must be `Z` and every other byte an ASCII
+digit before any field is read; seconds above 59 and days not in their month are rejected.
+The full parser now runs only for a certificate whose version field is absent, 0 or 1
+(`certificate_version`, :391, reads no further than the version); v3 certificates go to webpki
+without being parsed here. No parser in the file indexes or slices without a bounds check, and
+none unwraps certificate data. Tests: `malformed_times_are_rejected_without_panic` (the review's
+12-byte UTCTime with `é` across the year, and 19 other malformed times);
+`malformed_inputs_never_panic` (every truncation, three bit flips at every byte and an extension
+of both Bazel test certificates through every parser and the three verifier entry points, plus
+hand-made DER headers, integers, OIDs and BMPStrings); fixture `time_non_ascii` (JDK: "Parse UTC
+time, invalid format"; Blaze: rejected).
+
+## Q3 (S2) and the S4. FIXED
+
+Direct trust compares the anchor's subject and the *contents* of its subjectPublicKeyInfo with
+the certificate's (:99), and, as `PKIXValidator.engineValidate` returns `chain[0]` unchecked,
+a directly trusted certificate gets no signature or validity check. Fixtures `direct` (issued by
+an unknown issuer, itself the anchor), `direct_expired`, `self_signed`, `self_signed_expired`:
+the JDK accepts all four, Blaze accepts all four; `self_signed_untrusted`: both reject.
+
+## Q4 (S2). FIXED
+
+`most_specific_common_name` (:701) takes the first commonName of the last RDN that has one.
+Fixtures `two_cn_first` (one RDN, CN=localhost then CN=other: both accept `localhost`),
+`two_cn_second` (CN=other then CN=localhost: both reject), `cn_last_rdn`, `cn_first_rdn`.
+BMPString values are now read (`cn_bmp`, both accept).
+
+## Every JDK check of a pre-v3 server certificate, and the Rust that does it
+
+Java lines are JDK 11 (`sun.security`); "case" is the fixture that shows the JDK 25.0.2 verdict.
+Rust lines are `crates/blaze_remote/src/authandtls/jdk_server_cert_verifier.rs` at `18b4d4f6`.
+
+| Step | JDK | Case | Rust |
+|---|---|---|---|
+| DER lengths: definite, ≤ 4 length bytes, no leading zero, long form only above 127 | `DerInputStream.getLength` | `non_minimal_length` (JDK 25 accepts: stricter) | `read_tlv` :314 |
+| Certificate: SEQUENCE of exactly tbs, AlgorithmIdentifier, BIT STRING | `X509CertImpl.java:1810-1836` | (all) | :499-514 |
+| Bytes after the certificate | X509Factory reads one block | `trailing_bytes` (JDK accepts: stricter) | :505 |
+| AlgorithmIdentifier: SEQUENCE { OID, one optional parameter }, no extra data; OID minimal | `AlgorithmId.java:397-421`, `ObjectIdentifier.check` | — | `algorithm_identifier` :451, `valid_oid` :434 |
+| Signature BIT STRING | `DerValue.getBitString` | — | `bit_string_bits` :624 (no unused bits: stricter) |
+| Version `[0] EXPLICIT INTEGER`, nothing after the INTEGER | `X509CertInfo.java:644`, `CertificateVersion.java:80` | `v1_explicit`, `v2` | :517-529 |
+| Version above 2 | parsed as v2 | `version_5` (JDK accepts: stricter, webpki rejects) | `route` :206 |
+| Serial: INTEGER, non-empty | `X509CertInfo.java:650`, `DerInputBuffer.java:150` | `serial_negative` (both accept), `serial_leading_zero` (JDK 25 accepts: stricter) | :534 |
+| Inner AlgorithmIdentifier | `X509CertInfo.java:653` | — | :538 |
+| Issuer Name: SEQUENCE OF SET OF SEQUENCE { OID, value }, no extra bytes | `X500Name.parseDER`, `RDN`, `AVA` | — | `name` :471 (empty RDN rejected: stricter) |
+| Empty issuer | `X509CertInfo.java:656-660` | `empty_issuer` | :542 |
+| Validity: SEQUENCE of exactly two UTCTime/GeneralizedTime | `CertificateValidity.java:77-101` | — | :546-552 |
+| Time: digits, month 1-12, day 1-31, hour < 24, minute and second < 60 | `DerInputBuffer.getTime` | `time_non_ascii`, `time_second_60` | `parse_time` :641; `time_no_seconds`, `time_offset`, `time_fraction`, `time_feb_31` (JDK accepts: stricter) |
+| Subject Name; empty subject in v1 | `X509CertInfo.java:666-671` | `empty_subject` (JDK rejects), `empty_subject_v2` (JDK rejects at the host step) | :553-556 |
+| subjectPublicKeyInfo: SEQUENCE { AlgorithmIdentifier, BIT STRING }, no extra data | `X509Key.parse` ("excess subject key") | — | :558-559, `parse_spki_contents` :610 |
+| v1: nothing after the key | `X509CertInfo.java:677-681` | `v1_extensions`, `v1_explicit_extensions`, `v1_unique_id` | :562 |
+| v2: `[1]`, `[2]` in order, nothing else | `X509CertInfo.java:686-707` | `v2_unique_ids`, `v2_unique_ids_reversed`, `v2_extensions`, `v2_trailing_integer` | :570-582 |
+| Inner and outer signature algorithm equal | `X509CertImpl.java:1842-1847` | `alg_mismatch`, `alg_mismatch_outer`, `alg_params_absent_inner` (stricter) | :587 |
+| Directly trusted (same subject and key as a trust anchor): no further check | `PKIXValidator.java:256` | `direct`, `direct_expired`, `self_signed`, `self_signed_expired` | :99 |
+| Chain of more than one certificate | ordering loop, partial validation, builder (`PKIXValidator.java:243-306`) | — | :108 (rejected: stricter) |
+| Issued by an anchor (subject = issuer, anchor key verifies the signature) | `PKIXValidator.java:269-275`, BasicChecker | `v1`, `bad_signature`, `self_signed_untrusted` | :122 (`verify_with` :283; names by encoding: stricter) |
+| Signature algorithm and key size allowed | AlgorithmChecker (`jdk.certpath.disabledAlgorithms`) | — | ring's set (SHA-256 and up, RSA ≥ 2048, P-256/P-384, Ed25519) is inside the JDK's |
+| Validity at the current time | `CertificateValidity.java:271-275` | `expired` | :146, :149 (the notAfter second itself is expired: stricter by < 1 s) |
+| KeyChecker, ConstraintsChecker, PolicyChecker, EndEntityChecker, revocation | nothing to check without extensions; revocation off in PKIXValidator | — | — |
+| Host name a valid SNI host name (`new SNIHostName(name)`: LDH labels of 1-63, no leading or trailing hyphen, no trailing dot) | `HostnameChecker.java:195` | `underscore`, `trailing_dot_host` | `match_dns` :772, `is_sni_host_name` :756, requested host :157 |
+| IP address host: needs an iPAddress subjectAltName | `HostnameChecker.java:100, 143` | `ip_host` | :162, :784 (all-digit names: stricter) |
+| Most specific CN: first CN of the last RDN that has one, a string type | `X500Name.java:756-766`, `RDN.java:324-331` | `two_cn_first`, `two_cn_second`, `cn_last_rdn`, `cn_first_rdn`, `cn_bmp` | `most_specific_common_name` :701 |
+| CN NFKC-normalized, a valid SNI host name, matched label by label ignoring case | `HostnameChecker.java:221-236, 271-310` | `v1_upper_host`, `wrong_host` | `is_matched` :808 (non-ASCII names: stricter) |
+| Wildcard CN (`hasIllegalWildcard`, public suffix list for public CAs) | `HostnameChecker.java:290` | `wildcard` (JDK accepts) | :808 (not matched: stricter; no longer a crash) |
+| Handshake signature with the certificate's key | done by the TLS engine | — | `verify_pre_v3_signature` :167, :264 |
+
+The ten stricter cases are the `STRICTER` list of the fixture test. Each fails closed (a
+handshake failure), none can accept what the JDK refuses.
+
+## The two older S4 items
+
+- `blaze_exec/src/exec/spawn_log_context.rs` `get_platform_proto`: the properties map is now
+  Java's `HashMap` order. The `JavaHashMap` port moved from `blaze_remote/src/platform_utils.rs`
+  to `blaze_util/src/java_hash_map.rs` (a crate both use); both ports of `getPlatformProto` build
+  the map in the same steps.
+- `blaze_runtime/src/commands/bep.rs:2053, 2091` (the comment on synchronous file transport
+  close): not mine; reported to root for its owner.
+
+## Tests (shared working tree, HEAD `18b4d4f6`, 13:00-13:40)
+
+- `scripts/cargo-capped test -p blaze_remote --no-fail-fast`: 653 passed, 1 failed, 61 ignored.
+  The failure is `remote_module_test::disk_cache_gc_policy_fails_loudly` (a `should_panic` on
+  `DiskCacheGarbageCollectorIdleTask.create`): another agent has ported that idle task in the
+  shared tree, so the test is stale; not changed by me.
+- `blaze_exec` 1003 / 0 / 126; `blaze_util` 67 / 0 / 0; `blaze_optdefs` 424 / 0 / 25;
+  `blaze_repo_fetch` 476 / 1 / 14 (the failure is `oracle_extraction_test`, which compares with
+  a stored oracle extraction of a different `platforms` release; unrelated).
+- `scripts/cargo-capped check --workspace --all-targets`: passes. clippy: clean for the changed
+  files.

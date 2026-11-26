@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Keep two CPU cores free for the rest of the machine (the user's rule, 2026-11-26).
+#
+# usage: scripts/cpu-cap [apply|status|help]
+#
+# apply (default): idempotent, quiet. Two runtime settings of the systemd user manager, both
+#   gone at logout or reboot and re-applied by the next call (scripts/cargo-capped calls this):
+#   1. CPUQuota = (cores - 2) x 100% on app-t3code-agents.slice, the slice every agent runs in.
+#   2. A drop-in for transient `run-*.service` units (what `systemd-run --user` creates: Cargo
+#      through scripts/cargo-capped, the test harness, comparison tools, agents' heavy jobs)
+#      that places them in app-t3code-agents-jobs.slice, a child of that slice, so that agents
+#      and their jobs share the one quota.
+#   Units started with an explicit name must pass --slice=app-t3code-agents-jobs.slice.
+# status: print the quota, the drop-in and the present CPU use of the slice.
+set -euo pipefail
+slice=app-t3code-agents.slice
+jobs_slice=app-t3code-agents-jobs.slice
+free_cores="${BLAZE_FREE_CORES:-2}"
+cores=$(nproc --all)
+quota=$(( (cores - free_cores) * 100 ))
+dropin_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/systemd/user/run-.service.d"
+dropin="$dropin_dir/50-blaze-cpu-cap.conf"
+case "${1:-apply}" in
+  help|-h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  status)
+    systemctl --user show "$slice" -p CPUQuotaPerSecUSec -p CPUWeight
+    if [ -f "$dropin" ]; then echo "drop-in: $dropin"; cat "$dropin"; else echo "drop-in: missing"; fi
+    exit 0 ;;
+  apply) ;;
+  *) echo "usage: scripts/cpu-cap [apply|status|help]" >&2; exit 2 ;;
+esac
+want="[Service]
+Slice=$jobs_slice"
+if [ ! -f "$dropin" ] || [ "$(cat "$dropin")" != "$want" ]; then
+  mkdir -p "$dropin_dir"
+  printf '%s\n' "$want" > "$dropin"
+  systemctl --user daemon-reload
+fi
+have=$(systemctl --user show "$slice" -p CPUQuotaPerSecUSec --value 2>/dev/null || true)
+if [ "$have" != "$(( cores - free_cores ))s" ]; then
+  systemctl --user set-property --runtime "$slice" "CPUQuota=${quota}%" >/dev/null
+fi

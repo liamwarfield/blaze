@@ -415,3 +415,11 @@ Each entry: date, decision, why, who decided.
   --noexperimental_merged_skyframe_analysis_execution` on a one-genrule workspace exits 0 on
   both binaries with the same Found, Elapsed and "Build completed" lines (before the fix Blaze
   stopped with "not ported yet"). Root.
+- 2026-11-26. The user's rule: leave two CPU cores open while this system works. Done with
+  `scripts/cpu-cap` (new): a runtime CPUQuota of (cores - 2) x 100% on
+  `app-t3code-agents.slice`, where every agent runs, and a runtime drop-in that places the
+  transient units of `systemd-run --user` (Cargo, the test harness, comparison tools, agents'
+  heavy jobs) in a child slice, so agents and jobs share one quota. Verified: a transient unit
+  reports the child slice and the slice's `cpu.max` is `1400000 100000` on this 16-core
+  machine. Both settings are runtime-only (gone at reboot) and re-applied by every
+  `scripts/cargo-capped` call. AGENTS.md has the rule. Checkpoint 37 is 63f2099. Root.

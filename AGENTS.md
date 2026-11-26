@@ -37,6 +37,11 @@ Read them again after a context reset.
   Do not set `CARGO_TARGET_DIR`.
 - Heavy jobs that are not Cargo (oracle runs, big scripts) run under
   `systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0 ...`.
+- Two CPU cores stay free for the user (the user's rule, 2026-11-26). `scripts/cpu-cap` caps the
+  agents' slice at cores minus two and routes every `systemd-run --user` job into it;
+  `scripts/cargo-capped` re-applies it. Never start a heavy process in a way that leaves that
+  slice (no `--slice=` of your own, no `setsid` tricks, no `--scope` elsewhere); a unit you
+  start with an explicit `--unit` name must pass `--slice=app-t3code-agents-jobs.slice`.
 - Wait for a job by blocking in the foreground (Bash timeout up to 600000 ms), not by short polls.
 - Tools live under `scripts/`, never in `/tmp`. Every tool prints usage with `help`.
 - `/tmp` is RAM-backed. Put binaries, recordings and run outputs under `~/.cache/blaze/work/<your
