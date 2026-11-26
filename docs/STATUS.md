@@ -1,7 +1,30 @@
 # Status
 
-Updated 2026-11-26, 12:10 (root). Numbers cite their evidence; history is in `git log` and
-`docs/decisions.md`.
+Updated 2026-11-26, 14:20 (root). **Paused.** A pause was requested at a weekly-quota reading
+of 21% (threshold 20%); the user had said shortly before that there was plenty of limit left,
+so root asked the user which holds and waits. No agent and no background job is running.
+
+## To resume
+
+1. `scripts/cpu-cap apply` (CPU and memory limits are runtime settings), then start the keeper
+   loop (`scripts/reap-idle-servers` every three minutes, `scripts/clean-target` below 95 GB).
+2. The working tree holds the uncommitted work of six implementers that were cancelled mid-run
+   (snapshot on the local branch `wip/pause-2026-11-26`; it does not compile: the half-written
+   `crates/blaze_exec/tests/dynamic_spawn_strategy_unit_test.rs`). Resume each by a message to
+   its thread ("continue where you stopped; first check your files"); thread ids are in the
+   session transcript and in T3's thread list under these titles: "Incremental builds: I3",
+   "Server: idle tasks, info items, default-switch preparation", "Workers: hardened sandbox,
+   unit tests, then dynamic execution" (first: make the tree compile), "Java rules and config"
+   (now path mapping), "Commands" (now the sweep of small families), "Remote: repo contents
+   cache" (first: the silent failure with the cache on).
+3. Then checkpoint 38 (tree compiles, clean-checkout build), referee guard, a full-suite run
+   (unit name `root-suite-5f68157`, which the agents' briefs watch; pass
+   `--slice=app-t3code-agents-jobs.slice`), and the re-review of remote round 5 (D16) plus first
+   reviews of vendor mode, extra actions and metrics, the query formatters and genquery
+   (`blaze_analysis::skyframe_env` has one `unsafe` block), credential helpers follow-ups.
+4. Queued for free builder slots (at most six): the Build Event Service client, the
+   key-tracking `ctx.var` dict (a starlark-rust patch, approved) and SkyQuery, the remaining
+   profiler sites and `--starlark_cpu_profile`, include scanning, action rewinding.
 
 ## State
 
@@ -80,7 +103,7 @@ Updated 2026-11-26, 12:10 (root). Numbers cite their evidence; history is in `gi
 | Bzlmod, repositories, downloader, client | 4 | PASS |
 | Analysis, configuration, cquery/aquery | 3 | PASS |
 | Execution, sandbox, build driver | 4 (at ef66f55) | PASS |
-| Remote cache and execution | 4 (at 5f68157) | STOP: Q1 (certificate verifier); round-3 items met |
+| Remote cache and execution | 5 (at e476a59) | STOP: T1-T5; verifier rewritten to ruling D16, re-review owed |
 | Comparison tools | audit round 3 (2026-11-26) | PASS; committed c99a912 |
 | Byte strings | 2 (at 780fceb) | PASS |
 | Incremental evaluator, package I1 | 1 (at e8b79c0) | PASS |
@@ -88,11 +111,11 @@ Updated 2026-11-26, 12:10 (root). Numbers cite their evidence; history is in `gi
 | Server and client | 2 (at 5f68157) | PASS; items owed before the default switch |
 | Loading, macros, Starlark front end | 2 (at 5f68157) | PASS; three S2 open |
 | Java rules and configuration | 2 (at 5f68157) | PASS; one S2 open |
-| Commands and options | 2 (at f71e692) | STOP: R1 |
-| Execution: workers, tests, templates | 2 (at f71e692) | STOP: E2-9, E2-11 |
-| Reporting, build events, query outputs | 2 (at 5f68157) | STOP: R2-1 |
-| Coverage | 1 (at 5f68157) | STOP: V1 (fixed by root, probe owed) |
-| Cgroups | 1 (at 5f68157) | STOP: C1 |
+| Commands and options | 3 (at e476a59) | PASS |
+| Execution: workers, tests, templates | 3 (at e476a59) | PASS; S2 items open |
+| Reporting, build events, query outputs | 3 (at e476a59) | PASS |
+| Coverage | 2 (at e476a59) | PASS |
+| Cgroups, hardened worker sandbox | 2 (at e476a59) | PASS |
 
 Open items the reviewers left as non-blocking are listed at the end of each report.
 

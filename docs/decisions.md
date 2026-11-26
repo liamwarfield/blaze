@@ -454,3 +454,10 @@ Each entry: date, decision, why, who decided.
   Service client (the metrics implementer's last item; its thread has the context),
   `--starlark_cpu_profile` (needs a patch to the vendored interpreter), the remaining profiler
   sites, include scanning, action rewinding. Root.
+- 2026-11-26, 14:20. Paused. Sequence: a relayed instruction said to pause at 20% of the weekly
+  quota; root could not read the quota and cancelled the six implementers; the user then wrote
+  that the instruction was wrong and that plenty of limit was left, and root restarted three;
+  a further message reported a reading of 21% and asked for a pause again. Root cancelled the
+  three, stopped its background jobs and every probe server, snapshotted the working tree
+  (local branch `wip/pause-2026-11-26`, does not compile), and asked the user which instruction
+  holds. Checkpoint 37 (e476a59) is the last verified code state on main. Root.
