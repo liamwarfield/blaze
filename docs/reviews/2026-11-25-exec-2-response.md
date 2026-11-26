@@ -150,3 +150,109 @@ Tests: `crates/blaze_exec/tests/test_xml_output_parser_test.rs`, **145 documents
     controllers, the factory). `CgroupsInfo` is only the old implementation's path.
 - Dynamic execution (Part B). A draft of `Branch` / `ShrinkableSemaphore` is in
   `~/.cache/blaze/work/exec-fix-1/dynamic-draft/`, outside the tree.
+
+## Round 2
+
+Implementer: `workers-3` (Opus 5.5). Review: `docs/reviews/2026-11-25-exec-2-round2.md`, STOP at
+f71e692. Tree: uncommitted on top of d212972 (HEAD when measured). Binary for the Blaze evidence:
+`~/.cache/blaze/work/workers-3/bin/blaze-w3` (sha256 d584d347…), built from that tree; the
+pre-fix comparison uses root's suite binary `~/.cache/blaze/work/root-runs/blaze-5f68157`. All
+probe files are in `~/.cache/blaze/work/workers-3/`.
+
+### E2-9 fixed (finding confirmed on the oracle)
+
+- `crates/blaze_runtime/src/commands/build.rs`, `run_exclusive_tests`: the entries given to
+  `exclusive_test_order::evaluation_result_values_order` are now the roots in Java's order
+  (`SkyframeExecutor.evaluateBuildDriverKeys`: the configured-target keys, the aspect keys, then
+  the other values such as the workspace status artifact). A key skipped as incompatible is
+  added at its place among the roots with its `BuildDriverKey` hash (Java evaluates it and
+  `BuildDriverFunction.compute` returns a skipped `BuildDriverValue`). The caller passes the
+  full key list and the skipped keys. A check asserts that every evaluated `BuildDriverKey` is
+  a root.
+- Unit test `order_with_a_skipped_target` (synthetic hashes: three entries keep a table of 4,
+  four make it 8 and swap the two tests).
+- Oracle evidence. Workspace `excl-ws` (the ten exclusive tests of round 1, plus `skp:s1` and
+  `skp2:s2`, `sh_test`s with `target_compatible_with` an unsatisfiable constraint, reached by
+  `//skp:all`). Script `excl-ws/run_e29.sh`: 15 cases, 2 to 5 exclusive tests with 0, 1 or 2
+  skipped targets.
+  - The oracle confirms the finding: `test excl_c excl_e` runs e then c, `test excl_c excl_e
+    //skp:all` runs c then e (`e29-oracle.txt`).
+  - The reviewer's own example (`excl_b excl_c` plus one skipped target) does not change order
+    on the oracle (c then b in both); the hashes of round 1 came from another configuration.
+    The finding holds for other pairs.
+  - Fixed binary: **15 of 15 orders equal** to the oracle (`e29-blaze.txt`).
+  - Pre-fix binary: **8 of 15 differ** (every case with a skipped target where the count
+    crosses a table size: `c e`, `c i`, `d e`, `d i` and four five-test sets).
+  - Regression check: the 55 orders of round 1 (`run_all.sh`, no skipped target) are all equal
+    to the oracle's recorded results with the fixed binary (`excl55-blaze.txt`).
+- First runs used `--skip_incompatible_explicit_targets` with explicit targets; that flag is
+  part of the configuration, so it changes every key's hash. The evidence above uses wildcards
+  and no extra flag.
+
+### E2-11 fixed (finding confirmed on the oracle)
+
+- Oracle run (`xmlws`, three tests writing their own `test.xml`: a UTF-8 document with `\303(`,
+  a US-ASCII document with `\351`, and a good one; `test --test_summary=detailed //p:all`): the
+  console shows `[Fatal Error] :-1:-1: Byte "233" is not a member of the (7-bit) ASCII character
+  set.` and `[Fatal Error] :-1:-1: Invalid byte 2 of 2-byte UTF-8 sequence.`
+  (`e211-oracle.err`).
+- `xml_stream_reader.rs`: a decoding error now carries the message of the JDK reader that throws
+  it, and whether it is a reader's `MalformedByteSequenceException`. When the scanner reaches
+  one, `next()` prints `[Fatal Error] :-1:-1: <message>` to `System.err` (`blaze_events::io::
+  system_err_println`, the console during a command), once, before the parse fails.
+  - `UTF8Reader`: `Invalid byte N of M-byte UTF-8 sequence.`, `Expected byte N of M-byte UTF-8
+    sequence.` (at the end of the input), `High surrogate bits in UTF-8 sequence must not exceed
+    0x10 but found 0x<hex>.`, classified exactly as the JDK reader's branches
+    (`utf8_reader_error`).
+  - `ASCIIReader`: `Byte "<n>" is not a member of the (7-bit) ASCII character set.`
+  - `UTF16Reader`: an odd last byte is `Expected byte 2 of 2-byte UTF-8 sequence.`
+  - An unpaired UTF-16 surrogate is a scanner error (an invalid character), not printed.
+- Measured on the oracle's JDK with Bazel's parser: 12 printing documents (`xml/cases5`), whose
+  messages equal the code's classification.
+- Blaze run, same workspace and command: both lines are printed with the oracle's text; stdout
+  is byte-equal. The two lines' relative order depends on which test finishes first, on both
+  sides.
+- The module comment now says which messages are Java's and printed.
+
+### E2-10 fixed
+
+- Limits of the oracle's JDK, measured with Bazel's parser (`xml/cases6`, `oracle6.txt`):
+  - element depth over 100 fails;
+  - more than 200 attributes on an element fails; namespace declarations do not count (one
+    `xmlns:p` and 200 attributes pass);
+  - a name over 1,000 characters fails, counted per part of a qualified name (a 1,000-character
+    prefix with a 1,000-character local part passes; a 1,001-character prefix or local part
+    fails; a 1,001-character PI target fails).
+- All three are ported (`MAX_ELEMENT_DEPTH`, `ELEMENT_ATTRIBUTE_LIMIT`, `check_name_limit`).
+  Their messages are not Java's (Bazel drops them, and they are not printed).
+- Eager ASCII and UTF-16 errors: the error becomes visible from the start of the chunk that
+  holds the bad byte (chunks of 8192 bytes for ASCII, 4096 units for UTF-16, counted from the
+  end of the XML declaration).
+  - Measured: a bad ASCII byte 8,121 bytes after the declaration is rejected, 9,021 bytes after
+    is accepted (`ascii_high_8100`, `ascii_high_9000`). A UTF-16 `<testsuite/>` with an odd
+    byte is rejected.
+  - `PORT`: Xerces loads a shorter chunk when a token spans the end of its buffer, which moves
+    later boundaries. That is not modelled.
+
+### E2-12 fixed
+
+`java_parse_hex_float` ports `FloatingDecimal.parseHexString`: Java's pattern, the binary
+exponent required, and correct rounding to `float` (ties to even, subnormals, overflow).
+Oracle: `0x1.8p1` is 3000 ms, `0X.8P-3` 63, `-0x1.0p0d` -1000, `0x1.fffffep127` saturates to
+2147483647, `0x1.000001p0` and `0x1.0000018p0` are 1000, and `0x1.8` (no exponent) is rejected.
+
+### S3 / S4
+
+- `SingleplexWorker::put_request` carries the `PORT` note for the JDK's process reaper
+  (`Stream closed` versus `Broken pipe`, timing dependent in Java).
+- The CESU-8 comment is corrected: Xerces rejects `ED A0..BF` as `Invalid byte 2 of 3-byte
+  UTF-8 sequence.`, as the port does.
+
+### Tests
+
+- `crates/blaze_exec/tests/test_xml_output_parser_review_test.rs`: **112 documents**, all
+  passing. They are the reviewer's 79 (`cases`) and 10 (`cases2`) plus 23 of mine (`cases5`,
+  `cases6`), with the oracle's results.
+  - Generated by `~/.cache/blaze/work/workers-3/xml/make_review_tests.py`.
+  - Not included: `text_big` (20 MB) and `attrs_10001` (`attrs_201` covers that limit).
+- The 145 tests of round 1 still pass.
