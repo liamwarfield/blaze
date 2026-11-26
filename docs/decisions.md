@@ -423,3 +423,17 @@ Each entry: date, decision, why, who decided.
   reports the child slice and the slice's `cpu.max` is `1400000 100000` on this 16-core
   machine. Both settings are runtime-only (gone at reboot) and re-applied by every
   `scripts/cargo-capped` call. AGENTS.md has the rule. Checkpoint 37 is 63f2099. Root.
+- 2026-11-26. Reviews at e476a59 (checkpoint 37): PASS for commands (round 3), reporting (round
+  3), coverage (round 2), execution (round 3) and cgroups (round 2), each with S2 items sent to
+  the area's implementer; remote round 5 STOP (T1-T5, the pre-v3 certificate verifier again;
+  credential helpers and the scrubber have no S1). Root.
+- 2026-11-26. D16, X.509 v1/v2 server certificates. Two review rounds in a row found
+  acceptance holes in the hand-written validation of pre-v3 certificate chains that was added
+  so that Bazel's own TLS tests (v1 test certificates) pass. Ruling: Blaze does not validate
+  chains of v1/v2 certificates. The only trust rule beside webpki's is the JDK's direct trust:
+  an end-entity certificate byte-identical to one in the configured trust file is trusted
+  (v3 and pre-v3), then the host name is checked. Any other pre-v3 certificate is refused with
+  Blaze's own error text. This is stricter than Bazel (fail closed) and a declared deviation;
+  the functions of remote_execution_tls_test and remote_execution_mtls_test that need a v1
+  chain become a declared gap. Reason: a certificate path validator written for this port is a
+  security liability out of proportion to four test functions. The user can overrule. Root.
