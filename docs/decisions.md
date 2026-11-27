@@ -603,3 +603,18 @@ Each entry: date, decision, why, who decided.
   presents byte for byte, Blaze makes the structural check after the key and nothing more;
   every other reason the JDK's parser refuses that file is a declared lenient case, pinned by a
   fixture per class. No certificate from anyone else can take that route. Root.
+- 2026-11-26. Outer measure at checkpoint 40 (a673e29, its own binary): 163 of 211 targets,
+  2,679 of 2,878 functions; none lost against 374c631. About 70 of the remaining functions need
+  the persistent server as the default.
+- 2026-11-26. The slow daemon-mode suite run and the 5.7 GB test server had one cause, found by
+  the incremental implementer: at ce81d5a the kept graph held its own evaluator through an Arc
+  cycle (package roots reached the evaluator strongly), so every command that executed actions
+  leaked the graph and discarded it: +136 MB and all packages reloaded per command; +0.93 MB
+  and one package after the fix (measured on 30 edit-and-build rounds on brotli). D7 amended,
+  approved for implementation: values hold reference-counted handles to the frozen Starlark
+  heaps they point into, the heap slots keep nothing, and the address-keyed memo tables are
+  cleared at the end of every command (today a kept graph grows by one frozen module, five
+  generator-name heaps and fourteen depset heaps per `.bzl` edit: 254 MB to 440 MB over 200
+  rounds). `buildMetrics.buildGraphMetrics.dirtiedValues` is compared per function regardless
+  of order (Java's order is its thread pool's scheduling). `--watchfs` is ported. The fail-safe
+  for remote options stays until the reviewer's sequences match the oracle. Root.
