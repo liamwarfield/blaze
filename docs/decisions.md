@@ -656,3 +656,10 @@ Each entry: date, decision, why, who decided.
   "Entering directory" lines were missing, `--experimental_skyframe_memory_dump` was silently
   ignored (now fails loudly: Java measures its own objects). Patch 0065 of the vendored
   interpreter is in the patch list. Root.
+- 2026-11-26. Reviews at checkpoint 42 (dad60f0): Build Event Service client PASS (round 2);
+  remote round 8 STOP on one finding in the HTTP cache upload (H1), everything of round 7
+  closed; action rewinding STOP (first review) on RW-1 (a failed top-level output is thrown as
+  persistent, Java transient) and RW-2 (a shared action's second node re-runs with stale
+  inputs). The deviation recorded earlier today for the rewound-action synchronizer ("runs
+  alone under a write lock") is withdrawn: the tree at dad60f0 has the full port of Java's
+  per-action reader-preferring locks with upload cancellation. Root.
