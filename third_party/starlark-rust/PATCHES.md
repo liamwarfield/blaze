@@ -1131,10 +1131,20 @@ and users read them).
   names, which differ for a Java interface: `CqueryNode` (cquery's `build_options(target)`,
   `providers(target)`) is implemented by every configured target class, whose type is `Target`.
   `java_param_accepts` maps `CqueryNode` to `Target` (`BLAZE PATCH 0062 (round 2)`).
-  Limitation: the table's other interface names (`Info`, `NativeInfo`, `Provider`,
-  `StarlarkValue`, `structure`, `Iterable`) are still compared by name.
 - Test (round 2): configured_query_test#test_starlark_build_options_invalid_arg
   (`build_options(target, 'blah')`: Java's arity text).
+- Round 3 (query-4): the table's other Java class names that are not Starlark type names.
+  `StarlarkValue` is every value but a string or a bool (Java's `String` and `Boolean` are not
+  `StarlarkValue`s); `iterable` (Java's `StarlarkIterable`) and `Iterable` (`java.lang.Iterable`)
+  are a list, tuple, dict, set or range (round 1 also accepted a depset, which Java's
+  `Depset` is not). The provider interfaces are the embedder's: `register_java_interface_matcher`
+  takes a `JavaInterfaceMatcher` (`fn(&str, Value) -> Option<bool>`, `None` for a name it does
+  not know), and Blaze registers one in `blaze_analysis::starlark::install_hooks` for `Info`,
+  `NativeInfo`, `Provider` and `structure` (`blaze_analysis::info::java_interface_matcher`).
+  Rows: `cc_common.*(cc_toolchain: Info)`, `java_common.*(java_toolchain, plugin_info: Info)`,
+  `java_common.check_provider_instances(provider_type: Provider)`,
+  `proto.encode_text(x: structure or NativeInfo)`, `cc_internal.freeze(value: StarlarkValue)`,
+  `repository_ctx.download(url: string or Iterable)` and the `module` / override `Iterable`s.
 
 ## 0063 — key-tracking immutable dicts
 

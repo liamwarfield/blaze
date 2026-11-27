@@ -2236,3 +2236,66 @@ Fixture count: 67 (42 ACCEPT, 25 REJECT); the 54 earlier verdicts recorded again
 A negative `timeout` passes through: `RepositoryRemoteExecutor.execute` takes a `JavaDuration`
 (`Duration.ofSeconds(timeout)`), and `build_action` sets any non-zero timeout
 (`build_action_keeps_a_negative_timeout`, utils_test).
+
+## Also in this round (root's request): cancellable streaming calls
+
+`ReferenceCountedChannel`'s four call kinds take tonic's cancellation handle for the request and
+hold it in a guard (`CancelOnDrop`) that lives with the call's future and, for the streaming
+responses, with the returned `ResponseStream`: dropping either resets the HTTP/2 stream
+(`RST_STREAM CANCEL`) while the request side is still open, as grpc-java's `ClientCall.cancel`
+does, so the server's call fails with `CANCELLED`. Before, hyper reset the stream itself only
+when the call's future was dropped before the response headers; after them it kept piping the
+request stream until it ended and then half-closed (BES's `abortStream`).
+`tests/grpc_call_cancellation_test.rs` (five tests): a bidi response stream dropped with open
+requests (fails without the guard), a bidi and a client-streaming future dropped with open
+requests (ByteStream write on interrupt), a server-streaming response dropped (Read; Execute and
+WaitExecution are the same call kind), and a half-close that stays a half-close. A tonic server
+reports a cancelled request stream as its end (tonic `codec/decode.rs`), so these servers detect
+the reset by hyper dropping the call. blaze_bes: `test_file_upload_fails` is no longer ignored and
+passes; its fake server records a reset of the request body (a `RecordResets` wrapper, dev
+dependency `http-body`) and then reports `onError(CANCELLED "client cancelled")` as grpc-java's
+server does for a cancel before the half-close; the stale PORT note on
+`BesGrpcStreamContext::abort_stream` is corrected. The interrupt paths of the uploader and the
+executor drop the call's future (`get_from_future` / `block_on_interruptibly`), which is the case
+the tests cover.
+
+## Oracle
+
+Runs with `scripts/rrc-probe/rrc-probe` (one workspace and output base per side, worker shared,
+`--max_idle_secs=60`, shutdown after each function), Blaze in daemon mode, binary
+`~/.cache/blaze/work/remote-7/blaze-3` (sha256 `63e075ca9dd1e6ee…`). The four hand-written cases
+are in `scripts/rrc-probe/extra_round7.py` (`RRC_EXTRA=`), each the same on both sides:
+
+| Case | Oracle | Blaze |
+|---|---|---|
+| `testRound7LostBlobBeforeTargetPatterns` (N1, exit 39 and retry) | exit 0, 1 retry, 2 lost-file errors, @my_repo fetched once | same; the error lines are identical apart from invocation IDs |
+| `testRound7LostBlobMidBuild` (N1 through a dependency) | exit 1, no retry, 2 lost-file errors | same |
+| `testRound7LostBlobMidQuery` (N1 in `query deps(//:x)`) | exit 7, no retry, 2 lost-file errors | same |
+| `testRound7QueryWithoutCacheAfterCachedBuild` (N2) | exit 0, `@my_repo//sub:sub`, repository fetched to disk | same |
+| `testLostRemoteFile_build` | PASS | FAIL, see N1: the kept graph is discarded when a remote cache is set (incremental agent) |
+
+Before the dispatcher change the first case did not reach the lost file on Blaze (the flag's
+repository was fetched before the remote module was set up). The 13 functions of the
+`http-cache` family still pass on blaze-3 (regression check of the dispatcher change).
+
+## Tests
+
+Shared tree on HEAD `f051fd73` plus the uncommitted changes, full crate runs (`--no-fail-fast`):
+
+| Crate | Passed | Failed | Ignored |
+|---|---|---|---|
+| blaze_remote | 750 | 1 | 56 |
+| blaze_bes | 31 | 0 | 0 |
+| blaze_vfs | 96 | 0 | 8 |
+| blaze_sky_loading | 703 | 0 | 105 |
+| blaze_sky_exec | 120 | 0 | 61 |
+| blaze_exec | 1231 | 0 | 87 |
+| blaze_packages | 465 | 0 | 159 |
+
+The blaze_remote failure is `failure_circuit_breaker_test::test_record_failure_circuit_trips`, a
+timing test (sleeps around a 100 ms window, as the Java test) that failed under load and passes
+5 of 5 reruns; not touched here. `disk_cache_checks_action_result_integrity_with_rewind_lost_inputs`
+became `disk_cache_skips_action_result_integrity_check_with_rewind_lost_inputs`: the code follows
+`RemoteModule.java:700-706` since rewinding was ported (checkpoint 40), and the test still pinned
+the old round-2 ruling. blaze_repo_rules and blaze_runtime could not be run: another agent's
+`blaze_analysis` does not compile at the moment.
