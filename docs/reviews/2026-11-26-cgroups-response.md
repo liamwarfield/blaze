@@ -16,10 +16,13 @@ Implementer: `workers-3` (Opus 5.5). Review: `docs/reviews/2026-11-26-cgroups.md
   `SIGINT`, so batch mode's `captureSigint` reverts to it after the second interrupt, and a
   third one runs the hooks and exits with 130, as in Java.
 - HotSpot leaves a shutdown signal that is ignored when the process starts ignored
-  (`JVM_RegisterSignal` / `os::Posix::is_sig_ignored`). The oracle shows it: Bazel's server
-  started by `daemonize` inherits `SIGHUP` and `SIGINT` ignored and survives both. `install` now
-  skips `SIGHUP`, `SIGINT` and `SIGTERM` when ignored at startup. Without that check, the first
-  version of this fix made Blaze's server exit on `SIGHUP`, where Bazel's keeps running.
+  (`JVM_RegisterSignal` / `os::Posix::is_sig_ignored`). The oracle shows it for `SIGHUP`:
+  `daemonize.cc` ignores `SIGHUP` (only that signal), so Bazel's server survives it. It survives
+  `SIGINT` for another reason: `serverMain` installs its own `InterruptSignalHandler`
+  (corrected in round 2; the first version of this text said `daemonize` ignores both).
+  `install` now skips `SIGHUP`, `SIGINT` and `SIGTERM` when ignored at startup. Without that
+  check, the first version of this fix made Blaze's server exit on `SIGHUP`, where Bazel's keeps
+  running.
 - Other exit paths:
   - `BlazeRuntime::exit` (`System.exit`) and a return from `main` reach `std::process::exit`, so
     the `atexit` handler runs the `blaze_exec` hooks, after the server's file hooks.
@@ -38,7 +41,7 @@ Implementer: `workers-3` (Opus 5.5). Review: `docs/reviews/2026-11-26-cgroups.md
 | Blaze fixed | TERM | slice present, worker alive | server gone, worker gone, slice removed (three runs) |
 | oracle | HUP | slice present, worker alive | server alive (ignored), unchanged |
 | Blaze fixed | HUP | same | server alive, unchanged |
-| oracle | INT | same | server alive (ignored), unchanged |
+| oracle | INT | same | server alive (its own interrupt handler), unchanged |
 | Blaze fixed | INT | same | server alive, unchanged |
 
 - The oracle's own `SIGTERM` run left its slice behind once: its hooks run concurrently, and
@@ -100,3 +103,61 @@ The old implementation (`CgroupsInfo`, `--noincompatible_use_new_cgroup_implemen
 
 `scripts/cargo-capped test -p blaze_exec`: 1003 passed, 0 failed, 126 ignored, including the 37
 cgroup tests (35 ported from Java plus the two above).
+
+## Round 2
+
+Review: `docs/reviews/2026-11-26-cgroups-round2.md`, PASS at e476a59. Implementer: `workers-4`
+(Opus 5.5). Tree: uncommitted on top of 7ef5c86 (HEAD when measured). Binary: `~/.cache/blaze/work/workers-4/bin/
+blaze-w4` (sha256 a7694206…). Probes ran under the memory rule of 2026-11-26: `--max_idle_secs=60`,
+one output root per side.
+
+### C4 fixed
+
+- Probe (`~/.cache/blaze/work/workers-4/c4_probe.sh`): `--batch build //slow:slow` (a 6 s
+  genrule) started from a subshell with `trap '' INT`, then `kill -INT` after 3 s.
+  - Oracle: the build completes (exit 0).
+  - Blaze before the fix: `Bazel received an interrupt`, `ERROR: build interrupted`, exit 8.
+- Fix: `InterruptSignalHandler::new` (`crates/blaze_runtime/src/interrupt.rs`) installs nothing
+  when `SIGINT` is ignored, as `JVM_RegisterSignal` leaves an ignored signal ignored. `uninstall`
+  is then a no-op. Blaze after the fix: the build completes, exit 0.
+- Regression check with `SIGINT` at its default (a Python launcher resets it, fresh genrule
+  command each run): both binaries print `Bazel received an interrupt` and
+  `ERROR: build interrupted`, exit 8.
+
+### The explanation corrected
+
+The text of round 1 above is corrected: `daemonize.cc` ignores only `SIGHUP`
+(`daemonize.cc:266`); the server survives `SIGINT` because `serverMain` installs its own
+handler (`BlazeRuntime.java:1243`).
+
+### Open items made safe
+
+- **A signal during a normal exit.** `blaze_exec::worker::shutdown_hooks::begin_shutdown` ports
+  the lock of `Shutdown.exit`. The first thread that starts a shutdown owns it for the rest of
+  the process; a later call from the same thread returns, and any other thread blocks forever.
+  It is taken:
+  - by the terminating-signal thread before it runs the hooks;
+  - by `BlazeRuntime::exit` before the server's file hooks (the `atexit` handler then runs on
+    the same thread);
+  - by the `atexit` handler itself (a return from `main`).
+
+  A signal that arrives while a normal exit runs the hooks now waits, and the process ends when
+  that exit does.
+- **A panic in one hook.** `run_shutdown_hooks` runs each hook under `catch_unwind`, runs the
+  rest, then reports the panics to the default uncaught exception handler (each Java hook is a
+  thread of its own). `run_all_shutdown_hooks` and `BlazeRuntime::exit` guard each list the same
+  way, so a panic in the worker/cgroup list does not skip the server's file hooks.
+  - Test: `crates/blaze_exec/tests/shutdown_hooks_test.rs`
+    (`a_panicking_hook_does_not_skip_the_others`).
+  - The server's own `ShutdownHooks::run_hooks` (in `blaze_server`, another area) is unchanged.
+- **Probes after the change:**
+  - `SIGTERM` with a live worker, daemon mode: server gone, worker gone, slice removed.
+  - `shutdown`: the server exits in 0.17 s and its slice is removed.
+
+### Correction to S4 of round 1
+
+The round-1 review said Guava's `buildKeepingLast` keeps the position of a key's last occurrence,
+and the comment on `SandboxOptions::get_limits` was changed to say so. Measured with the
+oracle's own Guava (`A-server.jar`, `~/.cache/blaze/work/workers-4/guava-probe/`): the builder
+`{""=default, Foo=foo, ""=generic}` builds `{=generic, Foo=foo}`. The first position is kept with
+the last value, which is what the code does. The comment now says this.

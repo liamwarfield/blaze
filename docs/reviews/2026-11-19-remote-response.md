@@ -1989,3 +1989,133 @@ The verifier's module comment now states the D16 design and its declared deviati
   release; not mine).
 - clippy: clean for the changed files. `check --workspace --all-targets`: one error, in another
   agent's `blaze_exec/tests/analysis_actions_execute_test.rs:963`.
+
+# Round 6
+
+Response to the round-6 review (STOP at `374c631` on T7; H1, M1, C3, D1 and three S4 items).
+Code: the shared working tree on HEAD `ce81d5a8` (checkpoint 39; the round-6 changes are
+uncommitted). Binary for the end-to-end runs: `~/.cache/blaze/work/remote-6/blaze-2` (sha256
+`f4ef22b22822f6f8…`, release build of that tree at 15:41).
+
+## T7 (S1). FIXED as asked, the rest declared (D16)
+
+(a) `read_pre_v3_fields` (`jdk_server_cert_verifier.rs:430`) now takes the version and checks
+the end of the TBS as `X509CertInfo.parse` does, by structure only: in v1 nothing may follow
+`subjectPublicKeyInfo` ("no more data allowed for version 1 certificate"); in v2 only
+`[1]` then `[2]` (primitive, each at most once, in that order) may follow, and nothing after them.
+No content of the unique identifiers is read. A certificate that fails this is `PreV3(None)`:
+the name step refuses it (`BadEncoding`) and so do both handshake-signature entry points.
+
+(b) Root's ruling under D16: for a certificate that is both the user's trust file and the
+server's certificate, Blaze does not re-validate the validity contents, the outer algorithm
+identifier or an empty issuer. Declared in the module comment (`:34-42`, "Declared deviation,
+more lenient than Bazel") and pinned by the fixture test (`LENIENT`: the test fails if Blaze
+starts refusing them, or accepts any other JDK-rejected case).
+
+(c) Fixtures, each its own root (`scripts/jdk-certs/generate.py`, verdicts recorded with the
+oracle's JDK 25.0.2 by `scripts/jdk-certs/run`):
+
+| Case | JDK | Blaze |
+|---|---|---|
+| `direct_v1_extensions` | REJECT parse: no more data allowed for version 1 certificate | REJECT |
+| `direct_v2_extensions` | REJECT parse: Extensions not allowed in v2 certificate | REJECT |
+| `direct_v2_unique_ids` (both identifiers) | ACCEPT | ACCEPT |
+| `direct_v2_unique_ids_swapped` | REJECT parse | REJECT |
+| `direct_time_second_60` | REJECT parse: Parse UTC time, invalid format | ACCEPT (D16, declared) |
+| `direct_alg_mismatch` | REJECT parse: Signature algorithm mismatch | ACCEPT (D16, declared) |
+| `direct_empty_issuer` | REJECT parse: Empty issuer DN not allowed | ACCEPT (D16, declared) |
+
+(d) `google_auth_utils.rs` `to_x509_certificates` (:565-580): the comment now says that every
+certificate of the trust file is also trusted by byte identity, that a certificate the JDK cannot
+parse is therefore still trusted when presented byte for byte, what is checked of it and what is
+the declared deviation.
+
+## H1 (S2). FIXED
+
+`identity_host` (`:186`): one trailing dot is removed from the requested host before both name
+checks (`X509TrustManagerImpl.checkIdentity`, `X509TrustManagerImpl.java:405-410` at
+`jdk-25.0.2-ga`: "Remove the ending dot, which is not allowed in SNIHostName"); on the webpki
+route the SNI host-name check runs on the same stripped host. The referee now models the trust
+manager's entry point: `JdkCertProbe` strips one trailing dot before `HostnameChecker.match`, as
+`checkIdentity` does for Bazel's channel (no SNI name for a name `SNIHostName` refuses, so the
+peer host). Fixtures through the real handshake path (TLS 1.3 and 1.2): `direct_trailing_dot_host`
+(direct route) and `v3_issued_trailing_dot_host` (webpki route): JDK ACCEPT, Blaze ACCEPT. Unit
+test `requested_host_with_one_trailing_dot_is_stripped` (and two dots are refused).
+
+## M1 (S2). FIXED
+
+`to_private_key` (`google_auth_utils.rs:608`) reads the algorithm OID of the PKCS#8 structure
+(`pkcs8_algorithm`, `:638`) and accepts only rsaEncryption, id-dsa and id-ecPublicKey, the key
+factories Netty tries; Ed25519 (and RSASSA-PSS) are refused with Bazel's text.
+Oracle probe (`~/.cache/blaze/work/remote-6/m1`, one workspace, `--max_idle_secs=60`, shut down):
+with `--remote_cache=grpcs://localhost:1 --tls_certificate=... --tls_client_certificate=ed.crt
+--tls_client_key=ed.key` (an Ed25519 PKCS#8 key from `openssl genpkey -algorithm ed25519`) the
+oracle prints `WARNING: Remote Cache: Failed to init TLS infrastructure using '<ed.crt>' as
+client certificate: File does not contain valid private key: <ed.key>` and builds without the
+cache, exit 0 (not a failure at startup: the channel is created lazily and the remote cache is
+dropped). The same command with an RSA key gets as far as the connection (`Failed to query remote
+execution capabilities: ... Connection refused`). Blaze goes the same way: the error comes from
+`create_ssl_context`, the path of every unreadable key. Test
+`new_channel_ed25519_client_key_is_refused`. `blaze-2` on the same workspace and options
+(`BLAZE_SERVER_MODE=daemon`): the same warning text, the build goes on, exit 0.
+
+## C3 (S2). FIXED
+
+`get_credentials_response.rs:238`: the repeated-name check walks the builder from the last entry
+to the first, as Guava's `RegularImmutableMap.fromEntryArrayCheckingBucketOverflow`, and reports
+the entry already placed, then the one being added; the map keeps the builder's order. Oracle
+(`~/.cache/blaze/work/remote-6/c3`, a credential helper scoped to the probe's host, an
+`http_archive` download): `a` three times gives `Multiple entries with same key: a=[3] and
+a=[2]`; `a, b, a, b` gives `b=[4] and b=[2]`. Unit tests with both (and the two-entry cases kept).
+`blaze-2` on the same probe: the same two lines, word for word.
+
+## D1 (S2). Declared, each with a fixture
+
+The module comment (`:16-32`) now lists every stricter case, each with a fixture in `STRICTER`
+(the test fails if Blaze starts accepting one):
+
+| Case | Deviation | JDK |
+|---|---|---|
+| `chain_v1` | D16: no v1/v2 chains | ACCEPT |
+| `v3_self_ca_cn_only`, `v3_self_noca_cn_only` | webpki needs a subjectAltName | ACCEPT |
+| `v3_rsa1024_ca` | RSA keys under 2048 bits | ACCEPT |
+| `v3_sha1_signed` | SHA-1 chain signatures | ACCEPT |
+| `v3_p521_ca` | P-521 | ACCEPT |
+| `v3_ed25519_ca` | Ed25519 (the oracle's TLS engine refuses it too) | ACCEPT (probe) |
+| `direct_key_unused_bits` | key BIT STRING with unused bits (a P-256 key whose last bit is zero, signing with that key) | ACCEPT |
+| `direct_ber_length` | BER (indefinite) length | ACCEPT |
+| `direct_wildcard` | wildcard CN not matched | ACCEPT |
+| `ee_key_unknown_alg` | key Blaze cannot use (Bazel's handshake fails too) | ACCEPT (probe) |
+
+The fixture harness takes a fifth column, the server's signing key, for the P-256 case. H1 is no
+longer stricter (fixed).
+
+## S4
+
+- Fixture count: the round-5 response said 44; there were 41. Now 54 (36 ACCEPT, 18 REJECT by the
+  JDK): 41 + the 7 T7 cases + 5 D1 cases + 1 H1 case.
+- `oracle_signature_verification_algorithms` (`:98`): the filtered lists are cached per provider
+  list (keyed by the address of its `all` slice), not once for the process.
+- Routing of a certificate that is not trusted directly reads its version only (`pre_v3_tbs`,
+  `:390`; `verify_server_cert` `:265`); `read_pre_v3_fields` runs only for a directly trusted
+  certificate (name step) and for the handshake signature of a v1/v2 certificate (which reaches
+  there only after direct trust).
+
+## Tests
+
+Shared tree on HEAD `ce81d5a8` plus the uncommitted round-6 changes, full crate runs
+(`--no-fail-fast`):
+
+| Crate | Passed | Failed | Ignored |
+|---|---|---|---|
+| blaze_remote | 654 | 0 | 59 |
+| blaze_repo_fetch | 488 | 1 | 14 |
+| blaze_exec | 1193 | 0 | 91 |
+| blaze_vfs | 94 | 0 | 8 |
+
+The blaze_repo_fetch failure is `oracle_extraction_test` (unrelated, as in round 5). The fixture
+test (`jdk_server_cert_fixtures_test`: `verdicts_match_the_jdk` over 54 cases, each a TLS 1.3 and
+a TLS 1.2 handshake, and `v1_chain_is_refused_with_blazes_text`) passes; the verifier's unit tests
+are in the 35 of the library. `prefetch_files_file_exists_records_contents_proxy` is no longer
+ignored (the repo contents cache work gave `FileArtifactValue::RemoteFile` its shared contents
+proxy).
