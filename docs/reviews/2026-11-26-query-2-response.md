@@ -192,3 +192,87 @@ On `1958a452` plus the changes (now in `ee4c27ea`):
   65, a loading statistic), the label `str()` cases of `test_starlark_output_mode` with and
   without `--incompatible_unambiguous_label_stringification`, and the `build_options` /
   `providers` argument errors.
+
+# Round 2
+
+Response to `docs/reviews/2026-11-26-query-2-round2.md` (STOP at 38cd662). The fixes below are
+in `ef8c8ed1` (checkpoint 42).
+
+## P63-1 (S1): a key-tracking `ctx.var` passed whole to a native
+
+Each Blaze reader of a caller-supplied dict now calls
+`starlark::values::dict::dict_record_all_keys_accessed(x)` before `DictRef::from_value`, which
+records every key of a key-tracking dict as the Java reader does. The sites and the Java read
+each mirrors:
+
+| Rust site | Java reader | Java read |
+|---|---|---|
+| `blaze_analysis/src/starlark/util.rs:215` `dict_cast_string_string` (`env`, `substitutions`, ...) | `Dict.cast` (`Dict.java:666`) | `entrySet()` |
+| `blaze_analysis/src/starlark/util.rs:263` `dict_cast_string_object` | `Dict.cast` | `entrySet()` |
+| `blaze_analysis/src/starlark/starlark_rule_context.rs:1282` `dict_cast_string_artifact` | `Dict.cast` | `entrySet()` |
+| `blaze_analysis/src/providers/run_environment_info.rs:145` | `Dict.cast` | `entrySet()` |
+| `blaze_analysis/src/platform/template_variable_info.rs:172` | `Dict.noneableCast` | `entrySet()` |
+| `blaze_rules/src/cpp/util.rs:173`, `:209` | `Dict.cast` | `entrySet()` |
+| `blaze_rules/src/cpp/variables.rs:62` | a `Dict` as an `Iterable` | `keySet().iterator()` |
+| `blaze_starlark/src/json.rs:109` `json.encode` | `Json.Encoder.encode` (`Json.java:173`) | `keySet()` |
+| `blaze_packages/src/proto.rs:310` `proto.encode_text` | `Proto.TextEncoder.field` | `entrySet()` |
+
+`DictRef::from_value` readers that remain read dicts Blaze builds itself (never `ctx.var`).
+The PATCHES.md limitation of 0063 is removed.
+
+- Blaze test: `blaze_sky_top` `required_config_fragments_test::starlark_ctx_var_read_whole_by_natives`
+  (env and `json.encode(ctx.var)` record `["a", "b"]`; `ctx.var == x` records `[]`): passes.
+- Oracle (`cquery //cv2:<t>` with `--define` flags and `--show_config_fragments=direct`, one
+  reused workspace per side): `env = ctx.var`, `substitutions = ctx.var`,
+  `json.encode(ctx.var)`, and `{"a": "b"} == ctx.var` (below) give identical stdout. stderr is
+  identical except the `substitutions` case's loaded-package count (a loading statistic).
+
+## P63-2 (S2): `x == ctx.var`
+
+Patch 0063 round 2 (`types/dict/value.rs`): the `equals` hook calls `record_equals_accesses`
+with the left side's kind. A left side whose Java contents are an `ImmutableMap`
+(`java_contents_immutable`) records every key of the tracking dict (`ImmutableMap.equals` ->
+`entrySet()`); a mutable left side of the same size records `y.get(k)` for its own keys in its
+order, stopping at the first mismatch (`AbstractMap.equals`); different sizes record nothing;
+`ctx.var == x` records nothing. Cases in `starlark_conformance/tests/patches.rs`
+`patch_0063_key_tracking_dict` (equal, a missing key, a mismatching value, different sizes,
+tracking dict on the left, immutable left side). The oracle case `{"a": "b"} == ctx.var`
+(sizes differ from `ctx.var`, so nothing is recorded) is identical (above); the same-size and
+immutable cases are covered by the conformance test only.
+
+## Z-1 (S2): gzip bytes depend on the zlib linked
+
+`crates/blaze_rules/build.rs` (new; `blaze_rules` gains `libz-sys` with default features off so
+the workspace's feature choice decides) panics when `DEP_Z_ROOT` is set. libz-sys reports
+`cargo:root` only when it builds its bundled zlib, so the build fails exactly when the system
+`libz` is not linked; the comment says why. The workspace `Cargo.toml` flate2 comment points to
+it. Not exercised on the failing path (`LIBZ_SYS_STATIC=1` would rebuild the shared target for
+every agent); the passing path builds on this host.
+
+## S3: the two `unported!` paths around the transition resolver
+
+Both are left, each with its reason in the message:
+
+- `blaze_cquery/.../transitions_output_formatter_callback.rs:192`: a resolver node with
+  neither value nor error. Java's resolver runs outside Skyframe; in Blaze this is a Skyframe
+  cycle or catastrophe that analysis of the same key would already have reported, so there is no
+  Java behaviour to port.
+- `blaze_sky_analysis/src/cquery_transition_resolver.rs:136`: root causes after a successful
+  resolution. Java throws `EvaluateException("expected empty: " + causes)`, whose text needs
+  `Cause.toString` and `DetailedExitCode.toString` (not ported).
+
+## Round-1 residuals (a)-(c) of S2-2
+
+Not changed (the reviewer marked them masked, not blocking): (a) nodes computed when the
+detection fires stay in the graph and statistics; (b) is the first S3 path above; (c) on an
+interrupt earlier targets' resolver nodes are not deleted for that command.
+
+## Also in this round
+
+- Patch 0062 round 3: the interface names that `java_param_accepts` checks
+  (`Iterable`/`iterable` no longer accept a depset, `StarlarkValue`), and a
+  `JavaInterfaceMatcher` hook that Blaze registers (`blaze_analysis/src/starlark/mod.rs`) so
+  Blaze types answer for the Java interfaces they port. The table is only consulted to order
+  the errors of a call that already failed. Test `patch_0062_round_3_java_interface_names`;
+  PATCHES.md updated; `patches/blaze.diff` regenerated.
+- `starlark_conformance --test patches`: 62 passed, 0 failed.

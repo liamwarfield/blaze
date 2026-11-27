@@ -74,6 +74,8 @@ by adding.
 | 0062 | applied | a builtin's argument checks in Java's order: parameter types as the arguments are bound (positional, then named in call order) before the arity |
 | 0063 | applied | key-tracking immutable dicts (Java `Dict.ImmutableKeyTrackingDict`, `ctx.var` with `--include_config_fragments_provider`): `alloc_immutable_key_tracking_dict`, `dict_accessed_keys` |
 | 0064 | applied | the running evaluator's `extra` for code without an evaluator (`eval::with_current_extra`), so a value's `str` can read the thread's semantics (Java `Starlark.str(x, semantics)`) |
+| 0066 | applied | a native callable's own location (`StarlarkValue::callable_location`, `Frame::callable_location`; Java `StarlarkCallable.getLocation()`): its traceback frame and `Error: ...` |
+| 0067 | applied | a function's `repr` names its module's extra value also while that module executes (`<function f from //pkg:file.bzl>`) |
 
 Conformance (Bazel ScriptTest, `starlark_conformance run`; strict = Java ScriptTest semantics,
 resilient = aborted chunks re-run statement by statement):
@@ -1200,3 +1202,40 @@ and users read them).
   `module_info_extractor.rs`).
 - Test: through the ported `StarlarkFunctionInfoExtractorTest` and `ModuleInfoExtractorTest`
   (written by the implementer of `sweep-2`; entry added by root from its notes).
+
+## 0066 — native callables with a location
+
+- Gap: Java's `StarlarkThread.push(fn)` gives a frame the callable's `getLocation()`. Most
+  builtins have `Location.BUILTIN` (no frame line; the error reads `Error in NAME: ...`), but a
+  provider (`StarlarkProvider.getLocation`, its raw constructor) is at its `provider(` call, and
+  an exported symbolic macro at its export. Oracle (Bazel 9.3.2): `P = provider(fields = ["a"])`
+  then `P(c = 1)` prints a frame `File "t.bzl", line 1, column 13, in P` with the definition's
+  source line, then `Error: got unexpected field 'c' in call to instantiate provider P`; with an
+  `init` that fails, the provider's frame stands between the caller and the init function.
+  starlark-rust's call stack had no location for a native callable: Blaze printed
+  `Error in P: ...` and `File "<builtin>", in P`.
+- Fix: `values/traits.rs` `StarlarkValue::callable_location(&self) -> Option<FileSpan>` (default
+  `None`) with its vtable entry (`values/layout/vtable.rs`); `starlark_syntax/src/frame.rs`
+  `Frame::callable_location`, filled by `eval/runtime/cheap_call_stack.rs` `CheapFrame::to_frame`
+  from the frame's function (`None` for inlined frames, `eval/runtime/inlined_frame.rs`).
+- Users: blaze_packages `StarlarkProvider` and `RawConstructor` (the `provider()` call's span);
+  blaze_starlark `EvalError::from_starlark` puts a native frame at its `callable_location` (its
+  own entry when it is the innermost callee, the caller's position when it calls Starlark code).
+- Test: `patch_0066_native_callable_location`; oracle cases in the server-4 report (provider
+  calls at top level, in a `def`, with a failing `init`, loaded from another file, from a BUILD
+  file).
+
+## 0067 — a function's module while its module executes
+
+- Gap: Java `StarlarkFunction.repr` (net/starlark/java/eval/StarlarkFunction.java:222) prints
+  `<function NAME from CLIENT_DATA>` whenever the function's module has client data; a function
+  knows its module from creation. Patch 0009 read the client data (the module's extra value)
+  from the frozen module, which a `def` or `lambda` only gets when its module is frozen, so
+  `print(f)`, `str(lambda: 0)` or `"%s" % f` during a .bzl file's own execution printed
+  `<function f>` (oracle: `<function f from //pkg:file.bzl>`).
+- Fix: `eval/compiler/def.rs`: `DefGen::creation_module_extra`, the `str` of the executing
+  module's extra value when a function is created by that module's own code (the frozen module
+  of the creating function is used otherwise, as before); `Display` uses it while `module` is
+  not set.
+- Test: `patch_0067_def_repr_during_module_execution`.
+

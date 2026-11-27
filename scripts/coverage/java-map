@@ -8,7 +8,8 @@ Usage:
                                                 markers-unresolved.tsv, and the generated sections
                                                 of README.md (between BEGIN/END GENERATED lines)
   scripts/coverage/java-map summary             print the totals and cluster tables only
-  scripts/coverage/java-map check-parser [N]    compare this script's method parser with javac's
+  scripts/coverage/java-map check-parser [N]    run the `PORT: skipped` reference cases, then
+                                                compare this script's method parser with javac's
                                                 (scripts/coverage/JavaMethods.java, needs a JDK
                                                 >= 21 with jdk.compiler; $JAVA or the newest
                                                 /usr/lib/jvm/*/bin/java) on all main files, or on
@@ -616,6 +617,76 @@ class Model:
     pass
 
 
+SKIP_REF_RE = re.compile(r"\b([A-Z][\w$]*(?:\.[A-Z][\w$]*)*)\.(<init>|[a-z][\w$]*)")
+
+
+def skip_reference_marks(reason, by_name, parsed):
+    """The (file, method index) pairs that a `// PORT: skipped` reason names.
+
+    `Class.method` (Class the file's top-level class) names every method of that name in the
+    file; `Outer.Nested.method` the methods of that name in the nested class `Outer.Nested`;
+    `Class.<init>` and `Outer.Nested.<init>` the constructors of that class.
+    """
+    out = []
+    for cm in SKIP_REF_RE.finditer(reason):
+        classpath, member = cm.group(1), cm.group(2)
+        top = classpath.split(".")[0]
+        for g in sorted(by_name.get(top, ())):
+            for i, m in enumerate(parsed[g].methods):
+                if member == "<init>":
+                    hit = m[4] == "ctor" and m[0] == classpath
+                elif "." in classpath:
+                    hit = m[1] == member and m[0] == classpath
+                else:
+                    hit = m[1] == member
+                if hit:
+                    out.append((g, i))
+    return out
+
+
+SKIP_REF_CASE = """package p;
+public final class Outer {
+  public Outer() {}
+  public void run() {}
+  static class Nested {
+    Nested(int x) {}
+    void run() {}
+    void only() {}
+  }
+  interface Factory {
+    Object create();
+  }
+}
+"""
+
+SKIP_REF_EXPECTED = [
+    # (reason, expected (class path, name, kind) of the marked methods)
+    ("JVM only: Outer.run", {("Outer", "run", "method"), ("Outer.Nested", "run", "method")}),
+    ("struct fields: Outer.Nested.only, Outer.Nested.run",
+     {("Outer.Nested", "only", "method"), ("Outer.Nested", "run", "method")}),
+    ("no objects: Outer.<init>", {("Outer", "Outer", "ctor")}),
+    ("no objects: Outer.Nested.<init>", {("Outer.Nested", "Nested", "ctor")}),
+    ("one implementation: Outer.Factory.create", {("Outer.Factory", "create", "abstract")}),
+    ("unknown class: Other.run, Outer.Missing.run", set()),
+]
+
+
+def check_skip_references():
+    """The parser check's test case for `skip_reference_marks`; returns the number of failures."""
+    parsed = {"p/Outer.java": parse_java(SKIP_REF_CASE)}
+    by_name = {"Outer": {"p/Outer.java"}}
+    failures = 0
+    for reason, expected in SKIP_REF_EXPECTED:
+        got = {(parsed["p/Outer.java"].methods[i][0], parsed["p/Outer.java"].methods[i][1],
+                parsed["p/Outer.java"].methods[i][4])
+               for g, i in skip_reference_marks(reason, by_name, parsed)}
+        if got != expected:
+            failures += 1
+            print(f"skip-reference case FAILED: {reason!r}: got {sorted(got)}, want {sorted(expected)}")
+    print(f"skip-reference cases: {len(SKIP_REF_EXPECTED) - failures} of {len(SKIP_REF_EXPECTED)} pass")
+    return failures
+
+
 def build_model():
     M = Model()
     M.files = java_files(MAIN)
@@ -887,12 +958,10 @@ def build_model():
             M.skipped_sites[f] += 1
             M.skipped_reasons[f].append(reason)
         # `// PORT: skipped, <why>: Class.method` marks that method as handled ("skipped").
-        for cm in re.finditer(r"\b([A-Z][\w$]*)\.([a-z][\w$]*)\b", reason):
-            for g in by_name.get(cm.group(1), ()):
-                for i, m in enumerate(M.parsed[g].methods):
-                    if m[1] == cm.group(2) and (g, i) not in M.marks:
-                        M.marks[(g, i)].add("skipped")
-                        M.skip_marked += 1
+        for g, i in skip_reference_marks(reason, by_name, M.parsed):
+            if (g, i) not in M.marks:
+                M.marks[(g, i)].add("skipped")
+                M.skip_marked += 1
     M.ignore_by_class = collections.Counter()
     for rel, no, cr, fn, ign, reason in M.rust.tests:
         if ign and reason:
@@ -1350,6 +1419,8 @@ def find_java():
 
 
 def check_parser(n=None):
+    if check_skip_references():
+        sys.exit(1)
     files = java_files(MAIN)
     if n:
         step = max(1, len(files) // n)
