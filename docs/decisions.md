@@ -685,3 +685,13 @@ Each entry: date, decision, why, who decided.
   `Object` or `any`; include scanning's first review found no S1. Declared deviation: SkyQuery
   evaluates sequentially where Java visits in parallel (result sets equal; order compared only
   where Bazel's is stable). Root.
+- 2026-11-26, 22:00. Outer measure at checkpoint 43 (b216603, its own binary): one process per
+  command 168 of 211 targets and 2,729 of 2,878 functions (2 lost against a673e29, both remote,
+  assigned); server mode 190 targets and 2,774 functions, down from 2,803 at 38cd662 (22 lost,
+  44 unmeasured behind them): in a server's later commands the per-build effects of the build
+  driver do not happen for cached nodes (execroot planting of external repositories, the test
+  listener's aggregators). The checkpoint holds the Skymeld port half done; the regression is
+  with its implementer as the first item. Lesson for root: a structural port in progress
+  should not sit in a measured checkpoint without the server-mode reuse check passing on it;
+  the reuse check's basic scenario did fail on this binary and root read it as a tool problem.
+  Root.

@@ -43,6 +43,8 @@ threads. The list below is what a resumption after any later pause needs.
   | `374c631` | `blaze-374c631` | 159 | 2,619 |
   | `a673e29` | `blaze-a673e29` | 163 | 2,679 |
   | `38cd662`, server mode (opt-in) | `blaze-38cd662-daemon` | 190 | 2,803 |
+  | `b216603` | `blaze-b216603` | 168 | 2,729 |
+  | `b216603`, server mode (opt-in) | `blaze-b216603-daemon` | 190 | 2,774 (22 lost against `38cd662`, assigned) |
 
   Failures of the last run by family: `~/.cache/blaze/work/root-runs/38cd662-daemon-failures/by-family.tsv (server mode) and a673e29-failures/ (one process)`.
 - **Referee guard** at checkpoint 38 (label `guard-374c631`, the commit's own binary): rows 39,

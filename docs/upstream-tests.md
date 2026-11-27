@@ -78,6 +78,19 @@
 > items 20; functions that need the graph kept with a remote cache (discarded today by the
 > fail-safe ruling) about 10; four TLS functions with X.509 v1 chains (declared gap, D16);
 > sixteen single causes. The one-process figure for this commit was not measured.
+>
+> **Commit `b216603` (checkpoint 43), both modes** (2026-11-26 20:16 to 21:55, suite mode, 237
+> of 237 targets each; binary sha256 `f029071c…`, debug build from a clean checkout; builders
+> paused on Cargo). **One process per command** (label `blaze-b216603`, 2,869 s): **168 of 211
+> targets and 2,729 of 2,878 functions**; against `a673e29`: 52 gained, 2 lost
+> (`remote_execution_http_test#test_remote_http_cache_with_missing_cas_referenced_by_ac`,
+> `build_without_the_bytes_test#test_remote_cache_eviction_retries_jdeps`), 6 absent.
+> **Server mode** (label `blaze-b216603-daemon`, 3,000 s): **190 of 211 targets and 2,774 of
+> 2,878 functions**, down from 2,803 at `38cd662`: 41 gained, 22 lost and 44 unmeasured behind
+> them. The losses are one defect class in work in progress at this checkpoint (the port of
+> merged analysis and execution together with a kept graph): in a server's later commands an
+> external repository is not planted in the execroot and the test listener misses a target
+> whose build-driver node is cached (`bazel_java_test` and its toolchain variants).
 
 
 First full run of Bazel's own shell and Python integration tests (237 targets) against Blaze,
