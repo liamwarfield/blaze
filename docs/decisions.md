@@ -663,3 +663,15 @@ Each entry: date, decision, why, who decided.
   inputs). The deviation recorded earlier today for the rewound-action synchronizer ("runs
   alone under a write lock") is withdrawn: the tree at dad60f0 has the full port of Java's
   per-action reader-preferring locks with upload cancellation. Root.
+- 2026-11-26. The server-mode block of 25 unmeasured functions in build_event_stream_test is
+  resolved by hand: two defects (checkpoint 42 held the evaluator strongly in
+  SkyframeActionExecutor, so the server discarded its graph again; TargetCompleteEvent and
+  AspectCompleteEvent were not stored for replay, so a cached completion closed as aborted).
+  With both fixed, shard 2 runs to its end in suite mode (34 of 34) and shard 1's functions pass
+  one by one except the ruled gap test_glob_filesystem_operation_cost, whose failure log
+  overflows the test framework's XML writer and stops the shard. Consequences: (1) root runs
+  `scripts/incremental/reuse-check` on every checkpoint binary from now on (the checkpoint-42
+  cycle would have been caught); (2) for a later harness batch, to be audited: functions left
+  unmeasured after an XML-writer overflow are rerun per function and reported in their own
+  column. Ruling: the non-heap memory figures of `--memory_profile` are 0, 0, 0 and max -1
+  (D15). Root.
