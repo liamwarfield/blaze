@@ -40,16 +40,17 @@ built from an uncommitted tree, so workerd still counts as missing in the score 
 
 ## Feature status
 
-Updated 2026-11-19. Three columns, three different claims:
+Updated 2026-11-26. The claims, kept apart:
 
 - **Ported**: the code exists and runs.
-- **Compared with Bazel**: outputs were compared with real Bazel 9.3.2 by a script; the
-  comparison is named. "Referee" is the audited `scripts/oracle` on brotli and re2; the other
-  tools were written by the implementers of each feature; an audit of their hardening returned
-  STOP (`docs/reviews/2026-11-19-audit-4.md`), so those rows say exactly what was compared.
-- **Reviewed and accepted**: an independent reviewer compared the Rust with Bazel's Java and
-  returned PASS (`docs/reviews/`), and the feature is in the accepted baseline (`ef66f55`).
-  Nothing ported after that commit is accepted yet.
+- **Compared with Bazel**: outputs were compared with real Bazel 9.3.2. "Referee" is the audited
+  `scripts/oracle` on brotli and re2; the other comparison tools passed their audit on
+  2026-11-26 (`docs/reviews/2026-11-26-audit-4r3.md`) and their numbers are quoted in the
+  auditor's wording.
+- **Reviewed**: an independent, read-only reviewer compared the Rust with Bazel's Java and
+  returned PASS or STOP (`docs/reviews/`). A STOP names blocking findings that are being fixed.
+- **Accepted**: in the accepted baseline (`ef66f55`). Nothing ported after that commit is
+  accepted yet; acceptance needs a PASS for every area and a recorded score.
 
 ### Done and accepted
 
@@ -67,50 +68,57 @@ Updated 2026-11-19. Three columns, three different claims:
 | Build event stream, binary and JSON files, for `build` and `test` | yes | referee: 37 of 41 and 109 of 113 items | yes, with those items open |
 | `info` (42 of 57 compared cases), `clean`, `version` | yes | `scripts/w1/compare-info` | yes |
 
-### Done, compared with Bazel, not yet accepted
+### Ported after the baseline, not yet accepted
 
-"Reviewed" is the verdict of the read-only review of 2026-11-25 at `e8b79c0` (reports in
-`docs/reviews/`). A STOP names blocking findings that are being fixed. Comparison numbers are
-quoted in the wording the auditor approved (`docs/reviews/2026-11-26-audit-4r3.md`, tools PASS);
-they were measured on the binary of `e8b79c0` (sha256 `7455128a…`), before the review fixes.
+Review verdicts are those at the newest checkpoint each area was reviewed at (2026-11-26).
+Comparison figures in the auditor's wording were measured on the binary of `e8b79c0`, before the
+review fixes; the suite figures under "Measures" are newer.
 
-| Feature | Compared with Bazel | Reviewed |
-| --- | --- | --- |
-| Starlark aspects; full workerd build | output binary sha256 equal to Bazel's; query 46,371 and cquery 38,892 lines identical | no |
-| Bazel's byte-string semantics for non-ASCII text | 127 items: 112 identical; 3 stderr files differ only in lines the tool files under Bazel's warm server; 12 differ (Blaze exits 37 on the flag-off workspace) | PASS (2026-11-20) |
-| Disk cache, gRPC remote cache, remote execution, build without the bytes | lead-measured against Bazel's own remote worker on brotli and re2 | STOP in round 3; blocking fix in, re-review pending |
-| Incremental evaluator (dirtiness, change pruning, invalidation); not used by a build yet | 426 unit tests ported from Bazel; randomized model test | PASS |
-| Persistent server and client (opt-in, `BLAZE_SERVER_MODE=daemon`) | interop with Bazel's client, 16 steps: 13 identical, 3 differ. With Bazel's server, 890 steps: 250 identical; 152 fail the same way (not counted); 487 differ; 1 declared deviation | STOP: stale per-command state, event-bus leak |
-| `run` | 20 cases: 2 identical; 13 differ only in lines that depend on Bazel's warm server; 5 differ | STOP: one summary-line defect |
-| `help`, `fetch`, `canonicalize-flags`, `license`, invocation policy | 199 invocations: 174 identical (failures only where the case declares the exit code); 1 differs only in the crash trace; 24 fail the same way on both sides (not counted) | STOP (same review as `run`) |
-| `mod dump_repo_mapping`, `show_repo`, `tidy` | 133 cases: 89 identical; 43 fail the same way on both sides (not counted); 1 differs | STOP (same review) |
-| Symbolic macros, autoloads, Bazel's syntax front end and error texts | macros, 52 cases: 24 identical; 23 fail the same way on both sides (not counted); 5 differ. Interpreter, 566 cases, 1,135 rows: 1,128 identical; 7 differ | STOP: one `load()` error text |
-| Java rules (library, binary, test, plugins, deploy jars, toolchains) | 18 rows: 5 identical; 9 differ only in warm-server lines; 4 differ | STOP: one action-key defect under path stripping |
-| Platform mappings, platform flags, `--target_environment`, project flag scoping | 68 cases: 1 identical; 56 differ only in warm-server lines; 9 fail the same way on both sides (not counted); 1 differs; 1 stops at a function not ported | no blocking finding in this part |
-| Persistent workers; exclusive tests, streamed test output, test filters | workers, 34 cases: 25 identical; 2 differ only in the Java stack frames Blaze cannot print; 1 compared in reduced form; 6 differ. Tests, 21 cases: none identical; 6 differ only in warm-server lines; 11 fail the same way (not counted); 4 differ | STOP: exclusive-test order, worker error text, non-UTF-8 `test.xml` |
-| `unused_inputs_list`, C++ compile action templates | 12 steps: 11 identical, 1 differs | no blocking finding in this part |
-| Build events for `run`, `fetch`, `query`; target summaries; text-format output; `command.profile.gz`; progress bar; query `graph`/`xml`/rank outputs | text format on Bazel's own outputs: build events identical per record, cquery byte-identical, aquery by reprint and round trip only | STOP: `buildMetrics` event incomplete; stream unterminated after a crash |
-| Starlark core error texts | implementer's probe only | see the syntax front end row |
+| Feature | Reviewed |
+| --- | --- |
+| Starlark aspects; full workerd build (output binary sha256 equal to Bazel's; query 46,371 and cquery 38,892 lines identical) | not as its own area |
+| Bazel's byte-string semantics for non-ASCII text | PASS |
+| Incremental evaluator: dirtiness, change pruning, invalidation; equality and hermeticity of all node types | PASS |
+| Persistent server and client (opt-in, `BLAZE_SERVER_MODE=daemon`), idle tasks, `info`, server restart on a changed binary | PASS |
+| Incremental builds on the server: the graph kept between commands, `--watchfs` | STOP: three stale paths (repeated `--invocation_id`, two in `--watchfs`); a remote or disk cache discards the graph for now |
+| `run`, `help`, `fetch`, `canonicalize-flags`, `license`, `mod`, invocation policy, `config`, `dump`, `print_action`, `vendor` | PASS |
+| Symbolic macros, autoloads, Bazel's syntax front end and error texts | PASS |
+| Java rules; platform mappings, transitions, `--target_environment` | PASS |
+| Execution under `--experimental_output_paths=strip`; analysis-failure testing; the validation aspect | PASS |
+| Persistent workers, hardened worker sandbox, cgroups (new and old), exclusive tests, streamed test output, `test.xml` parsing | PASS |
+| Dynamic execution; Docker sandbox (never executed here: no daemon access) | PASS |
+| `coverage` and coverage reports | PASS |
+| Build events for every command, text-format output, build metrics, `command.profile.gz`, progress bar, query `graph`/`xml`/rank outputs | PASS |
+| Extra actions (`action_listener`, `extra_action`), `ctx.actions.do_nothing` | PASS |
+| cquery `starlark` and `transitions` outputs, `--show_config_fragments`, `genquery`, aquery dump after a build | STOP: one finding in the `ctx.var` key tracking |
+| Disk cache, gRPC and HTTP remote cache, remote execution, build without the bytes, credential helpers, remote downloader, remote repository contents cache, remote execution of repository rules | STOP: fixes in, re-review owed |
+| Build Event Service upload (`--bes_backend`) | STOP: fixes in, re-review owed |
+| Action rewinding for lost inputs and outputs (a rewound action runs alone: slower than Bazel, declared) | not yet |
 
 ### In progress
 
 | Feature | State |
 | --- | --- |
-| Fixes for the six STOP verdicts above | being fixed, then re-reviewed |
-| Incremental builds from a kept graph | package 2 of 3: equality and hermeticity of the 84 node types |
-| Server as the default | after the server fixes and a soak test |
-| `coverage` | being ported |
-| `config`, `dump`, `print_action` | being ported |
-| Build Event Service upload | being ported |
-| Dynamic execution | being ported |
+| The server as the default | after the incremental review passes; in server mode the suite figure is 2,803 of 2,878 |
+| SkyQuery (`--universe_scope`, `rbuildfiles`, `allrdeps`) | being ported |
+| Include scanning; `testing.analysis_test`; `starlark_doc_extract`; WebAssembly in repository rules | being ported |
+| Content-defined chunking, cache lease extension, `--digest_function=blake3` | being ported |
+| Going through Bazel's Java file by file against the coverage map | execution, remote, analysis, packages, C++ and configuration clusters are assigned |
 
 ### Not started
 
-`mobile-install`; native aspects; `genquery`, extra actions; include scanning; Docker sandbox;
-action rewinding; SkyQuery; vendor mode; remote HTTP cache, credential helpers and chunking;
-Apple and Android rules. The full list is `docs/missing-features.md`; sizes per area are in
-`docs/coverage/README.md` (at `e8b79c0`: about 106k ± 15k of 406k lines of needed Java are not
-ported, 13k of them remote analysis caching, which is out of scope).
+`mobile-install`; Apple and Android rules; the Starlark debugger. Sizes per area are in
+`docs/coverage/README.md` (after checkpoint 39: about 86k ± 15k of 406k lines of needed Java
+are not ported or not yet marked as ported, 13k of them remote analysis caching, which is out
+of scope).
+
+### Declared deviations from Bazel
+
+Recorded with their reasons in `docs/decisions.md`: JVM-only `info` keys and memory figures
+report process memory; chains of X.509 v1/v2 certificates are refused (four of Bazel's TLS test
+functions fail for that reason); Java stack frames in crash and worker error output cannot be
+produced; step limits and step counts of the Starlark interpreter are not reproduced; a few
+orders that Bazel takes from identity hashes or thread scheduling.
 
 ### Out of scope
 
@@ -128,12 +136,9 @@ Windows and macOS; JVM-only features (heap `info` keys, thread dumps); remote an
   scenarios. Of 664 that run the binary: 30 identical; 249 equal only after the masks for the
   warm server and the critical path; 2 equal only as sorted messages; 256 are failing steps
   equal in some view (not counted); 127 differ. Of 113 file checks: 112 identical.
-- **Rust tests**: 6,615 passed, 0 failed, 2,021 ignored at the last full run (remote lead,
-  dirty tree at `cc7373c`); the accepted baseline is 5,487 passed.
-
-Known limits: Linux x86-64 only, and scores are only comparable on a 16-CPU machine (Bazel's
-`cquery` order depends on the CPU count); `linux-sandbox`, `process-wrapper` and `@bazel_tools`
-come from Bazel 9.3.2's install base.
+- **Referee** (`scripts/oracle`, referee batch 3b, base `corpus/scores/blaze-ef66f55e904e.referee3b.json`):
+  the binary of `a673e29` matches 13,852 of 13,858 judged items in one-process mode and 13,858
+  of 13,860 in server mode on brotli and re2 (verification recordings, not accepted scores).
 
 ## Build
 
