@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""A logging HTTP/1.1 cache stand-in for probes of the HTTP remote cache.
+
+usage: scripts/remote-http/log-server <port> <log file> [mode]
+       scripts/remote-http/log-server help
+
+Serves GET (404, or the stored blob) and PUT (200, stores the body) like a cache under
+/ac/ and /cas/, keeps connections alive, and appends every request line, its headers and the
+body length to <log file>. Modes: `normal` (default); `gzip`: GET answers with
+Content-Encoding: gzip; `close`: every response carries Connection: close.
+"""
+import gzip
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+if len(sys.argv) < 3 or sys.argv[1] == "help":
+    print(__doc__.strip())
+    sys.exit(0)
+PORT, LOG = int(sys.argv[1]), sys.argv[2]
+MODE = sys.argv[3] if len(sys.argv) > 3 else "normal"
+STORE = {}
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_request_line(self, body_len):
+        with open(LOG, "a") as f:
+            f.write("%s %s\n" % (self.command, self.path))
+            for k, v in self.headers.items():
+                f.write("  %s: %s\n" % (k, v))
+            f.write("  [body %d]\n" % body_len)
+
+    def finish_headers(self):
+        if MODE == "close":
+            self.send_header("Connection", "close")
+        self.end_headers()
+
+    def do_GET(self):
+        self.log_request_line(0)
+        data = STORE.get(self.path)
+        if data is None:
+            body = b"not found"
+            self.send_response(404)
+            self.send_header("Content-Length", str(len(body)))
+            self.finish_headers()
+            self.wfile.write(body)
+            return
+        self.send_response(200)
+        if MODE == "gzip":
+            data = gzip.compress(data)
+            self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(data)))
+        self.finish_headers()
+        self.wfile.write(data)
+
+    def do_PUT(self):
+        n = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(n)
+        self.log_request_line(len(body))
+        STORE[self.path] = body
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.finish_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

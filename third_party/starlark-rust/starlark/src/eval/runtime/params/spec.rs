@@ -1368,3 +1368,34 @@ impl<'s, V> JavaArgs<'s, V> {
         Ok(())
     }
 }
+
+impl<V: Copy> ParametersSpec<V> { // BLAZE PATCH 0065
+    /// BLAZE PATCH 0065: the parameters as Java's `StarlarkFunction` lists them (ordinary, // BLAZE PATCH 0065
+    /// keyword-only, `*args`, `**kwargs`): each name with its role and its default value. // BLAZE PATCH 0065
+    pub(crate) fn blaze_java_parameters(&self) -> Vec<(String, crate::eval::compiler::def::DefParameterRole, Option<V>)> { // BLAZE PATCH 0065
+        use crate::eval::compiler::def::DefParameterRole; // BLAZE PATCH 0065
+        let default_of = |i: usize| match &self.param_kinds[i] { // BLAZE PATCH 0065
+            ParameterKind::Defaulted(v) => Some(*v), // BLAZE PATCH 0065
+            _ => None, // BLAZE PATCH 0065
+        }; // BLAZE PATCH 0065
+        let num_positional = self.indices.num_positional as usize; // BLAZE PATCH 0065
+        let args = self.indices.args.map(|i| i as usize); // BLAZE PATCH 0065
+        let kwargs = self.indices.kwargs.map(|i| i as usize); // BLAZE PATCH 0065
+        let mut result = Vec::new(); // BLAZE PATCH 0065
+        for i in 0..num_positional { // BLAZE PATCH 0065
+            result.push((self.param_names[i].clone(), DefParameterRole::Ordinary, default_of(i))); // BLAZE PATCH 0065
+        } // BLAZE PATCH 0065
+        for i in num_positional..self.param_names.len() { // BLAZE PATCH 0065
+            if Some(i) != args && Some(i) != kwargs { // BLAZE PATCH 0065
+                result.push((self.param_names[i].clone(), DefParameterRole::KeywordOnly, default_of(i))); // BLAZE PATCH 0065
+            } // BLAZE PATCH 0065
+        } // BLAZE PATCH 0065
+        if let Some(i) = args { // BLAZE PATCH 0065
+            result.push((self.param_names[i].clone(), DefParameterRole::Varargs, None)); // BLAZE PATCH 0065
+        } // BLAZE PATCH 0065
+        if let Some(i) = kwargs { // BLAZE PATCH 0065
+            result.push((self.param_names[i].clone(), DefParameterRole::Kwargs, None)); // BLAZE PATCH 0065
+        } // BLAZE PATCH 0065
+        result // BLAZE PATCH 0065
+    } // BLAZE PATCH 0065
+} // BLAZE PATCH 0065

@@ -201,23 +201,34 @@ impl Drop for InterruptSignalHandler {
 /// command); the second one reverts to the previous handler, so that a third one kills the
 /// process.
 ///
-/// PORT: the `interrupt-watcher` thread only writes log lines and thread dumps to the server log
-/// every 10 seconds (`ThreadUtils.warnAboutSlowInterrupt`); Blaze has no server logger, so it is
-/// not started.
+/// PORT: not started: the `interrupt-watcher` thread, which writes "Slow interrupt number %d in
+/// batch mode" and a dump of every Java thread to the server log every 10 seconds
+/// (`ThreadUtils.warnAboutSlowInterrupt`). The thread dump is JVM-only; the log lines are not
+/// observable outside the server log.
 // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1045 BlazeRuntime.captureSigint
 pub fn capture_sigint() -> InterruptSignalHandler {
     let main_thread = ThreadInterrupt::current();
     // AtomicInteger numInterrupts
     let mut num_interrupts = 0;
     InterruptSignalHandler::new(move |handler| {
-        // PORT: skipped, logging ("User interrupt").
+        // PORT: Java's log site is the handler lambda inside captureSigint, whose synthetic
+        // method name the JVM chooses; the record names the enclosing method.
+        blaze_util::server_logger::info(
+            "com.google.devtools.build.lib.runtime.BlazeRuntime",
+            "captureSigint",
+            "User interrupt",
+        );
         OutErr::system_out_err().print_err_ln("Bazel received an interrupt");
         main_thread.interrupt();
 
         num_interrupts += 1;
         if num_interrupts == 2 {
-            // PORT: skipped, logging ("Second --batch interrupt: Reverting to JVM SIGINT
-            // handler").
+            blaze_util::server_logger::warning(
+                "com.google.devtools.build.lib.runtime.BlazeRuntime",
+                "captureSigint",
+                "Second --batch interrupt: Reverting to JVM SIGINT handler",
+                None,
+            );
             handler.uninstall();
         }
     })

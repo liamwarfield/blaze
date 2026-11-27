@@ -127,6 +127,7 @@ impl LegacyMemory {
 }
 
 impl Controller for LegacyMemory {
+    // Java: com/google/devtools/build/lib/sandbox/cgroups/controller/v1/LegacyController.java:23 LegacyController.isLegacy
     fn is_legacy(&self) -> bool {
         true
     }
@@ -171,6 +172,7 @@ impl LegacyCpu {
 }
 
 impl Controller for LegacyCpu {
+    // Java: com/google/devtools/build/lib/sandbox/cgroups/controller/v1/LegacyController.java:23 LegacyController.isLegacy
     fn is_legacy(&self) -> bool {
         true
     }
@@ -214,6 +216,7 @@ impl UnifiedMemory {
 }
 
 impl Controller for UnifiedMemory {
+    // Java: com/google/devtools/build/lib/sandbox/cgroups/controller/v2/UnifiedController.java:31 UnifiedController.isLegacy
     fn is_legacy(&self) -> bool {
         false
     }
@@ -259,6 +262,7 @@ impl UnifiedCpu {
 }
 
 impl Controller for UnifiedCpu {
+    // Java: com/google/devtools/build/lib/sandbox/cgroups/controller/v2/UnifiedController.java:31 UnifiedController.isLegacy
     fn is_legacy(&self) -> bool {
         false
     }

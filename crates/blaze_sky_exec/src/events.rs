@@ -19,6 +19,9 @@ use crate::analysis_seam::ConfiguredTargetView;
 
 /// This event is fired during the build, when an action is started.
 // Java: com/google/devtools/build/lib/actions/ActionStartedEvent.java:24 ActionStartedEvent
+// Java: com/google/devtools/build/lib/actions/ActionStartedEvent.java:39 ActionStartedEvent.getAction
+// Java: com/google/devtools/build/lib/actions/ActionStartedEvent.java:43 ActionStartedEvent.getNanoTimeStart
+// (the getters are the public fields; `create` is the struct literal)
 #[derive(Clone)]
 pub struct ActionStartedEvent {
     pub action: ActionRef,
@@ -27,6 +30,11 @@ pub struct ActionStartedEvent {
 
 /// An event that is fired after an action completes (either successfully or not).
 // Java: com/google/devtools/build/lib/actions/ActionCompletionEvent.java:25 ActionCompletionEvent
+// Java: com/google/devtools/build/lib/actions/ActionCompletionEvent.java:44 ActionCompletionEvent.getAction
+// Java: com/google/devtools/build/lib/actions/ActionCompletionEvent.java:53 ActionCompletionEvent.getRelativeActionStartTimeNanos
+// Java: com/google/devtools/build/lib/actions/ActionCompletionEvent.java:57 ActionCompletionEvent.getFinishTimeNanos
+// Java: com/google/devtools/build/lib/actions/ActionCompletionEvent.java:61 ActionCompletionEvent.getActionLookupData
+// (the getters are the public fields)
 #[derive(Clone)]
 pub struct ActionCompletionEvent {
     pub related_time_start: Instant,
@@ -37,6 +45,9 @@ pub struct ActionCompletionEvent {
 
 /// An event that is fired after an action successfully executes, with its `ActionResult`.
 // Java: com/google/devtools/build/lib/actions/ActionResultReceivedEvent.java:22 ActionResultReceivedEvent
+// Java: com/google/devtools/build/lib/actions/ActionResultReceivedEvent.java:33 ActionResultReceivedEvent.getAction
+// Java: com/google/devtools/build/lib/actions/ActionResultReceivedEvent.java:38 ActionResultReceivedEvent.getActionResult
+// (the getters are the public fields; `create` is the struct literal)
 #[derive(Clone)]
 pub struct ActionResultReceivedEvent {
     pub action: ActionRef,
@@ -215,6 +226,8 @@ pub struct TopLevelTargetBuiltEvent {
 
 /// Notifies that an in-flight action is running input discovery.
 // Java: com/google/devtools/build/lib/actions/ScanningActionEvent.java:24 ScanningActionEvent
+// Java: com/google/devtools/build/lib/actions/ScanningActionEvent.java:34 ScanningActionEvent.getActionMetadata
+// (the getters are the public fields; `create` is the struct literal)
 #[derive(Clone)]
 pub struct ScanningActionEvent {
     /// `getActionMetadata()`.
@@ -223,6 +236,8 @@ pub struct ScanningActionEvent {
 
 /// Notifies that an in-flight action stopped running input discovery.
 // Java: com/google/devtools/build/lib/actions/StoppedScanningActionEvent.java:20 StoppedScanningActionEvent
+// Java: com/google/devtools/build/lib/actions/StoppedScanningActionEvent.java:27 StoppedScanningActionEvent.getAction
+// (the getters are the public fields; `create` is the struct literal)
 #[derive(Clone)]
 pub struct StoppedScanningActionEvent {
     /// `getAction()`.
@@ -231,6 +246,8 @@ pub struct StoppedScanningActionEvent {
 
 /// Notifies that an in-flight action is checking the cache.
 // Java: com/google/devtools/build/lib/actions/CachingActionEvent.java:27 CachingActionEvent
+// Java: com/google/devtools/build/lib/actions/CachingActionEvent.java:34 CachingActionEvent.create
+// (the getters are the public fields; `create` is the struct literal)
 #[derive(Clone)]
 pub struct CachingActionEvent {
     pub action: ActionRef,
@@ -239,6 +256,9 @@ pub struct CachingActionEvent {
 
 /// Notifies that an in-flight action is being scheduled (waiting for resources).
 // Java: com/google/devtools/build/lib/actions/SchedulingActionEvent.java:28 SchedulingActionEvent
+// Java: com/google/devtools/build/lib/actions/SchedulingActionEvent.java:40 SchedulingActionEvent.getActionMetadata
+// Java: com/google/devtools/build/lib/actions/SchedulingActionEvent.java:45 SchedulingActionEvent.getStrategy
+// (the getters are the public fields; `create` is the struct literal)
 #[derive(Clone)]
 pub struct SchedulingActionEvent {
     /// `getActionMetadata()`.
@@ -249,6 +269,9 @@ pub struct SchedulingActionEvent {
 
 /// Notifies that an in-flight action is running.
 // Java: com/google/devtools/build/lib/actions/RunningActionEvent.java:29 RunningActionEvent
+// Java: com/google/devtools/build/lib/actions/RunningActionEvent.java:41 RunningActionEvent.getActionMetadata
+// Java: com/google/devtools/build/lib/actions/RunningActionEvent.java:46 RunningActionEvent.getStrategy
+// (the getters are the public fields; `create` is the struct literal)
 #[derive(Clone)]
 pub struct RunningActionEvent {
     /// `getActionMetadata()`.
@@ -259,6 +282,8 @@ pub struct RunningActionEvent {
 
 /// Notifies that an in-flight action has made progress.
 // Java: com/google/devtools/build/lib/actions/ActionProgressEvent.java:29 ActionProgressEvent
+// Java: com/google/devtools/build/lib/actions/ActionProgressEvent.java:38 ActionProgressEvent.create
+// (the getters are the public fields; `create` is the struct literal)
 #[derive(Clone)]
 pub struct ActionProgressEvent {
     pub action: ActionRef,
@@ -270,6 +295,9 @@ pub struct ActionProgressEvent {
 /// Event for an action that has finished input discovery (the action of a shared action that
 /// discovers inputs).
 // Java: com/google/devtools/build/lib/actions/ActionScanningCompletedEvent.java:23 ActionScanningCompletedEvent
+// Java: com/google/devtools/build/lib/actions/ActionScanningCompletedEvent.java:33 ActionScanningCompletedEvent.getAction
+// Java: com/google/devtools/build/lib/actions/ActionScanningCompletedEvent.java:37 ActionScanningCompletedEvent.getActionLookupData
+// (the getters are the public fields; `create` is the struct literal)
 #[derive(Clone)]
 pub struct ActionScanningCompletedEvent {
     pub action: ActionRef,
@@ -278,6 +306,10 @@ pub struct ActionScanningCompletedEvent {
 
 /// Event for the metrics of input discovery of an action.
 // Java: com/google/devtools/build/lib/actions/DiscoveredInputsEvent.java:20 DiscoveredInputsEvent
+// Java: com/google/devtools/build/lib/actions/DiscoveredInputsEvent.java:31 DiscoveredInputsEvent.getMetrics
+// Java: com/google/devtools/build/lib/actions/DiscoveredInputsEvent.java:35 DiscoveredInputsEvent.getAction
+// Java: com/google/devtools/build/lib/actions/DiscoveredInputsEvent.java:39 DiscoveredInputsEvent.getStartTimeNanos
+// (the getters are the public fields; `create` is the struct literal)
 #[derive(Clone)]
 pub struct DiscoveredInputsEvent {
     /// `getMetrics()`.

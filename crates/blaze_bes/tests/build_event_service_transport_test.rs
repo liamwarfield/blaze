@@ -15,13 +15,20 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use blaze_bep::buildeventstream::artifact_uploader::LocalFilesArtifactUploader;
+use std::collections::HashMap;
+
+use blaze_bep::buildeventstream::artifact_uploader::{
+    BuildEventArtifactUploader, LocalFilesArtifactUploader, PathConverterFuture,
+};
 use blaze_bep::buildeventstream::build_completing_event::BuildCompletingEvent;
 use blaze_bep::buildeventstream::build_event::BuildEvent;
+use blaze_bep::buildeventstream::build_event::{LocalFile, LocalFileType};
 use blaze_bep::buildeventstream::build_event_context::{
     ArtifactGroupNamer, BuildEventContext, FileUriPathConverter, PathConverter,
 };
+use blaze_bep::buildeventstream::build_event_id_util;
 use blaze_bep::buildeventstream::generic_build_event::ProgressEvent;
+use blaze_bep::buildeventstream::generic_build_event::proto_chaining_with;
 use blaze_bep::buildeventstream::transport::{BuildEventTransport, CloseOutcome};
 use blaze_bep::runtime::counting_artifact_group_namer::CountingArtifactGroupNamer;
 use blaze_bes::client::grpc_client::BuildEventServiceGrpcClient;
@@ -35,6 +42,7 @@ use blaze_optdefs::misc::build_event_context::OutputGroupFileMode;
 use blaze_optdefs::misc::build_event_protocol_options::BuildEventProtocolOptions;
 use blaze_optdefs::misc::build_event_service_options::BuildEventServiceOptions;
 use blaze_protos::JavaMessage;
+use blaze_protos::build_event_stream as bes;
 use blaze_protos::failure_details::build_progress::Code as BuildProgressCode;
 use blaze_protos::google::devtools::build::v1::build_event::Event;
 use blaze_protos::google::devtools::build::v1::{
@@ -44,6 +52,7 @@ use blaze_protos::google::devtools::build::v1::{
 use blaze_protos::google::protobuf::Empty;
 use blaze_remote::grpc::channel::testing::channel_to;
 use blaze_util::ExitCode;
+use blaze_vfs::Path;
 use indexmap::IndexSet;
 use parking_lot::Mutex;
 use tokio_stream::Stream;
@@ -58,6 +67,8 @@ fn command_start_time() -> Instant {
 }
 
 fn command_context() -> CommandContext {
+    // BlazeVersionInfo, read by TracingMetadataUtils.buildMetadata.
+    blaze_remote::util::tracing_metadata_utils::set_tool_version("");
     CommandContext::new(
         BUILD_REQUEST_ID.to_string(),
         BUILD_INVOCATION_ID.to_string(),
@@ -121,6 +132,10 @@ struct RecorderState {
     stream_events: Vec<(StreamId, PublishBuildToolEventStreamRequest)>,
     successful_stream_events: Vec<(StreamId, PublishBuildToolEventStreamRequest)>,
     send_out_of_order_acknowledgments: bool,
+    /// `publishBuildToolEventStreamAccepted`.
+    publish_build_tool_event_stream_accepted: bool,
+    /// `eventStreamError`: the status of a request stream that failed.
+    event_stream_error: Option<Status>,
 }
 
 #[derive(Clone)]
@@ -139,6 +154,8 @@ impl Recorder {
             stream_events: Vec::new(),
             successful_stream_events: Vec::new(),
             send_out_of_order_acknowledgments: false,
+            publish_build_tool_event_stream_accepted: false,
+            event_stream_error: None,
         })))
     }
 
@@ -175,14 +192,28 @@ impl Recorder {
             .collect()
     }
 
+    /// `setStreamEventPredicateAndResponseStatus`; a `null` status (`None`) records the event
+    /// as successful without answering it.
     fn set_stream_event_predicate_and_response_status(
         &self,
         predicate: StreamPredicate,
-        status: Status,
+        status: impl Into<Option<Status>>,
     ) {
         let mut state = self.0.lock();
         state.stream_event_predicate = predicate;
-        state.stream_event_response_status = Some(status);
+        state.stream_event_response_status = status.into();
+    }
+
+    fn set_send_responses_on_request_predicate(&self, predicate: StreamPredicate) {
+        self.0.lock().send_responses_on_request_predicate = predicate;
+    }
+
+    fn publish_build_tool_event_stream_accepted(&self) -> bool {
+        self.0.lock().publish_build_tool_event_stream_accepted
+    }
+
+    fn event_stream_error(&self) -> Option<Status> {
+        self.0.lock().event_stream_error.clone()
     }
 
     fn set_lifecycle_event_predicate_and_response_status(
@@ -301,11 +332,26 @@ impl PublishBuildEvent for Recorder {
         &self,
         request: Request<Streaming<PublishBuildToolEventStreamRequest>>,
     ) -> Result<Response<ResponseStream>, Status> {
+        self.0.lock().publish_build_tool_event_stream_accepted = true;
         let mut requests = request.into_inner();
         let (sender, receiver) = tokio::sync::mpsc::channel(1024);
         let recorder = self.clone();
         tokio::spawn(async move {
-            while let Ok(Some(request)) = requests.message().await {
+            // onCompleted() {}: the client's half-close does not end the response stream; it
+            // ends when a response status says so, or when the client cancels the call.
+            loop {
+                let request = match requests.message().await {
+                    Ok(Some(request)) => request,
+                    Ok(None) => {
+                        sender.closed().await;
+                        return;
+                    }
+                    // onError(t): eventStreamError = Status.fromThrowable(t)
+                    Err(status) => {
+                        recorder.0.lock().event_stream_error = Some(status);
+                        return;
+                    }
+                };
                 let mut out: Vec<Result<PublishBuildToolEventStreamResponse, Status>> = Vec::new();
                 let mut end = false;
                 {
@@ -401,8 +447,22 @@ impl Fixture {
 
     // Java: com/google/devtools/build/lib/buildeventservice/AbstractBuildEventServiceTransportTest.java:938 AbstractBuildEventServiceTransportTest.newBuildEventServiceTransport
     fn new_transport(&self, publish_lifecycle_events: bool) -> BuildEventServiceTransport {
+        self.new_transport_with(
+            publish_lifecycle_events,
+            Duration::ZERO,
+            Arc::new(LocalFilesArtifactUploader),
+        )
+    }
+
+    // Java: com/google/devtools/build/lib/buildeventservice/AbstractBuildEventServiceTransportTest.java:944 AbstractBuildEventServiceTransportTest.newBuildEventServiceTransport
+    fn new_transport_with(
+        &self,
+        publish_lifecycle_events: bool,
+        close_timeout: Duration,
+        artifact_uploader: Arc<dyn BuildEventArtifactUploader>,
+    ) -> BuildEventServiceTransport {
         let bes_options = BuildEventServiceOptions {
-            bes_timeout: Duration::ZERO,
+            bes_timeout: close_timeout,
             bes_lifecycle_events: publish_lifecycle_events,
             ..BuildEventServiceOptions::default()
         };
@@ -411,7 +471,7 @@ impl Fixture {
                 channel_to(self.addr, vec![], None),
                 None,
             )),
-            local_file_uploader: Arc::new(LocalFilesArtifactUploader),
+            local_file_uploader: artifact_uploader,
             bes_options,
             bep_options: Arc::new(BuildEventProtocolOptions::default()),
             clock: self.clock.clone(),
@@ -776,33 +836,384 @@ fn test_wrong_ack_should_fail_the_upload() {
 }
 
 #[test]
-#[ignore = "not ported yet: the recorder's setSendResponsesOnRequestPredicate test (testAcksInBatchMode)"]
-fn test_acks_in_batch_mode() {}
+fn test_acks_in_batch_mode() {
+    let f = Fixture::new();
+    f.clock.advance_millis(1000);
+    let timestamp = f.clock.now();
+    // Send the first ACK only after the last event has been received.
+    let last = proto_util::stream_finished(&command_context(), timestamp, 4);
+    f.server
+        .set_send_responses_on_request_predicate(Box::new(move |req| *req == last));
+    let transport = f.new_transport(false);
+    transport.send_build_event(&f.started);
+    transport.send_build_event(&f.progress);
+    transport.send_build_event(&f.success);
+    close_ok(&transport);
+}
 
 #[test]
-#[ignore = "not ported yet: DelayingPublishBuildEventService (the retry tests that fail streams mid-way)"]
-fn test_retries_for_build_events_one_event_fails_always() {}
+fn test_retries_for_build_events_one_event_fails_always() {
+    let f = Fixture::new();
+    f.clock.advance_millis(1000);
+    let timestamp = f.clock.now();
+    let ctx = command_context();
+    let expected_payload = f.bytes(&f.progress);
+    let failing = proto_util::bazel_event(&ctx, timestamp, 2, &expected_payload);
+    let predicate_failing = failing.clone();
+    f.server.set_stream_event_predicate_and_response_status(
+        Box::new(move |req| *req == predicate_failing),
+        Status::cancelled(""),
+    );
+    let transport = f.new_transport(false);
+    transport.send_build_event(&f.started);
+    transport.send_build_event(&f.progress);
+    transport.send_build_event(&f.success);
+    assert_eq!(
+        close_failure(&transport),
+        BuildProgressCode::BesUploadRetryLimitExceededFailure.as_str_name()
+    );
+    assert!(
+        f.server
+            .get_successful_stream_events(&stream_id(EventCase::BazelEvent))
+            .contains(&proto_util::bazel_event(
+                &ctx,
+                timestamp,
+                1,
+                &f.bytes(&f.started)
+            ))
+    );
+    // containsAtLeast: the failing event at least five times (1 + --bes_upload_max_retries).
+    let sent = f
+        .server
+        .get_stream_events(&stream_id(EventCase::BazelEvent));
+    assert!(sent.iter().filter(|r| **r == failing).count() >= 5);
+}
 
 #[test]
-#[ignore = "not ported yet: DelayingPublishBuildEventService"]
-fn test_retries_for_build_events_every_event_fails_once() {}
+fn test_retries_for_build_events_every_event_fails_once() {
+    let f = Fixture::new();
+    f.clock.advance_millis(1000);
+    let timestamp = f.clock.now();
+    f.server.set_stream_event_predicate_and_response_status(
+        every_event_fails_once(),
+        Status::unavailable(""),
+    );
+    let transport = f.new_transport(false);
+    transport.send_build_event(&f.started);
+    transport.send_build_event(&f.success);
+    close_ok(&transport);
+    let ctx = command_context();
+    let started = proto_util::bazel_event(&ctx, timestamp, 1, &f.bytes(&f.started));
+    let success = proto_util::bazel_event(&ctx, timestamp, 2, &f.bytes(&f.success));
+    let finished = proto_util::stream_finished(&ctx, timestamp, 3);
+    let successful = f
+        .server
+        .get_successful_stream_events(&stream_id(EventCase::BazelEvent));
+    for expected in [&started, &success, &finished] {
+        assert!(successful.contains(expected), "missing {expected:?}");
+    }
+    // containsAtLeast: each event sent at least twice (failed once, then sent again).
+    let sent = f
+        .server
+        .get_stream_events(&stream_id(EventCase::BazelEvent));
+    for expected in [&started, &success, &finished] {
+        assert!(sent.iter().filter(|r| *r == expected).count() >= 2);
+    }
+}
 
 #[test]
-#[ignore = "not ported yet: DelayingPublishBuildEventService"]
-fn test_retries_for_build_events_acks_resets_attempts() {}
+fn test_retries_for_build_events_acks_resets_attempts() {
+    let f = Fixture::new();
+    let failed_seq_numbers = Arc::new(Mutex::new(IndexSet::<i64>::new()));
+    // Fail once with UNAVAILABLE (transient error) for every build event.
+    let recorded = failed_seq_numbers.clone();
+    f.server.set_stream_event_predicate_and_response_status(
+        Box::new(move |req| {
+            let seq_number = req.ordered_build_event.as_ref().unwrap().sequence_number;
+            recorded.lock().insert(seq_number)
+        }),
+        Status::unavailable(""),
+    );
+    let transport = f.new_transport(false);
+    transport.send_build_event(&f.started);
+    for _ in 0..10 {
+        transport.send_build_event(&f.progress);
+    }
+    transport.send_build_event(&f.success);
+    close_ok(&transport);
+    let successful_sequence_numbers: HashSet<i64> = f
+        .server
+        .get_successful_stream_events(&stream_id(EventCase::BazelEvent))
+        .iter()
+        .map(|e| e.ordered_build_event.as_ref().unwrap().sequence_number)
+        .collect();
+    let failed: HashSet<i64> = failed_seq_numbers.lock().iter().copied().collect();
+    assert_eq!(successful_sequence_numbers, failed);
+    assert_eq!(successful_sequence_numbers.len(), 13);
+}
+
+/// `BuildEventWithFiles`: a named set of the files, with the converted URIs.
+#[derive(Debug)]
+struct BuildEventWithFiles {
+    files: Vec<LocalFile>,
+}
+
+impl BuildEvent for BuildEventWithFiles {
+    fn as_stream_proto(
+        &self,
+        converters: &dyn BuildEventContext,
+    ) -> Result<bes::BuildEvent, blaze_bep::buildeventstream::build_event::Interrupted> {
+        let mut builder = bes::NamedSetOfFiles::default();
+        for file in &self.files {
+            if let Some(uri) = converters.path_converter().apply(&file.path) {
+                builder.files.push(bes::File {
+                    name: file.path.get_base_name().to_string(),
+                    file: Some(bes::file::File::Uri(uri)),
+                    ..Default::default()
+                });
+            }
+        }
+        Ok(proto_chaining_with(
+            self,
+            bes::build_event::Payload::NamedSetOfFiles(builder),
+        ))
+    }
+
+    fn get_event_id(&self) -> bes::BuildEventId {
+        build_event_id_util::from_artifact_group_name("list-of-files")
+    }
+
+    fn referenced_local_files(&self) -> Vec<LocalFile> {
+        self.files.clone()
+    }
+
+    fn get_children_events(&self) -> Vec<bes::BuildEventId> {
+        Vec::new()
+    }
+}
+
+/// `BuildEventArtifactUploaderWithRefCounting` with `upload` given by the test (`Mockito.spy`
+/// records the calls).
+struct RecordingUploader {
+    upload: Box<dyn Fn(&HashMap<Path, LocalFile>, usize) -> PathConverterFuture + Send + Sync>,
+    calls: Mutex<Vec<HashMap<Path, LocalFile>>>,
+}
+
+impl BuildEventArtifactUploader for RecordingUploader {
+    fn upload(&self, files: HashMap<Path, LocalFile>) -> PathConverterFuture {
+        let call_count = {
+            let mut calls = self.calls.lock();
+            calls.push(files.clone());
+            calls.len()
+        };
+        (self.upload)(&files, call_count)
+    }
+
+    fn may_be_slow(&self) -> bool {
+        false
+    }
+}
+
+/// A path converter over a map (`conversion::get`).
+struct MapPathConverter(HashMap<Path, String>);
+
+impl PathConverter for MapPathConverter {
+    fn apply(&self, path: &Path) -> Option<String> {
+        self.0.get(path).cloned()
+    }
+}
+
+fn file_system() -> blaze_vfs::FileSystemRef {
+    Arc::new(blaze_vfs::UnixFileSystem::new(
+        blaze_vfs::DigestHashFunction::Sha256,
+    ))
+}
+
+fn write_file(dir: &std::path::Path, name: &str, content: &str) -> Path {
+    let os_path = dir.join(name);
+    std::fs::write(&os_path, content.as_bytes()).unwrap();
+    Path::create(
+        blaze_vfs::PathFragment::create(os_path.to_str().unwrap()),
+        &file_system(),
+    )
+}
+
+fn output_file(path: &Path) -> LocalFile {
+    LocalFile::new(path.clone(), LocalFileType::OutputFile, None)
+}
+
+/// PORT: an in-memory file system stands in Java; the files live in a temporary directory of
+/// the local file system with SHA-256 digests (`makeVfsHashFunction()` of the gRPC test).
+#[test]
+fn test_file_upload() {
+    let f = Fixture::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let file1 = write_file(tmp.path(), "file1", "file1");
+    let file2 = write_file(tmp.path(), "file2", "file2");
+    let with_files: Arc<dyn BuildEvent> = Arc::new(BuildEventWithFiles {
+        files: vec![output_file(&file1), output_file(&file2)],
+    });
+    let uploader = Arc::new(RecordingUploader {
+        upload: Box::new(|files, _| {
+            let mut conversion = HashMap::new();
+            for file in files.keys() {
+                match file.get_digest() {
+                    Ok(digest) => {
+                        conversion.insert(file.clone(), format!("cas://{}", hex(&digest)));
+                    }
+                    Err(e) => return PathConverterFuture::immediate_failed(e),
+                }
+            }
+            PathConverterFuture::immediate(Box::new(MapPathConverter(conversion)))
+        }),
+        calls: Mutex::new(Vec::new()),
+    });
+    let transport = f.new_transport_with(true, Duration::ZERO, uploader.clone());
+    transport.send_build_event(&f.started);
+    transport.send_build_event(&f.progress);
+    transport.send_build_event(&with_files);
+    transport.send_build_event(&f.success);
+    close_ok(&transport);
+
+    let expected: HashMap<Path, LocalFile> = [
+        (file1.clone(), output_file(&file1)),
+        (file2.clone(), output_file(&file2)),
+    ]
+    .into_iter()
+    .collect();
+    assert!(uploader.calls.lock().contains(&expected));
+
+    let events = f
+        .server
+        .get_stream_events(&stream_id(EventCase::BazelEvent));
+    let Some(Event::BazelEvent(any_event)) = events[2]
+        .ordered_build_event
+        .as_ref()
+        .and_then(|o| o.event.as_ref())
+        .and_then(|e| e.event.clone())
+    else {
+        panic!("not a bazel event: {:?}", events[2]);
+    };
+    let build_event = <bes::BuildEvent as prost::Message>::decode(any_event.value.as_slice())
+        .expect("a build event");
+    let Some(bes::build_event::Payload::NamedSetOfFiles(set)) = build_event.payload else {
+        panic!("not a named set of files: {build_event:?}");
+    };
+    assert_eq!(set.files.len(), 2);
+    let referenced_files: HashSet<String> = set
+        .files
+        .iter()
+        .map(|f| match &f.file {
+            Some(bes::file::File::Uri(uri)) => uri.clone(),
+            other => panic!("not a uri: {other:?}"),
+        })
+        .collect();
+    let file1_hash = hex(&sha256(b"file1"));
+    let file2_hash = hex(&sha256(b"file2"));
+    assert_eq!(
+        referenced_files,
+        [format!("cas://{file1_hash}"), format!("cas://{file2_hash}")]
+            .into_iter()
+            .collect()
+    );
+}
 
 #[test]
-#[ignore = "not ported yet: needs a reference-counting artifact uploader double (BuildEventArtifactUploaderWithRefCounting)"]
-fn test_file_upload() {}
+fn test_file_upload_with_duplicate_paths() {
+    let f = Fixture::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let file1 = write_file(tmp.path(), "file1", "file1");
+    let with_files: Arc<dyn BuildEvent> = Arc::new(BuildEventWithFiles {
+        files: vec![output_file(&file1), output_file(&file1)],
+    });
+    let uploader = Arc::new(RecordingUploader {
+        upload: Box::new(|_, _| PathConverterFuture::immediate(Box::new(FileUriPathConverter))),
+        calls: Mutex::new(Vec::new()),
+    });
+    let transport = f.new_transport_with(true, Duration::ZERO, uploader.clone());
+    transport.send_build_event(&with_files);
+    close_ok(&transport);
+    // Check to make sure the code path was exercised
+    let expected: HashMap<Path, LocalFile> =
+        [(file1.clone(), output_file(&file1))].into_iter().collect();
+    assert!(uploader.calls.lock().contains(&expected));
+}
 
 #[test]
-#[ignore = "not ported yet: needs a reference-counting artifact uploader double"]
-fn test_file_upload_with_duplicate_paths() {}
+fn test_file_upload_fails() {
+    // Test that a failed file upload is not retried and fails the whole upload.
+    let f = Fixture::new();
+    let uploader = Arc::new(RecordingUploader {
+        upload: Box::new(|_, call_count| {
+            // When we create a connection but immediately abort it, it seems like the server is
+            // not notified at all, so we need to post at least one event before we abort.
+            match call_count {
+                1 => PathConverterFuture::immediate(Box::new(NoConversion)),
+                2 => PathConverterFuture::immediate_failed(std::io::Error::other(
+                    "File upload failed.",
+                )),
+                _ => panic!("Expected exactly two calls to upload."),
+            }
+        }),
+        calls: Mutex::new(Vec::new()),
+    });
+    let transport = f.new_transport_with(true, Duration::ZERO, uploader.clone());
+    transport.send_build_event(&f.started);
+    // Wait for lifecycle events to be sent.
+    while !f.server.publish_build_tool_event_stream_accepted() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // This event will trigger a upload that fails.
+    transport.send_build_event(&f.success);
+    // Wait until the server error is found _before_ we shut down the transport. Otherwise the
+    // close might race with the error.
+    while f.server.event_stream_error().is_none() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        close_failure(&transport),
+        BuildProgressCode::BesUploadLocalFileError.as_str_name()
+    );
+    let code = f.server.event_stream_error().unwrap().code();
+    assert!(
+        code == tonic::Code::Cancelled || code == tonic::Code::Internal,
+        "{code:?}"
+    );
+    assert_eq!(uploader.calls.lock().len(), 2);
+}
+
+/// `PathConverter.NO_CONVERSION`.
+struct NoConversion;
+
+impl PathConverter for NoConversion {
+    fn apply(&self, _path: &Path) -> Option<String> {
+        None
+    }
+}
 
 #[test]
-#[ignore = "not ported yet: needs a failing artifact uploader double"]
-fn test_file_upload_fails() {}
+fn test_close_timeout() {
+    let f = Fixture::new();
+    f.server
+        .set_stream_event_predicate_and_response_status(Box::new(|_| true), None);
+    // Timeout 1 second after calling close()
+    let transport = f.new_transport_with(
+        true,
+        Duration::from_secs(1),
+        Arc::new(LocalFilesArtifactUploader),
+    );
+    transport.send_build_event(&f.started);
+    assert!(matches!(
+        transport.close().get_outcome(Some(transport.get_timeout())),
+        CloseOutcome::TimedOut
+    ));
+}
 
-#[test]
-#[ignore = "not ported yet: the close timeout is the runtime's (bep.rs), not the transport's"]
-fn test_close_timeout() {}
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn sha256(bytes: &[u8]) -> Vec<u8> {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(bytes).to_vec()
+}

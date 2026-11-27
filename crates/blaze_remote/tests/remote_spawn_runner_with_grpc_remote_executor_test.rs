@@ -648,6 +648,7 @@ impl Fixture {
             remote_output_injector: Some(
                 Arc::new(RecordingInjector::default()) as Arc<dyn RemoteOutputInjector>
             ),
+            ..RemoteHooks::new()
         });
         let client = RemoteSpawnRunner::new(
             shared_remote_options,

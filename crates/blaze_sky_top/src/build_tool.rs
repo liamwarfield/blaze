@@ -525,6 +525,12 @@ pub trait BuildEventHooks {
     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:450 BuildTool.buildTargets
     fn ensure_build_info_posted(&self) {}
 
+    /// A request that does not analyze (`--noanalyze`): `NoAnalyzeEvent`, posted once loading is
+    /// complete, before the failure of the target patterns (if any) is reported.
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:168 AnalysisPhaseRunner.execute
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:147 AnalysisAndExecutionPhaseRunner.execute
+    fn no_analyze(&self) {}
+
     /// A request that analyzes but does not execute: `NoExecutionEvent`.
     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:560 BuildTool.buildTargetsWithoutMergedAnalysisExecution
     fn no_execution(&self) {}
@@ -623,6 +629,7 @@ impl<'a> BuildTool<'a> {
     /// The crux of the build system: performs loading and analysis (and runs the post
     /// processor) for the targets of the request. Returns the command's detailed exit code.
     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:892 BuildTool.processRequest
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:858 BuildTool.processRequest
     pub fn process_request(&self, request: &BuildRequest) -> DetailedExitCode {
         match self.build_targets(request) {
             Ok(()) => DetailedExitCode::success(),
@@ -828,7 +835,16 @@ impl<'a> BuildTool<'a> {
             request,
             &target_pattern_phase_value,
             &build_options,
-        )?;
+        );
+        // env.getReporter().post(new NoAnalyzeEvent()): AnalysisPhaseRunner posts it after
+        // "Loading complete." and before it reports a target pattern failure, so it is posted
+        // whether or not the runner failed.
+        if !request.perform_analysis_phase
+            && let Some(hooks) = self.build_event_hooks
+        {
+            hooks.no_analyze();
+        }
+        let analysis_result = analysis_result?;
         if request.perform_analysis_phase {
             let analysis_result =
                 analysis_result.expect("analysis result of a request that analyzes");

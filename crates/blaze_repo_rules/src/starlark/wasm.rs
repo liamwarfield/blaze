@@ -485,20 +485,17 @@ fn run(
     let memory = instance
         .get_memory(&store, MEMORY_0_EXPORT)
         .ok_or_else(|| RunError("WebAssembly module has no memory".to_owned()))?;
+    // Chicory's `instance.export(name)` throws `ChicoryException("Unknown export with name " +
+    // name)` for a missing export, so the null checks after it (and their "doesn't export"
+    // messages) are not reached.
+    // Java (Chicory): com/dylibso/chicory/runtime/Instance.java Instance.export
     let alloc_fn = instance
         .get_func(&store, &data.alloc_fn_name)
-        .ok_or_else(|| {
-            RunError(format!(
-                "WebAssembly module doesn't export \"{}\"",
-                data.alloc_fn_name
-            ))
-        })?;
+        .ok_or_else(|| RunError(format!("Unknown export with name {}", data.alloc_fn_name)))?;
     // TODO: #26092 - Validate execFn has the expected signature?
-    let exec_fn = instance.get_func(&store, exec_fn_name).ok_or_else(|| {
-        RunError(format!(
-            "WebAssembly module doesn't export \"{exec_fn_name}\""
-        ))
-    })?;
+    let exec_fn = instance
+        .get_func(&store, exec_fn_name)
+        .ok_or_else(|| RunError(format!("Unknown export with name {exec_fn_name}")))?;
 
     let input_len =
         i32::try_from(input.len()).map_err(|_| RunError("integer overflow".to_owned()))?;

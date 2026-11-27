@@ -138,6 +138,10 @@ struct KeptHeaps(Mutex<Vec<starlark::values::FrozenHeapRef>>);
 impl blaze_util::build_arena::ArenaSlot for KeptHeaps {
     const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
         blaze_util::build_arena::ReleaseOrder::Heaps;
+
+    fn held_count(&self) -> usize {
+        self.0.lock().len()
+    }
 }
 
 /// Keeps `heap` for the life of the build arena, so the addresses of its depsets stay unique

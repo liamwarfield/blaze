@@ -62,7 +62,7 @@ impl StatFailedException {
 
 // Java: com/google/devtools/build/lib/skyframe/FileSystemValueCheckerInferringAncestors.java:75 NodeVisitState
 struct NodeVisitState {
-    children_to_process: usize,
+    children_to_process: i64,
     needs_to_be_visited: bool,
     is_inferred_directory: bool,
     maybe_deleted_children: Option<HashSet<String>>,
@@ -245,6 +245,8 @@ impl Checker<'_> {
 
     // Java: com/google/devtools/build/lib/skyframe/FileSystemValueCheckerInferringAncestors.java:258 FileSystemValueCheckerInferringAncestors.processEntry
     fn process_entry(&mut self, mut path: RootedPath) -> Result<(), StatFailedException> {
+        // NodeVisitState rootParentSentinel = new NodeVisitState(false): one per call.
+        self.sentinel = NodeVisitState::new(false);
         loop {
             let parent = match path.get_parent_directory() {
                 Some(p) => Parent::Path(p),

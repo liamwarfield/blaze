@@ -227,6 +227,22 @@ impl<'v, V: ValueLike<'v> + FrozenMarker> StarlarkValue<'v> for StarlarkRepoRule
 where
     Self: ProvidesStaticType<'v>,
 {
+    /// The description `starlark_doc_extract` reads (Java `ModuleInfoExtractor` takes
+    /// `starlarkRepoRule.getRepoRule()`).
+    fn provide(&'v self, demand: &mut starlark::values::Demand<'_, 'v>) {
+        let d = &self.data;
+        demand.provide_value(
+            blaze_packages::starlark_defs::documentable::DocumentableRepoRule {
+                exported: self.is_exported(),
+                doc: d.doc.clone(),
+                rule_name: d.rule_name.get().cloned(),
+                bzl_file_label: d.bzl_file_label.clone(),
+                attributes: d.builder.attributes.clone(),
+                environ: d.environ.iter().cloned().collect(),
+            },
+        );
+    }
+
     // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkRepositoryModule.java:167 StarlarkRepoRule.call
     fn invoke(
         &self,
@@ -437,9 +453,32 @@ impl<V: ValueLifetimeless> fmt::Display for ModuleExtensionValueGen<V> {
 }
 
 #[starlark_value(type = "module_extension")]
-impl<'v, V: ValueLike<'v>> StarlarkValue<'v> for ModuleExtensionValueGen<V> where
-    Self: ProvidesStaticType<'v>
+impl<'v, V: ValueLike<'v>> StarlarkValue<'v> for ModuleExtensionValueGen<V>
+where
+    Self: ProvidesStaticType<'v>,
 {
+    /// The description `starlark_doc_extract` reads (Java `ModuleInfoExtractor` takes the
+    /// `ModuleExtension` itself).
+    fn provide(&'v self, demand: &mut starlark::values::Demand<'_, 'v>) {
+        let d = &self.data;
+        demand.provide_value(
+            blaze_packages::starlark_defs::documentable::DocumentableModuleExtension {
+                doc: d.doc.clone(),
+                defining_bzl_file_label: d.defining_bzl_file_label.clone(),
+                tag_classes: d
+                    .tag_classes
+                    .iter()
+                    .map(|(name, tag_class)| {
+                        blaze_packages::starlark_defs::documentable::DocumentableTagClass {
+                            name: name.clone(),
+                            doc: tag_class.doc.clone(),
+                            attributes: tag_class.attributes.clone(),
+                        }
+                    })
+                    .collect(),
+            },
+        );
+    }
 }
 
 /// The [`ModuleExtension`] of a module global, or `None` if it is not a module extension

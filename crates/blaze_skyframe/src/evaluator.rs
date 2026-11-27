@@ -1937,7 +1937,7 @@ impl<'e> Run<'e> {
     }
 
     /// If a previously requested dep is no longer done, restart this node from scratch.
-    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:787 Evaluate.handleUndonePreviouslyRequestedDep
+    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:795 Evaluate.handleUndonePreviouslyRequestedDep
     fn handle_undone_previously_requested_dep(&self, key: &SkyKey, node: &Arc<Node>) {
         // PORT: stateCache.invalidate (SkyKeyComputeState) is not ported.
         self.reset_entry(key, node);
@@ -1974,7 +1974,7 @@ impl<'e> Run<'e> {
     ///
     /// When FN next evaluates, it requests R1, and because R1 is done, R2 is not scheduled for
     /// evaluation, contrary to FN's expectations.
-    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:876 AbstractParallelEvaluator.dirtyRewindGraphAndResetEntry
+    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:872 AbstractParallelEvaluator.dirtyRewindGraphAndResetEntry
     fn dirty_rewind_graph_and_reset_entry(&self, key: &SkyKey, node: &Arc<Node>, restart: &Reset) {
         let rewind_graph = restart.rewind_graph();
         check_state!(
@@ -2020,7 +2020,7 @@ impl<'e> Run<'e> {
         self.reset_entry(key, node);
     }
 
-    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:912 AbstractParallelEvaluator.resetEntry
+    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:915 AbstractParallelEvaluator.resetEntry
     fn reset_entry(&self, key: &SkyKey, node: &Arc<Node>) {
         self.ev
             .graph_inconsistency_receiver()
@@ -2516,7 +2516,7 @@ impl<'e> Run<'e> {
     /// Evaluates or waits for `key`, which the node `requester` was just registered with and
     /// which answered `dependency_state` (`NEEDS_SCHEDULING` or `ALREADY_EVALUATING`): the
     /// steps of [`Run::eval_dep`] after the registration.
-    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:1129 AbstractParallelEvaluator.maybeHandleUndoneDepForDoneEntry
+    // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:1115 AbstractParallelEvaluator.maybeHandleUndoneDepForDoneEntry
     fn eval_undone_dep(
         &self,
         key: &SkyKey,

@@ -446,6 +446,13 @@ impl FileStateValue {
     }
 
     // Java: com/google/devtools/build/lib/actions/FileStateValue.java:214 FileStateValue.getType
+    // Java: com/google/devtools/build/lib/actions/FileStateValue.java:313 FileStateValue.RegularFileStateValueWithDigest.getType
+    // Java: com/google/devtools/build/lib/actions/FileStateValue.java:385 FileStateValue.RegularFileStateValueWithContentsProxy.getType
+    // Java: com/google/devtools/build/lib/actions/FileStateValue.java:456 FileStateValue.RegularFileStateValueWithMetadata.getType
+    // Java: com/google/devtools/build/lib/actions/FileStateValue.java:535 FileStateValue.SpecialFileStateValue.getType
+    // Java: com/google/devtools/build/lib/actions/FileStateValue.java:591 FileStateValue.DirectoryFileStateValue.getType
+    // Java: com/google/devtools/build/lib/actions/FileStateValue.java:634 FileStateValue.SymlinkFileStateValue.getType
+    // Java: com/google/devtools/build/lib/actions/FileStateValue.java:680 FileStateValue.NonexistentFileStateValue.getType
     pub fn get_type(&self) -> FileStateType {
         match self {
             FileStateValue::RegularFileWithDigest { .. }
@@ -460,6 +467,7 @@ impl FileStateValue {
 
     /// Returns the target of the symlink, or panics if this is not a symlink.
     // Java: com/google/devtools/build/lib/actions/FileStateValue.java:217 FileStateValue.getSymlinkTarget
+    // Java: com/google/devtools/build/lib/actions/FileStateValue.java:639 FileStateValue.SymlinkFileStateValue.getSymlinkTarget
     pub fn get_symlink_target(&self) -> &PathFragment {
         match self {
             FileStateValue::Symlink { symlink_target } => symlink_target,

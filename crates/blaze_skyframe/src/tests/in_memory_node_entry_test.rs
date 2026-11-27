@@ -530,7 +530,10 @@ pub(super) fn reset_lifecycle(kind: &Kind) {
     // Deps registered before the reset must be tracked if keeping edges.
     if entry.keeps_edges() {
         assert_contains_exactly(
-            &entry.get_reset_direct_deps().into_iter().collect::<Vec<_>>(),
+            &entry
+                .get_reset_direct_deps()
+                .into_iter()
+                .collect::<Vec<_>>(),
             &[dep1],
         );
     }
@@ -585,7 +588,10 @@ pub(super) fn reset_twice_more_deps_requested_before_first_reset(kind: &Kind) {
     // dep1 was registered during the most recent evaluation attempt.
     if entry.keeps_edges() {
         assert_contains_exactly(
-            &entry.get_reset_direct_deps().into_iter().collect::<Vec<_>>(),
+            &entry
+                .get_reset_direct_deps()
+                .into_iter()
+                .collect::<Vec<_>>(),
             &[dep1, dep2],
         );
     }
@@ -701,7 +707,12 @@ pub(super) fn concurrent_rewinding_allowed(kind: &Kind) {
     let mut entry = kind.create_entry();
     entry.add_reverse_dep_and_check_if_done(None); // Start evaluation.
     entry.mark_rebuilding();
-    set_value(&mut entry, Some(new_sky_value()), None, kind.initial_version);
+    set_value(
+        &mut entry,
+        Some(new_sky_value()),
+        None,
+        kind.initial_version,
+    );
     assert!(!entry.is_dirty());
     assert!(entry.is_done());
     assert!(entry.mark_dirty(DirtyType::Rewind).is_some());

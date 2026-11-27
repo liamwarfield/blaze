@@ -354,6 +354,12 @@ impl FrozenModule {
         self.module.all_items()
     }
 
+    /// BLAZE PATCH 0065: the module's raw docstring (Java `Module.getDocumentation()` before // BLAZE PATCH 0065
+    /// `Starlark.trimDocString`), `None` without one. // BLAZE PATCH 0065
+    pub fn raw_docstring(&self) -> Option<&str> { // BLAZE PATCH 0065
+        self.module.docstring.as_deref() // BLAZE PATCH 0065
+    } // BLAZE PATCH 0065
+
     /// The documentation for the module, and all of its top level values
     ///
     /// Returns `(<module documentation>, { <symbol> : <that symbol's documentation> })`

@@ -38,9 +38,7 @@ pub struct RemoteActionInputFetcher {
     build_request_id: String,
     command_id: String,
     combined_cache: Arc<CombinedCache>,
-    // PORT: `ConcurrentArtifactPathTrie rewoundActionOutputs` is only filled by
-    // `handleRewoundActionOutputs`, i.e. by action rewinding, which is not ported: the trie is
-    // always empty (see `rewound_action_outputs_contains`).
+    rewound_action_outputs: crate::concurrent_artifact_path_trie::ConcurrentArtifactPathTrie,
 }
 
 impl std::fmt::Debug for RemoteActionInputFetcher {
@@ -82,28 +80,39 @@ impl RemoteActionInputFetcher {
             build_request_id: build_request_id.to_string(),
             command_id: command_id.to_string(),
             combined_cache,
+            rewound_action_outputs: Default::default(),
         }
     }
 
     /// `rewoundActionOutputs.contains(execPath)`.
-    ///
-    /// PORT: rewinding is not ported; `handleRewoundActionOutputs` (the only writer of the trie)
-    /// fails loudly, so the trie is empty and contains nothing.
-    // Java: com/google/devtools/build/lib/remote/ConcurrentArtifactPathTrie.java:50 ConcurrentArtifactPathTrie.contains
-    fn rewound_action_outputs_contains(&self, _exec_path: &PathFragment) -> bool {
-        false
+    fn rewound_action_outputs_contains(&self, exec_path: &PathFragment) -> bool {
+        self.rewound_action_outputs.contains(exec_path)
     }
 
-    /// PORT: action rewinding is not ported (docs/remote.md, "Not ported is loud"). Java
-    /// invalidates the cached creation of the outputs' tree artifact directories in
-    /// `outputDirectoryHelper` and records the outputs (the parent of a `TreeFileArtifact`) in
-    /// `rewoundActionOutputs`, so that `forceRefetch` makes their downloads and directory
-    /// bookkeeping start over.
     // Java: com/google/devtools/build/lib/remote/RemoteActionInputFetcher.java:169 RemoteActionInputFetcher.handleRewoundActionOutputs
-    pub fn handle_rewound_action_outputs(&self, _outputs: &[ActionInputRef]) {
-        blaze_util::unported!(
-            "RemoteActionInputFetcher.handleRewoundActionOutputs (action rewinding)"
-        )
+    pub fn handle_rewound_action_outputs(&self, outputs: &[blaze_actions::Artifact]) {
+        // SkyframeActionExecutor#prepareForRewinding does *not* call this method because the
+        // RemoteActionFileSystem corresponds to an ActionFileSystemType with
+        // inMemoryFileSystem() == true. While it is true that resetting outputDirectoryHelper
+        // isn't necessary to undo the caching of output directory creation during action
+        // preparation, we still need to reset here since outputDirectoryHelper is also used by
+        // AbstractActionInputPrefetcher.
+        if let Some(output_directory_helper) = self.base.output_directory_helper() {
+            output_directory_helper.invalidate_tree_artifact_directory_creation(outputs);
+        }
+        for output in outputs {
+            // Action templates have TreeFileArtifacts as outputs, which isn't supported by the
+            // trie. We only need to track the tree artifacts themselves.
+            let tracked = if output.artifact_class()
+                == blaze_actions::actions::artifact::ArtifactClass::TreeFileArtifact
+            {
+                output.get_parent().expect("a TreeFileArtifact has a parent")
+            } else {
+                output
+            };
+            self.rewound_action_outputs
+                .add(&blaze_exec::actions::action_adapters::artifact_input(tracked));
+        }
     }
 
     /// `this` as the abstract class.

@@ -127,6 +127,36 @@ pub struct RemoteModuleEnvironment {
     pub hooks: RemoteHooks,
 }
 
+/// `RemoteModule.lastRemoteOutputChecker`: the checker of the previous command of the server
+/// (`None` after a command without remote options).
+///
+/// PORT: Java's module lives with the server and keeps it in a field; Blaze builds the module
+/// per command, so the field is this process-wide cell.
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:159 RemoteModule.lastRemoteOutputChecker
+static LAST_REMOTE_OUTPUT_CHECKER: parking_lot::Mutex<LastRemoteOutputChecker> =
+    parking_lot::Mutex::new(LastRemoteOutputChecker {
+        checker: None,
+        set_this_command: false,
+    });
+
+struct LastRemoteOutputChecker {
+    checker: Option<Arc<RemoteOutputChecker>>,
+    /// The module's `afterCommand` of the current command recorded its checker.
+    set_this_command: bool,
+}
+
+/// The end of every command (`RemoteModule.afterCommand` runs for every command in Java): a
+/// command whose module recorded no checker leaves none (`lastRemoteOutputChecker =
+/// remoteOutputChecker`, which is null without remote options).
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:1120 RemoteModule.afterCommand
+pub fn end_command_for_last_remote_output_checker() {
+    let mut last = LAST_REMOTE_OUTPUT_CHECKER.lock();
+    if !last.set_this_command {
+        last.checker = None;
+    }
+    last.set_this_command = false;
+}
+
 /// `RemoteModule`, as far as one command goes.
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:139 RemoteModule
 pub struct RemoteModule {
@@ -139,6 +169,13 @@ pub struct RemoteModule {
     remote_output_tree: Option<Arc<RemoteOutputTree>>,
     /// `actionInputFetcher` (see [`RemoteModule::create_action_input_fetcher`]).
     action_input_fetcher: Option<Arc<RemoteActionInputFetcher>>,
+    /// `RemoteOutputService.rewindLostInputs` (`buildRequestOptions != null &&
+    /// buildRequestOptions.rewindLostInputs`).
+    rewind_lost_inputs: bool,
+    /// `RemoteOutputService.rewoundActionSynchronizer` when it is a
+    /// `RemoteRewoundActionSynchronizer` (see [`RemoteModule::create_action_input_fetcher`]).
+    rewound_action_synchronizer:
+        Option<Arc<crate::remote_rewound_action_synchronizer::RemoteRewoundActionSynchronizer>>,
     /// `env.getExecRoot()`, for `createActionInputFetcher`.
     exec_root: Option<Path>,
     /// `env.getBuildRequestId()` / `env.getCommandId()`, for `createActionInputFetcher`.
@@ -256,6 +293,8 @@ impl RemoteModule {
             cache_available: false,
             remote_output_tree: None,
             action_input_fetcher: None,
+            rewind_lost_inputs: env.rewind_lost_inputs.unwrap_or(false),
+            rewound_action_synchronizer: None,
             exec_root: Some(env.exec_root.clone()),
             build_request_id: env.build_request_id.clone(),
             command_id: env.command_id.clone(),
@@ -383,6 +422,21 @@ impl RemoteModule {
             ),
         );
         self.action_input_fetcher = Some(fetcher.clone());
+        // RemoteOutputService.setActionInputFetcher(actionInputFetcher, graph).
+        // Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:73 RemoteOutputService.setActionInputFetcher
+        if self.rewind_lost_inputs {
+            let synchronizer = Arc::new(
+                crate::remote_rewound_action_synchronizer::RemoteRewoundActionSynchronizer::new(
+                    fetcher.clone(),
+                ),
+            );
+            if let Some(provider) = &self.action_context_provider {
+                provider
+                    .get_remote_execution_service()
+                    .set_rewound_action_synchronizer(synchronizer.clone());
+            }
+            self.rewound_action_synchronizer = Some(synchronizer);
+        }
         Some(fetcher)
     }
 
@@ -413,6 +467,16 @@ impl RemoteModule {
     /// `actionInputFetcher`.
     pub fn get_action_input_fetcher(&self) -> Option<&Arc<RemoteActionInputFetcher>> {
         self.action_input_fetcher.as_ref()
+    }
+
+    /// `outputService.getRewoundActionSynchronizer()` when it is the remote one (with
+    /// `--rewind_lost_inputs` and an action input fetcher).
+    // Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:241 RemoteOutputService.getRewoundActionSynchronizer
+    pub fn get_rewound_action_synchronizer(
+        &self,
+    ) -> Option<&Arc<crate::remote_rewound_action_synchronizer::RemoteRewoundActionSynchronizer>>
+    {
+        self.rewound_action_synchronizer.as_ref()
     }
 
     /// The salt of every action key (`ExecutorBuilder.setActionExecutionSalt`): whether a remote
@@ -450,9 +514,7 @@ impl RemoteModule {
             mut remote_options,
             auth_and_tls_options,
             execution_options,
-            // Read by Java for the disk cache integrity check only (see below; root ruling
-            // 2026-11-19); `executor_init` gets it from the integrator.
-            rewind_lost_inputs: _,
+            rewind_lost_inputs,
             experimental_sibling_repository_layout,
             reporter,
             file_system,
@@ -584,6 +646,7 @@ impl RemoteModule {
         // PORT: the remote output tree (see `get_remote_output_tree`) is created for a build
         // that enables a cache, unless the integrator provides its own injector.
         let mut hooks = hooks;
+        let skyframe_delete_by_function_name = hooks.skyframe_delete_by_function_name.clone();
         let any_cache =
             enable_disk_cache || enable_http_cache || enable_grpc_cache || enable_remote_execution;
         if any_cache && hooks.remote_output_injector.is_none() {
@@ -652,13 +715,25 @@ impl RemoteModule {
             }));
         }
 
-        let remote_output_checker = Arc::new(RemoteOutputChecker::new(
-            &command_name,
-            remote_options.remote_outputs_mode,
-            RemoteOutputChecker::patterns_to_download(&remote_options),
-        ));
-        // PORT: `remoteOutputChecker.maybeInvalidateSkyframeValues(evaluator)` compares with the
-        // checker of the previous command of the server; one command per process here.
+        let remote_output_checker =
+            Arc::new(RemoteOutputChecker::new_with_last_remote_output_checker(
+                &command_name,
+                remote_options.remote_outputs_mode,
+                RemoteOutputChecker::patterns_to_download(&remote_options),
+                LAST_REMOTE_OUTPUT_CHECKER.lock().checker.clone(),
+            ));
+        // Java: com/google/devtools/build/lib/remote/RemoteModule.java:574 RemoteModule.beforeCommand
+        if let Some(delete) = &skyframe_delete_by_function_name {
+            remote_output_checker.maybe_invalidate_skyframe_values(&mut |predicate| {
+                // The predicate lives only for this call: copy its verdict for the two
+                // function names it can match (TARGET_COMPLETION, ASPECT_COMPLETION).
+                let names: Vec<&'static str> = ["TARGET_COMPLETION", "ASPECT_COMPLETION"]
+                    .into_iter()
+                    .filter(|n| predicate(n))
+                    .collect();
+                delete(Arc::new(move |name: &str| names.contains(&name)));
+            });
+        }
         self.remote_output_checker = Some(remote_output_checker.clone());
 
         let invocation_id = command_id.clone();
@@ -731,12 +806,8 @@ impl RemoteModule {
         // rewinding, a blob that is missing after all is cheap to recover from, so the check can
         // be skipped. This allows disk cache AC checks to be entirely local, reducing server
         // load and avoiding a network round trip.
-        // PORT: Java skips the check under --rewind_lost_inputs (RemoteModule.java:700-706)
-        // because rewinding recovers a missing blob cheaply; action rewinding is not ported, so
-        // Blaze keeps the check as with --norewind_lost_inputs (root ruling 2026-11-19,
-        // docs/decisions.md). Restore Java's expression when rewinding is ported:
-        // `buildRequestOptions == null || !buildRequestOptions.rewindLostInputs`.
-        let check_disk_cache_action_result_integrity = true;
+        // Java: com/google/devtools/build/lib/remote/RemoteModule.java:705 RemoteModule.setup
+        let check_disk_cache_action_result_integrity = !rewind_lost_inputs.unwrap_or(false);
 
         if (enable_http_cache || enable_disk_cache) && !enable_grpc_cache {
             // Java: com/google/devtools/build/lib/remote/RemoteModule.java:287 RemoteModule.initHttpAndDiskCache
@@ -746,9 +817,14 @@ impl RemoteModule {
                 &auth_and_tls_options,
                 Some(&working_directory),
                 &digest_util,
-                // PORT: Java passes a retrier with `HTTP_RESULT_CLASSIFIER`; only the HTTP
-                // cache client (not ported) uses it.
-                retrier.clone(),
+                // new RemoteRetrier(remoteOptions, HTTP_RESULT_CLASSIFIER, retryScheduler,
+                // circuitBreaker), with a circuit breaker of its own.
+                Arc::new(RemoteRetrier::new(
+                    &remote_options,
+                    HTTP_RESULT_CLASSIFIER.clone(),
+                    retry_scheduler.clone(),
+                    circuit_breaker_factory::create_circuit_breaker(&remote_options),
+                )),
                 check_disk_cache_action_result_integrity,
             ) {
                 Ok(c) => c,
@@ -1027,8 +1103,16 @@ impl RemoteModule {
         }
 
         let rpc_log_file = self.rpc_log_file.take();
+        // lastRemoteOutputChecker = remoteOutputChecker
+        // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1120 RemoteModule.afterCommand
+        {
+            let mut last = LAST_REMOTE_OUTPUT_CHECKER.lock();
+            last.checker = self.remote_output_checker.clone();
+            last.set_this_command = true;
+        }
         self.remote_output_checker = None;
         self.action_input_fetcher = None;
+        self.rewound_action_synchronizer = None;
         // buildEventArtifactUploaderFactoryDelegate.reset()
         self.build_event_artifact_uploader_factory = None;
 
@@ -1307,6 +1391,48 @@ struct ProviderEnvironment {
     experimental_sibling_repository_layout: bool,
     scrubber: Option<Arc<Scrubber>>,
     hooks: RemoteHooks,
+}
+
+/// `HTTP_RESULT_CLASSIFIER`: the retry classification of the HTTP remote cache.
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:249 RemoteModule.HTTP_RESULT_CLASSIFIER
+pub static HTTP_RESULT_CLASSIFIER: std::sync::LazyLock<Arc<dyn crate::retrier::ResultClassifier>> =
+    std::sync::LazyLock::new(|| -> Arc<dyn crate::retrier::ResultClassifier> {
+        Arc::new(http_result_classifier)
+    });
+
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:249 RemoteModule.HTTP_RESULT_CLASSIFIER
+fn http_result_classifier(e: &io::Error) -> crate::retrier::ResultClassifierResult {
+    use crate::http::{ClosedChannelException, DownloadTimeoutException, HttpException};
+    use crate::retrier::ResultClassifierResult;
+    let mut retry = false;
+    if crate::common::errors::downcast_ref::<ClosedChannelException>(e).is_some() {
+        retry = true;
+    } else if crate::common::errors::downcast_ref::<DownloadTimeoutException>(e).is_some() {
+        retry = true;
+    } else if let Some(http_exception) = crate::common::errors::downcast_ref::<HttpException>(e) {
+        let status = http_exception.status;
+        if status == 404 {
+            return ResultClassifierResult::Success;
+        }
+        retry = matches!(status, 408 | 429 | 500 | 502 | 503 | 504);
+    } else {
+        // `e instanceof IOException`: every error here is one.
+        // PORT: the JDK's socket messages are `strerror` texts ("Connection reset by peer");
+        // Rust appends " (os error N)", which these tests do not see.
+        let msg = e.to_string().to_ascii_lowercase();
+        if msg.contains("connection reset") {
+            retry = true;
+        } else if msg.contains("operation timed out") {
+            retry = true;
+        }
+    }
+    // PORT: skipped, the workaround for netty#11815 (a `DecoderException` ending in
+    // "functions:OPENSSL_internal:BAD_DECRYPT"): no Netty or BoringSSL here.
+    if retry {
+        ResultClassifierResult::TransientFailure
+    } else {
+        ResultClassifierResult::PermanentFailure
+    }
 }
 
 /// Provides a remote execution context.

@@ -188,6 +188,7 @@ pub struct BasicActionInput {
 impl BasicActionInput {
     /// `ActionInputHelper.fromPath(String)`.
     // Java: com/google/devtools/build/lib/actions/ActionInputHelper.java:95 ActionInputHelper.fromPath
+    // Java: com/google/devtools/build/lib/actions/ActionInputHelper.java:72 ActionInputHelper.fromPath
     pub fn from_path(path: &str) -> BasicActionInput {
         BasicActionInput {
             exec_path: PathFragment::create(path),

@@ -104,17 +104,36 @@ pub fn register_execution_functions(
         .typed_function::<DirectoryArtifactTraversalRequest, _>(move |k, env| {
             recursive_filesystem_traversal.compute(k, env)
         })
-        .typed_function::<TargetCompletionKey, _>(move |k, env| {
-            completion_function::compute_target_completion(&completion_executor, &*seam_tc, k, env)
-        })
-        .typed_function::<AspectCompletionKey, _>(move |k, env| {
-            completion_function::compute_aspect_completion(
-                &aspect_completion_executor,
-                &*seam_ac,
-                k,
-                env,
-            )
-        })
+        // The completion functions may return a `Reset` (lost top-level outputs), so they are
+        // registered untyped.
+        .function(
+            <TargetCompletionKey as blaze_skyframe::Key>::FUNCTION,
+            move |k: &blaze_skyframe::SkyKey, env: &mut blaze_skyframe::Environment<'_>| {
+                let k = k
+                    .downcast::<TargetCompletionKey>()
+                    .expect("key type matches function name");
+                completion_function::compute_target_completion(
+                    &completion_executor,
+                    &*seam_tc,
+                    k,
+                    env,
+                )
+            },
+        )
+        .function(
+            <AspectCompletionKey as blaze_skyframe::Key>::FUNCTION,
+            move |k: &blaze_skyframe::SkyKey, env: &mut blaze_skyframe::Environment<'_>| {
+                let k = k
+                    .downcast::<AspectCompletionKey>()
+                    .expect("key type matches function name");
+                completion_function::compute_aspect_completion(
+                    &aspect_completion_executor,
+                    &*seam_ac,
+                    k,
+                    env,
+                )
+            },
+        )
         .typed_function::<TestCompletionKey, _>(move |k, env| {
             test_completion_function::compute_test_completion(
                 &*seam_test,

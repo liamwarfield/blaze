@@ -8,8 +8,11 @@
 //! deletion of old logs. The handler opens its file on the first log record, which the server
 //! writes during startup; Blaze opens it in [`init`].
 //!
-//! PORT: only the file naming, opening and symlink creation are ported; Blaze writes no log
-//! records yet (there is no `java.util.logging` equivalent), so the file stays empty.
+//! PORT: Blaze has no `java.util.logging`. The handler's file naming, opening and symlink, the
+//! `SingleLineFormatter` record format and `DebugLoggerConfigurator.setupLogging` are ported;
+//! the server writes its records through [`log`] (and crates below the runtime through
+//! `blaze_util::server_logger`, whose sinks [`init`] sets). Rotation and the deletion of old
+//! logs are not (Bazel's `javalog.properties` sets no limit that `SimpleLogHandler` reads).
 
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
@@ -164,6 +167,47 @@ impl SimpleLogHandler {
 
     /// Closes the current log file (`LogManager.reset()` closes all handlers).
     /// PORT: the formatter tail is empty for `SingleLineFormatter`; nothing is written.
+    /// Flushes the current log file.
+    // Java: com/google/devtools/build/lib/util/SimpleLogHandler.java:460 SimpleLogHandler.flush
+    // Java: com/google/devtools/build/lib/util/SimpleLogHandler.java:780 SimpleLogHandler.Output.flush
+    pub fn flush(&mut self) {
+        use std::io::Write as _;
+        if let Some((_, file)) = self.output.as_mut()
+            && let Err(e) = file.flush()
+        {
+            report_error("Failed to flush log file", &e);
+        }
+    }
+
+    // PORT: the `Output` inner class is the `output` field: `Output.open` is
+    // `open_output_if_needed`, `Output.write` is `publish`, `Output.close` is `close`,
+    // `Output.getPath` and `Output.isOpen` are `get_current_log_file_path`.
+    // Java: com/google/devtools/build/lib/util/SimpleLogHandler.java:743 SimpleLogHandler.Output.open
+    // Java: com/google/devtools/build/lib/util/SimpleLogHandler.java:770 SimpleLogHandler.Output.write
+    // Java: com/google/devtools/build/lib/util/SimpleLogHandler.java:789 SimpleLogHandler.Output.close
+    // Java: com/google/devtools/build/lib/util/SimpleLogHandler.java:760 SimpleLogHandler.Output.getPath
+    // Java: com/google/devtools/build/lib/util/SimpleLogHandler.java:734 SimpleLogHandler.Output.isOpen
+    //
+    // Rotation and the deletion of old logs are not reachable at the pin: Bazel's client
+    // configures the handler with `javalog.properties`, whose `limit` and `total_limit` are not
+    // property names `SimpleLogHandler` reads, so both stay disabled.
+    // PORT: skipped, unreachable: SimpleLogHandler.setRotateLimitBytes, SimpleLogHandler.setTotalLimitBytes
+    // PORT: skipped, unreachable: SimpleLogHandler.closeIfByteCountAtleast, SimpleLogHandler.deleteOldLogs
+    // PORT: skipped, unreachable: SimpleLogHandler.parseLogFileTimestamp, SimpleLogHandler.PathByTimestamp
+    // PORT: skipped, unreachable: SimpleLogHandler.getSize, SimpleLogHandler.compareTo, SimpleLogHandler.getPath
+    // The handler level and formatter and their `LogManager` properties are java.util.logging
+    // plumbing: records reach the handler filtered by the logger level and formatted by
+    // `SingleLineFormatter` (see `log`); the `LogHandlerQuerier` service is
+    // `get_server_log_path`.
+    // PORT: skipped, JVM-only: SimpleLogHandler.setLogLevel, SimpleLogHandler.setFormatter
+    // PORT: skipped, JVM-only: SimpleLogHandler.isLoggable, SimpleLogHandler.getConfiguredProperty
+    // PORT: skipped, JVM-only: SimpleLogHandler.getConfiguredStringProperty
+    // PORT: skipped, JVM-only: SimpleLogHandler.getConfiguredBooleanProperty
+    // PORT: skipped, JVM-only: SimpleLogHandler.getConfiguredIntProperty
+    // PORT: skipped, JVM-only: SimpleLogHandler.getConfiguredLevelProperty
+    // PORT: skipped, JVM-only: SimpleLogHandler.getConfiguredFormatterProperty
+    // PORT: skipped, JVM-only: SimpleLogHandler.canQuery, SimpleLogHandler.getLogHandlerFilePath
+
     // Java: com/google/devtools/build/lib/util/SimpleLogHandler.java:479 SimpleLogHandler.close
     pub fn close(&mut self) {
         self.output = None;
@@ -413,24 +457,40 @@ pub fn init(output_base: &blaze_vfs::Path) {
     handler.open_output_if_needed();
     *SERVER_LOG_HANDLER.lock() = Some(handler);
     // The loggers of the crates below the runtime write here too.
-    blaze_util::server_logger::set_info_sink(|class, method, message| {
-        log(
-            blaze_options::converters::LogLevel::INFO,
-            class,
-            method,
-            message,
-        )
-    });
-    blaze_util::server_logger::set_warning_sink(|class, method, message, cause| {
-        log_with_cause(
-            blaze_options::converters::LogLevel::WARNING,
-            class,
-            method,
-            message,
-            cause,
-        )
+    blaze_util::server_logger::set_sink(|level, class, method, message, cause| {
+        use blaze_options::converters::LogLevel;
+        let level = match level {
+            blaze_util::server_logger::Level::Severe => LogLevel::SEVERE,
+            blaze_util::server_logger::Level::Warning => LogLevel::WARNING,
+            blaze_util::server_logger::Level::Info => LogLevel::INFO,
+        };
+        log_with_cause(level, class, method, message, cause)
     });
 }
+
+/// Flushes all loggers at com.google.devtools.build.* or higher (their one handler, the server
+/// log's).
+// Java: com/google/devtools/build/lib/util/DebugLoggerConfigurator.java:61 DebugLoggerConfigurator.flushServerLog
+pub fn flush_server_log() {
+    if let Some(handler) = SERVER_LOG_HANDLER.lock().as_mut() {
+        handler.flush();
+    }
+}
+
+// The LogHandlerQuerier service finds the file of the handler installed by the logging
+// configuration; Blaze's one handler is the SimpleLogHandler above, which `get_server_log_path`
+// asks directly.
+// PORT: skipped, JVM-only (java.util.logging plumbing): LogHandlerQuerier.makeConfiguredInstance
+// PORT: skipped, JVM-only (java.util.logging plumbing): LogHandlerQuerier.getConfiguredInstance
+// PORT: skipped, JVM-only (java.util.logging plumbing): LogHandlerQuerier.getLoggerFilePath
+// PORT: skipped, JVM-only (java.util.logging plumbing): LogHandlerQuerier.canQuery
+// PORT: skipped, JVM-only (java.util.logging plumbing): LogHandlerQuerier.getLogHandlerFilePath
+// PORT: skipped, JVM-only (java.util.logging FileHandler): FileHandlerQuerier.canQuery
+// PORT: skipped, JVM-only (java.util.logging FileHandler): FileHandlerQuerier.getLogHandlerFilePath
+// PORT: skipped, Google-internal remote logging: LoggingUtil.installRemoteLogger
+// PORT: skipped, Google-internal remote logging: LoggingUtil.installRemoteLoggerForTesting
+// PORT: skipped, Google-internal remote logging: LoggingUtil.getRemoteLogger
+// PORT: skipped, JVM-only (class path scanning, used by docgen only): Classpath.findClasses
 
 /// `LogManager.getLogManager().reset()`: closes the server log.
 pub fn close() {
@@ -891,23 +951,32 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs log record publishing (no java.util.logging port)"]
-    fn test_publish() {}
+    fn test_publish() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut handler = SimpleLogHandler::builder()
+            .set_prefix(&format!("{}/hello", tmp.path().display()))
+            .build();
+        // TrivialFormatter: the message and a newline.
+        handler.publish("Hello world\n"); // To open the log file.
+        let log_path = handler.get_current_log_file_path().unwrap();
+        handler.close();
+        assert_eq!(std::fs::read_to_string(log_path).unwrap(), "Hello world\n");
+    }
 
     #[test]
-    #[ignore = "needs log levels (no java.util.logging port)"]
+    #[ignore = "handler log levels (Builder.setLogLevel, isLoggable) are skipped: Bazel never sets one"]
     fn test_log_level_equal_published() {}
 
     #[test]
-    #[ignore = "needs log levels (no java.util.logging port)"]
+    #[ignore = "handler log levels (Builder.setLogLevel, isLoggable) are skipped: Bazel never sets one"]
     fn test_log_level_higher_published() {}
 
     #[test]
-    #[ignore = "needs log levels (no java.util.logging port)"]
+    #[ignore = "handler log levels (Builder.setLogLevel, isLoggable) are skipped: Bazel never sets one"]
     fn test_log_level_lower_not_published() {}
 
     #[test]
-    #[ignore = "needs log levels (no java.util.logging port)"]
+    #[ignore = "handler log levels (Builder.setLogLevel, isLoggable) are skipped: Bazel never sets one"]
     fn test_log_level_default_all_published() {}
 
     #[test]
@@ -915,8 +984,25 @@ mod tests {
     fn test_rotate_limit_bytes() {}
 
     #[test]
-    #[ignore = "needs log record publishing (no java.util.logging port)"]
-    fn test_open_in_append_mode() {}
+    fn test_open_in_append_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log_path = tmp.path().join("hello.20150901-151754.log");
+        std::fs::write(&log_path, "Previous logs\n").unwrap();
+        // Instant.parse("2015-09-01T15:17:54Z")
+        let mut handler = SimpleLogHandler::builder()
+            .set_prefix(&format!("{}/hello", tmp.path().display()))
+            .set_pattern(".")
+            .set_extension("log")
+            .set_clock_for_testing(1_441_120_674)
+            .build();
+        handler.publish("New logs\n");
+        assert_eq!(handler.get_current_log_file_path().unwrap(), log_path);
+        handler.close();
+        assert_eq!(
+            std::fs::read_to_string(&log_path).unwrap(),
+            "Previous logs\nNew logs\n"
+        );
+    }
 
     #[test]
     #[ignore = "needs old-log deletion (not used by Bazel's javalog.properties)"]

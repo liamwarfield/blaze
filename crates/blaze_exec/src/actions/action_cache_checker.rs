@@ -404,11 +404,13 @@ pub struct ActionCacheCheckerCacheConfigBuilder {
 }
 
 impl ActionCacheCheckerCacheConfigBuilder {
+    // Java: com/google/devtools/build/lib/actions/ActionCacheChecker.java:93 ActionCacheChecker.CacheConfig.Builder.setEnabled
     pub fn set_enabled(&mut self, value: bool) -> &mut Self {
         self.enabled = Some(value);
         self
     }
 
+    // Java: com/google/devtools/build/lib/actions/ActionCacheChecker.java:95 ActionCacheChecker.CacheConfig.Builder.setStoreOutputMetadata
     pub fn set_store_output_metadata(&mut self, value: bool) -> &mut Self {
         self.store_output_metadata = Some(value);
         self

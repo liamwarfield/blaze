@@ -1,0 +1,18 @@
+[package]
+name = "blaze_starlarkdocextract"
+description = "API documentation extraction for loaded Starlark modules (lib/starlarkdocextract, starlark/common DocstringUtils): the stardoc_output ModuleInfo of starlark_doc_extract"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blaze_cmdline = { path = "../blaze_cmdline" }
+blaze_packages = { path = "../blaze_packages" }
+blaze_protos = { path = "../blaze_protos" }
+blaze_starlark = { path = "../blaze_starlark" }
+blaze_util = { path = "../blaze_util" }
+starlark.workspace = true
+starlark_map.workspace = true
+regex.workspace = true
+thiserror.workspace = true

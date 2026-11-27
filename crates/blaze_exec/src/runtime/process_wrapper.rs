@@ -74,6 +74,7 @@ impl ProcessWrapper {
     }
 
     /// `asActionInput()`.
+    // Java: com/google/devtools/build/lib/runtime/ProcessWrapper.java:97 ProcessWrapper.asActionInput
     pub fn as_action_input(&self) -> &ActionInputRef {
         &self.action_input
     }
@@ -94,14 +95,17 @@ pub struct CommandLineBuilder {
 }
 
 impl CommandLineBuilder {
+    // Java: com/google/devtools/build/lib/runtime/ProcessWrapper.java:133 ProcessWrapper.CommandLineBuilder.overrideProcessWrapperPath
     pub fn override_process_wrapper_path(&mut self, p: PathFragment) -> &mut Self {
         self.process_wrapper_path = p;
         self
     }
+    // Java: com/google/devtools/build/lib/runtime/ProcessWrapper.java:140 ProcessWrapper.CommandLineBuilder.setStdoutPath
     pub fn set_stdout_path(&mut self, p: PathFragment) -> &mut Self {
         self.stdout_path = Some(p);
         self
     }
+    // Java: com/google/devtools/build/lib/runtime/ProcessWrapper.java:147 ProcessWrapper.CommandLineBuilder.setStderrPath
     pub fn set_stderr_path(&mut self, p: PathFragment) -> &mut Self {
         self.stderr_path = Some(p);
         self
@@ -110,11 +114,13 @@ impl CommandLineBuilder {
         self.timeout = Some(timeout);
         self
     }
+    // Java: com/google/devtools/build/lib/runtime/ProcessWrapper.java:161 ProcessWrapper.CommandLineBuilder.setStatisticsPath
     pub fn set_statistics_path(&mut self, p: PathFragment) -> &mut Self {
         self.statistics_path = Some(p);
         self
     }
     /// `addExecutionInfo(executionInfo)`.
+    // Java: com/google/devtools/build/lib/runtime/ProcessWrapper.java:168 ProcessWrapper.CommandLineBuilder.addExecutionInfo
     pub fn add_execution_info(&mut self, execution_info: &IndexMap<String, String>) -> &mut Self {
         if execution_info.contains_key(execution_requirements::GRACEFUL_TERMINATION) {
             self.graceful_sigterm = true;

@@ -24,6 +24,31 @@ use crate::workspace::BlazeWorkspace;
 
 /// Encapsulates the state needed for a single command.
 // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:105 CommandEnvironment
+// The getters of Java's CommandEnvironment for the server's SkyframeExecutor and the objects
+// built with it: Blaze builds them per command where the command needs them
+// (`commands::query::create_skyframe_executor`, the build command's execution setup in
+// `commands/build.rs`, the repository setup of `blaze_repo_rules::setup`).
+// PORT: skipped, built per command: CommandEnvironment.getSkyframeExecutor, CommandEnvironment.getPackageManager
+// PORT: skipped, built per command: CommandEnvironment.getSkyframeBuildView, CommandEnvironment.getPackageLocator
+// PORT: skipped, built per command: CommandEnvironment.getRepoContentsCachePath
+// PORT: skipped, built per command: CommandEnvironment.getActionTempsDirectory, CommandEnvironment.getOutputService
+// PORT: skipped, built per command: CommandEnvironment.getWorkspaceInfoFromDiff, CommandEnvironment.getLocalResourceManager
+// PORT: skipped, built per command: CommandEnvironment.recordLastExecutionTime
+// PORT: skipped, built per command: CommandEnvironment.determineOutputFileSystem, CommandEnvironment.getOutputDirectoryHelper
+// PORT: skipped, built per command: CommandEnvironment.getSyscallCache, CommandEnvironment.getXattrProvider
+// PORT: skipped, built per command: CommandEnvironment.getQuiescingExecutors, CommandEnvironment.getBuildResultListener
+// PORT: skipped, built per command: CommandEnvironment.getCommandLinePathFactory
+// PORT: skipped, built per command: CommandEnvironment.additionalConfigurationChangeEvent
+// PORT: skipped, built per command: CommandEnvironment.getAdditionalConfigurationChangeEvent
+// PORT: skipped, built per command: CommandEnvironment.getHttpDownloader, CommandEnvironment.getDownloaderDelegate
+// PORT: skipped, built per command: CommandEnvironment.getClock, CommandEnvironment.getBuildRequestId
+// PORT: skipped, built per command: CommandEnvironment.getVersionGetter, CommandEnvironment.setVersionGetter
+// PORT: skipped, built per command: CommandEnvironment.getUseFakeStampData, CommandEnvironment.setUseFakeStampData
+// Getters that no Bazel code reads (Google-internal extensions and services):
+// PORT: skipped, no reader in Bazel: CommandEnvironment.getIdleTaskResultsFromPreviousIdlePeriod
+// PORT: skipped, no reader in Bazel: CommandEnvironment.getStartupOptionsProvider, CommandEnvironment.getFileFromWorkspace
+// PORT: skipped, no reader in Bazel: CommandEnvironment.getCommandExtensions, CommandEnvironment.getCommandExtensionReporter
+// PORT: skipped, remote analysis caching (out of scope): CommandEnvironment.getRemoteAnalysisCachingEventListener
 pub struct CommandEnvironment {
     /// Java `eventBus`.
     event_bus: Arc<CommandEventBus>,
@@ -51,6 +76,9 @@ pub struct CommandEnvironment {
     relative_working_directory: PathFragment,
     client_env: IndexMap<String, String>,
     command_id: String,
+    /// Java: `attemptNumber` (1 for the first attempt; the dispatcher retries a build after a
+    /// transient remote cache error).
+    attempt_number: i32,
     visible_action_env: std::collections::BTreeSet<String>,
     visible_test_env: std::collections::BTreeSet<String>,
     /// `blazeModuleEnvironment`: the module environment, whose `exit` sets the pending
@@ -163,7 +191,9 @@ impl CommandEnvironment {
         warnings: &mut Vec<String>,
         wait_time_in_ms: i64,
         command_start_time: i64,
+        attempt_number: i32,
     ) -> CommandEnvironment {
+        blaze_util::check_argument!(attempt_number >= 1);
         let directories = workspace.get_directories().clone();
         // Java: new Reporter(eventBus, ...) with the command's EventBus.
         let event_bus = Arc::new(CommandEventBus::default());
@@ -223,7 +253,8 @@ impl CommandEnvironment {
             .get_options::<ClientOptions>()
             .expect("CommandEnvironment needs its options provider to have ClientOptions loaded.");
         let client_env = make_map_from_map_entries(&client_options.client_env);
-        let command_id = Self::compute_command_id(&command_options, &client_env, warnings);
+        let command_id =
+            Self::compute_command_id(&command_options, &client_env, warnings, attempt_number);
         // PORT: buildRequestId is not ported.
         // Java: ALWAYS_INHERITED_REPO_ENV (Linux: PATH).
         let mut repo_env_builder: std::collections::BTreeMap<String, String> = client_env
@@ -327,6 +358,7 @@ impl CommandEnvironment {
             relative_working_directory,
             client_env,
             command_id,
+            attempt_number,
             visible_action_env,
             visible_test_env,
             blaze_module_environment,
@@ -446,6 +478,14 @@ impl CommandEnvironment {
             analysis_options.is_some_and(|o| o.discard_analysis_cache),
             self.reporter.as_ref(),
         );
+        // The server's state: a change of the decision, or no tracking, resets the kept graph,
+        // also for a command that builds no Skyframe executor.
+        self.workspace
+            .get_incremental_state()
+            .decide_keep_incremental_state_for_command(
+                &self.command_id,
+                self.track_incremental_state,
+            );
     }
 
     /// `getSkyframeExecutor().tracksStateForIncrementality()`.
@@ -514,33 +554,40 @@ impl CommandEnvironment {
         command_options: &CommonCommandOptions,
         client_env: &IndexMap<String, String>,
         warnings: &mut Vec<String>,
+        attempt_number: i32,
     ) -> String {
-        // PORT: attemptNumber is always 1 (no remote-cache retries yet), so the retry id
-        // derivation is not ported.
-        if let Some(id) = &command_options.invocation_id {
-            return blaze_options::OptionScalar::java_to_string(id);
-        }
-        // Try to set the clientId from the client environment.
-        let uuid_string = client_env
-            .get("BAZEL_INTERNAL_INVOCATION_ID")
-            .map(String::as_str)
-            .unwrap_or("");
-        if !uuid_string.is_empty() {
-            match uuid::Uuid::parse_str(uuid_string) {
-                Ok(id) => {
-                    warnings.push(
-                        "BAZEL_INTERNAL_INVOCATION_ID is set. This will soon be deprecated in favor of \
-                         --invocation_id. Please switch to using the flag."
-                            .to_string(),
-                    );
-                    id.to_string()
+        let command_id = match &command_options.invocation_id {
+            Some(id) => blaze_options::OptionScalar::java_to_string(id),
+            None => {
+                // Try to set the clientId from the client environment.
+                let uuid_string = client_env
+                    .get("BAZEL_INTERNAL_INVOCATION_ID")
+                    .map(String::as_str)
+                    .unwrap_or("");
+                if uuid_string.is_empty() {
+                    return uuid::Uuid::new_v4().to_string();
                 }
-                // String was malformed, so we will resort to generating a random UUID
-                Err(_) => uuid::Uuid::new_v4().to_string(),
+                match uuid::Uuid::parse_str(uuid_string) {
+                    Ok(id) => {
+                        warnings.push(
+                            "BAZEL_INTERNAL_INVOCATION_ID is set. This will soon be deprecated in \
+                             favor of --invocation_id. Please switch to using the flag."
+                                .to_string(),
+                        );
+                        id.to_string()
+                    }
+                    // String was malformed, so we will resort to generating a random UUID
+                    Err(_) => return uuid::Uuid::new_v4().to_string(),
+                }
             }
-        } else {
-            uuid::Uuid::new_v4().to_string()
+        };
+        // When retrying a command, the retry has to use a different command ID. BES backends can
+        // still link the invocations since their build ID will be the same and the attempt number
+        // will be increased.
+        if attempt_number > 1 {
+            return uuid::Uuid::new_v4().to_string();
         }
+        command_id
     }
 
     // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:464 CommandEnvironment.getRuntime
@@ -660,6 +707,11 @@ impl CommandEnvironment {
         &self.command_id
     }
 
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:1144 CommandEnvironment.getAttemptNumber
+    pub fn get_attempt_number(&self) -> i32 {
+        self.attempt_number
+    }
+
     /// The working directory of the server (the workspace, or null outside one).
     // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:706 CommandEnvironment.getWorkspace
     pub fn get_workspace(&self) -> Option<&Path> {
@@ -769,6 +821,7 @@ impl CommandEnvironment {
         self.ui_event_subscriber.as_ref()
     }
 
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:1199 CommandEnvironment.getUiEventHandler
     pub fn get_ui_event_handler(&self) -> Option<&Arc<blaze_events::ui::UiEventHandler>> {
         self.ui_event_handler.as_ref()
     }
@@ -841,6 +894,7 @@ impl CommandEnvironment {
     /// Hook method called by the BlazeCommandDispatcher right before the dispatch of each
     /// command ends (while its outcome can still be modified).
     ///
+    // PORT: skipped, a direct call to its one subscriber (commands/bep.rs): CommandPrecompleteEvent.getExitCode
     /// PORT: the deprecated `CommandPrecompleteEvent(ExitCode)` posted here has no subscriber
     /// in Blaze; the metrics collector's `CommandPrecompleteEvent` is posted by `afterCommand`
     /// (see `BlazeCommandDispatcher::after_command`).

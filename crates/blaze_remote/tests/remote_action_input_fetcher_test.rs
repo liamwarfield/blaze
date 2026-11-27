@@ -2160,7 +2160,7 @@ fn inject_remote_repo_invalid_path_throws_io_exception() {
 }
 
 #[test]
-#[ignore = "needs RemoteExternalOverlayFileSystem (the remote repo contents cache) and action rewinding (handleRewoundActionOutputs), not ported"]
+#[ignore = "needs RemoteExternalOverlayFileSystem (the remote repo contents cache), not ported"]
 fn rewound_action_output_exec_root_on_overlay_file_system_redownloaded() {
     let f = Fixture::set_up();
     let mut metadata = MetadataMap::new();
@@ -2185,7 +2185,7 @@ fn rewound_action_output_exec_root_on_overlay_file_system_redownloaded() {
 
     // Rewinding deletes the output and requires it to be downloaded again.
     a.get_path().delete().unwrap();
-    action_input_fetcher.handle_rewound_action_outputs(&[input(&a)]);
+    action_input_fetcher.handle_rewound_action_outputs(std::slice::from_ref(&a));
 
     wait(prefetcher.prefetch_files_interruptibly(
         f.action(),

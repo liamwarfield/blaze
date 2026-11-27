@@ -1251,6 +1251,10 @@ pub struct StarlarkDefinedConfigTransition {
     /// The frozen implementation function.
     implementation: OwnedFrozenValue,
     data: Arc<TransitionData>,
+    /// For `object` and `implementation` held without their heap ([`Self::from_parts`]): the
+    /// build arena generation that keeps the heap (`blaze_util::build_arena`); every read checks
+    /// it, so a transition kept past a release fails loudly. `None`: the handles own their heap.
+    arena_stamp: Option<blaze_util::build_arena::ArenaStamp>,
 }
 
 impl fmt::Debug for StarlarkDefinedConfigTransition {
@@ -1281,6 +1285,7 @@ impl StarlarkDefinedConfigTransition {
             object: value,
             implementation,
             data,
+            arena_stamp: None,
         })
     }
 
@@ -1297,11 +1302,27 @@ impl StarlarkDefinedConfigTransition {
             object,
             implementation,
             data: Arc::new(data),
+            // The caller makes both handles without an owner (keep-alive in the build arena).
+            arena_stamp: Some(blaze_util::build_arena::ArenaStamp::current()),
+        }
+    }
+
+    /// Panics if the build arena that keeps an unowned transition's heap was released.
+    fn check_arena(&self) {
+        if let Some(stamp) = self.arena_stamp {
+            stamp.check("StarlarkDefinedConfigTransition");
         }
     }
 
     pub fn object(&self) -> &OwnedFrozenValue {
+        self.check_arena();
         &self.object
+    }
+
+    /// The implementation function (checked like [`Self::object`]).
+    fn implementation(&self) -> &OwnedFrozenValue {
+        self.check_arena();
+        &self.implementation
     }
 
     // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:126 StarlarkDefinedConfigTransition.isExecTransition
@@ -1507,7 +1528,7 @@ impl StarlarkDefinedConfigTransition {
         let result = blaze_starlark::eval::run_on_evaluation_thread(|| {
             let ctx = ThreadContext::new(Phase::Analysis, semantics.clone(), print_events.clone());
             blaze_starlark::eval::call_frozen(
-                &self.implementation,
+                self.implementation(),
                 &ctx,
                 &blaze_starlark::eval::EvalOptions::default(),
                 |module| {
@@ -1732,7 +1753,7 @@ impl StarlarkDefinedConfigTransition {
     // Java: net/starlark/java/eval/StarlarkFunction.java:172 StarlarkFunction.getLocation
     fn impl_location_prefix(&self) -> String {
         let impl_location = blaze_starlark::defining_module::DefModule::declaration_span(
-            self.implementation.value(),
+            self.implementation().value(),
         )
         .map(|span| Location::of_span_start(&span));
         match impl_location {
@@ -1745,7 +1766,7 @@ impl StarlarkDefinedConfigTransition {
 
     fn impl_name(&self) -> String {
         // PORT: Java names the implementation function (`StarlarkCallable.getName`).
-        self.implementation.value().to_str()
+        self.implementation().value().to_str()
     }
 
     // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:602 RegularTransition.errorf

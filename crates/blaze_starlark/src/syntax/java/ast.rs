@@ -136,6 +136,8 @@ pub enum Stmt {
         op: Option<TokenKind>,
         op_offset: usize,
         rhs: Expr,
+        /// Java `AssignmentStatement.getDocComments()`.
+        doc_comments: Option<DocComments>,
     },
     Expr(Expr),
     If {
@@ -179,6 +181,8 @@ pub enum Stmt {
     Var {
         name: Ident,
         ty: Expr,
+        /// Java `VarStatement.getDocComments()`.
+        doc_comments: Option<DocComments>,
     },
 }
 
@@ -619,5 +623,55 @@ fn print_expr(buf: &mut String, e: &Expr, can_skip_parenthesis: bool) {
             }
             buf.push(']');
         }
+    }
+}
+
+/// A `#:` comment line (Java `Comment` with a doc comment prefix): its line (1-based) and its
+/// text from the `#` to the end of the line.
+// Java: net/starlark/java/syntax/Comment.java:25 Comment
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DocCommentLine {
+    pub line: usize,
+    pub text: String,
+}
+
+impl DocCommentLine {
+    /// The text following the `#: ` or `#:` prefix.
+    // Java: net/starlark/java/syntax/Comment.java:47 Comment.getDocCommentText
+    pub fn get_doc_comment_text(&self) -> &str {
+        self.text
+            .strip_prefix("#: ")
+            .or_else(|| self.text.strip_prefix("#:"))
+            .unwrap_or(&self.text)
+    }
+}
+
+/// A block of doc comments (`#:` lines) or a trailing doc comment.
+// Java: net/starlark/java/syntax/DocComments.java:25 DocComments
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocComments {
+    pub lines: Vec<DocCommentLine>,
+}
+
+impl DocComments {
+    // Java: net/starlark/java/syntax/DocComments.java:37 DocComments.getStartLocation
+    pub fn start_line(&self) -> usize {
+        self.lines.first().map_or(0, |l| l.line)
+    }
+
+    // Java: net/starlark/java/syntax/DocComments.java:41 DocComments.getEndLocation
+    pub fn end_line(&self) -> usize {
+        self.lines.last().map_or(0, |l| l.line)
+    }
+
+    /// The text content (trimmed of the leading `#: ` or `#:` prefixes, and joined with
+    /// newlines) of the doc comment block.
+    // Java: net/starlark/java/syntax/DocComments.java:49 DocComments.getText
+    pub fn get_text(&self) -> String {
+        self.lines
+            .iter()
+            .map(DocCommentLine::get_doc_comment_text)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }

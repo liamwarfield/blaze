@@ -49,6 +49,7 @@ impl Converter for RegexFilterAssignmentConverter {
                 .collect(),
         })))
     }
+    // Java: com/google/devtools/build/lib/exec/RegexFilterAssignmentConverter.java:29 RegexFilterAssignmentConverter.getTypeDescription
     fn get_type_description(&self) -> String {
         "a '<RegexFilter>=value[,value]' assignment".into()
     }

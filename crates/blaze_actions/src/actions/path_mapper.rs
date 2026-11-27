@@ -198,6 +198,7 @@ pub static NOOP: NoopPathMapper = NoopPathMapper;
 
 /// `PathMapperConstants.FOR_FINGERPRINTING`: a path mapper that inserts `pm-` before the config
 /// segment of output paths, used to fingerprint path-mapped actions.
+// PORT: skipped, PathMapperConstants.PathMapperConstants: the private constructor of a static utility class.
 // Java: com/google/devtools/build/lib/actions/PathMapperConstants.java:63 PathMapperConstants.FOR_FINGERPRINTING
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ForFingerprintingPathMapper;

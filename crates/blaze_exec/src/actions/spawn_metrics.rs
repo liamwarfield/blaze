@@ -15,6 +15,7 @@ pub enum ExecKind {
 }
 
 impl fmt::Display for ExecKind {
+    // Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:68 SpawnMetrics.ExecKind.toString
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             ExecKind::Remote => "Remote",
@@ -28,6 +29,68 @@ impl fmt::Display for ExecKind {
 /// Timing, size and memory statistics for a spawn execution. Fields are the Java builder's
 /// fields; build with struct-update syntax from [`SpawnMetrics::for_exec`].
 // Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:31 SpawnMetrics
+// The accessors, `toBuilder` (`clone`) and the builder's setters are the public fields: a
+// `set*(Duration)` setter is the caller's `to_ms` (`Builder.toMs`) and an `add*` setter the
+// caller's `+=` (`addRetryTimeInMs` merges into `retry_time_in_ms` by error code). The limits
+// are zero unless set, as `build()` returning a plain `SpawnMetrics` (no `FullSpawnMetrics`)
+// answers.
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:176 SpawnMetrics.totalTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:185 SpawnMetrics.networkTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:190 SpawnMetrics.queueTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:198 SpawnMetrics.uploadTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:207 SpawnMetrics.setupTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:212 SpawnMetrics.executionWallTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:220 SpawnMetrics.parseTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:225 SpawnMetrics.fetchTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:235 SpawnMetrics.retryTimeByError
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:240 SpawnMetrics.processOutputsTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:262 SpawnMetrics.inputBytes
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:267 SpawnMetrics.inputFiles
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:272 SpawnMetrics.memoryEstimate
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:277 SpawnMetrics.measuredMemoryPeak
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:281 SpawnMetrics.toBuilder
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:286 SpawnMetrics.inputBytesLimit
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:291 SpawnMetrics.inputFilesLimit
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:296 SpawnMetrics.outputBytesLimit
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:301 SpawnMetrics.outputFilesLimit
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:306 SpawnMetrics.memoryLimit
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:311 SpawnMetrics.timeLimitInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:377 SpawnMetrics.Builder.setExecKind
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:383 SpawnMetrics.Builder.setTotalTime
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:388 SpawnMetrics.Builder.setTotalTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:394 SpawnMetrics.Builder.setParseTime
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:399 SpawnMetrics.Builder.setParseTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:405 SpawnMetrics.Builder.setNetworkTime
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:410 SpawnMetrics.Builder.setNetworkTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:416 SpawnMetrics.Builder.setFetchTime
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:421 SpawnMetrics.Builder.setFetchTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:427 SpawnMetrics.Builder.setQueueTime
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:432 SpawnMetrics.Builder.setQueueTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:438 SpawnMetrics.Builder.addQueueTime
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:443 SpawnMetrics.Builder.addQueueTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:449 SpawnMetrics.Builder.setSetupTime
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:454 SpawnMetrics.Builder.setSetupTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:460 SpawnMetrics.Builder.addSetupTime
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:465 SpawnMetrics.Builder.addSetupTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:471 SpawnMetrics.Builder.setUploadTime
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:476 SpawnMetrics.Builder.setUploadTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:482 SpawnMetrics.Builder.setExecutionWallTime
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:487 SpawnMetrics.Builder.setExecutionWallTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:493 SpawnMetrics.Builder.addRetryTime
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:498 SpawnMetrics.Builder.addRetryTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:504 SpawnMetrics.Builder.setRetryTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:510 SpawnMetrics.Builder.setProcessOutputsTime
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:515 SpawnMetrics.Builder.setProcessOutputsTimeInMs
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:521 SpawnMetrics.Builder.setInputBytes
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:527 SpawnMetrics.Builder.setInputFiles
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:533 SpawnMetrics.Builder.setMemoryEstimateBytes
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:539 SpawnMetrics.Builder.setMeasuredMemoryPeakBytes
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:545 SpawnMetrics.Builder.setInputBytesLimit
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:551 SpawnMetrics.Builder.setInputFilesLimit
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:557 SpawnMetrics.Builder.setOutputBytesLimit
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:563 SpawnMetrics.Builder.setOutputFilesLimit
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:569 SpawnMetrics.Builder.setMemoryBytesLimit
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:575 SpawnMetrics.Builder.setTimeLimitInMs
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct SpawnMetrics {
     pub exec_kind: ExecKind,
@@ -58,6 +121,14 @@ const STATS_SHOW_THRESHOLD: f64 = 0.10;
 
 impl SpawnMetrics {
     /// `Builder.forExec(kind).build()`: empty metrics of a kind.
+    // Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:355 SpawnMetrics.Builder.forExec
+    // Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:339 SpawnMetrics.Builder.forLocalExec
+    // Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:343 SpawnMetrics.Builder.forRemoteExec
+    // Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:347 SpawnMetrics.Builder.forWorkerExec
+    // Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:351 SpawnMetrics.Builder.forOtherExec
+    // Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:361 SpawnMetrics.Builder.Builder
+    // Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:363 SpawnMetrics.Builder.build
+    // Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:377 SpawnMetrics.Builder.setExecKind
     pub fn for_exec(exec_kind: ExecKind) -> SpawnMetrics {
         SpawnMetrics {
             exec_kind,
@@ -77,14 +148,17 @@ impl SpawnMetrics {
     }
 
     /// `execKind()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:163 SpawnMetrics.execKind
     pub fn exec_kind(&self) -> ExecKind {
         self.exec_kind
     }
     /// `isEmpty()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:168 SpawnMetrics.isEmpty
     pub fn is_empty(&self) -> bool {
         self.total_time_in_ms == 0
     }
     /// `retryTimeInMs()`: the sum over error codes.
+    // Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:230 SpawnMetrics.retryTimeInMs
     pub fn retry_time_in_ms(&self) -> i32 {
         self.retry_time_in_ms
             .values()
@@ -92,6 +166,7 @@ impl SpawnMetrics {
             .fold(0, i32::wrapping_add)
     }
     /// `otherTimeInMs()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:248 SpawnMetrics.otherTimeInMs
     pub fn other_time_in_ms(&self) -> i32 {
         self.total_time_in_ms
             - self.parse_time_in_ms
@@ -169,12 +244,15 @@ impl SpawnMetrics {
     }
 }
 
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:137 SpawnMetrics.addStatToString
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:144 SpawnMetrics.isAboveThreshold
 fn add_stat(strings: &mut Vec<String>, name: &str, force_show: bool, time: i32, total: i32) {
     if force_show || (total > 0 && ((time as f32 / total as f32) as f64) >= STATS_SHOW_THRESHOLD) {
         strings.push(format!("{}: {}", name, pretty_percentage(time, total)));
     }
 }
 
+// Java: com/google/devtools/build/lib/actions/SpawnMetrics.java:153 SpawnMetrics.prettyPercentage
 fn pretty_percentage(duration: i32, total: i32) -> String {
     if total == 0 {
         return "N/A".to_string();

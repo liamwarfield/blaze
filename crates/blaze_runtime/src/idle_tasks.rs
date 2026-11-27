@@ -21,8 +21,8 @@ use crate::commands::info::items::pretty_print_bytes;
 /// An idle task that triggers a garbage collection and shrinks interner pools.
 ///
 /// PORT: Blaze has no garbage collector; `System.gc()` is the allocator's release of free memory
-/// (ruling D15, `malloc_trim`). Blaze has no `PooledInterner`s to shrink. The `[Idle GC]` log line
-/// is not written (Blaze has no server log).
+/// (ruling D15, `malloc_trim`). Blaze has no `PooledInterner`s to shrink. The log lines go to
+/// the server log (`crate::server_log`).
 // Java: com/google/devtools/build/lib/server/GcAndInternerShrinkingIdleTask.java:26 GcAndInternerShrinkingIdleTask
 pub struct GcAndInternerShrinkingIdleTask {
     state_kept_after_build: bool,
@@ -56,24 +56,54 @@ impl IdleTask for GcAndInternerShrinkingIdleTask {
 
     // Java: com/google/devtools/build/lib/server/GcAndInternerShrinkingIdleTask.java:48 GcAndInternerShrinkingIdleTask.run
     fn run(&self) -> Result<(), IdleTaskError> {
+        const CLASS: &str = "com.google.devtools.build.lib.server.GcAndInternerShrinkingIdleTask";
         let before = crate::process_memory::get_heap_memory_usage();
-        crate::process_memory::release_free_memory();
+        {
+            // try (var p = GoogleAutoProfilerUtils.logged("Idle GC")) { System.gc(); }
+            let start = std::time::Instant::now();
+            crate::process_memory::release_free_memory();
+            log_spent(CLASS, start, "Idle GC");
+        }
         // Shrinking interner pools can take multiple seconds for large builds, and is maximally
         // effective for builds that don't keep state. Avoid running it if state was kept, or if
         // the cleanup was interrupted in any case.
         if !thread_interrupt::interrupted() && !self.state_kept_after_build {
-            // PooledInterner.shrinkAll(): Blaze has no pooled interners.
+            // try (var p = GoogleAutoProfilerUtils.logged("Idle interner shrinking")) {
+            //   PooledInterner.shrinkAll(); }: Blaze has no pooled interners.
+            let start = std::time::Instant::now();
+            log_spent(CLASS, start, "Idle interner shrinking");
         }
         let after = crate::process_memory::get_heap_memory_usage();
-        // PORT: skipped, logging ("[Idle GC] used: %s -> %s, committed: %s -> %s").
-        let _ = (
-            pretty_print_bytes(before.get_used()),
-            pretty_print_bytes(after.get_used()),
-            pretty_print_bytes(before.get_committed()),
-            pretty_print_bytes(after.get_committed()),
+
+        blaze_util::server_logger::info(
+            CLASS,
+            "run",
+            &format!(
+                "[Idle GC] used: {} -> {}, committed: {} -> {}",
+                pretty_print_bytes(before.get_used()),
+                pretty_print_bytes(after.get_used()),
+                pretty_print_bytes(before.get_committed()),
+                pretty_print_bytes(after.get_committed())
+            ),
         );
         Ok(())
     }
+}
+
+/// The INFO line of a `GoogleAutoProfilerUtils.logged(description)` profiler when it closes
+/// (no minimum duration): "Spent <ms> milliseconds doing <description>", logged at the caller's
+/// site (`LogSites.callerOf(AutoProfiler.class)`), here `<class>.run`.
+// Java: com/google/devtools/build/lib/profiler/GoogleAutoProfilerUtils.java:125 GoogleAutoProfilerUtils.log
+fn log_spent(class: &str, start: std::time::Instant, description: &str) {
+    blaze_util::server_logger::info(
+        class,
+        "run",
+        &format!(
+            "Spent {} milliseconds doing {}",
+            start.elapsed().as_millis(),
+            description
+        ),
+    );
 }
 
 /// A garbage collector for stale install bases.
@@ -466,9 +496,12 @@ impl IdleTask for DiskCacheGcIdleTask {
 
     // Java: com/google/devtools/build/lib/remote/disk/DiskCacheGarbageCollectorIdleTask.java:98 DiskCacheGarbageCollectorIdleTask.run
     fn run(&self) -> Result<(), IdleTaskError> {
-        self.0
-            .run()
-            .map_err(|e| IdleTaskError::IdleTask(IdleTaskException::new(e)))
+        self.0.run().map_err(|e| match e {
+            blaze_remote::disk::GcError::Io(e) => {
+                IdleTaskError::IdleTask(IdleTaskException::new(e))
+            }
+            blaze_remote::disk::GcError::Interrupted(e) => IdleTaskError::Interrupted(e),
+        })
     }
 }
 

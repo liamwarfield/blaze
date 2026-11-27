@@ -399,8 +399,7 @@ pub fn configure_targets(
         // present in --output_groups. Throw the exception produced by the ArtifactConflictFinder
         // which cannot identify root-cause top-level keys but does catch all possible conflicts.
         if !keep_going {
-            // PORT: skipped, incremental: resetActionConflictsStoredInSkyframe frees the
-            // conflict-finding nodes.
+            skyframe_executor.reset_action_conflicts_stored_in_skyframe();
             return Err(no_keep_going_exception_due_to_conflict
                 .unwrap_or_else(|| panic!("NullPointerException"))
                 .into());
@@ -451,6 +450,11 @@ pub fn configure_targets(
                 cts_with_action_conflicts.push(configured_target);
             }
         }
+        // PORT: Java resets the nodes in `filterActionConflictsForTopLevelArtifacts` (the
+        // execution phase of a keep-going build), which is not ported; they are reset once this
+        // post-processing is done.
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2675 SkyframeExecutor.filterActionConflictsForTopLevelArtifacts
+        skyframe_executor.reset_action_conflicts_stored_in_skyframe();
     }
 
     Ok(SkyframeAnalysisResult {

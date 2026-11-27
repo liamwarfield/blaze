@@ -20,10 +20,16 @@ use crate::util::FileOutErr;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProgressStatus {
     /// `SpawnSchedulingEvent.create(runnerName)`.
+    // Java: com/google/devtools/build/lib/exec/SpawnSchedulingEvent.java:27 SpawnSchedulingEvent.SpawnSchedulingEvent
+    // Java: com/google/devtools/build/lib/exec/SpawnSchedulingEvent.java:31 SpawnSchedulingEvent.create
     Scheduling(String),
     /// `SpawnExecutingEvent.create(runnerName)`.
+    // Java: com/google/devtools/build/lib/exec/SpawnExecutingEvent.java:32 SpawnExecutingEvent.SpawnExecutingEvent
+    // Java: com/google/devtools/build/lib/exec/SpawnExecutingEvent.java:36 SpawnExecutingEvent.create
     Executing(String),
     /// `SpawnCheckingCacheEvent.create(runnerName)`.
+    // Java: com/google/devtools/build/lib/exec/SpawnCheckingCacheEvent.java:25 SpawnCheckingCacheEvent.SpawnCheckingCacheEvent
+    // Java: com/google/devtools/build/lib/exec/SpawnCheckingCacheEvent.java:29 SpawnCheckingCacheEvent.create
     CheckingCache(String),
 }
 

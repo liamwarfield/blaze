@@ -14,6 +14,20 @@ use crate::directories::BlazeDirectories;
 ///
 /// PORT: of Java's builder only the diff awareness factories (`addDiffAwarenessFactory`); the
 /// rest builds the server's Skyframe executor, which Blaze creates per command.
+// The rest of the builder configures the server's SkyframeExecutor, which Blaze builds per
+// command from the command's options (`blaze_sky_top::skyframe_executor::SkyframeExecutor::create`,
+// with the repository functions of `blaze_repo_rules::setup` and the workspace status of
+// `blaze_actions`), keeping only its graph between commands:
+// PORT: skipped, executor built per command: WorkspaceBuilder.build, WorkspaceBuilder.setSkyframeExecutorFactory
+// PORT: skipped, executor built per command: WorkspaceBuilder.setWorkspaceStatusActionFactory
+// PORT: skipped, executor built per command: WorkspaceBuilder.setSyscallCache, WorkspaceBuilder.getSyscallCacheInitialCapacity
+// PORT: skipped, executor built per command: WorkspaceBuilder.addSkyFunction, WorkspaceBuilder.addSkyFunctions
+// PORT: skipped, executor built per command: WorkspaceBuilder.allowExternalRepositories
+// PORT: skipped, executor built per command: WorkspaceBuilder.setRepoContentsCachePathSupplier
+// PORT: skipped, executor built per command: WorkspaceBuilder.setSkyKeyStateReceiver
+// PORT: skipped, memory instrumentation: WorkspaceBuilder.setAllocationTracker
+// PORT: skipped, remote analysis caching (out of scope): WorkspaceBuilder.setAnalysisCodecRegistrySupplier
+// PORT: skipped, remote analysis caching (out of scope): WorkspaceBuilder.setRemoteAnalysisCachingServicesSupplier
 // Java: com/google/devtools/build/lib/runtime/WorkspaceBuilder.java:48 WorkspaceBuilder
 #[derive(Default)]
 pub struct WorkspaceBuilder {
@@ -35,6 +49,20 @@ impl WorkspaceBuilder {
         self
     }
 }
+
+// BlazeWorkspace's QuiescingExecutors: Blaze's evaluator runs each evaluation on its own scoped
+// worker threads, sized by the evaluation's `parallelism` (`blaze_skyframe::EvaluationContext`,
+// from --jobs, --loading_phase_threads or `SkyframeExecutor::DEFAULT_THREAD_COUNT`).
+// PORT: skipped, replaced by EvaluationContext.parallelism: QuiescingExecutorsImpl.forTesting, QuiescingExecutorsImpl.createDefault
+// PORT: skipped, replaced by EvaluationContext.parallelism: QuiescingExecutorsImpl.resetParameters
+// PORT: skipped, replaced by EvaluationContext.parallelism: QuiescingExecutorsImpl.analysisParallelism
+// PORT: skipped, replaced by EvaluationContext.parallelism: QuiescingExecutorsImpl.executionParallelism
+// PORT: skipped, replaced by EvaluationContext.parallelism: QuiescingExecutorsImpl.globbingParallelism
+// PORT: skipped, replaced by EvaluationContext.parallelism: QuiescingExecutorsImpl.getAnalysisExecutor
+// PORT: skipped, replaced by EvaluationContext.parallelism: QuiescingExecutorsImpl.getMergedAnalysisAndExecutionExecutor
+// LineBufferedOutputStream has no user at the pin.
+// PORT: skipped, unused at the pin: LineBufferedOutputStream.flushBuffer, LineBufferedOutputStream.write
+// PORT: skipped, unused at the pin: LineBufferedOutputStream.flush, LineBufferedOutputStream.close
 
 /// This class represents a workspace, and contains operations and data related to it.
 // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:68 BlazeWorkspace

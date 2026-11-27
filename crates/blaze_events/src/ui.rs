@@ -45,15 +45,19 @@ use crate::terminal_writers::{
 // Java: com/google/devtools/build/lib/clock/Clock.java:19 Clock
 pub trait Clock: Send + Sync {
     /// Returns the current time in milliseconds since the epoch.
+    // Java: com/google/devtools/build/lib/clock/Clock.java:25 Clock.currentTimeMillis
     fn current_time_millis(&self) -> i64;
     /// Returns the current time in nanoseconds, for measuring elapsed time.
+    // Java: com/google/devtools/build/lib/clock/Clock.java:32 Clock.nanoTime
     fn nano_time(&self) -> i64;
 }
+// PORT: skipped, Instant.ofEpochMilli(currentTimeMillis()): Rust callers use current_time_millis: Clock.now
 
 /// The wall clock (`JavaClock`).
 pub struct JavaClock;
 
 impl Clock for JavaClock {
+    // Java: com/google/devtools/build/lib/clock/JavaClock.java:25 JavaClock.currentTimeMillis
     fn current_time_millis(&self) -> i64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -61,6 +65,7 @@ impl Clock for JavaClock {
             .unwrap_or(0)
     }
 
+    // Java: com/google/devtools/build/lib/clock/JavaClock.java:30 JavaClock.nanoTime
     fn nano_time(&self) -> i64 {
         nano_time_of(std::time::Instant::now())
     }
@@ -1039,12 +1044,10 @@ impl UiEventHandler {
                 }
                 // Fall through.
                 if stdout.is_some() || stderr.is_some() {
-                    unported!(
-                        "BugReport.sendBugReport",
-                        "IllegalStateException: stdout/stderr should not be present for this \
-                         event {}",
+                    blaze_util::bug_report::send_bug_report(&format!(
+                        "stdout/stderr should not be present for this event {}",
                         event
-                    );
+                    ));
                 }
             }
         }

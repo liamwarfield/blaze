@@ -646,14 +646,12 @@ impl MetricsCollector {
         // Check only one event per build. No proto3 check for presence, so check for not-default
         // value.
         if state.build_graph_metrics.action_lookup_value_count > 0 {
-            // PORT: BugReport.sendBugReport(new IllegalStateException("Already initialized build
-            // graph metrics builder: " + ...)) is not ported.
-            blaze_util::unported!(
-                "BugReport.sendBugReport",
+            // PORT: the two messages are printed with Debug where Java uses the protos'
+            // `toString` (text format).
+            blaze_util::bug_report::send_bug_report(&format!(
                 "Already initialized build graph metrics builder: {:?}, {:?}",
-                state.build_graph_metrics,
-                build_graph_metrics
-            );
+                state.build_graph_metrics, build_graph_metrics
+            ));
         }
         merge_build_graph_metrics(&mut state.build_graph_metrics, build_graph_metrics);
     }

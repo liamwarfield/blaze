@@ -105,42 +105,79 @@ pub fn is_remote_cache_options(options: &RemoteOptions) -> bool {
 // Java: com/google/devtools/build/lib/remote/CombinedCacheClientFactory.java:77 CombinedCacheClientFactory.createHttp
 fn create_http(
     options: &RemoteOptions,
-    _creds: Option<Arc<dyn Credentials>>,
-    _auth_and_tls_options: &AuthAndTLSOptions,
-    _digest_util: &DigestUtil,
-    _retrier: Arc<RemoteRetrier>,
+    creds: Option<Arc<dyn Credentials>>,
+    auth_and_tls_options: &AuthAndTLSOptions,
+    digest_util: &DigestUtil,
+    retrier: Arc<RemoteRetrier>,
 ) -> Arc<dyn RemoteCacheClient> {
     let Some(remote_cache) = options.remote_cache.as_deref() else {
         panic!("NullPointerException: remoteCache");
     };
 
-    // `URI uri = URI.create(options.remoteCache)`
-    // PORT: `java.net.URI` is not ported. The URI syntax check of `URI.create` is not made (a
-    // malformed URL is left to the unported `HttpCacheClient`); the scheme is the text before the
-    // first ':', which is what `URI.getScheme()` returns for the strings `isHttpCache` accepts
-    // (they start with "http://" or "https://").
-    let scheme = remote_cache
-        .split_once(':')
-        .map_or("", |(scheme, _)| scheme);
+    // `URI uri = URI.create(options.remoteCache)`: an IllegalArgumentException (wrapping the
+    // URISyntaxException) for a malformed URI.
+    let uri = match blaze_repo_fetch::uri::JavaUri::create(remote_cache) {
+        Ok(uri) => uri,
+        Err(e) => panic!("java.lang.RuntimeException: java.lang.IllegalArgumentException: {e}"),
+    };
+    let scheme = uri.get_scheme().unwrap_or("");
+    // Preconditions.checkArgument(Ascii.toLowerCase(uri.getScheme()).startsWith("http"), ...)
     if !scheme.to_ascii_lowercase().starts_with("http") {
-        panic!("java.lang.IllegalArgumentException: remoteCache should start with http");
+        panic!(
+            "java.lang.RuntimeException: java.lang.IllegalArgumentException: remoteCache should start with http"
+        );
     }
 
-    if let Some(remote_proxy) = &options.remote_proxy {
-        if remote_proxy.starts_with("unix:") {
-            // `HttpCacheClient.create(new DomainSocketAddress(options.remoteProxy
-            // .replaceFirst("^unix:", "")), uri, ...)`
-            blaze_util::unported!(
-                "CombinedCacheClientFactory.createHttp (HTTP remote cache over a Unix domain socket proxy: HttpCacheClient.create)"
-            )
-        } else {
-            panic!("java.lang.Exception: Remote cache proxy unsupported: {remote_proxy}");
+    let domain_socket = match &options.remote_proxy {
+        Some(remote_proxy) if remote_proxy.starts_with("unix:") => {
+            // new DomainSocketAddress(options.remoteProxy.replaceFirst("^unix:", ""))
+            Some(std::path::PathBuf::from(
+                blaze_util::string_encoding::internal_to_platform(&remote_proxy["unix:".len()..])
+                    .into_owned(),
+            ))
+        }
+        Some(remote_proxy) => {
+            panic!(
+                "java.lang.RuntimeException: java.lang.Exception: Remote cache proxy unsupported: {remote_proxy}"
+            );
+        }
+        None => None,
+    };
+    // Math.toIntExact(options.remoteTimeout.toSeconds())
+    let timeout_seconds = match i32::try_from(options.remote_timeout.as_secs()) {
+        Ok(seconds) => seconds,
+        Err(_) => {
+            panic!("java.lang.RuntimeException: java.lang.ArithmeticException: integer overflow")
+        }
+    };
+    // HttpCacheClient.createSSLContext, when the scheme is https.
+    let tls = if scheme == "https" {
+        let host = uri.get_host().unwrap_or_default().to_string();
+        match crate::authandtls::google_auth_utils::http_cache_tls_config(
+            &host,
+            auth_and_tls_options,
+        ) {
+            Ok(config) => Some(Arc::new(config)),
+            Err(e) => panic!("java.lang.RuntimeException: java.io.IOException: {e}"),
         }
     } else {
-        // `HttpCacheClient.create(uri, Math.toIntExact(options.remoteTimeout.toSeconds()),
-        // options.remoteMaxConnections, options.remoteVerifyDownloads, effectiveHeaders(options),
-        // digestUtil, retrier, creds, authAndTlsOptions)`
-        blaze_util::unported!("CombinedCacheClientFactory.createHttp (HTTP remote cache)")
+        None
+    };
+    match crate::http::http_cache_client::HttpCacheClient::create(
+        domain_socket,
+        uri,
+        timeout_seconds,
+        options.remote_max_connections,
+        options.remote_verify_downloads,
+        effective_headers(options),
+        digest_util.clone(),
+        retrier,
+        creds,
+        tls,
+        crate::util::tracing_metadata_utils::tool_version(),
+    ) {
+        Ok(client) => Arc::new(client),
+        Err(e) => panic!("java.lang.RuntimeException: java.io.IOException: {e}"),
     }
 }
 

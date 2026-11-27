@@ -255,6 +255,8 @@ impl ActionExecutionException {
     /// Returns a new ActionExecutionException given an optional action subtask describing which
     /// part of the action failed (should be null for standard action failures).
     // Java: com/google/devtools/build/lib/actions/ActionExecutionException.java:134 ActionExecutionException.fromExecException
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionException.java:119 ActionExecutionException.fromExecException
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionException.java:153 ActionExecutionException.fromExecException
     pub fn from_exec_exception(
         exception: &ExecException,
         action_subtask: Option<&str>,
@@ -364,16 +366,19 @@ impl ActionExecutionException {
     }
 
     /// `getAction()`.
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionException.java:160 ActionExecutionException.getAction
     pub fn get_action(&self) -> Option<&FailedActionInfo> {
         self.action.as_ref()
     }
 
     /// `getRootCauses()`.
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionException.java:168 ActionExecutionException.getRootCauses
     pub fn get_root_causes(&self) -> &[RootCause] {
         &self.root_causes
     }
 
     /// Catastrophic exceptions should stop builds, even if --keep_going.
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionException.java:182 ActionExecutionException.isCatastrophe
     pub fn is_catastrophe(&self) -> bool {
         self.catastrophe
     }

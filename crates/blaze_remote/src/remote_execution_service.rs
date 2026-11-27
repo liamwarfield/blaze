@@ -456,6 +456,11 @@ pub struct RemoteExecutionService {
     /// predicate once it exists ([`RemoteExecutionService::set_was_rewound`]). Unset (no
     /// execution, tests), no action was rewound.
     pub(crate) was_rewound: OnceLock<WasRewound>,
+    /// `getRewoundActionSynchronizer()`: the `RemoteRewoundActionSynchronizer` of the output
+    /// service, set by the module with the action input fetcher.
+    pub(crate) rewound_action_synchronizer: OnceLock<
+        Arc<crate::remote_rewound_action_synchronizer::RemoteRewoundActionSynchronizer>,
+    >,
     /// `Boolean useOutputPaths`, initialized on first use.
     pub(crate) use_output_paths: OnceLock<bool>,
 
@@ -800,9 +805,45 @@ struct OutputUpload {
     upload_error_reporter: UploadErrorReporter,
     force: bool,
     on_upload_complete: Box<dyn FnOnce() + Send>,
+    /// The completion the synchronizer awaits and the `unregisterHandle`, when the task was
+    /// registered with a `RemoteRewoundActionSynchronizer`.
+    registration: Option<(Arc<UploadCompletion>, Box<dyn FnOnce() + Send>)>,
+}
+
+/// `CancellableTask.awaitCompletion()` of an output upload: done once the body and the completion
+/// action ran (or the upload was prevented from running).
+#[derive(Default)]
+pub(crate) struct UploadCompletion {
+    done: parking_lot::Mutex<bool>,
+    changed: parking_lot::Condvar,
+}
+
+impl UploadCompletion {
+    fn complete(&self) {
+        *self.done.lock() = true;
+        self.changed.notify_all();
+    }
+}
+
+impl crate::remote_rewound_action_synchronizer::Cancellable for UploadCompletion {
+    // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1890 RemoteExecutionService.OutputUploadTask.awaitCompletion
+    fn await_completion(&self) {
+        let mut done = self.done.lock();
+        while !*done {
+            self.changed.wait(&mut done);
+        }
+    }
 }
 
 impl OutputUpload {
+    /// The end of `run()`'s `finally`: the completion is signalled and the task unregistered.
+    fn finish(registration: Option<(Arc<UploadCompletion>, Box<dyn FnOnce() + Send>)>) {
+        if let Some((completion, unregister_handle)) = registration {
+            completion.complete();
+            unregister_handle();
+        }
+    }
+
     /// `OutputUploadTask.run()`: `upload.runIfNotCancelled()`, which runs the body and then the
     /// completion action.
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1872 RemoteExecutionService.OutputUploadTask.run
@@ -824,6 +865,7 @@ impl OutputUpload {
             Err(error) => report_background_upload_error(&self.upload_error_reporter, error),
         }
         (self.on_upload_complete)();
+        OutputUpload::finish(self.registration);
     }
 
     /// `upload.requestCancellation()` for an upload that has not started: prevents it from
@@ -831,6 +873,7 @@ impl OutputUpload {
     // Java: com/google/devtools/build/lib/concurrent/CancellableTask.java:138 CancellableTask.requestCancellation
     fn request_cancellation(self) {
         (self.on_upload_complete)();
+        OutputUpload::finish(self.registration);
     }
 }
 
@@ -859,9 +902,8 @@ fn report_background_upload_error(
 /// `CancellableTask` ensures that the completion callback runs exactly once and that
 /// cancellation only completes once the upload no longer accesses the action's outputs.
 ///
-/// PORT: there is no `RemoteRewoundActionSynchronizer` (no output service, no rewinding), so the
-/// task is never registered and nothing requests its cancellation: `requestCancellation` and
-/// `awaitCompletion` (`RemoteRewoundActionSynchronizer.Cancellable`) have no caller and no port.
+/// PORT: cancellation (`requestCancellation`) is not ported; the synchronizer awaits the upload
+/// (`awaitCompletion`, [`UploadCompletion`]).
 // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1820 RemoteExecutionService.OutputUploadTask
 struct OutputUploadTask<'t, 'a> {
     service: &'t RemoteExecutionService,
@@ -880,8 +922,6 @@ impl<'t, 'a> OutputUploadTask<'t, 'a> {
         force: bool,
         on_upload_complete: Box<dyn FnOnce() + Send>,
     ) -> OutputUploadTask<'t, 'a> {
-        // PORT: `this.rewoundActionSynchronizer = getRewoundActionSynchronizer()` is null: the
-        // output service is not a `RemoteOutputService` (there is none).
         OutputUploadTask {
             service,
             action,
@@ -945,7 +985,24 @@ impl<'t, 'a> OutputUploadTask<'t, 'a> {
             upload_error_reporter,
             force: self.force,
             on_upload_complete: self.on_upload_complete,
+            registration: None,
         };
+        let mut upload = upload;
+        // Register before starting the upload so that it can't unregister itself before it has
+        // been registered.
+        if let (Some(synchronizer), Some(spawn_owner)) = (
+            service.rewound_action_synchronizer.get(),
+            self.action
+                .get_remote_action_execution_context()
+                .get_spawn_owner(),
+        ) {
+            let completion = Arc::new(UploadCompletion::default());
+            let unregister_handle = synchronizer.register_output_upload_task(
+                spawn_owner,
+                completion.clone() as Arc<dyn crate::remote_rewound_action_synchronizer::Cancellable>,
+            );
+            upload.registration = Some((completion, unregister_handle));
+        }
         // Executes rather than submits the upload: the body of a task submitted to an
         // ExecutorService is skipped entirely if its future is cancelled before the body starts,
         // which is why cancellation goes through the task itself instead of its future.
@@ -1074,6 +1131,7 @@ impl RemoteExecutionService {
             hooks: crate::hooks::RemoteHooks::new(),
             use_output_paths: OnceLock::new(),
             was_rewound: OnceLock::new(),
+            rewound_action_synchronizer: OnceLock::new(),
             // `Runtime.getRuntime().availableProcessors()`
             remote_action_building_semaphore: Semaphore::new(
                 std::thread::available_parallelism().map_or(1, |n| n.get()),
@@ -1086,6 +1144,15 @@ impl RemoteExecutionService {
     // Java: com/google/devtools/build/lib/remote/RemoteActionContextProvider.java:156 RemoteActionContextProvider.getRemoteExecutionService
     pub fn set_was_rewound(&self, was_rewound: WasRewound) {
         let _ = self.was_rewound.set(was_rewound);
+    }
+
+    /// Sets the output service's `RemoteRewoundActionSynchronizer`
+    /// (`getRewoundActionSynchronizer()`).
+    pub fn set_rewound_action_synchronizer(
+        &self,
+        synchronizer: Arc<crate::remote_rewound_action_synchronizer::RemoteRewoundActionSynchronizer>,
+    ) {
+        let _ = self.rewound_action_synchronizer.set(synchronizer);
     }
 
     /// `wasRewound.test(owner)`.
@@ -1821,8 +1888,6 @@ impl RemoteExecutionService {
         }
     }
 
-    // PORT: `getRewoundActionSynchronizer()` (RemoteExecutionService.java:1800) has no port: it
-    // returns null unless the output service is a `RemoteOutputService`.
 
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1893 RemoteExecutionService.doUploadOutputs
     fn do_upload_outputs(

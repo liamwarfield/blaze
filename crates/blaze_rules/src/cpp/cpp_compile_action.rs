@@ -780,7 +780,10 @@ impl Action for CppCompileAction {
         }
         // TODO(ulfjack): Extra actions currently ignore the client environment.
         for (name, value) in self
-            .get_effective_environment(/* client_env= */ &IndexMap::new())
+            .get_effective_environment(
+                /* client_env= */ &IndexMap::new(),
+                &blaze_actions::actions::path_mapper::NOOP,
+            )
             .map_err(CommandLineError::CommandLineExpansion)?
         {
             info.variable.push(EnvironmentVariable { name, value });
@@ -898,11 +901,10 @@ impl Action for CppCompileAction {
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1011 CppCompileAction.getEffectiveEnvironment
-    // PORT: the trait method has no PathMapper argument; PathMapper.NOOP is used, as in every
-    // analysis-time caller.
     fn get_effective_environment(
         &self,
         client_env: &IndexMap<String, String>,
+        path_mapper: &dyn blaze_actions::actions::path_mapper::PathMapper,
     ) -> Result<IndexMap<String, String>, CommandLineExpansionException> {
         let env = self.get_environment();
         let mut environment = IndexMap::with_capacity(env.estimated_size());
@@ -917,7 +919,7 @@ impl Action for CppCompileAction {
 
         let compile_env = self
             .compile_command_line
-            .get_environment(&CC_NOOP)
+            .get_environment(&CcPathMapper(path_mapper))
             .map_err(|e| CommandLineExpansionException::new(e.message))?;
         for (k, v) in compile_env {
             environment.insert(k, v);
@@ -1899,10 +1901,9 @@ impl CppCompileAction {
         let arguments = self
             .get_arguments_with(path_mapper)
             .map_err(|e| self.command_generation_failure(&e.message))?;
-        // PORT: the trait's getEffectiveEnvironment uses PathMapper.NOOP; path mapping is OFF
-        // (PathMappers.create returns NOOP for every supported mode).
+        // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1776 CppCompileAction.createSpawn
         let environment = self
-            .get_effective_environment(client_env)
+            .get_effective_environment(client_env, spawn_path_mapper.as_actions_path_mapper())
             .map_err(|e| self.command_generation_failure(&e.message))?;
         Ok(SimpleSpawn::new(
             ActionMetadataSnapshot::of(self),

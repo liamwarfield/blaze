@@ -44,6 +44,7 @@ pub use soft_error::SoftErrorHandler;
 pub use starlark_syntax::call_stack::CallStack;
 
 pub use crate::eval::compiler::def::DefModule; // BLAZE PATCH 0017
+pub use crate::eval::compiler::def::{DefParameter, DefParameterRole}; // BLAZE PATCH 0065
 pub use crate::eval::runtime::evaluator::with_current_extra; // BLAZE PATCH 0064
 use starlark_syntax::slice_vec_ext::SliceExt;
 use starlark_syntax::syntax::module::AstModule;

@@ -219,22 +219,26 @@ impl DependencyResolver {
     }
 
     /// Return this target's `TargetAndConfiguration`.
+    // Java: com/google/devtools/build/lib/skyframe/DependencyResolver.java:291 DependencyResolver.getTargetAndConfiguration
     pub fn get_target_and_configuration(&self) -> &TargetAndConfiguration {
         &self.target_and_configuration
     }
 
     /// Return this target's fully resolved dependencies.
+    // Java: com/google/devtools/build/lib/skyframe/DependencyResolver.java:300 DependencyResolver.getDepValueMap
     pub fn get_dep_value_map(&self) -> &PrerequisiteMap {
         self.dep_value_map
             .as_ref()
             .expect("NullPointerException: depValueMap")
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/DependencyResolver.java:304 DependencyResolver.getMaterializerTargets
     pub fn get_materializer_targets(&self) -> Option<&PrerequisiteMap> {
         self.materializer_targets.as_ref()
     }
 
     /// Return the keys in this target's `select()`s.
+    // Java: com/google/devtools/build/lib/skyframe/DependencyResolver.java:314 DependencyResolver.getConfigConditions
     pub fn get_config_conditions(&self) -> &ConfigConditions {
         self.config_conditions
             .as_ref()
@@ -242,11 +246,13 @@ impl DependencyResolver {
     }
 
     /// Return this target's platform metadata, or `None` if it doesn't use platforms.
+    // Java: com/google/devtools/build/lib/skyframe/DependencyResolver.java:323 DependencyResolver.getPlatformInfo
     pub fn get_platform_info(&self) -> Option<&Arc<PlatformInfo>> {
         self.platform_info.as_ref()
     }
 
     /// Return this target's toolchain requirements, or `None` if it doesn't use toolchains.
+    // Java: com/google/devtools/build/lib/skyframe/DependencyResolver.java:333 DependencyResolver.getUnloadedToolchainContexts
     pub fn get_unloaded_toolchain_contexts(
         &self,
     ) -> Option<&Arc<ToolchainCollection<UnloadedToolchainContext>>> {

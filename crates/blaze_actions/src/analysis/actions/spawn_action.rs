@@ -380,7 +380,7 @@ impl SpawnAction {
         };
         // ActionSpawn: parent.getEffectiveEnvironment(clientEnv = ImmutableMap.of(), NOOP).
         for (name, value) in self
-            .get_effective_environment(&IndexMap::new())
+            .get_effective_environment(&IndexMap::new(), &crate::actions::path_mapper::NOOP)
             .map_err(CommandLineError::CommandLineExpansion)?
         {
             info.variable
@@ -644,12 +644,13 @@ impl Action for SpawnAction {
     fn get_effective_environment(
         &self,
         client_env: &IndexMap<String, String>,
+        path_mapper: &dyn crate::actions::path_mapper::PathMapper,
     ) -> Result<IndexMap<String, String>, CommandLineExpansionException> {
         let env = self.get_environment();
         let mut environment = IndexMap::with_capacity(env.estimated_size());
         if let Some(shadowed) = self.enhanced().and_then(|d| d.shadowed_action.as_ref()) {
             // Put all the variables of the shadowed action's environment
-            for (k, v) in shadowed.get_effective_environment(client_env)? {
+            for (k, v) in shadowed.get_effective_environment(client_env, path_mapper)? {
                 environment.insert(k, v);
             }
         }

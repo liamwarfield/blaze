@@ -165,10 +165,11 @@ impl CleanCommand {
             .get_embedded_binaries_root()
             .get_relative_str("daemonize");
         if !daemonize.exists() {
-            blaze_util::unported!(
-                "BinTools.getEmbeddedPath",
-                "daemonize is not in the install base ({})",
-                daemonize
+            // BinTools.getEmbeddedPath returns null for a tool that is not in the install base,
+            // and CleanCommand calls getPathString() on it.
+            // Java: com/google/devtools/build/lib/exec/BinTools.java:155 BinTools.getEmbeddedPath
+            panic!(
+                "java.lang.NullPointerException: Cannot invoke \"com.google.devtools.build.lib.vfs.Path.getPathString()\" because the return value of \"com.google.devtools.build.lib.exec.BinTools.getEmbeddedPath(String)\" is null"
             );
         }
 

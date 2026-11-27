@@ -44,6 +44,9 @@ impl fmt::Debug for TopLevelSkyValue {
 
 /// The value of a [`BuildDriverKey`]: the analyzed top-level value and whether it was skipped.
 // Java: com/google/devtools/build/lib/skyframe/BuildDriverValue.java:24 BuildDriverValue
+// Java: com/google/devtools/build/lib/skyframe/BuildDriverValue.java:28 BuildDriverValue.getWrappedSkyValue
+// Java: com/google/devtools/build/lib/skyframe/BuildDriverValue.java:32 BuildDriverValue.isSkipped
+// (the getters are the public fields `top_level_sky_value` and `skipped`)
 #[derive(Clone, Debug)]
 pub struct BuildDriverValue {
     /// `getLastEvaluatedTopLevelSkyValue()`.
@@ -53,6 +56,7 @@ pub struct BuildDriverValue {
     /// an exclusive test); its `getExclusiveTestConfiguredTarget()` is the configured target of
     /// `top_level_sky_value`.
     // Java: com/google/devtools/build/lib/skyframe/ExclusiveTestBuildDriverValue.java:20 ExclusiveTestBuildDriverValue
+    // Java: com/google/devtools/build/lib/skyframe/ExclusiveTestBuildDriverValue.java:31 ExclusiveTestBuildDriverValue.getExclusiveTestConfiguredTarget
     pub exclusive_test: bool,
 }
 

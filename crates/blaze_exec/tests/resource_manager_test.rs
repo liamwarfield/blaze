@@ -11,7 +11,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use blaze_exec::actions::resource_manager::{ResourceHandle, ResourceManager, ResourcePriority};
-use blaze_exec::actions::{ExecException, FakeOwner, ResourceSet};
+use blaze_exec::actions::{ExecException, FakeOwner, ResourceSet, ResourceSetConverter};
 use indexmap::IndexMap;
 use parking_lot::{Condvar, Mutex};
 
@@ -738,21 +738,32 @@ fn test_cpu_load_scheduling_cant_acquire_x3_cpu() {}
 
 // ---- ResourceSetTest ----
 
+// Java: src/test/java/com/google/devtools/build/lib/actions/ResourceSetTest.java:40 ResourceSetTest.testConverterParsesExpectedFormat
 #[test]
-#[ignore = "needs ResourceSet.ResourceSetConverter, which is not ported"]
-fn test_converter_parses_expected_format() {}
+fn test_converter_parses_expected_format() {
+    let resources = ResourceSetConverter.convert("1,0.5,2").unwrap();
+    assert!((resources.get_memory_mb() - 1.0).abs() <= 0.01);
+    assert!((resources.get_cpu_usage() - 0.5).abs() <= 0.01);
+    assert_eq!(resources.get_local_test_count(), i32::MAX);
+}
 
+// Java: src/test/java/com/google/devtools/build/lib/actions/ResourceSetTest.java:48 ResourceSetTest.testConverterThrowsWhenGivenInsufficientInputs
 #[test]
-#[ignore = "needs ResourceSet.ResourceSetConverter, which is not ported"]
-fn test_converter_throws_when_given_insufficient_inputs() {}
+fn test_converter_throws_when_given_insufficient_inputs() {
+    assert!(ResourceSetConverter.convert("0,0,").is_err());
+}
 
+// Java: src/test/java/com/google/devtools/build/lib/actions/ResourceSetTest.java:53 ResourceSetTest.testConverterThrowsWhenGivenTooManyInputs
 #[test]
-#[ignore = "needs ResourceSet.ResourceSetConverter, which is not ported"]
-fn test_converter_throws_when_given_too_many_inputs() {}
+fn test_converter_throws_when_given_too_many_inputs() {
+    assert!(ResourceSetConverter.convert("0,0,0,").is_err());
+}
 
+// Java: src/test/java/com/google/devtools/build/lib/actions/ResourceSetTest.java:58 ResourceSetTest.testConverterThrowsWhenGivenNegativeInputs
 #[test]
-#[ignore = "needs ResourceSet.ResourceSetConverter, which is not ported"]
-fn test_converter_throws_when_given_negative_inputs() {}
+fn test_converter_throws_when_given_negative_inputs() {
+    assert!(ResourceSetConverter.convert("-1,0,0").is_err());
+}
 
 fn map(entries: &[(&str, f64)]) -> IndexMap<String, f64> {
     entries.iter().map(|(k, v)| (k.to_string(), *v)).collect()

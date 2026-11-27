@@ -203,6 +203,7 @@ impl Artifact {
     /// Creates a `TreeFileArtifact` under a shared tree artifact, owned by an action template
     /// expansion.
     // Java: com/google/devtools/build/lib/actions/Artifact.java:1100 TreeFileArtifact.createTemplateExpansionOutput
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:1116 Artifact.TreeFileArtifact.createTemplateExpansionOutput
     pub fn create_template_expansion_output(
         parent: &Artifact,
         parent_relative_path: PathFragment,
@@ -427,12 +428,15 @@ impl Artifact {
     }
 
     // Java: com/google/devtools/build/lib/actions/Artifact.java:366 Artifact.hasParent
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:881 Artifact.SpecialArtifact.hasParent
     pub fn has_parent(&self) -> bool {
         self.get_parent().is_some()
     }
 
     /// Returns the parent tree artifact of a `TreeFileArtifact` or `ArchivedTreeArtifact`.
     // Java: com/google/devtools/build/lib/actions/Artifact.java:375 Artifact.getParent
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:950 Artifact.ArchivedTreeArtifact.getParent
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:1137 Artifact.TreeFileArtifact.getParent
     pub fn get_parent(&self) -> Option<&Artifact> {
         match self.derived().map(|d| &d.class) {
             Some(DerivedClass::TreeFile { parent, .. }) => Some(parent),
@@ -479,6 +483,7 @@ impl Artifact {
 
     /// Gets the owner of this artifact (an `ArtifactOwner`).
     // Java: com/google/devtools/build/lib/actions/Artifact.java:448 Artifact.getArtifactOwner
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:792 Artifact.SourceArtifact.getArtifactOwner
     pub fn get_artifact_owner(&self) -> ArtifactOwner {
         match &self.0.kind {
             ArtifactKind::Source { owner } => owner.clone(),
@@ -581,6 +586,7 @@ impl Artifact {
 
     /// Returns true iff this is an unresolved symlink artifact.
     // Java: com/google/devtools/build/lib/actions/Artifact.java:535 Artifact.isSymlink
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:876 Artifact.SpecialArtifact.isSymlink
     pub fn is_symlink(&self) -> bool {
         self.get_special_artifact_type() == Some(SpecialArtifactType::UNRESOLVED_SYMLINK)
     }
@@ -588,6 +594,7 @@ impl Artifact {
     /// For targets in external repositories, this returns the path the artifact live at in the
     /// runfiles tree. For local targets, it returns the rootRelativePath.
     // Java: com/google/devtools/build/lib/actions/Artifact.java:544 Artifact.getParentRelativePath
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:1142 Artifact.TreeFileArtifact.getParentRelativePath
     pub fn get_parent_relative_path(&self) -> Option<PathFragment> {
         match self.derived().map(|d| &d.class) {
             Some(DerivedClass::TreeFile {
@@ -633,12 +640,14 @@ impl Artifact {
 
     /// Returns true iff this is a runfiles tree.
     // Java: com/google/devtools/build/lib/actions/Artifact.java:579 Artifact.isRunfilesTree
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:856 Artifact.SpecialArtifact.isRunfilesTree
     pub fn is_runfiles_tree(&self) -> bool {
         self.get_special_artifact_type() == Some(SpecialArtifactType::RUNFILES)
     }
 
     /// Returns true iff this is a TreeArtifact representing a directory tree containing Artifacts.
     // Java: com/google/devtools/build/lib/actions/Artifact.java:589 Artifact.isTreeArtifact
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:871 Artifact.SpecialArtifact.isTreeArtifact
     pub fn is_tree_artifact(&self) -> bool {
         self.get_special_artifact_type() == Some(SpecialArtifactType::TREE)
     }
@@ -657,6 +666,7 @@ impl Artifact {
     }
 
     // Java: com/google/devtools/build/lib/actions/Artifact.java:612 Artifact.isFileset
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:861 Artifact.SpecialArtifact.isFileset
     pub fn is_fileset(&self) -> bool {
         self.get_special_artifact_type() == Some(SpecialArtifactType::FILESET)
     }
@@ -669,6 +679,7 @@ impl Artifact {
     /// Returns whether the artifact represents a file whose metadata should be ignored when
     /// computing whether an action needs to be re-executed.
     // Java: com/google/devtools/build/lib/actions/Artifact.java:628 Artifact.isConstantMetadata
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:866 Artifact.SpecialArtifact.isConstantMetadata
     pub fn is_constant_metadata(&self) -> bool {
         self.get_special_artifact_type() == Some(SpecialArtifactType::CONSTANT_METADATA)
     }
@@ -795,6 +806,7 @@ impl Artifact {
 
     /// Returns the exec paths of the given artifacts.
     // Java: com/google/devtools/build/lib/actions/Artifact.java:1203 Artifact.asExecPaths
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:1211 Artifact.asExecPaths
     pub fn as_exec_paths<'a>(artifacts: impl IntoIterator<Item = &'a Artifact>) -> Vec<String> {
         artifacts
             .into_iter()
@@ -804,6 +816,7 @@ impl Artifact {
 
     /// Lazily converts artifacts into root-relative path strings.
     // Java: com/google/devtools/build/lib/actions/Artifact.java:1181 Artifact.toRootRelativePaths
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:1173 Artifact.toRootRelativePaths
     pub fn to_root_relative_paths<'a>(
         artifacts: impl IntoIterator<Item = &'a Artifact>,
     ) -> Vec<String> {

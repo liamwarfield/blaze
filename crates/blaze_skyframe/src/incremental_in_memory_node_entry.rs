@@ -553,17 +553,18 @@ impl IncrementalInMemoryNodeEntry {
             .dirty_building_state
             .take()
             .expect("checked by getResetDirectDeps");
-        self.base.dirty_building_state = Some(match dirty_building_state.take_incremental_parts() {
-            Some((last_build_direct_deps, last_build_value, dirty_direct_dep_index)) => {
-                DirtyBuildingState::new_reset_incremental_building_state(
-                    last_build_direct_deps,
-                    last_build_value,
-                    dirty_direct_dep_index,
-                    reset_deps,
-                )
-            }
-            None => DirtyBuildingState::new_reset_initial_building_state(reset_deps),
-        });
+        self.base.dirty_building_state =
+            Some(match dirty_building_state.take_incremental_parts() {
+                Some((last_build_direct_deps, last_build_value, dirty_direct_dep_index)) => {
+                    DirtyBuildingState::new_reset_incremental_building_state(
+                        last_build_direct_deps,
+                        last_build_value,
+                        dirty_direct_dep_index,
+                        reset_deps,
+                    )
+                }
+                None => DirtyBuildingState::new_reset_initial_building_state(reset_deps),
+            });
         self.direct_deps = None;
     }
 

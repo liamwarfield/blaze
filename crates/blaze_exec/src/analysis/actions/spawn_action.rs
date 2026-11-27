@@ -139,7 +139,8 @@ fn new_action_spawn(
     let mut inputs = NestedSetBuilder::<ActionInputRef>::new_builder(Order::STABLE_ORDER);
     inputs.add_transitive(&to_action_input_set(&parent.get_inputs()));
     inputs.add_all(additional_inputs);
-    let effective_environment = parent.get_effective_environment(client_env)?;
+    let effective_environment =
+        parent.get_effective_environment(client_env, path_mapper.as_actions_path_mapper())?;
     // BaseSpawn.getOutputFiles: parent.getOutputs(); ActionSpawn: empty unless reportOutputs.
     let outputs: Vec<ActionInputRef> = if report_outputs {
         parent.get_outputs().iter().map(artifact_input).collect()

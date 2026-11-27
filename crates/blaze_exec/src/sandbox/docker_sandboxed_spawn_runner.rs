@@ -162,6 +162,9 @@ impl DockerSandboxedSpawnRunner {
         tree_deleter: Arc<dyn TreeDeleter>,
     ) -> DockerSandboxedSpawnRunner {
         // OS.getCurrent() == OS.LINUX.
+        // Java: com/google/devtools/build/lib/unix/ProcessUtils.java:41 ProcessUtils.getuid
+        // Java: com/google/devtools/build/lib/unix/ProcessUtils.java:34 ProcessUtils.getgid
+        // PORT: skipped, ProcessUtils.ProcessUtils: the private constructor of a static utility class.
         // SAFETY: plain getuid(2) / getgid(2).
         let (uid, gid) = unsafe { (libc::getuid() as i32, libc::getgid() as i32) };
         DockerSandboxedSpawnRunner {

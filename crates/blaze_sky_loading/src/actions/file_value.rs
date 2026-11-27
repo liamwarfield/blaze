@@ -84,6 +84,8 @@ impl FileValue {
 
     /// Returns true if the original path is a symlink; the target path can never be a symlink.
     // Java: com/google/devtools/build/lib/actions/FileValue.java:55 FileValue.isSymlink
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:564 FileValue.SymlinkFileValueWithStoredChain.isSymlink
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:618 FileValue.SymlinkFileValueWithoutStoredChain.isSymlink
     pub fn is_symlink(&self) -> bool {
         matches!(
             self,
@@ -124,6 +126,9 @@ impl FileValue {
     /// -- this information is only needed for resolving ancestors, and an existing file or a
     /// non-existent directory has no descendants, by definition. Panics for those values.
     // Java: com/google/devtools/build/lib/actions/FileValue.java:94 FileValue.logicalChainDuringResolution
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:227 FileValue.RegularFileValue.logicalChainDuringResolution
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:357 FileValue.DifferentRealPathFileValueWithStoredChain.logicalChainDuringResolution
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:427 FileValue.DifferentRealPathFileValueWithoutStoredChain.logicalChainDuringResolution
     pub fn logical_chain_during_resolution(
         &self,
         initial_rooted_path: &RootedPath,
@@ -156,6 +161,11 @@ impl FileValue {
     /// If a symlink pointing back to its own ancestor was encountered during the resolution of
     /// this value, returns the path to it. Otherwise, returns `None`.
     // Java: com/google/devtools/build/lib/actions/FileValue.java:100 FileValue.pathToUnboundedAncestorSymlinkExpansionChain
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:232 FileValue.RegularFileValue.pathToUnboundedAncestorSymlinkExpansionChain
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:273 FileValue.DifferentRealPathFileValueWithUnboundedAncestorExpansion.pathToUnboundedAncestorSymlinkExpansionChain
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:362 FileValue.DifferentRealPathFileValueWithStoredChain.pathToUnboundedAncestorSymlinkExpansionChain
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:432 FileValue.DifferentRealPathFileValueWithoutStoredChain.pathToUnboundedAncestorSymlinkExpansionChain
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:493 FileValue.SymlinkFileValueWithUnboundedAncestorExpansion.pathToUnboundedAncestorSymlinkExpansionChain
     pub fn path_to_unbounded_ancestor_symlink_expansion_chain(&self) -> Option<&[RootedPath]> {
         match self {
             FileValue::DifferentRealPathWithUnboundedAncestorExpansion {
@@ -178,6 +188,11 @@ impl FileValue {
     /// expansion. If there is, you should either error out and give up, or you should perform the
     /// traversal carefully (e.g. with a visited set) lest the traversal never terminate.
     // Java: com/google/devtools/build/lib/actions/FileValue.java:111 FileValue.unboundedAncestorSymlinkExpansionChain
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:238 FileValue.RegularFileValue.unboundedAncestorSymlinkExpansionChain
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:278 FileValue.DifferentRealPathFileValueWithUnboundedAncestorExpansion.unboundedAncestorSymlinkExpansionChain
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:367 FileValue.DifferentRealPathFileValueWithStoredChain.unboundedAncestorSymlinkExpansionChain
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:437 FileValue.DifferentRealPathFileValueWithoutStoredChain.unboundedAncestorSymlinkExpansionChain
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:498 FileValue.SymlinkFileValueWithUnboundedAncestorExpansion.unboundedAncestorSymlinkExpansionChain
     pub fn unbounded_ancestor_symlink_expansion_chain(&self) -> Option<&[RootedPath]> {
         match self {
             FileValue::DifferentRealPathWithUnboundedAncestorExpansion {
@@ -197,6 +212,9 @@ impl FileValue {
     /// to 'c'. Note that ancestor symlinks outside the root boundary are not taken into
     /// consideration.
     // Java: com/google/devtools/build/lib/actions/FileValue.java:118 FileValue.realRootedPath
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:244 FileValue.RegularFileValue.realRootedPath
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:347 FileValue.DifferentRealPathFileValueWithStoredChain.realRootedPath
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:417 FileValue.DifferentRealPathFileValueWithoutStoredChain.realRootedPath
     pub fn real_rooted_path(&self, initial_rooted_path: &RootedPath) -> RootedPath {
         match self {
             FileValue::Regular(_) => initial_rooted_path.clone(),
@@ -222,6 +240,8 @@ impl FileValue {
     }
 
     // Java: com/google/devtools/build/lib/actions/FileValue.java:120 FileValue.realFileStateValue
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:352 FileValue.DifferentRealPathFileValueWithStoredChain.realFileStateValue
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:422 FileValue.DifferentRealPathFileValueWithoutStoredChain.realFileStateValue
     pub fn real_file_state_value(&self) -> &FileStateValue {
         match self {
             FileValue::Regular(state) => state,
@@ -259,6 +279,8 @@ impl FileValue {
     /// directory, but upon encountering symbolic links it can decide between copying or
     /// following them.
     // Java: com/google/devtools/build/lib/actions/FileValue.java:129 FileValue.getUnresolvedLinkTarget
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:569 FileValue.SymlinkFileValueWithStoredChain.getUnresolvedLinkTarget
+    // Java: com/google/devtools/build/lib/actions/FileValue.java:623 FileValue.SymlinkFileValueWithoutStoredChain.getUnresolvedLinkTarget
     pub fn get_unresolved_link_target(&self) -> &PathFragment {
         match self {
             FileValue::SymlinkWithUnboundedAncestorExpansion { link_target, .. }

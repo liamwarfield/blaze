@@ -629,6 +629,7 @@ option_field_type!(StringMap, "java.util.Map");
 pub struct OptionSourcesConverter;
 
 impl OptionSourcesConverter {
+    // Java: com/google/devtools/build/lib/runtime/BlazeServerStartupOptions.java:49 BlazeServerStartupOptions.OptionSourcesConverter.unescape
     fn unescape(input: &str) -> String {
         input.replace("_C", ":").replace("_U", "_")
     }
@@ -664,6 +665,7 @@ impl Converter for OptionSourcesConverter {
     fn convert(&self, input: Option<&str>, _: Option<&ConversionContext>) -> ConvResult {
         Ok(Some(Value::new(self.convert_map(non_null(input)))))
     }
+    // Java: com/google/devtools/build/lib/runtime/BlazeServerStartupOptions.java:72 BlazeServerStartupOptions.OptionSourcesConverter.getTypeDescription
     fn get_type_description(&self) -> String {
         "a list of option-source pairs".into()
     }

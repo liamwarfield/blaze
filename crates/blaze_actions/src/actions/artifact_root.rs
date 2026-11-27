@@ -77,6 +77,7 @@ impl ArtifactRoot {
     /// Be careful with this method - all derived roots must be within the derived artifacts tree,
     /// defined in ArtifactFactory (see `ArtifactFactory#isDerivedArtifact`).
     // Java: com/google/devtools/build/lib/actions/ArtifactRoot.java:135 ArtifactRoot.asDerivedRoot
+    // Java: com/google/devtools/build/lib/actions/ArtifactRoot.java:152 ArtifactRoot.asDerivedRoot
     pub fn as_derived_root(
         exec_root: &Path,
         root_type: RootType,

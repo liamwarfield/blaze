@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+# Runs the four repository-rule remote execution functions of Bazel's
+# src/test/shell/bazel/remote/remote_execution_test.sh (test_repo_remote_exec,
+# test_repo_remote_exec_path_argument, test_repo_remote_exec_timeout,
+# test_repo_remote_exec_file_upload) by hand on the oracle or on Blaze.
+#
+# usage: scripts/rrc-probe/repo-remote-exec <oracle|BINARY> <side-name>
+#        scripts/rrc-probe/repo-remote-exec help
+#
+# One workspace and one output user root per side, reused by the four functions:
+#   ~/.cache/blaze/work/remote-6/rexec/<side-name>/{ws,ur,worker,log.txt}
+# The workspace's files are rewritten for each function (its output base is expunged between
+# functions); startup --max_idle_secs=60; one remote worker (worker_deploy.jar built from the
+# pin) for the series; everything runs inside one
+#   systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0
+# unit, so the server and the worker end with it. Blaze is run with BLAZE_SERVER_MODE=daemon.
+# Prints one line per function: name, PASS or FAIL, and the reason.
+set -euo pipefail
+if [[ "${1:-help}" == "help" || "${1:-}" == "--help" || $# -lt 2 ]]; then
+  sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+CACHE="$HOME/.cache/blaze"
+if [[ "${1}" == "oracle" ]]; then
+  BIN="$CACHE/oracle/bazel-9.3.2-linux-x86_64"
+else
+  BIN="$(realpath "$1")"
+fi
+SIDE="$2"
+BASE="$CACHE/work/remote-6/rexec/$SIDE"
+
+if [[ "${REXEC_IN_UNIT:-}" != "1" ]]; then
+  mkdir -p "$BASE"
+  exec systemd-run --user --collect --wait --quiet --pipe -p MemoryMax=12G -p MemorySwapMax=0 \
+    --setenv=HOME="$HOME" --setenv=PATH=/usr/bin:/bin --setenv=REXEC_IN_UNIT=1 \
+    --setenv=BLAZE_SERVER_MODE=daemon "$(realpath "$0")" "$@"
+fi
+
+INSTALL="$CACHE/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9"
+JAVA="$INSTALL/embedded_tools/jdk/bin/java"
+JAR="$CACHE/work/upstream-src/bazel-bin/src/tools/remote/worker_deploy.jar"
+WS="$BASE/ws"
+UR="$BASE/ur"
+LOG="$BASE/log.txt"
+: > "$LOG"
+mkdir -p "$WS" "$UR"
+
+# The worker.
+WORKER="$BASE/worker"
+chmod -R u+w "$WORKER" 2>/dev/null || true
+rm -rf "$WORKER"
+mkdir -p "$WORKER/work" "$WORKER/cas" \
+  "$WORKER/runfiles/io_bazel/src/tools/remote/src/main/java/com/google/devtools/build/remote/worker"
+PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1])')
+RUNFILES_DIR="$WORKER/runfiles" "$JAVA" -jar "$JAR" --work_path="$WORKER/work" \
+  --cas_path="$WORKER/cas" --listen_port="$PORT" --pid_file="$WORKER/pid" \
+  > "$WORKER/stdout" 2> "$WORKER/stderr" &
+WORKER_PID=$!
+for _ in $(seq 1 150); do [[ -s "$WORKER/pid" ]] && break; sleep 0.2; done
+
+bazel() {
+  echo "\$ bazel $*" >> "$LOG"
+  (cd "$WS" && "$BIN" --output_user_root="$UR" --max_idle_secs=60 "$@") >> "$LOG" 2>&1
+}
+
+reset_ws() {
+  if [[ -f "$WS/MODULE.bazel" ]]; then
+    (cd "$WS" && "$BIN" --output_user_root="$UR" --max_idle_secs=60 clean --expunge) \
+      >/dev/null 2>&1 || true
+  fi
+  chmod -R u+w "$WS" 2>/dev/null || true
+  rm -rf "$WS"
+  mkdir -p "$WS"
+}
+
+result() { echo -e "$1\t$2\t${3:-}"; echo "RESULT $1 $2 ${3:-}" >> "$LOG"; }
+
+# --- test_repo_remote_exec
+reset_ws; echo "=== test_repo_remote_exec" >> "$LOG"
+touch "$WS/BUILD"
+cat > "$WS/test.bzl" <<'EOF'
+def _impl(ctx):
+  res = ctx.execute(["/bin/bash", "-c", "echo -n $BAZEL_REMOTE_PLATFORM"])
+  if res.return_code != 0:
+    fail("Return code 0 expected, but was " + res.return_code)
+
+  entries = res.stdout.split(",")
+  if len(entries) != 2:
+    fail("Two platform kv pairs expected. Got:" + str(entries))
+  if entries[0] != "ISA=x86-64":
+    fail("'ISA' expected in remote platform'")
+  if entries[1] != "OSFamily=Linux":
+    fail("'OSFamily' expected in remote platform'")
+
+  ctx.file("BUILD")
+
+foo_configure = repository_rule(
+  implementation = _impl,
+  remotable = True,
+)
+EOF
+cat > "$WS/MODULE.bazel" <<'EOF'
+foo_configure = use_repo_rule("//:test.bzl", "foo_configure")
+
+foo_configure(
+  name = "default_foo",
+  exec_properties = {
+    "OSFamily" : "Linux",
+    "ISA" : "x86-64",
+  }
+)
+EOF
+if bazel fetch --remote_executor=grpc://localhost:$PORT --experimental_repo_remote_exec \
+    @default_foo//:all; then
+  result test_repo_remote_exec PASS
+else
+  result test_repo_remote_exec FAIL "fetch failed: $(grep -m1 -E 'ERROR|FATAL|panicked' "$LOG" | tail -1)"
+fi
+
+# --- test_repo_remote_exec_path_argument
+reset_ws; echo "=== test_repo_remote_exec_path_argument" >> "$LOG"
+touch "$WS/BUILD"
+echo "hello world" > "$WS/input.txt"
+cat > "$WS/test.bzl" <<'EOF'
+def _impl(ctx):
+  ctx.execute(["cat", ctx.path("input.txt")])
+  ctx.file("BUILD")
+
+foo_configure = repository_rule(
+  implementation = _impl,
+  remotable = True,
+)
+EOF
+cat > "$WS/MODULE.bazel" <<'EOF'
+foo_configure = use_repo_rule("//:test.bzl", "foo_configure")
+
+foo_configure(
+  name = "default_foo",
+)
+EOF
+start=$(wc -l < "$LOG")
+if bazel fetch --remote_executor=grpc://localhost:$PORT --experimental_repo_remote_exec \
+    @default_foo//:all; then
+  result test_repo_remote_exec_path_argument FAIL "Should fail"
+elif tail -n +"$start" "$LOG" | grep -q "Argument 1 of execute is neither a label nor a string"; then
+  result test_repo_remote_exec_path_argument PASS
+else
+  result test_repo_remote_exec_path_argument FAIL "expected text not in the log"
+fi
+
+# --- test_repo_remote_exec_timeout
+reset_ws; echo "=== test_repo_remote_exec_timeout" >> "$LOG"
+touch "$WS/BUILD"
+cat > "$WS/test.bzl" <<'EOF'
+def _impl(ctx):
+  ctx.execute(["/bin/bash","-c",
+    "for i in {1..3}; do echo \"Sleeping $i...\" && sleep 1; done"], timeout=1)
+  ctx.file("BUILD")
+
+foo_configure = repository_rule(
+  implementation = _impl,
+  remotable = True,
+)
+EOF
+cat > "$WS/MODULE.bazel" <<'EOF'
+foo_configure = use_repo_rule("//:test.bzl", "foo_configure")
+
+foo_configure(
+  name = "default_foo",
+)
+EOF
+start=$(wc -l < "$LOG")
+if bazel fetch --remote_executor=grpc://localhost:$PORT --experimental_repo_remote_exec \
+    @default_foo//:all; then
+  result test_repo_remote_exec_timeout FAIL "Should fail"
+elif tail -n +"$start" "$LOG" | grep -q "exceeded deadline"; then
+  result test_repo_remote_exec_timeout PASS
+else
+  result test_repo_remote_exec_timeout FAIL "expected text not in the log"
+fi
+
+# --- test_repo_remote_exec_file_upload
+reset_ws; echo "=== test_repo_remote_exec_file_upload" >> "$LOG"
+cat > "$WS/BUILD" <<'EOF'
+  exports_files(["cmd.sh", "hello.txt"])
+EOF
+cat > "$WS/cmd.sh" <<'EOF'
+#!/bin/sh
+cat $1
+EOF
+chmod +x "$WS/cmd.sh"
+echo "hello world" > "$WS/hello.txt"
+cat > "$WS/test.bzl" <<'EOF'
+def _impl(ctx):
+  script = Label("//:cmd.sh")
+  file = Label("//:hello.txt")
+
+  res = ctx.execute([script, file])
+
+  if res.return_code != 0:
+    fail("Return code 0 expected, but was " + res.return_code)
+
+  if res.stdout.strip() != "hello world":
+    fail("Stdout 'hello world' expected, but was '" + res.stdout + "'");
+
+  ctx.file("BUILD")
+
+remote_foo_configure = repository_rule(
+  implementation = _impl,
+  remotable = True,
+)
+
+local_foo_configure = repository_rule(
+  implementation = _impl,
+)
+EOF
+cat > "$WS/MODULE.bazel" <<'EOF'
+local_foo_configure = use_repo_rule("//:test.bzl", "local_foo_configure")
+remote_foo_configure = use_repo_rule("//:test.bzl", "remote_foo_configure")
+
+remote_foo_configure(
+  name = "remote_foo",
+)
+
+local_foo_configure(
+  name = "local_foo",
+)
+EOF
+# Each step runs whatever the one before did (the remote step depends on the worker's PATH to
+# find the relative "cmd.sh"; the two local steps do not).
+failed=""
+bazel fetch --remote_executor=grpc://localhost:$PORT --experimental_repo_remote_exec \
+  @remote_foo//:all || failed="$failed remote-fetch"
+bazel clean --expunge || true
+bazel fetch --experimental_repo_remote_exec @remote_foo//:all || failed="$failed local-fetch-of-remote_foo"
+bazel clean --expunge || true
+bazel fetch --experimental_repo_remote_exec @local_foo//:all || failed="$failed fetch-of-local_foo"
+if [[ -z "$failed" ]]; then
+  result test_repo_remote_exec_file_upload PASS
+else
+  result test_repo_remote_exec_file_upload FAIL "failed steps:$failed"
+fi
+
+(cd "$WS" && "$BIN" --output_user_root="$UR" shutdown) >/dev/null 2>&1 || true
+kill "$WORKER_PID" 2>/dev/null || true
+wait "$WORKER_PID" 2>/dev/null || true

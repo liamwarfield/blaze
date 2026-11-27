@@ -39,7 +39,7 @@ impl RewindableGraphInconsistencyReceiver {
     }
 
     /// Returns whether this is the first time the inconsistency was noted for a parent.
-    // Java: com/google/devtools/build/lib/skyframe/rewinding/RewindableGraphInconsistencyReceiver.java:175 RewindableGraphInconsistencyReceiver.noteSelfInconsistency
+    // Java: com/google/devtools/build/lib/skyframe/rewinding/RewindableGraphInconsistencyReceiver.java:86 RewindableGraphInconsistencyReceiver.noteSelfInconsistency
     fn note_self_inconsistency(&self, inconsistency: Inconsistency) -> bool {
         let mut counts = self.self_counts.lock();
         let count = counts.entry(inconsistency).or_insert(0);
@@ -52,7 +52,10 @@ impl RewindableGraphInconsistencyReceiver {
     pub fn get_inconsistency_stats(
         &self,
     ) -> (HashMap<Inconsistency, i64>, HashMap<Inconsistency, i64>) {
-        (self.self_counts.lock().clone(), self.child_counts.lock().clone())
+        (
+            self.self_counts.lock().clone(),
+            self.child_counts.lock().clone(),
+        )
     }
 
     fn add_child_count(&self, inconsistency: Inconsistency, count: usize) {
@@ -61,7 +64,7 @@ impl RewindableGraphInconsistencyReceiver {
 }
 
 /// `listChildren(otherKeys)`: at most [`LOGGED_CHILDREN_LIMIT`] keys.
-// Java: com/google/devtools/build/lib/skyframe/rewinding/RewindableGraphInconsistencyReceiver.java:184 RewindableGraphInconsistencyReceiver.listChildren
+// Java: com/google/devtools/build/lib/skyframe/rewinding/RewindableGraphInconsistencyReceiver.java:104 RewindableGraphInconsistencyReceiver.listChildren
 fn list_children(children: &[SkyKey]) -> String {
     let shown: Vec<String> = children
         .iter()
@@ -80,7 +83,7 @@ fn list_children(children: &[SkyKey]) -> String {
     }
 }
 
-// Java: com/google/devtools/build/lib/skyframe/rewinding/RewindableGraphInconsistencyReceiver.java:193 RewindableGraphInconsistencyReceiver.unexpectedInconsistency
+// Java: com/google/devtools/build/lib/skyframe/rewinding/RewindableGraphInconsistencyReceiver.java:156 RewindableGraphInconsistencyReceiver.unexpectedInconsistency
 fn unexpected_inconsistency(
     key: &SkyKey,
     other_keys: Option<&[SkyKey]>,
@@ -97,7 +100,7 @@ fn unexpected_inconsistency(
 }
 
 impl GraphInconsistencyReceiver for RewindableGraphInconsistencyReceiver {
-    // Java: com/google/devtools/build/lib/skyframe/rewinding/RewindableGraphInconsistencyReceiver.java:64 RewindableGraphInconsistencyReceiver.noteInconsistencyAndMaybeThrow
+    // Java: com/google/devtools/build/lib/skyframe/rewinding/RewindableGraphInconsistencyReceiver.java:65 RewindableGraphInconsistencyReceiver.noteInconsistencyAndMaybeThrow
     fn note_inconsistency_and_maybe_throw(
         &self,
         key: &SkyKey,
@@ -160,11 +163,13 @@ impl GraphInconsistencyReceiver for RewindableGraphInconsistencyReceiver {
                         && unrewindable_undone_children.is_empty(),
                     "Unexpected undone children: parent = {:?}, children = {}",
                     key,
-                    list_children(if rewinding_initiated && parent_depends_on_rewindable_nodes {
-                        &unrewindable_undone_children
-                    } else {
-                        other_keys
-                    })
+                    list_children(
+                        if rewinding_initiated && parent_depends_on_rewindable_nodes {
+                            &unrewindable_undone_children
+                        } else {
+                            other_keys
+                        }
+                    )
                 );
                 self.note_self_inconsistency(inconsistency);
                 self.add_child_count(inconsistency, other_keys.len());
@@ -175,7 +180,7 @@ impl GraphInconsistencyReceiver for RewindableGraphInconsistencyReceiver {
         }
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/rewinding/RewindableGraphInconsistencyReceiver.java:217 RewindableGraphInconsistencyReceiver.reset
+    // Java: com/google/devtools/build/lib/skyframe/rewinding/RewindableGraphInconsistencyReceiver.java:216 RewindableGraphInconsistencyReceiver.reset
     fn reset(&self) {
         self.self_counts.lock().clear();
         self.child_counts.lock().clear();
@@ -183,7 +188,7 @@ impl GraphInconsistencyReceiver for RewindableGraphInconsistencyReceiver {
     }
 }
 
-// Java: com/google/devtools/build/lib/skyframe/rewinding/RewindingInconsistencyUtils.java:34 RewindingInconsistencyUtils.mayForceRebuildChildren
+// Java: com/google/devtools/build/lib/skyframe/rewinding/RewindingInconsistencyUtils.java:31 RewindingInconsistencyUtils.mayForceRebuildChildren
 fn may_force_rebuild_children(key: &SkyKey) -> bool {
     key.downcast::<ActionExecutionKey>().is_some()
         || key.downcast::<ArtifactNestedSetKey>().is_some()
@@ -191,7 +196,7 @@ fn may_force_rebuild_children(key: &SkyKey) -> bool {
 }
 
 /// Returns whether the key specifies a node which may be rewound by a failed action.
-// Java: com/google/devtools/build/lib/skyframe/rewinding/RewindingInconsistencyUtils.java:41 RewindingInconsistencyUtils.isRewindable
+// Java: com/google/devtools/build/lib/skyframe/rewinding/RewindingInconsistencyUtils.java:38 RewindingInconsistencyUtils.isRewindable
 pub fn is_rewindable(key: &SkyKey) -> bool {
     key.downcast::<ActionExecutionKey>().is_some()
         || key.downcast::<ArtifactNestedSetKey>().is_some()
@@ -202,7 +207,7 @@ pub fn is_rewindable(key: &SkyKey) -> bool {
 ///
 /// Such a node may discover, while in-flight, that a dependency of theirs transitioned from done
 /// to undone.
-// Java: com/google/devtools/build/lib/skyframe/rewinding/RewindingInconsistencyUtils.java:53 RewindingInconsistencyUtils.isTypeThatDependsOnRewindableNodes
+// Java: com/google/devtools/build/lib/skyframe/rewinding/RewindingInconsistencyUtils.java:50 RewindingInconsistencyUtils.isTypeThatDependsOnRewindableNodes
 fn is_type_that_depends_on_rewindable_nodes(key: &SkyKey) -> bool {
     key.downcast::<ActionExecutionKey>().is_some()
         || key.downcast::<ArtifactNestedSetKey>().is_some()
@@ -218,5 +223,6 @@ fn is_type_that_depends_on_rewindable_nodes(key: &SkyKey) -> bool {
 /// `key instanceof TopLevelActionLookupKeyWrapper`: the target and aspect completion keys
 /// (`TopLevelActionLookupConflictFindingFunction.Key` has no port).
 fn is_top_level_action_lookup_key_wrapper(key: &SkyKey) -> bool {
-    key.downcast::<TargetCompletionKey>().is_some() || key.downcast::<AspectCompletionKey>().is_some()
+    key.downcast::<TargetCompletionKey>().is_some()
+        || key.downcast::<AspectCompletionKey>().is_some()
 }

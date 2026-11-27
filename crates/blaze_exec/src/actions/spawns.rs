@@ -8,6 +8,8 @@ use super::exec_exception::{ExecException, UserExecException};
 use super::execution_requirements as er;
 use super::spawn::Spawn;
 
+// PORT: skipped, Spawns.Spawns: the private constructor of a static utility class (this module).
+
 /// `mayBeCached(Spawn)`.
 // Java: com/google/devtools/build/lib/actions/Spawns.java:33 Spawns.mayBeCached
 pub fn may_be_cached(spawn: &dyn Spawn) -> bool {
@@ -20,6 +22,7 @@ pub fn may_be_cached_info(execution_info: &indexmap::IndexMap<String, String>) -
 }
 
 /// `mayBeCachedRemotely(Spawn)`.
+// Java: com/google/devtools/build/lib/actions/Spawns.java:40 Spawns.mayBeCachedRemotely
 pub fn may_be_cached_remotely(spawn: &dyn Spawn) -> bool {
     may_be_cached_remotely_info(spawn.get_execution_info())
 }
@@ -33,6 +36,7 @@ pub fn may_be_cached_remotely_info(info: &indexmap::IndexMap<String, String>) ->
 }
 
 /// `mayBeExecutedRemotely(Spawn)`.
+// Java: com/google/devtools/build/lib/actions/Spawns.java:52 Spawns.mayBeExecutedRemotely
 pub fn may_be_executed_remotely(spawn: &dyn Spawn) -> bool {
     let info = spawn.get_execution_info();
     !info.contains_key(er::LOCAL)
@@ -41,11 +45,13 @@ pub fn may_be_executed_remotely(spawn: &dyn Spawn) -> bool {
 }
 
 /// `mayBeExecutedLocally(Spawn)`.
+// Java: com/google/devtools/build/lib/actions/Spawns.java:59 Spawns.mayBeExecutedLocally
 pub fn may_be_executed_locally(spawn: &dyn Spawn) -> bool {
     !spawn.get_execution_info().contains_key(er::NO_LOCAL)
 }
 
 /// `mayBeSandboxed(Spawn)`.
+// Java: com/google/devtools/build/lib/actions/Spawns.java:64 Spawns.mayBeSandboxed
 pub fn may_be_sandboxed(spawn: &dyn Spawn) -> bool {
     let info = spawn.get_execution_info();
     !info.contains_key(er::LEGACY_NOSANDBOX)
@@ -54,6 +60,7 @@ pub fn may_be_sandboxed(spawn: &dyn Spawn) -> bool {
 }
 
 /// `usesPathMapping(Spawn)`.
+// Java: com/google/devtools/build/lib/actions/Spawns.java:74 Spawns.usesPathMapping
 pub fn uses_path_mapping(spawn: &dyn Spawn) -> bool {
     !spawn.get_path_mapper().is_noop()
 }
@@ -72,6 +79,7 @@ pub fn requires_network(spawn: &dyn Spawn, default_sandbox_disallow_network: boo
 }
 
 /// `supportsWorkers(Spawn)`.
+// Java: com/google/devtools/build/lib/actions/Spawns.java:94 Spawns.supportsWorkers
 pub fn supports_workers(spawn: &dyn Spawn) -> bool {
     spawn
         .get_execution_info()
@@ -81,6 +89,7 @@ pub fn supports_workers(spawn: &dyn Spawn) -> bool {
 }
 
 /// `supportsMultiplexWorkers(Spawn)`.
+// Java: com/google/devtools/build/lib/actions/Spawns.java:102 Spawns.supportsMultiplexWorkers
 pub fn supports_multiplex_workers(spawn: &dyn Spawn) -> bool {
     spawn
         .get_execution_info()
@@ -90,6 +99,7 @@ pub fn supports_multiplex_workers(spawn: &dyn Spawn) -> bool {
 }
 
 /// `getWorkerKeyMnemonic(Spawn)`.
+// Java: com/google/devtools/build/lib/actions/Spawns.java:145 Spawns.getWorkerKeyMnemonic
 pub fn get_worker_key_mnemonic(spawn: &dyn Spawn) -> String {
     spawn
         .get_execution_info()
@@ -137,6 +147,7 @@ pub fn get_worker_protocol_format(spawn: &dyn Spawn) -> Result<er::WorkerProtoco
 }
 
 /// `getTimeout(Spawn)`.
+// Java: com/google/devtools/build/lib/actions/Spawns.java:154 Spawns.getTimeout
 pub fn get_timeout(spawn: &dyn Spawn) -> Result<Duration, ExecException> {
     get_timeout_with_default(spawn, Some(Duration::ZERO))
 }
@@ -152,7 +163,10 @@ pub fn get_timeout_with_default(
     };
     match timeout_str.parse::<i32>() {
         Ok(secs) if secs >= 0 => Ok(Duration::from_secs(secs as u64)),
-        Ok(_) => blaze_util::unported!("Spawns.getTimeout(negative timeout)"),
+        Ok(_) => blaze_util::unported!(
+            "Spawns.getTimeout(negative timeout)",
+            "a negative 'timeout' execution requirement: java.time.Duration may be negative, std::time::Duration may not"
+        ),
         Err(e) => Err(UserExecException::with_cause(
             &format!("For input string: \"{timeout_str}\" ({e})"),
             FailureDetail {
@@ -170,6 +184,7 @@ pub fn get_timeout_with_default(
 }
 
 /// `shouldPrefetchInputsForLocalExecution(Spawn)`.
+// Java: com/google/devtools/build/lib/actions/Spawns.java:183 Spawns.shouldPrefetchInputsForLocalExecution
 pub fn should_prefetch_inputs_for_local_execution(spawn: &dyn Spawn) -> bool {
     match spawn.get_execution_info().get(er::DISABLE_LOCAL_PREFETCH) {
         None => true,

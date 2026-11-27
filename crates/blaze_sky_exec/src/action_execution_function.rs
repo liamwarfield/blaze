@@ -59,6 +59,7 @@ pub struct ActionExecutionFunction {
 }
 
 /// `ActionUtils.getActionForLookupData`.
+// PORT: skipped, ActionUtils.ActionUtils: the private constructor of a static utility class.
 // Java: com/google/devtools/build/lib/skyframe/ActionUtils.java:40 ActionUtils.getActionForLookupData
 pub fn get_action_for_lookup_data(
     seam: &dyn AnalysisSeam,
@@ -1326,7 +1327,11 @@ pub(crate) fn add_to_map(input_map: &ActionInputMetadata, key: &Artifact, value:
                 );
             }
             if key.is_fileset() {
-                blaze_util::unported!("ActionInputMapHelper.addToMap", "fileset input {}", key);
+                blaze_util::unported!(
+                    "ActionInputMapHelper.addToMap (unreachable in Bazel: only the non-open-sourced fileset rule makes fileset artifacts, packages/OutputFile.java:123)",
+                    "fileset input {}",
+                    key
+                );
             } else if key.is_runfiles_tree() {
                 let runfiles_artifact_value = action_execution_value
                     .get_rich_artifact_data()
@@ -2048,6 +2053,17 @@ mod timestamp_builder_tests {
                 .with_lost_inputs_policy(remote.lost_inputs_policy.clone()),
             );
             let mut builder = EvaluatorBuilder::new();
+            // SequencedSkyframeExecutor.getGraphInconsistencyReceiverForCommand (as
+            // execution_phase::prepare_execution).
+            if remote
+                .lost_inputs_policy
+                .as_ref()
+                .is_some_and(|p| p.rewinding_enabled)
+            {
+                builder = builder.graph_inconsistency_receiver(Arc::new(
+                    crate::rewinding::rewindable_graph_inconsistency_receiver::RewindableGraphInconsistencyReceiver::new(),
+                ));
+            }
             // Java's TimestampBuilderTestCase registers FILE_STATE and FILE with ARTIFACT, which
             // requests the FILE value of a source artifact.
             let _ = remote.loading;

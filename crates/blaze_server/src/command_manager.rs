@@ -235,11 +235,21 @@ impl CommandManager {
 
 /// `ThreadUtils.warnAboutSlowInterrupt`.
 ///
-/// PORT: skipped, logging and bug report. Java logs "Interrupt took too long. Dumping thread
-/// state.", every thread's stack, and sends a `SlowInterruptException` bug report (logged; not
-/// shown to the user); Blaze has no server log records and no thread dumps.
+/// PORT: skipped, JVM-only: the dump of every Java thread's stack (`Thread.getAllStackTraces`,
+/// `ThreadDumper`) and the `SlowInterruptException` bug report (logged only, not shown to the
+/// user). The first log line is written.
 // Java: com/google/devtools/build/lib/util/ThreadUtils.java:55 ThreadUtils.warnAboutSlowInterrupt
-fn warn_about_slow_interrupt(_slow_interrupt_message_suffix: Option<&str>) {}
+// Java: com/google/devtools/build/lib/util/ThreadUtils.java:60 ThreadUtils.warnAboutSlowInterrupt
+// PORT: skipped, JVM-only (Java thread dump): ThreadUtils.makeString, ThreadUtils.makeThreadInfoString
+// PORT: skipped, JVM-only (Java thread dump): ThreadUtils.hashCode, ThreadUtils.equals, ThreadUtils.compareTo
+fn warn_about_slow_interrupt(_slow_interrupt_message_suffix: Option<&str>) {
+    blaze_util::server_logger::warning(
+        "com.google.devtools.build.lib.util.ThreadUtils",
+        "warnAboutSlowInterrupt",
+        "Interrupt took too long. Dumping thread state.",
+        None,
+    );
+}
 
 impl CommandManagerWatch for CommandManager {
     fn is_empty(&self) -> bool {

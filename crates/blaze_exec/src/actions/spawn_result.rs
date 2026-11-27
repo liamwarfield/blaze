@@ -32,6 +32,7 @@ pub enum Status {
 
 impl Status {
     /// `isConsideredUserError()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:103 SpawnResult.Status.isConsideredUserError
     pub fn is_considered_user_error(self) -> bool {
         matches!(
             self,
@@ -96,6 +97,29 @@ impl SpawnResult {
     /// `new SpawnResult.DelegateSpawnResult(this) { getRunnerName() { return runnerName; }
     /// getMetrics() { return metrics; } }`: every other getter answers as this result does.
     // Java: com/google/devtools/build/lib/actions/SpawnResult.java:482 SpawnResult.DelegateSpawnResult
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:489 SpawnResult.DelegateSpawnResult.setupSuccess
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:494 SpawnResult.DelegateSpawnResult.isCatastrophe
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:499 SpawnResult.DelegateSpawnResult.status
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:504 SpawnResult.DelegateSpawnResult.exitCode
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:509 SpawnResult.DelegateSpawnResult.failureDetail
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:515 SpawnResult.DelegateSpawnResult.getExecutorHostName
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:521 SpawnResult.DelegateSpawnResult.getRunnerName
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:526 SpawnResult.DelegateSpawnResult.getRunnerSubtype
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:531 SpawnResult.DelegateSpawnResult.getStartTime
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:537 SpawnResult.DelegateSpawnResult.getWallTimeInMs
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:542 SpawnResult.DelegateSpawnResult.getUserTimeInMs
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:547 SpawnResult.DelegateSpawnResult.getSystemTimeInMs
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:552 SpawnResult.DelegateSpawnResult.getNumBlockOutputOperations
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:558 SpawnResult.DelegateSpawnResult.getNumBlockInputOperations
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:564 SpawnResult.DelegateSpawnResult.getNumInvoluntaryContextSwitches
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:570 SpawnResult.DelegateSpawnResult.getMemoryInKb
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:576 SpawnResult.DelegateSpawnResult.getMetrics
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:581 SpawnResult.DelegateSpawnResult.isCacheHit
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:586 SpawnResult.DelegateSpawnResult.getFailureMessage
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:591 SpawnResult.DelegateSpawnResult.getInMemoryOutput
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:597 SpawnResult.DelegateSpawnResult.getDetailMessage
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:603 SpawnResult.DelegateSpawnResult.wasRemote
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:608 SpawnResult.DelegateSpawnResult.getDigest
     pub fn delegate_with_runner_name_and_metrics(
         &self,
         runner_name: &str,
@@ -109,6 +133,7 @@ impl SpawnResult {
     }
 
     /// `setupSuccess()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:116 SpawnResult.setupSuccess
     pub fn setup_success(&self) -> bool {
         matches!(
             self.status,
@@ -116,6 +141,7 @@ impl SpawnResult {
         )
     }
     /// `isCatastrophe()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:128 SpawnResult.isCatastrophe
     pub fn is_catastrophe(&self) -> bool {
         matches!(
             self.status,
@@ -123,74 +149,110 @@ impl SpawnResult {
         )
     }
     /// `status()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:134 SpawnResult.status
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:348 SpawnResult.SimpleSpawnResult.status
     pub fn status(&self) -> Status {
         self.status
     }
     /// `exitCode()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:150 SpawnResult.exitCode
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:343 SpawnResult.SimpleSpawnResult.exitCode
     pub fn exit_code(&self) -> i32 {
         self.exit_code
     }
     /// `failureDetail()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:156 SpawnResult.failureDetail
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:353 SpawnResult.SimpleSpawnResult.failureDetail
     pub fn failure_detail(&self) -> Option<&FailureDetail> {
         self.failure_detail.as_ref()
     }
     /// `getExecutorHostName()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:164 SpawnResult.getExecutorHostName
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:359 SpawnResult.SimpleSpawnResult.getExecutorHostName
     pub fn get_executor_host_name(&self) -> Option<&str> {
         self.executor_host_name.as_deref()
     }
     /// `getRunnerName()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:171 SpawnResult.getRunnerName
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:364 SpawnResult.SimpleSpawnResult.getRunnerName
     pub fn get_runner_name(&self) -> &str {
         &self.runner_name
     }
     /// `getRunnerSubtype()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:174 SpawnResult.getRunnerSubtype
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:369 SpawnResult.SimpleSpawnResult.getRunnerSubtype
     pub fn get_runner_subtype(&self) -> &str {
         &self.runner_subtype
     }
     /// `getMetrics()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:247 SpawnResult.getMetrics
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:374 SpawnResult.SimpleSpawnResult.getMetrics
     pub fn get_metrics(&self) -> &SpawnMetrics {
         &self.spawn_metrics
     }
     /// `getStartTime()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:182 SpawnResult.getStartTime
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:379 SpawnResult.SimpleSpawnResult.getStartTime
     pub fn get_start_time(&self) -> Option<SystemTime> {
         self.start_time
     }
     /// `getWallTimeInMs()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:191 SpawnResult.getWallTimeInMs
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:384 SpawnResult.SimpleSpawnResult.getWallTimeInMs
     pub fn get_wall_time_in_ms(&self) -> i32 {
         self.wall_time_in_ms
     }
     /// `getUserTimeInMs()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:199 SpawnResult.getUserTimeInMs
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:389 SpawnResult.SimpleSpawnResult.getUserTimeInMs
     pub fn get_user_time_in_ms(&self) -> i32 {
         self.user_time_in_ms
     }
     /// `getSystemTimeInMs()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:207 SpawnResult.getSystemTimeInMs
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:394 SpawnResult.SimpleSpawnResult.getSystemTimeInMs
     pub fn get_system_time_in_ms(&self) -> i32 {
         self.system_time_in_ms
     }
     /// `getNumBlockOutputOperations()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:215 SpawnResult.getNumBlockOutputOperations
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:399 SpawnResult.SimpleSpawnResult.getNumBlockOutputOperations
     pub fn get_num_block_output_operations(&self) -> Option<i64> {
         self.num_block_output_operations
     }
     /// `getNumBlockInputOperations()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:224 SpawnResult.getNumBlockInputOperations
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:404 SpawnResult.SimpleSpawnResult.getNumBlockInputOperations
     pub fn get_num_block_input_operations(&self) -> Option<i64> {
         self.num_block_input_operations
     }
     /// `getNumInvoluntaryContextSwitches()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:233 SpawnResult.getNumInvoluntaryContextSwitches
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:409 SpawnResult.SimpleSpawnResult.getNumInvoluntaryContextSwitches
     pub fn get_num_involuntary_context_switches(&self) -> Option<i64> {
         self.num_involuntary_context_switches
     }
     /// `getMemoryInKb()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:244 SpawnResult.getMemoryInKb
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:414 SpawnResult.SimpleSpawnResult.getMemoryInKb
     pub fn get_memory_in_kb(&self) -> Option<i64> {
         self.memory_kb
     }
     /// `isCacheHit()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:250 SpawnResult.isCacheHit
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:419 SpawnResult.SimpleSpawnResult.isCacheHit
     pub fn is_cache_hit(&self) -> bool {
         self.cache_hit
     }
     /// `getFailureMessage()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:253 SpawnResult.getFailureMessage
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:424 SpawnResult.SimpleSpawnResult.getFailureMessage
     pub fn get_failure_message(&self) -> &str {
         &self.failure_message
     }
     /// `getInMemoryOutput(ActionInput)`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:263 SpawnResult.getInMemoryOutput
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:458 SpawnResult.SimpleSpawnResult.getInMemoryOutput
     pub fn get_in_memory_output(&self, output: &ActionInputRef) -> Option<&[u8]> {
         match &self.in_memory_output_file {
             Some(f) if f == output => self.in_memory_contents.as_deref(),
@@ -198,16 +260,21 @@ impl SpawnResult {
         }
     }
     /// `wasRemote()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:271 SpawnResult.wasRemote
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:467 SpawnResult.SimpleSpawnResult.wasRemote
     pub fn was_remote(&self) -> bool {
         self.remote
     }
     /// `getDigest()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:278 SpawnResult.getDigest
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:472 SpawnResult.SimpleSpawnResult.getDigest
     pub fn get_digest(&self) -> Option<&Digest> {
         self.digest.as_ref()
     }
 
     /// `getDetailMessage(message, catastrophe, forciblyRunRemotely)`: e.g. `"(Exit 1): <msg>"`.
     // Java: com/google/devtools/build/lib/actions/SpawnResult.java:268 SimpleSpawnResult.getDetailMessage
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:268 SpawnResult.getDetailMessage
     pub fn get_detail_message(
         &self,
         message: &str,
@@ -347,22 +414,27 @@ impl SpawnResultBuilder {
         }
     }
 
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:679 SpawnResult.Builder.setExitCode
     pub fn set_exit_code(&mut self, exit_code: i32) -> &mut Self {
         self.exit_code = exit_code;
         self
     }
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:685 SpawnResult.Builder.setStatus
     pub fn set_status(&mut self, status: Status) -> &mut Self {
         self.status = Some(status);
         self
     }
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:691 SpawnResult.Builder.setFailureDetail
     pub fn set_failure_detail(&mut self, failure_detail: FailureDetail) -> &mut Self {
         self.failure_detail = Some(failure_detail);
         self
     }
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:697 SpawnResult.Builder.setExecutorHostname
     pub fn set_executor_hostname(&mut self, name: String) -> &mut Self {
         self.executor_host_name = Some(name);
         self
     }
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:703 SpawnResult.Builder.setRunnerName
     pub fn set_runner_name(&mut self, runner_name: &str) -> &mut Self {
         self.runner_name = runner_name.to_string();
         self
@@ -371,59 +443,73 @@ impl SpawnResultBuilder {
         self.runner_subtype = runner_subtype.to_string();
         self
     }
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:709 SpawnResult.Builder.setSpawnMetrics
     pub fn set_spawn_metrics(&mut self, metrics: SpawnMetrics) -> &mut Self {
         self.spawn_metrics = Some(metrics);
         self
     }
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:715 SpawnResult.Builder.setStartTime
     pub fn set_start_time(&mut self, start_time: SystemTime) -> &mut Self {
         self.start_time = Some(start_time);
         self
     }
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:721 SpawnResult.Builder.setWallTimeInMs
     pub fn set_wall_time_in_ms(&mut self, ms: i32) -> &mut Self {
         self.wall_time_in_ms = ms;
         self
     }
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:727 SpawnResult.Builder.setUserTimeInMs
     pub fn set_user_time_in_ms(&mut self, ms: i32) -> &mut Self {
         self.user_time_in_ms = ms;
         self
     }
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:733 SpawnResult.Builder.setSystemTimeInMs
     pub fn set_system_time_in_ms(&mut self, ms: i32) -> &mut Self {
         self.system_time_in_ms = ms;
         self
     }
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:739 SpawnResult.Builder.setNumBlockOutputOperations
     pub fn set_num_block_output_operations(&mut self, n: i64) -> &mut Self {
         self.num_block_output_operations = Some(n);
         self
     }
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:745 SpawnResult.Builder.setNumBlockInputOperations
     pub fn set_num_block_input_operations(&mut self, n: i64) -> &mut Self {
         self.num_block_input_operations = Some(n);
         self
     }
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:751 SpawnResult.Builder.setNumInvoluntaryContextSwitches
     pub fn set_num_involuntary_context_switches(&mut self, n: i64) -> &mut Self {
         self.num_involuntary_context_switches = Some(n);
         self
     }
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:757 SpawnResult.Builder.setMemoryInKb
     pub fn set_memory_in_kb(&mut self, kb: i64) -> &mut Self {
         self.memory_in_kb = Some(kb);
         self
     }
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:763 SpawnResult.Builder.setCacheHit
     pub fn set_cache_hit(&mut self, cache_hit: bool) -> &mut Self {
         self.cache_hit = cache_hit;
         self
     }
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:769 SpawnResult.Builder.setFailureMessage
     pub fn set_failure_message(&mut self, failure_message: &str) -> &mut Self {
         self.failure_message = failure_message.to_string();
         self
     }
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:775 SpawnResult.Builder.setInMemoryOutput
     pub fn set_in_memory_output(&mut self, output: ActionInputRef, contents: Vec<u8>) -> &mut Self {
         self.in_memory_output_file = Some(output);
         self.in_memory_contents = Some(contents);
         self
     }
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:782 SpawnResult.Builder.setRemote
     pub fn set_remote(&mut self, remote: bool) -> &mut Self {
         self.remote = remote;
         self
     }
+    // Java: com/google/devtools/build/lib/actions/SpawnResult.java:788 SpawnResult.Builder.setDigest
     pub fn set_digest(&mut self, digest: Option<Digest>) -> &mut Self {
         self.digest = digest;
         self

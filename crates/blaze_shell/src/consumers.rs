@@ -103,6 +103,7 @@ struct OutputConsumer {
 static THREAD_INIT_NUMBER: AtomicI32 = AtomicI32::new(0);
 
 impl OutputConsumer {
+    // Java: com/google/devtools/build/lib/shell/Consumers.java:124 Consumers.StreamingConsumer.StreamingConsumer
     fn streaming(out: OutputStream) -> OutputConsumer {
         OutputConsumer {
             kind: ConsumerKind::Streaming(out),
@@ -117,6 +118,9 @@ impl OutputConsumer {
         }
     }
 
+    // Java: com/google/devtools/build/lib/shell/Consumers.java:109 Consumers.OutputConsumer.getAccumulatedOut
+    // Java: com/google/devtools/build/lib/shell/Consumers.java:128 Consumers.StreamingConsumer.getAccumulatedOut
+    // Java: com/google/devtools/build/lib/shell/Consumers.java:152 Consumers.AccumulatingConsumer.getAccumulatedOut
     fn get_accumulated_out(&self) -> ByteArrayOutputStream {
         match &self.kind {
             ConsumerKind::Streaming(_) => CommandResult::NO_OUTPUT_COLLECTED,
@@ -124,11 +128,16 @@ impl OutputConsumer {
         }
     }
 
+    // Java: com/google/devtools/build/lib/shell/Consumers.java:111 Consumers.OutputConsumer.logConsumptionStrategy
+    // Java: com/google/devtools/build/lib/shell/Consumers.java:133 Consumers.StreamingConsumer.logConsumptionStrategy
+    // Java: com/google/devtools/build/lib/shell/Consumers.java:157 Consumers.AccumulatingConsumer.logConsumptionStrategy
     fn log_consumption_strategy(&self) {
         // PORT: skipped, FINER-level java.log logging.
     }
 
     // Java: com/google/devtools/build/lib/shell/Consumers.java:177 FutureConsumption.registerInput
+    // Java: com/google/devtools/build/lib/shell/Consumers.java:113 Consumers.OutputConsumer.registerInput
+    // Java: com/google/devtools/build/lib/shell/Consumers.java:222 Consumers.AccumulatorThreadFactory.newThread
     fn register_input(&mut self, input: InputStream, close_consumer: bool) {
         let sink = self.create_consuming_and_closing_sink(input, close_consumer);
         // Java: AccumulatorThreadFactory names the pool's threads.
@@ -143,6 +152,9 @@ impl OutputConsumer {
         self.future = Some(handle);
     }
 
+    // Java: com/google/devtools/build/lib/shell/Consumers.java:182 Consumers.FutureConsumption.createConsumingAndClosingSink
+    // Java: com/google/devtools/build/lib/shell/Consumers.java:138 Consumers.StreamingConsumer.createConsumingAndClosingSink
+    // Java: com/google/devtools/build/lib/shell/Consumers.java:162 Consumers.AccumulatingConsumer.createConsumingAndClosingSink
     fn create_consuming_and_closing_sink(
         &self,
         input: InputStream,
@@ -158,6 +170,7 @@ impl OutputConsumer {
     }
 
     // Java: com/google/devtools/build/lib/shell/Consumers.java:185 FutureConsumption.cancel
+    // Java: com/google/devtools/build/lib/shell/Consumers.java:115 Consumers.OutputConsumer.cancel
     fn cancel(&mut self) {
         // PORT: Java's future.cancel(true) interrupts the consumer thread, which does not stop a
         // blocking read; the copy runs on until end-of-file. Detaching the thread is the same.
@@ -168,6 +181,7 @@ impl OutputConsumer {
     }
 
     // Java: com/google/devtools/build/lib/shell/Consumers.java:190 FutureConsumption.waitForCompletion
+    // Java: com/google/devtools/build/lib/shell/Consumers.java:117 Consumers.OutputConsumer.waitForCompletion
     fn wait_for_completion(&mut self) -> io::Result<()> {
         let Some(future) = self.future.take() else {
             // Already waited for (or cancelled).
@@ -185,6 +199,8 @@ impl OutputConsumer {
 
 /// A sink that closes its input stream once its done.
 // Java: com/google/devtools/build/lib/shell/Consumers.java:237 Consumers.ClosingSink
+// Java: com/google/devtools/build/lib/shell/Consumers.java:269 Consumers.ClosingSink.run
+// Java: com/google/devtools/build/lib/shell/Consumers.java:286 Consumers.silentClose
 fn closing_sink(input: InputStream, out: OutputStream, close: bool) -> RunnableSink {
     let sink = InputStreamSink::new_runnable_sink(input, out.clone());
     Box::new(move || {

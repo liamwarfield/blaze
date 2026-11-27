@@ -591,6 +591,7 @@ impl Fixture {
             remote_output_injector: Some(
                 self.remote_output_injector.clone() as Arc<dyn RemoteOutputInjector>
             ),
+            ..RemoteHooks::new()
         });
         RemoteSpawnCache::new(
             options,

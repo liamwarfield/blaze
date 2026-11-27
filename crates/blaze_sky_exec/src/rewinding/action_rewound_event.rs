@@ -9,7 +9,7 @@ use blaze_events::Postable;
 
 /// This event is fired during the build for an action that failed because of lost inputs, and
 /// that will try to recover through rewinding (see `ActionRewindStrategy`).
-// Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewoundEvent.java:24 ActionRewoundEvent
+// Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewoundEvent.java:23 ActionRewoundEvent
 #[derive(Clone)]
 pub struct ActionRewoundEvent {
     /// A nanotime taken before action execution began.

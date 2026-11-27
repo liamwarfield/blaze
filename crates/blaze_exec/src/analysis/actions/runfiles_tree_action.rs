@@ -160,7 +160,7 @@ pub fn create_runfiles_artifact_value(
         let input_ref = artifact_input(input);
         if input.is_fileset() {
             blaze_util::unported!(
-                "RunfilesTreeAction.createRunfilesArtifactValue",
+                "RunfilesTreeAction.createRunfilesArtifactValue (unreachable in Bazel: only the non-open-sourced fileset rule makes fileset artifacts, packages/OutputFile.java:123)",
                 "fileset {} in a runfiles tree (FilesetOutputTree)",
                 input
             );

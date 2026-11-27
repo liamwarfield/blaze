@@ -140,6 +140,22 @@ impl Scratch {
         precomputed: RepoPrecomputedValues,
         env: IndexMap<String, String>,
     ) -> FetchEvaluator {
+        self.evaluator_with_semantics(
+            extra_options,
+            precomputed,
+            env,
+            StarlarkSemantics::default(),
+        )
+    }
+
+    /// [`Scratch::evaluator_with_env`] with the given Starlark semantics.
+    pub fn evaluator_with_semantics(
+        &self,
+        extra_options: &[&str],
+        precomputed: RepoPrecomputedValues,
+        env: IndexMap<String, String>,
+        starlark_semantics: StarlarkSemantics,
+    ) -> FetchEvaluator {
         let mut parser = OptionsParser::builder()
             .options_classes(&[RepositoryOptions::class()])
             .build()
@@ -159,7 +175,7 @@ impl Scratch {
             output_base: &self.output_base,
             install_base: &self.install_base,
             repo_options: &repo_options,
-            starlark_semantics: StarlarkSemantics::default(),
+            starlark_semantics,
             client_env: env.clone(),
             repo_env: env.clone(),
             nonstrict_repo_env: env,

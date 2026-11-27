@@ -17,7 +17,7 @@ pub fn set_tool_version(version: &str) {
     let _ = TOOL_VERSION.set(version.to_string());
 }
 
-fn tool_version() -> &'static str {
+pub(crate) fn tool_version() -> &'static str {
     match TOOL_VERSION.get() {
         Some(v) => v,
         None => panic!(

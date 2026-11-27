@@ -500,26 +500,8 @@ fn output_group_info_of(target: &ConfiguredTarget) -> Option<OutputGroupInfo> {
 }
 
 /// `ConfiguredTarget.toString()`.
-// Java: com/google/devtools/build/lib/analysis/configuredtargets/AbstractConfiguredTarget.java:111 AbstractConfiguredTarget.toString
-// Java: com/google/devtools/build/lib/analysis/configuredtargets/InputFileConfiguredTarget.java:105 InputFileConfiguredTarget.toString
 fn configured_target_to_string(configured_target: &ConfiguredTarget) -> String {
-    match configured_target {
-        ConfiguredTarget::InputFile(_) => {
-            format!(
-                "InputFileConfiguredTarget({})",
-                configured_target.get_label()
-            )
-        }
-        // MoreObjects.toStringHelper(this).add("label", ...).add("configurationKey", ...)...
-        ConfiguredTarget::Alias(_) => blaze_util::unported!("AliasConfiguredTarget.toString"),
-        _ => format!(
-            "ConfiguredTarget({}, {})",
-            configured_target.get_label(),
-            configured_target
-                .get_configuration_checksum()
-                .unwrap_or_else(|| "null".to_string())
-        ),
-    }
+    blaze_analysis::configuredtargets::configured_target_to_string(configured_target)
 }
 
 /// `env.getSkyframeExecutor().getActionGraph(eventHandler)`.
@@ -650,6 +632,7 @@ impl<'a, F: Fn(&ActionRef) -> bool> PrintActionVisitor<'a, F> {
     }
 
     // Java: com/google/devtools/build/lib/analysis/PrintActionVisitor.java:54 PrintActionVisitor.visitAction
+    // Java: com/google/devtools/build/lib/actions/ActionGraphVisitor.java:41 ActionGraphVisitor.visitAction
     fn visit_action(&mut self, action: &ActionRef) {
         if (self.action_mnemonic_matcher)(action) {
             self.actions.push(action.clone());

@@ -1011,6 +1011,7 @@ impl Fixture {
         )
         .with_hooks(RemoteHooks {
             remote_output_injector: Some(injector),
+            ..RemoteHooks::new()
         })
     }
 

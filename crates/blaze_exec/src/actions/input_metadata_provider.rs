@@ -102,10 +102,12 @@ pub struct TreeArtifactValue {
 
 impl TreeArtifactValue {
     /// `getChildren()`.
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:339 TreeArtifactValue.getChildren
     pub fn get_children(&self) -> Vec<ActionInputRef> {
         self.child_values.iter().map(|(a, _)| a.clone()).collect()
     }
     /// `getArchivedArtifact()`.
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:361 TreeArtifactValue.getArchivedArtifact
     pub fn get_archived_artifact(&self) -> Option<ActionInputRef> {
         self.archived_representation
             .as_ref()
@@ -226,6 +228,7 @@ impl TreeArtifactValue {
     }
 
     // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:549 Visitor.visit
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:514 TreeArtifactValue.TreeArtifactVisitor.visit
     fn visit(
         parent_dir: &Path,
         parent_relative_path: &PathFragment,
@@ -282,6 +285,7 @@ impl TreeArtifactValue {
     /// `getDigest()`: the digest of [`TreeArtifactValue::build`] (`None` for values not built
     /// through it).
     // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:335 TreeArtifactValue.getDigest
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:257 TreeArtifactValue.TreeArtifactCompositeFileArtifactValue.getDigest
     pub fn get_digest(&self) -> Option<&[u8]> {
         self.metadata.as_ref().and_then(|m| m.get_digest())
     }

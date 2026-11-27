@@ -74,6 +74,13 @@ pub struct RemoteHooks {
     /// Missing hook: `SpawnExecutionContext.getActionFileSystem()` as a
     /// `RemoteActionFileSystem`.
     pub remote_output_injector: Option<Arc<dyn RemoteOutputInjector>>,
+    /// `env.getSkyframeExecutor().getEvaluator()` as `RemoteOutputChecker
+    /// .maybeInvalidateSkyframeValues` uses it: `memoizingEvaluator.delete(predicate)` over the
+    /// server's graph, the predicate taking the key's function name. `None`: no graph is kept
+    /// (nothing to delete).
+    #[allow(clippy::type_complexity)]
+    pub skyframe_delete_by_function_name:
+        Option<Arc<dyn Fn(Arc<dyn Fn(&str) -> bool + Send + Sync>) + Send + Sync>>,
 }
 
 impl RemoteHooks {

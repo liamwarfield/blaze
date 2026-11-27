@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""The functions of src/test/shell/integration/watchfs_test.sh on persistent servers.
+
+usage: scripts/incremental/watchfs help
+       scripts/incremental/watchfs run [--blaze B] [--oracle O] [--only NAME] [--keep]
+
+Replays test_nowatchfs, test_command, test_special_chars and test_large_number_of_files command
+by command, first with the oracle (~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64), then with
+Blaze (BLAZE_SERVER_MODE=daemon, the graph kept between commands), each side in its own
+directory under ~/.cache/blaze/work/i3/watchfs/<side>/ (workspace, output user root, profile).
+Each function starts from a fresh server, as the test's tear_down shuts it down. Every step
+prints the test's assertion on it and whether it held (for the helper: the "VFS stat" events of
+the second build's profile that name the package's whocares.in); at the end, one line per step
+where the two sides differ. Exit 1 if an assertion failed on Blaze or the sides differ.
+
+Servers: startup options --max_idle_secs=60 --nohome_rc --nosystem_rc; commands add
+--repository_cache=~/.cache/blaze/repo-cache --jobs=4; shut down after each function. The side
+directories are deleted at the end unless --keep.
+"""
+
+import argparse
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+HOME = os.path.expanduser("~")
+WORK = os.path.join(HOME, ".cache/blaze/work/i3/watchfs")
+ORACLE = os.path.join(HOME, ".cache/blaze/oracle/bazel-9.3.2-linux-x86_64")
+REPO_CACHE = os.path.join(HOME, ".cache/blaze/repo-cache")
+DEFAULT_BLAZE = os.path.join(HOME, ".cache/blaze/work/i3/bin/blaze")
+
+GENRULE = """genrule(
+    name = "foo",
+    srcs = ["whocares.in"],
+    outs = ["foo.out"],
+    cmd = "touch $@",
+)
+"""
+
+
+def write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+class Side:
+    def __init__(self, name, binary, daemon):
+        self.name = name
+        self.binary = binary
+        self.root = os.path.join(WORK, name)
+        self.out_root = os.path.join(self.root, "ur")
+        self.ws = os.path.join(self.root, "ws")
+        self.profile = os.path.join(self.root, "profile.log")
+        self.env = {"HOME": HOME, "PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8"}
+        if daemon:
+            self.env["BLAZE_SERVER_MODE"] = "daemon"
+
+    def setup(self):
+        self.reset()
+        os.makedirs(self.ws)
+        write(os.path.join(self.ws, "MODULE.bazel"), "")
+
+    def run(self, args, timeout=600):
+        cmd = [
+            self.binary,
+            "--output_user_root=" + self.out_root,
+            "--max_idle_secs=60",
+            "--nohome_rc",
+            "--nosystem_rc",
+        ] + args
+        if args[0] == "build":
+            cmd += ["--repository_cache=" + REPO_CACHE, "--jobs=4", "--color=no", "--curses=no"]
+        p = subprocess.run(cmd, cwd=self.ws, env=self.env, capture_output=True, timeout=timeout)
+        return p.returncode, p.stderr.decode("utf-8", "replace")
+
+    def shutdown(self):
+        try:
+            subprocess.run(
+                [self.binary, "--output_user_root=" + self.out_root, "--nohome_rc",
+                 "--nosystem_rc", "shutdown"],
+                cwd=self.ws, env=self.env, capture_output=True, timeout=120,
+            )
+        except Exception:
+            pass
+        if os.path.isdir(self.out_root):
+            for d in os.listdir(self.out_root):
+                pid_file = os.path.join(self.out_root, d, "server", "server.pid.txt")
+                try:
+                    pid = int(open(pid_file).read().strip())
+                    with open("/proc/%d/cmdline" % pid, "rb") as f:
+                        if self.out_root.encode() in f.read():
+                            os.kill(pid, signal.SIGKILL)
+                except Exception:
+                    pass
+
+    def reset(self):
+        self.shutdown()
+        if os.path.isdir(self.root):
+            subprocess.run(["chmod", "-R", "u+w", self.root], capture_output=True)
+            shutil.rmtree(self.root)
+
+
+def helper(side, rows, pkg, option):
+    """watchfs_test.sh helper(): two builds, the second profiled; the VFS stat lines."""
+    write(os.path.join(side.ws, pkg, "BUILD"), GENRULE)
+    write(os.path.join(side.ws, pkg, "whocares.in"), "")
+    opts = [option] if option else []
+    code, err = side.run(["build"] + opts + ["//%s:foo" % pkg])
+    rows.append(("first build", "exit=%d" % code, code == 0))
+    if os.path.exists(side.profile):
+        os.remove(side.profile)
+    code, err = side.run(
+        ["build"] + opts + ["//%s:foo" % pkg, "--record_full_profiler_data", "--noslim_profile",
+                            "--profile=" + side.profile]
+    )
+    rows.append(("second build (profiled)", "exit=%d" % code, code == 0))
+    try:
+        lines = [l for l in open(side.profile, encoding="utf-8", errors="replace")
+                 if "VFS stat" in l]
+    except OSError:
+        lines = None
+    rows.append(("profile written", "present=%s" % (lines is not None), lines is not None))
+    return lines or []
+
+
+def test_nowatchfs(side):
+    rows = []
+    side.setup()
+    pkg = "test_nowatchfs"
+    lines = helper(side, rows, pkg, "")
+    hit = any(pkg + "/whocares.in" in l for l in lines)
+    rows.append(("expect_log VFS stat whocares.in", "found=%s" % hit, hit))
+    return rows
+
+
+def test_command(side):
+    rows = []
+    side.setup()
+    pkg = "test_command"
+    lines = helper(side, rows, pkg, "--watchfs")
+    hit = any(pkg + "/whocares.in" in l for l in lines)
+    rows.append(("expect_not_log VFS stat whocares.in", "found=%s" % hit, not hit))
+    return rows
+
+
+def test_special_chars(side):
+    rows = []
+    side.setup()
+    code, _ = side.run(["info"])
+    rows.append(("info", "exit=%d" % code, code == 0))
+    write(os.path.join(side.ws, "empty", "BUILD"), "")
+    code, err = side.run(["build", "--watchfs", "//empty/..."])
+    rows.append(("build //empty/...", "exit=%d unicode=%s" % (code, "Hello, Unicode!" in err),
+                 code == 0 and "Hello, Unicode!" not in err))
+    write(os.path.join(side.ws, "pkg", "BUILD"), """print("Hello, Unicode!")
+
+genrule(
+    name = "foo",
+    srcs = ["foo \U0001F331.in"],
+    outs = ["foo.out"],
+    output_to_bindir = True,
+    cmd = "cp '$<' $@",
+)
+""")
+    write(os.path.join(side.ws, "pkg", "foo \U0001F331.in"), "foo\n")
+    time.sleep(5)
+    code, err = side.run(["build", "--watchfs", "//pkg/..."])
+    fallback = "falling back to manually" in err
+    unicode = "Hello, Unicode!" in err
+    out = open(os.path.join(side.ws, "bazel-bin/pkg/foo.out")).read() if code == 0 else ""
+    rows.append(("build //pkg/... (new files)",
+                 "exit=%d fallback=%s unicode=%s out=%r" % (code, fallback, unicode, out),
+                 code == 0 and not fallback and unicode and "foo" in out))
+    write(os.path.join(side.ws, "pkg", "foo \U0001F331.in"), "bar\n")
+    time.sleep(5)
+    code, err = side.run(["build", "--watchfs", "//pkg/..."])
+    fallback = "falling back to manually" in err
+    unicode = "Hello, Unicode!" in err
+    out = open(os.path.join(side.ws, "bazel-bin/pkg/foo.out")).read() if code == 0 else ""
+    rows.append(("build //pkg/... (edited input)",
+                 "exit=%d fallback=%s unicode=%s out=%r" % (code, fallback, unicode, out),
+                 code == 0 and not fallback and not unicode and "bar" in out))
+    return rows
+
+
+def test_large_number_of_files(side):
+    rows = []
+    side.setup()
+    pkg = "test_large_number_of_files"
+    write(os.path.join(side.ws, pkg, "BUILD"), """genrule(
+    name = "gen",
+    outs = ["out"],
+    srcs = [":srcs"],
+    cmd = "touch $@",
+)
+
+filegroup(
+    name = "srcs",
+    srcs = glob(["*.txt"]),
+)
+""")
+    write(os.path.join(side.ws, pkg, "1.txt"), "")
+    code, _ = side.run(["build", "--watchfs", "//%s:gen" % pkg])
+    rows.append(("first build", "exit=%d" % code, code == 0))
+    for i in range(1, 601):
+        write(os.path.join(side.ws, pkg, "%d.txt" % i), "")
+    code, err = side.run(["build", "--watchfs", "//%s:gen" % pkg])
+    overflow = "WARNING: Overflow when watching local filesystem" in err
+    rows.append(("build after 600 files", "exit=%d overflow=%s" % (code, overflow),
+                 code == 0 and not overflow))
+    return rows
+
+
+FUNCTIONS = [
+    ("test_nowatchfs", test_nowatchfs),
+    ("test_command", test_command),
+    ("test_special_chars", test_special_chars),
+    ("test_large_number_of_files", test_large_number_of_files),
+]
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("help", "-h", "--help"):
+        print(__doc__)
+        return 0
+    if sys.argv[1] != "run":
+        print(__doc__)
+        return 2
+    p = argparse.ArgumentParser()
+    p.add_argument("--blaze", default=DEFAULT_BLAZE)
+    p.add_argument("--oracle", default=ORACLE)
+    p.add_argument("--only")
+    p.add_argument("--keep", action="store_true")
+    a = p.parse_args(sys.argv[2:])
+    sides = [Side("oracle", a.oracle, False), Side("blaze", a.blaze, True)]
+    failed = False
+    differences = []
+    for name, fn in FUNCTIONS:
+        if a.only and a.only != name:
+            continue
+        results = {}
+        for side in sides:
+            try:
+                results[side.name] = fn(side)
+            finally:
+                side.shutdown()
+            print("== %s [%s]" % (name, side.name))
+            for label, obs, ok in results[side.name]:
+                print("  %-4s %-36s %s" % ("ok" if ok else "FAIL", label, obs))
+            if side.name == "blaze" and not all(ok for _, _, ok in results[side.name]):
+                failed = True
+        o, b = results["oracle"], results["blaze"]
+        for i in range(max(len(o), len(b))):
+            ro = o[i] if i < len(o) else ("-", "-", True)
+            rb = b[i] if i < len(b) else ("-", "-", True)
+            if ro[0] != rb[0] or ro[2] != rb[2]:
+                differences.append("%s: oracle %s: %s | blaze %s: %s"
+                                   % (name, ro[0], ro[1], rb[0], rb[1]))
+    print("== differences: %d" % len(differences))
+    for d in differences:
+        print("  " + d)
+    if not a.keep:
+        for side in sides:
+            side.reset()
+    return 1 if failed or differences else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

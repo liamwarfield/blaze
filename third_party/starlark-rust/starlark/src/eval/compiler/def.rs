@@ -647,6 +647,30 @@ impl<V> Display for DefGen<V> {
 pub(crate) type Def<'v> = DefGen<Value<'v>>;
 pub(crate) type FrozenDef = DefGen<FrozenValue>;
 
+/// BLAZE PATCH 0065: the role of a parameter (Java `StarlarkFunction`'s order). // BLAZE PATCH 0065
+#[derive(Debug, Clone, Copy, PartialEq, Eq)] // BLAZE PATCH 0065
+pub enum DefParameterRole { // BLAZE PATCH 0065
+    /// A parameter that can be given positionally. // BLAZE PATCH 0065
+    Ordinary, // BLAZE PATCH 0065
+    /// A parameter after `*` or `*args`. // BLAZE PATCH 0065
+    KeywordOnly, // BLAZE PATCH 0065
+    /// `*args`. // BLAZE PATCH 0065
+    Varargs, // BLAZE PATCH 0065
+    /// `**kwargs`. // BLAZE PATCH 0065
+    Kwargs, // BLAZE PATCH 0065
+} // BLAZE PATCH 0065
+
+/// BLAZE PATCH 0065: a parameter of a `def` (see [`DefModule::def_parameters`]). // BLAZE PATCH 0065
+#[derive(Debug, Clone)] // BLAZE PATCH 0065
+pub struct DefParameter<'v> { // BLAZE PATCH 0065
+    /// The parameter's name. // BLAZE PATCH 0065
+    pub name: String, // BLAZE PATCH 0065
+    /// The parameter's role. // BLAZE PATCH 0065
+    pub role: DefParameterRole, // BLAZE PATCH 0065
+    /// The default value (`None` for a mandatory parameter, `*args` and `**kwargs`). // BLAZE PATCH 0065
+    pub default_value: Option<Value<'v>>, // BLAZE PATCH 0065
+} // BLAZE PATCH 0065
+
 /// BLAZE PATCH 0017: the module a `def` or `lambda` was defined in (Java
 /// net/starlark/java/eval/StarlarkFunction.java:195 `StarlarkFunction.getModule`), or the module
 /// whose top level is executing.
@@ -701,6 +725,44 @@ impl<'v> DefModule<'v> {
         }
     }
 
+    /// BLAZE PATCH 0065: the parameters of a `def` or `lambda` as Java's `StarlarkFunction` // BLAZE PATCH 0065
+    /// lists them (`getParameterNames`, `getNumOrdinaryParameters`, // BLAZE PATCH 0065
+    /// `getNumKeywordOnlyParameters`, `hasVarargs`, `hasKwargs`, `getDefaultValue`); `None` for // BLAZE PATCH 0065
+    /// other values. // BLAZE PATCH 0065
+    pub fn def_parameters(function: Value<'v>) -> Option<Vec<DefParameter<'v>>> { // BLAZE PATCH 0065
+        let params: Vec<(String, DefParameterRole, Option<Value<'v>>)> = // BLAZE PATCH 0065
+            if let Some(f) = function.downcast_ref::<Def<'v>>() { // BLAZE PATCH 0065
+                f.parameters.blaze_java_parameters() // BLAZE PATCH 0065
+            } else if let Some(f) = function.downcast_ref::<FrozenDef>() { // BLAZE PATCH 0065
+                f.parameters // BLAZE PATCH 0065
+                    .blaze_java_parameters() // BLAZE PATCH 0065
+                    .into_iter() // BLAZE PATCH 0065
+                    .map(|(n, r, d)| (n, r, d.map(|v| v.to_value()))) // BLAZE PATCH 0065
+                    .collect() // BLAZE PATCH 0065
+            } else { // BLAZE PATCH 0065
+                return None; // BLAZE PATCH 0065
+            }; // BLAZE PATCH 0065
+        Some( // BLAZE PATCH 0065
+            params // BLAZE PATCH 0065
+                .into_iter() // BLAZE PATCH 0065
+                .map(|(name, role, default_value)| DefParameter { name, role, default_value }) // BLAZE PATCH 0065
+                .collect(), // BLAZE PATCH 0065
+        ) // BLAZE PATCH 0065
+    } // BLAZE PATCH 0065
+
+    /// BLAZE PATCH 0065: the docstring of a `def` (Java `StarlarkFunction.getDocumentation`, // BLAZE PATCH 0065
+    /// the raw string); `Some(None)` without one, `None` for values that are not a `def`. // BLAZE PATCH 0065
+    pub fn def_docstring(function: Value<'v>) -> Option<Option<String>> { // BLAZE PATCH 0065
+        let def_info = if let Some(f) = function.downcast_ref::<Def<'v>>() { // BLAZE PATCH 0065
+            f.def_info // BLAZE PATCH 0065
+        } else if let Some(f) = function.downcast_ref::<FrozenDef>() { // BLAZE PATCH 0065
+            f.def_info // BLAZE PATCH 0065
+        } else { // BLAZE PATCH 0065
+            return None; // BLAZE PATCH 0065
+        }; // BLAZE PATCH 0065
+        Some(def_info.docstring.clone()) // BLAZE PATCH 0065
+    } // BLAZE PATCH 0065
+
     /// BLAZE PATCH 0024: where `function` (a `def` or `lambda`) is declared, Java
     /// `StarlarkFunction.getLocation()` (net/starlark/java/eval/StarlarkFunction.java:172): the
     /// span of the name of a `def`, or of the whole `lambda` expression. Its start is the
@@ -739,6 +801,21 @@ impl<'v> DefModule<'v> {
     pub fn frozen_extra_value(&self) -> Option<FrozenValue> {
         self.frozen.and_then(|module| module.extra_value)
     }
+
+    /// BLAZE PATCH 0065: the globals of the frozen defining module in definition order (Java // BLAZE PATCH 0065
+    /// `Module.getGlobals()` as `StarlarkFunctionInfoExtractor` searches it), `None` while the // BLAZE PATCH 0065
+    /// module is not frozen. starlark-rust keeps `load` bindings among the names (see // BLAZE PATCH 0065
+    /// `get_global`). // BLAZE PATCH 0065
+    pub fn frozen_globals(&self) -> Option<Vec<(String, FrozenValue)>> { // BLAZE PATCH 0065
+        let module = self.frozen?; // BLAZE PATCH 0065
+        Some( // BLAZE PATCH 0065
+            module // BLAZE PATCH 0065
+                .names // BLAZE PATCH 0065
+                .all_symbols() // BLAZE PATCH 0065
+                .filter_map(|(name, slot)| Some((name.as_str().to_owned(), module.slots.get_slot(slot)?))) // BLAZE PATCH 0065
+                .collect(), // BLAZE PATCH 0065
+        ) // BLAZE PATCH 0065
+    } // BLAZE PATCH 0065
 
     /// Whether `self` and `other` are the same module (same compiled file).
     pub fn same_module(&self, other: &DefModule) -> bool {

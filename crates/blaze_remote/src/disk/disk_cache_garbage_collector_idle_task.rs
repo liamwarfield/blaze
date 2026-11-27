@@ -4,13 +4,12 @@
 //! `blaze_runtime` (`idle_tasks.rs`) implements it for this type and registers it with
 //! `env.addIdleTask`.
 
-use std::io;
 use std::time::Duration;
 
 use blaze_optdefs::misc::remote_options::RemoteOptions;
 use blaze_vfs::Path;
 
-use super::disk_cache_garbage_collector::{CollectionPolicy, DiskCacheGarbageCollector};
+use super::disk_cache_garbage_collector::{CollectionPolicy, DiskCacheGarbageCollector, GcError};
 
 /// An idle task to collect garbage in a disk cache.
 // Java: com/google/devtools/build/lib/remote/disk/DiskCacheGarbageCollectorIdleTask.java:33 DiskCacheGarbageCollectorIdleTask
@@ -70,12 +69,15 @@ impl DiskCacheGarbageCollectorIdleTask {
     }
 
     /// `run()`: the collection; an `Err` is the `IOException` Java wraps in an
-    /// `IdleTaskException`.
-    ///
-    /// PORT: skipped, logging (`logger.atInfo().log("%s", stats.displayString())`).
+    /// `IdleTaskException`, or the `InterruptedException` it lets through.
     // Java: com/google/devtools/build/lib/remote/disk/DiskCacheGarbageCollectorIdleTask.java:98 DiskCacheGarbageCollectorIdleTask.run
-    pub fn run(&self) -> io::Result<()> {
-        let _stats = self.gc.run()?;
+    pub fn run(&self) -> Result<(), GcError> {
+        let stats = self.gc.run()?;
+        blaze_util::server_logger::info(
+            "com.google.devtools.build.lib.remote.disk.DiskCacheGarbageCollectorIdleTask",
+            "run",
+            &stats.display_string(),
+        );
         Ok(())
     }
 }

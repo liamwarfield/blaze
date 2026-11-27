@@ -291,69 +291,85 @@ impl ExecutionStatisticsResourceUsage {
     }
 
     /// Returns the user time for command execution, if available.
+    // Java: com/google/devtools/build/lib/shell/ExecutionStatistics.java:64 ExecutionStatistics.ResourceUsage.getUserExecutionTime
     pub fn get_user_execution_time(&self) -> Duration {
         let p = &self.resource_usage_proto;
         duration_of_seconds(p.utime_sec, p.utime_usec.wrapping_mul(1000))
     }
 
     /// Returns the system time for command execution, if available.
+    // Java: com/google/devtools/build/lib/shell/ExecutionStatistics.java:70 ExecutionStatistics.ResourceUsage.getSystemExecutionTime
     pub fn get_system_execution_time(&self) -> Duration {
         let p = &self.resource_usage_proto;
         duration_of_seconds(p.stime_sec, p.stime_usec.wrapping_mul(1000))
     }
 
+    // Java: com/google/devtools/build/lib/shell/ExecutionStatistics.java:76 ExecutionStatistics.ResourceUsage.getMaximumResidentSetSize
     pub fn get_maximum_resident_set_size(&self) -> i64 {
         self.resource_usage_proto.maxrss
     }
 
+    // Java: com/google/devtools/build/lib/shell/ExecutionStatistics.java:83 ExecutionStatistics.ResourceUsage.getIntegralSharedMemorySize
     pub fn get_integral_shared_memory_size(&self) -> i64 {
         self.resource_usage_proto.ixrss
     }
 
+    // Java: com/google/devtools/build/lib/shell/ExecutionStatistics.java:90 ExecutionStatistics.ResourceUsage.getIntegralUnsharedDataSize
     pub fn get_integral_unshared_data_size(&self) -> i64 {
         self.resource_usage_proto.idrss
     }
 
+    // Java: com/google/devtools/build/lib/shell/ExecutionStatistics.java:97 ExecutionStatistics.ResourceUsage.getIntegralUnsharedStackSize
     pub fn get_integral_unshared_stack_size(&self) -> i64 {
         self.resource_usage_proto.isrss
     }
 
+    // Java: com/google/devtools/build/lib/shell/ExecutionStatistics.java:105 ExecutionStatistics.ResourceUsage.getPageReclaims
     pub fn get_page_reclaims(&self) -> i64 {
         self.resource_usage_proto.minflt
     }
 
+    // Java: com/google/devtools/build/lib/shell/ExecutionStatistics.java:110 ExecutionStatistics.ResourceUsage.getPageFaults
     pub fn get_page_faults(&self) -> i64 {
         self.resource_usage_proto.majflt
     }
 
+    // Java: com/google/devtools/build/lib/shell/ExecutionStatistics.java:115 ExecutionStatistics.ResourceUsage.getSwaps
     pub fn get_swaps(&self) -> i64 {
         self.resource_usage_proto.nswap
     }
 
+    // Java: com/google/devtools/build/lib/shell/ExecutionStatistics.java:120 ExecutionStatistics.ResourceUsage.getBlockInputOperations
     pub fn get_block_input_operations(&self) -> i64 {
         self.resource_usage_proto.inblock
     }
 
+    // Java: com/google/devtools/build/lib/shell/ExecutionStatistics.java:125 ExecutionStatistics.ResourceUsage.getBlockOutputOperations
     pub fn get_block_output_operations(&self) -> i64 {
         self.resource_usage_proto.oublock
     }
 
+    // Java: com/google/devtools/build/lib/shell/ExecutionStatistics.java:130 ExecutionStatistics.ResourceUsage.getIpcMessagesSent
     pub fn get_ipc_messages_sent(&self) -> i64 {
         self.resource_usage_proto.msgsnd
     }
 
+    // Java: com/google/devtools/build/lib/shell/ExecutionStatistics.java:135 ExecutionStatistics.ResourceUsage.getIpcMessagesReceived
     pub fn get_ipc_messages_received(&self) -> i64 {
         self.resource_usage_proto.msgrcv
     }
 
+    // Java: com/google/devtools/build/lib/shell/ExecutionStatistics.java:140 ExecutionStatistics.ResourceUsage.getSignalsReceived
     pub fn get_signals_received(&self) -> i64 {
         self.resource_usage_proto.nsignals
     }
 
+    // Java: com/google/devtools/build/lib/shell/ExecutionStatistics.java:145 ExecutionStatistics.ResourceUsage.getVoluntaryContextSwitches
     pub fn get_voluntary_context_switches(&self) -> i64 {
         self.resource_usage_proto.nvcsw
     }
 
+    // Java: com/google/devtools/build/lib/shell/ExecutionStatistics.java:152 ExecutionStatistics.ResourceUsage.getInvoluntaryContextSwitches
     pub fn get_involuntary_context_switches(&self) -> i64 {
         self.resource_usage_proto.nivcsw
     }

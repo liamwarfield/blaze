@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""Memory of a persistent server over many edit-and-build rounds (the kept graph's arena).
+
+usage: scripts/incremental/arena-growth help
+       scripts/incremental/arena-growth run --side SIDE [--binary B] [--rounds N] [--keep]
+
+SIDE: `blaze` (BLAZE_SERVER_MODE=daemon, the graph kept: the default), `blaze-none` (the same
+with BLAZE_INCREMENTAL=none: a new graph and a released arena per command) or `oracle`
+(~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64).
+
+Copies the brotli checkout (~/.cache/blaze/corpus/brotli, without bazel-* and .git) to
+~/.cache/blaze/work/i3/arena/<side>/ws, adds `i3_defs.bzl` (one constant) and a load of it to
+the root BUILD.bazel, and runs `build //...` once, then N rounds (default 200) of: rewrite the
+constant, `build //...`. The root package is loaded again each round and its targets analyzed
+again; the action keys do not change. After every build it records the server's resident
+memory (VmRSS and VmHWM of /proc/<pid>/status) and, for Blaze, the counts the server log's
+arena line prints (frozen .bzl modules kept, depset heaps, generator-name heaps). Prints one
+line per round and a summary; writes them to <side>/rounds.tsv as well.
+
+Startup options --max_idle_secs=120 --nohome_rc --nosystem_rc; builds --jobs=4
+--repository_cache=~/.cache/blaze/repo-cache. Heavy: run under
+`systemd-run --user --collect --wait -P -p MemoryMax=12G -p MemorySwapMax=0`. The server is
+shut down at the end; the side directory is deleted unless --keep.
+"""
+
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+HOME = os.path.expanduser("~")
+ROOT = os.path.join(HOME, ".cache/blaze/work/i3/arena")
+ORACLE = os.path.join(HOME, ".cache/blaze/oracle/bazel-9.3.2-linux-x86_64")
+BROTLI = os.path.join(HOME, ".cache/blaze/corpus/brotli")
+REPO_CACHE = os.path.join(HOME, ".cache/blaze/repo-cache")
+
+
+def status(pid):
+    out = {}
+    try:
+        for line in open("/proc/%d/status" % pid):
+            if line.startswith(("VmRSS:", "VmHWM:")):
+                k, v = line.split(":", 1)
+                out[k] = int(v.split()[0]) // 1024
+    except OSError:
+        pass
+    return out
+
+
+def server_pid(out_root):
+    for d in os.listdir(out_root) if os.path.isdir(out_root) else []:
+        p = os.path.join(out_root, d, "server", "server.pid.txt")
+        if os.path.exists(p):
+            try:
+                return int(open(p).read().strip())
+            except ValueError:
+                pass
+    return None
+
+
+def arena_line(out_root):
+    for d in os.listdir(out_root) if os.path.isdir(out_root) else []:
+        log = os.path.join(out_root, d, "java.log")
+        if os.path.exists(log):
+            last = ""
+            for line in open(log, errors="replace"):
+                if "releaseBuildArena" in line:
+                    last = line
+            m = re.search(r"held: (.*)$", last)
+            if m:
+                return m.group(1).strip()
+            if last:
+                return "released" if "not released" not in last else last.strip()[-60:]
+    return ""
+
+
+def remove(path):
+    if os.path.isdir(path):
+        subprocess.run(["chmod", "-R", "u+w", path], capture_output=True)
+        shutil.rmtree(path)
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("help", "-h", "--help"):
+        print(__doc__)
+        return 0
+    if sys.argv[1] != "run":
+        print(__doc__)
+        return 2
+    args = sys.argv[2:]
+
+    def opt(name, default):
+        return args[args.index(name) + 1] if name in args else default
+
+    side = opt("--side", "blaze")
+    binary = opt("--binary", ORACLE if side == "oracle" else
+                 os.path.join(HOME, ".cache/blaze/work/i3/bin/blaze"))
+    rounds = int(opt("--rounds", "200"))
+    base = os.path.join(ROOT, side)
+    remove(base)
+    ws = os.path.join(base, "ws")
+    out_root = os.path.join(base, "ur")
+    os.makedirs(base)
+    subprocess.run(["rsync", "-a", "--exclude=/bazel-*", "--exclude=/.git", BROTLI + "/",
+                    ws + "/"], check=True)
+    build_file = os.path.join(ws, "BUILD.bazel")
+    text = open(build_file).read()
+    open(build_file, "w").write('load("//:i3_defs.bzl", "I3_ROUND")\n' + text)
+    defs = os.path.join(ws, "i3_defs.bzl")
+    env = {"HOME": HOME, "PATH": "/usr/bin:/bin"}
+    if side.startswith("blaze"):
+        env["BLAZE_SERVER_MODE"] = "daemon"
+    if side == "blaze-none":
+        env["BLAZE_INCREMENTAL"] = "none"
+    startup = [binary, "--output_user_root=" + out_root, "--max_idle_secs=120", "--nohome_rc",
+               "--nosystem_rc"]
+    rows = []
+    try:
+        for r in range(rounds + 1):
+            with open(defs, "w") as f:
+                f.write("I3_ROUND = %d\n" % r)
+            t0 = time.monotonic()
+            p = subprocess.run(startup + ["build", "--jobs=4", "--color=no", "--curses=no",
+                                          "--repository_cache=" + REPO_CACHE, "//..."],
+                               cwd=ws, env=env, capture_output=True, timeout=1800)
+            dt = time.monotonic() - t0
+            err = p.stderr.decode("utf-8", "replace")
+            analyzed = next((l for l in err.splitlines() if l.startswith("INFO: Analyzed")), "")
+            m = re.search(r"\((\d+) packages loaded, (\d+) targets configured\)", analyzed)
+            pid = server_pid(out_root)
+            st = status(pid) if pid else {}
+            row = (r, p.returncode, round(dt, 1), st.get("VmRSS", -1), st.get("VmHWM", -1),
+                   m.group(1) if m else "?", m.group(2) if m else "?", arena_line(out_root))
+            rows.append(row)
+            print("round %3d exit %d %6.1fs rss %6d MB hwm %6d MB loaded %s configured %s %s"
+                  % row, flush=True)
+            if p.returncode != 0:
+                print(err[-2000:])
+                break
+    finally:
+        subprocess.run(startup + ["shutdown"], cwd=ws, env=env, capture_output=True, timeout=120)
+        pid = server_pid(out_root)
+        if pid:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+    with open(os.path.join(base, "rounds.tsv"), "w") as f:
+        f.write("round\texit\tseconds\trss_mb\thwm_mb\tpackages_loaded\ttargets_configured"
+                "\tarena\n")
+        for row in rows:
+            f.write("\t".join(str(x) for x in row) + "\n")
+    if rows:
+        first, last = rows[min(1, len(rows) - 1)], rows[-1]
+        n = max(1, last[0] - first[0])
+        print("summary %s: rounds %d, rss after round %d %d MB, after round %d %d MB, "
+              "growth %.1f MB per round; mean %.1fs per build"
+              % (side, len(rows) - 1, first[0], first[3], last[0], last[3],
+                 (last[3] - first[3]) / n, sum(x[2] for x in rows[1:]) / max(1, len(rows) - 1)))
+    if "--keep" not in args:
+        tsv = open(os.path.join(base, "rounds.tsv")).read()
+        remove(base)
+        os.makedirs(base)
+        open(os.path.join(base, "rounds.tsv"), "w").write(tsv)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

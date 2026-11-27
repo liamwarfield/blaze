@@ -413,6 +413,7 @@ fn main() -> ExitCode {
     let injector = Arc::new(RecordingInjector::default());
     let hooks = RemoteHooks {
         remote_output_injector: Some(injector.clone()),
+        ..RemoteHooks::new()
     };
     let build_request_id = opt_arg(&args, "--build-request-id")
         .unwrap_or_else(|| "00000000-0000-0000-0000-000000000001".to_string());

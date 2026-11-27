@@ -456,6 +456,34 @@ fn rustls_client_config(
     Ok(config)
 }
 
+/// The TLS configuration of the HTTP remote cache (`HttpCacheClient.createSSLContext`):
+/// `--tls_certificate` as the trust roots (else the default ones), the client certificate when
+/// both `--tls_client_certificate` and `--tls_client_key` are given, no ALPN (HTTP/1.1).
+///
+/// PORT: Java's `SslContextBuilder.forClient()` (Netty 4.1) does not identify the endpoint: the
+/// server's certificate is not checked against the host name. Blaze checks it with the same
+/// verifier as the gRPC channels (`JdkServerCertVerifier`, ruling D16), so a certificate for
+/// another name is refused where Bazel accepts it (stricter, fail closed).
+// Java: com/google/devtools/build/lib/remote/http/HttpCacheClient.java:828 HttpCacheClient.createSSLContext
+pub fn http_cache_tls_config(
+    host: &str,
+    options: &AuthAndTLSOptions,
+) -> Result<tokio_rustls::rustls::ClientConfig, Box<dyn std::error::Error + Send + Sync>> {
+    let (client_cert, client_key) = match (&options.tls_client_certificate, &options.tls_client_key)
+    {
+        (Some(cert), Some(key)) => (Some(cert.as_str()), Some(key.as_str())),
+        _ => (None, None),
+    };
+    let mut config = rustls_client_config(
+        host,
+        options.tls_certificate.as_deref(),
+        client_cert,
+        client_key,
+    )?;
+    config.alpn_protocols.clear();
+    Ok(config)
+}
+
 /// `Math.toIntExact(seconds)`, whose `ArithmeticException` reaches the
 /// `catch (RuntimeException e)` of `newChannel`.
 // Java: com/google/devtools/build/lib/authandtls/GoogleAuthUtils.java:116 GoogleAuthUtils.newChannel

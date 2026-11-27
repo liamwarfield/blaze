@@ -16,6 +16,8 @@ pub enum BuildPhase {
     EXECUTES,
 }
 
+// runtime/BuildPhase.java (the outcome of a build for its summary) has no user at the pin.
+// PORT: skipped, unused at the pin: BuildPhase.getMessage, BuildPhase.getSuccess
 impl BuildPhase {
     // Java: com/google/devtools/build/lib/runtime/Command.java:100 Command.BuildPhase.executes
     pub fn executes(self) -> bool {
@@ -42,24 +44,39 @@ impl BuildPhase {
 #[derive(Debug)]
 pub struct CommandAnnotation {
     /// `name()` and `inheritsOptionsFrom()` as `BlazeOptionHandler` sees them.
+    // Java: com/google/devtools/build/lib/runtime/Command.java:32 Command.name
+    // Java: com/google/devtools/build/lib/runtime/Command.java:44 Command.inheritsOptionsFrom
     pub rc: RcCommand,
     /// `options()`: the options classes of the command itself (a function because option class
     /// infos are created lazily).
+    // Java: com/google/devtools/build/lib/runtime/Command.java:38 Command.options
     pub options: fn() -> Vec<OptionsClassRef>,
     /// `inheritsOptionsFrom()`.
     pub inherits_options_from: &'static [&'static CommandAnnotation],
+    // Java: com/google/devtools/build/lib/runtime/Command.java:49 Command.shortDescription
     pub short_description: &'static str,
+    // Java: com/google/devtools/build/lib/runtime/Command.java:54 Command.usesConfigurationOptions
     pub uses_configuration_options: bool,
+    // Java: com/google/devtools/build/lib/runtime/Command.java:63 Command.buildPhase
     pub build_phase: BuildPhase,
+    // Java: com/google/devtools/build/lib/runtime/Command.java:121 Command.hidden
     pub hidden: bool,
+    // Java: com/google/devtools/build/lib/runtime/Command.java:128 Command.allowResidue
     pub allow_residue: bool,
+    // Java: com/google/devtools/build/lib/runtime/Command.java:134 Command.hasSensitiveResidue
     pub has_sensitive_residue: bool,
+    // Java: com/google/devtools/build/lib/runtime/Command.java:142 Command.binaryStdOut
     pub binary_std_out: bool,
+    // Java: com/google/devtools/build/lib/runtime/Command.java:150 Command.binaryStdErr
     pub binary_std_err: bool,
+    // Java: com/google/devtools/build/lib/runtime/Command.java:157 Command.writeCommandLog
     pub write_command_log: bool,
     /// `help()`: either the help text or `resource:<file>`.
+    // Java: com/google/devtools/build/lib/runtime/Command.java:164 Command.help
     pub help: &'static str,
+    // Java: com/google/devtools/build/lib/runtime/Command.java:171 Command.mustRunInWorkspace
     pub must_run_in_workspace: bool,
+    // Java: com/google/devtools/build/lib/runtime/Command.java:180 Command.completion
     pub completion: &'static str,
 }
 

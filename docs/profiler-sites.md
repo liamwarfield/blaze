@@ -14,6 +14,22 @@ with a negative start (fix: a large positive origin, as Java's `nanoTime`). "Loa
 dependencies and build artifacts" belongs in `analysis_phase_runner.rs`. The command thread is
 named "main" where Bazel's is "Main Thread" on a gRPC thread.
 
+Done on 2026-11-26 (task `extra-actions-3`), in the order of their frequency in the oracle's
+profiles (a cold command: about 550 `bazel module processing` events; a build: the action
+events): blaze_bzlmod and blaze_bzlmod_model (every BZLMOD scope below except the extension
+evaluation ones, which live in blaze_repo_rules), blaze_sky_exec (all three files), blaze_exec
+(resource manager, local spawn runner, the two sandbox files, symlink tree helper, file write
+action, and `AbstractSpawnStrategy.getInputMapping`), blaze_sky_loading, blaze_skyframe,
+blaze_rules and the two analysis phase markers. On a clean build of three targets the action
+categories now count as Bazel's (action processing, complete action execution, action count,
+discover inputs, Skyframe evaluator, critical path). Still to do: blaze_repo_rules
+(REPOSITORY_FETCH, STARLARK_REPOSITORY_FN, the extension evaluation BZLMOD scopes), the worker
+notes, blaze_remote, `outputService.finalizeAction` (Blaze does not know `finalizeActions`
+without a finalizing output service), the EXECUTE / PREPARE markers of the non-merged
+`ExecutionTool`, `trashPath.deleteTree`, and the restart-driven counts (Java's `discovery` scope
+repeats with every Skyframe restart of the resolution function, 13 times on that build; Blaze
+computes once).
+
 | Crate | File | Java sites |
 | --- | --- | --- |
 | blaze_sky_exec | `skyframe_action_executor.rs` | SkyframeActionExecutor.java:1103 (ACTION), 1129, 1257, 1284, 1341, 1423, 1634, 781 (ACTION_CHECK) |

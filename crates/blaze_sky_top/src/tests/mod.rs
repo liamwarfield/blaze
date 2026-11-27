@@ -2,6 +2,7 @@
 //! (`crate::testing`, Java `BuildViewTestCase` / `AnalysisTestCase`).
 
 mod alias_test;
+mod kept_graph_references_test;
 mod aspect_auto_exec_groups_test;
 mod aspect_aware_attribute_mapper_test;
 mod aspect_test;

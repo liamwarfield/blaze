@@ -30,6 +30,8 @@ tonic-build.workspace = true
 
 [dev-dependencies]
 blaze_remote = { path = "../blaze_remote", features = ["testing"] }
+tempfile.workspace = true
+sha2.workspace = true
 
 # Records the requests of a Build Event Service client (scripts-free tool; see `help`).
 [[bin]]

@@ -31,11 +31,13 @@ struct JavaSubprocess {
 }
 
 impl Subprocess for JavaSubprocess {
+    // Java: com/google/devtools/build/lib/shell/JavaSubprocessFactory.java:50 JavaSubprocessFactory.JavaSubprocess.destroy
     fn destroy(&self) -> bool {
         self.process.destroy();
         true
     }
 
+    // Java: com/google/devtools/build/lib/shell/JavaSubprocessFactory.java:56 JavaSubprocessFactory.JavaSubprocess.exitValue
     fn exit_value(&self) -> i32 {
         self.process.exit_value()
     }
@@ -57,10 +59,12 @@ impl Subprocess for JavaSubprocess {
         !self.process.is_alive()
     }
 
+    // Java: com/google/devtools/build/lib/shell/JavaSubprocessFactory.java:74 JavaSubprocessFactory.JavaSubprocess.isAlive
     fn is_alive(&self) -> bool {
         self.process.is_alive()
     }
 
+    // Java: com/google/devtools/build/lib/shell/JavaSubprocessFactory.java:79 JavaSubprocessFactory.JavaSubprocess.timedout
     fn timedout(&self) -> bool {
         self.deadline_exceeded.load(Ordering::SeqCst)
     }
@@ -87,22 +91,27 @@ impl Subprocess for JavaSubprocess {
         Ok(())
     }
 
+    // Java: com/google/devtools/build/lib/shell/JavaSubprocessFactory.java:97 JavaSubprocessFactory.JavaSubprocess.getOutputStream
     fn get_output_stream(&self) -> Option<Box<dyn Write + Send>> {
         self.process.get_output_stream()
     }
 
+    // Java: com/google/devtools/build/lib/shell/JavaSubprocessFactory.java:107 JavaSubprocessFactory.JavaSubprocess.getInputStream
     fn get_input_stream(&self) -> Option<Box<dyn Read + Send>> {
         self.process.get_input_stream()
     }
 
+    // Java: com/google/devtools/build/lib/shell/JavaSubprocessFactory.java:102 JavaSubprocessFactory.JavaSubprocess.getErrorStream
     fn get_error_stream(&self) -> Option<Box<dyn Read + Send>> {
         self.process.get_error_stream()
     }
 
+    // Java: com/google/devtools/build/lib/shell/JavaSubprocessFactory.java:117 JavaSubprocessFactory.JavaSubprocess.getProcessId
     fn get_process_id(&self) -> i64 {
         self.process.pid()
     }
 
+    // Java: com/google/devtools/build/lib/shell/JavaSubprocessFactory.java:112 JavaSubprocessFactory.JavaSubprocess.close
     fn close(&self) {
         self.process.destroy_forcibly();
     }

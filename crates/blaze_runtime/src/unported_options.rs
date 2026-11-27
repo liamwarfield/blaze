@@ -159,7 +159,9 @@ mod tests {
     use blaze_options::{OptionsClass, OptionsParser};
 
     use super::*;
-    use crate::command_registry::{BUILD_COMMAND, QUERY_COMMAND, RUN_COMMAND, TEST_COMMAND};
+    use crate::command_registry::{
+        BUILD_COMMAND, MOBILE_INSTALL_COMMAND, QUERY_COMMAND, RUN_COMMAND, TEST_COMMAND,
+    };
 
     fn parser(args: &[&str]) -> OptionsParser {
         let mut parser = OptionsParser::builder()
@@ -207,13 +209,16 @@ mod tests {
     #[test]
     #[should_panic(expected = "RemoteModule.beforeCommand")]
     fn disk_cache_fails() {
-        check_unported_options(&RUN_COMMAND, &parser(&["--disk_cache=/tmp/cache"]));
+        check_unported_options(
+            &MOBILE_INSTALL_COMMAND,
+            &parser(&["--disk_cache=/tmp/cache"]),
+        );
     }
 
-    // build and test run the remote module.
+    // build, test and run run the remote module (crate::commands::build::run_build).
     #[test]
     fn remote_flags_are_accepted_for_build_and_test() {
-        for command in [&BUILD_COMMAND, &TEST_COMMAND] {
+        for command in [&BUILD_COMMAND, &TEST_COMMAND, &RUN_COMMAND] {
             check_unported_options(command, &parser(&["--disk_cache=/tmp/cache"]));
             check_unported_options(command, &parser(&["--remote_cache=grpc://localhost:1"]));
             check_unported_options(command, &parser(&["--remote_executor=grpc://localhost:1"]));
@@ -230,7 +235,7 @@ mod tests {
     #[should_panic(expected = "RemoteModule.beforeCommand")]
     fn remote_cache_fails() {
         check_unported_options(
-            &RUN_COMMAND,
+            &MOBILE_INSTALL_COMMAND,
             &parser(&["--remote_cache=grpc://localhost:1"]),
         );
     }

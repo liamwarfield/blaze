@@ -96,10 +96,20 @@ pub(crate) fn before_command(
     env: &CommandEnvironment,
     options: &OptionsParsingResult,
 ) -> Result<Option<RemoteSupport>, AbruptExitException> {
-    let Some(mut module) = set_up_module(env, options)? else {
+    // A command other than build/test that builds (coverage, run, fetch, vendor, print_action):
+    // the dispatcher already ran RemoteModule.beforeCommand for it; its module (if any) is this
+    // command's, and dispatcher_after_command then has nothing left to do for it.
+    let module = if DISPATCHER_RAN.load(std::sync::atomic::Ordering::SeqCst) {
+        DISPATCHER_MODULE.lock().take()
+    } else {
+        set_up_module(env, options)?.map(|mut module| {
+            add_disk_cache_gc_idle_task(env, &mut module);
+            module
+        })
+    };
+    let Some(mut module) = module else {
         return Ok(None);
     };
-    add_disk_cache_gc_idle_task(env, &mut module);
     let build_request_options = options.get_options::<BuildRequestOptions>();
     let lease_extension_requested = options
         .get_options::<RemoteOptions>()
@@ -145,7 +155,9 @@ pub(crate) fn before_command(
 // Java: com/google/devtools/build/lib/remote/LeaseService.java:88 LeaseService.handleMissingInputs
 fn delete_remote_action_execution_values(memoizing_evaluator: &blaze_skyframe::Evaluator) {
     memoizing_evaluator.delete(|key, value| {
-        if key.function_name() == <blaze_sky_exec::keys::ActionExecutionKey as blaze_skyframe::Key>::FUNCTION {
+        if key.function_name()
+            == <blaze_sky_exec::keys::ActionExecutionKey as blaze_skyframe::Key>::FUNCTION
+        {
             // Java: memoizingEvaluator.getExistingValue(key) instanceof ActionExecutionValue.
             return value
                 .and_then(|v| {
@@ -263,7 +275,15 @@ fn set_up_module(
         client_env: env.get_client_env().clone(),
         clock: Arc::new(JavaClock),
         scrubber,
-        hooks: RemoteHooks::new(),
+        hooks: RemoteHooks {
+            skyframe_delete_by_function_name: Some({
+                let incremental_state = env.get_blaze_workspace().get_incremental_state().clone();
+                Arc::new(move |predicate: Arc<dyn Fn(&str) -> bool + Send + Sync>| {
+                    incremental_state.delete_by_function_name(predicate)
+                })
+            }),
+            ..RemoteHooks::new()
+        },
     })?;
     // RemoteModule.setup ends with `actionInputFetcher = createActionInputFetcher(combinedCache)`.
     let output_permissions = if writable_outputs {
@@ -413,6 +433,7 @@ fn init_repo_helpers_and_overlay_fs(
 /// `repositoryRemoteHelpersFactoryDelegate.reset()` and `remoteFs.afterCommand()`.
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1098 RemoteModule.afterCommand
 pub(crate) fn reset_repo_helpers_and_overlay_fs(env: &CommandEnvironment) {
+    blaze_remote::remote_module::end_command_for_last_remote_output_checker();
     blaze_repo_rules::repository::remote_helpers::reset_repository_remote_helpers_factory();
     if let Some(remote_fs) = remote_external_overlay_file_system(env) {
         remote_fs.after_command();
@@ -443,18 +464,15 @@ pub(crate) fn command_build_request_id(options: &OptionsParsingResult) -> String
     build_request_id(options)
 }
 
-/// Whether this attempt of the command is a retry (`buildRequestIdOverride != null`).
-pub(crate) fn is_retried_attempt() -> bool {
-    BUILD_REQUEST_ID_OVERRIDE.lock().is_some()
-}
-
 /// [`build_request_id`] given `--build_request_id`.
 ///
 /// PORT: Java computes `env.getBuildRequestId()` once, when the command's environment is
 /// created; here the first module that asks computes it and the later ones get the same value
 /// (cleared at the start of each command by [`reset_build_request_id_override`]).
 fn build_request_id_for(explicit: Option<String>) -> String {
-    if let Some(last) = LAST_BUILD_REQUEST_ID.lock().clone() {
+    if explicit.is_none()
+        && let Some(last) = LAST_BUILD_REQUEST_ID.lock().clone()
+    {
         return last;
     }
     let build_request_id = explicit
@@ -519,6 +537,11 @@ static DISPATCHER_TEMP_DIR: Mutex<Option<blaze_vfs::Path>> = Mutex::new(None);
 /// that requests remote functionality, until `afterCommand`.
 static DISPATCHER_MODULE: Mutex<Option<RemoteModule>> = Mutex::new(None);
 
+/// Whether [`dispatcher_before_command`] ran `RemoteModule.beforeCommand` for the current
+/// command; [`before_command`] then takes its module over instead of running it a second time
+/// (Java runs `beforeCommand` once per command).
+static DISPATCHER_RAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// `RemoteModule.beforeCommand(env)` for the commands other than `build` / `test` (which set the
 /// module up in `crate::commands::build`, see [`before_command`]): `RemoteOptions` is a common
 /// command option (`RemoteModule.getCommonCommandOptions`), so `beforeCommand` runs for every
@@ -537,6 +560,7 @@ pub(crate) fn dispatcher_before_command(
 ) -> Result<(), crate::module::AbruptExitException> {
     *DISPATCHER_TEMP_DIR.lock() = None;
     *DISPATCHER_MODULE.lock() = None;
+    DISPATCHER_RAN.store(false, std::sync::atomic::Ordering::SeqCst);
     if matches!(env.get_command_name(), "build" | "test") {
         return Ok(());
     }
@@ -544,6 +568,7 @@ pub(crate) fn dispatcher_before_command(
         // Quit if no supported command is being used.
         return Ok(());
     };
+    DISPATCHER_RAN.store(true, std::sync::atomic::Ordering::SeqCst);
     let to_module_exception = |e: AbruptExitException| {
         crate::module::AbruptExitException::new(
             crate::commands::build::abrupt_exit_detailed_exit_code(e),
@@ -705,6 +730,14 @@ impl RemoteSupport {
             action_execution_salt: Some(RemoteModule::compute_action_execution_salt(
                 remote_options,
             )),
+            // RemoteOutputService.getRewoundActionSynchronizer().
+            // Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:241 RemoteOutputService.getRewoundActionSynchronizer
+            rewound_action_synchronizer: module.get_rewound_action_synchronizer().map(|s| {
+                s.clone()
+                    as Arc<
+                        dyn blaze_exec::exec::rewound_action_synchronizer::RewoundActionSynchronizer,
+                    >
+            }),
             // RemoteModule.setup created a RemoteOutputService (no --experimental_remote_output_
             // service: that one is unported) and executorInit gave it the RemoteOutputChecker.
             // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1241 RemoteModule.executorInit
@@ -750,6 +783,7 @@ impl RemoteSupport {
                             checker.clone(),
                             fetcher.clone(),
                             self.merged_analysis_and_execution.clone(),
+                            module.get_rewound_action_synchronizer().cloned(),
                         ),
                     )
                         as Arc<

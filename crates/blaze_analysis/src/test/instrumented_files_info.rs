@@ -148,18 +148,64 @@ impl InstrumentedFilesInfo {
 }
 
 impl fmt::Display for InstrumentedFilesInfo {
-    // Java: NativeInfo/StructImpl.repr with no struct fields.
+    /// `NativeInfo.repr`: `struct(` and the legacy fields (`Starlark.dir`, natural order, the
+    /// builtin functions `get_coverage_environment` and `get_coverage_support_files` skipped)
+    /// with their values' `repr`.
+    // Java: com/google/devtools/build/lib/packages/NativeInfo.java:125 NativeInfo.repr
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "InstrumentedFilesInfo()")
+        write!(
+            f,
+            "struct(instrumented_files = {}, metadata_files = {})",
+            artifacts_to_depset(&self.instrumented_files)
+                .value()
+                .to_repr(),
+            artifacts_to_depset(&self.instrumentation_metadata_files)
+                .value()
+                .to_repr()
+        )
     }
 }
 
-const FIELDS: [&str; 4] = [
-    "instrumented_files",
-    "metadata_files",
-    "coverage_support_files",
-    "coverage_environment",
-];
+/// The struct fields (`structField = true`); `get_coverage_environment` and
+/// `get_coverage_support_files` are methods ([`instrumented_files_info_methods`]).
+const FIELDS: [&str; 2] = ["instrumented_files", "metadata_files"];
+
+fn this_instrumented_files_info<'v>(this: Value<'v>) -> &'v InstrumentedFilesInfo {
+    starlark::values::ValueLike::downcast_ref::<InstrumentedFilesInfo>(this)
+        .expect("InstrumentedFilesInfo method on another value")
+}
+
+// Java: com/google/devtools/build/lib/starlarkbuildapi/test/InstrumentedFilesInfoApi.java:31 InstrumentedFilesInfoApi
+#[starlark_module]
+fn instrumented_files_info_methods(builder: &mut MethodsBuilder) {
+    // Java: com/google/devtools/build/lib/analysis/test/InstrumentedFilesInfo.java:122 InstrumentedFilesInfo.getCoverageEnvironmentForStarlark
+    fn get_coverage_environment<'v>(
+        this: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<Value<'v>> {
+        builtin_restriction::fail_if_called_outside_default_allowlist(eval)?;
+        // The ImmutableMap becomes an immutable Dict (Starlark.fromJava).
+        let heap = eval.heap();
+        let dict = heap.alloc(starlark::values::dict::AllocDict(
+            this_instrumented_files_info(this)
+                .coverage_environment
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str())),
+        ));
+        blaze_starlark::dict::dict_immutable_copy_of(heap, dict)
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/test/InstrumentedFilesInfo.java:111 InstrumentedFilesInfo.getCoverageSupportFilesForStarlark
+    fn get_coverage_support_files<'v>(
+        this: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<Value<'v>> {
+        builtin_restriction::fail_if_called_outside_default_allowlist(eval)?;
+        Ok(depset_value(&artifacts_to_depset(
+            &this_instrumented_files_info(this).coverage_support_files,
+        )))
+    }
+}
 
 // Java: com/google/devtools/build/lib/starlarkbuildapi/test/InstrumentedFilesInfoApi.java:31 InstrumentedFilesInfoApi
 #[starlark_value(type = "InstrumentedFilesInfo")]
@@ -174,43 +220,14 @@ impl<'v> StarlarkValue<'v> for InstrumentedFilesInfo {
             "metadata_files" => Some(depset_value(&artifacts_to_depset(
                 &self.instrumentation_metadata_files,
             ))),
-            // `coverage_support_files` and `coverage_environment` check
-            // `BuiltinRestriction.failIfCalledOutsideDefaultAllowlist`, which needs the thread:
-            // they are answered by `get_attr_fallible` (Starlark `x.f` calls it); a Rust caller
-            // without an evaluator does not see them.
             _ => None,
         }
     }
 
-    fn get_attr_fallible(
-        &self,
-        attribute: starlark::collections::Hashed<&str>,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> starlark::Result<Option<Value<'v>>> {
-        match attribute.key().as_ref() {
-            // Java: com/google/devtools/build/lib/analysis/test/InstrumentedFilesInfo.java:111 InstrumentedFilesInfo.getCoverageSupportFilesForStarlark
-            "coverage_support_files" => {
-                builtin_restriction::fail_if_called_outside_default_allowlist(eval)?;
-                Ok(Some(depset_value(&artifacts_to_depset(
-                    &self.coverage_support_files,
-                ))))
-            }
-            // Java: com/google/devtools/build/lib/analysis/test/InstrumentedFilesInfo.java:122 InstrumentedFilesInfo.getCoverageEnvironmentForStarlark
-            "coverage_environment" => {
-                builtin_restriction::fail_if_called_outside_default_allowlist(eval)?;
-                // The ImmutableMap becomes an immutable Dict (Starlark.fromJava).
-                let heap = eval.heap();
-                let dict = heap.alloc(starlark::values::dict::AllocDict(
-                    self.coverage_environment
-                        .iter()
-                        .map(|(k, v)| (k.as_str(), v.as_str())),
-                ));
-                Ok(Some(blaze_starlark::dict::dict_immutable_copy_of(
-                    heap, dict,
-                )?))
-            }
-            other => Ok(self.get_attr(other, eval.heap())),
-        }
+    fn get_methods() -> Option<&'static Methods> {
+        static RES: MethodsStatic =
+            MethodsStatic::new("InstrumentedFilesInfo", instrumented_files_info_methods);
+        Some(RES.methods())
     }
 
     fn has_attr(&self, attribute: &str, _heap: Heap<'v>) -> bool {
@@ -335,8 +352,8 @@ impl<'a> InstrumentedFilesInfoBuilder<'a> {
         self.coverage_support_files_builder
             .add_transitive(provider.get_coverage_support_files());
         for (k, v) in provider.get_coverage_environment() {
-            // ImmutableMap.Builder.buildKeepingLast: a repeated key takes its last position.
-            self.coverage_environment_builder.shift_remove(k);
+            // ImmutableMap.Builder.buildKeepingLast: a repeated key keeps the position of its
+            // first occurrence with its last value (IndexMap.insert).
             self.coverage_environment_builder
                 .insert(k.clone(), v.clone());
         }
@@ -510,8 +527,8 @@ impl InstrumentedFilesCollector {
         }
 
         for (k, v) in coverage_environment {
-            // ImmutableMap.Builder.buildKeepingLast: a repeated key takes its last position.
-            builder.coverage_environment_builder.shift_remove(k);
+            // ImmutableMap.Builder.buildKeepingLast: a repeated key keeps the position of its
+            // first occurrence with its last value (IndexMap.insert).
             builder
                 .coverage_environment_builder
                 .insert(k.clone(), v.clone());

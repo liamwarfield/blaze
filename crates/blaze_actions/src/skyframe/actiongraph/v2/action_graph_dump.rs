@@ -279,7 +279,7 @@ impl<'h> ActionGraphDump<'h> {
         // store environment
         if action.as_command_action().is_some() {
             let fixed_environment = action
-                .get_effective_environment(&IndexMap::new())
+                .get_effective_environment(&IndexMap::new(), &crate::actions::path_mapper::NOOP)
                 .map_err(|e| ActionGraphDumpError::CommandLineExpansion(e.message))?;
             for (key, value) in fixed_environment {
                 action_builder

@@ -42,10 +42,7 @@ impl RewindGraph {
             node_u
         );
         self.add_node(node_v.clone());
-        self.successors
-            .entry(node_u)
-            .or_default()
-            .insert(node_v)
+        self.successors.entry(node_u).or_default().insert(node_v)
     }
 
     /// `Graph.nodes()`.
@@ -67,7 +64,9 @@ impl RewindGraph {
     pub fn successors(&self, node: &SkyKey) -> impl Iterator<Item = &SkyKey> {
         self.successors
             .get(node)
-            .unwrap_or_else(|| panic!("IllegalArgumentException: Node {node:?} is not an element of this graph."))
+            .unwrap_or_else(|| {
+                panic!("IllegalArgumentException: Node {node:?} is not an element of this graph.")
+            })
             .iter()
     }
 
@@ -85,10 +84,9 @@ impl RewindGraph {
         let mut result = Vec::with_capacity(self.successors.len());
         let mut visited: HashSet<&SkyKey> = HashSet::new();
         let mut stack: Vec<(&SkyKey, usize)> = Vec::new();
-        let (start, _) = self
-            .successors
-            .get_key_value(start)
-            .unwrap_or_else(|| panic!("IllegalArgumentException: Node {start:?} is not an element of this graph."));
+        let (start, _) = self.successors.get_key_value(start).unwrap_or_else(|| {
+            panic!("IllegalArgumentException: Node {start:?} is not an element of this graph.")
+        });
         visited.insert(start);
         stack.push((start, 0));
         while let Some((node, next)) = stack.last_mut() {
@@ -153,7 +151,7 @@ impl fmt::Debug for RewindGraph {
 ///
 /// A function returns it as its value (`Arc::new(reset)` as a `SkyValue`); the evaluator
 /// recognizes it before committing anything.
-// Java: com/google/devtools/build/skyframe/SkyFunction.java:131 SkyFunction.Reset
+// Java: com/google/devtools/build/skyframe/SkyFunction.java:132 SkyFunction.Reset
 pub struct Reset {
     rewind_graph: RewindGraph,
 }

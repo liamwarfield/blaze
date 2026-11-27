@@ -181,6 +181,7 @@ pub trait FileSystem: std::any::Any + Send + Sync + fmt::Debug {
 
     /// Deletes all directory trees beneath `dir`. Does nothing if `dir` is not a directory.
     // Java: com/google/devtools/build/lib/vfs/FileSystem.java:265 FileSystem.deleteTreesBelow
+    // Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:245 NativePosixFiles.deleteTreesBelow
     fn delete_trees_below(&self, dir: &PathFragment) -> io::Result<()> {
         if self.is_directory(dir, false) {
             let entries = match self.get_directory_entries(dir) {

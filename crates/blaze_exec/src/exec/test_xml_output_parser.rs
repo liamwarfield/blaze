@@ -23,6 +23,7 @@ pub struct TestXmlOutputParserException {
 }
 
 impl TestXmlOutputParserException {
+    // Java: com/google/devtools/build/lib/exec/TestXmlOutputParserException.java:27 TestXmlOutputParserException.TestXmlOutputParserException
     fn new(message: impl Into<String>) -> TestXmlOutputParserException {
         TestXmlOutputParserException {
             message: message.into(),

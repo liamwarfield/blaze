@@ -518,6 +518,8 @@ pub fn grpc_aware_error_message(error: &io::Error, verbose_failures: bool) -> St
         // `error.getClass().getSimpleName()`
         error_message = if errors::is_interrupted(error) {
             "InterruptedException".to_string()
+        } else if errors::downcast_ref::<crate::http::ClosedChannelException>(error).is_some() {
+            "ClosedChannelException".to_string()
         } else {
             "IOException".to_string()
         };

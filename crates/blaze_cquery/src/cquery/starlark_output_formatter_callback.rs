@@ -429,11 +429,14 @@ impl<'a> StarlarkOutputFormatterCallback<'a> {
                 ));
             }
             exception_message_prefix = "invalid --starlark:file: ";
-            // ParserInput.readFile(options.file)
+            // ParserInput.readFile(options.file): `fromUTF8`, so the file's text is a Unicode
+            // string (not an internal one, unlike BUILD and .bzl sources); a non-ASCII literal
+            // leaves through the ISO-8859-1 streams as its Latin-1 byte or `?`.
+            // Java: net/starlark/java/syntax/ParserInput.java:61 ParserInput.readFile
             match read_file(workspace, &options.file) {
                 Ok(bytes) => {
                     file_name = options.file.clone();
-                    source = blaze_util::string_encoding::latin1_decode(&bytes).into_owned();
+                    source = blaze_util::string_encoding::java_new_string_utf8(&bytes);
                 }
                 Err(message) => {
                     return Err(QueryException::new(

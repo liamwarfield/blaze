@@ -1093,5 +1093,5 @@ use Reportable as _;
 #[derive(Debug)]
 pub(crate) struct UndonePreviouslyRequestedDeps(
     #[allow(dead_code)] // Java's getDepKeys, read by nothing the blocking engine ports
-    pub(crate) Vec<SkyKey>,
+    pub(crate)  Vec<SkyKey>,
 );

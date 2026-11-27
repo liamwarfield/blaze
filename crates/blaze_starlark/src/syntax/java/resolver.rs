@@ -69,6 +69,8 @@ struct Resolver<'m, 't> {
     /// Innermost last.
     blocks: Vec<Block<'t>>,
     loop_count: usize,
+    /// Java `docCommentsMap`: the doc comments of each new global binding, in binding order.
+    doc_comments_map: SmallMap<String, super::ast::DocComments>,
 }
 
 /// Resolves the file `stmts` against `module` and returns the errors in Java's order.
@@ -78,7 +80,19 @@ pub fn resolve_file(
     module: &dyn ResolverModule,
     options: JavaOptions,
 ) -> Vec<OffsetError> {
+    resolve_file_with_doc_comments(stmts, module, options).0
+}
+
+/// [`resolve_file`], also returning the doc comments of the file's new global bindings (Java's
+/// `StarlarkFile.docCommentsMap`, which `resolveFile` fills).
+// Java: net/starlark/java/syntax/Resolver.java:1323 Resolver.resolveFile
+pub fn resolve_file_with_doc_comments(
+    stmts: &[Stmt],
+    module: &dyn ResolverModule,
+    options: JavaOptions,
+) -> (Vec<OffsetError>, SmallMap<String, super::ast::DocComments>) {
     let mut r = Resolver {
+        doc_comments_map: SmallMap::new(),
         errors: Vec::new(),
         options,
         module,
@@ -96,7 +110,7 @@ pub fn resolve_file(
         r.visit_stmt(s);
     }
     r.blocks.pop();
-    r.errors
+    (r.errors, r.doc_comments_map)
 }
 
 impl<'t> Resolver<'_, 't> {
@@ -128,17 +142,24 @@ impl<'t> Resolver<'_, 't> {
     // Java: net/starlark/java/syntax/Resolver.java:549 Resolver.createBindings
     fn create_bindings(&mut self, stmt: &'t Stmt) {
         match stmt {
-            Stmt::Assign { lhs, ty, .. } => {
+            Stmt::Assign {
+                lhs,
+                ty,
+                doc_comments,
+                ..
+            } => {
                 if ty.is_some() {
                     if let Expr::Ident(id) = lhs {
-                        self.bind(id, false, true);
+                        self.bind_with_doc_comments(id, false, true, doc_comments.as_ref());
                     }
                 } else {
-                    self.create_bindings_for_lhs(lhs);
+                    self.create_bindings_for_lhs_with_doc_comments(lhs, doc_comments.as_ref());
                 }
             }
-            Stmt::Var { name, .. } => {
-                self.bind(name, false, true);
+            Stmt::Var {
+                name, doc_comments, ..
+            } => {
+                self.bind_with_doc_comments(name, false, true, doc_comments.as_ref());
             }
             Stmt::If { then, els, .. } => {
                 self.create_bindings_for_block(then);
@@ -188,15 +209,35 @@ impl<'t> Resolver<'_, 't> {
 
     // Java: net/starlark/java/syntax/Identifier.java:116 Identifier.boundIdentifiers
     fn create_bindings_for_lhs(&mut self, lhs: &'t Expr) {
+        self.create_bindings_for_lhs_with_doc_comments(lhs, None);
+    }
+
+    // Java: net/starlark/java/syntax/Resolver.java:595 Resolver.createBindingsForLHS
+    fn create_bindings_for_lhs_with_doc_comments(
+        &mut self,
+        lhs: &'t Expr,
+        doc_comments: Option<&super::ast::DocComments>,
+    ) {
         let mut ids = Vec::new();
         collect_bound_identifiers(lhs, &mut ids);
         for id in ids {
-            self.bind(&id, false, false);
+            self.bind_with_doc_comments(&id, false, false, doc_comments);
         }
     }
 
     // Java: net/starlark/java/syntax/Resolver.java:1157 Resolver.bind
     fn bind(&mut self, id: &'t Ident, is_load: bool, has_type: bool) -> bool {
+        self.bind_with_doc_comments(id, is_load, has_type, None)
+    }
+
+    // Java: net/starlark/java/syntax/Resolver.java:1157 Resolver.bind
+    fn bind_with_doc_comments(
+        &mut self,
+        id: &'t Ident,
+        is_load: bool,
+        has_type: bool,
+        doc_comments: Option<&super::ast::DocComments>,
+    ) -> bool {
         let name: &'t str = &id.name;
         let mut is_new = false;
         let bind;
@@ -210,6 +251,10 @@ impl<'t> Resolver<'_, 't> {
                         is_syntactic: true,
                         first_start: id.start,
                     });
+                    if let Some(doc_comments) = doc_comments {
+                        self.doc_comments_map
+                            .insert(name.to_owned(), doc_comments.clone());
+                    }
                     self.toplevel.insert(name, bind);
                     if let Some(&prev_local) = self.locals().bindings.get(&name) {
                         self.global_local_conflict(id, Scope::Global, prev_local);

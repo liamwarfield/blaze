@@ -12,6 +12,7 @@ pub mod expanded_spawn_log_context;
 pub mod io;
 pub mod local;
 pub mod remote_action_file_system;
+pub mod rewound_action_synchronizer;
 pub mod runfiles_tree_updater;
 pub mod single_build_file_cache;
 pub mod spawn_input_expander;

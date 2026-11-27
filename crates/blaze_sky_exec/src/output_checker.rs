@@ -37,10 +37,6 @@ pub trait ModifiedOutputsReceiver: Sync {
 
 /// Returns the action values which have output files that are not in-sync with the on-disk file
 /// value (were modified externally).
-///
-/// PORT: the "deleted after materialization" record of a remote output
-/// (`wasMaterializedAsToplevelOutput`) is not in Blaze's `FileArtifactValue`: such an output is
-/// never treated as deleted after materialization.
 // Java: com/google/devtools/build/lib/skyframe/FilesystemValueChecker.java:210 FilesystemValueChecker.getDirtyActionValues
 pub fn get_dirty_action_values(
     values_map: &HashMap<SkyKey, SkyValue>,
@@ -175,14 +171,30 @@ fn artifact_is_dirty_with_direct_system_calls(
     }
     match crate::skyframe_action_executor::file_artifact_value_for_output_check(file, tsgm) {
         Ok(file_metadata) => {
-            let is_trusted_remote_value = file_metadata.get_type()
+            // Remote metadata may record that the file has been materialized in the local
+            // filesystem as a requested top-level output without its generating action having
+            // been reexecuted (e.g. by the completion function after an action cache hit). If the
+            // file is missing now, the action has to be invalidated so that its reevaluation can
+            // restore the file in case the current invocation wants it locally.
+            let deleted_after_materialization = file_metadata.get_type()
                 == blaze_exec::actions::file_artifact_value::FileStateType::Nonexistent
+                && last_known_data.is_remote()
+                && last_known_data.was_materialized_as_toplevel_output();
+            let is_trusted_remote_value = !deleted_after_materialization
+                && file_metadata.get_type()
+                    == blaze_exec::actions::file_artifact_value::FileStateType::Nonexistent
                 && last_known_data.is_remote()
                 && output_checker.should_trust_metadata(
                     &*blaze_exec::actions::action_adapters::artifact_input(file).0,
                     last_known_data,
                 );
             if !is_trusted_remote_value && file_metadata.could_be_modified_since(last_known_data) {
+                if deleted_after_materialization {
+                    // Clear the record so that a reevaluation that chooses not to rematerialize
+                    // the file doesn't invalidate the action again on every subsequent
+                    // invocation.
+                    last_known_data.set_materialized_as_toplevel_output(false);
+                }
                 let maybe_modified_time = if file_metadata.get_type()
                     != blaze_exec::actions::file_artifact_value::FileStateType::Nonexistent
                 {

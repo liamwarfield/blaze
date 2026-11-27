@@ -643,6 +643,8 @@ pub struct AliasConfiguredTarget {
     pub actual: ConfiguredTarget,
     /// Java `overrides` merged over the actual target's providers (overrides win).
     providers: TransitiveInfoProviderMap,
+    /// Java `overrides` alone (for `toString`).
+    overrides: TransitiveInfoProviderMap,
     config_conditions: Arc<IndexMap<Label, ConfigMatchingProvider>>,
 }
 
@@ -707,8 +709,72 @@ impl AliasConfiguredTarget {
             base: base_of(action_lookup_key, visibility),
             actual,
             providers: merged.build(),
+            overrides,
             config_conditions,
         }
+    }
+
+    /// `toString()`: `MoreObjects.toStringHelper` of the label, the configuration key, the
+    /// actual target, the overrides (an `ImmutableClassToInstanceMap`) and the config
+    /// conditions.
+    ///
+    /// PORT: the overrides print `Object.toString()` (`<class>@<identity hash>`) of providers
+    /// that have no `toString`; the identity hash of a Java object is assigned per run, Blaze's
+    /// stands for it with a hash of the provider's address. `RequiredConfigFragmentsProvider`
+    /// (an override only with `--include_config_fragments_provider`) fails loudly.
+    // Java: com/google/devtools/build/lib/rules/AliasConfiguredTarget.java:252 AliasConfiguredTarget.toString
+    pub fn to_string_java(&self, label: &Label, configuration_checksum: Option<&str>) -> String {
+        let mut overrides = Vec::new();
+        for (_key, instance) in self.overrides.entries() {
+            let ProviderInstance::Native(provider) = instance else {
+                blaze_util::unported!("AliasConfiguredTarget.toString (an Info override)");
+            };
+            // Class.toString() of the key, and the value's toString().
+            let (key, value_class) = match provider.java_class_name() {
+                "AliasProvider" => (
+                    "class com.google.devtools.build.lib.analysis.AliasProvider",
+                    "com.google.devtools.build.lib.analysis.AliasProvider",
+                ),
+                "VisibilityProvider" => (
+                    "interface com.google.devtools.build.lib.analysis.VisibilityProvider",
+                    "com.google.devtools.build.lib.analysis.VisibilityProviderImpl",
+                ),
+                "LateBoundAliasProvider" => (
+                    "class com.google.devtools.build.lib.analysis.AliasProvider$LateBoundAliasProvider",
+                    "com.google.devtools.build.lib.analysis.AliasProvider$LateBoundAliasProvider",
+                ),
+                "BuildSettingProvider" => (
+                    "class com.google.devtools.build.lib.analysis.BuildSettingProvider",
+                    "com.google.devtools.build.lib.analysis.BuildSettingProvider",
+                ),
+                other => blaze_util::unported!(&format!(
+                    "AliasConfiguredTarget.toString (override {other})"
+                )),
+            };
+            // Object.toString(): getClass().getName() + "@" + Integer.toHexString(hashCode())
+            let address = Arc::as_ptr(provider) as *const () as usize as u64;
+            let identity_hash = ((address >> 4) ^ (address >> 36)) as u32 & 0x7fff_ffff;
+            overrides.push(format!("{key}={value_class}@{identity_hash:x}"));
+        }
+        // ImmutableMap<Label, ConfigMatchingProvider>: ConfigMatchingProvider.toString() is its
+        // label.
+        let config_conditions: Vec<String> = self
+            .config_conditions
+            .iter()
+            .map(|(label, provider)| format!("{label}={}", provider.label()))
+            .collect();
+        // BuildConfigurationKey.toString(): "BuildConfigurationKey[" + options.checksum() + "]"
+        let configuration_key = match configuration_checksum {
+            Some(checksum) => format!("BuildConfigurationKey[{checksum}]"),
+            None => "null".to_string(),
+        };
+        format!(
+            "AliasConfiguredTarget{{label={label}, configurationKey={configuration_key}, \
+             actual={}, overrides={{{}}}, configConditions={{{}}}}}",
+            configured_target_to_string(&self.actual),
+            overrides.join(", "),
+            config_conditions.join(", ")
+        )
     }
 
     pub fn providers(&self) -> &TransitiveInfoProviderMap {
@@ -1339,4 +1405,29 @@ pub fn target_to_starlark<'v>(
 /// The configured target of a Starlark `Target` value.
 pub fn target_from_starlark(v: starlark::values::Value) -> Option<ConfiguredTarget> {
     target_value::StarlarkTarget::configured_target_of(v).cloned()
+}
+
+/// `ConfiguredTarget.toString()`.
+// Java: com/google/devtools/build/lib/analysis/configuredtargets/AbstractConfiguredTarget.java:111 AbstractConfiguredTarget.toString
+// Java: com/google/devtools/build/lib/analysis/configuredtargets/InputFileConfiguredTarget.java:105 InputFileConfiguredTarget.toString
+pub fn configured_target_to_string(configured_target: &ConfiguredTarget) -> String {
+    match configured_target {
+        ConfiguredTarget::InputFile(_) => {
+            format!(
+                "InputFileConfiguredTarget({})",
+                configured_target.get_label()
+            )
+        }
+        ConfiguredTarget::Alias(alias) => alias.to_string_java(
+            &configured_target.get_label(),
+            configured_target.get_configuration_checksum().as_deref(),
+        ),
+        _ => format!(
+            "ConfiguredTarget({}, {})",
+            configured_target.get_label(),
+            configured_target
+                .get_configuration_checksum()
+                .unwrap_or_else(|| "null".to_string())
+        ),
+    }
 }

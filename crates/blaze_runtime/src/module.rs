@@ -50,6 +50,33 @@ impl AbruptExitException {
 /// where the command that needs them builds its executor (see `crate::bazel_modules`); they are
 /// added here as callers outside the command appear.
 // Java: com/google/devtools/build/lib/runtime/BlazeModule.java:69 BlazeModule
+// The hooks of Java's `BlazeModule` that are not methods of this trait. A hook that no module in
+// Bazel's module list overrides keeps Java's default (null, empty or no-op), so it has nothing to
+// port:
+// PORT: skipped, default only (no Bazel module overrides it): BlazeModule.getEventBusAndAsyncExceptionHandler
+// PORT: skipped, default only (no Bazel module overrides it): BlazeModule.getPackageSettings
+// PORT: skipped, default only (no Bazel module overrides it): BlazeModule.getPackageValidator
+// PORT: skipped, default only (no Bazel module overrides it): BlazeModule.getPackageOverheadEstimator
+// PORT: skipped, default only (no Bazel module overrides it): BlazeModule.getSlowThreadInterruptMessageSuffix
+// PORT: skipped, default only (no Bazel module overrides it): BlazeModule.createProjectFileProvider
+// PORT: skipped, default only (no Bazel module overrides it): BlazeModule.getFileFromWorkspace
+// The hooks that Bazel's modules override are dispatched statically: Blaze runs the overriding
+// module's code where Java calls the hook (file system: `BlazeRuntime::new_runtime`
+// (BazelFileSystemModule, RemoteModule); rule classes: `BazelRuleClassProvider`; precomputed
+// values: the repository setup of each executor; executor and strategy registration, analysis
+// callbacks and coverage: `commands/build.rs`, `commands/build_remote.rs`, `bazel_modules.rs`;
+// query helpers: `commands/query.rs`; the module name is `BlazeModule::name`).
+// PORT: skipped, dispatched statically: BlazeModule.getFileSystem, BlazeModule.fileSystem
+// PORT: skipped, dispatched statically: BlazeModule.virtualSourceRoot, BlazeModule.create
+// PORT: skipped, dispatched statically: BlazeModule.createWithVirtualization
+// PORT: skipped, dispatched statically: BlazeModule.getFileSystemForBuildArtifacts
+// PORT: skipped, dispatched statically: BlazeModule.initializeRuleClasses, BlazeModule.getPrecomputedValues
+// PORT: skipped, dispatched statically: BlazeModule.executorInit, BlazeModule.registerActionContexts
+// PORT: skipped, dispatched statically: BlazeModule.registerSpawnStrategies
+// PORT: skipped, dispatched statically: BlazeModule.afterAnalysis, BlazeModule.afterTopLevelTargetAnalysis
+// PORT: skipped, dispatched statically: BlazeModule.coverageArtifactsKnown, BlazeModule.getCoverageReportFactory
+// PORT: skipped, dispatched statically: BlazeModule.postsBuildMetricsEvent, BlazeModule.getQueryRuntimeHelperFactory
+// PORT: skipped, dispatched statically: BlazeModule.toString
 pub trait BlazeModule: Send + Sync {
     /// The Java class name (used in `toString()` and logs).
     fn name(&self) -> &'static str;
@@ -164,6 +191,20 @@ pub trait BlazeModule: Send + Sync {
 /// instrumentation outputs are not ported yet.
 // Java: com/google/devtools/build/lib/runtime/ServerBuilder.java:30 ServerBuilder
 #[derive(Default)]
+// The rest of Java's ServerBuilder: what no Bazel module adds keeps its default, and what the
+// runtime itself or the remote module adds is set where Blaze uses it (query output formatters:
+// `blaze_query`; the BEP artifact uploaders and repository helpers: `commands/build_remote.rs`;
+// the instrumentation output factory: `commands/bep.rs`).
+// PORT: skipped, default only (no Bazel module calls it): ServerBuilder.addInvocationPolicy, ServerBuilder.getInvocationPolicy
+// PORT: skipped, default only (no Bazel module calls it): ServerBuilder.setQueryEnvironmentFactory
+// PORT: skipped, default only (no Bazel module calls it): ServerBuilder.getQueryEnvironmentFactory
+// PORT: skipped, default only (no Bazel module calls it): ServerBuilder.addQueryFunctions, ServerBuilder.getQueryFunctions
+// PORT: skipped, set where used: ServerBuilder.addQueryOutputFormatters, ServerBuilder.getQueryOutputFormatters
+// PORT: skipped, set where used: ServerBuilder.addBuildEventArtifactUploaderFactory
+// PORT: skipped, set where used: ServerBuilder.getBuildEventArtifactUploaderMap
+// PORT: skipped, set where used: ServerBuilder.setRepositoryHelpersFactory, ServerBuilder.getRepositoryHelpersFactory
+// PORT: skipped, set where used: ServerBuilder.getInstrumentationOutputFactoryBuilder
+// PORT: skipped, set where used: ServerBuilder.createInstrumentationOutputFactory
 pub struct ServerBuilder {
     commands: Vec<Arc<dyn BlazeCommand>>,
     info_items: IndexMap<String, Arc<dyn InfoItem>>,
@@ -186,6 +227,7 @@ impl ServerBuilder {
 
     /// Adds the given command to the server. This method may be called multiple times.
     // Java: com/google/devtools/build/lib/runtime/ServerBuilder.java:116 ServerBuilder.addCommands
+    // Java: com/google/devtools/build/lib/runtime/ServerBuilder.java:122 ServerBuilder.addCommands
     pub fn add_commands(&mut self, commands: impl IntoIterator<Item = Arc<dyn BlazeCommand>>) {
         self.commands.extend(commands);
     }

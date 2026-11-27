@@ -403,6 +403,9 @@ fn get_diff_with_inferred_ancestors_file_modified_returns_file_with_values() {
     f.file_with("file", "hello");
     let key = f.file_state_value_key("file");
     let value = f.file_state_value("file");
+    // PORT: Java's Scratch is an InMemoryFileSystem; on disk the file contents proxy has
+    // millisecond resolution (the timestamp granularity monitor covers this in builds).
+    std::thread::sleep(std::time::Duration::from_millis(10));
     f.file_with("file", "there");
     f.add_done_nodes_and_then_mark_changed(vec![(key.clone(), value)]);
     let diff = f.get_diff(std::slice::from_ref(&key)).unwrap();

@@ -61,11 +61,22 @@ impl LocalHostCapacity {
         capacity.unwrap()
     }
 
-    /// PORT: the `logger.atInfo()` line ("Determined local resources: ...") is not written; Blaze
-    /// has no server logger.
     // Java: com/google/devtools/build/lib/actions/LocalHostCapacity.java:34 LocalHostCapacity.getNewLocalHostCapacity
     fn get_new_local_host_capacity() -> LocalResourceSet {
-        LocalHostResource::get()
+        let local_resources = LocalHostResource::get();
+        // "Determined local resources: RAM=%dMB, CPU=%.1f" ((int) memoryMb, cpuUsage).
+        // PORT: Java's %.1f rounds HALF_UP, Rust's {:.1} half to even; CPU counts are whole
+        // numbers, so the two agree.
+        blaze_util::server_logger::info(
+            "com.google.devtools.build.lib.actions.LocalHostCapacity",
+            "getNewLocalHostCapacity",
+            &format!(
+                "Determined local resources: RAM={}MB, CPU={:.1}",
+                local_resources.get_memory_mb() as i32,
+                local_resources.get_cpu_usage()
+            ),
+        );
+        local_resources
     }
 
     /// Sets the local host capacity to hardcoded values.

@@ -171,15 +171,18 @@ struct IndividualErrorProcessingResult {
 }
 
 impl IndividualErrorProcessingResult {
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:187 SkyframeErrorProcessor.IndividualErrorProcessingResult.isActionConflictError
     fn is_action_conflict_error(&self) -> bool {
         !self.action_conflicts.is_empty()
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:191 SkyframeErrorProcessor.IndividualErrorProcessingResult.isLoadingError
     fn is_loading_error(&self) -> bool {
         !self.loading_root_causes.is_empty()
     }
 
     /// This is true for all non-execution errors: including loading & action conflict errors.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:196 SkyframeErrorProcessor.IndividualErrorProcessingResult.isAnalysisError
     fn is_analysis_error(&self) -> bool {
         self.execution_detailed_exit_code.is_none()
     }

@@ -27,6 +27,7 @@ pub struct SymlinkTreeHelper {
 
 /// Obtains a symlink target path from a `T`.
 // Java: com/google/devtools/build/lib/exec/SymlinkTreeHelper.java:76 SymlinkTreeHelper.TargetPathFunction
+// Java: com/google/devtools/build/lib/exec/SymlinkTreeHelper.java:78 SymlinkTreeHelper.TargetPathFunction.get
 type TargetPathFunction<'a, T> = &'a dyn Fn(&T) -> io::Result<PathFragment>;
 
 impl SymlinkTreeHelper {
@@ -216,7 +217,7 @@ impl SymlinkTreeHelper {
             let target = match as_blaze_artifact(&symlink.target) {
                 Some(a) => a.get_path().as_fragment().clone(),
                 None => blaze_util::unported!(
-                    "SymlinkTreeHelper.processFilesetLinks",
+                    "SymlinkTreeHelper.processFilesetLinks (unreachable in Bazel: only the non-open-sourced fileset rule makes fileset artifacts, packages/OutputFile.java:123)",
                     "fileset target {} is not a blaze_actions Artifact",
                     symlink.target.0.get_exec_path()
                 ),

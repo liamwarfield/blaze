@@ -297,6 +297,10 @@ pub(crate) fn run_build(
     }
     let mut module_exit_code: Option<DetailedExitCode> = None;
     // RemoteModule.afterCommand and its BlockWaitingModule task (reports its own error).
+    // BlockWaitingModule's executor is replaced by running its one submitter's task
+    // (RemoteModule.afterCommandTask) inline, in the module order Java's afterCommand waits in.
+    // PORT: skipped, replaced by an inline call: BlockWaitingModule.beforeCommand, BlockWaitingModule.submit
+    // PORT: skipped, replaced by an inline call: BlockWaitingModule.call
     let remote_exit = match &remote {
         Some(remote) => remote.after_command(env.get_reporter().as_ref()),
         None => {
@@ -1293,6 +1297,23 @@ impl SpawnLogSetup {
 
 // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:520 BuildTool.buildTargetsWithoutMergedAnalysisExecution
 // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:613 BuildTool.buildTargetsWithMergedAnalysisExecution
+/// `skyframeExecutor.setSaltAndDeleteActionsIfChanged(actionExecutionSalt)` of
+/// `ExecutionTool.prepareForExecution`, after `configureActionExecutor` (the executor's salt:
+/// `RemoteModule.executorInit`'s, "" without one).
+// Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:332 ExecutionTool.prepareForExecution
+fn set_salt_and_delete_actions_if_changed(skyframe_executor: &SkyframeExecutor) {
+    if let Some(state) = skyframe_executor.get_execution() {
+        skyframe_executor.set_salt_and_delete_actions_if_changed(
+            &state
+                .config
+                .remote
+                .action_execution_salt
+                .clone()
+                .unwrap_or_default(),
+        );
+    }
+}
+
 struct ExecutionToolConstruction<'a> {
     execution_phase: &'a RuntimeExecutionPhase,
     spawn_log: &'a SpawnLogSetup,
@@ -1314,6 +1335,7 @@ impl AnalysisPostProcessor for ExecutionToolConstruction<'_> {
         // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:270 ExecutionTool.prepareForExecution
         self.execution_phase
             .prepare_incremental_package_roots(skyframe_executor)?;
+        set_salt_and_delete_actions_if_changed(skyframe_executor);
         self.spawn_log.executor_init();
         if let Err(e) = self.spawn_log.module_environment.throw_pending_exception() {
             // catch (AbruptExitException e): result.setCatastrophe().
@@ -1390,6 +1412,12 @@ impl ExecutionToolConstruction<'_> {
             .expect("IllegalStateException: the executor was created without execution");
         // SpawnLogModule.executorInit (already run before a merged analysis).
         self.spawn_log.executor_init();
+        // CacheFileDigestsModule.executorInit, next in the module order.
+        crate::bazel_modules::CacheFileDigestsModule::executor_init(
+            self.execution_phase
+                .execution_options
+                .cache_size_for_computed_file_digests,
+        );
         // ExecutionTool.<init>: each module's executorInit (BuildSummaryStatsModule's registers
         // the CriticalPathComputer) runs before the spawn strategy registry is built.
         // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:171 ExecutionTool.<init>
@@ -2341,6 +2369,12 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         // The loading and analysis BEP events are posted by BuildTool's hooks
         // (blaze_sky_top BuildEventHooks, crate::commands::bep).
 
+        // ExecutionTool.prepareForExecution of the path without merged analysis and execution
+        // (Skymeld runs it before the analysis: `before_merged_analysis`).
+        if !request.with_merged_analysis_and_execution_source_of_truth() {
+            set_salt_and_delete_actions_if_changed(skyframe_executor);
+        }
+
         // Without merged analysis and execution, ExecutionTool.executeBuild plants the symlink
         // forest of the exec root ("plantSymlinkForest"); Skymeld planted it incrementally
         // (prepare_incremental_package_roots).
@@ -2956,13 +2990,13 @@ impl ExecutionPhase for RuntimeExecutionPhase {
 /// it as a marked `UserExecException`); the `ActionExecutionException` it causes tells
 /// (`is_caused_by_test_exec_exception`), which is the `cause.getCause() instanceof
 /// TestExecException` of `rethrow`. A `TestExecException` is never the error of a node itself.
-/// `TopLevelOutputException` (action rewinding, staging of top-level outputs) is not raised by
-/// the ported functions.
 // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:873 SkyframeErrorProcessor.isExecutionException
 enum ExecutionExceptionCause<'a> {
     ActionExecution(&'a ActionExecutionException),
     InputFileError(&'a InputFileErrorException),
     ArtifactNestedSetEval(&'a ArtifactNestedSetEvalException),
+    // For top-level outputs errors in CompletionFunction.
+    TopLevelOutput(&'a blaze_sky_exec::completion_function::TopLevelOutputException),
 }
 
 impl<'a> ExecutionExceptionCause<'a> {
@@ -2975,6 +3009,11 @@ impl<'a> ExecutionExceptionCause<'a> {
         }
         if let Some(e) = cause.downcast_ref::<ArtifactNestedSetEvalException>() {
             return Some(ExecutionExceptionCause::ArtifactNestedSetEval(e));
+        }
+        if let Some(e) =
+            cause.downcast_ref::<blaze_sky_exec::completion_function::TopLevelOutputException>()
+        {
+            return Some(ExecutionExceptionCause::TopLevelOutput(e));
         }
         None
     }
@@ -2992,6 +3031,7 @@ impl<'a> ExecutionExceptionCause<'a> {
                 ),
             },
             ExecutionExceptionCause::InputFileError(e) => e.detailed_exit_code.clone(),
+            ExecutionExceptionCause::TopLevelOutput(e) => e.detailed_exit_code.clone(),
             ExecutionExceptionCause::ArtifactNestedSetEval(e) => {
                 create_unknown_execution_detailed_exit_code(&e.to_string())
             }
@@ -3208,6 +3248,19 @@ fn rethrow(cause: &ExecutionExceptionCause<'_>) -> RethrownException {
             RethrownException::build_failed(BuildToolError::BuildFailed {
                 message: String::new(),
                 failure_detail: input_file_error_exception
+                    .detailed_exit_code
+                    .get_failure_detail()
+                    .cloned()
+                    .expect("NullPointerException: detailedExitCode"),
+            })
+        }
+        // throw topLevelOutputException: a BuildFailedException whose error is already shown
+        // (TopLevelOutputException.<init>: errorAlreadyShown = true, not catastrophic).
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:1000 SkyframeErrorProcessor.rethrow
+        ExecutionExceptionCause::TopLevelOutput(top_level_output_exception) => {
+            RethrownException::build_failed(BuildToolError::BuildFailed {
+                message: String::new(),
+                failure_detail: top_level_output_exception
                     .detailed_exit_code
                     .get_failure_detail()
                     .cloned()

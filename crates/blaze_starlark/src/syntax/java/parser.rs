@@ -117,6 +117,9 @@ pub struct Parser<'a> {
     errors_count: usize,
     recovery_mode: bool,
     inside_type_expr: bool,
+    /// Java `mostRecentDocCommentBlock`: the last doc comment block, so that it may be attached
+    /// to the next assignment.
+    most_recent_doc_comment_block: Option<super::ast::DocComments>,
 }
 
 impl<'a> Parser<'a> {
@@ -128,6 +131,7 @@ impl<'a> Parser<'a> {
             errors_count: 0,
             recovery_mode: false,
             inside_type_expr: false,
+            most_recent_doc_comment_block: None,
         };
         p.next_token();
         p
@@ -1177,9 +1181,11 @@ impl<'a> Parser<'a> {
         symbols.push((local, original));
     }
 
+    // Java: net/starlark/java/syntax/Parser.java:1469 Parser.parseSimpleStatement
     fn parse_simple_statement(&mut self, list: &mut Vec<Stmt>) {
         let s = self.parse_small_statement();
         list.push(s);
+        self.most_recent_doc_comment_block = None;
         while self.kind() == T::Semi {
             self.next_token();
             if self.kind() == T::Newline || self.kind() == T::DocCommentTrailing {
@@ -1194,10 +1200,45 @@ impl<'a> Parser<'a> {
         self.expect_and_recover(T::Newline);
     }
 
-    fn maybe_parse_trailing_doc_comment(&mut self) {
+    /// Parses a trailing doc comment if we're at one: returns that comment if it exists, or else
+    /// the currently applicable block comment if it exists. `statement_start` is the offset of
+    /// the first token in the statement, used to determine the currently applicable block
+    /// comment.
+    // Java: net/starlark/java/syntax/Parser.java:1497 Parser.maybeParseTrailingDocComment
+    fn maybe_parse_trailing_doc_comment(
+        &mut self,
+        statement_start: usize,
+    ) -> Option<super::ast::DocComments> {
         if self.kind() == T::DocCommentTrailing {
+            let result = match &self.lexer.value {
+                TokenValue::DocComments { lines, .. } => Some(super::ast::DocComments {
+                    lines: lines.clone(),
+                }),
+                _ => None,
+            };
             self.next_token();
+            result
+        } else {
+            let line = self.lexer.line_of(statement_start);
+            self.get_doc_comment_block_on_previous_line(line)
         }
+    }
+
+    // Java: net/starlark/java/syntax/Parser.java:239 Parser.getDocCommentBlockOnPreviousLine
+    fn get_doc_comment_block_on_previous_line(
+        &self,
+        line: usize,
+    ) -> Option<super::ast::DocComments> {
+        self.most_recent_doc_comment_block
+            .as_ref()
+            .filter(|block| block.end_line() + 1 == line)
+            .cloned()
+    }
+
+    /// The `#:` comment lines the lexer scanned (Java `StarlarkFile.getComments()` with a doc
+    /// comment prefix).
+    pub fn doc_comment_lines(&self) -> &[super::ast::DocCommentLine] {
+        &self.lexer.doc_comment_lines
     }
 
     // Java: net/starlark/java/syntax/Parser.java:1482 Parser.parseSmallStatement
@@ -1222,7 +1263,7 @@ impl<'a> Parser<'a> {
         if self.kind() == T::Equals || op.is_some() {
             let op_offset = self.next_token();
             let rhs = self.parse_expr();
-            self.maybe_parse_trailing_doc_comment();
+            let doc_comments = self.maybe_parse_trailing_doc_comment(lhs.start());
             if ty.is_some() {
                 if !matches!(lhs, Expr::Ident(_)) {
                     self.syntax_error_at(
@@ -1249,11 +1290,16 @@ impl<'a> Parser<'a> {
                 op,
                 op_offset,
                 rhs,
+                doc_comments,
             }
         } else if let Some(t) = ty {
-            self.maybe_parse_trailing_doc_comment();
+            let doc_comments = self.maybe_parse_trailing_doc_comment(lhs.start());
             match lhs {
-                Expr::Ident(name) => Stmt::Var { name, ty: t },
+                Expr::Ident(name) => Stmt::Var {
+                    name,
+                    ty: t,
+                    doc_comments,
+                },
                 lhs => {
                     self.syntax_error_at(
                         colon_offset,
@@ -1416,8 +1462,15 @@ impl<'a> Parser<'a> {
         }
     }
 
+    // Saves the last doc comment block, so that it may be attached to the next assignment.
+    // Java: net/starlark/java/syntax/Parser.java:231 Parser.maybeParseDocCommentBlock
     fn maybe_parse_doc_comment_block(&mut self) {
         while self.kind() == T::DocCommentBlock {
+            if let TokenValue::DocComments { lines, .. } = &self.lexer.value {
+                self.most_recent_doc_comment_block = Some(super::ast::DocComments {
+                    lines: lines.clone(),
+                });
+            }
             self.next_token();
         }
     }

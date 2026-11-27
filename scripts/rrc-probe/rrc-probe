@@ -25,9 +25,11 @@ The memory rule (AGENTS.md "Memory") shapes the stand-in:
     systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0
     so the servers and the worker die with it.
 
-BLAZE_SERVER_MODE (Blaze's server mode, see crates/blaze_client/src/server.rs) is passed through
-to the binary: set it to `daemon` for Blaze, since the test functions assume a server that keeps
-its state between commands, as Bazel's does.
+BLAZE_SERVER_MODE (Blaze's server mode, see crates/blaze_client/src/server.rs) and
+BLAZE_INCREMENTAL_DEBUG are passed through to the binary: set BLAZE_SERVER_MODE to `daemon` for
+Blaze, since the test functions assume a server that keeps its state between commands, as Bazel's
+does. RRC_KEEP=1 keeps the last function's workspace and output base (only its server is shut
+down); the next run expunges them.
 
 Results: ~/.cache/blaze/work/remote-6/rrc/<side-name>/results.tsv (name, PASS/FAIL/SKIP, first
 line of the failure) and log.txt (every command with exit code, stdout and stderr).
@@ -54,6 +56,8 @@ INSTALL = os.path.join(CACHE, "oracle-out/ur/install/58cf1ecbff441bac762b0050d6d
 JAVA = os.path.join(INSTALL, "embedded_tools/jdk/bin/java")
 WORKER_JAR = os.path.join(CACHE, "work/upstream-src/bazel-bin/src/tools/remote/worker_deploy.jar")
 ROOT = os.path.join(CACHE, "work", "remote-6", "rrc")
+# Environment variables passed through to the binary.
+PASSED_ENV = ["BLAZE_SERVER_MODE", "BLAZE_INCREMENTAL_DEBUG"]
 
 
 def usage():
@@ -255,8 +259,9 @@ def make_test_base():
         def _EnvMap(self, env_remove=None, env_add=None):
             env = {"HOME": os.path.join(self._temp, "home"), "PATH": "/usr/bin:/bin",
                    "TEST_TMPDIR": State.tmp, "TMP": self._temp}
-            if os.environ.get("BLAZE_SERVER_MODE"):
-                env["BLAZE_SERVER_MODE"] = os.environ["BLAZE_SERVER_MODE"]
+            for name in PASSED_ENV:
+                if os.environ.get(name):
+                    env[name] = os.environ[name]
             for e in env_remove or []:
                 env.pop(e, None)
             for k, v in (env_add or {}).items():
@@ -319,8 +324,9 @@ def reset_workspace():
     """Expunges the previous function's output bases, then empties the workspace."""
     env = {"HOME": os.path.join(State.tmp, "home"), "PATH": "/usr/bin:/bin",
            "TEST_TMPDIR": State.tmp, "TMP": State.tmp}
-    if os.environ.get("BLAZE_SERVER_MODE"):
-        env["BLAZE_SERVER_MODE"] = os.environ["BLAZE_SERVER_MODE"]
+    for name in PASSED_ENV:
+        if os.environ.get(name):
+            env[name] = os.environ[name]
     for cwd in sorted(State.used_cwds):
         if os.path.isdir(cwd) and os.path.exists(os.path.join(cwd, "MODULE.bazel")):
             for args in (["clean", "--expunge"], ["shutdown"]):
@@ -352,7 +358,7 @@ def main(argv):
         cmd = ["systemd-run", "--user", "--collect", "--wait", "--quiet", "--pipe",
                "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0",
                "--setenv=HOME=" + os.environ["HOME"], "--setenv=PATH=/usr/bin:/bin",
-               "--setenv=BLAZE_SERVER_MODE=" + os.environ.get("BLAZE_SERVER_MODE", ""),
+               *["--setenv=%s=%s" % (n, os.environ.get(n, "")) for n in PASSED_ENV + ["RRC_KEEP"]],
                sys.executable, os.path.abspath(__file__), "--unit"] + argv
         return subprocess.call(cmd)
 
@@ -411,7 +417,13 @@ def main(argv):
             log("RESULT %s %s %.0fs\n%s" % (name, status, time.time() - t0, why))
             print("%s\t%s\t%.0fs\t%s" % (name, status, time.time() - t0, msg[:300]), flush=True)
     finally:
-        reset_workspace()
+        if os.environ.get("RRC_KEEP"):
+            # Keep the last function's workspace and output base; only stop its server.
+            for cwd in sorted(State.used_cwds):
+                subprocess.run([State.binary, "--bazelrc=" + State.bazelrc, "shutdown"], cwd=cwd,
+                               capture_output=True)
+        else:
+            reset_workspace()
         stop_worker()
         with open(os.path.join(State.base, "results.tsv"), "w") as f:
             for r in results:

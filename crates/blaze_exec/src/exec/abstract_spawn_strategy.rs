@@ -425,11 +425,18 @@ impl SpawnExecutionContext for SpawnExecutionContextImpl<'_> {
             return mapping.clone();
         }
 
-        let input_mapping = Arc::new(self.spawn_input_expander.get_input_mapping(
-            self.spawn,
-            self.action_execution_context.get_input_metadata_provider(),
-            base_directory,
-        ));
+        // Java: com/google/devtools/build/lib/exec/AbstractSpawnStrategy.java:350 SpawnExecutionContextImpl.getInputMapping
+        let input_mapping = {
+            let _c = blaze_util::profiler::Profiler::instance().profile(
+                blaze_util::profiler::ProfilerTask::INFO,
+                "AbstractSpawnStrategy.getInputMapping",
+            );
+            Arc::new(self.spawn_input_expander.get_input_mapping(
+                self.spawn,
+                self.action_execution_context.get_input_metadata_provider(),
+                base_directory,
+            ))
+        };
 
         // Don't cache the input mapping if it is unlikely that it is used again.
         // This reduces memory usage in the case where remote caching/execution is

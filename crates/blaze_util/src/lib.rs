@@ -1,12 +1,15 @@
 //! Shared utilities for Blaze: porting macros and small ports of `lib/util`.
 
+pub mod bug_report;
 pub mod build_arena;
+pub mod concurrent;
 pub mod exit_code;
 pub mod fingerprint;
 pub mod graph;
 pub mod io;
 pub mod java_hash_map;
 pub mod java_regex;
+pub mod process_utils;
 pub mod profiler;
 pub mod server_logger;
 pub mod string_encoding;

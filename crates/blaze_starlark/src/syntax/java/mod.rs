@@ -94,6 +94,9 @@ pub struct ParsedFile {
     pub statements: Vec<ast::Stmt>,
     pub errors: Vec<SyntaxError>,
     pub locs: FileLocations,
+    /// The `#:` comment lines of the file (Java `StarlarkFile.getComments()` with a doc comment
+    /// prefix).
+    pub doc_comment_lines: Vec<ast::DocCommentLine>,
 }
 
 /// Java `StarlarkFile.parse`: scans and parses `source` (an internal string: one char per byte),
@@ -111,6 +114,7 @@ pub fn parse_file(file: &str, source: &str, options: JavaOptions) -> ParsedFile 
     let lexer = lexer::Lexer::new(&chars, &line_starts, options);
     let mut p = parser::Parser::new(lexer, options);
     let statements = p.parse_file_input();
+    let doc_comment_lines = p.doc_comment_lines().to_vec();
     let errors = p
         .errors
         .into_iter()
@@ -123,6 +127,7 @@ pub fn parse_file(file: &str, source: &str, options: JavaOptions) -> ParsedFile 
         statements,
         errors,
         locs,
+        doc_comment_lines,
     }
 }
 
@@ -169,6 +174,41 @@ pub fn compile_errors(
     errors
 }
 
+/// The doc comments of a compiled file: Java `Program.getDocCommentsMap()` (the doc comments
+/// attached to the file's new global bindings, by name, in binding order) and
+/// `Program.getUnusedDocCommentLines()` (the other `#:` comment lines, in file order).
+#[derive(Debug, Clone, Default)]
+pub struct ProgramDocComments {
+    pub doc_comments_map: starlark_map::small_map::SmallMap<String, ast::DocComments>,
+    pub unused_doc_comment_lines: Vec<ast::DocCommentLine>,
+}
+
+/// Java `Program.compileFile(file, env)`'s doc comments of `parsed` resolved against `module`.
+// Java: net/starlark/java/syntax/Program.java:101 Program.compileFile
+pub fn program_doc_comments(
+    parsed: &ParsedFile,
+    module: &dyn resolver::ResolverModule,
+    options: JavaOptions,
+) -> ProgramDocComments {
+    let (_, doc_comments_map) =
+        resolver::resolve_file_with_doc_comments(&parsed.statements, module, options);
+    // Find unused doc comments.
+    let used_doc_comment_lines: std::collections::HashSet<&ast::DocCommentLine> = doc_comments_map
+        .values()
+        .flat_map(|doc_comments| doc_comments.lines.iter())
+        .collect();
+    let unused_doc_comment_lines = parsed
+        .doc_comment_lines
+        .iter()
+        .filter(|c| !used_doc_comment_lines.contains(c))
+        .cloned()
+        .collect();
+    ProgramDocComments {
+        doc_comments_map,
+        unused_doc_comment_lines,
+    }
+}
+
 /// A [`resolver::ResolverModule`] for a fresh module with these predeclared names (Java
 /// `Module.withPredeclared` + `Starlark.UNIVERSE`; `Module.resolve`).
 // Java: net/starlark/java/eval/Module.java:231 Module.resolve
@@ -206,5 +246,109 @@ impl resolver::ResolverModule for PredeclaredModule<'_> {
             message: format!("name '{name}' is not defined"),
             candidates: Some(self.names.clone()),
         })
+    }
+}
+
+#[cfg(test)]
+mod doc_comments_tests {
+    use super::*;
+
+    fn compile_doc_comments(source: &str, options: JavaOptions) -> ProgramDocComments {
+        let parsed = parse_file("foo.star", source, options);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let guarded = |_: &str| None;
+        let module = PredeclaredModule::new(vec!["pre".to_owned()], &guarded);
+        program_doc_comments(&parsed, &module, options)
+    }
+
+    fn texts(p: &ProgramDocComments) -> Vec<(String, String)> {
+        p.doc_comments_map
+            .iter()
+            .map(|(k, v)| (k.clone(), v.get_text()))
+            .collect()
+    }
+
+    // Java: src/test/java/net/starlark/java/syntax/ProgramTest.java:33 ProgramTest.docComments
+    #[test]
+    fn doc_comments() {
+        let program = compile_doc_comments(
+            "#: Doc comment for A\n#: multiline\nFOO = 1\nBAR, BAZ = (2, 3)  #: Applies to LHS list\n",
+            JavaOptions::DEFAULT,
+        );
+        assert_eq!(
+            texts(&program),
+            vec![
+                ("FOO".to_owned(), "Doc comment for A\nmultiline".to_owned()),
+                ("BAR".to_owned(), "Applies to LHS list".to_owned()),
+                ("BAZ".to_owned(), "Applies to LHS list".to_owned()),
+            ]
+        );
+    }
+
+    // Java: src/test/java/net/starlark/java/syntax/ProgramTest.java:50 ProgramTest.docComments_unused
+    #[test]
+    fn doc_comments_unused() {
+        let program = compile_doc_comments(
+            "#: Unused - separated by a non-doc comment line\n\
+             # Non-doc comment line - not in module.unassignedDocComments()\n\
+             A = 1\n\
+             \n\
+             #: Unused - overridden by trailing doc comment\n\
+             B = 2  #: Trailing doc comment for B overrides preceding doc comment block\n\
+             \n\
+             def func():\n\
+             \x20   #: Unused - not a global assignment\n\
+             \x20   C = 3\n\
+             # Another non-doc comment line - not in module.unassignedDocComments()\n",
+            JavaOptions::DEFAULT,
+        );
+        assert_eq!(
+            texts(&program),
+            vec![(
+                "B".to_owned(),
+                "Trailing doc comment for B overrides preceding doc comment block".to_owned()
+            )]
+        );
+        let unused: Vec<&str> = program
+            .unused_doc_comment_lines
+            .iter()
+            .map(|c| c.get_doc_comment_text())
+            .collect();
+        assert_eq!(
+            unused,
+            vec![
+                "Unused - separated by a non-doc comment line",
+                "Unused - overridden by trailing doc comment",
+                "Unused - not a global assignment",
+            ]
+        );
+    }
+
+    // Java: src/test/java/net/starlark/java/syntax/ResolverTest.java:648 ResolverTest.testDocComments
+    #[test]
+    fn test_doc_comments() {
+        let options = JavaOptions {
+            allow_type_syntax: true,
+            ..JavaOptions::DEFAULT
+        };
+        let program = compile_doc_comments(
+            "#: Doc for FOO\n#: multiline\nFOO = 1\n\nBAR, BAZ = (2, 3)  #: Applies to LHS list\n\n\
+             #: Applies to var annotation without initialier\nQUX : pre\n\
+             QUUX : pre #: And the trailing version...\n",
+            options,
+        );
+        assert_eq!(
+            texts(&program),
+            vec![
+                ("FOO".to_owned(), "Doc for FOO\nmultiline".to_owned()),
+                ("BAR".to_owned(), "Applies to LHS list".to_owned()),
+                ("BAZ".to_owned(), "Applies to LHS list".to_owned()),
+                (
+                    "QUX".to_owned(),
+                    "Applies to var annotation without initialier".to_owned()
+                ),
+                ("QUUX".to_owned(), "And the trailing version...".to_owned()),
+            ]
+        );
     }
 }

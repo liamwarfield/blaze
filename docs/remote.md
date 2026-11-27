@@ -177,21 +177,32 @@ where Bazel would enter it; none is silently ignored.
 
 ## Known deviations (not loud; each by a ruling or listed for one)
 
-Work in progress (remote-5, not reviewed): the remote repo contents cache (startup
-`--experimental_remote_repo_contents_cache`) is ported up to the overlay file system
-(`remote_external_overlay_file_system.rs`), the cache (`remote_repo_contents_cache_impl.rs`) and
-its wiring; a cached repository is served from memory for loading (BUILD and .bzl files). NOT
-ported and NOT loud yet: the remote metadata of a source file of an in-memory repo
-(`FileStatusWithMetadata` through `FileStateValue` and the source artifact's value), with which
-Java prefetches such a file for a local action. A local action that reads a file of a repository
-served from the cache fails (the file is not on disk), where Bazel downloads it first.
+Remote repo contents cache (startup `--experimental_remote_repo_contents_cache`, remote-5/6, not
+reviewed yet): the overlay file system (`remote_external_overlay_file_system.rs`), the cache
+(`remote_repo_contents_cache_impl.rs`) and its wiring are ported. A file of a repository served
+from the cache is stat'ed with its remote metadata (`blaze_vfs::StatMetadata`, the port of
+`FileStatusWithMetadata`), which `FileStateValue::RegularFileWithMetadata` keeps and the source
+artifact's value returns, so a local action prefetches it as in Java; the metadata's contents
+proxy is a cell shared by its copies (`RemoteFileArtifactValueWithMaterializationData.proxy`), so a
+materialized file is not seen as modified. Top-level outputs are downloaded at completion
+(`remote_important_output_handler.rs`); lost top-level outputs (action rewinding) and a failed
+download stop with `unported!`. Measured with `scripts/rrc-probe/rrc-probe` (one workspace per
+side): see the remote-6 report. Declared: dropping the overlay's repos when no cache is
+available invalidates the whole kept graph (`resetEvaluator`) instead of their
+`REPOSITORY_DIRECTORY` nodes only (no targeted delete on the kept graph yet); same results, other
+"packages loaded" counts.
+
+Remote execution of repository rules (`--experimental_repo_remote_exec`, `remotable = True`,
+`exec_properties`) is ported (`remote_repository_remote_executor.rs`, the factory's
+`createExecutor`, `StarlarkBaseExternalContext.executeRemote`); a negative `timeout` is sent as
+no timeout (a Rust `Duration` cannot be negative).
 
 | What | Bazel 9.3.2 | Blaze | Why |
 |---|---|---|---|
 | Disk cache action-result integrity check | skipped under the default `--rewind_lost_inputs` (`RemoteModule.java:700-706`) | always on | Ruling 2026-11-19: rewinding is not ported, so a disk-cache action result whose blobs are not in the disk CAS must be a miss, not a crash. Visible where a disk cache was filled under build without the bytes together with a remote cache: Bazel `disk cache hit`, Blaze re-executes. A disk-cache-only setup is unchanged (brotli, re2). Restore Java's expression when rewinding is ported. |
 | X.509 v1 certificates | accepted | rejected | Ruling 2026-11-19, see "Security posture". |
 | Transport error causes | Netty/JDK texts (`finishConnect(..) failed: Connection refused: localhost/127.0.0.1:9499`; `General OpenSslEngine problem`) | the status line is Bazel's (`UNAVAILABLE: io exception`, `INTERNAL: http2 exception`, `UNAVAILABLE: ssl exception`, `Unable to resolve host <host>`, ported from grpc-netty `Utils.statusFromThrowable`); the connect cause is rebuilt in Netty's form, but Netty's choice between `127.0.0.1` and `[0:0:0:0:0:0:0:1]` for `localhost` varies between runs of Bazel itself, a certificate rejected locally prints rustls' text. A call whose connection failed gets the connection's first failure as its status, as grpc-netty's shutdown status (`mtls-noclient`: `UNAVAILABLE: ssl exception` on both) | exit codes are equal; not reproducible |
-| Lost top-level outputs (`RemoteImportantOutputHandler`, "Lost outputs no longer available remotely") | reported when a target becomes top-level after its action ran in an earlier command of the same server | not reached: Blaze has no server, top-level outputs are downloaded when their action is finalized or its cached result is checked | PORT: skipped, incremental |
+| Lost top-level outputs (`RemoteImportantOutputHandler`, "Lost outputs no longer available remotely") | rewinds or retries | `unported!` (`ActionRewindStrategy.prepareRewindPlanForLostTopLevelOutputs`); the download itself is ported | rewinding is not ported |
 | Connection pool | one connection per 100 concurrent calls (`DynamicConnectionPool`) | one HTTP/2 connection per endpoint | performance only with default flags; non-default values are loud |
 | `-1` ("unknown") permissions of a remote file's stat | `RemoteFileStatus.getPermissions() == -1` | the bits this file system's `isReadable/isWritable/isExecutable` answer | `blaze_vfs::FileStatus` has no unknown value |
 
@@ -252,8 +263,8 @@ Remote causes (39 functions). Every one is either a feature that fails loudly (s
 | id | functions | cause |
 |---|---:|---|
 | R-http | 13 | HTTP remote cache (`--remote_cache=http://...`): `RemoteModule.createCredentials (HTTP remote cache)` |
-| R-gate | 9 | remote flags on `run` (5) and `coverage` (4): the commands themselves are not ported |
-| R-repocc | 4 | remote repo contents cache (`--experimental_remote_repo_contents_cache`); these would first hit N-mod |
+| R-gate | 9 | remote flags on `run` (5) and `coverage` (4): `run` now runs the remote module (remote-6); not re-measured |
+| R-repocc | 4 | remote repo contents cache (`--experimental_remote_repo_contents_cache`): ported (remote-6); not re-measured |
 | R-dl | 4 | `--experimental_remote_downloader` |
 | R-tlsv1 | 4 | Bazel's test certificates are X.509 v1, which rustls rejects (ruling: fail closed, "Security posture") |
 | R-cred | 3 | `--credential_helper` |

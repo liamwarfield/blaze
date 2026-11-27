@@ -226,7 +226,11 @@ impl Write for GenQueryOutputStream {
     fn flush(&mut self) -> io::Result<()> {
         match &mut self.out {
             Out::Plain => Ok(()),
-            Out::Gzip(g) => g.flush(),
+            // `GZIPOutputStream(out, size)` has `syncFlush == false`: `DeflaterOutputStream.flush`
+            // only flushes `out` and writes no deflate block (flate2's `flush` would write a
+            // sync-flush block, so the bytes would differ).
+            // JDK: java.base/java/util/zip/DeflaterOutputStream.java DeflaterOutputStream.flush (syncFlush)
+            Out::Gzip(g) => g.get_mut().flush(),
         }
     }
 }
@@ -306,6 +310,31 @@ mod tests {
                 output_compressed,
             );
         }
+    }
+
+    /// Not a Java test: `flush()` between writes leaves the compressed bytes as they are
+    /// (`GZIPOutputStream` without `syncFlush` writes no flush block), and the stream starts with
+    /// Java's header.
+    #[test]
+    fn flush_does_not_change_compressed_bytes() {
+        let data = "abcdefgh".repeat(5_000);
+        let compressed = |flush: bool| {
+            let mut s = GenQueryOutputStream::new(true);
+            for chunk in data.as_bytes().chunks(777) {
+                s.write_all(chunk).unwrap();
+                if flush {
+                    s.flush().unwrap();
+                }
+            }
+            s.close().unwrap();
+            match s.get_result() {
+                GenQueryResult::SimpleResult { data } => data,
+                other => panic!("{:?}", class_of(&other)),
+            }
+        };
+        let plain = compressed(false);
+        assert_eq!(compressed(true), plain);
+        assert_eq!(plain[..10], [0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff]);
     }
 
     fn run_multibyte_write_test(data: &str, result_class: ResultClass, output_compressed: bool) {

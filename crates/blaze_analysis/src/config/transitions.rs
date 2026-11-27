@@ -999,7 +999,10 @@ pub fn starlark_defined_config_transition_of(
     // SAFETY: both values live on frozen .bzl heaps that BZL_LOAD keeps in the build arena
     // (PORT: keep-alive), as `StarlarkCallable::to_owned_frozen_value` relies on. The
     // transition is held by this memo (same arena, released before the heaps) and by values of
-    // the command's evaluators; the arena is released only once no evaluator is left.
+    // the command's evaluators (the kept graph of a server included, which holds a lease); the
+    // arena is released only once no evaluator is left. `StarlarkDefinedConfigTransition::
+    // from_parts` stamps the transition with the arena generation and checks it at every read
+    // of the object or the implementation, so a holder past a release fails loudly.
     let implementation = unsafe { OwnedFrozenValue::new(FrozenHeapRef::default(), implementation) };
     // AnalysisTestTransition.changedSettings: the dict values are Starlark objects.
     let changed_settings: Vec<(String, blaze_build_config::starlark_transition::JavaObject)> =

@@ -176,8 +176,10 @@ impl Action for ExtraAction {
     fn get_effective_environment(
         &self,
         client_env: &IndexMap<String, String>,
+        path_mapper: &dyn blaze_actions::actions::path_mapper::PathMapper,
     ) -> Result<IndexMap<String, String>, CommandLineExpansionException> {
-        self.spawn_action.get_effective_environment(client_env)
+        self.spawn_action
+            .get_effective_environment(client_env, path_mapper)
     }
 
     fn as_command_action(&self) -> Option<&dyn CommandAction> {

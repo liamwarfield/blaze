@@ -184,6 +184,17 @@ impl ActionLookupData {
     /// Index of the action in question in the node keyed by [`Self::get_action_lookup_key`].
     /// Should be passed to `ActionLookupValue#getAction`.
     // Java: com/google/devtools/build/lib/actions/ActionLookupData.java:81 ActionLookupData.getActionIndex
+    // Java: com/google/devtools/build/lib/actions/ActionLookupData.java:127 ActionLookupData.ActionLookupData0.getActionIndex
+    // Java: com/google/devtools/build/lib/actions/ActionLookupData.java:138 ActionLookupData.ActionLookupData1.getActionIndex
+    // Java: com/google/devtools/build/lib/actions/ActionLookupData.java:149 ActionLookupData.ActionLookupData2.getActionIndex
+    // Java: com/google/devtools/build/lib/actions/ActionLookupData.java:160 ActionLookupData.ActionLookupData3.getActionIndex
+    // Java: com/google/devtools/build/lib/actions/ActionLookupData.java:171 ActionLookupData.ActionLookupData4.getActionIndex
+    // Java: com/google/devtools/build/lib/actions/ActionLookupData.java:182 ActionLookupData.ActionLookupData5.getActionIndex
+    // Java: com/google/devtools/build/lib/actions/ActionLookupData.java:193 ActionLookupData.ActionLookupData6.getActionIndex
+    // Java: com/google/devtools/build/lib/actions/ActionLookupData.java:204 ActionLookupData.ActionLookupData7.getActionIndex
+    // Java: com/google/devtools/build/lib/actions/ActionLookupData.java:215 ActionLookupData.ActionLookupData8.getActionIndex
+    // Java: com/google/devtools/build/lib/actions/ActionLookupData.java:226 ActionLookupData.ActionLookupData9.getActionIndex
+    // Java: com/google/devtools/build/lib/actions/ActionLookupData.java:240 ActionLookupData.ActionLookupDataN.getActionIndex
     pub fn get_action_index(&self) -> i32 {
         self.action_index
     }

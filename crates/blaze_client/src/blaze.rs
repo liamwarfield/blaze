@@ -2917,7 +2917,7 @@ fn run_launcher(
     // PORT: Blaze-only: the daemon is this executable; see crate::binary_identity.
     if mode == ServerMode::Daemon {
         blaze_server.binary_identity_ =
-            crate::binary_identity::identity(self_path, &startup_options.install_base);
+            crate::binary_identity::identity(self_path, &startup_options.output_user_root);
     }
 
     blaze_server.connect();

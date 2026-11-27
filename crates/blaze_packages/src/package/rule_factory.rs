@@ -218,6 +218,10 @@ struct GeneratorNameHeaps(Mutex<Vec<FrozenHeapRef>>);
 impl blaze_util::build_arena::ArenaSlot for GeneratorNameHeaps {
     const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
         blaze_util::build_arena::ReleaseOrder::Heaps;
+
+    fn held_count(&self) -> usize {
+        self.0.lock().len()
+    }
 }
 
 /// A Starlark string value for `generator_name`, valid for any heap lifetime while the build

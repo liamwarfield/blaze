@@ -130,8 +130,8 @@ pub fn execute(
         analysis_result = Some(result);
     } else {
         reporter.handle(&Event::progress("Loading complete."));
-        // PORT: NoAnalyzeEvent (the build event of --noanalyze) is the command's (blaze_bep
-        // bep_module.rs).
+        // env.getReporter().post(new NoAnalyzeEvent()): posted by the caller through
+        // `BuildEventHooks::no_analyze` (the event is blaze_bep's), right after this returns.
         let failure_detail: Option<FailureDetail> =
             build_view::create_analysis_failure_detail(target_pattern_phase_value, None);
         if let Some(failure_detail) = failure_detail {

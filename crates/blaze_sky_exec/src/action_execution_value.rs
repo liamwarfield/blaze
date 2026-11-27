@@ -159,6 +159,7 @@ impl ActionExecutionValue {
 
     /// Returns metadata for a given artifact, if that metadata is cached in this value.
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:162 ActionExecutionValue.getExistingFileArtifactValue
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:358 ActionExecutionValue.SingleOutputFile.getExistingFileArtifactValue
     pub fn get_existing_file_artifact_value(
         &self,
         artifact: &Artifact,
@@ -176,21 +177,32 @@ impl ActionExecutionValue {
 
     /// `getTreeArtifactValue(Artifact)`.
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:184 ActionExecutionValue.getTreeArtifactValue
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:439 ActionExecutionValue.SingleTree.getTreeArtifactValue
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:473 ActionExecutionValue.MultiTree.getTreeArtifactValue
     pub fn get_tree_artifact_value(&self, artifact: &Artifact) -> Option<&Arc<TreeArtifactValue>> {
         self.tree_artifact_data.get(artifact)
     }
 
     /// `getAllFileValues()`.
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:208 ActionExecutionValue.getAllFileValues
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:367 ActionExecutionValue.SingleOutputFile.getAllFileValues
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:421 ActionExecutionValue.MultiOutputFile.getAllFileValues
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:451 ActionExecutionValue.SingleTree.getAllFileValues
     pub fn get_all_file_values(&self) -> &IndexMap<Artifact, FileArtifactValue> {
         &self.artifact_data
     }
 
     /// `getAllTreeArtifactValues()`.
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:211 ActionExecutionValue.getAllTreeArtifactValues
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:446 ActionExecutionValue.SingleTree.getAllTreeArtifactValues
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:480 ActionExecutionValue.MultiTree.getAllTreeArtifactValues
     pub fn get_all_tree_artifact_values(&self) -> &IndexMap<Artifact, Arc<TreeArtifactValue>> {
         &self.tree_artifact_data
     }
 
     /// `getRichArtifactData()` (a runfiles tree's `RunfilesArtifactValue`).
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:215 ActionExecutionValue.getRichArtifactData
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:384 ActionExecutionValue.WithRichData.getRichArtifactData
     pub fn get_rich_artifact_data(&self) -> Option<&Arc<RunfilesArtifactValue>> {
         self.rich_artifact_data.as_ref()
     }

@@ -62,6 +62,7 @@ pub trait ActionContextRegistry: Send + Sync {
 /// `getContext(T.class)` for a context registered through
 /// [`ActionContextRegistry::get_context_any`] under `TypeId::of::<T>()`. Register the context as
 /// `Arc<T>` (wrapped as `Arc<dyn Any>`), so trait-object contexts use `T = Arc<dyn Trait>`.
+// Java: com/google/devtools/build/lib/actions/ActionContext.java:46 ActionContext.ActionContextRegistry.getContext
 pub fn get_context<T: Send + Sync + 'static>(
     registry: &(impl ActionContextRegistry + ?Sized),
 ) -> Option<Arc<T>> {
@@ -733,10 +734,12 @@ impl SpawnExecutedEvent {
     }
 
     /// `getSpawn().getMnemonic()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnExecutedEvent.java:52 SpawnExecutedEvent.getSpawn
     pub fn get_spawn_mnemonic(&self) -> &str {
         &self.spawn_mnemonic
     }
     /// `getActionMetadata().getOwner()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnExecutedEvent.java:67 SpawnExecutedEvent.getActionMetadata
     pub fn get_action_owner(&self) -> &ActionOwner {
         &self.action_owner
     }
@@ -753,18 +756,22 @@ impl SpawnExecutedEvent {
         &self.action_primary_output
     }
     /// `getExitCode()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnExecutedEvent.java:72 SpawnExecutedEvent.getExitCode
     pub fn get_exit_code(&self) -> i32 {
         self.result.exit_code()
     }
     /// `getSpawnResult()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnExecutedEvent.java:77 SpawnExecutedEvent.getSpawnResult
     pub fn get_spawn_result(&self) -> &SpawnResult {
         &self.result
     }
     /// `getStartTimeInstant()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnExecutedEvent.java:82 SpawnExecutedEvent.getStartTimeInstant
     pub fn get_start_time_instant(&self) -> SystemTime {
         self.start_time_instant
     }
     /// `getSpawnIdentifier()`.
+    // Java: com/google/devtools/build/lib/actions/SpawnExecutedEvent.java:87 SpawnExecutedEvent.getSpawnIdentifier
     pub fn get_spawn_identifier(&self) -> Option<&str> {
         self.spawn_identifier.as_deref()
     }

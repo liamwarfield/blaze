@@ -742,6 +742,10 @@ struct KeepAlive(Mutex<Vec<FrozenModule>>);
 impl blaze_util::build_arena::ArenaSlot for KeepAlive {
     const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
         blaze_util::build_arena::ReleaseOrder::Heaps;
+
+    fn held_count(&self) -> usize {
+        self.0.lock().len()
+    }
 }
 
 /// `blaze_starlark::eval::exec_module`, plus the module's extra value (its

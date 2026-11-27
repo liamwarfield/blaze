@@ -82,12 +82,24 @@ pub enum ReleaseOrder {
 pub trait ArenaSlot: Default + Send + Sync + 'static {
     /// When the slot is dropped at a release.
     const RELEASE_ORDER: ReleaseOrder;
+
+    /// How many entries (heaps, modules) the slot holds now, for the server's diagnostics
+    /// ([`slot_counts`]); 0 for slots that do not count.
+    fn held_count(&self) -> usize {
+        0
+    }
 }
 
 struct Slot {
     type_id: TypeId,
     order: ReleaseOrder,
     value: Arc<dyn Any + Send + Sync>,
+    name: &'static str,
+    count: fn(&Arc<dyn Any + Send + Sync>) -> usize,
+}
+
+fn count_of<T: ArenaSlot>(value: &Arc<dyn Any + Send + Sync>) -> usize {
+    downcast::<T>(value).held_count()
 }
 
 /// The slots of one arena.
@@ -116,6 +128,8 @@ impl BuildArena {
             type_id,
             order: T::RELEASE_ORDER,
             value: value.clone(),
+            name: std::any::type_name::<T>(),
+            count: count_of::<T>,
         });
         value
     }
@@ -187,6 +201,18 @@ impl std::fmt::Debug for Lease {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("build_arena::Lease")
     }
+}
+
+/// The entries each counting slot of the current arena holds (`(type name, count)`, slots that
+/// count only): Blaze-only diagnostics of what a kept graph keeps alive.
+pub fn slot_counts() -> Vec<(&'static str, usize)> {
+    let arena = CURRENT.lock().arena.clone();
+    let slots = arena.slots.read();
+    slots
+        .iter()
+        .map(|s| (s.name, (s.count)(&s.value)))
+        .filter(|(_, n)| *n > 0)
+        .collect()
 }
 
 /// The number of leases held now.

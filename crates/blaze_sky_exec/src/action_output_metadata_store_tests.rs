@@ -949,9 +949,6 @@ fn cannot_enter_execution_mode_twice() {
 
 // Java: src/test/java/com/google/devtools/build/lib/skyframe/ActionOutputMetadataStoreTest.java:714 ActionOutputMetadataStoreTest.fileArtifactValueFromArtifactCompatibleWithGetMetadata_changed
 #[test]
-#[ignore = "FileArtifactValue.couldBeModifiedSince (actions/FileArtifactValue.java:235) is not \
-            ported in blaze_exec's FileArtifactValue"]
-#[allow(unreachable_code, unused_variables, clippy::diverging_sub_expression)]
 fn file_artifact_value_from_artifact_compatible_with_get_metadata_changed() {
     let f = Fixture::new();
     let artifact = create_artifact_with_root_relative_path(&f.output_root, "output");
@@ -971,16 +968,13 @@ fn file_artifact_value_from_artifact_compatible_with_get_metadata_changed() {
 
     // assertThat(fileArtifactValueFromArtifactResult.couldBeModifiedSince(getMetadataResult))
     //     .isTrue();
-    let could_be_modified_since: bool =
-        blaze_util::unported!("FileArtifactValue.couldBeModifiedSince");
+    let could_be_modified_since = file_artifact_value_from_artifact_result
+        .could_be_modified_since(get_metadata_result.as_ref().unwrap());
     assert!(could_be_modified_since);
 }
 
 // Java: src/test/java/com/google/devtools/build/lib/skyframe/ActionOutputMetadataStoreTest.java:735 ActionOutputMetadataStoreTest.fileArtifactValueFromArtifactCompatibleWithGetMetadata_notChanged
 #[test]
-#[ignore = "FileArtifactValue.couldBeModifiedSince (actions/FileArtifactValue.java:235) is not \
-            ported in blaze_exec's FileArtifactValue"]
-#[allow(unreachable_code, unused_variables, clippy::diverging_sub_expression)]
 fn file_artifact_value_from_artifact_compatible_with_get_metadata_not_changed() {
     let f = Fixture::new();
     let artifact = create_artifact_with_root_relative_path(&f.output_root, "output");
@@ -999,8 +993,8 @@ fn file_artifact_value_from_artifact_compatible_with_get_metadata_not_changed() 
 
     // assertThat(fileArtifactValueFromArtifactResult.couldBeModifiedSince(getMetadataResult))
     //     .isFalse();
-    let could_be_modified_since: bool =
-        blaze_util::unported!("FileArtifactValue.couldBeModifiedSince");
+    let could_be_modified_since = file_artifact_value_from_artifact_result
+        .could_be_modified_since(get_metadata_result.as_ref().unwrap());
     assert!(!could_be_modified_since);
 }
 

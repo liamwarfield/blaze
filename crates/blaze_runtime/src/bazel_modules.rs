@@ -57,6 +57,13 @@ use crate::options_result::OptionsParsingResult;
 /// `BlazeRuntime.Builder.build` appends a `DummyMetricsModule` only when no module posts a
 /// `BuildMetricsEvent`; `MetricsModule.postsBuildMetricsEvent` returns true, so Bazel's list is
 /// used as is.
+// DummyMetricsModule is added only when no module posts the BuildMetricsEvent (see above):
+// PORT: skipped, not in Bazel's module list: DummyMetricsModule.beforeCommand, DummyMetricsModule.onBuildComplete
+// PORT: skipped, not in Bazel's module list: DummyMetricsModule.postsBuildMetricsEvent
+// Bazel's main registers no BlazeService (BlazeRuntime.Builder.addBlazeService):
+// PORT: skipped, default only (Bazel registers no service): BlazeService.getStartupOptions
+// PORT: skipped, default only (Bazel registers no service): BlazeService.getCommonCommandOptions
+// PORT: skipped, default only (Bazel registers no service): BlazeService.getCommandOptions
 // Java: com/google/devtools/build/lib/bazel/Bazel.java:41 Bazel.BAZEL_MODULES
 pub fn bazel_modules() -> Vec<Arc<dyn BlazeModule>> {
     vec![
@@ -296,7 +303,12 @@ impl BlazeModule for CommandLogModule {
                 .flush()
                 .and_then(|()| log_output_stream.close());
             if let Err(e) = closed {
-                // PORT: the logger.atWarning line is not written (no server logger).
+                blaze_util::server_logger::warning(
+                    "com.google.devtools.build.lib.runtime.CommandLogModule",
+                    "commandComplete",
+                    "I/O exception closing log",
+                    Some(&format!("java.io.IOException: {}", java_io_message(&e))),
+                );
                 let msg = format!("I/O exception closing log: {}", java_io_message(&e));
                 match local_env {
                     Some(reporter) => {
@@ -838,14 +850,121 @@ impl BlazeModule for WorkerModule {
 }
 
 /// Enables the caching of file digests in `DigestUtils`.
-/// PORT: skipped, incremental (executorInit, commandComplete size the digest cache the server
-/// keeps between commands and log its statistics).
+///
+/// PORT: the module's fields live in a process static, because the build command reaches the
+/// module's `executorInit` statically (`commands/build.rs`) rather than through the module list;
+/// a server has one runtime, so one instance, as in Java.
 // Java: com/google/devtools/build/lib/runtime/CacheFileDigestsModule.java:26 CacheFileDigestsModule
 pub struct CacheFileDigestsModule;
+
+/// The fields of [`CacheFileDigestsModule`].
+#[derive(Default)]
+struct CacheFileDigestsModuleState {
+    /// Stats gathered at the beginning of a command, to compute deltas on completion.
+    stats: Option<blaze_exec::actions::cache::digest_utils::CacheStats>,
+    /// Last known size of the cache. Changes to this value cause the cache to be reinitialized.
+    /// `None` if we don't know anything about the last value yet (i.e. before any command has
+    /// been run).
+    last_known_cache_size: Option<i64>,
+}
+
+static CACHE_FILE_DIGESTS_MODULE: parking_lot::Mutex<Option<CacheFileDigestsModuleState>> =
+    parking_lot::Mutex::new(None);
+
+const CACHE_FILE_DIGESTS_MODULE_CLASS: &str =
+    "com.google.devtools.build.lib.runtime.CacheFileDigestsModule";
+
+impl CacheFileDigestsModule {
+    /// Adds a line to the log with cache statistics.
+    // Java: com/google/devtools/build/lib/runtime/CacheFileDigestsModule.java:47 CacheFileDigestsModule.logStats
+    fn log_stats(message: &str, stats: &blaze_exec::actions::cache::digest_utils::CacheStats) {
+        blaze_util::server_logger::info(
+            CACHE_FILE_DIGESTS_MODULE_CLASS,
+            "logStats",
+            &format!(
+                "{}: hit count={}, miss count={}, hit rate={}, eviction count={}",
+                message,
+                stats.hit_count,
+                stats.miss_count,
+                java_format_g(stats.hit_rate()),
+                stats.eviction_count
+            ),
+        );
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/CacheFileDigestsModule.java:53 CacheFileDigestsModule.executorInit
+    pub fn executor_init(cache_size_for_computed_file_digests: i64) {
+        use blaze_exec::actions::cache::digest_utils::DigestUtils;
+        let mut guard = CACHE_FILE_DIGESTS_MODULE.lock();
+        let state = guard.get_or_insert_with(Default::default);
+        if state.last_known_cache_size != Some(cache_size_for_computed_file_digests) {
+            blaze_util::server_logger::info(
+                CACHE_FILE_DIGESTS_MODULE_CLASS,
+                "executorInit",
+                &format!(
+                    "Reconfiguring cache with size={}",
+                    cache_size_for_computed_file_digests
+                ),
+            );
+            DigestUtils::configure_cache(cache_size_for_computed_file_digests);
+            state.last_known_cache_size = Some(cache_size_for_computed_file_digests);
+        }
+
+        if cache_size_for_computed_file_digests == 0 {
+            state.stats = None;
+            blaze_util::server_logger::info(
+                CACHE_FILE_DIGESTS_MODULE_CLASS,
+                "executorInit",
+                "Disabled cache",
+            );
+        } else {
+            let stats = DigestUtils::get_cache_stats();
+            Self::log_stats("Accumulated cache stats before command", &stats);
+            state.stats = Some(stats);
+        }
+    }
+}
+
+/// Java `String.format("%g", x)` for `0 <= x <= 1` (a hit rate): six significant digits, fixed
+/// notation (Java switches to scientific notation below 10^-4).
+fn java_format_g(x: f64) -> String {
+    if x == 0.0 {
+        return "0.00000".to_string();
+    }
+    if x < 1e-4 {
+        // %g with precision 6: one digit, 5 decimals, the exponent with at least two digits.
+        let exponent = x.log10().floor() as i32;
+        let mantissa = x / 10f64.powi(exponent);
+        return format!(
+            "{:.5}e{}{:02}",
+            mantissa,
+            if exponent < 0 { '-' } else { '+' },
+            exponent.abs()
+        );
+    }
+    let exponent = x.log10().floor() as i32;
+    let decimals = (5 - exponent).max(0) as usize;
+    format!("{:.*}", decimals, x)
+}
 
 impl BlazeModule for CacheFileDigestsModule {
     fn name(&self) -> &'static str {
         "CacheFileDigestsModule"
+    }
+
+    // Java: com/google/devtools/build/lib/runtime/CacheFileDigestsModule.java:73 CacheFileDigestsModule.commandComplete
+    fn command_complete(&self) {
+        use blaze_exec::actions::cache::digest_utils::DigestUtils;
+        let mut guard = CACHE_FILE_DIGESTS_MODULE.lock();
+        let Some(state) = guard.as_mut() else {
+            return;
+        };
+        if let Some(stats) = state.stats.take() {
+            let new_stats = DigestUtils::get_cache_stats();
+            Self::log_stats("Accumulated cache stats after command", &new_stats);
+            Self::log_stats("Cache stats for finished command", &new_stats.minus(&stats));
+            // Silence stats until next command that uses the executor.
+        }
     }
 }
 
@@ -1136,10 +1255,9 @@ impl BlazeModule for BlockWaitingModule {
 
 /// Bazel's BES module (`BuildEventServiceModule<BuildEventServiceOptions>`).
 /// beforeCommand and afterCommand set up and close the Build Event Protocol of a command
-/// (`crate::commands::bep::BepCommandSupport`). PORT: the upload to a Build Event Service
-/// (`--bes_backend`: workspaceInit, getBesKeywords, getBesClient, clearBesClient,
-/// getInvocationIdPrefix, getBuildRequestIdPrefix) fails loudly (`crate::unported_options`).
-/// getOutputListener returns the command's BEP output listener (stdout and stderr in the BEP's
+/// (`crate::commands::bep::BepCommandSupport`); the upload to a Build Event Service
+/// (`--bes_backend`: getBesKeywords, getBesClient, clearBesClient, getInvocationIdPrefix,
+/// getBuildRequestIdPrefix) is `blaze_bes::module`. getOutputListener returns the command's BEP output listener (stdout and stderr in the BEP's
 /// progress events). blazeShutdownOnCrash closes the command's streamer with an abort reason
 /// (`BepCommandSupport::blaze_shutdown_on_crash`).
 // Java: com/google/devtools/build/lib/buildeventservice/BazelBuildEventServiceModule.java:52 BazelBuildEventServiceModule
@@ -1188,6 +1306,11 @@ impl BlazeModule for BazelBuildEventServiceModule {
             return Ok(());
         };
         bep.after_command()
+    }
+
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:512 BuildEventServiceModule.blazeShutdown
+    fn blaze_shutdown(&self) {
+        crate::commands::bep::blaze_shutdown_pending_uploads();
     }
 
     // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:500 BuildEventServiceModule.blazeShutdownOnCrash

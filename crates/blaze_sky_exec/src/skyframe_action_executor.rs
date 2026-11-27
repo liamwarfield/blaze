@@ -118,6 +118,10 @@ pub struct ActionContexts {
 impl ActionContexts {
     /// Registers `context` as the implementation of `T` (Java `ActionContext.ActionContextRegistry`
     /// `register(T.class, context)`). For a trait-object context, `T = Arc<dyn Trait>`.
+    // Java: com/google/devtools/build/lib/exec/ModuleActionContextRegistry.java:132 ModuleActionContextRegistry.Builder.register
+    // (A later registration of a type replaces the earlier one: the last registered context wins,
+    // as `ModuleActionContextRegistry.Builder.build` picks it for an empty restriction.)
+    // PORT: skipped, ModuleActionContextRegistry.logActionContexts: java.log logging.
     pub fn register<T: Send + Sync + 'static>(&mut self, context: Arc<T>) {
         self.contexts
             .insert(TypeId::of::<T>(), context as ActionContextRef);
@@ -129,6 +133,8 @@ impl ActionContexts {
         self.contexts.insert(type_id, context);
     }
 
+    // Java: com/google/devtools/build/lib/exec/ModuleActionContextRegistry.java:65 ModuleActionContextRegistry.getContext
+    // Java: com/google/devtools/build/lib/exec/BlazeExecutor.java:110 BlazeExecutor.getContext
     pub fn get_any(&self, type_id: TypeId) -> Option<ActionContextRef> {
         self.contexts.get(&type_id).cloned()
     }
@@ -329,7 +335,7 @@ impl ActionExecutionState {
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:205 ActionExecutionState.obsolete
     fn obsolete(
         &self,
-        requester: &ActionLookupData,
+        requester: Option<&ActionLookupData>,
         build_action_map: &mut HashMap<OwnerlessArtifactWrapper, ActionExecutionState>,
         ownerless_artifact_wrapper: &OwnerlessArtifactWrapper,
     ) {
@@ -339,7 +345,7 @@ impl ActionExecutionState {
             self.result.get(),
             Some(r) if !matches!(r, Err(ExecutionFailure::LostInputs(_)))
         );
-        if self.action_lookup_data == *requester {
+        if requester == Some(&self.action_lookup_data) {
             // An action state's owner only obsoletes it when rewinding. The lost inputs exception
             // thrown from ActionStepOrResult#run left its state undone.
             check_state!(
@@ -377,7 +383,7 @@ impl ActionExecutionState {
             removed_state
                 .as_ref()
                 .is_some_and(|s| Arc::ptr_eq(&s.result, &self.result)),
-            "removed unexpected state from buildActionMap; requester: {}, this: {}, removed: {:?}",
+            "removed unexpected state from buildActionMap; requester: {:?}, this: {}, removed: {:?}",
             requester,
             self.action_lookup_data,
             removed_state
@@ -549,6 +555,7 @@ pub trait ProgressSupplier: Send + Sync {
 // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1994 SkyframeActionExecutor.ActionCompletedReceiver
 pub trait ActionCompletedReceiver: Send + Sync {
     /// Receives a completed action.
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:256 ActionExecutionState.SharedActionCallback.actionCompleted
     fn action_completed(&self, action_lookup_data: &ActionLookupData);
 }
 
@@ -945,6 +952,7 @@ impl SkyframeActionExecutor {
         &self.action_key_context
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:409 SkyframeActionExecutor.getActionContextRegistry
     pub fn get_contexts(&self) -> &ActionContexts {
         &self.contexts
     }
@@ -984,6 +992,22 @@ impl SkyframeActionExecutor {
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1025 SkyframeActionExecutor.isBuilderAborting
     fn is_builder_aborting(&self) -> bool {
         self.had_execution_error() && !self.keep_going
+    }
+
+    /// `invocationRetriesEnabled()`: `--experimental_remote_cache_eviction_retries` > 0.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:444 SkyframeActionExecutor.invocationRetriesEnabled
+    pub fn invocation_retries_enabled(&self) -> bool {
+        self.lost_inputs_policy
+            .as_ref()
+            .is_some_and(|p| p.invocation_retries_enabled)
+    }
+
+    /// `listener.post(new LostInputsEvent(missingDigests))`: the subscribers' handler of the
+    /// lost-inputs policy.
+    pub fn post_lost_inputs_event(&self, missing_digests: &[String]) {
+        if let Some(policy) = &self.lost_inputs_policy {
+            (policy.on_lost_inputs)(missing_digests);
+        }
     }
 
     /// `rewindingEnabled()`: `--rewind_lost_inputs`.
@@ -1087,7 +1111,7 @@ impl SkyframeActionExecutor {
                 // If an action failed from lost inputs during input discovery then it won't have
                 // a state to obsolete.
                 state.obsolete(
-                    failed_key,
+                    Some(failed_key),
                     &mut build_action_map,
                     &ownerless_artifact_wrapper,
                 );
@@ -1104,6 +1128,25 @@ impl SkyframeActionExecutor {
 
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:593 SkyframeActionExecutor.prepareDepForRewinding
     pub fn prepare_dep_for_rewinding(&self, failed_key: &ActionLookupData, dep: &ActionRef) {
+        self.prepare_dep_for_rewinding_requested_by(Some(failed_key), dep);
+    }
+
+    /// `prepareDepForRewinding(failedKey, dep)` for a top-level key (a target or aspect
+    /// completion), which owns no action execution state.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:593 SkyframeActionExecutor.prepareDepForRewinding
+    pub fn prepare_dep_for_rewinding_of_top_level_key(
+        &self,
+        _failed_key: &blaze_skyframe::SkyKey,
+        dep: &ActionRef,
+    ) {
+        self.prepare_dep_for_rewinding_requested_by(None, dep);
+    }
+
+    fn prepare_dep_for_rewinding_requested_by(
+        &self,
+        failed_key: Option<&ActionLookupData>,
+        dep: &ActionRef,
+    ) {
         let ownerless_artifact_wrapper = OwnerlessArtifactWrapper(dep.get_primary_output());
         if blaze_exec::actions::action_template::as_action_template(dep.as_ref()).is_some() {
             // ActionTemplate does not have an ActionExecutionState and it is not executed, so we
@@ -1152,6 +1195,26 @@ impl SkyframeActionExecutor {
         {
             state.rewind_signal.set(RewindOutcome::Failed(failure));
         }
+    }
+
+    /// `outputService.getRewoundActionSynchronizer()`: the synchronizer the remote module
+    /// registered as an action context, or `RewoundActionSynchronizer.NOOP`.
+    // Java: com/google/devtools/build/lib/vfs/OutputService.java:270 OutputService.getRewoundActionSynchronizer
+    fn get_rewound_action_synchronizer(
+        &self,
+    ) -> Arc<dyn blaze_exec::exec::rewound_action_synchronizer::RewoundActionSynchronizer> {
+        self.contexts
+            .get_any(TypeId::of::<
+                Arc<dyn blaze_exec::exec::rewound_action_synchronizer::RewoundActionSynchronizer>,
+            >())
+            .and_then(|c| {
+                c.downcast::<Arc<
+                    dyn blaze_exec::exec::rewound_action_synchronizer::RewoundActionSynchronizer,
+                >>()
+                .ok()
+            })
+            .map(|c| (*c).clone())
+            .unwrap_or_else(|| Arc::new(blaze_exec::exec::rewound_action_synchronizer::NoopRewoundActionSynchronizer))
     }
 
     /// `probeActionExecution`: whether this action's (shared) execution already started.
@@ -1470,6 +1533,12 @@ impl SkyframeActionExecutor {
             // REMOTE_FILE_SYSTEM answers true to inMemoryFileSystem() (OutputService.java:82).
             // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1128 ActionRunner.run
             let action_file_system = output_metadata_store.get_action_file_system();
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1124 ActionRunner.run
+            let rewound_action_synchronizer = self.get_rewound_action_synchronizer();
+            let was_rewound = self.was_rewound(action.as_ref());
+            let _outer_lock = rewound_action_synchronizer
+                .enter_action_preparation(action.as_ref(), was_rewound)
+                .map_err(|_| ExecutionFailure::Interrupted)?;
             // if (actionFileSystemType().shouldDoEagerActionPrep()):
             // This call generally deletes any files at locations that are declared outputs of the
             // action, although some actions perform additional work, while others intentionally
@@ -1505,6 +1574,14 @@ impl SkyframeActionExecutor {
             } else {
                 self.create_output_directories(action.as_ref())?;
             }
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1160 ActionRunner.run
+            let _inner_lock = rewound_action_synchronizer
+                .enter_action_execution(
+                    action.as_ref(),
+                    was_rewound,
+                    context.get_input_metadata_provider(),
+                )
+                .map_err(|_| ExecutionFailure::Interrupted)?;
             self.execute_action_inner(env.listener(), action, &context)
         })();
         // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1199 ActionRunner.notifyActionCompletion
@@ -1932,18 +2009,19 @@ impl SkyframeActionExecutor {
     ) -> std::io::Result<()> {
         use crate::metadata_consumer_for_metrics::MetadataConsumerForMetrics as _;
         let Some(metadata) = metadata else {
-            // BugReport.sendBugReport(new IllegalStateException(...)): not ported.
-            blaze_util::unported!(
-                "BugReport.sendBugReport",
+            // PORT: the report names the output by its exec path and leaves out the metadata
+            // store's `toString` (the server log is the only reader).
+            blaze_util::bug_report::send_bug_report(&format!(
                 "Metadata for {} not present (for {})",
                 output.get_exec_path_string(),
                 action_for_debugging.to_string_java()
-            );
+            ));
+            return Ok(());
         };
         let metrics = &self.artifact_metrics;
         if output.is_fileset() {
             blaze_util::unported!(
-                "SkyframeActionExecutor.addOutputToMetrics",
+                "SkyframeActionExecutor.addOutputToMetrics (unreachable in Bazel: only the non-open-sourced fileset rule makes fileset artifacts, packages/OutputFile.java:123)",
                 "fileset output {}",
                 output.get_exec_path_string()
             );
@@ -2252,14 +2330,18 @@ impl SkyframeActionExecutor {
         if let Some(symlink_tree_action) = action.as_any().downcast_ref::<SymlinkTreeAction>() {
             // Java: com/google/devtools/build/lib/analysis/actions/SymlinkTreeAction.java:229 SymlinkTreeAction.reconstructRichDataOnActionCacheHit
             if symlink_tree_action.get_primary_output().is_fileset() {
-                blaze_util::unported!("FilesetOutputTree.forward");
+                blaze_util::unported!(
+                    "FilesetOutputTree.forward (unreachable in Bazel: only the non-open-sourced fileset rule makes fileset artifacts, packages/OutputFile.java:123)"
+                );
             }
             return None;
         }
         if let Some(symlink_action) = action.as_any().downcast_ref::<SymlinkAction>() {
             // Java: com/google/devtools/build/lib/analysis/actions/SymlinkAction.java:210 SymlinkAction.reconstructRichDataOnActionCacheHit
             if symlink_action.is_fileset() {
-                blaze_util::unported!("FilesetOutputTree.forward");
+                blaze_util::unported!(
+                    "FilesetOutputTree.forward (unreachable in Bazel: only the non-open-sourced fileset rule makes fileset artifacts, packages/OutputFile.java:123)"
+                );
             }
             return None;
         }
@@ -2274,7 +2356,9 @@ impl SkyframeActionExecutor {
         }
         for input in action.get_inputs().to_list().iter() {
             if input.is_fileset() {
-                blaze_util::unported!("ActionCacheChecker (fileset input)");
+                blaze_util::unported!(
+                    "ActionCacheChecker (fileset input) (unreachable in Bazel: only the non-open-sourced fileset rule makes fileset artifacts, packages/OutputFile.java:123)"
+                );
             }
         }
     }
@@ -2535,6 +2619,7 @@ impl SkyframeActionExecutor {
     /// For the action 'action' that failed due to 'message' with the output 'actionOutput',
     /// notify the user about the error.
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1850 SkyframeActionExecutor.printError
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1835 SkyframeActionExecutor.printError
     pub fn print_error(
         &self,
         message: &str,
@@ -2840,21 +2925,27 @@ struct ActionOutputEventData {
 }
 
 impl blaze_events::event::ProcessOutput for ActionOutputEventData {
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:2014 SkyframeActionExecutor.ActionOutputEventData.getStdOutPath
     fn get_std_out_path(&self) -> String {
         self.out_path.clone()
     }
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:2019 SkyframeActionExecutor.ActionOutputEventData.getStdOutSize
     fn get_std_out_size(&self) -> std::io::Result<i64> {
         Ok(self.out.len() as i64)
     }
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:2024 SkyframeActionExecutor.ActionOutputEventData.getStdOut
     fn get_std_out(&self) -> Vec<u8> {
         self.out.clone()
     }
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:2029 SkyframeActionExecutor.ActionOutputEventData.getStdErrPath
     fn get_std_err_path(&self) -> String {
         self.err_path.clone()
     }
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:2034 SkyframeActionExecutor.ActionOutputEventData.getStdErrSize
     fn get_std_err_size(&self) -> std::io::Result<i64> {
         Ok(self.err.len() as i64)
     }
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:2039 SkyframeActionExecutor.ActionOutputEventData.getStdErr
     fn get_std_err(&self) -> Vec<u8> {
         self.err.clone()
     }
@@ -4401,18 +4492,22 @@ impl ActionExecutionContext for ActionExecutionContextImpl<'_> {
     fn get_exec_root(&self) -> &Path {
         &self.exec_root
     }
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:354 ActionExecutionContext.getInputMetadataProvider
     fn get_input_metadata_provider(&self) -> &dyn InputMetadataProvider {
         &*self.input_metadata
     }
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:509 ActionExecutionContext.getFileOutErr
     fn get_file_out_err(&self) -> &FileOutErr {
         &self.file_out_err
     }
     fn get_client_env(&self) -> &IndexMap<String, String> {
         &self.executor.client_env
     }
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:432 ActionExecutionContext.getEventHandler
     fn get_event_handler(&self) -> &dyn ExtendedEventHandler {
         &*self.executor.reporter
     }
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:420 ActionExecutionContext.getClock
     fn get_clock(&self) -> &dyn Clock {
         &self.clock
     }
@@ -4470,6 +4565,7 @@ impl ActionExecutionContext for ActionExecutionContextImpl<'_> {
     /// `toExecException()` form the trait returns (see
     /// `ActionExecutionContext::check_for_lost_inputs`).
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1614 SkyframeActionExecutor.lostInputsCheck
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:626 ActionExecutionContext.LostInputsCheck.checkForLostInputs
     fn check_for_lost_inputs(&self) -> Result<(), ExecException> {
         match self.get_remote_action_file_system() {
             Some(action_file_system) => {

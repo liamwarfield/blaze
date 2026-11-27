@@ -120,10 +120,12 @@ struct IdentitySetMultimap {
 }
 
 impl IdentitySetMultimap {
+    // Java: com/google/devtools/build/lib/exec/StableSort.java:140 StableSort.IdentitySetMultimap.containsKey
     fn contains_key(&self, key: usize) -> bool {
         self.map.contains_key(&key)
     }
 
+    // Java: com/google/devtools/build/lib/exec/StableSort.java:144 StableSort.IdentitySetMultimap.get
     fn get(&self, key: usize) -> impl Iterator<Item = usize> + '_ {
         self.map
             .get(&key)
@@ -131,10 +133,12 @@ impl IdentitySetMultimap {
             .flat_map(|s| s.iter().copied())
     }
 
+    // Java: com/google/devtools/build/lib/exec/StableSort.java:148 StableSort.IdentitySetMultimap.put
     fn put(&mut self, key: usize, value: usize) {
         self.map.entry(key).or_default().insert(value);
     }
 
+    // Java: com/google/devtools/build/lib/exec/StableSort.java:152 StableSort.IdentitySetMultimap.remove
     fn remove(&mut self, key: usize, value: usize) {
         if let Some(value_set) = self.map.get_mut(&key) {
             value_set.shift_remove(&value);

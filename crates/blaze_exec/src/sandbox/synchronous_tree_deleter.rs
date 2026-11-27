@@ -14,5 +14,6 @@ impl TreeDeleter for SynchronousTreeDeleter {
     fn delete_tree(&self, path: &Path) -> std::io::Result<()> {
         path.delete_tree()
     }
+    // Java: com/google/devtools/build/lib/sandbox/SynchronousTreeDeleter.java:29 SynchronousTreeDeleter.shutdown
     fn shutdown(&self) {}
 }

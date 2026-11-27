@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Checks that a persistent Blaze server reuses its graph for a no-op rebuild.
+
+usage: scripts/incremental/reuse-check help
+       scripts/incremental/reuse-check run [--blaze B] [--keep]
+
+Writes a small workspace (a genrule that runs in the sandbox, a filegroup) under
+~/.cache/blaze/work/i3/reuse/ws and runs `build //...` three times on one daemon server
+(BLAZE_SERVER_MODE=daemon, BLAZE_INCREMENTAL_DEBUG=1, --max_idle_secs=60, --jobs=4). The second
+and third builds must print what Bazel prints for a no-op rebuild on a warm server:
+"INFO: Analyzed 2 targets (0 packages loaded, 0 targets configured)." and
+"INFO: 1 process: 1 internal.", and the server's debug output must contain no line saying the
+kept graph was discarded or not kept. Exit 1 otherwise (the failing lines are printed).
+
+This is the check for the regression of 2026-11-26 (a reference cycle kept the executor's
+evaluator alive, so every daemon command after a build that executed actions rebuilt the
+graph). The server is shut down at the end; the directory is deleted unless --keep.
+"""
+
+import os
+import shutil
+import signal
+import subprocess
+import sys
+
+HOME = os.path.expanduser("~")
+ROOT = os.path.join(HOME, ".cache/blaze/work/i3/reuse")
+REPO_CACHE = os.path.join(HOME, ".cache/blaze/repo-cache")
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("help", "-h", "--help"):
+        print(__doc__)
+        return 0
+    if sys.argv[1] != "run":
+        print(__doc__)
+        return 2
+    args = sys.argv[2:]
+    blaze = os.path.join(HOME, ".cache/blaze/work/i3/bin/blaze")
+    keep = "--keep" in args
+    if "--blaze" in args:
+        blaze = args[args.index("--blaze") + 1]
+    if os.path.isdir(ROOT):
+        subprocess.run(["chmod", "-R", "u+w", ROOT], capture_output=True)
+        shutil.rmtree(ROOT)
+    ws = os.path.join(ROOT, "ws")
+    out_root = os.path.join(ROOT, "ur")
+    os.makedirs(os.path.join(ws, "pkg"))
+    open(os.path.join(ws, "MODULE.bazel"), "w").close()
+    with open(os.path.join(ws, "pkg", "BUILD"), "w") as f:
+        f.write('genrule(name = "g", srcs = ["in.txt"], outs = ["out.txt"], cmd = "cp $< $@")\n'
+                'filegroup(name = "fg", srcs = [":g"])\n')
+    with open(os.path.join(ws, "pkg", "in.txt"), "w") as f:
+        f.write("x\n")
+    env = {"HOME": HOME, "PATH": "/usr/bin:/bin", "BLAZE_SERVER_MODE": "daemon",
+           "BLAZE_INCREMENTAL_DEBUG": "1"}
+    startup = [blaze, "--output_user_root=" + out_root, "--max_idle_secs=60", "--nohome_rc",
+               "--nosystem_rc"]
+    failures = []
+    try:
+        for i in range(3):
+            p = subprocess.run(startup + ["build", "--jobs=4", "--color=no", "--curses=no",
+                                          "--repository_cache=" + REPO_CACHE, "//..."],
+                               cwd=ws, env=env, capture_output=True, timeout=900)
+            err = p.stderr.decode("utf-8", "replace")
+            lines = [l for l in err.splitlines() if l.startswith("INFO: Analyzed")
+                     or l.startswith("INFO:") and "process" in l]
+            print("build %d: exit %d: %s" % (i + 1, p.returncode, " | ".join(lines)))
+            if p.returncode != 0:
+                failures.append("build %d exited %d" % (i + 1, p.returncode))
+            if i > 0:
+                if "INFO: Analyzed 2 targets (0 packages loaded, 0 targets configured)." not in err:
+                    failures.append("build %d analyzed again" % (i + 1))
+                if "INFO: 1 process: 1 internal." not in err:
+                    failures.append("build %d executed again" % (i + 1))
+    finally:
+        subprocess.run(startup + ["shutdown"], cwd=ws, env=env, capture_output=True,
+                       timeout=120)
+        for d in os.listdir(out_root) if os.path.isdir(out_root) else []:
+            try:
+                pid = int(open(os.path.join(out_root, d, "server", "server.pid.txt")).read())
+                os.kill(pid, signal.SIGKILL)
+            except Exception:
+                pass
+    for d in os.listdir(out_root) if os.path.isdir(out_root) else []:
+        jvm_out = os.path.join(out_root, d, "server", "jvm.out")
+        if os.path.exists(jvm_out):
+            for line in open(jvm_out, errors="replace"):
+                if "discarded" in line or "not kept" in line or "still referenced" in line:
+                    failures.append("server: " + line.strip())
+    for f in failures:
+        print("FAIL " + f)
+    if not keep and os.path.isdir(ROOT):
+        subprocess.run(["chmod", "-R", "u+w", ROOT], capture_output=True)
+        shutil.rmtree(ROOT)
+    print("reuse-check: %s" % ("FAILED" if failures else "ok"))
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

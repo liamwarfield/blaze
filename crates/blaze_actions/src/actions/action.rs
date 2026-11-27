@@ -213,6 +213,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
 
     /// Returns the mnemonic for this action.
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:324 AbstractAction.getMnemonic
+    // Java: com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java:58 ActionAnalysisMetadata.getMnemonic
     fn get_mnemonic(&self) -> String;
 
     /// See the javadoc for `Action` and [`Action::get_key`] for the contract of this method.
@@ -269,6 +270,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
 
     /// Returns the owner of this executable if this executable can supply verbose information.
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:118 AbstractAction.getOwner
+    // Java: com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java:43 ActionAnalysisMetadata.getOwner
     fn get_owner(&self) -> &ActionOwner {
         self.abstract_action().owner()
     }
@@ -358,6 +360,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
     }
 
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:157 AbstractAction.getOriginalInputs
+    // Java: com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java:143 ActionAnalysisMetadata.getOriginalInputs
     fn get_original_inputs(&self) -> NestedSet<Artifact> {
         check_state!(
             !self.discovers_inputs(),
@@ -367,16 +370,19 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
     }
 
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:200 AbstractAction.getSchedulingDependencies
+    // Java: com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java:152 ActionAnalysisMetadata.getSchedulingDependencies
     fn get_scheduling_dependencies(&self) -> NestedSet<Artifact> {
         NestedSetBuilder::empty_set(Order::STABLE_ORDER)
     }
 
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:222 AbstractAction.getTools
+    // Java: com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java:127 ActionAnalysisMetadata.getTools
     fn get_tools(&self) -> NestedSet<Artifact> {
         NestedSetBuilder::empty_set(Order::STABLE_ORDER)
     }
 
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:227 AbstractAction.getInputs
+    // Java: com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java:136 ActionAnalysisMetadata.getInputs
     fn get_inputs(&self) -> NestedSet<Artifact> {
         self.abstract_action().inputs()
     }
@@ -388,11 +394,10 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
 
     /// Returns the environment variables to set for this action, resolved against `client_env`.
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:236 AbstractAction.getEffectiveEnvironment
-    // PORT: the `PathMapper` argument is unused by AbstractAction; SpawnAction's override takes it
-    // through its own method.
     fn get_effective_environment(
         &self,
         client_env: &IndexMap<String, String>,
+        _path_mapper: &dyn crate::actions::path_mapper::PathMapper,
     ) -> Result<IndexMap<String, String>, CommandLineExpansionException> {
         let env = self.get_environment();
         let mut effective_environment = IndexMap::with_capacity(env.estimated_size());
@@ -402,6 +407,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
 
     /// Returns the set of client environment variables this action depends on.
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:246 AbstractAction.getClientEnvironmentVariables
+    // Java: com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java:163 ActionAnalysisMetadata.getClientEnvironmentVariables
     fn get_client_environment_variables(&self) -> Vec<String> {
         self.get_environment()
             .get_inherited_env()
@@ -410,6 +416,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
     }
 
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:251 AbstractAction.getOutputs
+    // Java: com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java:170 ActionAnalysisMetadata.getOutputs
     fn get_outputs(&self) -> Vec<Artifact> {
         self.abstract_action().outputs().to_vec()
     }
@@ -421,11 +428,13 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
     }
 
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:311 AbstractAction.getPrimaryOutput
+    // Java: com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java:214 ActionAnalysisMetadata.getPrimaryOutput
     fn get_primary_output(&self) -> Artifact {
         self.abstract_action().outputs()[0].clone()
     }
 
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:316 AbstractAction.getMandatoryInputs
+    // Java: com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java:226 ActionAnalysisMetadata.getMandatoryInputs
     fn get_mandatory_inputs(&self) -> NestedSet<Artifact> {
         self.get_inputs()
     }
@@ -446,6 +455,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
     }
 
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:352 AbstractAction.isShareable
+    // Java: com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java:51 ActionAnalysisMetadata.isShareable
     fn is_shareable(&self) -> bool {
         true
     }
@@ -523,11 +533,13 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
     }
 
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:421 AbstractAction.prettyPrint
+    // Java: com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java:104 ActionAnalysisMetadata.prettyPrint
     fn pretty_print(&self) -> String {
         format!("action '{}'", self.describe())
     }
 
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:422 AbstractAction.describe
+    // Java: com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java:107 ActionAnalysisMetadata.describe
     fn describe(&self) -> String {
         match self.get_progress_message(None) {
             Some(m) => m,
@@ -554,6 +566,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
     }
 
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:587 AbstractAction.getMandatoryOutputs
+    // Java: com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java:195 ActionAnalysisMetadata.getMandatoryOutputs
     fn get_mandatory_outputs(&self) -> Vec<Artifact> {
         Vec::new()
     }
@@ -600,6 +613,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
     /// PORT: Java passes the `ActionExecutionContext` (for include scanning); the actions that
     /// need it fail loudly here. `None` where Java returns null (a Skyframe restart).
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:606 AbstractAction.getInputFilesForExtraAction
+    // Java: com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java:184 ActionAnalysisMetadata.getInputFilesForExtraAction
     fn get_input_files_for_extra_action(&self) -> Option<NestedSet<Artifact>> {
         Some(NestedSetBuilder::empty_set(Order::STABLE_ORDER))
     }

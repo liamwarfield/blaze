@@ -151,6 +151,11 @@ pub trait PredicateWithMessage: fmt::Debug + Send + Sync {
     fn apply(&self, input: &AttrValue) -> bool;
 
     fn get_error_reason(&self, value: &AttrValue) -> String;
+
+    /// `this instanceof Attribute.AllowedValueSet`.
+    fn allowed_value_set(&self) -> Option<&AllowedValueSet> {
+        None
+    }
 }
 
 /// A shared [`PredicateWithMessage`]; equality is identity (Java does not override equals).
@@ -191,6 +196,10 @@ impl AllowedValueSet {
 }
 
 impl PredicateWithMessage for AllowedValueSet {
+    fn allowed_value_set(&self) -> Option<&AllowedValueSet> {
+        Some(self)
+    }
+
     // Java: com/google/devtools/build/lib/packages/Attribute.java:231 Attribute.AllowedValueSet.apply
     fn apply(&self, input: &AttrValue) -> bool {
         self.allowed_values.contains(input)

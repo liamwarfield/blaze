@@ -185,7 +185,7 @@ impl RunfilesTreeUpdater {
         // manifest, implying the symlinks exist and are already up to date. If the output
         // manifest is a symbolic link, it is likely a symbolic link to the input manifest, so we
         // cannot trust it as an up-to-date check.
-        // PORT: skipped, windows only (`isRunfilesDirectoryPopulated`: on Linux the condition is
+        // PORT: skipped, windows only (RunfilesTreeUpdater.isRunfilesDirectoryPopulated: on Linux the condition is
         // `OS.getCurrent() != OS.WINDOWS`, always true).
         let up_to_date = || -> io::Result<bool> {
             Ok(tree.get_symlinks_mode() == RunfileSymlinksMode::CREATE

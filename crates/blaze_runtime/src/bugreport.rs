@@ -204,6 +204,28 @@ impl Crash {
         }
     }
 
+    /// Creates a crash caused by the given panic message with the given [`DetailedExitCode`].
+    // Java: com/google/devtools/build/lib/bugreport/Crash.java:44 Crash.from
+    pub fn from_message_with_exit_code(
+        message: String,
+        detailed_exit_code: DetailedExitCode,
+    ) -> Crash {
+        let record = find_record(&message);
+        Crash {
+            message,
+            record,
+            detailed_exit_code,
+        }
+    }
+
+    /// The message of the panic (Java: the throwable).
+    // Java: com/google/devtools/build/lib/bugreport/Crash.java:56 Crash.getThrowable
+    pub fn get_throwable(&self) -> &str {
+        &self.message
+    }
+
+    // PORT: skipped, debug output only (no caller prints it): Crash.toString
+
     // Java: com/google/devtools/build/lib/bugreport/Crash.java:60 Crash.getDetailedExitCode
     pub fn get_detailed_exit_code(&self) -> &DetailedExitCode {
         &self.detailed_exit_code
@@ -286,6 +308,7 @@ impl CrashContext {
 
     /// Sets the arguments to include with the bug report.
     // Java: com/google/devtools/build/lib/bugreport/CrashContext.java:76 CrashContext.withArgs
+    // Java: com/google/devtools/build/lib/bugreport/CrashContext.java:83 CrashContext.withArgs
     pub fn with_args(mut self, args: &[String]) -> CrashContext {
         self.args = args.to_vec();
         self
@@ -305,9 +328,35 @@ impl CrashContext {
         self
     }
 
+    // Java: com/google/devtools/build/lib/bugreport/CrashContext.java:132 CrashContext.getArgs
     pub fn get_args(&self) -> &[String] {
         &self.args
     }
+
+    // Java: com/google/devtools/build/lib/bugreport/CrashContext.java:128 CrashContext.shouldHaltJvm
+    pub fn should_halt_jvm(&self) -> bool {
+        self.halt_jvm
+    }
+
+    // Java: com/google/devtools/build/lib/bugreport/CrashContext.java:140 CrashContext.getExtraOomInfo
+    pub fn get_extra_oom_info(&self) -> &str {
+        &self.extra_oom_info
+    }
+
+    // Java: com/google/devtools/build/lib/bugreport/CrashContext.java:149 CrashContext.getEventHandler
+    pub fn get_event_handler(&self) -> &Arc<dyn EventHandler> {
+        &self.event_handler
+    }
+
+    // Java: com/google/devtools/build/lib/bugreport/CrashContext.java:153 CrashContext.returnIfCrashInProgress
+    pub fn return_if_crash_in_progress(&self) -> bool {
+        self.return_if_crash_in_progress
+    }
+
+    // The bug report (sent only from a released Google-internal binary) and the JVM heap dump.
+    // PORT: skipped, Google-internal bug reports: CrashContext.withoutBugReport, CrashContext.shouldSendBugReport
+    // PORT: skipped, JVM-only (heap dump): CrashContext.setHeapDumpPath, CrashContext.getHeapDumpPath
+    // PORT: skipped, debug output only (no caller prints it): CrashContext.toString
 }
 
 /// The narrow interface of `BugReport`'s usage of the runtime.
@@ -357,6 +406,14 @@ impl BugReport {
     ///
     /// PORT: skipped, logging: the server log lines and `sendBugReport` (which reports to a
     /// remote logging service only from a released Google-internal binary).
+    // PORT: skipped, test support (TestType.isInTest): BugReport.getAndResetLastCrashingThrowableIfInTest
+    // PORT: skipped, test support (TestType.isInTest): BugReport.maybePropagateLastCrashIfInTest
+    // PORT: skipped, Google-internal bug reports: BugReport.sendBugReportInternal, BugReport.filterArgs
+    // PORT: skipped, Google-internal bug reports: BugReport.logException, BugReport.handleCrash
+    // PORT: skipped, JVM-only (heap dump on OOM): BugReport.dumpHeap
+    // Google-internal bug reports go to a remote logging service from a released binary only.
+    // PORT: skipped, Google-internal bug reports: BugReporter.defaultInstance, BugReporter.logUnexpected
+    // PORT: skipped, Google-internal bug reports: BugReporter.sendBugReport
     // Java: com/google/devtools/build/lib/bugreport/BugReport.java:257 BugReport.handleCrash
     pub fn handle_crash(crash: &Crash, mut ctx: CrashContext) {
         let numeric_exit_code = crash

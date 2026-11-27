@@ -191,19 +191,23 @@ fn read_head_line(reader: &mut impl BufRead) -> Result<Option<String>, IoExcepti
     Ok(Some(line.iter().map(|&b| b as char).collect()))
 }
 
+/// The status line and header fields of a response.
+///
+/// Public for the HTTP remote cache (`blaze_remote::http`), which reads its responses with this
+/// stack.
 #[derive(Debug)]
-struct ResponseHead {
+pub struct ResponseHead {
     /// The first line as received (one char per byte).
-    status_line: String,
-    code: i32,
-    message: String,
+    pub status_line: String,
+    pub code: i32,
+    pub message: String,
     /// Lower-cased names, in order.
-    headers: Vec<(String, String)>,
+    pub headers: Vec<(String, String)>,
 }
 
 impl ResponseHead {
     /// All values of a header (lower-case name), in order.
-    fn header_values(&self, name: &str) -> Vec<String> {
+    pub fn header_values(&self, name: &str) -> Vec<String> {
         self.headers
             .iter()
             .filter(|(k, _)| k == name)
@@ -211,7 +215,7 @@ impl ResponseHead {
             .collect()
     }
 
-    fn header(&self, name: &str) -> Option<&str> {
+    pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
             .rev()
@@ -220,7 +224,7 @@ impl ResponseHead {
     }
 }
 
-fn read_response_head(reader: &mut impl BufRead) -> Result<ResponseHead, IoException> {
+pub fn read_response_head(reader: &mut impl BufRead) -> Result<ResponseHead, IoException> {
     // The JDK: "Unexpected end of file from server" (a SocketException) when the connection
     // closes before a status line.
     let unexpected_eof = || {
@@ -284,7 +288,7 @@ fn read_response_head(reader: &mut impl BufRead) -> Result<ResponseHead, IoExcep
 
 /// How the end of the body is found (RFC 9112 section 6.3, as the JDK applies it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BodyFraming {
+pub enum BodyFraming {
     /// No body (1xx, 204, 304).
     Empty,
     /// `Content-Length` bytes remain.
@@ -299,7 +303,7 @@ enum BodyFraming {
 
 /// The position inside a chunked body (`ChunkedInputStream`'s states).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ChunkState {
+pub enum ChunkState {
     /// At a chunk-size line.
     AwaitingChunkHeader,
     /// Inside chunk data with this many bytes left.
@@ -314,7 +318,7 @@ enum ChunkState {
 ///
 /// PORT: the JDK's `HttpInputStream` over `MeteredStream` (fixed length), `ChunkedInputStream`
 /// (chunked) or the socket stream (until close).
-pub(crate) struct BodyStream<R: Read + Send> {
+pub struct BodyStream<R: Read + Send> {
     reader: Option<BufReader<R>>,
     framing: BodyFraming,
 }
@@ -326,11 +330,22 @@ fn premature_eof() -> IoException {
 }
 
 impl<R: Read + Send> BodyStream<R> {
-    fn new(reader: BufReader<R>, framing: BodyFraming) -> Self {
+    pub fn new(reader: BufReader<R>, framing: BodyFraming) -> Self {
         BodyStream {
             reader: Some(reader),
             framing,
         }
+    }
+
+    /// The framing left to read ([`BodyFraming::Done`] once the body has ended).
+    pub fn framing(&self) -> BodyFraming {
+        self.framing
+    }
+
+    /// The connection, for a next request on it once the body has ended; `None` after
+    /// `close`.
+    pub fn into_reader(self) -> Option<BufReader<R>> {
+        self.reader
     }
 
     /// A chunked body read from `source` (for tests of the framing).
@@ -722,7 +737,7 @@ fn request_head(
 
 /// How the body of a response is framed.
 // Java: sun/net/www/http/HttpClient.java HttpClient.parseHTTPHeader (JDK 25.0.2)
-fn body_framing(head: &ResponseHead) -> BodyFraming {
+pub fn body_framing(head: &ResponseHead) -> BodyFraming {
     if head.code == 204 || head.code == 304 {
         return BodyFraming::Empty;
     }

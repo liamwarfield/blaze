@@ -445,3 +445,24 @@ fn fails_when_lock_is_already_held() {
 
     drop(external_lock);
 }
+
+/// Blaze-only: `IdleTaskManager.busy` interrupts a running collection (Java: the waiting thread's
+/// `awaitQuiescence(true)` throws `InterruptedException` and the queued work does not run).
+#[test]
+fn interrupted_collection_deletes_nothing() {
+    let f = Fixture::new();
+    f.write_files(&[
+        Entry::of("ac/123", kbytes(1), days_ago(1)),
+        Entry::of("cas/456", kbytes(1), days_ago(2)),
+    ]);
+    blaze_shell::thread_interrupt::ThreadInterrupt::current().interrupt();
+    let gc =
+        DiskCacheGarbageCollector::new(f.root_dir.clone(), CollectionPolicy::new(Some(0), None));
+    match gc.run() {
+        Err(blaze_remote::disk::GcError::Interrupted(_)) => {}
+        other => panic!("expected an interruption, got {other:?}"),
+    }
+    // InterruptedException clears the interrupt status.
+    assert!(!blaze_shell::thread_interrupt::is_current_interrupted());
+    f.assert_files_exist(&["ac/123", "cas/456"]);
+}

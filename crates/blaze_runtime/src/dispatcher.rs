@@ -424,6 +424,7 @@ impl BlazeCommandDispatcher {
             &mut command_env_warnings,
             wait_time_in_ms,
             first_contact_time,
+            attempt_number,
         );
         env.set_client_command_line(args.to_vec(), startup_options_tagged_with_bazel_rc.clone());
         env.set_config_flag_definitions(config_flag_definitions);
@@ -584,6 +585,8 @@ impl BlazeCommandDispatcher {
         let ui_filter = Arc::new(ReportedOnceFilter::new(handler.clone()));
         reporter.add_handler(ui_filter.clone());
         env.set_ui_event_handler(handler.clone(), ui_subscriber);
+        // PORT: skipped, registered only with the ANSI-allowing handler: PassiveExperimentalEventHandler.noBuild
+        // PORT: skipped, registered only with the ANSI-allowing handler: PassiveExperimentalEventHandler.noBuildFinished
         // PORT: the ANSI-allowing handler for --color=no (registerAnsiAllowingHandler, and its
         // PassiveExperimentalEventHandler on the event bus) is not registered, so
         // Reporter.switchToAnsiAllowingHandler (info, run) keeps the UI handler. Java's
@@ -1091,6 +1094,8 @@ impl BlazeCommandDispatcher {
         // PORT: actionKeyContext.clear(): Blaze's ActionKeyContext belongs to the command's
         // Skyframe executor, which is gone.
         // storedExitCode.set(null)
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:834 BlazeRuntime.afterCommand
+        crate::server_log::flush_server_log();
         self.runtime.clear_stored_exit_code();
         // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:836 BlazeRuntime.afterCommand
         BlazeCommandResult::with_response_extensions(
@@ -1270,7 +1275,14 @@ fn release_build_arena(kept_graph: bool) {
             blaze_options::converters::LogLevel::INFO,
             "com.google.devtools.build.lib.runtime.BlazeCommandDispatcher",
             "releaseBuildArena",
-            "build arena kept with the Skyframe graph kept for the next command",
+            &format!(
+                "build arena kept with the Skyframe graph kept for the next command; held: {}",
+                blaze_util::build_arena::slot_counts()
+                    .iter()
+                    .map(|(name, n)| format!("{}={n}", name.rsplit("::").next().unwrap_or(name)))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
         );
     } else if !blaze_util::build_arena::release_if_unused() {
         crate::server_log::log(
@@ -1558,7 +1570,6 @@ fn process_options_parsing_exception(
     )
 }
 
-// Java: com/google/devtools/build/lib/util/InterruptedFailureDetails.java:30 InterruptedFailureDetails.detailedExitCode
 /// `env.getEventBus().post(new NoBuildEvent(commandName, firstContactTime, false, true,
 /// env.getCommandId().toString()))` of a command that stops before it runs: the Build Event
 /// Protocol of such a command consists of the events posted so far and this one.
@@ -1577,7 +1588,10 @@ fn post_no_build_event(env: &CommandEnvironment) {
     }
 }
 
-fn interrupted_detailed_exit_code(message: &str) -> DetailedExitCode {
+/// A [`DetailedExitCode`] with `ExitCode.INTERRUPTED`, `Interrupted.Code.INTERRUPTED` and the
+/// provided detail message.
+// Java: com/google/devtools/build/lib/util/InterruptedFailureDetails.java:30 InterruptedFailureDetails.detailedExitCode
+pub(crate) fn interrupted_detailed_exit_code(message: &str) -> DetailedExitCode {
     DetailedExitCode::of(FailureDetail {
         message: message.to_string(),
         category: Some(failure_details::failure_detail::Category::Interrupted(
@@ -1586,6 +1600,18 @@ fn interrupted_detailed_exit_code(message: &str) -> DetailedExitCode {
             },
         )),
     })
+}
+
+/// An `AbruptExitException` with the [`DetailedExitCode`] of [`interrupted_detailed_exit_code`].
+///
+/// PORT: the overload with a `cause` keeps no cause (Blaze's `AbruptExitException` carries the
+/// exit code only).
+// Java: com/google/devtools/build/lib/util/InterruptedFailureDetails.java:42 InterruptedFailureDetails.abruptExitException
+// Java: com/google/devtools/build/lib/util/InterruptedFailureDetails.java:55 InterruptedFailureDetails.abruptExitException
+pub(crate) fn interrupted_abrupt_exit_exception(
+    message: &str,
+) -> crate::module::AbruptExitException {
+    crate::module::AbruptExitException::new(interrupted_detailed_exit_code(message))
 }
 
 /// Converts an event recorded by `blaze_options`' rc handler into a `blaze_events` event.

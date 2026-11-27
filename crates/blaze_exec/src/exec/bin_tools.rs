@@ -57,17 +57,37 @@ impl BinTools {
         Ok(BinTools::new(embedded_binaries_root, tools))
     }
 
+    /// Creates an empty instance for testing. PORT: Java takes the `BlazeDirectories` whose
+    /// `getEmbeddedBinariesRoot()` this is.
+    // Java: com/google/devtools/build/lib/exec/BinTools.java:47 BinTools.<init>
+    // Java: com/google/devtools/build/lib/exec/BinTools.java:86 BinTools.empty
+    pub fn empty(embedded_binaries_root: Path) -> BinTools {
+        BinTools::new(embedded_binaries_root, Vec::new())
+    }
+
+    /// Returns a BinTools instance. Before calling this method, you have to populate the
+    /// embedded binaries root. PORT: Java takes the `BlazeDirectories` whose
+    /// `getEmbeddedBinariesRoot()` this is.
+    // Java: com/google/devtools/build/lib/exec/BinTools.java:123 BinTools.forIntegrationTesting
+    pub fn for_integration_testing(embedded_binaries_root: Path, tools: Vec<String>) -> BinTools {
+        BinTools::new(embedded_binaries_root, tools)
+    }
+
     /// `forEmbeddedBin(Path, Iterable<String>)`.
+    // Java: com/google/devtools/build/lib/exec/BinTools.java:94 BinTools.forEmbeddedBin
     pub fn for_embedded_bin(embedded_binaries_root: Path, tools: Vec<String>) -> BinTools {
         BinTools::new(embedded_binaries_root, tools)
     }
 
     /// `forUnitTesting(Path execroot, Iterable<String> tools)`.
+    // Java: com/google/devtools/build/lib/exec/BinTools.java:104 BinTools.forUnitTesting
+    // Java: com/google/devtools/build/lib/exec/BinTools.java:114 BinTools.forUnitTesting
     pub fn for_unit_testing(execroot: &Path, tools: Vec<String>) -> BinTools {
         BinTools::new(execroot.get_relative_str("/fake/embedded/tools"), tools)
     }
 
     /// `getActionInput(embeddedPath)`.
+    // Java: com/google/devtools/build/lib/exec/BinTools.java:150 BinTools.getActionInput
     pub fn get_action_input(&self, embedded_path: &str) -> Option<ActionInputRef> {
         self.action_inputs.get(embedded_path).cloned()
     }
@@ -128,6 +148,9 @@ impl PathActionInput {
 }
 
 impl ActionInput for PathActionInput {
+    // Java: com/google/devtools/build/lib/exec/BinTools.java:240 BinTools.PathActionInput.getExecPathString
+    // (`ActionInput::get_exec_path_string`, the exec path's string)
+    // Java: com/google/devtools/build/lib/exec/BinTools.java:245 BinTools.PathActionInput.getExecPath
     fn get_exec_path(&self) -> &PathFragment {
         &self.exec_path
     }
@@ -146,6 +169,7 @@ impl ActionInput for PathActionInput {
 }
 
 impl VirtualActionInput for PathActionInput {
+    // Java: com/google/devtools/build/lib/exec/BinTools.java:178 BinTools.PathActionInput.writeTo
     fn write_to(&self, out: &mut dyn Write) -> io::Result<()> {
         let mut input = self.path.get_input_stream()?;
         io::copy(&mut input, out)?;
@@ -167,6 +191,8 @@ impl VirtualActionInput for PathActionInput {
     }
 
     // Java: com/google/devtools/build/lib/exec/BinTools.java:183 BinTools.PathActionInput.getMetadata
+    // Java: com/google/devtools/build/lib/exec/BinTools.java:223 BinTools.PathActionInput.hash
+    // (inlined; the file system's digest function is SHA-256, the only one Blaze has)
     fn get_metadata(&self) -> io::Result<Option<FileArtifactValue>> {
         let mut state = self.state.lock().unwrap();
         if state.0.is_none() {

@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+"""Skyframe graph metrics of a command sequence on a persistent server, oracle against Blaze.
+
+usage: scripts/incremental/graph-metrics help
+       scripts/incremental/graph-metrics run --workspace DIR [--blaze B] [--oracle O]
+              [--name N] [--keep] [--debug] -- CMD1 ';' CMD2 ';' ...
+       scripts/incremental/graph-metrics compare BEP_ORACLE BEP_BLAZE
+
+run: copies DIR (without bazel-* and .git) to ~/.cache/blaze/work/i3/gm/<N>/<side>/ws for each
+side, runs the commands in order on one server per side (the oracle first, then Blaze with
+BLAZE_SERVER_MODE=daemon), each command with --build_event_json_file=<side>/bep-<i>.json added
+(after the verb), and compares, per command, `buildMetrics.buildGraphMetrics` of the two BEP
+files: `builtValues`, `dirtiedValues`, `changedValues`, `cleanedValues` per SkyFunction and
+`postInvocationSkyframeNodeCount`. Prints one line per function whose count differs. With
+--debug, Blaze's server runs with BLAZE_INCREMENTAL_DEBUG=1 and its jvm.out is printed.
+
+Every command gets the startup options --max_idle_secs=60 --nohome_rc --nosystem_rc and the
+command options --repository_cache=~/.cache/blaze/repo-cache --color=no --curses=no --jobs=4
+(for build-like verbs). Servers are shut down at the end; the side directories are deleted
+unless --keep.
+
+compare: the same comparison for two BEP files already written.
+
+Exit 1 if any count differs.
+"""
+
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+
+HOME = os.path.expanduser("~")
+WORK = os.path.join(HOME, ".cache/blaze/work/i3/gm")
+ORACLE = os.path.join(HOME, ".cache/blaze/oracle/bazel-9.3.2-linux-x86_64")
+REPO_CACHE = os.path.join(HOME, ".cache/blaze/repo-cache")
+JOBS_VERBS = {"build", "test", "run", "coverage", "cquery", "aquery"}
+FIELDS = ["builtValues", "dirtiedValues", "changedValues", "cleanedValues"]
+
+
+def graph_metrics(bep_path):
+    """{field: {function: count}} and the node count, from the last BuildMetrics event."""
+    metrics = None
+    try:
+        with open(bep_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                ev = json.loads(line)
+                bm = ev.get("buildMetrics")
+                if bm is not None:
+                    metrics = bm
+    except OSError:
+        return None
+    if metrics is None:
+        return None
+    g = metrics.get("buildGraphMetrics", {})
+    out = {}
+    for field in FIELDS:
+        counts = {}
+        for e in g.get(field, []):
+            name = e.get("skyfunctionName", "?")
+            counts[name] = counts.get(name, 0) + int(e.get("count", 0))
+        out[field] = counts
+    out["postInvocationSkyframeNodeCount"] = int(g.get("postInvocationSkyframeNodeCount", 0))
+    return out
+
+
+def compare(o, b, label):
+    diffs = []
+    if o is None or b is None:
+        print("%s: metrics missing (oracle %s, blaze %s)" % (label, o is not None, b is not None))
+        return 1 if (o is None) != (b is None) else 0
+    for field in FIELDS:
+        names = sorted(set(o[field]) | set(b[field]))
+        to = sum(o[field].values())
+        tb = sum(b[field].values())
+        print("%s: %-14s total oracle %6d blaze %6d" % (label, field, to, tb))
+        for n in names:
+            co, cb = o[field].get(n, 0), b[field].get(n, 0)
+            if co != cb:
+                diffs.append(n)
+                print("    %-40s oracle %6d blaze %6d" % (n, co, cb))
+    no, nb = o["postInvocationSkyframeNodeCount"], b["postInvocationSkyframeNodeCount"]
+    print("%s: postInvocationSkyframeNodeCount oracle %d blaze %d%s"
+          % (label, no, nb, "" if no == nb else "  DIFFERENT"))
+    return 1 if diffs or no != nb else 0
+
+
+class Side:
+    def __init__(self, name, binary, root, daemon, debug):
+        self.name = name
+        self.binary = binary
+        self.root = root
+        self.ws = os.path.join(root, "ws")
+        self.out_root = os.path.join(root, "ur")
+        self.env = {"HOME": HOME, "PATH": "/usr/bin:/bin"}
+        if daemon:
+            self.env["BLAZE_SERVER_MODE"] = "daemon"
+            if debug:
+                self.env["BLAZE_INCREMENTAL_DEBUG"] = "1"
+
+    def run(self, argv, bep):
+        verb = argv[0]
+        cmd = [self.binary, "--output_user_root=" + self.out_root, "--max_idle_secs=60",
+               "--nohome_rc", "--nosystem_rc", verb,
+               "--repository_cache=" + REPO_CACHE, "--color=no", "--curses=no",
+               "--build_event_json_file=" + bep]
+        if verb in JOBS_VERBS:
+            cmd.append("--jobs=4")
+        cmd += argv[1:]
+        p = subprocess.run(cmd, cwd=self.ws, env=self.env, capture_output=True, timeout=1800)
+        return p.returncode
+
+    def shutdown(self):
+        try:
+            subprocess.run([self.binary, "--output_user_root=" + self.out_root, "--nohome_rc",
+                            "--nosystem_rc", "shutdown"], cwd=self.ws, env=self.env,
+                           capture_output=True, timeout=120)
+        except Exception:
+            pass
+        if os.path.isdir(self.out_root):
+            for d in os.listdir(self.out_root):
+                try:
+                    pid = int(open(os.path.join(self.out_root, d, "server",
+                                                "server.pid.txt")).read().strip())
+                    with open("/proc/%d/cmdline" % pid, "rb") as f:
+                        if self.out_root.encode() in f.read():
+                            os.kill(pid, signal.SIGKILL)
+                except Exception:
+                    pass
+
+    def jvm_out(self):
+        if not os.path.isdir(self.out_root):
+            return ""
+        out = []
+        for d in os.listdir(self.out_root):
+            p = os.path.join(self.out_root, d, "server", "jvm.out")
+            if os.path.exists(p):
+                out.append(open(p, errors="replace").read())
+        return "".join(out)
+
+
+def remove(path):
+    if os.path.isdir(path):
+        subprocess.run(["chmod", "-R", "u+w", path], capture_output=True)
+        shutil.rmtree(path)
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("help", "-h", "--help"):
+        print(__doc__)
+        return 0
+    if sys.argv[1] == "compare" and len(sys.argv) == 4:
+        return compare(graph_metrics(sys.argv[2]), graph_metrics(sys.argv[3]), "compare")
+    if sys.argv[1] != "run" or "--" not in sys.argv:
+        print(__doc__)
+        return 2
+    i = sys.argv.index("--")
+    opts, rest = sys.argv[2:i], sys.argv[i + 1:]
+    o = {"--blaze": os.path.join(HOME, ".cache/blaze/work/i3/bin/blaze"), "--oracle": ORACLE,
+         "--name": "seq", "--workspace": None}
+    flags = set()
+    j = 0
+    while j < len(opts):
+        if opts[j] in ("--keep", "--debug"):
+            flags.add(opts[j])
+            j += 1
+        else:
+            o[opts[j]] = opts[j + 1]
+            j += 2
+    if not o["--workspace"]:
+        print(__doc__)
+        return 2
+    commands, cur = [], []
+    for a in rest:
+        if a == ";":
+            if cur:
+                commands.append(cur)
+            cur = []
+        else:
+            cur.append(a)
+    if cur:
+        commands.append(cur)
+    base = os.path.join(WORK, o["--name"])
+    sides = [Side("oracle", o["--oracle"], os.path.join(base, "oracle"), False, False),
+             Side("blaze", o["--blaze"], os.path.join(base, "blaze"), True, "--debug" in flags)]
+    metrics = {}
+    for side in sides:
+        remove(side.root)
+        os.makedirs(side.root)
+        subprocess.run(["rsync", "-a", "--exclude=/bazel-*", "--exclude=/.git",
+                        o["--workspace"].rstrip("/") + "/", side.ws + "/"], check=True)
+        try:
+            for n, argv in enumerate(commands):
+                bep = os.path.join(side.root, "bep-%d.json" % n)
+                rc = side.run(argv, bep)
+                print("[%s] %s -> exit %d" % (side.name, " ".join(argv), rc), flush=True)
+                metrics[(side.name, n)] = graph_metrics(bep)
+        finally:
+            side.shutdown()
+        if side.name == "blaze" and "--debug" in flags:
+            print(side.jvm_out())
+    status = 0
+    for n, argv in enumerate(commands):
+        status |= compare(metrics[("oracle", n)], metrics[("blaze", n)],
+                          "#%d %s" % (n, " ".join(argv[:2])))
+    if "--keep" not in flags:
+        for side in sides:
+            remove(side.root)
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main())

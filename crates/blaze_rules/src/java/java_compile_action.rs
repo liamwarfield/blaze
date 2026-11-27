@@ -541,7 +541,7 @@ impl JavaCompileAction {
                 .map(|p| ActionInputRef::new(p.clone())),
         );
         let environment = self
-            .get_effective_environment(action_execution_context.get_client_env())
+            .get_effective_environment(action_execution_context.get_client_env(), mapper.as_ref())
             .map_err(|e| {
                 self.create_action_execution_exception(
                     &e.message,

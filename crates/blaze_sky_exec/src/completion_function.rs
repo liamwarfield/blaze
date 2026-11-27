@@ -185,6 +185,12 @@ pub(crate) trait Completor {
     /// `key.actionLookupKey().getLabel()`.
     fn key_label(&self) -> blaze_cmdline::Label;
 
+    /// The completion key (`TopLevelActionLookupKeyWrapper`) as a `SkyKey`.
+    fn sky_key(&self) -> SkyKey;
+
+    /// `key.actionLookupKey().toString()`.
+    fn action_lookup_key_description(&self) -> String;
+
     /// Creates an event reporting an absent input artifact.
     fn get_root_cause_error(
         &self,
@@ -214,6 +220,14 @@ struct TargetCompletor<'a> {
 }
 
 impl Completor for TargetCompletor<'_> {
+    fn sky_key(&self) -> SkyKey {
+        SkyKey::new(self.key.clone())
+    }
+
+    fn action_lookup_key_description(&self) -> String {
+        self.key.action_lookup_key.to_string()
+    }
+
     fn key_label(&self) -> blaze_cmdline::Label {
         self.key.action_lookup_key.get_label().unwrap_or_else(|| {
             panic!(
@@ -298,6 +312,14 @@ struct AspectCompletor<'a> {
 }
 
 impl Completor for AspectCompletor<'_> {
+    fn sky_key(&self) -> SkyKey {
+        SkyKey::new(self.key.clone())
+    }
+
+    fn action_lookup_key_description(&self) -> String {
+        self.key.action_lookup_key.to_string()
+    }
+
     fn key_label(&self) -> blaze_cmdline::Label {
         self.value.get_label()
     }
@@ -493,7 +515,9 @@ fn accumulate_metrics(
                 consumer.accumulate_tree(tree_artifact_value);
             }
             if key.is_fileset() {
-                blaze_util::unported!("ActionInputMapHelper.addToMap (filesets)");
+                blaze_util::unported!(
+                    "ActionInputMapHelper.addToMap (filesets) (unreachable in Bazel: only the non-open-sourced fileset rule makes fileset artifacts, packages/OutputFile.java:123)"
+                );
             } else if key.is_runfiles_tree() {
                 let runfiles_artifact_value = action_execution_value
                     .get_rich_artifact_data()
@@ -547,7 +571,9 @@ fn add_to_map(input_map: &mut ImportantInputMap, key: &Artifact, value: &InputVa
                 );
             }
             if key.is_fileset() {
-                blaze_util::unported!("ActionInputMapHelper.addToMap (filesets)");
+                blaze_util::unported!(
+                    "ActionInputMapHelper.addToMap (filesets) (unreachable in Bazel: only the non-open-sourced fileset rule makes fileset artifacts, packages/OutputFile.java:123)"
+                );
             } else if key.is_runfiles_tree() {
                 let runfiles_artifact_value = action_execution_value
                     .get_rich_artifact_data()
@@ -711,7 +737,7 @@ pub fn compute_target_completion(
     seam: &dyn AnalysisSeam,
     key: &TargetCompletionKey,
     env: &mut Environment<'_>,
-) -> Result<Option<TargetCompletionValue>, ComputeError> {
+) -> Result<Option<blaze_skyframe::SkyValue>, ComputeError> {
     // Java: com/google/devtools/build/lib/skyframe/TargetCompletor.java:66 TargetCompletor.getValueAndArtifactsToBuild
     let Some(value) = seam.get_configured_target(&key.action_lookup_key, env)? else {
         return Ok(None);
@@ -723,12 +749,16 @@ pub fn compute_target_completion(
     };
     Ok(compute_completion(
         skyframe_action_executor,
+        seam,
         &completor,
         &groups,
         &key.output_groups,
         env,
     )?
-    .map(|()| TargetCompletionValue))
+    .map(|step| match step {
+        CompletionStep::Done => Arc::new(TargetCompletionValue) as blaze_skyframe::SkyValue,
+        CompletionStep::Reset(reset) => Arc::new(reset),
+    }))
 }
 
 /// The (marker) value of a completed top-level aspect.
@@ -744,7 +774,7 @@ pub fn compute_aspect_completion(
     seam: &dyn AnalysisSeam,
     key: &AspectCompletionKey,
     env: &mut Environment<'_>,
-) -> Result<Option<AspectCompletionValue>, ComputeError> {
+) -> Result<Option<blaze_skyframe::SkyValue>, ComputeError> {
     // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:364 CompletionFunction.getValueAndArtifactsToBuild
     let Some(value) = seam.get_configured_aspect(&key.action_lookup_key, env)? else {
         return Ok(None);
@@ -757,25 +787,30 @@ pub fn compute_aspect_completion(
     };
     Ok(compute_completion(
         skyframe_action_executor,
+        seam,
         &completor,
         &groups,
         &key.output_groups,
         env,
     )?
-    .map(|()| AspectCompletionValue))
+    .map(|step| match step {
+        CompletionStep::Done => Arc::new(AspectCompletionValue) as blaze_skyframe::SkyValue,
+        CompletionStep::Reset(reset) => Arc::new(reset),
+    }))
 }
 
 /// The generic part of `CompletionFunction.compute`, after `getValueAndArtifactsToBuild`:
 /// `groups` are the value's output groups, `requested_output_groups` the key's
-/// `TopLevelArtifactContext`. `Ok(Some(()))` is `completor.getResult()`.
+/// `TopLevelArtifactContext`. `Ok(Some(CompletionStep::Done))` is `completor.getResult()`.
 // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:153 CompletionFunction.compute
 fn compute_completion(
     skyframe_action_executor: &SkyframeActionExecutor,
+    seam: &dyn AnalysisSeam,
     completor: &dyn Completor,
     groups: &IndexMap<String, NestedSet<Artifact>>,
     requested_output_groups: &[String],
     env: &mut Environment<'_>,
-) -> Result<Option<()>, ComputeError> {
+) -> Result<Option<CompletionStep>, ComputeError> {
     let artifacts_to_build = get_all_artifacts_to_build_of(groups, requested_output_groups);
     let artifacts_by_output_group =
         get_all_artifacts_by_output_group(groups, requested_output_groups);
@@ -943,21 +978,48 @@ fn compute_completion(
         // prevent us from staging built artifacts and posting the failed event.
         // PORT: nothing here polls the interrupt (no `env.check_interrupted()?`), so the event
         // is always posted; the handler's own interruption is ignored here as Java restores it.
+        let mut rewind_plan_result = None;
         if let (Some(handler), Some(full_input_map)) = (&important_output_handler, &full_input_map)
             && !built_artifacts.is_empty()
         {
-            let important: Vec<&Artifact> = all_artifacts
+            let important_owned: Vec<Artifact> = all_artifacts
                 .iter()
                 .filter(|a| built_artifacts.contains(*a))
                 .filter(|a| all_artifacts_are_important || important_artifacts.contains(*a))
+                .cloned()
                 .collect();
+            let important: Vec<&Artifact> = important_owned.iter().collect();
             match inform_important_output_handler(
+                skyframe_action_executor,
+                seam,
+                completor,
+                env,
                 &**handler,
                 &important,
                 &runfiles_tree_artifacts,
                 full_input_map,
+                &artifacts_by_output_group,
+                &mut built_artifacts,
             ) {
-                Ok(()) | Err(blaze_skyframe::Interrupted) => {}
+                Ok(r) => rewind_plan_result = r,
+                Err(InformFailure::Interrupted) => {}
+                Err(InformFailure::Compute(e)) => return Err(e),
+                Err(InformFailure::TopLevelOutput { cause, exception }) => {
+                    return Err(fail_top_level_output(
+                        skyframe_action_executor,
+                        completor,
+                        env,
+                        cause,
+                        exception,
+                        root_causes,
+                        action_causes,
+                        label_causes,
+                        artifacts_to_build,
+                        &built_artifacts,
+                        artifacts_by_output_group,
+                        important_input_map,
+                    ));
+                }
             }
         }
         // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:329 CompletionFunction.postFailedEvent
@@ -975,6 +1037,17 @@ fn compute_completion(
                 artifacts_by_output_group: built_outputs,
                 important_input_map,
             }));
+        if let Some(rewind_plan_result) = rewind_plan_result {
+            // Only return a reset after posting the failed event. If we're in --nokeep_going
+            // mode, the attempt to rewind will be ignored, so this is our only opportunity to post
+            // the event. If we're in --keep_going mode, rewinding will take place, the event
+            // won't actually get emitted (per the spec of SkyFunction.Environment#getListener for
+            // stored events), and we'll get another opportunity to post an event after
+            // rewinding.
+            return Ok(rewind_plan_result
+                .to_null_if_missing_dependencies_else_reset()
+                .map(CompletionStep::Reset));
+        }
         if let Some(e) = first_action_execution_exception {
             // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:467 CompletionFunctionException.<init>
             // isCatastrophic(): actionException != null && actionException.isCatastrophe().
@@ -1021,18 +1094,53 @@ fn compute_completion(
     }
 
     if let (Some(handler), Some(full_input_map)) = (&important_output_handler, &full_input_map) {
-        let important: Vec<&Artifact> = if all_artifacts_are_important {
-            all_artifacts.iter().collect()
+        let important_owned: Vec<Artifact> = if all_artifacts_are_important {
+            all_artifacts.iter().cloned().collect()
         } else {
-            important_artifacts.iter().collect()
+            important_artifacts.iter().cloned().collect()
         };
-        inform_important_output_handler(
+        let important: Vec<&Artifact> = important_owned.iter().collect();
+        match inform_important_output_handler(
+            skyframe_action_executor,
+            seam,
+            completor,
+            env,
             &**handler,
             &important,
             &runfiles_tree_artifacts,
             full_input_map,
-        )
-        .map_err(ComputeError::Interrupted)?;
+            &artifacts_by_output_group,
+            &mut built_artifacts,
+        ) {
+            Ok(None) => {}
+            // Either initiates action rewinding to generate lost inputs or requests a Skyframe
+            // restart to wait for missing analysis dependencies.
+            Ok(Some(rewind_plan_result)) => {
+                return Ok(rewind_plan_result
+                    .to_null_if_missing_dependencies_else_reset()
+                    .map(CompletionStep::Reset));
+            }
+            Err(InformFailure::Interrupted) => {
+                return Err(ComputeError::Interrupted(blaze_skyframe::Interrupted));
+            }
+            Err(InformFailure::Compute(e)) => return Err(e),
+            Err(InformFailure::TopLevelOutput { cause, exception }) => {
+                return Err(fail_top_level_output(
+                    skyframe_action_executor,
+                    completor,
+                    env,
+                    cause,
+                    exception,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    artifacts_to_build,
+                    &built_artifacts,
+                    artifacts_by_output_group,
+                    important_input_map,
+                ));
+            }
+        }
     }
 
     let event = completor.create_succeeded(
@@ -1050,7 +1158,7 @@ fn compute_completion(
         .artifact_metrics()
         .top_level_artifacts_metric
         .merge_in(&current_consumer);
-    Ok(Some(()))
+    Ok(Some(CompletionStep::Done))
 }
 
 /// `ActionInputMapHelper.addToMap(inputMap, input, artifactValue, ...)` into the full input map,
@@ -1083,46 +1191,196 @@ fn add_to_full_input_map(
     }
 }
 
-/// `informImportantOutputHandler`: `Ok(())` is Java's `null` (no rewind plan), `Err` its
-/// `InterruptedException`.
+/// What `CompletionFunction.compute` returns besides `null`: `completor.getResult()`, or a
+/// `Reset` that rewinds the actions generating lost top-level outputs.
+pub enum CompletionStep {
+    Done,
+    Reset(blaze_skyframe::Reset),
+}
+
+/// The `catch (ActionRewindException | ImportantOutputException e)` of
+/// `informImportantOutputHandler`: the `LabelCause` joins the root causes, its error is reported,
+/// the execution error recorded and the failed event posted; the `TopLevelOutputException` is
+/// thrown (`new CompletionFunctionException(e)`, not catastrophic).
+// Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:444 CompletionFunction.informImportantOutputHandler
+#[allow(clippy::too_many_arguments)]
+fn fail_top_level_output(
+    skyframe_action_executor: &SkyframeActionExecutor,
+    completor: &dyn Completor,
+    env: &mut Environment<'_>,
+    cause: CompletionRootCause,
+    exception: TopLevelOutputException,
+    mut root_causes: Vec<Option<blaze_cmdline::Label>>,
+    action_causes: Vec<CompletionRootCause>,
+    mut label_causes: Vec<CompletionRootCause>,
+    artifacts_to_build: Vec<(String, Vec<Artifact>)>,
+    built_artifacts: &HashSet<Artifact>,
+    artifacts_by_output_group: Vec<(String, ArtifactsInOutputGroup)>,
+    important_input_map: ImportantInputMap,
+) -> ComputeError {
+    root_causes.push(Some(completor.key_label()));
+    push_unique(&mut label_causes, cause);
+    // env.getListener().handle(completor.getRootCauseError(key, value, cause, env)):
+    // LabelCause.getMessage() is the message of its failure detail.
+    match completor.get_root_cause_error(&exception.message, env) {
+        Ok(event) => env.listener().handle(&event),
+        Err(e) => return e,
+    }
+    skyframe_action_executor.record_execution_error();
+    // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:329 CompletionFunction.postFailedEvent
+    let built_outputs = SuccessfulArtifactFilter::new(built_artifacts)
+        .filter_artifacts_in_output_group(artifacts_by_output_group);
+    let mut root_cause_details = action_causes;
+    for cause in &label_causes {
+        push_unique(&mut root_cause_details, cause.clone());
+    }
+    env.listener()
+        .post(completor.create_failed(CompletionOutcome {
+            root_causes,
+            root_cause_details,
+            artifacts_to_build,
+            artifacts_by_output_group: built_outputs,
+            important_input_map,
+        }));
+    // CompletionFunctionException(TopLevelOutputException): not catastrophic.
+    SkyFunctionException::new(exception, Transience::Persistent).into()
+}
+
+/// Thrown when an output provided by a top-level target could not be staged: an output is lost
+/// and action rewinding was ineffective (or is disabled), or there was an error placing the
+/// output at its final location.
+///
+/// It is the responsibility of the caller to report this error (`errorAlreadyShown`).
+// Java: com/google/devtools/build/lib/actions/TopLevelOutputException.java:30 TopLevelOutputException
+#[derive(Clone, Debug)]
+pub struct TopLevelOutputException {
+    pub message: String,
+    pub detailed_exit_code: blaze_util::DetailedExitCode,
+}
+
+impl std::fmt::Display for TopLevelOutputException {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for TopLevelOutputException {}
+
+/// How `informImportantOutputHandler` ends other than with its (nullable) rewind plan.
+enum InformFailure {
+    /// `InterruptedException`.
+    Interrupted,
+    /// A Skyframe lookup of the rewind plan failed.
+    Compute(ComputeError),
+    /// `catch (ActionRewindException | ImportantOutputException e)`: the `LabelCause` to add to
+    /// the root causes and the `TopLevelOutputException` to throw once the failed event is
+    /// posted.
+    TopLevelOutput {
+        cause: CompletionRootCause,
+        exception: TopLevelOutputException,
+    },
+}
+
+/// `OutputGroupInfo.HIDDEN_TOP_LEVEL`.
+// Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:103 OutputGroupInfo.HIDDEN_TOP_LEVEL
+const HIDDEN_TOP_LEVEL: &str = "_hidden_top_level_INTERNAL_";
+
+/// `informImportantOutputHandler`: `Ok(None)` is Java's `null` (no lost outputs), `Ok(Some)`
+/// the plan that rewinds the actions generating the lost outputs.
 ///
 /// PORT: filesets are not expanded (`key.topLevelArtifactContext().expandFilesets()` is not
-/// ported; no fileset reaches a completion, see `add_to_map`). Lost top-level outputs need
-/// action rewinding, which is not ported, and a failed download (`ImportantOutputException`) is
-/// not ported either: both stop loudly.
+/// ported; no fileset reaches a completion, see `add_to_map`). The caller handles
+/// [`InformFailure::TopLevelOutput`] (Java's `catch`: report, record, post the failed event,
+/// throw), which needs the values it owns.
 // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:385 CompletionFunction.informImportantOutputHandler
+#[allow(clippy::too_many_arguments)]
 fn inform_important_output_handler(
+    skyframe_action_executor: &SkyframeActionExecutor,
+    seam: &dyn AnalysisSeam,
+    completor: &dyn Completor,
+    env: &mut Environment<'_>,
     handler: &dyn blaze_exec::exec::action_execution_context::ImportantOutputHandler,
     important_artifacts: &[&Artifact],
     runfiles_tree_artifacts: &[blaze_exec::actions::ActionInputRef],
     full_input_map: &crate::skyframe_action_executor::ActionInputMetadata,
-) -> Result<(), blaze_skyframe::Interrupted> {
+    artifacts_by_output_group: &[(String, ArtifactsInOutputGroup)],
+    built_artifacts: &mut HashSet<Artifact>,
+) -> Result<Option<crate::rewinding::action_rewind_strategy::RewindPlanResult>, InformFailure> {
     use blaze_exec::exec::action_execution_context::ImportantOutputError;
     // The only handler (the remote module's) requires the hidden output metadata: the full
     // input map, `new ActionInputMetadataProvider(inputMap)`.
     blaze_util::check_state!(handler.requires_hidden_output_metadata());
+    let label = completor.key_label();
     let important: Vec<blaze_exec::actions::ActionInputRef> = important_artifacts
         .iter()
         .filter(|artifact| !artifact.is_fileset())
         .map(|artifact| blaze_exec::actions::action_adapters::artifact_input(artifact))
         .collect();
-    match handler.process_outputs_and_get_lost_artifacts(
-        &important,
-        runfiles_tree_artifacts,
-        &full_input_map.action_input_map_only(),
-    ) {
-        Ok(lost_outputs) if lost_outputs.is_empty() => Ok(()),
-        Ok(lost_outputs) => blaze_util::unported!(
-            "ActionRewindStrategy.prepareRewindPlanForLostTopLevelOutputs",
-            "lost top-level outputs: {:?}",
-            lost_outputs.by_digest.keys().collect::<Vec<_>>()
-        ),
-        Err(ImportantOutputError::Interrupted) => Err(blaze_skyframe::Interrupted),
-        Err(ImportantOutputError::Exception(e)) => blaze_util::unported!(
-            "CompletionFunction.informImportantOutputHandler",
-            "ImportantOutputException (TopLevelOutputException): {}",
-            e.message
-        ),
+    let failure = |message: String, failure_detail: blaze_protos::failure_details::FailureDetail| {
+        InformFailure::TopLevelOutput {
+            cause: CompletionRootCause::Label {
+                label: label.clone(),
+                failure_detail: failure_detail.clone(),
+            },
+            exception: TopLevelOutputException {
+                message,
+                detailed_exit_code: blaze_util::DetailedExitCode::of(failure_detail),
+            },
+        }
+    };
+    let lost_outputs = {
+        let _c = blaze_util::profiler::Profiler::instance().profile(
+            blaze_util::profiler::ProfilerTask::INFO,
+            &format!("Informing important output handler of top-level outputs for {label}"),
+        );
+        match handler.process_outputs_and_get_lost_artifacts(
+            &important,
+            runfiles_tree_artifacts,
+            &full_input_map.action_input_map_only(),
+        ) {
+            Ok(lost_outputs) => lost_outputs,
+            Err(ImportantOutputError::Interrupted) => return Err(InformFailure::Interrupted),
+            Err(ImportantOutputError::Exception(e)) => {
+                return Err(failure(e.message.clone(), e.failure_detail.clone()));
+            }
+        }
+    };
+    if lost_outputs.is_empty() {
+        return Ok(None);
+    }
+
+    let mut artifacts_relevant_for_rewinding: Vec<Artifact> =
+        important_artifacts.iter().map(|a| (*a).clone()).collect();
+    if handler.requires_hidden_output_metadata()
+        && let Some((_, hidden_top_level_artifacts)) = artifacts_by_output_group
+            .iter()
+            .find(|(name, _)| name == HIDDEN_TOP_LEVEL)
+    {
+        artifacts_relevant_for_rewinding
+            .extend(hidden_top_level_artifacts.artifacts.to_list().iter().cloned());
+    }
+    let failed_key_deps: IndexSet<SkyKey> = artifacts_relevant_for_rewinding
+        .iter()
+        .map(artifact_key)
+        .collect();
+
+    match skyframe_action_executor
+        .action_rewind_strategy()
+        .prepare_rewind_plan_for_lost_top_level_outputs(
+            skyframe_action_executor,
+            seam,
+            &completor.sky_key(),
+            &label.to_string(),
+            &completor.action_lookup_key_description(),
+            &failed_key_deps,
+            &lost_outputs,
+            full_input_map,
+            built_artifacts,
+            env,
+        ) {
+        Ok(Ok(rewind_plan_result)) => Ok(Some(rewind_plan_result)),
+        Ok(Err(e)) => Err(InformFailure::Compute(e)),
+        Err(e) => Err(failure(e.get_message().to_owned(), e.get_failure_detail())),
     }
 }
 

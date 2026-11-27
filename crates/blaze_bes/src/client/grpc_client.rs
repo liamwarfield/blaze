@@ -154,6 +154,21 @@ pub fn user_readable_error(status: &Status) -> String {
         root = Some(e);
         cause = e.source();
     }
+    // A connection that could not be established: the transport's IOException is Netty's
+    // `AnnotatedConnectException`, whose cause (the root) is the `ConnectException` it annotates:
+    // its message is the annotated one without `": " + remoteAddress`.
+    // Java: io/netty/channel/AbstractChannel.java AbstractChannel.AnnotatedConnectException.<init>
+    if let Some(io_cause) = blaze_remote::grpc::channel::transport_io_cause(status)
+        && let Some(java) = io_cause
+            .get_ref()
+            .and_then(|e| e.downcast_ref::<blaze_remote::common::errors::JavaException>())
+        && java.class_name == "io.netty.channel.AbstractChannel$AnnotatedConnectException"
+        && java.message.matches(": ").count() >= 2
+        && let Some((annotated_cause, _remote_address)) = java.message.rsplit_once(": ")
+    {
+        message.push_str(annotated_cause);
+        return message;
+    }
     match root {
         Some(root) => message.push_str(&root.to_string()),
         // The StatusException is its own root cause: `Status.formatThrowableMessage(status)`.

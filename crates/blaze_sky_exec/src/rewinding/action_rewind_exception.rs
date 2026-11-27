@@ -6,20 +6,22 @@ use blaze_protos::failure_details::{
 use std::fmt;
 
 /// Exception thrown when action rewinding is not possible.
-// Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindException.java:26 ActionRewindException
+// Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindException.java:23 ActionRewindException
 #[derive(Clone, Debug)]
 pub enum ActionRewindException {
-    // Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindException.java:33 GenericActionRewindException
+    // Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindException.java:29 GenericActionRewindException
     Generic {
         message: String,
         code: action_rewinding::Code,
     },
-    // Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindException.java:51 FallbackToBuildRewindingException
-    FallbackToBuildRewinding { message: String },
+    // Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindException.java:47 FallbackToBuildRewindingException
+    FallbackToBuildRewinding {
+        message: String,
+    },
 }
 
 impl ActionRewindException {
-    // Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindException.java:36 GenericActionRewindException.<init>
+    // Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindException.java:32 GenericActionRewindException.<init>
     pub(crate) fn generic(message: String, code: action_rewinding::Code) -> ActionRewindException {
         ActionRewindException::Generic { message, code }
     }
@@ -33,8 +35,8 @@ impl ActionRewindException {
     }
 
     /// `getDetailedExitCode()`'s failure detail.
-    // Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindException.java:42 GenericActionRewindException.getDetailedExitCode
-    // Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindException.java:57 FallbackToBuildRewindingException.getDetailedExitCode
+    // Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindException.java:38 GenericActionRewindException.getDetailedExitCode
+    // Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindException.java:38 FallbackToBuildRewindingException.getDetailedExitCode
     pub fn get_failure_detail(&self) -> FailureDetail {
         match self {
             ActionRewindException::Generic { message, code } => FailureDetail {

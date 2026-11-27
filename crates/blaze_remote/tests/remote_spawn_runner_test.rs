@@ -783,6 +783,7 @@ impl RemoteSpawnRunnerTest {
         )
         .with_hooks(RemoteHooks {
             remote_output_injector: Some(self.injector.clone() as Arc<dyn RemoteOutputInjector>),
+            ..RemoteHooks::new()
         })
     }
 

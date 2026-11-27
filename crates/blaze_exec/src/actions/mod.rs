@@ -55,9 +55,6 @@ pub mod spawn_strategy;
 pub mod spawns;
 pub mod virtual_action_input;
 
-pub use action_template::{
-    ActionTemplate, ActionTemplateError, as_action_template, register_action_template,
-};
 pub use action_cache_checker::{ActionCacheChecker, CacheCheckAction, OutputChecker};
 pub use action_execution::{
     ActionExecutionException, ActionResult, ExecutableAction, as_executable,
@@ -69,6 +66,9 @@ pub use action_execution_metadata::{
 pub use action_input::{
     ActionInput, ActionInputRef, Artifact, BasicActionInput, HierarchicalPath, InputMapping,
 };
+pub use action_template::{
+    ActionTemplate, ActionTemplateError, as_action_template, register_action_template,
+};
 pub use exec_exception::{
     EnvironmentalExecException, ExecException, LostArtifacts, LostInputsExecException,
     SpawnExecException, UserExecException,
@@ -79,7 +79,7 @@ pub use input_metadata_provider::{
     RunfilesTree, SymlinkEntry, TreeArtifactValue, expand_artifacts,
 };
 pub use path_mapper::PathMapper;
-pub use resource_set::{ResourceSet, ResourceSetOrBuilder};
+pub use resource_set::{ResourceSet, ResourceSetConverter, ResourceSetOrBuilder};
 pub use simple_spawn::SimpleSpawn;
 pub use spawn::{Spawn, SpawnDescribable};
 pub use spawn_metrics::{ExecKind, SpawnMetrics};

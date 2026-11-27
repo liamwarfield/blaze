@@ -181,49 +181,58 @@ pub struct CommandResultBuilder {
 }
 
 impl CommandResultBuilder {
+    // Java: com/google/devtools/build/lib/shell/CommandResult.java:120 CommandResult.Builder.setStdoutStream
     pub fn set_stdout_stream(&mut self, stdout: ByteArrayOutputStream) -> &mut Self {
         self.stdout_stream = Some(stdout);
         self
     }
 
+    // Java: com/google/devtools/build/lib/shell/CommandResult.java:123 CommandResult.Builder.setStderrStream
     pub fn set_stderr_stream(&mut self, stderr: ByteArrayOutputStream) -> &mut Self {
         self.stderr_stream = Some(stderr);
         self
     }
 
+    // Java: com/google/devtools/build/lib/shell/CommandResult.java:126 CommandResult.Builder.setTerminationStatus
     pub fn set_termination_status(&mut self, termination_status: TerminationStatus) -> &mut Self {
         self.termination_status = Some(termination_status);
         self
     }
 
+    // Java: com/google/devtools/build/lib/shell/CommandResult.java:129 CommandResult.Builder.setWallExecutionTime
     pub fn set_wall_execution_time(&mut self, d: Duration) -> &mut Self {
         self.wall_execution_time = Some(d);
         self
     }
 
     /// Sets or clears the wall execution time.
+    // Java: com/google/devtools/build/lib/shell/CommandResult.java:136 CommandResult.Builder.setWallExecutionTime
     pub fn set_wall_execution_time_opt(&mut self, d: Option<Duration>) -> &mut Self {
         self.wall_execution_time = d;
         self
     }
 
+    // Java: com/google/devtools/build/lib/shell/CommandResult.java:139 CommandResult.Builder.setUserExecutionTime
     pub fn set_user_execution_time(&mut self, d: Duration) -> &mut Self {
         self.user_execution_time = Some(d);
         self
     }
 
     /// Sets or clears the user execution time.
+    // Java: com/google/devtools/build/lib/shell/CommandResult.java:146 CommandResult.Builder.setUserExecutionTime
     pub fn set_user_execution_time_opt(&mut self, d: Option<Duration>) -> &mut Self {
         self.user_execution_time = d;
         self
     }
 
+    // Java: com/google/devtools/build/lib/shell/CommandResult.java:149 CommandResult.Builder.setSystemExecutionTime
     pub fn set_system_execution_time(&mut self, d: Duration) -> &mut Self {
         self.system_execution_time = Some(d);
         self
     }
 
     /// Sets or clears the system execution time.
+    // Java: com/google/devtools/build/lib/shell/CommandResult.java:156 CommandResult.Builder.setSystemExecutionTime
     pub fn set_system_execution_time_opt(&mut self, d: Option<Duration>) -> &mut Self {
         self.system_execution_time = d;
         self

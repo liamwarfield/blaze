@@ -229,6 +229,27 @@ pub struct BepSubscriber {
 impl EventBus for BepSubscriber {
     fn post(&self, event: Arc<dyn Postable>) {
         let shared = &self.shared;
+        // `HttpDownloader` posts a `buildeventstream.FetchEvent` after each download attempt;
+        // the downloader of the port posts its own copy of the class (blaze_repo_fetch is below
+        // blaze_bep), which is the same event for the streamer.
+        // Java: com/google/devtools/build/lib/bazel/repository/downloader/HttpDownloader.java:206 HttpDownloader.downloadWithoutChecksum
+        if let Some(e) = downcast_event::<
+            blaze_repo_fetch::downloader::download_progress_event::FetchEvent,
+        >(&event)
+        {
+            let downloader = blaze_protos::build_event_stream::build_event_id::fetch_id::Downloader::from_str_name(
+                e.downloader,
+            )
+            .unwrap_or_else(|| panic!("unknown FetchId.Downloader {}", e.downloader));
+            shared.streamer.build_event(Arc::new(
+                blaze_bep::buildeventstream::build_completing_event::FetchEvent::new(
+                    e.url.clone(),
+                    downloader,
+                    e.success,
+                ),
+            ));
+            return;
+        }
         // The MetricsCollector's subscriptions.
         if let Some(e) = downcast_event::<ActionCompletionEvent>(&event) {
             // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:240 MetricsCollector.onActionComplete
@@ -999,6 +1020,11 @@ fn create_bes_transport(
         );
     let reporter: Arc<dyn EventHandler> = env.get_reporter().clone();
     let event_bus: Arc<dyn blaze_events::EventBus> = env.get_event_bus().clone();
+    // BlazeVersionInfo.instance().getVersion(), which TracingMetadataUtils.buildMetadata reads
+    // for the calls of the client (the remote module sets it too; the first call wins).
+    blaze_remote::util::tracing_metadata_utils::set_tool_version(
+        &BlazeVersionInfo::instance().get_version(),
+    );
     let result = blaze_bes::module::create_bes_transport(
         blaze_bes::module::BesTransportEnvironment {
             credentials: blaze_bes::module::CredentialsEnvironment {
@@ -1016,13 +1042,7 @@ fn create_bes_transport(
                 parsing_result,
             ),
             invocation_id: env.get_command_id().to_string(),
-            // cmdEnv.getAttemptNumber(). PORT: the environment does not keep the attempt
-            // number; a first attempt is 1, a retried one (remote cache eviction) fails loudly.
-            attempt_number: if crate::commands::build::build_remote::is_retried_attempt() {
-                blaze_util::unported!("CommandEnvironment.getAttemptNumber (retried command)")
-            } else {
-                1
-            },
+            attempt_number: env.get_attempt_number(),
             command_name: env.get_command_name().to_string(),
             command_start_time_millis: env.get_command_start_time(),
             clock: Arc::new(blaze_bes::uploader::JavaClock),
@@ -1416,6 +1436,44 @@ fn remove_from_pending_uploads(uploads: &[PendingUpload]) {
         .retain(|pending| !uploads.iter().any(|u| u.same_transport(pending)));
 }
 
+/// `blazeShutdown()`: waits (at most `getMaxWaitForPreviousInvocation()`, five seconds) for the
+/// uploads the last command left running, then cancels what is left. A failure or a timeout is
+/// only logged by Java (logging is not ported).
+///
+// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:512 BuildEventServiceModule.blazeShutdown
+pub(crate) fn blaze_shutdown_pending_uploads() {
+    let pending = PENDING_UPLOADS.lock().clone();
+    if pending.is_empty() {
+        return;
+    }
+    // Uninterruptibles.getUninterruptibly(Futures.allAsList(...), 5, SECONDS): the first failure
+    // ends the wait.
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    'wait: loop {
+        let mut all_done = true;
+        for upload in &pending {
+            match upload.close.poll() {
+                None => all_done = false,
+                Some(TimedOutcome::Done(Ok(()))) => {}
+                Some(_) => break 'wait,
+            }
+        }
+        if all_done || std::time::Instant::now() >= until {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    // finally: cancelAndResetPendingUploads(), then uploaderFactoryToCleanup.shutdown()
+    cancel_and_reset_pending_uploads();
+    if let Some(factory) = &*UPLOADER_FACTORY_TO_CLEANUP.lock() {
+        factory.shutdown();
+    }
+}
+
+/// The module's `uploaderFactoryToCleanup`: the uploader factory the last command selected.
+static UPLOADER_FACTORY_TO_CLEANUP: parking_lot::Mutex<Option<Arc<DeferredUploaderFactory>>> =
+    parking_lot::Mutex::new(None);
+
 /// `waitForPreviousInvocation(isShutdown)`: waits (at most five seconds,
 /// `getMaxWaitForPreviousInvocation`) for the uploads the previous command left running, and
 /// reports how long it waited or why it gave up.
@@ -1562,8 +1620,9 @@ impl BepCommandSupport {
         // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:377 BuildEventServiceModule.beforeCommand
         let command_is_shutdown = env.get_command_name() == "shutdown";
         wait_for_previous_invocation(env.get_reporter().as_ref(), command_is_shutdown);
-        // PORT: `uploaderFactoryToCleanup.shutdown()` for `shutdown`: the uploader factories of
-        // the port hold no resources between commands.
+        if command_is_shutdown && let Some(factory) = &*UPLOADER_FACTORY_TO_CLEANUP.lock() {
+            factory.shutdown();
+        }
 
         // Exit early if the running command isn't supported.
         // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:383 BuildEventServiceModule.beforeCommand
@@ -1573,6 +1632,9 @@ impl BepCommandSupport {
         let uploader_factory_map = DeferredUploaderFactory::new(
             crate::commands::build::build_remote::build_event_artifact_uploader_factory_map(None),
         );
+        // this.uploaderFactoryToCleanup = uploaderFactory
+        // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:395 BuildEventServiceModule.beforeCommand
+        *UPLOADER_FACTORY_TO_CLEANUP.lock() = Some(uploader_factory_map.clone());
         let parsing_result = env.get_options();
         let bep_options: BuildEventProtocolOptions = parsing_result
             .get_options()
@@ -2794,6 +2856,13 @@ impl BuildEventHooks for BepCommandSupport {
     }
 
     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:560 BuildTool.buildTargetsWithoutMergedAnalysisExecution
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:168 AnalysisPhaseRunner.execute
+    fn no_analyze(&self) {
+        self.post(Arc::new(
+            blaze_bep::events::buildtool_events::NoAnalyzeEvent,
+        ));
+    }
+
     fn no_execution(&self) {
         self.post(Arc::new(
             blaze_bep::events::buildtool_events::NoExecutionEvent,

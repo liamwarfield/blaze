@@ -80,9 +80,114 @@ fn test_patch_outside_of_external_repository() {}
 #[ignore = "needs a harness running repository_ctx methods with an ExternalContext over a Skyframe environment"]
 fn test_patch_error_was_thrown() {}
 
+/// Recording stand-in for Java's `Mockito.mock(RepositoryRemoteExecutor.class)`.
+#[derive(Default)]
+struct RecordingRemoteExecutor {
+    calls: std::sync::Mutex<Vec<String>>,
+}
+
+impl blaze_repo_rules::repository::remote_helpers::RepositoryRemoteExecutor
+    for RecordingRemoteExecutor
+{
+    fn execute(
+        &self,
+        arguments: &[String],
+        input_files: &std::collections::BTreeMap<blaze_vfs::PathFragment, blaze_vfs::Path>,
+        execution_properties: &indexmap::IndexMap<String, String>,
+        environment: &indexmap::IndexMap<String, String>,
+        working_directory: Option<&str>,
+        timeout: std::time::Duration,
+    ) -> std::io::Result<blaze_repo_rules::repository::remote_helpers::ExecutionResult> {
+        self.calls.lock().unwrap().push(format!(
+            "{arguments:?} {:?} {execution_properties:?} {environment:?} {working_directory:?} {timeout:?}",
+            input_files.keys().collect::<Vec<_>>()
+        ));
+        Ok(
+            blaze_repo_rules::repository::remote_helpers::ExecutionResult::new(
+                0,
+                b"test-stdout".to_vec(),
+                b"test-stderr".to_vec(),
+            ),
+        )
+    }
+}
+
+struct RecordingFactory(std::sync::Arc<RecordingRemoteExecutor>);
+
+impl blaze_repo_rules::repository::remote_helpers::RepositoryRemoteHelpersFactory
+    for RecordingFactory
+{
+    fn create_executor(
+        &self,
+    ) -> Option<
+        std::sync::Arc<dyn blaze_repo_rules::repository::remote_helpers::RepositoryRemoteExecutor>,
+    > {
+        Some(self.0.clone())
+    }
+
+    fn create_repo_contents_cache(
+        &self,
+    ) -> Option<
+        std::sync::Arc<dyn blaze_repo_rules::repository::remote_helpers::RemoteRepoContentsCache>,
+    > {
+        None
+    }
+}
+
+/// Java: `context.execute(["/bin/cmd", "arg1"], timeout = 10, quiet = True)` in a remotable rule
+/// with `exec_properties = {"OSFamily": "Linux"}` and `--experimental_repo_remote_exec` goes to
+/// the remote executor with these arguments, no input files, the execution properties, an empty
+/// environment, the working directory "" and 10 seconds, and returns its result. Here a real
+/// repository rule runs, with a recording executor registered as the runtime's factory.
+// Java: src/test/java/com/google/devtools/build/lib/bazel/repository/starlark/StarlarkRepositoryContextTest.java:488 StarlarkRepositoryContextTest.testRemoteExec
 #[test]
-#[ignore = "needs a harness running repository_ctx methods with an ExternalContext over a Skyframe environment"]
-fn test_remote_exec() {}
+fn test_remote_exec() {
+    use blaze_repo_rules::repository::remote_helpers::{
+        init_repository_remote_helpers_factory, reset_repository_remote_helpers_factory,
+    };
+    run(|| {
+        let s = Scratch::new();
+        s.file(
+            "MODULE.bazel",
+            "configure = use_repo_rule('//:rule.bzl', 'configure')\n\
+             configure(name = 'configure', exec_properties = {'OSFamily': 'Linux'})\n",
+        );
+        s.file("BUILD", "");
+        s.file(
+            "rule.bzl",
+            "def _impl(rctx):\n\
+             \x20 r = rctx.execute(['/bin/cmd', 'arg1'], timeout = 10, quiet = True)\n\
+             \x20 rctx.file('BUILD', '')\n\
+             \x20 rctx.file('result.txt', repr([r.return_code, r.stdout, r.stderr]))\n\
+             configure = repository_rule(implementation = _impl, remotable = True)\n",
+        );
+        let executor = std::sync::Arc::new(RecordingRemoteExecutor::default());
+        init_repository_remote_helpers_factory(std::sync::Arc::new(RecordingFactory(
+            executor.clone(),
+        )));
+        let semantics = blaze_starlark::StarlarkSemantics {
+            experimental_repo_remote_exec: true,
+            ..blaze_starlark::StarlarkSemantics::default()
+        };
+        let ev =
+            s.evaluator_with_semantics(&[], Default::default(), Scratch::default_env(), semantics);
+        reset_repository_remote_helpers_factory();
+        let dir = s
+            .fetch(&ev, "+configure+configure")
+            .unwrap_or_else(|e| panic!("{e}\n{:?}", s.events()));
+        assert_eq!(
+            *executor.calls.lock().unwrap(),
+            vec![
+                "[\"/bin/cmd\", \"arg1\"] [] {\"OSFamily\": \"Linux\"} {} Some(\"\") 10s"
+                    .to_string()
+            ]
+        );
+        assert_eq!(
+            s.read(&dir.join("result.txt")),
+            "[0, \"test-stdout\", \"test-stderr\"]"
+        );
+    })
+}
 
 #[test]
 #[ignore = "needs a harness running repository_ctx methods with an ExternalContext over a Skyframe environment"]

@@ -125,9 +125,11 @@ impl AnalysisFailureInfo {
 }
 
 impl fmt::Display for AnalysisFailureInfo {
-    // Java: NativeInfo/StructImpl.repr with no struct fields.
+    /// `Info.repr` (the class implements `Info`, not `NativeInfo`): `<instance of provider ` +
+    /// `getProvider().getPrintableName()` + `>`.
+    // Java: com/google/devtools/build/lib/packages/Info.java:66 Info.repr
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "AnalysisFailureInfo()")
+        write!(f, "<instance of provider AnalysisFailureInfo>")
     }
 }
 

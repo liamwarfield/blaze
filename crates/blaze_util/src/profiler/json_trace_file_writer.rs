@@ -57,7 +57,11 @@ impl Write for ProfileOutputStream {
     fn flush(&mut self) -> io::Result<()> {
         match self {
             ProfileOutputStream::Plain(s) => s.flush(),
-            ProfileOutputStream::Gzip(g) => g.flush(),
+            // `new GZIPOutputStream(stream)` has `syncFlush == false`: `DeflaterOutputStream.flush`
+            // only flushes the stream and writes no deflate block (flate2's `flush` would write a
+            // sync-flush block, so the bytes would differ).
+            // JDK: java.base/java/util/zip/DeflaterOutputStream.java DeflaterOutputStream.flush (syncFlush)
+            ProfileOutputStream::Gzip(g) => g.get_mut().flush(),
         }
     }
 }

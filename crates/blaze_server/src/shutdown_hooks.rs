@@ -109,10 +109,20 @@ impl ShutdownHooks {
 }
 
 // Java: com/google/devtools/build/lib/server/ShutdownHooks.java:104 ShutdownHooks.printStack
-fn print_stack(_e: &std::io::Error) {
-    // Hopefully this never happens. Java formats the stack trace between
-    // "=======[BAZEL SERVER: ENCOUNTERED IO EXCEPTION]=======" lines and logs it.
-    // PORT: skipped, logging (Blaze has no server log records yet).
+fn print_stack(e: &std::io::Error) {
+    // Hopefully this never happens. It's not very nice to just write this to the user's console,
+    // but I'm not sure what better choice we have.
+    // PORT: `e.printStackTrace` is the exception's first line (Blaze has no Java stack).
+    let err = format!(
+        "=======[BAZEL SERVER: ENCOUNTERED IO EXCEPTION]=======\njava.io.IOException: {e}\n\
+         =====================================================\n"
+    );
+    blaze_util::server_logger::severe(
+        "com.google.devtools.build.lib.server.ShutdownHooks",
+        "printStack",
+        &err,
+        None,
+    );
 }
 
 #[cfg(test)]

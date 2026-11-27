@@ -10,10 +10,12 @@ use blaze_vfs::Path;
 /// `CompletionContext.ArtifactReceiver`.
 // Java: com/google/devtools/build/lib/actions/CompletionContext.java:115 CompletionContext.ArtifactReceiver
 pub trait ArtifactReceiver {
+    // Java: com/google/devtools/build/lib/actions/CompletionContext.java:116 CompletionContext.ArtifactReceiver.accept
     fn accept(&mut self, artifact: &Artifact, metadata: &FileArtifactValue);
 
     /// `acceptFilesetMapping(Artifact fileset, FilesetOutputSymlink link)`. PORT: filesets are
     /// not ported; a fileset artifact with `expand_filesets` fails loudly before reaching this.
+    // Java: com/google/devtools/build/lib/actions/CompletionContext.java:118 CompletionContext.ArtifactReceiver.acceptFilesetMapping
     fn accept_fileset_mapping(&mut self, fileset: &Artifact);
 }
 
@@ -124,7 +126,9 @@ impl CompletionContext {
             }
             if artifact.is_fileset() {
                 if self.expand_filesets {
-                    unported!("CompletionContext.visitArtifacts (fileset expansion)");
+                    unported!(
+                        "CompletionContext.visitArtifacts (fileset expansion) (unreachable in Bazel: only the non-open-sourced fileset rule makes fileset artifacts, packages/OutputFile.java:123)"
+                    );
                 }
             } else if artifact.is_tree_artifact() {
                 let Some(children) = self.important_input_map.get_tree_children(artifact) else {

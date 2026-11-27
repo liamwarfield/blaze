@@ -49,6 +49,7 @@ impl ActionEnvironment {
     /// undefined, so callers need to take care that the key set of the `fixed_env` map and the
     /// set of `inherited_env` elements are disjoint.
     // Java: com/google/devtools/build/lib/actions/ActionEnvironment.java:56 ActionEnvironment.create
+    // Java: com/google/devtools/build/lib/actions/ActionEnvironment.java:67 ActionEnvironment.create
     pub fn create(
         fixed_env: IndexMap<String, String>,
         inherited_env: IndexSet<String>,
@@ -98,6 +99,9 @@ impl ActionEnvironment {
     /// to fixed values and their values. This should only be used for testing and to compute the
     /// cache keys of actions. Use [`Self::resolve`] instead to get the complete environment.
     // Java: com/google/devtools/build/lib/actions/ActionEnvironment.java:100 ActionEnvironment.getFixedEnv
+    // Java: com/google/devtools/build/lib/actions/ActionEnvironment.java:157 ActionEnvironment.EmptyActionEnvironment.getFixedEnv
+    // Java: com/google/devtools/build/lib/actions/ActionEnvironment.java:183 ActionEnvironment.SimpleActionEnvironment.getFixedEnv
+    // Java: com/google/devtools/build/lib/actions/ActionEnvironment.java:225 ActionEnvironment.CompoundActionEnvironment.getFixedEnv
     pub fn get_fixed_env(&self) -> IndexMap<String, String> {
         match self {
             ActionEnvironment::Empty => IndexMap::new(),
@@ -120,6 +124,9 @@ impl ActionEnvironment {
     /// should only be used for testing and to compute the cache keys of actions. Use
     /// [`Self::resolve`] instead to get the complete environment.
     // Java: com/google/devtools/build/lib/actions/ActionEnvironment.java:108 ActionEnvironment.getInheritedEnv
+    // Java: com/google/devtools/build/lib/actions/ActionEnvironment.java:162 ActionEnvironment.EmptyActionEnvironment.getInheritedEnv
+    // Java: com/google/devtools/build/lib/actions/ActionEnvironment.java:188 ActionEnvironment.SimpleActionEnvironment.getInheritedEnv
+    // Java: com/google/devtools/build/lib/actions/ActionEnvironment.java:233 ActionEnvironment.CompoundActionEnvironment.getInheritedEnv
     pub fn get_inherited_env(&self) -> IndexSet<String> {
         match self {
             ActionEnvironment::Empty => IndexSet::new(),
@@ -132,6 +139,9 @@ impl ActionEnvironment {
     /// to [`Self::resolve`] may add less entries than this number if environment variables are
     /// contained in both the fixed and the inherited environment.
     // Java: com/google/devtools/build/lib/actions/ActionEnvironment.java:115 ActionEnvironment.estimatedSize
+    // Java: com/google/devtools/build/lib/actions/ActionEnvironment.java:167 ActionEnvironment.EmptyActionEnvironment.estimatedSize
+    // Java: com/google/devtools/build/lib/actions/ActionEnvironment.java:193 ActionEnvironment.SimpleActionEnvironment.estimatedSize
+    // Java: com/google/devtools/build/lib/actions/ActionEnvironment.java:238 ActionEnvironment.CompoundActionEnvironment.estimatedSize
     pub fn estimated_size(&self) -> usize {
         match self {
             ActionEnvironment::Empty => 0,

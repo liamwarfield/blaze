@@ -283,6 +283,8 @@ impl BlazeRuntime {
         for module in &self.blaze_modules {
             module.blaze_shutdown_on_crash(exit_code);
         }
+        // finally
+        crate::server_log::flush_server_log();
     }
 
     /// Performs all shutdown steps.
@@ -291,6 +293,8 @@ impl BlazeRuntime {
         for module in &self.blaze_modules {
             module.blaze_shutdown();
         }
+        // finally
+        crate::server_log::flush_server_log();
     }
 
     /// All the options classes of all commands (deduplicated, in first-seen order): what
@@ -1186,6 +1190,10 @@ impl BlazeRuntime {
         let runtime = Arc::new(runtime);
         // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1792 BlazeRuntime.Builder.build
         crate::bugreport::BugReport::set_runtime(runtime.clone());
+        // BugReport's VERSION_INFO.isReleasedBlaze(), for the reports of the crates below.
+        blaze_util::bug_report::set_released(
+            crate::version_info::BlazeVersionInfo::instance().is_released_blaze(),
+        );
         Ok(runtime)
     }
 

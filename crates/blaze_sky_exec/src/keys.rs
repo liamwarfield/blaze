@@ -326,6 +326,11 @@ impl TestType {
 
 /// Wraps an `ActionLookupKey` (configured target or aspect) to drive its analysis and execution.
 // Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:26 BuildDriverKey
+// Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:93 BuildDriverKey.getActionLookupKey
+// Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:97 BuildDriverKey.isExplicitlyRequested
+// Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:101 BuildDriverKey.shouldSkipIncompatibleExplicitTargets
+// Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:109 BuildDriverKey.isExtraActionTopLevelOnly
+// (these getters are the public fields)
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct BuildDriverKey {
     /// `getActionLookupKey()`.

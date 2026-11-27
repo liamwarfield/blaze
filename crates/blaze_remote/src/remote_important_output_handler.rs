@@ -33,22 +33,45 @@ pub struct RemoteImportantOutputHandler {
     /// See [`ImportantOutputHandler::is_registered`]: set once the build knows whether it is a
     /// Skymeld build (`env.withMergedAnalysisAndExecutionSourceOfTruth()`).
     registered: Arc<AtomicBool>,
+    /// `rewoundActionSynchronizer` when it is a `RemoteRewoundActionSynchronizer`.
+    rewound_action_synchronizer:
+        Option<Arc<crate::remote_rewound_action_synchronizer::RemoteRewoundActionSynchronizer>>,
 }
 
 impl RemoteImportantOutputHandler {
-    /// PORT: Java's `graph` (for `getGeneratingAction`) and `rewoundActionSynchronizer` are not
-    /// taken: see [`RemoteImportantOutputHandler::download_artifact`] and
-    /// [`ImportantOutputHandler::process_outputs_and_get_lost_artifacts`].
+    /// PORT: Java's `graph` (for `getGeneratingAction`) is not taken: see
+    /// [`RemoteImportantOutputHandler::download_artifact`]. `rewoundActionSynchronizer` is the
+    /// remote one or `None` (Java's `NOOP`).
     // Java: com/google/devtools/build/lib/remote/RemoteImportantOutputHandler.java:60 RemoteImportantOutputHandler.<init>
     pub fn new(
         remote_output_checker: Arc<RemoteOutputChecker>,
         action_input_prefetcher: Arc<RemoteActionInputFetcher>,
         registered: Arc<AtomicBool>,
+        rewound_action_synchronizer: Option<
+            Arc<crate::remote_rewound_action_synchronizer::RemoteRewoundActionSynchronizer>,
+        >,
     ) -> RemoteImportantOutputHandler {
         RemoteImportantOutputHandler {
             remote_output_checker,
             action_input_prefetcher,
             registered,
+            rewound_action_synchronizer,
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/remote/RemoteImportantOutputHandler.java:134 RemoteImportantOutputHandler.maybeEnterProcessOutputsAndGetLostArtifacts
+    fn maybe_enter_process_outputs_and_get_lost_artifacts(
+        &self,
+        important_outputs: &[ActionInputRef],
+        metadata_provider: &dyn InputMetadataProvider,
+    ) -> Result<
+        blaze_exec::exec::rewound_action_synchronizer::SilentCloseable,
+        blaze_shell::InterruptedException,
+    > {
+        match &self.rewound_action_synchronizer {
+            Some(synchronizer) => synchronizer
+                .enter_process_outputs_and_get_lost_artifacts(important_outputs, metadata_provider),
+            None => Ok(blaze_exec::exec::rewound_action_synchronizer::SilentCloseable::noop()),
         }
     }
 
@@ -106,10 +129,12 @@ impl RemoteImportantOutputHandler {
         // were not reexecuted, so the metadata tracked for them in Skyframe remains remote.
         // Record the materialization on the metadata so that if such a file is deleted locally, a
         // later invocation reruns the generating action to restore it.
-        // PORT: `FileArtifactValue.setMaterializedAsToplevelOutput` is not ported (Blaze's
-        // metadata values are immutable copies); `ensured_output_metadata` is collected as Java
-        // does, and the flag stays unset.
-        let _ = ensured_output_metadata;
+        // PORT: the record is a cell the clones of a metadata value share (the graph's value
+        // and the copies the metadata provider hands out).
+        // Java: com/google/devtools/build/lib/remote/RemoteImportantOutputHandler.java:178 RemoteImportantOutputHandler.ensureToplevelArtifacts
+        for metadata in &ensured_output_metadata {
+            metadata.set_materialized_as_toplevel_output(true);
+        }
         Ok(())
     }
 
@@ -176,10 +201,6 @@ impl ImportantOutputHandler for RemoteImportantOutputHandler {
         true
     }
 
-    /// PORT: Java holds the `RemoteRewoundActionSynchronizer` lock of the artifacts during the
-    /// download (`maybeEnterProcessOutputsAndGetLostArtifacts`), which guards their producers
-    /// from rewinding; Blaze does not rewind actions (`--rewind_lost_inputs` fails loudly in the
-    /// action executor), so there is nothing to guard.
     // Java: com/google/devtools/build/lib/remote/RemoteImportantOutputHandler.java:78 RemoteImportantOutputHandler.processOutputsAndGetLostArtifacts
     fn process_outputs_and_get_lost_artifacts(
         &self,
@@ -187,6 +208,9 @@ impl ImportantOutputHandler for RemoteImportantOutputHandler {
         runfiles_tree_artifacts: &[ActionInputRef],
         metadata_provider: &dyn InputMetadataProvider,
     ) -> Result<LostArtifacts, ImportantOutputError> {
+        let _lock = self
+            .maybe_enter_process_outputs_and_get_lost_artifacts(important_outputs, metadata_provider)
+            .map_err(|_| ImportantOutputError::Interrupted)?;
         match self.ensure_toplevel_artifacts(
             important_outputs,
             runfiles_tree_artifacts,

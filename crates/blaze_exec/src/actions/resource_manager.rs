@@ -217,6 +217,10 @@ impl CountDownLatch {
 /// Latch which indicates the availability of resources.
 // Java: com/google/devtools/build/lib/actions/ResourceManager.java:725 ResourceManager.ResourceLatch
 #[derive(Debug, Clone)]
+// Java: com/google/devtools/build/lib/actions/ResourceManager.java:734 ResourceManager.ResourceLatch.getLatch
+// Java: com/google/devtools/build/lib/actions/ResourceManager.java:738 ResourceManager.ResourceLatch.getWorker
+// Java: com/google/devtools/build/lib/actions/ResourceManager.java:742 ResourceManager.ResourceLatch.setWorker
+// (the accessors are the field reads and writes of `latch` and `worker`)
 struct ResourceLatch {
     latch: Option<Arc<CountDownLatch>>,
     worker: WorkerSlot,
@@ -304,6 +308,7 @@ impl std::fmt::Debug for ResourceHandle {
 
 impl ResourceHandle {
     /// `getRequest()`.
+    // Java: com/google/devtools/build/lib/actions/ResourceManager.java:108 ResourceManager.ResourceHandle.getRequest
     pub fn get_request(&self) -> Option<&ResourceRequest> {
         self.request.as_ref()
     }
@@ -496,7 +501,10 @@ impl ResourceManager {
     ) {
         if cpu_load_scheduling {
             // PORT: MachineLoadProvider (the machine's CPU load) is not ported.
-            blaze_util::unported!("MachineLoadProvider.instance");
+            blaze_util::unported!(
+                "MachineLoadProvider.instance",
+                "--experimental_cpu_load_scheduling: needs OperatingSystemMXBean.getCpuLoad, the JDK's native CPU load sampling (/proc/stat deltas or the container's cgroup metrics)"
+            );
         }
         let mut st = self.state.lock();
         st.cpu_load_scheduling = cpu_load_scheduling;
@@ -557,7 +565,10 @@ impl ResourceManager {
         // PORT: no window update is ever scheduled without CPU load scheduling, which needs the
         // unported MachineLoadProvider (initialize_cpu_load_functionality fails loudly).
         if self.state.lock().cpu_load_scheduling {
-            blaze_util::unported!("ResourceManager.scheduleCpuLoadWindowUpdate");
+            blaze_util::unported!(
+                "ResourceManager.scheduleCpuLoadWindowUpdate",
+                "--experimental_cpu_load_scheduling: needs OperatingSystemMXBean.getCpuLoad, the JDK's native CPU load sampling (/proc/stat deltas or the container's cgroup metrics)"
+            );
         }
     }
 
@@ -1032,7 +1043,10 @@ impl ResourceManager {
                 return Ok(false);
             }
             let _ = st.window_estimation_cpu;
-            blaze_util::unported!("MachineLoadProvider.getCurrentCpuUsage");
+            blaze_util::unported!(
+                "MachineLoadProvider.getCurrentCpuUsage",
+                "--experimental_cpu_load_scheduling: needs OperatingSystemMXBean.getCpuLoad, the JDK's native CPU load sampling (/proc/stat deltas or the container's cgroup metrics)"
+            );
         }
 
         ResourceManager::is_available(st, available, used, requested, key)

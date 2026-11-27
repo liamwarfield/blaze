@@ -110,6 +110,12 @@ pub struct StandaloneTestResult {
 
 impl StandaloneTestResult {
     // Java: com/google/devtools/build/lib/exec/StandaloneTestResult.java:53 StandaloneTestResult.builder
+    // Java: com/google/devtools/build/lib/exec/StandaloneTestResult.java:65 StandaloneTestResult.Builder.setSpawnResults
+    // Java: com/google/devtools/build/lib/exec/StandaloneTestResult.java:68 StandaloneTestResult.Builder.setTestResultDataBuilder
+    // Java: com/google/devtools/build/lib/exec/StandaloneTestResult.java:70 StandaloneTestResult.Builder.setExecutionInfo
+    // Java: com/google/devtools/build/lib/exec/StandaloneTestResult.java:73 StandaloneTestResult.Builder.realBuild
+    // Java: com/google/devtools/build/lib/exec/StandaloneTestResult.java:80 StandaloneTestResult.Builder.build
+    // Java: com/google/devtools/build/lib/exec/StandaloneTestResult.java:62 StandaloneTestResult.Builder.spawnResults
     pub fn new(
         spawn_results: Vec<SpawnResult>,
         test_result_data_builder: TestResultData,

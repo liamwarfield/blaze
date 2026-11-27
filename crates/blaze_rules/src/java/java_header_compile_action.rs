@@ -248,8 +248,10 @@ impl Action for JavaHeaderCompileAction {
     fn get_effective_environment(
         &self,
         client_env: &IndexMap<String, String>,
+        path_mapper: &dyn blaze_actions::actions::path_mapper::PathMapper,
     ) -> Result<IndexMap<String, String>, CommandLineExpansionException> {
-        self.spawn.get_effective_environment(client_env)
+        self.spawn
+            .get_effective_environment(client_env, path_mapper)
     }
 
     fn as_command_action(&self) -> Option<&dyn CommandAction> {
@@ -351,7 +353,7 @@ impl JavaHeaderCompileAction {
                 .map(|p| ActionInputRef::new(p.clone())),
         );
         let environment = self
-            .get_effective_environment(ctx.get_client_env())
+            .get_effective_environment(ctx.get_client_env(), path_mapper.as_ref())
             .map_err(|e| self.command_line_exception(&e.message))?;
         let r = self.spawn.get_resource_set_or_builder();
         let mut resources = IndexMap::new();

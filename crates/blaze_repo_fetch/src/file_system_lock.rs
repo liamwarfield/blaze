@@ -37,6 +37,7 @@ pub enum LockMode {
     EXCLUSIVE,
 }
 
+// Java: com/google/devtools/build/lib/util/FileSystemLock.java:47 FileSystemLock.LockMode.toString
 impl std::fmt::Display for LockMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -72,6 +73,12 @@ pub struct FileSystemLock {
     shared: bool,
 }
 
+// Java: com/google/devtools/build/lib/util/FileSystemLock.java:61 FileSystemLock.prepareChannel
+//
+// PORT: `closeAfterFailure` is the drop of the `File` on the failure paths of `acquire`; the
+// per-process table keeps a descriptor of a locked file open, so that drop never releases a lock
+// held through another lock object.
+// Java: com/google/devtools/build/lib/util/FileSystemLock.java:126 FileSystemLock.closeAfterFailure
 fn prepare_channel(path: &Path) -> Result<File, IoException> {
     if let Some(parent) = path.get_parent_directory() {
         parent.create_directory_and_parents()?;
@@ -117,6 +124,7 @@ impl FileSystemLock {
     pub fn try_get(path: &Path, mode: LockMode) -> Result<FileSystemLock, IoException> {
         match Self::acquire(path, mode, false)? {
             Some(lock) => Ok(lock),
+            // Java: com/google/devtools/build/lib/util/FileSystemLock.java:37 FileSystemLock.LockAlreadyHeldException.<init>
             None => Err(IoException::new(format!(
                 "failed to acquire {} filesystem lock on {}",
                 mode, path
@@ -172,6 +180,7 @@ impl FileSystemLock {
         Ok(Some(FileSystemLock { key, shared }))
     }
 
+    // Java: com/google/devtools/build/lib/util/FileSystemLock.java:134 FileSystemLock.isShared
     pub fn is_shared(&self) -> bool {
         self.shared
     }
@@ -190,6 +199,7 @@ impl FileSystemLock {
             .is_some_and(|table| table.contains_key(&(metadata.dev(), metadata.ino())))
     }
 
+    // Java: com/google/devtools/build/lib/util/FileSystemLock.java:139 FileSystemLock.isExclusive
     pub fn is_exclusive(&self) -> bool {
         !self.shared
     }

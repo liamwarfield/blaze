@@ -7,43 +7,78 @@
 
 use std::sync::OnceLock;
 
-/// `(source class name, source method name, message)` of an `INFO` record.
-pub type InfoSink = fn(&str, &str, &str);
+/// The `java.util.logging.Level` of a record (`intValue()`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    Severe = 1000,
+    Warning = 900,
+    Info = 800,
+}
 
-static INFO_SINK: OnceLock<InfoSink> = OnceLock::new();
+/// `(level, source class name, source method name, message, cause)` of a record; the cause is
+/// the `toString()` of the throwable Java attaches with `withCause`.
+pub type Sink = fn(Level, &str, &str, &str, Option<&str>);
 
-/// Sets the sink of `INFO` records (once per process).
-pub fn set_info_sink(sink: InfoSink) {
-    let _ = INFO_SINK.set(sink);
+static SINK: OnceLock<Sink> = OnceLock::new();
+
+/// Sets the sink of the records (once per process).
+pub fn set_sink(sink: Sink) {
+    let _ = SINK.set(sink);
+}
+
+/// `logger.at<level>().withCause(cause).log(message)` of class `source_class_name`, method
+/// `source_method_name` (`cause`: `None` without `withCause`).
+pub fn log(
+    level: Level,
+    source_class_name: &str,
+    source_method_name: &str,
+    message: &str,
+    cause: Option<&str>,
+) {
+    if let Some(sink) = SINK.get() {
+        sink(level, source_class_name, source_method_name, message, cause);
+    }
 }
 
 /// `logger.atInfo().log(message)` of class `source_class_name`, method `source_method_name`.
 pub fn info(source_class_name: &str, source_method_name: &str, message: &str) {
-    if let Some(sink) = INFO_SINK.get() {
-        sink(source_class_name, source_method_name, message);
-    }
+    log(
+        Level::Info,
+        source_class_name,
+        source_method_name,
+        message,
+        None,
+    );
 }
 
-/// `(source class name, source method name, message, cause)` of a `WARNING` record; the cause is
-/// the `toString()` of the throwable Java attaches with `withCause`.
-pub type WarningSink = fn(&str, &str, &str, Option<&str>);
-
-static WARNING_SINK: OnceLock<WarningSink> = OnceLock::new();
-
-/// Sets the sink of `WARNING` records (once per process).
-pub fn set_warning_sink(sink: WarningSink) {
-    let _ = WARNING_SINK.set(sink);
-}
-
-/// `logger.atWarning().withCause(cause).log(message)` of class `source_class_name`, method
-/// `source_method_name` (`cause`: `None` without `withCause`).
+/// `logger.atWarning().withCause(cause).log(message)`.
 pub fn warning(
     source_class_name: &str,
     source_method_name: &str,
     message: &str,
     cause: Option<&str>,
 ) {
-    if let Some(sink) = WARNING_SINK.get() {
-        sink(source_class_name, source_method_name, message, cause);
-    }
+    log(
+        Level::Warning,
+        source_class_name,
+        source_method_name,
+        message,
+        cause,
+    );
+}
+
+/// `logger.atSevere().withCause(cause).log(message)`.
+pub fn severe(
+    source_class_name: &str,
+    source_method_name: &str,
+    message: &str,
+    cause: Option<&str>,
+) {
+    log(
+        Level::Severe,
+        source_class_name,
+        source_method_name,
+        message,
+        cause,
+    );
 }

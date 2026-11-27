@@ -73,6 +73,10 @@ pub struct RemoteModuleContributions {
     /// How the action executor treats the lost inputs of a build with a remote cache (see
     /// [`LostInputsPolicy`]); `None` without one (no input can be lost then).
     pub lost_inputs_policy: Option<LostInputsPolicy>,
+    /// `outputService.getRewoundActionSynchronizer()` of the remote output service
+    /// (`RemoteRewoundActionSynchronizer` with `--rewind_lost_inputs`); `None` is `NOOP`.
+    pub rewound_action_synchronizer:
+        Option<Arc<dyn crate::exec::rewound_action_synchronizer::RewoundActionSynchronizer>>,
 }
 
 /// `SkyframeActionExecutor.rewindingEnabled()` / `invocationRetriesEnabled()` and the
@@ -135,6 +139,14 @@ impl RemoteModuleContributions {
                     Arc<dyn crate::exec::action_execution_context::ImportantOutputHandler>,
                 >(),
                 Arc::new(handler.clone()),
+            );
+        }
+        if let Some(synchronizer) = &self.rewound_action_synchronizer {
+            register(
+                std::any::TypeId::of::<
+                    Arc<dyn crate::exec::rewound_action_synchronizer::RewoundActionSynchronizer>,
+                >(),
+                Arc::new(synchronizer.clone()),
             );
         }
         if let Some(finalizer) = &self.action_finalizer {

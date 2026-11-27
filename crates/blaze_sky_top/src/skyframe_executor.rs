@@ -911,12 +911,9 @@ impl SkyframeExecutor {
 
     /// Checks the given action lookup values for action conflicts. Values satisfying the returned
     /// predicate are known to be transitively error-free from action conflicts or other analysis
-    /// failures.
-    ///
-    /// PORT: skipped, incremental: Java deletes the conflict-finding nodes afterwards
-    /// (`memoizingEvaluator.delete`, `resetActionConflictsStoredInSkyframe`) to free memory and
-    /// so that a later build recomputes them. A command analyzes once, so they are never read
-    /// with other conflicts.
+    /// failures. [`SkyframeExecutor::reset_action_conflicts_stored_in_skyframe`] must be called
+    /// after this to free memory coming from this call (and, with a graph kept between
+    /// commands, so that a later build does not read these verdicts again).
     // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2541 SkyframeExecutor.filterActionConflictsForConfiguredTargetsAndAspects
     pub fn filter_action_conflicts_for_configured_targets_and_aspects(
         &self,
@@ -942,10 +939,36 @@ impl SkyframeExecutor {
                 .unwrap_or(1),
             event_handler,
         )?;
+        // Remove top-level action-conflict detection values for memory efficiency. Non-top-level
+        // ones are removed below. We are OK with this mini-phase being non-incremental as the
+        // failure mode of action conflict is rare.
+        self.evaluator.delete(|k, _| {
+            k.function_name()
+                == action_lookup_conflict_finding_function::TOP_LEVEL_ACTION_LOOKUP_CONFLICT_FINDING
+        });
         Ok(TopLevelActionConflictReport {
             result,
             top_level_artifact_context: top_level_artifact_context.to_vec(),
         })
+    }
+
+    /// `SkyframeExecutor.setSaltAndDeleteActionsIfChanged` on the graph kept between commands
+    /// (nothing to do for an executor that does not keep its graph: it starts with none).
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2066 SkyframeExecutor.setSaltAndDeleteActionsIfChanged
+    pub fn set_salt_and_delete_actions_if_changed(&self, execution_salt: &str) {
+        if let Some(handle) = &self.incremental {
+            handle.set_salt_and_delete_actions_if_changed(&self.evaluator, execution_salt);
+        }
+    }
+
+    /// Clears all action conflicts stored in skyframe that were discovered by a call to
+    /// [`SkyframeExecutor::filter_action_conflicts_for_configured_targets_and_aspects`].
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2611 SkyframeExecutor.resetActionConflictsStoredInSkyframe
+    pub fn reset_action_conflicts_stored_in_skyframe(&self) {
+        self.evaluator.delete(|k, _| {
+            k.function_name()
+                == action_lookup_conflict_finding_function::ACTION_LOOKUP_CONFLICT_FINDING
+        });
     }
 
     /// Evaluates `roots` (Java `SkyframeExecutor.evaluate(roots, keepGoing, numThreads,
@@ -1065,7 +1088,7 @@ impl SkyframeExecutor {
         &self,
     ) -> Arc<dyn blaze_actions::actions::artifact_factory::PackageRootLookup> {
         Arc::new(DonePackageRootLookup {
-            evaluator: self.evaluator.clone(),
+            evaluator: Arc::downgrade(&self.evaluator),
         })
     }
 
@@ -2236,8 +2259,15 @@ fn adjust_for_exec_with_evaluator(
 
 /// `SkyframeExecutor::getRootForDonePackage` as a package root lookup (Java passes the method
 /// reference `skyframeExecutor::getRootForDonePackage`).
+///
+/// PORT: the lookup holds the executor's evaluator weakly. The artifact factory keeps it as its
+/// package roots (`IncrementalPackageRoots`), and values in the graph can reach the factory, so
+/// a strong reference would make the graph own its own evaluator (an `Arc` cycle: the evaluator
+/// is never freed, and a server cannot keep the graph for the next command, package I3). Java's
+/// collector frees such cycles. The evaluator lives as long as the command's executor, which is
+/// as long as the lookup is used.
 struct DonePackageRootLookup {
-    evaluator: Arc<Evaluator>,
+    evaluator: std::sync::Weak<Evaluator>,
 }
 
 impl blaze_actions::actions::artifact_factory::PackageRootLookup for DonePackageRootLookup {
@@ -2248,6 +2278,7 @@ impl blaze_actions::actions::artifact_factory::PackageRootLookup for DonePackage
     ) -> Option<blaze_vfs::Root> {
         let value = self
             .evaluator
+            .upgrade()?
             .get_existing_value(&SkyKey::new(PackageKey::key(package_identifier.clone())))?;
         let package_value = value.downcast::<PackageValue>().ok()?;
         Some(package_value.get_package().get_source_root().clone())

@@ -7,7 +7,44 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use blaze_repo_fetch::downloader::download_progress_event::bytes_count_to_display_string;
 use blaze_repo_fetch::file_system_lock::{FileSystemLock, LockMode};
+use blaze_shell::thread_interrupt::{self, InterruptedException};
 use blaze_vfs::{DirentType, Path, Symlinks};
+
+/// What [`DiskCacheGarbageCollector::run`] throws: `IOException` or `InterruptedException`.
+#[derive(Debug)]
+pub enum GcError {
+    Io(io::Error),
+    Interrupted(InterruptedException),
+}
+
+impl From<io::Error> for GcError {
+    fn from(e: io::Error) -> Self {
+        GcError::Io(e)
+    }
+}
+
+impl From<GcError> for io::Error {
+    /// For callers that only know `IOException`: an interruption becomes `ErrorKind::Interrupted`.
+    fn from(e: GcError) -> Self {
+        match e {
+            GcError::Io(e) => e,
+            GcError::Interrupted(_) => io::Error::new(io::ErrorKind::Interrupted, "interrupted"),
+        }
+    }
+}
+
+/// The interruption check of `AbstractQueueVisitor.awaitQuiescence(interruptWorkers=true)`: an
+/// interrupt of the collecting thread stops the work (tasks not yet started do not run) and
+/// surfaces as `InterruptedException`, which clears the thread's interrupt status.
+///
+/// PORT: Java runs the visits and the deletions on a shared executor while the collecting thread
+/// waits; Blaze runs them on the collecting thread and checks for an interrupt before each task.
+fn check_interrupted() -> Result<(), GcError> {
+    if thread_interrupt::interrupted() {
+        return Err(GcError::Interrupted(InterruptedException));
+    }
+    Ok(())
+}
 
 /// `EXCLUDED_DIRS`.
 // Java: com/google/devtools/build/lib/remote/disk/DiskCacheGarbageCollector.java:51 DiskCacheGarbageCollector.EXCLUDED_DIRS
@@ -299,21 +336,21 @@ impl DiskCacheGarbageCollector {
 
     /// Runs garbage collection.
     ///
-    /// Fails if an I/O error occurred.
+    /// Fails if an I/O error occurred, or if the thread was interrupted.
     // Java: com/google/devtools/build/lib/remote/disk/DiskCacheGarbageCollector.java:184 DiskCacheGarbageCollector.run
-    pub fn run(&self) -> io::Result<CollectionStats> {
+    pub fn run(&self) -> Result<CollectionStats, GcError> {
         // Acquire an exclusive lock to prevent two Bazel processes from simultaneously running
         // garbage collection, which can waste resources and lead to incorrect results.
         let lock =
             FileSystemLock::try_get(&self.root.get_relative_str("gc/lock"), LockMode::EXCLUSIVE)
-                .map_err(|e| e.into_io_error())?;
+                .map_err(|e| GcError::Io(e.into_io_error()))?;
         let result = self.run_under_lock();
         lock.close();
         result
     }
 
     // Java: com/google/devtools/build/lib/remote/disk/DiskCacheGarbageCollector.java:192 DiskCacheGarbageCollector.runUnderLock
-    fn run_under_lock(&self) -> io::Result<CollectionStats> {
+    fn run_under_lock(&self) -> Result<CollectionStats, GcError> {
         let start_time = Instant::now();
         let scanner = EntryScanner { collector: self };
         let mut deleter = EntryDeleter {
@@ -327,6 +364,7 @@ impl DiskCacheGarbageCollector {
         let entries_to_delete = self.policy.get_entries_to_delete(&mut all_entries);
 
         for entry in entries_to_delete {
+            check_interrupted()?;
             deleter.delete(entry)?;
         }
 
@@ -353,12 +391,13 @@ struct EntryScanner<'a> {
 impl EntryScanner<'_> {
     /// Lists all disk cache entries.
     // Java: com/google/devtools/build/lib/remote/disk/DiskCacheGarbageCollector.java:229 EntryScanner.scan
-    fn scan(&self) -> io::Result<Vec<Entry>> {
+    fn scan(&self) -> Result<Vec<Entry>, GcError> {
         let mut entries: Vec<Entry> = Vec::new();
         // The queue of `execute(() -> visitDirectory(path))` tasks.
         let mut queue: VecDeque<Path> = VecDeque::new();
         queue.push_back(self.collector.root.clone());
         while let Some(path) = queue.pop_front() {
+            check_interrupted()?;
             self.visit_directory(&path, &mut entries, &mut queue)?;
         }
         Ok(entries)

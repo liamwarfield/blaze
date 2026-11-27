@@ -24,6 +24,7 @@ pub mod builtin_providers;
 pub mod bzl_globals;
 pub mod config;
 pub mod config_common;
+pub mod documentable;
 pub mod macro_function;
 pub mod platform_common;
 pub mod provider;

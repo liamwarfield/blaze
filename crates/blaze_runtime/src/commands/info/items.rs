@@ -487,8 +487,15 @@ impl InfoItem for ServerLogInfoItem {
     ) -> Result<Vec<u8>, AbruptExitException> {
         match crate::server_log::get_server_log_path() {
             Ok(path) => Ok(print(path.unwrap_or_default())),
-            // PORT: the logger.atWarning line is not written (no server logger).
-            Err(_) => Ok(print("UNKNOWN LOG LOCATION")),
+            Err(e) => {
+                blaze_util::server_logger::warning(
+                    "com.google.devtools.build.lib.runtime.commands.info.ServerLogInfoItem",
+                    "get",
+                    "Failed to determine server log location",
+                    Some(&format!("java.io.IOException: {e}")),
+                );
+                Ok(print("UNKNOWN LOG LOCATION"))
+            }
         }
     }
 }
@@ -1043,12 +1050,7 @@ impl BuildLanguageInfoItem {
             )
             .map_err(|_| {
                 // InfoCommand.exec: `catch (InterruptedException e)`.
-                AbruptExitException::new(crate::exit_code::DetailedExitCode::of(FailureDetail {
-                    message: "info interrupted".to_string(),
-                    category: Some(Category::Interrupted(failure_details::Interrupted {
-                        code: failure_details::interrupted::Code::Interrupted as i32,
-                    })),
-                }))
+                crate::dispatcher::interrupted_abrupt_exit_exception("info interrupted")
             })?;
         if result.has_error() {
             return Err(AbruptExitException::new(

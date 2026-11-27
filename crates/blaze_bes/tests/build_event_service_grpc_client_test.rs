@@ -24,6 +24,8 @@ use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status, Streaming};
 
 fn command_context() -> CommandContext {
+    // BlazeVersionInfo, read by TracingMetadataUtils.buildMetadata.
+    blaze_remote::util::tracing_metadata_utils::set_tool_version("");
     CommandContext::new(
         "8d720129-bc1a-481f-8c4c-dbe11dcef319".to_string(),
         "1b4c3b8e-6c3f-4f0a-9f0e-0c6b0d7a5e21".to_string(),

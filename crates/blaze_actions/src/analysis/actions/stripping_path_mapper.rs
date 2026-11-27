@@ -282,7 +282,7 @@ impl StringStripper {
     /// would be non-existent without config prefixes (e.g. "bazel-out/x86-fastbuild",
     /// "bazel-out;foo", "/path/to/compiler bazel-out").
     // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:287 StrippingPathMapper.StringStripper.stripPathsPattern
-    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:170 StrippingPathMapper.StringStripper.strip
+    // Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:309 StrippingPathMapper.StringStripper.strip
     // PORT: the output root is "bazel-out" or "blaze-out"; its regex metacharacters ('-') are
     // literal outside a character class, so the root is matched literally.
     fn strip(&self, s: &str) -> String {
@@ -374,7 +374,7 @@ fn have_same_digest(
 
 /// Keep the config segment, but replace it with a fixed string to improve cacheability while
 /// still preserving the general segment structure of the exec path.
-// Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:170 StrippingPathMapper.strip
+// Java: com/google/devtools/build/lib/analysis/actions/StrippingPathMapper.java:387 StrippingPathMapper.strip
 fn strip(exec_path: &PathFragment) -> PathFragment {
     exec_path
         .sub_fragment(0, 1)

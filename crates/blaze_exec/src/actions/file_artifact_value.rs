@@ -153,6 +153,13 @@ pub enum FileArtifactValue {
         /// prefetcher share; the cell is shared by the clones of this value instead.
         // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:831 RemoteFileArtifactValueWithMaterializationData.proxy
         contents_proxy: NotInEquality<Option<Arc<Mutex<Option<FileContentsProxy>>>>>,
+        /// `RemoteFileArtifactValueWithMaterializationData.materializedAsToplevelOutput`: the
+        /// file was materialized in the local file system as a requested top-level output
+        /// without its generating action having been re-executed. `None` for a plain
+        /// `RemoteFileArtifactValue` (always false, setter does nothing). Shared by the clones,
+        /// as `contents_proxy`.
+        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:832 RemoteFileArtifactValueWithMaterializationData.materializedAsToplevelOutput
+        materialized_as_toplevel_output: NotInEquality<Option<Arc<std::sync::atomic::AtomicBool>>>,
     },
     /// `ResolvedSymlinkArtifactValue`: a value with the path it was resolved through.
     ResolvedSymlink {
@@ -201,6 +208,16 @@ impl<T> Eq for NotInEquality<T> {}
 
 impl FileArtifactValue {
     /// `getType()`.
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:483 FileArtifactValue.DirectoryArtifactValue.getType
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:545 FileArtifactValue.HashedDirectoryArtifactValue.getType
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:610 FileArtifactValue.RegularFileArtifactValue.getType
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:695 FileArtifactValue.RunfilesProxyArtifactValue.getType
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:774 FileArtifactValue.RemoteFileArtifactValue.getType
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:970 FileArtifactValue.ResolvedSymlinkArtifactValue.getType
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1175 FileArtifactValue.UnresolvedSymlinkArtifactValue.getType
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1245 FileArtifactValue.InlineFileArtifactValue.getType
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1330 FileArtifactValue.ProxyFileArtifactValue.getType
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1440 FileArtifactValue.ConstantMetadataValue.getType
     pub fn get_type(&self) -> FileStateType {
         match self {
             FileArtifactValue::RegularFile { .. } => FileStateType::RegularFile,
@@ -286,7 +303,56 @@ impl FileArtifactValue {
         }
     }
 
+    /// `wasMaterializedAsToplevelOutput()`: whether the file was materialized in the local file
+    /// system as a requested top-level output without its generating action having been
+    /// re-executed.
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:140 FileArtifactValue.wasMaterializedAsToplevelOutput
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:888 RemoteFileArtifactValueWithMaterializationData.wasMaterializedAsToplevelOutput
+    pub fn was_materialized_as_toplevel_output(&self) -> bool {
+        match self {
+            FileArtifactValue::RemoteFile {
+                materialized_as_toplevel_output: NotInEquality(Some(flag)),
+                ..
+            } => flag.load(std::sync::atomic::Ordering::SeqCst),
+            // Java: FileArtifactValue.java:992 ResolvedSymlinkArtifactValue.wasMaterializedAsToplevelOutput
+            FileArtifactValue::ResolvedSymlink { delegate, .. } => {
+                delegate.was_materialized_as_toplevel_output()
+            }
+            // Java: FileArtifactValue.java:1352 ProxyFileArtifactValue.wasMaterializedAsToplevelOutput
+            FileArtifactValue::Proxy { delegate, .. } => {
+                delegate.was_materialized_as_toplevel_output()
+            }
+            _ => false,
+        }
+    }
+
+    /// `setMaterializedAsToplevelOutput(materializedAsToplevelOutput)`.
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:149 FileArtifactValue.setMaterializedAsToplevelOutput
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:893 RemoteFileArtifactValueWithMaterializationData.setMaterializedAsToplevelOutput
+    pub fn set_materialized_as_toplevel_output(&self, materialized_as_toplevel_output: bool) {
+        match self {
+            FileArtifactValue::RemoteFile {
+                materialized_as_toplevel_output: NotInEquality(Some(flag)),
+                ..
+            } => flag.store(
+                materialized_as_toplevel_output,
+                std::sync::atomic::Ordering::SeqCst,
+            ),
+            // Java: FileArtifactValue.java:997 ResolvedSymlinkArtifactValue.setMaterializedAsToplevelOutput
+            FileArtifactValue::ResolvedSymlink { delegate, .. } => {
+                delegate.set_materialized_as_toplevel_output(materialized_as_toplevel_output)
+            }
+            // Java: FileArtifactValue.java:1357 ProxyFileArtifactValue.setMaterializedAsToplevelOutput
+            FileArtifactValue::Proxy { delegate, .. } => {
+                delegate.set_materialized_as_toplevel_output(materialized_as_toplevel_output)
+            }
+            _ => {}
+        }
+    }
+
     /// `getUnresolvedSymlinkTarget()`.
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:171 FileArtifactValue.getUnresolvedSymlinkTarget
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1170 FileArtifactValue.UnresolvedSymlinkArtifactValue.getUnresolvedSymlinkTarget
     pub fn get_unresolved_symlink_target(&self) -> Option<&str> {
         match self {
             FileArtifactValue::UnresolvedSymlink { target, .. } => Some(target),
@@ -295,6 +361,9 @@ impl FileArtifactValue {
     }
 
     /// `isRemote()`.
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:193 FileArtifactValue.isRemote
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:805 FileArtifactValue.RemoteFileArtifactValue.isRemote
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1041 FileArtifactValue.ResolvedSymlinkArtifactValue.isRemote
     pub fn is_remote(&self) -> bool {
         match self {
             FileArtifactValue::RemoteFile { .. } => true,
@@ -306,6 +375,9 @@ impl FileArtifactValue {
     }
 
     /// `getLocationIndex()`.
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:198 FileArtifactValue.getLocationIndex
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:795 FileArtifactValue.RemoteFileArtifactValue.getLocationIndex
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1046 FileArtifactValue.ResolvedSymlinkArtifactValue.getLocationIndex
     pub fn get_location_index(&self) -> i32 {
         match self {
             FileArtifactValue::RemoteFile { location_index, .. } => *location_index,
@@ -315,6 +387,8 @@ impl FileArtifactValue {
     }
 
     /// `getResolvedPath()`.
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:289 FileArtifactValue.getResolvedPath
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:965 FileArtifactValue.ResolvedSymlinkArtifactValue.getResolvedPath
     pub fn get_resolved_path(&self) -> Option<&PathFragment> {
         match self {
             FileArtifactValue::ResolvedSymlink { resolved_path, .. } => Some(resolved_path),
@@ -351,6 +425,7 @@ impl FileArtifactValue {
     }
 
     /// `createForDirectoryWithMtime(mtime)`.
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:417 FileArtifactValue.createForDirectoryWithMtime
     pub fn create_for_directory_with_mtime(mtime: i64) -> FileArtifactValue {
         FileArtifactValue::Directory { mtime }
     }
@@ -382,6 +457,7 @@ impl FileArtifactValue {
     }
 
     /// `createForRemoteFile(digest, size, locationIndex)`.
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:430 FileArtifactValue.createForRemoteFile
     pub fn create_for_remote_file(
         digest: Vec<u8>,
         size: i64,
@@ -394,10 +470,12 @@ impl FileArtifactValue {
             expiration_time_millis: NotInEquality(None),
             in_memory_output: NotInEquality(false),
             contents_proxy: NotInEquality(None),
+            materialized_as_toplevel_output: NotInEquality(None),
         }
     }
 
     /// `createForRemoteFileWithMaterializationData(...)`.
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:434 FileArtifactValue.createForRemoteFileWithMaterializationData
     pub fn create_for_remote_file_with_materialization_data(
         digest: Vec<u8>,
         size: i64,
@@ -412,6 +490,9 @@ impl FileArtifactValue {
             expiration_time_millis: NotInEquality(expiration_time_millis),
             in_memory_output: NotInEquality(in_memory_output),
             contents_proxy: NotInEquality(Some(Arc::new(Mutex::new(None)))),
+            materialized_as_toplevel_output: NotInEquality(Some(Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
+            ))),
         }
     }
 
@@ -520,6 +601,7 @@ impl FileArtifactValue {
     /// the (tweaked) digest of its target string.
     // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:394 FileArtifactValue.createForUnresolvedSymlink
     // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1149 UnresolvedSymlinkArtifactValue.<init>
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:389 FileArtifactValue.createForUnresolvedSymlink
     pub fn create_for_unresolved_symlink(symlink: &Path) -> io::Result<FileArtifactValue> {
         let symlink_target = symlink.read_symbolic_link()?.get_path_string().to_owned();
 
@@ -547,6 +629,8 @@ impl FileArtifactValue {
     }
 
     /// `createForTesting(Path)`.
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:340 FileArtifactValue.createForTesting
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:345 FileArtifactValue.createForTesting
     pub fn create_for_testing(path: &Path) -> io::Result<FileArtifactValue> {
         let stat = path.stat_with(Symlinks::Follow)?;
         FileArtifactValue::create_from_stat(path, &stat)
@@ -610,6 +694,7 @@ impl FileArtifactValue {
     /// Returns whether the file contents have changed since the digest was computed, as far as
     /// this value can tell (`path` is the file's current location).
     // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:228 FileArtifactValue.wasModifiedSinceDigest
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1265 FileArtifactValue.InlineFileArtifactValue.wasModifiedSinceDigest
     pub fn was_modified_since_digest(&self, path: &Path) -> io::Result<bool> {
         match self {
             // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:631 RegularFileArtifactValue.wasModifiedSinceDigest

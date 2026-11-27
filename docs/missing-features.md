@@ -144,7 +144,11 @@ in, not re-reviewed). Missing:
 - Cache lease extension with `--norewind_lost_inputs`.
 - Disk cache garbage collection.
 - Remote flags on commands other than `build` and `test`.
-- Build Event Service upload (`--bes_backend`).
+- Build Event Service upload (`--bes_backend`): ported (crate `blaze_bes`, 2026-11-26). Not
+  ported: the attempt number of a retried command (a retried `--bes_backend` command fails
+  loudly), `mobile-install` with `--bes_backend`, the `BuildEventServiceUploadCompleteEvent` and
+  `LargeBuildEventSerializedEvent` subscribers (Bazel has none), and the server-shutdown wait
+  for asynchronous uploads (`blazeShutdown`).
 - At their first run (before the round-2 fixes), 143 of 253 of Bazel's remote shell test
   functions did not pass.
 
@@ -161,8 +165,7 @@ in, not re-reviewed). Missing:
   are ported (bep-wave-1); the stream of `cquery` / `aquery`, `--nobuild`, `fetch` with targets
   and `--build_event_publish_all_actions` were ported later (reporting fixer, 2026-11-25);
   still missing: Skymeld's interleaving of `targetConfigured` / `targetCompleted` and the late
-  `convenienceSymlinksIdentified`, the Build Event Service upload (`--bes_backend` fails
-  loudly).
+  `convenienceSymlinksIdentified`. The Build Event Service upload is ported (see "Remote").
 - `buildMetrics`: `memoryMetrics` is absent (JVM heap and garbage collection; Blaze has no JVM).
   The other groups are sent: `artifactMetrics` (counts equal to Bazel's on a brotli build),
   `cumulativeMetrics` (counted for every command, as in Bazel) and the Skyframe graph

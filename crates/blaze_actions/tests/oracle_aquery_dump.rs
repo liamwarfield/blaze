@@ -83,6 +83,7 @@ impl Action for RecordedAction {
     fn get_effective_environment(
         &self,
         _client_env: &IndexMap<String, String>,
+        _path_mapper: &dyn blaze_actions::actions::path_mapper::PathMapper,
     ) -> Result<IndexMap<String, String>, CommandLineExpansionException> {
         Ok(self.env.clone())
     }

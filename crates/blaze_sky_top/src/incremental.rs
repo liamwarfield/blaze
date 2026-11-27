@@ -154,14 +154,27 @@ impl LoadingSignature {
     }
 }
 
+/// Whether the command has a remote cache, a disk cache or remote execution configured
+/// (`RemoteOptions.isRemoteCacheEnabled`, which includes the disk cache and remote execution).
+// Java: com/google/devtools/build/lib/remote/options/RemoteOptions.java:856 RemoteOptions.isRemoteCacheEnabled
+fn remote_configured(options: &OptionsParser) -> bool {
+    options
+        .get_options::<blaze_optdefs::misc::remote_options::RemoteOptions>()
+        .is_some_and(|o| o.is_remote_cache_enabled())
+}
+
 /// Why a graph is not reused, on the server's stderr when `BLAZE_INCREMENTAL_DEBUG` is set in the
 /// server's environment (Blaze-only diagnostics).
 fn debug(message: &str) {
-    static ON: std::sync::LazyLock<bool> =
-        std::sync::LazyLock::new(|| std::env::var_os("BLAZE_INCREMENTAL_DEBUG").is_some());
-    if *ON {
+    if debug_enabled() {
         eprintln!("blaze incremental: {message}");
     }
+}
+
+fn debug_enabled() -> bool {
+    static ON: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var_os("BLAZE_INCREMENTAL_DEBUG").is_some());
+    *ON
 }
 
 /// `SkyframeExecutor.DEFAULT_EVENT_FILTER_WITH_ACTIONS`: store events, and do not propagate
@@ -242,6 +255,11 @@ struct KeptGraph {
     evaluator: Arc<Evaluator>,
     _lease: blaze_util::build_arena::Lease,
     signature: LoadingSignature,
+    /// The command that gave the graph back.
+    command_id: String,
+    /// Whether that command had a remote cache, a disk cache or remote execution (see
+    /// [`remote_configured`]).
+    remote: bool,
 }
 
 /// The server's state (Java: the fields of `SequencedSkyframeExecutor` and `SkyframeExecutor`
@@ -294,6 +312,49 @@ struct Inner {
     /// The main repository mapping the last command computed (Blaze-only: the configured target
     /// and aspect functions read it from a cell, Java from `RepositoryMappingValue`).
     main_repo_mapping: Option<RepositoryMapping>,
+    /// Blaze-only: the generation of the graph last handed to an executor. A reset or a newer
+    /// hand-out makes the graphs of earlier generations stale: they are dropped when given back,
+    /// so a graph is never kept with the state of another one.
+    generation: u64,
+    /// The command `decideKeepIncrementalState` ran for.
+    decided_command: Option<String>,
+    /// `SkyframeExecutor.lastExecutionSalt`.
+    last_execution_salt: Option<String>,
+    /// `memoizingEvaluator.delete(...)` requests made while no executor holds the graph,
+    /// applied to the graph the next executor reuses (Java's deletions are themselves pending
+    /// until the next evaluation).
+    #[allow(clippy::type_complexity)]
+    pending_deletions: Vec<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+}
+
+impl ExecutorHandle {
+    /// Sets the execution salt and deletes all action execution nodes if it has changed since
+    /// the last time it was set.
+    ///
+    /// PORT: `lastExecutionSalt` is the server's (it describes the kept graph): it is forgotten
+    /// with the graph (`resetEvaluator` and the Blaze-only discards), which then has no action
+    /// execution node of an earlier salt.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2066 SkyframeExecutor.setSaltAndDeleteActionsIfChanged
+    pub fn set_salt_and_delete_actions_if_changed(
+        &self,
+        evaluator: &Evaluator,
+        execution_salt: &str,
+    ) {
+        let _c = blaze_util::profiler::Profiler::instance().profile(
+            blaze_util::profiler::ProfilerTask::INFO,
+            "setSaltAndDeleteActionsIfChanged",
+        );
+        let mut inner = self.command.state.inner.lock();
+        if let Some(last) = &inner.last_execution_salt
+            && last != execution_salt
+        {
+            debug("delete: execution salt changed");
+            evaluator.delete(|k, _| {
+                k.function_name() == <blaze_sky_exec::keys::ActionExecutionKey as Key>::FUNCTION
+            });
+        }
+        inner.last_execution_salt = Some(execution_salt.to_string());
+    }
 }
 
 /// An executor's hold on the kept graph: given back when the executor is dropped.
@@ -301,6 +362,11 @@ pub struct ExecutorHandle {
     command: IncrementalCommand,
     signature: LoadingSignature,
     analyzed: bool,
+    /// The generation of the graph this executor was given; `put_back` keeps the graph only
+    /// while it is the current one.
+    generation: u64,
+    /// The command has a remote cache, a disk cache or remote execution.
+    remote: bool,
 }
 
 impl SkyframeIncrementalState {
@@ -331,6 +397,10 @@ impl SkyframeIncrementalState {
                 skyframe_analysis_was_discarded: false,
                 last_top_level_build_options: None,
                 main_repo_mapping: None,
+                generation: 0,
+                decided_command: None,
+                last_execution_salt: None,
+                pending_deletions: Vec::new(),
             }),
         }
     }
@@ -363,6 +433,8 @@ impl SkyframeIncrementalState {
                     evaluator: Arc::new(stripped),
                     _lease: kept._lease,
                     signature: kept.signature,
+                    command_id: kept.command_id,
+                    remote: kept.remote,
                 });
             }
             // Something still holds the last executor's evaluator: it cannot be reused (fail
@@ -390,6 +462,8 @@ impl SkyframeIncrementalState {
             evaluator,
             _lease,
             signature,
+            command_id,
+            remote,
         } = kept;
         let evaluator = match Arc::try_unwrap(evaluator) {
             Ok(evaluator) => Arc::new(
@@ -406,7 +480,16 @@ impl SkyframeIncrementalState {
             evaluator,
             _lease,
             signature,
+            command_id,
+            remote,
         });
+    }
+
+    /// `memoizingEvaluator.delete(k -> predicate(k.functionName()))` on the server's graph
+    /// (`RemoteOutputChecker.maybeInvalidateSkyframeValues`): applied to the kept graph when the
+    /// next executor reuses it; nothing to do when it builds a new one.
+    pub fn delete_by_function_name(&self, predicate: Arc<dyn Fn(&str) -> bool + Send + Sync>) {
+        self.inner.lock().pending_deletions.push(predicate);
     }
 
     /// Whether a graph is kept for the next command.
@@ -431,6 +514,9 @@ impl SkyframeIncrementalState {
         self.diff_awareness.lock().manager.reset();
         let mut inner = self.inner.lock();
         inner.kept = None;
+        // A graph an executor holds now is dropped when it is given back (a reset during a
+        // command, as `invalidate_repo_directories`'s).
+        inner.generation += 1;
         // skyframeBuildView.reset(): configuration = null, skyframeAnalysisWasDiscarded = false.
         inner.has_configuration = false;
         inner.original_configuration_options = None;
@@ -480,13 +566,21 @@ impl SkyframeIncrementalState {
         let first_in_command = inner.synced_command.as_deref() != Some(&command.command_id);
         if first_in_command {
             inner.synced_command = Some(command.command_id.clone());
-            Self::decide_keep_incremental_state(state, &mut inner, command);
+            if inner.decided_command.as_deref() != Some(&command.command_id) {
+                let track = command.track_incremental_state
+                    && !(command.batch && command.discard_analysis_cache);
+                Self::decide_keep_incremental_state(state, &mut inner, &command.command_id, track);
+            }
         }
         let analyzed = inputs.top_level_build_options.is_some();
+        let remote = remote_configured(inputs.options);
+        inner.generation += 1;
         let handle = ExecutorHandle {
             command: command.clone(),
             signature: inputs.signature.clone(),
             analyzed,
+            generation: inner.generation,
+            remote,
         };
         // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:226 SequencedSkyframeExecutor.createEvaluator
         // (trackIncrementalState ? DEFAULT_EVENT_FILTER_WITH_ACTIONS : EventFilter.NO_STORAGE).
@@ -501,6 +595,29 @@ impl SkyframeIncrementalState {
             debug("no kept graph");
         }
         let previous = kept.and_then(|kept| {
+            if kept.command_id != command.command_id && (kept.remote || remote) {
+                // PORT: Blaze-only, fail safe until the remote invalidations are ported (review
+                // 2026-11-26 S1-1, S1-2): RemoteOutputChecker.maybeInvalidateSkyframeValues with
+                // the previous command's checker, the outputs materialized as top-level outputs,
+                // and setSaltAndDeleteActionsIfChanged.
+                let message = format!(
+                    "Skyframe graph of the previous command discarded: {} has a remote cache, a \
+                     disk cache or remote execution configured (remote output invalidation is \
+                     not ported)",
+                    if remote {
+                        "this command"
+                    } else {
+                        "the previous command"
+                    }
+                );
+                debug(&message);
+                blaze_util::server_logger::info(
+                    "com.google.devtools.build.lib.skyframe.SequencedSkyframeExecutor",
+                    "sync",
+                    &message,
+                );
+                return None;
+            }
             if kept.signature != inputs.signature {
                 // PORT: Blaze-only, fail safe (see LoadingSignature).
                 debug("loading signature changed: graph discarded");
@@ -515,6 +632,7 @@ impl SkyframeIncrementalState {
         });
         let Some(previous) = previous else {
             // A new graph: nothing of an earlier command is in it.
+            Self::reset_graph_bookkeeping(&mut inner);
             Self::note_new_graph(&mut inner, &inputs, command);
             drop(inner);
             let evaluator = builder.build();
@@ -529,6 +647,16 @@ impl SkyframeIncrementalState {
         // a sync that cannot keep the graph falls back to a new one.
         let fallback = builder.clone();
         let evaluator = builder.build_reusing(previous);
+        for predicate in std::mem::take(&mut inner.pending_deletions) {
+            debug("delete: pending deletion");
+            evaluator.delete(|k, _| predicate(k.function_name().0));
+        }
+        if debug_enabled() {
+            debug(&format!(
+                "reusing the kept graph: {} nodes",
+                evaluator.get_all_keys().len()
+            ));
+        }
         let evaluator = match Self::sync(
             state,
             &mut inner,
@@ -539,6 +667,7 @@ impl SkyframeIncrementalState {
         ) {
             Some(evaluator) => evaluator,
             None => {
+                Self::reset_graph_bookkeeping(&mut inner);
                 Self::note_new_graph(&mut inner, &inputs, command);
                 drop(inner);
                 return (fallback.build(), handle);
@@ -546,6 +675,19 @@ impl SkyframeIncrementalState {
         };
         drop(inner);
         (evaluator, handle)
+    }
+
+    /// The analysis-cache bookkeeping that describes the graph (Java resets it with the graph in
+    /// `resetEvaluator`): a new graph starts without it, whatever discarded the old one.
+    fn reset_graph_bookkeeping(inner: &mut Inner) {
+        inner.pending_deletions.clear();
+        inner.last_execution_salt = None;
+        inner.has_configuration = false;
+        inner.original_configuration_options = None;
+        inner.skyframe_analysis_was_discarded = false;
+        inner.last_analysis_discarded = false;
+        inner.last_top_level_build_options = None;
+        inner.main_repo_mapping = None;
     }
 
     /// Records what a new (empty) graph was built from.
@@ -567,18 +709,30 @@ impl SkyframeIncrementalState {
     /// The bookkeeping part of `decideKeepIncrementalState` (the warnings are printed by
     /// blaze_runtime's `CommandEnvironment.decide_keep_incremental_state`).
     // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:399 SequencedSkyframeExecutor.decideKeepIncrementalState
+    /// `decideKeepIncrementalState` for a command whose decision (`trackIncrementalState`) the
+    /// runtime computed with its warnings (blaze_runtime `CommandEnvironment`); runs for every
+    /// command, also one that builds no executor.
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:896 CommandEnvironment.decideKeepIncrementalState
+    pub fn decide_keep_incremental_state_for_command(&self, command_id: &str, track: bool) {
+        let mut inner = self.inner.lock();
+        if inner.decided_command.as_deref() == Some(command_id) {
+            return;
+        }
+        Self::decide_keep_incremental_state(self, &mut inner, command_id, track);
+    }
+
     fn decide_keep_incremental_state(
         state: &SkyframeIncrementalState,
         inner: &mut Inner,
-        command: &IncrementalCommand,
+        command_id: &str,
+        track: bool,
     ) {
+        inner.decided_command = Some(command_id.to_string());
         let old_value_of_track_incremental_state = inner.track_incremental_state;
-        // First check if the incrementality state should be kept around during the build.
-        let explicitly_requested_no_incremental_data = !command.track_incremental_state;
-        let implicitly_requested_no_incremental_data =
-            command.batch && command.discard_analysis_cache;
-        inner.track_incremental_state =
-            !explicitly_requested_no_incremental_data && !implicitly_requested_no_incremental_data;
+        // First check if the incrementality state should be kept around during the build
+        // (`!explicitlyRequestedNoIncrementalData && !implicitlyRequestedNoIncrementalData`,
+        // computed by the caller).
+        inner.track_incremental_state = track;
         // Now check if it is necessary to wipe the previous state. We do this if either the
         // previous or current command requires the build to have been isolated.
         let evaluator_needs_reset = old_value_of_track_incremental_state
@@ -588,6 +742,7 @@ impl SkyframeIncrementalState {
             // SequencedSkyframeExecutor.sync: resetEvaluator().
             state.diff_awareness.lock().manager.reset();
             inner.kept = None;
+            inner.generation += 1;
             inner.has_configuration = false;
             inner.original_configuration_options = None;
             inner.skyframe_analysis_was_discarded = false;
@@ -618,6 +773,7 @@ impl SkyframeIncrementalState {
                 .collect();
             if !newly_deleted_or_not_deleted_packages.is_empty() {
                 // PackageLookupValue is a HERMETIC node type, so we can't invalidate it.
+                debug("delete: deleted packages changed");
                 evaluator.delete(|k, _| {
                     k.downcast::<PackageLookupKey>()
                         .is_some_and(|k| newly_deleted_or_not_deleted_packages.contains(&k.0))
@@ -632,6 +788,7 @@ impl SkyframeIncrementalState {
             if inner.last_analysis_discarded {
                 // dropConfiguredTargetsNow(eventHandler): handleAnalysisInvalidatingChange.
                 let current = inner.last_top_level_build_options.clone();
+                debug("delete: last analysis discarded");
                 evaluator.delete(|k, v| {
                     should_delete_on_analysis_invalidating_change(k, v, current.as_ref(), true)
                 });
@@ -1135,7 +1292,19 @@ impl SkyframeIncrementalState {
     /// command by [`Self::reset_evaluator`] (Java `BlazeRuntime.afterCommand`), not here: the
     /// command's later executors still use it, as Java's one executor does.
     pub fn put_back(&self, handle: ExecutorHandle, evaluator: Arc<Evaluator>) {
+        if debug_enabled() {
+            debug(&format!(
+                "put_back: {} nodes ({})",
+                evaluator.get_all_keys().len(),
+                handle.command.command_id
+            ));
+        }
         let mut inner = self.inner.lock();
+        if handle.generation != inner.generation {
+            // A reset, or a newer graph handed out meanwhile: this graph is not the current one.
+            debug("put_back: stale graph not kept");
+            return;
+        }
         if !Self::passes_graph(self, &inner)
             || inner.synced_command.as_deref() != Some(&handle.command.command_id)
         {
@@ -1157,6 +1326,8 @@ impl SkyframeIncrementalState {
             evaluator,
             _lease: blaze_util::build_arena::lease(),
             signature: handle.signature,
+            command_id: handle.command.command_id.clone(),
+            remote: handle.remote,
         });
     }
 
@@ -1210,6 +1381,7 @@ impl SkyframeIncrementalState {
             inner.original_configuration_options = Some(new_options.clone());
             // skyframeExecutor.handleAnalysisInvalidatingChange()
             let current = Some(new_options.clone());
+            debug("delete: analysis-invalidating configuration change");
             evaluator.delete(|k, v| {
                 should_delete_on_analysis_invalidating_change(k, v, current.as_ref(), false)
             });
@@ -1231,6 +1403,7 @@ impl SkyframeIncrementalState {
             .as_ref()
             .is_some_and(|previous| previous != mapping)
         {
+            debug("delete: main repository mapping changed");
             evaluator.delete(|k, _| is_analysis_key(k));
         }
         inner.main_repo_mapping = Some(mapping.clone());

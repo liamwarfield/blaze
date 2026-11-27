@@ -40,6 +40,7 @@ impl TransitiveTargetKey {
         TransitiveTargetKey(label)
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/TransitiveTargetKey.java:55 TransitiveTargetKey.getLabel
     pub fn get_label(&self) -> &Label {
         &self.0
     }
@@ -104,16 +105,19 @@ pub struct TransitiveTargetValue {
 
 impl TransitiveTargetValue {
     // Java: com/google/devtools/build/lib/skyframe/TransitiveTargetValue.java:62 TransitiveTargetValue.getTransitiveTargets
+    // Java: com/google/devtools/build/lib/skyframe/TransitiveTargetFunction.java:179 TransitiveTargetFunction.TransitiveTargetValueBuilder.getTransitiveTargets
     pub fn get_transitive_targets(&self) -> &Arc<LabelNestedSet> {
         &self.transitive_targets
     }
 
     // Java: com/google/devtools/build/lib/skyframe/TransitiveTargetValue.java:56 TransitiveTargetValue.encounteredLoadingError
+    // Java: com/google/devtools/build/lib/skyframe/TransitiveTargetValue.java:70 TransitiveTargetValue.UnsuccessfulTransitiveTargetValue.encounteredLoadingError
     pub fn encountered_loading_error(&self) -> bool {
         self.encountered_loading_error
     }
 
     // Java: com/google/devtools/build/lib/skyframe/TransitiveTargetValue.java:51 TransitiveTargetValue.getErrorLoadingTarget
+    // Java: com/google/devtools/build/lib/skyframe/TransitiveTargetValue.java:64 TransitiveTargetValue.UnsuccessfulTransitiveTargetValue.getErrorLoadingTarget
     pub fn get_error_loading_target(&self) -> Option<&NoSuchTargetException> {
         self.error_loading_target.as_ref()
     }

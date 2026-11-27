@@ -216,6 +216,8 @@ pub enum TokenValue {
     DocComments {
         end_line: usize,
         text: String,
+        /// The comment lines (Java `DocComments.getLines()`).
+        lines: Vec<super::ast::DocCommentLine>,
     },
 }
 
@@ -242,6 +244,9 @@ pub struct Lexer<'a> {
     line_only_whitespace_or_comments: bool,
     started: bool,
     line_starts: &'a [usize],
+    /// Every comment with a `#:` prefix, in file order (the doc comment lines of Java's
+    /// `StarlarkFile.getComments()`).
+    pub doc_comment_lines: Vec<super::ast::DocCommentLine>,
 }
 
 fn equal_token(c: char) -> Option<TokenKind> {
@@ -362,10 +367,11 @@ impl<'a> Lexer<'a> {
             line_only_whitespace_or_comments: true,
             started: false,
             line_starts,
+            doc_comment_lines: Vec::new(),
         }
     }
 
-    fn line_of(&self, offset: usize) -> usize {
+    pub(crate) fn line_of(&self, offset: usize) -> usize {
         match self.line_starts.binary_search(&offset) {
             Ok(i) => i + 1,
             Err(i) => i,
@@ -471,7 +477,9 @@ impl<'a> Lexer<'a> {
                 if self.peek(1) == Some(':') && self.open_paren_stack_depth == 0 {
                     return;
                 }
+                let comment_start = self.pos;
                 self.scan_to_newline();
+                self.record_doc_comment_line(comment_start);
                 indent_len = 0;
             } else {
                 break;
@@ -702,6 +710,10 @@ impl<'a> Lexer<'a> {
         let mut last_end = self.pos;
         // Java: DocComments.java:53 DocComments.toString (Comment.toString is its text).
         let mut texts = vec![self.buffer_slice(first_start, self.pos)];
+        let mut lines = vec![super::ast::DocCommentLine {
+            line: self.line_of(first_start),
+            text: self.buffer_slice(first_start, self.pos),
+        }];
         if is_block {
             let mut prev_line = self.line_of(first_start);
             while self.peek(0) == Some('\n') {
@@ -717,20 +729,39 @@ impl<'a> Lexer<'a> {
                 prev_line = line;
                 let start_pos = self.pos;
                 self.scan_to_newline();
+                self.record_doc_comment_line(start_pos);
                 texts.push(self.buffer_slice(start_pos, self.pos));
+                lines.push(super::ast::DocCommentLine {
+                    line,
+                    text: self.buffer_slice(start_pos, self.pos),
+                });
                 last_end = self.pos;
             }
             self.set_token(TokenKind::DocCommentBlock, first_start, last_end);
             self.value = TokenValue::DocComments {
                 end_line: prev_line,
                 text: texts.join("\n"),
+                lines,
             };
         } else {
             self.set_token(TokenKind::DocCommentTrailing, first_start, last_end);
             self.value = TokenValue::DocComments {
                 end_line: self.line_of(first_start),
                 text: texts.join("\n"),
+                lines,
             };
+        }
+    }
+
+    /// Records the comment scanned from `start` to the current position when it has the `#:`
+    /// prefix.
+    fn record_doc_comment_line(&mut self, start: usize) {
+        if self.buffer.get(start + 1) == Some(&':') {
+            let line = super::ast::DocCommentLine {
+                line: self.line_of(start),
+                text: self.buffer_slice(start, self.pos),
+            };
+            self.doc_comment_lines.push(line);
         }
     }
 
@@ -909,6 +940,7 @@ impl<'a> Lexer<'a> {
                 '#' => {
                     let old = p - 1;
                     self.scan_to_newline();
+                    self.record_doc_comment_line(old);
                     let is_doc = self.buffer.get(old + 1) == Some(&':');
                     if is_doc && self.open_paren_stack_depth == 0 {
                         let block = self.line_only_whitespace_or_comments;

@@ -33,8 +33,10 @@ use crate::path_fragment::PathFragment;
 /// A path string that is not internal (a char above U+00FF: "not well-formed but must be
 /// tolerated") gets `?` for each UTF-16 unit above 0xFF, as the native layer writes it.
 // Java: (native) src/main/native/latin1_jni_path.cc GetStringLatin1Chars
-// PORT: the Java side reports such a path once (`NativePosixFiles.logBadPath`, a non-fatal bug
-// report); not ported.
+// PORT: skipped, NativePosixFiles.logBadPath: the Java side reports such a path once (a non-fatal
+// bug report).
+// PORT: skipped, NativePosixFiles.mkfifo: only the Java tests call it.
+// PORT: skipped, NativePosixFiles.NativePosixFiles: the private constructor of a static utility class.
 fn os(path: &str) -> std::borrow::Cow<'_, std::ffi::OsStr> {
     use std::borrow::Cow;
     use std::ffi::{OsStr, OsString};
@@ -81,6 +83,8 @@ pub(crate) fn posix_error(message: &str, e: io::Error) -> io::Error {
 /// `NativePosixFiles.getxattr` / `lgetxattr` (`getxattr_common` with a 4096-byte buffer):
 /// `Ok(None)` when the attribute does not exist (ENODATA); the raw OS error otherwise.
 // Java: (native) src/main/native/unix_jni.cc getxattr_common
+// Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:223 NativePosixFiles.getxattr
+// Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:235 NativePosixFiles.lgetxattr
 fn native_getxattr(path: &str, name: &str, follow_symlinks: bool) -> io::Result<Option<Vec<u8>>> {
     let invalid = || io::Error::from_raw_os_error(libc::EINVAL);
     let c_path = std::ffi::CString::new(os(path).as_bytes()).map_err(|_| invalid())?;
@@ -254,6 +258,7 @@ impl FileSystem for UnixFileSystem {
     }
 
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:258 UnixFileSystem.createDirectory
+    // Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:145 NativePosixFiles.mkdir
     fn create_directory(&self, path: &PathFragment) -> io::Result<bool> {
         match fs::DirBuilder::new()
             .mode(0o777)
@@ -303,6 +308,7 @@ impl FileSystem for UnixFileSystem {
     }
 
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:343 UnixFileSystem.delete
+    // Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:196 NativePosixFiles.remove
     fn delete(&self, path: &PathFragment) -> io::Result<bool> {
         // remove(3): unlink, or rmdir for directories.
         let name = path.get_path_string();
@@ -327,6 +333,7 @@ impl FileSystem for UnixFileSystem {
     }
 
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:361 UnixFileSystem.setLastModifiedTime
+    // Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:131 NativePosixFiles.utimensat
     fn set_last_modified_time(&self, path: &PathFragment, new_time: i64) -> io::Result<()> {
         // NativePosixFiles.utimensat(path, now, millis): utimensat(AT_FDCWD, path, {t, t}, 0),
         // following symlinks; `now` is UTIME_NOW (the kernel's clock, and only write access is
@@ -361,6 +368,10 @@ impl FileSystem for UnixFileSystem {
     }
 
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:118 UnixFileSystem.stat
+    // Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:92 NativePosixFiles.stat
+    // Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:104 NativePosixFiles.stat
+    // Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:106 NativePosixFiles.lstat
+    // Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:118 NativePosixFiles.lstat
     fn stat(&self, path: &PathFragment, follow_symlinks: bool) -> io::Result<FileStatus> {
         let name = path.get_path_string();
         let start_time = Profiler::nano_time_maybe();
@@ -398,6 +409,7 @@ impl FileSystem for UnixFileSystem {
     }
 
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:299 UnixFileSystem.createSymbolicLink
+    // Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:61 NativePosixFiles.symlink
     fn create_symbolic_link(
         &self,
         link_path: &PathFragment,
@@ -411,6 +423,7 @@ impl FileSystem for UnixFileSystem {
     }
 
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:311 UnixFileSystem.readSymbolicLink
+    // Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:42 NativePosixFiles.readlink
     fn read_symbolic_link(&self, path: &PathFragment) -> io::Result<PathFragment> {
         let name = path.get_path_string();
         match fs::read_link(os(name)) {
@@ -485,6 +498,7 @@ impl FileSystem for UnixFileSystem {
     }
 
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:228 UnixFileSystem.chmod
+    // Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:52 NativePosixFiles.chmod
     fn chmod(&self, path: &PathFragment, mode: u32) -> io::Result<()> {
         let name = path.get_path_string();
         fs::set_permissions(os(name), fs::Permissions::from_mode(mode))
@@ -518,6 +532,7 @@ impl FileSystem for UnixFileSystem {
     }
 
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:328 UnixFileSystem.renameTo
+    // Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:187 NativePosixFiles.rename
     fn rename_to(&self, source_path: &PathFragment, target_path: &PathFragment) -> io::Result<()> {
         fs::rename(
             os(source_path.get_path_string()),
@@ -536,6 +551,7 @@ impl FileSystem for UnixFileSystem {
     }
 
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:411 UnixFileSystem.createFSDependentHardLink
+    // Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:70 NativePosixFiles.link
     fn create_fs_dependent_hard_link(
         &self,
         link_path: &PathFragment,
@@ -553,6 +569,7 @@ impl FileSystem for UnixFileSystem {
 impl UnixFileSystem {
     /// The body of `readdir`, without its `VFS_DIR` profiler event.
     // Java: com/google/devtools/build/lib/unix/UnixFileSystem.java:88 UnixFileSystem.readdir
+    // Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:155 NativePosixFiles.readdir
     fn readdir_unprofiled(
         &self,
         path: &PathFragment,
@@ -594,6 +611,8 @@ impl UnixFileSystem {
     }
 
     /// `NativePosixFiles.stat`/`lstat` with `THROW_UNLESS_NOT_FOUND` (no profiler event).
+    // Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:87 NativePosixFiles.StatErrorHandling.getCode
+    // Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:83 NativePosixFiles.StatErrorHandling.StatErrorHandling
     fn stat_if_found_unprofiled(
         &self,
         path: &PathFragment,
