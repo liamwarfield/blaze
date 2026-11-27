@@ -575,3 +575,10 @@ Each entry: date, decision, why, who decided.
   `command.profile.gz`) equals Bazel's bytes on the same host, because Bazel's JDK links the
   host's zlib (here zlib-ng-compat 2.3.3) and Blaze now links the same library; stock zlib
   1.3.1 gives other bytes at 42 KB and 2 MB. Checkpoint 40 is a673e29. Root.
+- 2026-11-26. Action rewinding is ported for lost inputs and lost top-level outputs. Accepted
+  as a declared, slower-but-correct form: a rewound action holds a write lock from preparation
+  to the end of execution and runs alone, where Java switches to per-action locks; it waits for
+  its own in-flight uploads where Java cancels them. With rewinding ported, Java's rule is
+  restored: the disk-cache integrity check is skipped under `--rewind_lost_inputs` (this
+  reverses the stop-gap of 2026-11-19). `RewindingTest` (37 cases) stays ignored until an
+  in-process build harness exists. Root.
