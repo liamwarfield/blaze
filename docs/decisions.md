@@ -718,3 +718,11 @@ Each entry: date, decision, why, who decided.
   modes started on that binary (labels `blaze-8ecc520-daemon`, `blaze-8ecc520`); reviews
   started at 8ecc520: remote round 9, query round 4 with rewinding round 3, first review of
   interpreter patches 0066-0068 and the multi-command test fixture. Root.
+- 2026-11-26, 23:50. Reviews at 8ecc520. Query round 4: PASS (P63-1 fixed inside the cast
+  helpers; SQ-3, sequential SkyQuery, stays the declared deviation recorded above; Q4-1, S2, the
+  debugger's `get_children` reads a dict without recording, passed to the analysis thread).
+  Rewinding round 3: STOP on IS-2 only (`compute_used_modules` removed the own module with
+  `shift_remove`; Java's CompactHashSet moves the last entry into the hole). Root changed the
+  one line to `swap_remove`; IS-3 (a failed read in discovery becomes a restart) and a unit
+  test for the order are with the implementer; the same reviewer re-checks at the next
+  checkpoint. AT-1 is confirmed fixed. Root.
