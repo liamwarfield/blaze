@@ -726,3 +726,11 @@ Each entry: date, decision, why, who decided.
   one line to `swap_remove`; IS-3 (a failed read in discovery becomes a restart) and a unit
   test for the order are with the implementer; the same reviewer re-checks at the next
   checkpoint. AT-1 is confirmed fixed. Root.
+- 2026-11-27, 00:05. Review of interpreter patches 0066-0068 and the multi-command fixture at
+  8ecc520 (docs/reviews/2026-11-26-patches-fixture.md). Patches: STOP on 0068 (P1-1 `dict ==
+  view` always false; P1-2 `json.encode` of a view gives an array); with the packages thread.
+  Fixture, ConfigCommandTest, DumpCommandTest, `dump` over a kept graph: PASS. Ruling on P2-1
+  (`dump --rules`/`--skyframe` statistics): rule or aspect classes that have the same count and
+  fall in the same `HashMap` bin are printed sorted by key. Java's order there is the insertion
+  order from the graph's `ConcurrentHashMap`, which follows SkyKey hash codes and is not a
+  fixed value; a comparison treats such a tied group as a set. Declared deviation. Root.
