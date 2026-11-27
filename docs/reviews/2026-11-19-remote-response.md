@@ -2299,3 +2299,69 @@ became `disk_cache_skips_action_result_integrity_check_with_rewind_lost_inputs`:
 `RemoteModule.java:700-706` since rewinding was ported (checkpoint 40), and the test still pinned
 the old round-2 ruling. blaze_repo_rules and blaze_runtime could not be run: another agent's
 `blaze_analysis` does not compile at the moment.
+
+# Round 8
+
+Response to the round-8 review (STOP at `dad60f0` on H1; G1, S2, S3, S4 and the unchecked
+items). Code: the shared working tree on HEAD `dad60f0` plus the uncommitted changes. Binaries
+and runs: see "Oracle".
+
+## H1 (S1). FIXED: the response of an upload is read while the body is written
+
+`http_cache_client.rs`: `exchange_upload` writes the request head and each 8 KiB of the body
+with `write_watching`, which puts the socket in non-blocking mode and `poll(2)`s it for
+readability and writability: as soon as the server sends anything, writing stops and the
+response is read as usual (`HttpUploadHandler.channelRead0` completes the promise with the
+response whatever has been written). For TLS, received records count as an answer only once
+rustls decrypts application data or a close (a TLS 1.3 session ticket is not an answer); the
+plaintext stays in the connection for the response reader. No read or write within the socket
+timeout is still the upload timeout. A connection answered early is closed, not kept (Java
+releases it to its pool with part of the body unwritten; declared in the code).
+
+Found with the reviewer's 401 variant: Bazel sends the uploads of an action's outputs at once
+(each on its own channel); Blaze sent them one after another, because each HTTP transfer blocks
+its task (`block_in_place`) and the uploads of an action are awaited in one task. With a token
+that expires, Bazel's three uploads all carry the old token, where Blaze's later ones already
+carried the refreshed one. `RemoteCacheClient::upload_blob_owned` (new, default: the old path)
+lets the HTTP client run each upload as a task of its own (aborted when its waiter is dropped),
+so they proceed together as in Java.
+
+Tests (`http_cache_client_test.rs`, each on TCP and on a Unix socket, against a server that
+answers before reading the body of a PUT over 1 MiB): `upload_answered_before_body_reports_the_status`
+(16 MiB, 403 at once, under 5 s with a 10 s timeout), `expired_auth_token_before_body_is_refreshed`
+(401 invalid_token before the body: refreshed, uploaded again), `expired_auth_token_for_a_file_is_not_retried`
+(S4 below).
+
+## S4. FIXED: the retry after a refresh needs Java's `reset(in)`
+
+`Blob::supports_reset` (new; Java's `markSupported` or `FileInputStream`): true for a
+`ByteString`'s stream (`BytesBlob`, also the action result), false for a file
+(`LazyFileInputStream`) and a chunk of a file. `upload_async` repeats the upload after a refresh
+only then, sending the body again from its start (a new stream of the blob). Shown with the
+oracle (`authput` below: Bazel repeats the two small blobs and not the 64 MiB file).
+
+## G1 (S2). Declared
+
+The PORT note of `ReferenceCountedChannel::cancellable_request` says that a call dropped while
+hyper waits for HTTP/2 window for a chunk it already took is reset only when the window opens or
+the connection closes.
+
+## S2. Fixture added
+
+`google_auth_utils_test::http_cache_tls_config_checks_the_host_name_stricter_than_netty`: the
+fixture `v3_issued_san` (SAN `localhost`, issued by the fixtures' `ca.pem`) with its key;
+`localhost` is accepted, `example.com` refused ("certificate not valid for name"), where
+Netty's client context of `HttpCacheClient.createSSLContext` does not identify the endpoint. The
+PORT note of `http_cache_tls_config` names the test.
+
+## S3. PORTED: `Content-Encoding: snappy`
+
+What Java does, read from the oracle's Netty 4.1.119 class files (no source at the pin) and run:
+`HttpContentDecompressor` decodes snappy with `new SnappyFrameDecoder()` (the framing format,
+checksums not validated) over `Snappy.decode`. `http/snappy.rs` ports both as a `Read` adapter:
+chunk types and limits (65540 uncompressed, 16777215 compressed, 65536 decoded), the stream
+identifier check, skippable chunks, literals and the three copy forms with Netty's offset checks,
+and Netty's messages. A `DecompressionException` is a `RuntimeException` in Netty: with a
+reserved unskippable chunk the oracle crashes ("FATAL: bazel crashed due to an internal error",
+caused by `DecompressionException: Found reserved unskippable chunk type: 0x2`, exit 37); Blaze
+panics with the same class and message, which is its internal-error crash (exit 37).

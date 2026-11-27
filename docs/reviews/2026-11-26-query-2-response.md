@@ -276,3 +276,42 @@ interrupt earlier targets' resolver nodes are not deleted for that command.
   the errors of a call that already failed. Test `patch_0062_round_3_java_interface_names`;
   PATCHES.md updated; `patches/blaze.diff` regenerated.
 - `starlark_conformance --test patches`: 62 passed, 0 failed.
+
+# Round 3
+
+Response to `docs/reviews/2026-11-26-query-2-round3.md` (STOP at b216603). Working tree on
+98e71603 plus the changes below (not committed).
+
+## P63-1 (S1): the remaining whole-dict readers
+
+The recording now sits in the blaze_packages helpers, so a new caller cannot miss it:
+
+- `starlark_defs/util.rs` `dict_cast` (Java `Dict.cast`, `entrySet()`): covers the provider
+  `init` result (`provider.rs`), and every other `dict_cast` caller in `starlark_defs`
+  (`rule_class_functions.rs`, `config.rs`, `implicit_outputs_function.rs`). Root's `"unknown"`
+  class names at those call sites are kept.
+- `types/type_.rs` `convert_dict` (Java `Type.DictType.convert`, `Type.java:574`
+  `o.entrySet()`): covers `ctx.resolve_command(make_variables = ...)` and every
+  `Type.*_DICT.convert` port; the `copy_and_lift_starlark_value` dict branch (Java
+  `DictType.copyAndLiftStarlarkValue`, `entrySet()`); and the list conversion of a dict
+  (`iterable_elements`, Java `Iterable` of a dict = `keySet().iterator()`).
+- `select()` (Java `SelectorList.select`, `dict.entrySet()`): `build/select.rs` takes its argument
+  as `ValueOf<DictRef>` (same type error) and records; `types/select.rs` `select_impl` records.
+- `builtins/cc_internal.rs` `freeze` now goes through `Dict.immutableCopyOf`'s port
+  (`dict_immutable_copy_of`), which returns an immutable dict (so `ctx.var` itself, keeping its
+  tracking) and copies only mutable ones, as Java (the reviewer's non-blocking note).
+
+Per-site recording removed: none. None of the ten round-2 sites calls these helpers: they are
+themselves the `Dict.cast` helpers of blaze_analysis and blaze_rules, or ports of other Java
+readers (`json.encode`, `proto.encode_text`), so their recording stays.
+
+The tree check: blaze_sky_top `whole_dict_readers_test::every_starlark_dict_reader_records_or_is_listed`
+scans `crates/*/src` (not test files) for `DictRef::from_value(`, `DictMut::from_value(`, a
+`DictRef<'v>` parameter, `UnpackDictEntries<` and `DictType<`. Each reader must either call
+`dict_record_all_keys_accessed` earlier in its function or be listed in `NOT_RECORDING` with a
+reason: a phase without `ctx.var` (repository rules, module extensions, MODULE.bazel,
+REPO.bazel, PROJECT.scl, transitions, loading-time computed defaults, documentation extraction,
+the execution-time build-info callback), a type check (`instanceof Dict`), or a Java read that
+does not record (`isEmpty`, `hashCode`, `Dict.immutableCopyOf` of an immutable dict,
+`checkLabelDict`, which fails on string keys). A listed entry that no longer names a reader also
+fails the test.

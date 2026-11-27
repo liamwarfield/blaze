@@ -76,6 +76,7 @@ by adding.
 | 0064 | applied | the running evaluator's `extra` for code without an evaluator (`eval::with_current_extra`), so a value's `str` can read the thread's semantics (Java `Starlark.str(x, semantics)`) |
 | 0066 | applied | a native callable's own location (`StarlarkValue::callable_location`, `Frame::callable_location`; Java `StarlarkCallable.getLocation()`): its traceback frame and `Error: ...` |
 | 0067 | applied | a function's `repr` names its module's extra value also while that module executes (`<function f from //pkg:file.bzl>`) |
+| 0068 | applied | native values Java implements as a `Map` (`StarlarkValue::java_map_entries`; Bazel's `existing_rule` views) in `dict(m)`, `d.update(m)`, `f(**m)`, `\|`, `\|=` and the set methods |
 
 Conformance (Bazel ScriptTest, `starlark_conformance run`; strict = Java ScriptTest semantics,
 resilient = aborted chunks re-run statement by statement):
@@ -1163,16 +1164,25 @@ and users read them).
   when present; iteration (`iterate`, Java `iterator()` = `keySet()`), `repr`/`str` (Java
   `printList(entrySet())`), `d | x` and `x | d`, `x |= d`, `x.update(d)`, `dict(d)` (Java copies
   through `entrySet()`) and `f(**d)` (Java iterates `entrySet()`) record every key. `keys()`,
-  `items()`, `values()`, `len` and `==` record nothing (Java reads `contents` directly).
+  `items()`, `values()` and `len` record nothing (Java reads `contents` directly). Round 2:
+  `x == d` with the tracking dict on the right is Java's `x.contents.equals(d)`: an `ImmutableMap`
+  left side (`java_contents_immutable`) records every key (`entrySet()`), a mutable left side of
+  the same size records `d.get(k)` for its own keys in order up to the first mismatch
+  (`AbstractMap.equals`), different sizes record nothing; `d == x` records nothing.
   `alloc_immutable_key_tracking_dict(heap, Dict) -> Value`, `dict_accessed_keys(value) ->
   Option<Vec<Value>>` (Java `getAccessedKeys`), `dict_record_all_keys_accessed(value)`; re-exported
   from `starlark::values::dict`. `dict.get`'s receiver is a `Value` (was `DictRef`). Freezing
   drops the tracking (Java reads the keys before the context is closed).
-- Limitation: native functions that read a dict through `DictRef` (Java natives that call
-  `Dict.cast`, which iterates `entrySet()`) record nothing; an empty key-tracking dict is not the
-  shared empty frozen dict (Java's builder makes a new dict too).
-- Users: blaze_analysis `starlark_rule_context::get_var` / `looked_up_variables`.
-- Test: `patch_0063_key_tracking_dict`.
+- Native readers: a native that reads a dict through `DictRef` does not record by itself; Blaze
+  calls `dict_record_all_keys_accessed` in every native that ports a Java `entrySet()`/
+  `keySet()`/`iterator()` read (`Dict.cast`, `Type.DictType.convert`, `json.encode`, ...), and
+  blaze_sky_top's `whole_dict_readers_test` fails on a new reader that neither records nor is
+  listed with a reason. An empty key-tracking dict is not the shared empty frozen dict (Java's
+  builder makes a new dict too).
+- Users: blaze_analysis `starlark_rule_context::get_var` / `looked_up_variables`; the native
+  readers above.
+- Test: `patch_0063_key_tracking_dict`; blaze_sky_top `starlark_ctx_var_read_whole_by_natives`
+  and `whole_dict_readers_test`.
 
 ## 0064 — the running evaluator's `extra`
 
@@ -1238,4 +1248,22 @@ and users read them).
   of the creating function is used otherwise, as before); `Display` uses it while `module` is
   not set.
 - Test: `patch_0067_def_repr_during_module_execution`.
+
+## 0068 — native values that are Java `Map`s
+
+- Gap: Java's interpreter accepts any `java.util.Map`, not only a `Dict`, in `dict(m)` and
+  `d.update(m)` (`Dict.update`, net/starlark/java/eval/Dict.java:358), `f(**m)`
+  (`Eval.evalCall`, Eval.java:747), `m | m` (`EvalUtils.binaryOp`, EvalUtils.java:131),
+  `d |= m` (`Eval.inplaceBinaryOp`, Eval.java:499) and the set methods
+  (`StarlarkSet.toHashableCollection`, StarlarkSet.java:827). Bazel's `native.existing_rule(...)`
+  and `native.existing_rules()` views (`StarlarkNativeModule.DictLikeView`) are such maps; in
+  Blaze `dict(native.existing_rule("x"))` failed with "dictionary update sequence element #0 is
+  not iterable (string)" (oracle: a dict of the rule's attributes).
+- Fix: `StarlarkValue::java_map_entries` (default `None`) gives a value's entries in its
+  `entrySet()` order; `dict/globals.rs` (`java_update_pairs`, new `java_map_as_dict`),
+  `dict/value.rs` (`bit_or`), `layout/value.rs` (`Value::bit_or` with a map on the left),
+  `compiler/stmt.rs` (`bit_or_assign`), `runtime/arguments.rs` (`ArgumentsImpl::java_map_kwargs`,
+  called by the five call instructions in `bc/instr_impl.rs` before the callee binds its
+  arguments) and `set/methods.rs` (`hashable_collection`) use it.
+- Test: `patch_0068_java_map_values`.
 
