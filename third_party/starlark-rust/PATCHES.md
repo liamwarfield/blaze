@@ -72,6 +72,8 @@ by adding.
 | 0060 | applied | the nesting guard of comparisons is 20000 levels in debug and release builds (Java has none) |
 | 0061 | applied | Java's call-site error locations: an argument-binding error of a call with named or `*`/`**` arguments at the enclosing statement's location (`=`, `for`, `:`); `*x`/`**x` errors and calls of a non-callable value in the caller, without the callee's frame |
 | 0062 | applied | a builtin's argument checks in Java's order: parameter types as the arguments are bound (positional, then named in call order) before the arity |
+| 0063 | applied | key-tracking immutable dicts (Java `Dict.ImmutableKeyTrackingDict`, `ctx.var` with `--include_config_fragments_provider`): `alloc_immutable_key_tracking_dict`, `dict_accessed_keys` |
+| 0064 | applied | the running evaluator's `extra` for code without an evaluator (`eval::with_current_extra`), so a value's `str` can read the thread's semantics (Java `Starlark.str(x, semantics)`) |
 
 Conformance (Bazel ScriptTest, `starlark_conformance run`; strict = Java ScriptTest semantics,
 resilient = aborted chunks re-run statement by statement):
@@ -1125,4 +1127,50 @@ and users read them).
 - Limitation: an unexpected or repeated keyword raised by binding is not reordered against the
   type checks of earlier arguments.
 - Test: oracle probes t12-t15 of the loading-fix-2 report.
+- Round 2 (review query-2, item 2): the table's class names are matched against Starlark type
+  names, which differ for a Java interface: `CqueryNode` (cquery's `build_options(target)`,
+  `providers(target)`) is implemented by every configured target class, whose type is `Target`.
+  `java_param_accepts` maps `CqueryNode` to `Target` (`BLAZE PATCH 0062 (round 2)`).
+  Limitation: the table's other interface names (`Info`, `NativeInfo`, `Provider`,
+  `StarlarkValue`, `structure`, `Iterable`) are still compared by name.
+- Test (round 2): configured_query_test#test_starlark_build_options_invalid_arg
+  (`build_options(target, 'blah')`: Java's arity text).
+
+## 0063 — key-tracking immutable dicts
+
+- Gap: Java `Dict.Builder.buildImmutableWithKeyTracking` (net/starlark/java/eval/Dict.java:532)
+  makes an `ImmutableKeyTrackingDict` (Dict.java:789): an immutable dict whose overridden
+  `containsKey`, `get`, `keySet` and `entrySet` record the keys accessed (present keys only).
+  `StarlarkRuleContext.var()` builds `ctx.var` this way when required config fragments are
+  tracked, and `lookedUpVariables()` reports the `--define` variables a rule read
+  (`cquery --show_config_fragments`).
+- Fix: `types/dict/value.rs`: `MutableDictData` gets `accessed_keys: RefCell<Option<Vec<usize>>>`
+  (indexes of the keys, in order of first access; `Some` for a key-tracking dict), and the
+  `DictLike` trait two hooks (`record_key_index_access`, `record_all_keys_access`, no-ops for
+  other dicts). Recorded as Java does: `in` (`is_in`), `d[k]` (`at`) and `d.get(k)` record the key
+  when present; iteration (`iterate`, Java `iterator()` = `keySet()`), `repr`/`str` (Java
+  `printList(entrySet())`), `d | x` and `x | d`, `x |= d`, `x.update(d)`, `dict(d)` (Java copies
+  through `entrySet()`) and `f(**d)` (Java iterates `entrySet()`) record every key. `keys()`,
+  `items()`, `values()`, `len` and `==` record nothing (Java reads `contents` directly).
+  `alloc_immutable_key_tracking_dict(heap, Dict) -> Value`, `dict_accessed_keys(value) ->
+  Option<Vec<Value>>` (Java `getAccessedKeys`), `dict_record_all_keys_accessed(value)`; re-exported
+  from `starlark::values::dict`. `dict.get`'s receiver is a `Value` (was `DictRef`). Freezing
+  drops the tracking (Java reads the keys before the context is closed).
+- Limitation: native functions that read a dict through `DictRef` (Java natives that call
+  `Dict.cast`, which iterates `entrySet()`) record nothing; an empty key-tracking dict is not the
+  shared empty frozen dict (Java's builder makes a new dict too).
+- Users: blaze_analysis `starlark_rule_context::get_var` / `looked_up_variables`.
+- Test: `patch_0063_key_tracking_dict`.
+
+## 0064 — the running evaluator's `extra`
+
+- Gap: Java's `Starlark.str(x, semantics)` passes the converting thread's semantics to the value
+  (`Label.str`: `--incompatible_unambiguous_label_stringification`); starlark-rust's
+  `collect_str` has no evaluator.
+- Fix: `eval/runtime/evaluator.rs`: a thread-local holds the `extra` of the evaluator running
+  `eval_module` or `eval_function` (a guard sets it on entry and restores the previous one on
+  return or unwinding, so nested evaluations see their own); `eval::with_current_extra(f)` gives
+  it to `f` (`None` outside an evaluation).
+- Users: blaze_starlark `label.rs` (`Label.str` reads the `ThreadContext`'s semantics).
+- Test: `patch_0064_current_extra`.
 

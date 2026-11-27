@@ -563,3 +563,15 @@ Each entry: date, decision, why, who decided.
   run, check that the slice's memory use is below 10 GiB, and never run the daemon-mode suite
   while a test server can grow to several GiB (the incremental implementer has that finding).
   Root.
+- 2026-11-26. Query review follow-ups (docs/reviews/2026-11-26-query-2-response.md), declared
+  deviations: (1) the `aquery --skyframe_state` dump and the dump after a build are ordered by
+  key string; Java's order is that of a ConcurrentHashMap and changes between servers; (2) the
+  Blaze-only node CQUERY_TRANSITION_RESOLVER is deleted when the query closes and reports
+  Java's "DependencyResolver.evaluate did not complete" where Java would; (3) the 500,000-step
+  limit on the cquery format function is not enforced: Java counts AST statements and
+  expressions, starlark-rust runs bytecode, and no guessed limit is installed; (4) finding S2-4
+  of that review is withdrawn (TargetPatternFunction.java:132: the filtered-target set is
+  always empty in Java). Also recorded: gzip output (`genquery(compressed_output)`,
+  `command.profile.gz`) equals Bazel's bytes on the same host, because Bazel's JDK links the
+  host's zlib (here zlib-ng-compat 2.3.3) and Blaze now links the same library; stock zlib
+  1.3.1 gives other bytes at 42 KB and 2 MB. Checkpoint 40 is a673e29. Root.
