@@ -315,3 +315,57 @@ the execution-time build-info callback), a type check (`instanceof Dict`), or a 
 does not record (`isEmpty`, `hashCode`, `Dict.immutableCopyOf` of an immutable dict,
 `checkLabelDict`, which fails on string keys). A listed entry that no longer names a reader also
 fails the test.
+
+Tests: `starlark_ctx_var_read_whole_by_natives` gains `resolve_command` (Type.STRING_DICT.convert)
+and `provider_init` (Dict.cast of the init result), both requiring `--define:a, --define:b`;
+`whole_dict_readers_test` passes. Oracle (`cquery //cv3:<t> --define=a=1 --define=b=2
+--show_config_fragments=direct`, one reused workspace per side): `ctx.resolve_command(command =
+"echo x", make_variables = ctx.var)`, `P(ctx.var)` with `def _init(v): return v`, and
+`select(ctx.var)` in an implementation: stdout and stderr identical (the oracle lists
+`--define:a, --define:b` for each); the four round-2 cases (`env`, `subst`, `json`, `eq`) are
+still identical.
+
+## S2
+
+- **SQ-1.** `report_unsuccessful_or_missing_targets` orders the missing keys as Java's
+  `HashSet<SkyKey>` iterates them: `java_hash_set_order_of_label_keys` replays `HashMap.putVal`
+  (default capacity 16, resize past 3/4, the `treeifyBin` resize below 64 slots) with
+  `Label.hashCode` (the engine's `JavaHashCode`) and sorts stably by the final slot; a tree bin
+  fails loudly. Oracle: `deps(//mis:top)` over five missing targets of one package prints
+  `Targets were missing from graph: [//mis/sub:zz, //mis/sub:aa, //mis/sub:m1, //mis/sub:m2,
+  //mis/sub:m3]` on both (not the insertion order).
+- **SQ-2.** `get_fwd_dep_labels` keeps every done node, including one on a cycle (no value, no
+  exception, `is_cycle`); a key with a node that is not done is skipped with a PORT note (Java's
+  `checkState` fails there; the WalkableGraph port exposes done nodes only, and after the
+  universe's evaluation every universe node is done). Oracle: `deps(//cyc:a)` and
+  `allrdeps(//cyc:x)` over a two-target cycle: identical.
+- **SQ-3.** The PORT note in `sky_query_environment.rs` now gives the reason: the query engine
+  is sequential (immediate `QueryTaskFuture`s), a pool needs it thread-safe first, and Java's
+  order inside a streamed batch is not a fixed value to port; only unordered outputs can show
+  it. For root's deviation record.
+
+## S3
+
+- `rbuildfiles` over a package-piece key: Java casts `rdep.argument()` to `PackageIdentifier`,
+  which throws `ClassCastException` for a `PackagePieceIdentifier.ForBuildFile` (it has function
+  name PACKAGE and is its own argument), so the server crashes; the port now panics with that
+  exception instead of `unported!`.
+- Native computed or late-bound defaults without a class name: late-bound defaults now print
+  `Attribute$LabelLateBoundDefault`, `Attribute$LabelListLateBoundDefault` and
+  `Attribute$AlwaysNullLateBoundDefault` (their constructors make those classes, no subclass);
+  `LateBoundDefaultKind::Other` and a computed default without `with_java_class_name` still fail
+  loudly.
+
+## S4
+
+- PATCHES.md 0063: the `==` sentence now describes round 2, and the limitation paragraph is
+  replaced by the native-reader rule and the tree check.
+- The two universe `check_state!` messages print the list as `List.toString` (`[//a:b]`).
+
+## Verification
+
+- `scripts/cargo-capped test -p blaze_sky_top -- --test-threads=4`: 960 passed, 0 failed,
+  160 ignored (the unit was OOM-killed once at full parallelism with other jobs on the slice; the
+  12 tests left were run on their own and pass).
+- `test -p blaze_sky_loading -p blaze_packages -p blaze_skyframe`: 0 failed.
+- SkyQuery oracle series (40 cases): 40 identical.

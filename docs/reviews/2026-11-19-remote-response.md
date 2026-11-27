@@ -2365,3 +2365,86 @@ and Netty's messages. A `DecompressionException` is a `RuntimeException` in Nett
 reserved unskippable chunk the oracle crashes ("FATAL: bazel crashed due to an internal error",
 caused by `DecompressionException: Found reserved unskippable chunk type: 0x2`, exit 37); Blaze
 panics with the same class and message, which is its internal-error crash (exit 37).
+
+## Probes against the oracle (unchecked items of the review, and H1)
+
+Binary `blaze-6` (sha256 `a8e34970c1e3baf5`, the shared tree at HEAD `c434f6cd` plus uncommitted
+changes); oracle `bazel-9.3.2-linux-x86_64`. One workspace and output user root per side, server
+mode, `--max_idle_secs=60`, `--jobs=4`. Tools: `scripts/remote-http/early-answer-probe`,
+`scripts/remote-http/http-variants-probe` (both print usage with `help`).
+
+| Probe | Oracle | Blaze | Verdict |
+|---|---|---|---|
+| H1 `early`: 403 before the body of a 64 MiB PUT | `WARNING: Remote Cache: 403 Forbidden`, exit 0 | same | requests equal (as sets; order is concurrent on both sides) |
+| H1 `auth`: 401 invalid_token before the body, credential helper | 2 helper calls, exit 0 | same | requests equal |
+| H1 `authput`: as `auth`, first request an upload | `WARNING: Remote Cache: 401 Unauthorized`; the two small blobs repeated with the new token, the 64 MiB file not | same | requests equal |
+| `snappy` 1000 B, 16 MiB, 64 MiB (GET answered with `Content-Encoding: snappy`) | remote cache hit, output sha256 = CAS digest | same digests (`758bee38…`, `dbe472a3…`, `bd1b5118…`) | equal |
+| `snappy-bad` (reserved unskippable chunk) | FATAL crash, `DecompressionException: Found reserved unskippable chunk type: 0x2`, exit 37 | same class and message, exit 37 | equal |
+| `unix` (`--remote_proxy=unix:`) build, clean, download | both builds exit 0 | same | requests equal |
+| `tls` (`https://localhost`, `--tls_certificate`) | both builds exit 0 | same | requests equal |
+| `coverage` of an `sh_test` with an HTTP cache, twice with a clean | PASSED, then (cached) PASSED; 27 CAS and 8 AC uploads | same, with the same sizes except one blob of 123 vs 124 bytes (not inspected, probably the test's timing) | equal up to that blob |
+| `interrupt`: SIGINT 3 s into the upload of 4 MiB at 64 KiB/s | `Upload of '/cas/…' timed out. Sent 4194304 bytes.`, exit 0, ends at 14.6 s | same warning, exit 0, ends at 30.6 s | OPEN: Blaze restarts its idle clock on every accepted write; Netty's idle handler at this point is not settled. Ctrl-C does not stop the wait for the uploads on either side |
+| `disk-blake3`: `--digest_function=blake3` with `--disk_cache` | entries listed | identical | equal (a remote cache cannot be compared: the pinned worker refuses BLAKE3) |
+
+Earlier oracle records of the H1 probes came from an older version of the probe's genrule (its
+64 MiB digest differed); they were recorded again for this table.
+
+## Checkpoint-43 regressions (root's report at b216603)
+
+Both regressions are `remote_execution_http_test#test_remote_http_cache_with_missing_cas_referenced_by_ac`
+and `build_without_the_bytes_test#test_remote_cache_eviction_retries_jdeps`. Each test ran on
+root's binaries, one function at a time with `scripts/upstream-tests/run --per-function`. Both
+pass on `blaze-dad60f0` and fail on `blaze-b216603`, so checkpoint 43 (`c051eade`) broke them. Both
+fail the same way: the build that `--experimental_remote_cache_eviction_retries` starts again
+inside the same command ("Found transient remote cache error, retrying the build...") runs its
+actions in an execroot without the external repositories' symlinks:
+
+- HTTP test: `bar`'s genrule ran in linux-sandbox with `/bin/bash: line 1:
+  external/bazel_tools/tools/genrule/genrule-setup.sh: No such file or directory`. Its stderr
+  became the 4th CAS entry. The HTTP client's missing-CAS handling was right: the first attempt
+  ignores the action-cache entry and reports "Lost inputs no longer available remotely:
+  a/bar.txt".
+- jdeps test: the retried build fails with "Cannot run program
+  .../external/rules_java++toolchains+remotejdk25_linux/bin/java".
+
+Cause: checkpoint 43 brought Skymeld's symlink planting into `BuildDriverFunction`. Its per-build
+states (`keyToPostedEvents`) live in the build arena, which lasts for the whole command. Java
+resets them after each `evaluateBuildDriverKeys`
+(`SkyframeExecutor.resetBuildDriverFunction`). At b216603, Blaze reset them only on the merged
+path. On the path Blaze takes, a key whose first attempt failed kept
+`TOP_LEVEL_TARGET_READY_FOR_SYMLINK_PLANTING` as posted, so the retry's new
+`IncrementalPackageRoots` was never told to plant. The fix is not mine: it is the
+`BuildDriverFunction::reset_states()` call in `blaze_buildtool` `execution_tool.rs`
+`evaluate_build_driver_keys`, committed in checkpoint 44 (`a2b67af7`). On `blaze-6` both
+functions pass in both modes: labels `remote7-b6` (one process per command) and
+`remote7-b6-daemon` (`scripts/server/ut-wrapper`).
+
+## Also found: the chunking check blocked on the remote runtime (S1, FIXED)
+
+Porting the last ignored CombinedCache chunking tests found it. `CombinedCache.Chunking.supported`
+fetched the server capabilities with the blocking call, from inside an upload or a download
+running on the remote runtime. The runtime refuses that ("blocking remote call from inside the
+remote executor", a panic). With `--experimental_remote_cache_chunking` over gRPC, the first
+large upload or download panicked whenever the background capabilities fetch had not finished.
+`chunking_supported` is now async, over the new `GrpcCacheClient::get_server_capabilities_async`.
+Two first callers may now both fetch; both get the channel's one cached answer (PORT note).
+
+## Tests (round 8)
+
+Shared tree at HEAD `c434f6cd` plus uncommitted changes, full runs of two crates:
+
+- blaze_remote: 852 passed, 0 failed, 51 ignored.
+- blaze_bes: 35 passed, 0 failed.
+
+New this round:
+
+- `chunked_blob_uploader_test`: 10.
+- `combined_cache_test`: four tests that were ignored, now ported against the fake gRPC server
+  (Java spies on `GrpcCacheClient`). They are `upload_file_chunked_upload_deduplicates_remote_upload`,
+  `download_blob_chunk_missing_after_partial_write_does_not_restart_into_same_stream`,
+  `download_blob_first_chunk_missing_does_not_fall_back_to_whole_blob_download` and
+  `download_blob_blob_not_splittable_falls_back_to_whole_blob_download`. They passed 5 of 5 runs.
+- `grpc_cache_client_test`: `split_blob_server_cannot_split_fails_with_blob_not_splittable`, once
+  with `NOT_FOUND` and once with `UNIMPLEMENTED`.
+- `http/snappy.rs` unit tests: 4.
+- The H1 and S4 tests listed above.
