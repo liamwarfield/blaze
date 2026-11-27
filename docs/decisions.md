@@ -618,3 +618,8 @@ Each entry: date, decision, why, who decided.
   rounds). `buildMetrics.buildGraphMetrics.dirtiedValues` is compared per function regardless
   of order (Java's order is its thread pool's scheduling). `--watchfs` is ported. The fail-safe
   for remote options stays until the reviewer's sequences match the oracle. Root.
+- 2026-11-26. Referee guard at checkpoint 40 (binary of a673e29, sha256 53e3431b…, recorded
+  from a dirty tree, verification labels only) against the base referee3b: one process per
+  command (`guard-a673e29`): 13,852 matching, 58 allowed, rows 39, gained 2, regressed 0;
+  daemon mode (`guardd-a673e29`): 13,858 matching of 13,860 judged, 56 allowed, gained 2,
+  regressed 0. Root.
