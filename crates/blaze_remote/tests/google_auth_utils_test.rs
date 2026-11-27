@@ -17,6 +17,7 @@ use blaze_optdefs::misc::auth_and_tls_options::AuthAndTLSOptions;
 use blaze_optdefs::misc::auth_and_tls_options::CredentialHelperOptionConverter;
 use blaze_remote::authandtls::Credentials;
 use blaze_remote::authandtls::google_auth_utils::{
+    http_cache_tls_config,
     is_tls_enabled, new_channel, new_credential_helper_provider, new_credentials_from_netrc,
 };
 use blaze_repo_fetch::authandtls::credentialhelper::{
@@ -587,4 +588,48 @@ fn new_channel_rejected_client_certificate_fails_connections_not_channel_creatio
         cause.to_string().starts_with("invalid peer certificate: "),
         "{cause}"
     );
+}
+
+/// Review 2026-11-19 round 8, S2: the declared stricter host-name check of an HTTPS cache
+/// (`http_cache_tls_config`). Netty's client context of `HttpCacheClient.createSSLContext` does
+/// not identify the endpoint, so Bazel accepts a certificate for another name; Blaze refuses it.
+/// The certificate is the fixture `v3_issued_san` (subjectAltName `localhost`, issued by the
+/// fixtures' `ca.pem`), presented with its key; `localhost` is accepted, `example.com` refused.
+#[test]
+fn http_cache_tls_config_checks_the_host_name_stricter_than_netty() {
+    use tokio_rustls::rustls::pki_types::pem::PemObject;
+    use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
+
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/jdk_cert_fixtures");
+    let handshake = |host: &str| -> Result<(), String> {
+        let mut options = AuthAndTLSOptions::default();
+        options.tls_certificate = Some(dir.join("ca.pem").to_str().unwrap().to_string());
+        let client_config = http_cache_tls_config(host, &options).map_err(|e| e.to_string())?;
+        let cert = CertificateDer::from(std::fs::read(dir.join("v3_issued_san.der")).unwrap());
+        let key = PrivateKeyDer::from_pem_slice(&std::fs::read(dir.join("keys/ee.key")).unwrap())
+            .unwrap();
+        let server_config = tokio_rustls::rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .unwrap();
+        let server_name = ServerName::try_from(host.to_string()).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let (client_io, server_io) = tokio::io::duplex(1 << 16);
+            let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(client_config));
+            let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(server_config));
+            let server = async move {
+                let _ = acceptor.accept(server_io).await;
+            };
+            let (client, ()) = tokio::join!(connector.connect(server_name, client_io), server);
+            client.map(|_| ()).map_err(|e| e.to_string())
+        })
+    };
+    handshake("localhost").unwrap();
+    let e = handshake("example.com").unwrap_err();
+    assert!(e.contains("NotValidForName"), "{e}");
 }

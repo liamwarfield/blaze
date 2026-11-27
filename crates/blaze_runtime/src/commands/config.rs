@@ -617,36 +617,5 @@ impl ConfigCommandOutputFormatter for JsonOutputFormatter {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    //! `ConfigCommandTest` (src/test/java/com/google/devtools/build/lib/runtime/commands): every
-    //! test runs `build --nobuild` and then `config` in one server, reading the configurations
-    //! the build left in the graph.
-
-    const NEEDS_HARNESS: &str = "needs BuildIntegrationTestCase (several commands in one in-process runtime), not ported; the kept graph exists in daemon mode and `build` then `config` (ids, one config, --dump_all, --output=json) was checked against the oracle by hand";
-
-    macro_rules! ignored {
-        ($($name:ident),* $(,)?) => {
-            $(
-                #[test]
-                #[ignore = "needs BuildIntegrationTestCase (several commands in one in-process runtime), not ported; the kept graph exists in daemon mode and `build` then `config` (ids, one config, --dump_all, --output=json) was checked against the oracle by hand"]
-                fn $name() {
-                    let _ = NEEDS_HARNESS;
-                }
-            )*
-        };
-    }
-
-    ignored!(
-        show_config_ids,
-        show_single_config,
-        show_single_config_hash_prefix,
-        unknown_hash_prefix,
-        show_all_configs,
-        compare_configs,
-        compare_configs_hash_prefix,
-        starlark_flags_in_user_defined_fragment,
-        define_flags_individually_listed_in_user_defined_fragment,
-        conflicting_defines_last_wins,
-    );
-}
+// The tests (ConfigCommandTest) are in tests/config_command_test.rs: they run several commands on
+// one runtime (blaze_buildtool_testing::BuildIntegrationTestCase).

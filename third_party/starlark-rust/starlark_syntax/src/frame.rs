@@ -30,6 +30,10 @@ pub struct Frame {
     pub name: String,
     /// The location of the definition, or [`None`] for native Rust functions.
     pub location: Option<FileSpan>,
+    /// BLAZE PATCH 0066: the callee's own location when it is a native callable that has one // BLAZE PATCH 0066
+    /// (Java `StarlarkCallable.getLocation()` other than `Location.BUILTIN`, e.g. a provider's // BLAZE PATCH 0066
+    /// definition), from [`StarlarkValue::callable_location`]; [`None`] otherwise. // BLAZE PATCH 0066
+    pub callable_location: Option<FileSpan>, // BLAZE PATCH 0066
 }
 
 impl Display for Frame {

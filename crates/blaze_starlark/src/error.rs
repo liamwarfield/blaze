@@ -454,6 +454,8 @@ impl EvalError {
         };
         let frames = &e.call_stack().frames;
         let mut callstack = Vec::new();
+        // Whether the innermost callee is a native callable already in `callstack`.
+        let mut native_leaf = false;
         if frames.is_empty() {
             callstack.push(entry("<toplevel>", e.span()));
         } else {
@@ -464,7 +466,14 @@ impl EvalError {
                 // starts at that callee (StarlarkThread has no `<toplevel>` frame then), so there
                 // is no `File "<builtin>", in <toplevel>` entry.
                 if i > 0 || f.location.is_some() {
-                    callstack.push(entry(caller, f.location.as_ref()));
+                    // A native caller has no call site of its own; Java's frame of a native
+                    // callable stands at its `getLocation()` (a provider's definition), or is a
+                    // builtin frame (StarlarkThread.push: `fn.getLocation()`).
+                    let location = f.location.as_ref().or_else(|| {
+                        i.checked_sub(1)
+                            .and_then(|p| frames[p].callable_location.as_ref())
+                    });
+                    callstack.push(entry(caller, location));
                 }
                 caller = &f.name;
             }
@@ -476,7 +485,10 @@ impl EvalError {
                     (Some(_), None) => false,
                 };
             if builtin {
-                callstack.push(entry(&last.name, None));
+                // A native callee with a location (Java `getLocation()` other than BUILTIN) is a
+                // frame at that location, and its error reads `Error: ...`.
+                callstack.push(entry(&last.name, last.callable_location.as_ref()));
+                native_leaf = true;
             } else {
                 callstack.push(entry(&last.name, e.span()));
             }
@@ -485,6 +497,7 @@ impl EvalError {
         // frame. An error whose span is a whole call `f(...)` was raised by that call itself (an
         // argument's error would carry the argument's span), so it is a builtin leaf.
         if kind == EvalErrorKind::Eval
+            && !native_leaf
             && callstack.last().is_some_and(|l| l.location.is_some())
             && let Some(name) = e.span().and_then(|s| call_identifier(s.source_span()))
         {

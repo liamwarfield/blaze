@@ -92,7 +92,7 @@ pub fn expand_artifacts(
 // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:414 TreeArtifactValue.toString
 // PORT: skipped, equality serves only change pruning, and blaze_sky_exec's ActionExecutionValue values_equal treats a value with tree artifacts as never equal (it prunes less, which no output shows): TreeArtifactValue.equals TreeArtifactValue.hashCode
 // PORT: skipped, no caller at the pin (TreeArtifactValueCodec, serialization, is not ported): TreeArtifactValue.empty TreeArtifactValue.getChildPaths TreeArtifactValue.childDataBuilder TreeArtifactValue.newMultiBuilder
-// PORT: skipped, no caller at the pin: MultiBuilder.MultiBuilder MultiBuilder.addTree MultiBuilder.putChild MultiBuilder.setArchivedRepresentation MultiBuilder.forEach
+// PORT: skipped, no caller at the pin: TreeArtifactValue.MultiBuilder.<init> TreeArtifactValue.MultiBuilder.addTree TreeArtifactValue.MultiBuilder.putChild TreeArtifactValue.MultiBuilder.setArchivedRepresentation TreeArtifactValue.MultiBuilder.forEach
 #[derive(Debug, Clone, Default)]
 pub struct TreeArtifactValue {
     /// `getChildValues()`: the `TreeFileArtifact` children (sorted by exec path, as Java's

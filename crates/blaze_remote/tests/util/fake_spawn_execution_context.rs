@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use blaze_exec::actions::{ExecException, InputMapping, InputMetadataProvider, Spawn};
 use blaze_exec::exec::spawn_input_expander::SpawnInputExpander;

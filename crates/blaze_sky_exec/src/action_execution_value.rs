@@ -21,9 +21,9 @@ use indexmap::IndexMap;
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:434 ActionExecutionValue.SingleTree.<init>
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:466 ActionExecutionValue.MultiTree.<init>
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:223 ActionExecutionValue.toString
-// PORT: skipped, C++ modules (discovered modules) stop with unported! in blaze_rules (CppCompileAction.findUsedModules), so a value never has them: ActionExecutionValue.getDiscoveredModules ModuleDiscovering.ModuleDiscovering ModuleDiscovering.getDiscoveredModules
+// PORT: skipped, C++ modules (discovered modules) stop with unported! in blaze_rules (CppCompileAction.findUsedModules), so a value never has them: ActionExecutionValue.getDiscoveredModules ActionExecutionValue.ModuleDiscovering.<init> ActionExecutionValue.ModuleDiscovering.getDiscoveredModules
 // PORT: skipped, values are compared (keys.rs values_equal), never hashed: ActionExecutionValue.hashCode
-// PORT: skipped, the transform failure is the Err(String) of transform_for_shared_action: ActionTransformException.ActionTransformException
+// PORT: skipped, the transform failure is the Err(String) of transform_for_shared_action: ActionExecutionValue.ActionTransformException.<init>
 #[derive(Clone, Debug, Default)]
 pub struct ActionExecutionValue {
     artifact_data: IndexMap<Artifact, FileArtifactValue>,

@@ -15,6 +15,7 @@ use blaze_analysis::configured_target_key::{CONFIGURED_TARGET, ConfiguredTargetK
 use blaze_bzlmod_model::ExternalDepsException;
 use blaze_cmdline::Label;
 use blaze_events::{Event, ExtendedEventHandler};
+use blaze_exec::actions::action_execution::ActionExecutionException;
 use blaze_packages::exceptions::{
     DetailedExitCode as PackagesDetailedExitCode, NoSuchPackageException, NoSuchTargetException,
     NoSuchThingException,
@@ -111,7 +112,7 @@ impl ViewCreationFailedException {
 // (`newBuilder()` is `Default`, and the aggregating builder is the value itself.)
 // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:126 SkyframeErrorProcessor.ErrorProcessingResult.newBuilder
 // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:160 SkyframeErrorProcessor.ErrorProcessingResult.AggregatingBuilder.build
-// PORT: skipped, a private constructor of a static class: SkyframeErrorProcessor.SkyframeErrorProcessor
+// PORT: skipped, a private constructor of a static class: SkyframeErrorProcessor.<init>
 // PORT: skipped, logging only (BugReport.logUnexpected and logger lines, not shown to the user): SkyframeErrorProcessor.assertValidAnalysisException SkyframeErrorProcessor.assertValidAnalysisOrExecutionException SkyframeErrorProcessor.logUnexpectedExceptionOrigin SkyframeErrorProcessor.logUnexpectedException SkyframeErrorProcessor.isExecutionCauseWorthLogging
 // PORT: skipped, BuildViewTestCase only (inBuildViewTest: no event bus): SkyframeErrorProcessor.isValidErrorKeyType
 #[derive(Debug, Default)]
@@ -1040,5 +1041,185 @@ mod tests {
             ViewCreationFailedException::with_cause("a", detail, None).get_message(),
             "a"
         );
+    }
+}
+
+/// `SkyframeErrorProcessor.isExecutionException(cause)`, with the cause's class.
+///
+/// PORT: `TestExecException` is not a class of its own in blaze_exec (the test strategy raises
+/// it as a marked `UserExecException`); the `ActionExecutionException` it causes tells
+/// (`is_caused_by_test_exec_exception`), which is the `cause.getCause() instanceof
+/// TestExecException` of `rethrow`. A `TestExecException` is never the error of a node itself.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:873 SkyframeErrorProcessor.isExecutionException
+pub enum ExecutionExceptionCause<'a> {
+    ActionExecution(&'a ActionExecutionException),
+    InputFileError(&'a blaze_sky_exec::completion_function::InputFileErrorException),
+    ArtifactNestedSetEval(&'a blaze_sky_exec::artifact_function::ArtifactNestedSetEvalException),
+    // For top-level outputs errors in CompletionFunction.
+    TopLevelOutput(&'a blaze_sky_exec::completion_function::TopLevelOutputException),
+}
+
+impl<'a> ExecutionExceptionCause<'a> {
+    pub fn of(cause: &'a blaze_skyframe::SkyError) -> Option<ExecutionExceptionCause<'a>> {
+        if let Some(e) = cause.downcast_ref::<ActionExecutionException>() {
+            return Some(ExecutionExceptionCause::ActionExecution(e));
+        }
+        if let Some(e) =
+            cause.downcast_ref::<blaze_sky_exec::completion_function::InputFileErrorException>()
+        {
+            return Some(ExecutionExceptionCause::InputFileError(e));
+        }
+        if let Some(e) = cause
+            .downcast_ref::<blaze_sky_exec::artifact_function::ArtifactNestedSetEvalException>()
+        {
+            return Some(ExecutionExceptionCause::ArtifactNestedSetEval(e));
+        }
+        if let Some(e) =
+            cause.downcast_ref::<blaze_sky_exec::completion_function::TopLevelOutputException>()
+        {
+            return Some(ExecutionExceptionCause::TopLevelOutput(e));
+        }
+        None
+    }
+
+    /// `DetailedException.getDetailedExitCode(cause)`, or the "unknown" code for a cause that is
+    /// not a `DetailedException`.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:621 SkyframeErrorProcessor.getExecutionDetailedExitCodeFromCause
+    pub fn get_execution_detailed_exit_code(&self) -> blaze_util::DetailedExitCode {
+        match self {
+            ExecutionExceptionCause::ActionExecution(e) => match e.get_failure_detail() {
+                Some(failure_detail) => blaze_util::DetailedExitCode::of(failure_detail.clone()),
+                None => panic!(
+                    "NullPointerException: detailedExitCode of {}",
+                    e.get_message()
+                ),
+            },
+            ExecutionExceptionCause::InputFileError(e) => e.detailed_exit_code.clone(),
+            ExecutionExceptionCause::TopLevelOutput(e) => e.detailed_exit_code.clone(),
+            ExecutionExceptionCause::ArtifactNestedSetEval(e) => {
+                create_unknown_execution_detailed_exit_code(&e.to_string())
+            }
+        }
+    }
+}
+
+/// The exit code of an execution exception without a `DetailedExitCode`.
+///
+/// PORT: skipped, the non-fatal bug report Java sends first.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:631 SkyframeErrorProcessor.sendBugReportAndCreateUnknownExecutionDetailedExitCode
+pub fn create_unknown_execution_detailed_exit_code(
+    cause_message: &str,
+) -> blaze_util::DetailedExitCode {
+    let message =
+        format!("Unexpected exception, please file an issue with the Bazel team: {cause_message}");
+    blaze_util::DetailedExitCode::of(FailureDetail {
+        message,
+        category: Some(Category::Execution(failure_details::Execution {
+            code: failure_details::execution::Code::UnexpectedException as i32,
+        })),
+    })
+}
+
+/// What [`rethrow`] throws.
+#[derive(Debug)]
+pub enum RethrownException {
+    /// A `BuildFailedException` (`crate::build_tool::BuildToolError::BuildFailed`), with its `isCatastrophic()`.
+    BuildFailed {
+        error: crate::build_tool::BuildToolError,
+        catastrophic: bool,
+    },
+    /// The `TestExecException` (its message) that caused an `ActionExecutionException`: a test
+    /// failed without `--test_keep_going`.
+    TestExec(String),
+}
+
+impl RethrownException {
+    pub fn build_failed(error: crate::build_tool::BuildToolError) -> RethrownException {
+        RethrownException::BuildFailed {
+            error,
+            catastrophic: false,
+        }
+    }
+}
+
+/// Figure out why an action's analysis/execution failed and rethrow the right kind of exception.
+///
+/// PORT: returns the `BuildFailedException`; an empty message stands for
+/// `isErrorAlreadyShown()` (`BuildTool.processRequest` reports the others).
+// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:974 SkyframeErrorProcessor.rethrow
+pub fn rethrow(cause: &ExecutionExceptionCause<'_>) -> RethrownException {
+    if let ExecutionExceptionCause::ActionExecution(e) = cause
+        && e.is_caused_by_test_exec_exception()
+    {
+        // innerCause instanceof TestExecException: throw testExecException.
+        // PORT: the ActionExecutionException's message is the TestExecException's
+        // (`ActionExecutionException.fromExecException` without a subtask).
+        return RethrownException::TestExec(e.get_message().to_owned());
+    }
+    match cause {
+        ExecutionExceptionCause::ActionExecution(action_execution_cause) => {
+            let mut message = action_execution_cause.get_message().to_owned();
+            if let Some(action) = action_execution_cause.get_action() {
+                message = format!("{} failed: {}", action.describe, message);
+                // Sometimes ActionExecutionExceptions are caused by Actions with no owner.
+                // PORT: the snapshot always has the owner's location.
+                message = format!("{} {}", action.location, message);
+            }
+            let failure_detail = cause
+                .get_execution_detailed_exit_code()
+                .get_failure_detail()
+                .cloned()
+                .expect("NullPointerException: detailedExitCode");
+            RethrownException::BuildFailed {
+                error: crate::build_tool::BuildToolError::BuildFailed {
+                    // errorAlreadyShown = !actionExecutionCause.showError()
+                    message: if action_execution_cause.show_error() {
+                        message
+                    } else {
+                        String::new()
+                    },
+                    failure_detail,
+                },
+                catastrophic: action_execution_cause.is_catastrophe(),
+            }
+        }
+        // throw inputFileErrorException: a BuildFailedException whose error is already shown.
+        ExecutionExceptionCause::InputFileError(input_file_error_exception) => {
+            RethrownException::build_failed(crate::build_tool::BuildToolError::BuildFailed {
+                message: String::new(),
+                failure_detail: input_file_error_exception
+                    .detailed_exit_code
+                    .get_failure_detail()
+                    .cloned()
+                    .expect("NullPointerException: detailedExitCode"),
+            })
+        }
+        // throw topLevelOutputException: a BuildFailedException whose error is already shown
+        // (TopLevelOutputException.<init>: errorAlreadyShown = true, not catastrophic).
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:1000 SkyframeErrorProcessor.rethrow
+        ExecutionExceptionCause::TopLevelOutput(top_level_output_exception) => {
+            RethrownException::build_failed(crate::build_tool::BuildToolError::BuildFailed {
+                message: String::new(),
+                failure_detail: top_level_output_exception
+                    .detailed_exit_code
+                    .get_failure_detail()
+                    .cloned()
+                    .expect("NullPointerException: detailedExitCode"),
+            })
+        }
+        // We encountered an exception we don't think we should have encountered. This can
+        // indicate an exception-processing bug in our code, such as lower level exceptions not
+        // being properly handled, or in our expectations in this method.
+        ExecutionExceptionCause::ArtifactNestedSetEval(_) => {
+            let failure_detail = cause
+                .get_execution_detailed_exit_code()
+                .get_failure_detail()
+                .cloned()
+                .expect("NullPointerException: unknownExitCode.getFailureDetail()");
+            RethrownException::build_failed(crate::build_tool::BuildToolError::BuildFailed {
+                message: failure_detail.message.clone(),
+                failure_detail,
+            })
+        }
     }
 }

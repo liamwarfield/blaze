@@ -39,8 +39,8 @@ pub enum ArtifactValue {
 
 // PORT: skipped, debugging text (the Debug form): ArtifactFunction.MissingArtifactValue.toString
 // PORT: skipped, remote analysis caching stops with unported!: ArtifactFunction.State.getRetrievalContext
-// PORT: skipped, the failures are SkyFunctionExceptions built at the throw sites with the same transience (TRANSIENT for an action failure): ArtifactFunctionException.ArtifactFunctionException
-// PORT: skipped, key interning: DirectoryArtifactTraversalRequest.getSkyKeyInterner
+// PORT: skipped, the failures are SkyFunctionExceptions built at the throw sites with the same transience (TRANSIENT for an action failure): ArtifactFunction.ArtifactFunctionException.<init>
+// PORT: skipped, key interning: ArtifactFunction.DirectoryArtifactTraversalRequest.getSkyKeyInterner
 /// A `SkyValue` representing a missing input file.
 // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:80 ArtifactFunction.MissingArtifactValue
 #[derive(Clone, Debug)]

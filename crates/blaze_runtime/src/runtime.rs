@@ -932,8 +932,11 @@ impl BlazeRuntime {
     }
 
     /// Creates a new blaze runtime, given the install and output base directories.
+    ///
+    /// Public for the in-process test fixture (`blaze_buildtool_testing`; Java's tests build their
+    /// runtime with `BlazeRuntime.Builder`).
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1318 BlazeRuntime.newRuntime
-    pub(crate) fn new_runtime(
+    pub fn new_runtime(
         blaze_modules: Vec<Arc<dyn BlazeModule>>,
         args: &[String],
         abrupt_shutdown_handler: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -1257,7 +1260,7 @@ impl BlazeRuntime {
 }
 
 /// Exceptions `newRuntime` throws.
-pub(crate) enum NewRuntimeError {
+pub enum NewRuntimeError {
     Options(OptionsParsingException),
     Abrupt(AbruptExitException),
 }

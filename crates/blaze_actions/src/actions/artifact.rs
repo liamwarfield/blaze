@@ -933,9 +933,9 @@ impl Eq for Artifact {}
 // Source artifacts hash their exec path; derived artifacts their exec path and owning key.
 // (A derived artifact's owner for the hash is the ActionLookupKey of its ActionLookupData.)
 // Java: com/google/devtools/build/lib/actions/Artifact.java:287 Artifact.DerivedArtifact.getOwnerToUseForHashCode
-// PORT: skipped, serialization is not ported: ArtifactSerializationContext.getSourceArtifact ArtifactSerializationContext.includeGeneratingActionKey ArtifactSerializationContext.getOmittedGeneratingActionKey ArtifactSerializationContext.intern Artifact.objectForEncoding
+// PORT: skipped, serialization is not ported: Artifact.ArtifactSerializationContext.getSourceArtifact Artifact.ArtifactSerializationContext.includeGeneratingActionKey Artifact.ArtifactSerializationContext.getOmittedGeneratingActionKey Artifact.ArtifactSerializationContext.intern Artifact.objectForEncoding
 // PORT: skipped, the artifact SkyKeys are blaze_sky_exec's ArtifactKey (function name ARTIFACT), built by the callers: Artifact.keys Artifact.functionName
-// PORT: skipped, a checked cast; the Rust artifact kinds are matched instead: SpecialArtifact.cast
+// PORT: skipped, a checked cast; the Rust artifact kinds are matched instead: Artifact.SpecialArtifact.cast
 // PORT: skipped, no caller at the pin: Artifact.filterFiles
 impl Hash for Artifact {
     fn hash<H: Hasher>(&self, state: &mut H) {

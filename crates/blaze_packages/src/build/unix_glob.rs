@@ -32,6 +32,10 @@ pub enum UnixGlobError {
     BadPattern(#[from] BadPattern),
     #[error("{0}")]
     Io(#[from] io::Error),
+    /// The thread was interrupted while the glob ran (Java's `InterruptedException` from
+    /// `globInterruptible`).
+    #[error("interrupted")]
+    Interrupted,
 }
 
 /// The filesystem operations a glob uses (Java `UnixGlob.FilesystemOps`).
@@ -399,7 +403,6 @@ impl UnixGlobBuilder {
 
     /// Executes the glob; the order of the result is unspecified.
     // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:396 UnixGlob.Builder.glob
-    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:406 UnixGlob.Builder.globInterruptible
     // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:101 UnixGlob.globInternal
     // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:112 UnixGlob.globInternalUninterruptible
     pub fn glob(&self) -> Result<Vec<Path>, UnixGlobError> {
@@ -408,6 +411,20 @@ impl UnixGlobBuilder {
             &self.patterns,
             self.path_discriminator.as_ref(),
             self.filesystem_ops.as_ref(),
+            /* interruptible= */ false,
+        )
+    }
+
+    /// Like [`UnixGlobBuilder::glob`], but an interrupt of the calling thread stops it with
+    /// [`UnixGlobError::Interrupted`].
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:406 UnixGlob.Builder.globInterruptible
+    pub fn glob_interruptible(&self) -> Result<Vec<Path>, UnixGlobError> {
+        GlobVisitor::default().glob(
+            &self.base,
+            &self.patterns,
+            self.path_discriminator.as_ref(),
+            self.filesystem_ops.as_ref(),
+            /* interruptible= */ true,
         )
     }
 
@@ -422,6 +439,7 @@ impl UnixGlobBuilder {
             &self.patterns,
             self.path_discriminator.as_ref(),
             self.filesystem_ops.as_ref(),
+            /* interruptible= */ true,
         )?;
         Ok(visitor.total_ops)
     }
@@ -432,8 +450,6 @@ impl UnixGlobBuilder {
 // run once an error is recorded) and `decrementAndCheckDone` (the result or the first error when
 // the queue is empty). Results are a set in both; Java's order is the concurrent set's, and every
 // caller (`GlobCache.globUnsorted`) puts them in a `HashSet` and the package sorts them.
-// PORT: an interrupt does not stop a glob (Java's `globInterruptible` waits on the future
-// interruptibly); a glob has no executor to stop, it ends when its queue is empty.
 // PORT: skipped, the synchronous visitor (no future, executor or cancellation): UnixGlob.globAsyncInternal, UnixGlob.setExecutor, UnixGlob.globAsync
 // PORT: skipped, the synchronous visitor (no future, executor or cancellation): UnixGlob.delegate, UnixGlob.setException, UnixGlob.set, UnixGlob.cancel, UnixGlob.markCanceled
 // PORT: skipped, the synchronous visitor (no future, executor or cancellation): UnixGlob.queueTask, UnixGlob.decrementAndCheckDone
@@ -491,6 +507,7 @@ impl GlobVisitor {
         patterns: &[String],
         path_discriminator: &dyn UnixGlobPathDiscriminator,
         filesystem_ops: &dyn FilesystemOps,
+        interruptible: bool,
     ) -> Result<Vec<Path>, UnixGlobError> {
         let base_stat = filesystem_ops.stat_if_found(base)?;
         let Some(base_stat) = base_stat else {
@@ -534,6 +551,15 @@ impl GlobVisitor {
             );
         }
         while let Some(task) = self.queue.pop_front() {
+            // Java: `globInterruptible` waits on the visitor's future; an interrupt of the
+            // waiting thread throws `InterruptedException` (clearing the thread's interrupt
+            // status) and the glob's result is not used.
+            // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:502 UnixGlob.GlobVisitor.glob
+            // `glob()` is `globUninterruptible` (Uninterruptibles.getUninterruptibly): it never
+            // stops for an interrupt.
+            if interruptible && blaze_shell::thread_interrupt::interrupted() {
+                return Err(UnixGlobError::Interrupted);
+            }
             // Java: tasks do not run once an error was recorded.
             if self.io_exception.is_some() {
                 continue;
@@ -1297,17 +1323,99 @@ mod tests {
         assert!(matches!(b.glob(), Err(UnixGlobError::Io(_))));
     }
 
+    /// The stat of the base fails before any interrupt is seen (Java: `throwOnStat = tmpPath`,
+    /// the thread already interrupted): the stat's `FileNotFoundException` comes out.
     #[test]
-    #[ignore = "Blaze globs on the calling thread; Java's executor interruption does not apply"]
-    fn test_fast_failureith_interrupt() {}
+    fn test_fast_failureith_interrupt() {
+        let f = fixture();
+        blaze_shell::ThreadInterrupt::current().interrupt();
+        let missing = f.tmp_path.get_relative_str("globtmp-missing");
+        struct ThrowOnStat(Path);
+        impl FilesystemOps for ThrowOnStat {
+            fn stat_if_found(&self, path: &Path) -> io::Result<Option<FileStatus>> {
+                if *path == self.0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("{} (No such file or directory)", path.get_path_string()),
+                    ));
+                }
+                DirectFilesystemOps.stat_if_found(path)
+            }
+            fn readdir(&self, path: &Path) -> io::Result<Vec<Dirent>> {
+                DirectFilesystemOps.readdir(path)
+            }
+        }
+        let b = UnixGlobBuilder::new(missing.clone(), Arc::new(ThrowOnStat(missing)));
+        match b.glob_interruptible() {
+            Err(UnixGlobError::Io(e)) => {
+                assert_eq!(e.kind(), io::ErrorKind::NotFound);
+                assert!(e.to_string().contains("globtmp"), "{e}");
+            }
+            other => panic!("expected the stat's error, got {other:?}"),
+        }
+        assert!(blaze_shell::thread_interrupt::interrupted());
+    }
 
-    #[test]
-    #[ignore = "Blaze globs on the calling thread; Java's executor interruption does not apply"]
-    fn test_check_can_be_interrupted() {}
+    /// A discriminator that interrupts the calling thread the first time it is asked.
+    fn interrupter() -> TestUnixGlobPathDiscriminator {
+        let sent = std::sync::atomic::AtomicBool::new(false);
+        TestUnixGlobPathDiscriminator {
+            traversal_predicate: Box::new(move |_| {
+                if !sent.swap(true, Ordering::SeqCst) {
+                    blaze_shell::ThreadInterrupt::current().interrupt();
+                }
+                true
+            }),
+            result_predicate: Box::new(|_, _| true),
+        }
+    }
 
+    /// PORT: Blaze globs on the calling thread (no executor, so nothing to cancel or shut
+    /// down): the interrupt arrives while the glob runs, and `globInterruptible` stops with
+    /// `InterruptedException`, clearing the interrupt status.
     #[test]
-    #[ignore = "Blaze globs on the calling thread; Java's executor interruption does not apply"]
-    fn test_check_cannot_be_interrupted() {}
+    fn test_check_can_be_interrupted() {
+        let f = fixture();
+        let mut b = UnixGlobBuilder::new(f.tmp_path.clone(), Arc::new(DirectFilesystemOps));
+        b.add_pattern("**")
+            .set_path_discriminator(Arc::new(interrupter()));
+        assert!(matches!(
+            b.glob_interruptible(),
+            Err(UnixGlobError::Interrupted)
+        ));
+        assert!(!blaze_shell::thread_interrupt::interrupted());
+    }
+
+    /// PORT: on the calling thread, as `test_check_can_be_interrupted`.
+    #[test]
+    fn test_check_cannot_be_interrupted() {
+        let f = fixture();
+        let mut b = UnixGlobBuilder::new(f.tmp_path.clone(), Arc::new(DirectFilesystemOps));
+        b.add_patterns(&["**", "*"])
+            .set_path_discriminator(Arc::new(interrupter()));
+        let result: HashSet<Path> = b.glob().unwrap().into_iter().collect();
+        // In the non-interruptible case, the interrupt bit should be set, but the
+        // glob should return the correct set of full results.
+        assert!(blaze_shell::thread_interrupt::interrupted());
+        assert_eq!(
+            result,
+            f.resolve_paths(&[
+                ".",
+                "foo",
+                "foo/bar",
+                "foo/bar/wiz",
+                "foo/bar/wiz/file",
+                "foo/barnacle",
+                "foo/barnacle/wiz",
+                "food",
+                "food/barnacle",
+                "food/barnacle/wiz",
+                "fool",
+                "fool/barnacle",
+                "fool/barnacle/wiz",
+            ])
+        );
+    }
 
     fn remove_excludes_of(paths: &[&str], excludes: &[&str]) -> HashSet<String> {
         let mut path_set: HashSet<String> = paths.iter().map(|s| (*s).to_owned()).collect();

@@ -691,6 +691,12 @@ impl ReferenceCountedChannel {
     /// half-closes as if the call had finished normally (BES's `abortStream`). A request side that
     /// has ended (unary, server streaming) is reset by h2 when the response is dropped; the guard
     /// changes nothing there. Tested in `tests/grpc_call_cancellation_test.rs`.
+    ///
+    /// PORT: hyper polls the request body (and so sees the cancel) only when it wants the next
+    /// chunk; while a chunk it already took waits for HTTP/2 flow-control window, a dropped call
+    /// is not reset until the window opens or the connection closes (review 2026-11-19 round 8,
+    /// G1). grpc-java resets at once. Only a server that grants no window for the stream shows
+    /// the difference, bounded by the channel's life.
     fn cancellable_request<T>(
         message: T,
         headers: MetadataMap,

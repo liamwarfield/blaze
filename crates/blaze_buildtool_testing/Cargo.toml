@@ -1,0 +1,20 @@
+[package]
+name = "blaze_buildtool_testing"
+description = "Test support: BuildIntegrationTestCase (src/test/java/.../lib/buildtool/util), several commands on one in-process BlazeRuntime"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blaze_runtime = { path = "../blaze_runtime" }
+blaze_events = { path = "../blaze_events" }
+blaze_protos = { path = "../blaze_protos" }
+blaze_server = { path = "../blaze_server" }
+blaze_skyframe = { path = "../blaze_skyframe" }
+blaze_sky_top = { path = "../blaze_sky_top" }
+parking_lot.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -650,12 +650,55 @@ impl ActionLookupValuesTraversal {
 
 /// Java `dep instanceof ActionLookupKey` for the keys of Blaze's analysis graph:
 /// `ConfiguredTargetKey`, `AspectKey`, `TopLevelAspectsKey` and the workspace status key.
-fn is_action_lookup_key(key: &SkyKey) -> bool {
+pub(crate) fn is_action_lookup_key(key: &SkyKey) -> bool {
     let name = key.function_name();
     name == <ConfiguredTargetKey as Key>::FUNCTION
         || name == ASPECT
         || name == TOP_LEVEL_ASPECTS
         || name == <blaze_analysis::analysis_services::WorkspaceStatusKey as Key>::FUNCTION
+}
+
+/// The actions of the value of an `ActionLookupKey` when the value is an `ActionLookupValue`
+/// (`value instanceof ActionLookupValue`): a rule's configured target, an aspect, the top-level
+/// aspects, the workspace status. `None` for a `NonRuleConfiguredTargetValue`.
+pub(crate) fn action_lookup_value_actions(
+    key: &SkyKey,
+    value: &SkyValue,
+) -> Option<Vec<blaze_actions::ActionRef>> {
+    if key.downcast::<ConfiguredTargetKey>().is_some() {
+        let value = value
+            .clone()
+            .downcast::<ConfiguredTargetValue>()
+            .unwrap_or_else(|_| panic!("CONFIGURED_TARGET value of {:?}", key));
+        return match value.get_configured_target() {
+            ConfiguredTarget::Rule(_) => Some(value.get_actions().to_vec()),
+            _ => None,
+        };
+    }
+    if key.function_name() == ASPECT {
+        let value = value
+            .clone()
+            .downcast::<AspectValue>()
+            .unwrap_or_else(|_| panic!("ASPECT value of {:?}", key));
+        return Some(value.get_actions().to_vec());
+    }
+    if key.function_name() == TOP_LEVEL_ASPECTS {
+        let value = value
+            .clone()
+            .downcast::<TopLevelAspectsValue>()
+            .unwrap_or_else(|_| panic!("TOP_LEVEL_ASPECTS value of {:?}", key));
+        return Some(value.get_actions().to_vec());
+    }
+    if key.function_name()
+        == <blaze_analysis::analysis_services::WorkspaceStatusKey as Key>::FUNCTION
+    {
+        let value = value
+            .clone()
+            .downcast::<blaze_analysis::analysis_services::WorkspaceStatusValue>()
+            .unwrap_or_else(|_| panic!("BUILD_INFO value"));
+        return Some(value.actions.clone());
+    }
+    None
 }
 
 /// `SkyframeExecutor.collectActionLookupValuesInBuild` with incrementality tracked: the

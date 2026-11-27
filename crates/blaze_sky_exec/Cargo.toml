@@ -16,6 +16,8 @@ blaze_protos = { path = "../blaze_protos" }
 blaze_skyframe = { path = "../blaze_skyframe" }
 blaze_actions = { path = "../blaze_actions" }
 blaze_exec = { path = "../blaze_exec" }
+# ThreadInterrupt: the interruptible waits of a shared action's copy (review RW-4).
+blaze_shell = { path = "../blaze_shell" }
 blaze_options = { path = "../blaze_options" }
 blaze_optdefs = { path = "../blaze_optdefs" }
 blaze_packages = { path = "../blaze_packages" }

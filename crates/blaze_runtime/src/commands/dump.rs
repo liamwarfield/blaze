@@ -1,13 +1,12 @@
 //! `blaze dump`: dumps the internal state of the server process.
 //!
-//! PORT: the state `dump` reads is the server's: the Skyframe graph left by earlier commands, the
-//! loaded action cache, the rule class provider. Blaze keeps no Skyframe graph between commands
-//! (docs/research/08-server-and-incrementality.md, decision D2: Bazel's
-//! `--notrack_incremental_state` behaviour), so the graph a command that does not analyze starts
-//! with is empty: [`server_evaluator`] is that graph. The dumps of the graph are ported for it;
-//! a dump that would have to iterate graph entries (their order is the one of Java's
-//! `ConcurrentHashMap`, their edges and `debugPrint` are not exposed by `blaze_skyframe`) fails
-//! loudly. `--memory` (`SkyframeMemoryDumper`) measures JVM objects and is not ported.
+//! The state `dump` reads is the server's: the Skyframe graph left by earlier commands
+//! ([`server_evaluator`]: the graph the server keeps between commands; an empty one when it
+//! keeps none, decision D2), the loaded action cache, the rule class provider. Where Java lists
+//! graph entries in its `ConcurrentHashMap` order (hash order), the dumps here sort them
+//! (`--packages` by package, `--skyframe` by key; see `blaze_skyframe::dump`). `--skyframe=value`
+//! needs each value's Java `toString` and fails loudly on a non-empty selection; `--memory`
+//! (`SkyframeMemoryDumper`) measures JVM objects and is not ported.
 
 use std::sync::Arc;
 
@@ -213,31 +212,142 @@ impl std::io::Write for PrintStream {
     }
 }
 
-/// Fails loudly at the first node of a graph dump: see the module comment.
-fn unported_graph_entries(method: &'static str, node_count: usize) -> ! {
-    blaze_util::unported!(
-        method,
-        "a non-empty Skyframe graph ({} nodes): Java's ConcurrentHashMap order, the node's edges \
-         and SkyValue.debugPrint",
-        node_count
-    )
-}
-
+/// `dumpPackages`: the count of PACKAGE nodes with a value, then `Package.dump` of each.
+///
+/// PORT: Java lists the packages in the order of the graph's `ConcurrentHashMap` (hash order of
+/// the package keys); here they are sorted by package identifier (canonical form).
 // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:788 SequencedSkyframeExecutor.dumpPackages
 fn dump_packages(evaluator: &Evaluator, out: &mut PrintStream) {
-    let package_sky_keys: Vec<_> = evaluator
-        .get_values()
-        .into_keys()
-        .filter(|k| k.function_name().0 == "PACKAGE")
-        .collect();
-    out.println(&format!("{} packages", package_sky_keys.len()));
-    if !package_sky_keys.is_empty() {
-        // Iterables.filter over the values map (Java's ConcurrentHashMap order), then
-        // Package.dump for each.
-        unported_graph_entries(
-            "SequencedSkyframeExecutor.dumpPackages",
-            package_sky_keys.len(),
-        );
+    use blaze_sky_loading::package_function::PackageValue;
+    let mut packages: Vec<Arc<blaze_packages::package::package::Package>> = Vec::new();
+    let mut count = 0usize;
+    for (key, value) in evaluator.get_values() {
+        if key.function_name().0 != "PACKAGE" {
+            continue;
+        }
+        count += 1;
+        if let Some(package_value) = value.downcast_ref::<PackageValue>() {
+            packages.push(package_value.get_package().clone());
+        }
+        // Java: a null PackageValue (`pkgVal == null`) prints nothing for that key.
+    }
+    out.println(&format!("{count} packages"));
+    packages.sort_by_key(|p| p.get_package_identifier().get_canonical_form());
+    for package in packages {
+        dump_package(&package, out);
+    }
+}
+
+/// `Package.dump(out)`: the rules with every attribute's possible values, then the files.
+// Java: com/google/devtools/build/lib/packages/Package.java:479 Package.dump
+fn dump_package(package: &blaze_packages::package::package::Package, out: &mut PrintStream) {
+    use blaze_packages::attribute::AggregatingAttributeMapper;
+    use blaze_packages::target::target::Target;
+    out.println(&format!(
+        "  Package {} ({})",
+        package.get_name(),
+        package
+            .get_metadata()
+            .build_filename
+            .as_path()
+            .get_path_string()
+    ));
+
+    // Rules:
+    out.println("    Rules");
+    for target in package.get_targets().values() {
+        let Target::Rule(rule) = target else {
+            continue;
+        };
+        out.println(&format!(
+            "      {} {}",
+            target.get_target_kind(),
+            rule.get_label()
+        ));
+        let mapper = AggregatingAttributeMapper::of(&**rule);
+        for attr in rule
+            .get_rule_class_object()
+            .get_attribute_provider()
+            .get_attributes()
+        {
+            for possible_value in mapper.visit_attribute(attr.get_name(), attr.get_type()) {
+                out.println(&format!(
+                    "        {} = {}",
+                    attr.get_name(),
+                    java_object_to_string(possible_value.as_ref())
+                ));
+            }
+        }
+    }
+
+    // Files:
+    out.println("    Files");
+    for target in package.get_targets().values() {
+        match target {
+            Target::InputFile(_) => {
+                out.println(&format!(
+                    "      {} {}",
+                    target.get_target_kind(),
+                    target.get_label()
+                ));
+            }
+            Target::OutputFile(file) => {
+                out.println(&format!(
+                    "      {} {} (generated by {})",
+                    target.get_target_kind(),
+                    target.get_label(),
+                    file.get_generating_rule().get_label()
+                ));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// `String.valueOf(possibleValue)`: Java's `toString` of an attribute value (`null`, `String` as
+/// is, `List` as `[a, b]`, `Map` as `{k=v}`, `Label.toString`, `TriState` and `License` names).
+fn java_object_to_string(value: Option<&blaze_packages::types::AttrValue>) -> String {
+    use blaze_packages::types::AttrValue;
+    fn list<T: std::fmt::Display>(items: impl Iterator<Item = T>) -> String {
+        let items: Vec<String> = items.map(|i| i.to_string()).collect();
+        format!("[{}]", items.join(", "))
+    }
+    fn dict<K: std::fmt::Display, V>(
+        items: impl Iterator<Item = (K, V)>,
+        value: impl Fn(V) -> String,
+    ) -> String {
+        let items: Vec<String> = items.map(|(k, v)| format!("{}={}", k, value(v))).collect();
+        format!("{{{}}}", items.join(", "))
+    }
+    let Some(value) = value else {
+        return "null".to_owned();
+    };
+    match value {
+        AttrValue::Int(i) => i.to_string(),
+        AttrValue::String(s) => s.clone(),
+        AttrValue::Bool(b) => b.to_string(),
+        AttrValue::Label(l) => l.to_string(),
+        AttrValue::StringList(l) => list(l.iter()),
+        AttrValue::StringSet(l) => list(l.iter()),
+        AttrValue::IntList(l) => list(l.iter()),
+        AttrValue::LabelList(l) => list(l.iter()),
+        AttrValue::StringDict(d) => dict(d.iter(), |v| v.clone()),
+        AttrValue::StringListDict(d) => dict(d.iter(), |v| list(v.iter())),
+        AttrValue::LabelDictUnary(d) => dict(d.iter(), |v| v.to_string()),
+        AttrValue::LabelKeyedStringDict(d) => dict(d.iter(), |v| v.clone()),
+        AttrValue::LabelListDict(d) => dict(d.iter(), |v| list(v.iter())),
+        AttrValue::License(l) => l.to_string(),
+        // TriState.toString(): the enum constant's name.
+        AttrValue::TriState(t) => match t {
+            blaze_packages::types::TriState::Yes => "YES",
+            blaze_packages::types::TriState::No => "NO",
+            blaze_packages::types::TriState::Auto => "AUTO",
+        }
+        .to_owned(),
+        other => blaze_util::unported!(
+            "Package.dump",
+            "the Java toString of the attribute value {other:?}"
+        ),
     }
 }
 
@@ -551,76 +661,40 @@ fn dump_starlark_heap(out: &mut PrintStream) {
     );
 }
 
-// Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:293 AbstractInMemoryMemoizingEvaluator.dumpSummary
+// The graph dumps are blaze_skyframe::dump's (Java: AbstractInMemoryMemoizingEvaluator's), which
+// also documents the order they list nodes in.
+
 fn dump_summary(evaluator: &Evaluator, out: &mut PrintStream) {
-    let nodes = evaluator.get_all_keys_for_testing().len();
-    if nodes != 0 {
-        // The edge count reads each done entry's direct deps.
-        unported_graph_entries("AbstractInMemoryMemoizingEvaluator.dumpSummary", nodes);
-    }
-    let edges: i64 = 0;
-    out.println(&format!("Node count: {}", nodes));
-    out.println(&format!("Edge count: {}", edges));
+    out.print(&blaze_skyframe::dump::dump_summary(evaluator));
 }
 
-// Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:307 AbstractInMemoryMemoizingEvaluator.dumpCount
-fn dump_count(evaluator: &Evaluator, _out: &mut PrintStream) {
-    let nodes = evaluator.get_all_keys_for_testing().len();
-    if nodes != 0 {
-        // Multisets.copyHighestCountFirst of a HashMultiset: ties in HashMap order.
-        unported_graph_entries("AbstractInMemoryMemoizingEvaluator.dumpCount", nodes);
-    }
+fn dump_count(evaluator: &Evaluator, out: &mut PrintStream) {
+    out.print(&blaze_skyframe::dump::dump_count(evaluator));
 }
 
-/// `processGraphForDumpCommand`: every done entry whose canonical name passes `filter`.
-// Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:317 AbstractInMemoryMemoizingEvaluator.processGraphForDumpCommand
-fn process_graph_for_dump_command(
-    evaluator: &Evaluator,
-    _filter: &RegexFilter,
-    method: &'static str,
-) {
-    let nodes = evaluator.get_all_keys_for_testing().len();
-    if nodes != 0 {
-        unported_graph_entries(method, nodes);
-    }
+fn dump_values(evaluator: &Evaluator, out: &mut PrintStream, filter: &RegexFilter) {
+    out.print(&blaze_skyframe::dump::dump_values(evaluator, &|n| {
+        filter.test(n)
+    }));
 }
 
-// Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:336 AbstractInMemoryMemoizingEvaluator.dumpValues
-fn dump_values(evaluator: &Evaluator, _out: &mut PrintStream, filter: &RegexFilter) {
-    process_graph_for_dump_command(
-        evaluator,
-        filter,
-        "AbstractInMemoryMemoizingEvaluator.dumpValues",
-    );
+fn dump_deps(evaluator: &Evaluator, out: &mut PrintStream, filter: &RegexFilter) {
+    out.print(&blaze_skyframe::dump::dump_deps(evaluator, &|n| {
+        filter.test(n)
+    }));
 }
 
-// Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:349 AbstractInMemoryMemoizingEvaluator.dumpDeps
-fn dump_deps(evaluator: &Evaluator, _out: &mut PrintStream, filter: &RegexFilter) {
-    process_graph_for_dump_command(
-        evaluator,
-        filter,
-        "AbstractInMemoryMemoizingEvaluator.dumpDeps",
-    );
-}
-
-// Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:375 AbstractInMemoryMemoizingEvaluator.dumpFunctionGraph
 fn dump_function_graph(evaluator: &Evaluator, out: &mut PrintStream, filter: &RegexFilter) {
-    out.println("digraph {");
-    process_graph_for_dump_command(
+    out.print(&blaze_skyframe::dump::dump_function_graph(
         evaluator,
-        filter,
-        "AbstractInMemoryMemoizingEvaluator.dumpFunctionGraph",
-    );
-    out.println("}");
+        &|n| filter.test(n),
+    ));
 }
 
-// Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:398 AbstractInMemoryMemoizingEvaluator.dumpRdeps
-fn dump_rdeps(evaluator: &Evaluator, _out: &mut PrintStream, filter: &RegexFilter) {
-    process_graph_for_dump_command(
-        evaluator,
-        filter,
-        "AbstractInMemoryMemoizingEvaluator.dumpRdeps",
-    );
+fn dump_rdeps(evaluator: &Evaluator, out: &mut PrintStream, filter: &RegexFilter) {
+    out.print(&blaze_skyframe::dump::dump_rdeps(evaluator, &|n| {
+        filter.test(n)
+    }));
 }
 
 // Java: com/google/devtools/build/lib/runtime/commands/DumpCommand.java:712 DumpCommand.createFailureResult
@@ -636,20 +710,5 @@ fn create_failure_result(
     })
 }
 
-#[cfg(test)]
-mod tests {
-    //! `DumpCommandTest` (src/test/java/com/google/devtools/build/lib/runtime/commands).
-
-    /// `dump --skyframe count`: the warning goes to stderr, not stdout.
-    /// Checked end to end against the oracle instead (`dump --skyframe=count`, identical stdout
-    /// and stderr; docs/reviews/2026-11-25-commands-response.md).
-    #[test]
-    #[ignore = "needs a dispatcher test fixture with a recording OutErr (dispatcher_tests.rs keeps its fixture private)"]
-    fn does_not_contain_warning_in_stdout() {}
-
-    /// Builds `//foo:foo` with `--nobuild`, then dumps rule classes, rules and the Skyframe
-    /// summary from the same server.
-    #[test]
-    #[ignore = "needs the Skyframe graph kept between commands (Blaze discards it, decision D2)"]
-    fn multi_option_smoke() {}
-}
+// The tests (DumpCommandTest) are in tests/dump_command_test.rs: they run several commands on one
+// runtime (blaze_buildtool_testing::BuildIntegrationTestCase).

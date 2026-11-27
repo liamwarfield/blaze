@@ -74,11 +74,15 @@ pub fn build_attribute_info(context: &ExtractorContext, attribute: &Attribute) -
                         }
                         // StarlarkValue.repr: "<unknown object " + getClass().getName() + ">",
                         // the (often anonymous) class of the native computed default.
-                        ComputedDefaultKind::Native(_) => blaze_util::unported!(
-                            "StarlarkValue.repr",
-                            "the Java class name of a native ComputedDefault of attribute {}",
-                            attribute.get_name()
-                        ),
+                        ComputedDefaultKind::Native(_) => match computed_default.java_class_name() {
+                            Some(java_class_name) => format!("<unknown object {java_class_name}>"),
+                            None => blaze_util::unported!(
+                                "StarlarkValue.repr",
+                                "the Java class name of a native ComputedDefault of attribute {} \
+                                 (set ComputedDefault::with_java_class_name at its definition)",
+                                attribute.get_name()
+                            ),
+                        },
                     }
                 }
                 default_value => {

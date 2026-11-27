@@ -10,6 +10,8 @@ publish.workspace = true
 blaze_util = { path = "../blaze_util" }
 blaze_cmdline = { path = "../blaze_cmdline" }
 blaze_vfs = { path = "../blaze_vfs" }
+# thread_interrupt: an interrupt stops a running glob (UnixGlob).
+blaze_shell = { path = "../blaze_shell" }
 blaze_collect = { path = "../blaze_collect" }
 blaze_events = { path = "../blaze_events" }
 blaze_starlark = { path = "../blaze_starlark" }

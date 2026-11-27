@@ -672,6 +672,14 @@ pub trait StarlarkValue<'v>:
         None // BLAZE PATCH 0013
     } // BLAZE PATCH 0013
 
+    /// BLAZE PATCH 0066: the location of a callable native value, if it has one (Java // BLAZE PATCH 0066
+    /// `StarlarkCallable.getLocation()`: a provider's or rule's definition). A call of it is a // BLAZE PATCH 0066
+    /// frame at that location in a Bazel traceback, and an error it raises is that frame's // BLAZE PATCH 0066
+    /// (`Error: ...`), not a builtin's (`Error in NAME: ...`). Default: none (`Location.BUILTIN`). // BLAZE PATCH 0066
+    fn callable_location(&self) -> Option<crate::codemap::FileSpan> { // BLAZE PATCH 0066
+        None // BLAZE PATCH 0066
+    } // BLAZE PATCH 0066
+
     /// Attribute access that may fail and may read the evaluator (Bazel's
     /// `Structure.getValue(StarlarkSemantics, String)`, which throws `EvalException`).
     /// `Ok(None)` means the field is missing. Used by `x.f`, `x.f(...)`, `x.f op= y` and

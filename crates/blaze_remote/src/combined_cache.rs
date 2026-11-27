@@ -28,7 +28,7 @@ use crate::common::remote_cache_client::{
     ActionKey, Blob, BytesBlob, RemoteCacheClient, RemoteCacheClientUploads, dedup_upload,
 };
 use crate::chunked_blob_downloader::ChunkedBlobDownloader;
-use crate::chunked_blob_uploader::ChunkedBlobUploader;
+use crate::chunked_blob_uploader::{CacheClients, ChunkedBlobUploader};
 use crate::chunking::ChunkingConfig;
 use crate::common::BlobNotSplittableException;
 use crate::disk::DiskCacheClient;
@@ -588,10 +588,13 @@ impl CombinedCache {
         force: bool,
     ) -> impl std::future::Future<Output = io::Result<()>> + Send + 'static {
         let uploader = ChunkedBlobUploader::new(
-            self.remote_cache_client
-                .clone()
-                .expect("a chunked upload needs the remote cache"),
-            self.disk_cache_client.clone(),
+            Arc::new(CacheClients {
+                remote_cache_client: self
+                    .remote_cache_client
+                    .clone()
+                    .expect("a chunked upload needs the remote cache"),
+                disk_cache_client: self.disk_cache_client.clone(),
+            }),
             &self.chunking_config(),
             self.digest_util.clone(),
         );

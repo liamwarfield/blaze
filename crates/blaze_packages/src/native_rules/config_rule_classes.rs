@@ -230,16 +230,19 @@ fn config_feature_flag_allowlist_attribute_for(
     let mut b = get_attribute_from_allowlist_name(CONFIG_FEATURE_FLAG_ALLOWLIST_NAME);
     // Critically, get is never actually called on attributeToInspect and thus it is not
     // necessary to declare whether it is configurable, for this context.
-    b.value_computed_default(Arc::new(crate::attribute::ComputedDefault::new_native(
-        Vec::new(),
-        Arc::new(move |rule: &dyn AttributeMap| {
-            if rule.is_attribute_value_explicitly_specified(&attribute_to_inspect) {
-                Some(AttrValue::Label(label.clone()))
-            } else {
-                None
-            }
-        }),
-    )));
+    b.value_computed_default(Arc::new(
+        crate::attribute::ComputedDefault::new_native(
+            Vec::new(),
+            Arc::new(move |rule: &dyn AttributeMap| {
+                if rule.is_attribute_value_explicitly_specified(&attribute_to_inspect) {
+                    Some(AttrValue::Label(label.clone()))
+                } else {
+                    None
+                }
+            }),
+        )
+        .with_java_class_name("com.google.devtools.build.lib.rules.config.ConfigFeatureFlag$1"),
+    ));
     b
 }
 

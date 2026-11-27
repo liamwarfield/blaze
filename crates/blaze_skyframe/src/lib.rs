@@ -189,6 +189,7 @@ mod abstract_in_memory_node_entry;
 mod cycle_info;
 mod differencer;
 mod dirty_building_state;
+pub mod dump;
 mod environment;
 mod error_info;
 mod evaluation_result;

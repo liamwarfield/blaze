@@ -155,6 +155,48 @@ simple_rule(name = "simple")
     assert_eq!(strings(required.defines()), vec!["required_var".to_owned()]);
 }
 
+/// Not a Java test (review query-2 round 2, P63-1 and P63-2): `ctx.var` passed whole to a native
+/// records every key, as Java's `Dict.cast` and `json.encode` read `entrySet()`/`keySet()`; and
+/// `{...} == ctx.var` reads `ctx.var.get(k)` for the keys of the mutable left side.
+#[test]
+fn starlark_ctx_var_read_whole_by_natives() {
+    let cases: &[(&str, &str, &[&str])] = &[
+        (
+            "env",
+            r#"    out = ctx.actions.declare_file(ctx.label.name + ".out")
+    ctx.actions.run_shell(outputs = [out], command = "touch " + out.path, env = ctx.var)"#,
+            &["a", "b"],
+        ),
+        ("json", "    x = json.encode(ctx.var)", &["a", "b"]),
+        (
+            "eq",
+            "    x = {\"b\": \"2\", \"zz\": \"0\"} == ctx.var",
+            &[],
+        ),
+    ];
+    for (name, body, want) in cases {
+        let mut t = BuildViewTestCase::new();
+        t.use_configuration(&[
+            "--include_config_fragments_provider=direct",
+            "--define=a=1",
+            "--define=b=2",
+        ]);
+        t.scratch.file(
+            "a/defs.bzl",
+            &[&format!(
+                "def _impl(ctx):\n{body}\n    return []\n\nsimple_rule = rule(implementation = _impl)\n"
+            )],
+        );
+        t.scratch.file(
+            "a/BUILD",
+            &["load(\"//a:defs.bzl\", \"simple_rule\")\n\nsimple_rule(name = \"simple\")\n"],
+        );
+        let required = required_fragments(&mut t, "//a:simple");
+        let want: Vec<String> = want.iter().map(|s| (*s).to_owned()).collect();
+        assert_eq!(strings(required.defines()), want, "{name}");
+    }
+}
+
 // Java: RequiredConfigFragmentsTest.addAspectImplSpecificRequiredConfigFragments
 #[test]
 #[ignore = "needs the native aspect AspectWithConfigFragmentRequirements and its rule (createRuleClassProvider)"]

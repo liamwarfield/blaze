@@ -45,44 +45,53 @@ pub const ENVIRONMENT_RULE: &str = "environment";
 /// Java `BaseRuleClasses.testonlyDefault`: the package's `default_testonly`.
 // Java: com/google/devtools/build/lib/analysis/BaseRuleClasses.java:68 BaseRuleClasses.testonlyDefault
 pub static TESTONLY_DEFAULT: LazyLock<Arc<ComputedDefault>> = LazyLock::new(|| {
-    Arc::new(ComputedDefault::new_native(
-        Vec::new(),
-        Arc::new(|rule: &dyn AttributeMap| {
-            rule.get_package_args()
-                .default_test_only()
-                .map(AttrValue::Bool)
-        }),
-    ))
+    Arc::new(
+        ComputedDefault::new_native(
+            Vec::new(),
+            Arc::new(|rule: &dyn AttributeMap| {
+                rule.get_package_args()
+                    .default_test_only()
+                    .map(AttrValue::Bool)
+            }),
+        )
+        .with_java_class_name("com.google.devtools.build.lib.analysis.BaseRuleClasses$1"),
+    )
 });
 
 /// Java `BaseRuleClasses.deprecationDefault`: the package's `default_deprecation`.
 // Java: com/google/devtools/build/lib/analysis/BaseRuleClasses.java:77 BaseRuleClasses.deprecationDefault
 pub static DEPRECATION_DEFAULT: LazyLock<Arc<ComputedDefault>> = LazyLock::new(|| {
-    Arc::new(ComputedDefault::new_native(
-        Vec::new(),
-        Arc::new(|rule: &dyn AttributeMap| {
-            rule.get_package_args()
-                .default_deprecation()
-                .map(|d| AttrValue::String(d.to_owned()))
-        }),
-    ))
+    Arc::new(
+        ComputedDefault::new_native(
+            Vec::new(),
+            Arc::new(|rule: &dyn AttributeMap| {
+                rule.get_package_args()
+                    .default_deprecation()
+                    .map(|d| AttrValue::String(d.to_owned()))
+            }),
+        )
+        .with_java_class_name("com.google.devtools.build.lib.analysis.BaseRuleClasses$2"),
+    )
 });
 
 /// Java `BaseRuleClasses.TIMEOUT_DEFAULT`: the default timeout of the test's `size`, or
 /// `"illegal"`.
 // Java: com/google/devtools/build/lib/analysis/BaseRuleClasses.java:86 BaseRuleClasses.TIMEOUT_DEFAULT
 pub static TIMEOUT_DEFAULT: LazyLock<Arc<ComputedDefault>> = LazyLock::new(|| {
-    Arc::new(ComputedDefault::new_native(
-        Vec::new(),
-        Arc::new(|rule: &dyn AttributeMap| {
-            let size = rule.get("size", Type::String);
-            let size = size.as_ref().and_then(AttrValue::as_str).unwrap_or("");
-            if let Some(timeout) = test_size_default_timeout(size) {
-                return Some(AttrValue::String(timeout.to_owned()));
-            }
-            Some(AttrValue::String("illegal".to_owned()))
-        }),
-    ))
+    Arc::new(
+        ComputedDefault::new_native(
+            Vec::new(),
+            Arc::new(|rule: &dyn AttributeMap| {
+                let size = rule.get("size", Type::String);
+                let size = size.as_ref().and_then(AttrValue::as_str).unwrap_or("");
+                if let Some(timeout) = test_size_default_timeout(size) {
+                    return Some(AttrValue::String(timeout.to_owned()));
+                }
+                Some(AttrValue::String("illegal".to_owned()))
+            }),
+        )
+        .with_java_class_name("com.google.devtools.build.lib.analysis.BaseRuleClasses$3"),
+    )
 });
 
 /// `TestSize.getTestSize(attr).getDefaultTimeout().toString()`.
@@ -106,14 +115,17 @@ fn test_size_default_timeout(attr: &str) -> Option<&'static str> {
 /// Java `BaseRuleClasses.packageMetadataDefault`: the package's `default_package_metadata`.
 // Java: com/google/devtools/build/lib/analysis/BaseRuleClasses.java:102 BaseRuleClasses.packageMetadataDefault
 pub static PACKAGE_METADATA_DEFAULT: LazyLock<Arc<ComputedDefault>> = LazyLock::new(|| {
-    Arc::new(ComputedDefault::new_native(
-        Vec::new(),
-        Arc::new(|rule: &dyn AttributeMap| {
-            rule.get_package_args()
-                .default_package_metadata()
-                .map(|l| AttrValue::LabelList(l.to_vec()))
-        }),
-    ))
+    Arc::new(
+        ComputedDefault::new_native(
+            Vec::new(),
+            Arc::new(|rule: &dyn AttributeMap| {
+                rule.get_package_args()
+                    .default_package_metadata()
+                    .map(|l| AttrValue::LabelList(l.to_vec()))
+            }),
+        )
+        .with_java_class_name("com.google.devtools.build.lib.analysis.BaseRuleClasses$4"),
+    )
 });
 
 /// Java `BaseRuleClasses.ACTION_LISTENER` (resolved from the configuration's action listeners

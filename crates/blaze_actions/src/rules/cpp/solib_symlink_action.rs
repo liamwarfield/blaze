@@ -54,11 +54,6 @@ impl SolibSymlinkAction {
     pub fn get_symlink(&self) -> &Artifact {
         &self.symlink
     }
-
-    // Java: com/google/devtools/build/lib/rules/cpp/SolibSymlinkAction.java:322 SolibSymlinkAction.mayInsensitivelyPropagateInputs
-    pub fn may_insensitively_propagate_inputs(&self) -> bool {
-        true
-    }
 }
 
 /// `getDynamicLibrarySymlink(actionConstructionContext, solibDir, library, preserveName,
@@ -336,6 +331,11 @@ impl Action for SolibSymlinkAction {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/SolibSymlinkAction.java:322 SolibSymlinkAction.mayInsensitivelyPropagateInputs
+    fn may_insensitively_propagate_inputs(&self) -> bool {
+        true
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/SolibSymlinkAction.java:132 SolibSymlinkAction.getMnemonic

@@ -589,6 +589,12 @@ pub(crate) struct DefGen<V> {
     /// Values are either [`Value`] or [`FrozenValue`] pointing respectively to
     /// [`ValueCaptured`] or [`FrozenValueCaptured`].
     captured: Vec<V>,
+    /// BLAZE PATCH 0067: `str` of the extra value of the module the function was created in, // BLAZE PATCH 0067
+    /// when that module was still executing (`module` is then `None` until it is frozen): Java's // BLAZE PATCH 0067
+    /// `StarlarkFunction` knows its module (and the module's client data, printed by `repr`) // BLAZE PATCH 0067
+    /// from creation on. `None` without an extra value (or a `None` one). // BLAZE PATCH 0067
+    #[derivative(Debug = "ignore")] // BLAZE PATCH 0067
+    creation_module_extra: Option<String>, // BLAZE PATCH 0067
     // Important to ignore these field as it probably references DefGen in a cycle
     #[derivative(Debug = "ignore")]
     /// A reference to the module where the function is defined after the module has been frozen.
@@ -639,7 +645,10 @@ impl<V> Display for DefGen<V> {
             if !extra.is_none() { // BLAZE PATCH 0009
                 write!(f, " from {}", extra.to_value().to_str())?; // BLAZE PATCH 0009
             } // BLAZE PATCH 0009
-        } // BLAZE PATCH 0009
+        } else if let Some(extra) = &self.creation_module_extra { // BLAZE PATCH 0067
+            // The defining module is still executing (Java: the module is known from creation). // BLAZE PATCH 0067
+            write!(f, " from {extra}")?; // BLAZE PATCH 0067
+        } // BLAZE PATCH 0067
         write!(f, ">") // BLAZE PATCH 0009
     }
 }
@@ -873,13 +882,26 @@ impl<'v> Def<'v> {
             .parent
             .as_ref()
             .map(|copy| eval.clone_slot_capture(copy, &stmt));
+        let frozen_module = eval.top_frame_def_frozen_module(false)?; // BLAZE PATCH 0067
+        // A function created by a function of an already frozen module has that module; one // BLAZE PATCH 0067
+        // created by the executing module's code has the executing module (Java // BLAZE PATCH 0067
+        // `StarlarkFunction.module`), whose extra value is read now. // BLAZE PATCH 0067
+        let creation_module_extra = match frozen_module { // BLAZE PATCH 0067
+            Some(_) => None, // BLAZE PATCH 0067
+            None => eval // BLAZE PATCH 0067
+                .module() // BLAZE PATCH 0067
+                .extra_value() // BLAZE PATCH 0067
+                .filter(|extra| !extra.is_none()) // BLAZE PATCH 0067
+                .map(|extra| extra.to_str()), // BLAZE PATCH 0067
+        }; // BLAZE PATCH 0067
         Ok(eval.heap().alloc(Self {
             parameters,
             parameter_captures: stmt.parameter_captures,
             parameter_types,
             return_type,
             captured,
-            module: AtomicFrozenAnyValueOption::new(eval.top_frame_def_frozen_module(false)?),
+            creation_module_extra, // BLAZE PATCH 0067
+            module: AtomicFrozenAnyValueOption::new(frozen_module), // BLAZE PATCH 0067
             optimized_on_freeze_stmt: StmtCompiledCell::new(),
             def_info: stmt,
         }))
@@ -894,6 +916,7 @@ impl<'v> Freeze for Def<'v> {
         let parameter_types = self.parameter_types.freeze(freezer)?;
         let return_type = self.return_type.freeze(freezer)?;
         let captured = self.captured.try_map(|x| x.freeze(freezer))?;
+        let creation_module_extra = self.creation_module_extra; // BLAZE PATCH 0067
         let module = AtomicFrozenAnyValueOption::new(self.module.load_relaxed());
         Ok(FrozenDef {
             parameters,
@@ -902,6 +925,7 @@ impl<'v> Freeze for Def<'v> {
             return_type,
             def_info: self.def_info,
             captured,
+            creation_module_extra, // BLAZE PATCH 0067
             module,
             optimized_on_freeze_stmt: self.optimized_on_freeze_stmt,
         })

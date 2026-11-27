@@ -558,6 +558,47 @@ impl SkyframeIncrementalState {
             .map(|kept| kept.evaluator.clone())
     }
 
+    /// The strong references to the kept graph's evaluator (`None`: no graph kept).
+    ///
+    /// PORT: Blaze-only check (root, 2026-11-26). Once a command has ended and its executors
+    /// are gone, the kept graph must be the evaluator's only holder: anything else is an `Arc`
+    /// cycle through a graph value or a function (the regressions of 2026-11-26: the package
+    /// root lookup, the rewound-action synchronizer, the action executor's graph), which leaks
+    /// the evaluator and makes the next executor discard the graph. The dispatcher checks it
+    /// after every command ([`SkyframeIncrementalState::check_kept_graph_unshared`]).
+    pub fn kept_graph_strong_count(&self) -> Option<usize> {
+        self.inner
+            .lock()
+            .kept
+            .as_ref()
+            .map(|kept| Arc::strong_count(&kept.evaluator))
+    }
+
+    /// Checks [`SkyframeIncrementalState::kept_graph_strong_count`] after a command: panics in
+    /// debug builds (so that a test that runs a command fails in the crate that adds a holder),
+    /// logs to the server log in release builds. Returns whether the graph is unshared.
+    pub fn check_kept_graph_unshared(&self, command_name: &str) -> bool {
+        match self.kept_graph_strong_count() {
+            None | Some(1) => true,
+            Some(n) => {
+                let message = format!(
+                    "the kept Skyframe graph is still referenced after the '{command_name}' \
+                     command: {n} strong references to its evaluator, expected 1 (an Arc cycle \
+                     through a graph value or a function, or a holder that outlives its command)"
+                );
+                if cfg!(debug_assertions) {
+                    panic!("{message}");
+                }
+                blaze_util::server_logger::info(
+                    "com.google.devtools.build.lib.skyframe.SequencedSkyframeExecutor",
+                    "afterCommand",
+                    &message,
+                );
+                false
+            }
+        }
+    }
+
     /// Whether a graph is kept for the next command.
     pub fn has_kept_graph(&self) -> bool {
         self.inner.lock().kept.is_some()
@@ -1259,6 +1300,8 @@ impl SkyframeIncrementalState {
             if check_output_files {
                 file_types_to_check.push(FileType::Output);
             }
+            // Iterables.toString(fileTypesToCheck), for the log line below.
+            let file_types_text = file_type_set_to_string(&file_types_to_check);
             let external_dirtiness_checker = (!file_types_to_check.is_empty()).then(|| {
                 // FileType.REPO_CONTENTS_CACHE_DIRS is intentionally never checked here.
                 Arc::new(ExternalDirtinessChecker::new(
@@ -1270,6 +1313,16 @@ impl SkyframeIncrementalState {
                 dirtiness_checkers.push(checker.clone());
             }
             blaze_util::check_argument!(!dirtiness_checkers.is_empty());
+
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:4022 SkyframeExecutor.handleDiffsWithMissingDiffInformation
+            blaze_util::server_logger::info(
+                "com.google.devtools.build.lib.skyframe.SkyframeExecutor",
+                "handleDiffsWithMissingDiffInformation",
+                &format!(
+                    "About to scan skyframe graph checking for filesystem nodes of types {}",
+                    file_types_text
+                ),
+            );
             let batch_dirty_result = fsvc.get_dirty_keys(
                 &evaluator.get_done_values(),
                 &UnionDirtinessChecker::new(dirtiness_checkers),
@@ -1302,7 +1355,15 @@ impl SkyframeIncrementalState {
                 .external_other_files_seen
                 .is_empty()
         {
-            // PORT: logger.atInfo() "About to scan %d external files" is not ported.
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:4048 SkyframeExecutor.handleDiffsWithMissingDiffInformation
+            blaze_util::server_logger::info(
+                "com.google.devtools.build.lib.skyframe.SkyframeExecutor",
+                "handleDiffsWithMissingDiffInformation",
+                &format!(
+                    "About to scan {} external files",
+                    external_files_knowledge.external_other_files_seen.len()
+                ),
+            );
             let fsvc = FilesystemValueChecker::new(
                 Some(command.tsgm.clone()),
                 fsvc_threads(inputs.options),
@@ -1480,6 +1541,26 @@ impl ExecutorHandle {
     pub fn state(&self) -> &Arc<SkyframeIncrementalState> {
         &self.command.state
     }
+}
+
+/// `Iterables.toString(fileTypesToCheck)` of Java's `EnumSet<FileType>`: the constant names in
+/// declaration order.
+fn file_type_set_to_string(file_types: &[FileType]) -> String {
+    let mut sorted: Vec<FileType> = file_types.to_vec();
+    sorted.sort_by_key(|t| *t as u8);
+    sorted.dedup();
+    let names: Vec<&str> = sorted
+        .iter()
+        .map(|t| match t {
+            FileType::Bundled => "BUNDLED",
+            FileType::Internal => "INTERNAL",
+            FileType::Output => "OUTPUT",
+            FileType::ExternalRepo => "EXTERNAL_REPO",
+            FileType::RepoContentsCacheDirs => "REPO_CONTENTS_CACHE_DIRS",
+            FileType::ExternalOther => "EXTERNAL_OTHER",
+        })
+        .collect();
+    format!("[{}]", names.join(", "))
 }
 
 /// `--experimental_fsvc_threads` (Java `buildRequestOptions == null ? 200 : fsvcThreads`).

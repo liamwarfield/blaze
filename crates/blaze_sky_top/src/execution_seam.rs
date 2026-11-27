@@ -477,6 +477,10 @@ fn get_files_to_build(target: &ConfiguredTarget) -> Option<NestedSet<Artifact>> 
 }
 
 impl ConfiguredTargetView for SkyframeConfiguredTargetView {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     // Java: com/google/devtools/build/lib/analysis/ConfiguredTarget.java:37 ConfiguredTarget.getLabel
     fn get_label(&self) -> Label {
         self.configured_target.get_label()
@@ -898,6 +902,7 @@ pub fn build_driver_keys(
     extra_action_top_level_only: bool,
     test_context: &BuildDriverKeyTestContext,
     event_handler: &dyn ExtendedEventHandler,
+    keep_going: bool,
 ) -> Vec<BuildDriverKey> {
     // Java: com/google/devtools/build/lib/analysis/BuildView.java:361 BuildView.update
     let configuration_key = top_level_configuration.get_key();
@@ -938,6 +943,7 @@ pub fn build_driver_keys(
             skip_incompatible_explicit_targets,
             extra_action_top_level_only,
             test_type,
+            keep_going,
         });
     }
     build_driver_ct_keys.into_iter().collect()
@@ -1011,6 +1017,7 @@ pub fn build_driver_aspect_keys(
     output_groups: &[String],
     skip_incompatible_explicit_targets: bool,
     extra_action_top_level_only: bool,
+    keep_going: bool,
 ) -> Vec<BuildDriverKey> {
     top_level_aspect_drivers()
         .created
@@ -1023,6 +1030,7 @@ pub fn build_driver_aspect_keys(
             /* explicitly_requested= */ explicit_target_patterns.contains(k.get_label()),
             skip_incompatible_explicit_targets,
             extra_action_top_level_only,
+            keep_going,
         ));
     }
     build_driver_aspect_keys.into_iter().collect()

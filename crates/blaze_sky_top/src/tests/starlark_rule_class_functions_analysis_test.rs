@@ -1151,7 +1151,6 @@ my_library(name = "my_target")
 
 // Java: StarlarkRuleClassFunctionsTest.testAnalysisTest
 #[test]
-#[ignore = "BLAZE GAP: unported!(\"StarlarkTestingModule.analysisTest\") (blaze_analysis test/starlark_testing_module.rs)"]
 fn test_analysis_test() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(
@@ -1179,7 +1178,6 @@ my_test_macro(name = "my_test_target")
 
 // Java: StarlarkRuleClassFunctionsTest.testAnalysisTestAttrs
 #[test]
-#[ignore = "BLAZE GAP: unported!(\"StarlarkTestingModule.analysisTest\") (blaze_analysis test/starlark_testing_module.rs)"]
 fn test_analysis_test_attrs() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(
@@ -1214,7 +1212,6 @@ my_test_macro(name = "my_test_target")
 
 // Java: StarlarkRuleClassFunctionsTest.testAnalysisTestDuplicateName_samePackage
 #[test]
-#[ignore = "BLAZE GAP: unported!(\"StarlarkTestingModule.analysisTest\") (blaze_analysis test/starlark_testing_module.rs)"]
 fn test_analysis_test_duplicate_name_same_package() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(
@@ -1259,7 +1256,6 @@ my_test_macro2(name = "my_test_target")
 
 // Java: StarlarkRuleClassFunctionsTest.testAnalysisTestBadName
 #[test]
-#[ignore = "BLAZE GAP: unported!(\"StarlarkTestingModule.analysisTest\") (blaze_analysis test/starlark_testing_module.rs)"]
 fn test_analysis_test_bad_name() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(
@@ -1292,7 +1288,6 @@ my_test_macro(name = "my+test+target")
 
 // Java: StarlarkRuleClassFunctionsTest.testAnalysisTestBadArgs
 #[test]
-#[ignore = "BLAZE GAP: unported!(\"StarlarkTestingModule.analysisTest\") (blaze_analysis test/starlark_testing_module.rs)"]
 fn test_analysis_test_bad_args() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(
@@ -1329,7 +1324,6 @@ my_test_macro(name = "my_test_target")
 
 // Java: StarlarkRuleClassFunctionsTest.testAnalysisTestErrorOnExport
 #[test]
-#[ignore = "BLAZE GAP: unported!(\"StarlarkTestingModule.analysisTest\") (blaze_analysis test/starlark_testing_module.rs)"]
 fn test_analysis_test_error_on_export() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file("p/b.bzl", &["def impl(ctx): ", "  return  [AnalysisTestResultInfo(", "    success = True,", "    message = ''", "  )]", "def my_test_macro(name):", "  testing.analysis_test(name = name, implementation = impl, attrs = {'name': attr.string()})"]);
@@ -1351,7 +1345,6 @@ my_test_macro(name = "my_test_target")
 
 // Java: StarlarkRuleClassFunctionsTest.testAnalysisTestErrorOverridingName
 #[test]
-#[ignore = "BLAZE GAP: unported!(\"StarlarkTestingModule.analysisTest\") (blaze_analysis test/starlark_testing_module.rs)"]
 fn test_analysis_test_error_overriding_name() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file("p/b.bzl", &["def impl(ctx): ", "  return  [AnalysisTestResultInfo(", "    success = True,", "    message = ''", "  )]", "def my_test_macro(name):", "  testing.analysis_test(name = name, implementation = impl, attr_values = {'name': 'override'})"]);

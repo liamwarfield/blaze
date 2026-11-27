@@ -136,7 +136,7 @@ impl fmt::Debug for PrecomputedValue {
 // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:198 PrecomputedValue.Key.create
 // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:208 PrecomputedValue.Key.functionName
 // PORT: skipped, key interning (the keys are plain values here): PrecomputedValue.Key.intern Key.getSkyKeyInterner
-// PORT: skipped, shareability only matters to remote analysis caching, which stops with unported!: UnshareableKey.UnshareableKey UnshareableKey.create UnshareableKey.intern UnshareableKey.functionName UnshareableKey.valueIsShareable UnshareableKey.getSkyKeyInterner
+// PORT: skipped, shareability only matters to remote analysis caching, which stops with unported!: PrecomputedValue.UnshareableKey.<init> PrecomputedValue.UnshareableKey.create PrecomputedValue.UnshareableKey.intern PrecomputedValue.UnshareableKey.functionName PrecomputedValue.UnshareableKey.valueIsShareable PrecomputedValue.UnshareableKey.getSkyKeyInterner
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PrecomputedKey(pub &'static str);
 

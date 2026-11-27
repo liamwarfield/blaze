@@ -63,6 +63,9 @@ pub struct ComputedDefault {
     /// Sorted (Java `Ordering.natural().immutableSortedCopy`).
     dependencies: Vec<String>,
     kind: ComputedDefaultKind,
+    /// The Java class of a native computed default (`getClass().getName()`, usually an
+    /// anonymous class such as `BaseRuleClasses$2`), which `StarlarkValue.repr` prints.
+    java_class_name: Option<&'static str>,
 }
 
 impl ComputedDefault {
@@ -74,7 +77,19 @@ impl ComputedDefault {
         ComputedDefault {
             dependencies,
             kind: ComputedDefaultKind::Native(f),
+            java_class_name: None,
         }
+    }
+
+    /// Names the Java class this native computed default ports (`getClass().getName()`).
+    pub fn with_java_class_name(mut self, java_class_name: &'static str) -> Self {
+        self.java_class_name = Some(java_class_name);
+        self
+    }
+
+    /// The Java class name set by [`ComputedDefault::with_java_class_name`].
+    pub fn java_class_name(&self) -> Option<&'static str> {
+        self.java_class_name
     }
 
     // Java: com/google/devtools/build/lib/packages/Attribute.java:1523 Attribute.StarlarkComputedDefault.<init>
@@ -84,6 +99,7 @@ impl ComputedDefault {
         ComputedDefault {
             dependencies,
             kind: ComputedDefaultKind::Starlark(s),
+            java_class_name: None,
         }
     }
 

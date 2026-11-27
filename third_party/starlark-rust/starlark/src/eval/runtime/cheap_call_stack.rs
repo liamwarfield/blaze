@@ -58,6 +58,7 @@ impl CheapFrame<'_> {
         Frame {
             name: self.function.name_for_call_stack(),
             location: self.location(),
+            callable_location: self.function.get_ref().callable_location(), // BLAZE PATCH 0066
         }
     }
 }

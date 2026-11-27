@@ -2740,3 +2740,127 @@ fn patch_0062_round_3_java_interface_names() {
         assert_eq!(encode(int), Some(false));
     });
 }
+
+/// A native callable with a location (Java `StarlarkCallable.getLocation()` other than BUILTIN,
+/// e.g. a provider at its definition): a call stack frame of it carries that location.
+mod located {
+    use allocative::Allocative;
+    use starlark::any::ProvidesStaticType;
+    use starlark::codemap::FileSpan;
+    use starlark::eval::Arguments;
+    use starlark::eval::Evaluator;
+    use starlark::starlark_simple_value;
+    use starlark::values::NoSerialize;
+    use starlark::values::StarlarkValue;
+    use starlark::values::Value;
+    use starlark::values::starlark_value;
+
+    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative)]
+    pub struct Located;
+
+    impl std::fmt::Display for Located {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "<located>")
+        }
+    }
+
+    starlark_simple_value!(Located);
+
+    #[starlark_value(type = "located")]
+    impl<'v> StarlarkValue<'v> for Located {
+        fn invoke(
+            &self,
+            _me: Value<'v>,
+            _args: &Arguments<'v, '_>,
+            _eval: &mut Evaluator<'v, '_, '_>,
+        ) -> starlark::Result<Value<'v>> {
+            Err(starlark::Error::new_other(anyhow::anyhow!("boom")))
+        }
+
+        fn name_for_call_stack(&self, _me: Value<'v>) -> String {
+            "Located".to_owned()
+        }
+
+        fn callable_location(&self) -> Option<FileSpan> {
+            Some(FileSpan::new(
+                "def.bzl".to_owned(),
+                "Located = x".to_owned(),
+            ))
+        }
+    }
+}
+
+/// Patch 0066: an error raised by a native callable with a location has that location on the
+/// callable's frame (`Frame::callable_location`); other frames have none.
+#[test]
+fn patch_0066_native_callable_location() {
+    std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(|| {
+            let globals = dialect::bazel_universe();
+            let ast = AstModule::parse(
+                "t.bzl",
+                "def f():\n    located()\nf()\n".to_owned(),
+                &dialect::bzl_dialect(),
+            )
+            .unwrap();
+            Module::with_temp_heap(|module| {
+                module.set("located", module.heap().alloc(located::Located));
+                let mut e = Evaluator::new(&module);
+                let err = e.eval_module(ast, &globals).unwrap_err();
+                let frames = &err.call_stack().frames;
+                let names: Vec<&str> = frames.iter().map(|f| f.name.as_str()).collect();
+                assert_eq!(names, ["f", "Located"]);
+                assert!(frames[0].callable_location.is_none());
+                let location = frames[1].callable_location.as_ref().unwrap();
+                assert_eq!(location.filename(), "def.bzl");
+            });
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// Patch 0067: Java `StarlarkFunction.repr` names the module's client data also while the module
+/// executes (`<function f from //p:t.bzl>`); without an extra value there is no ` from`.
+#[test]
+fn patch_0067_def_repr_during_module_execution() {
+    std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(|| {
+            let globals = dialect::bazel_universe();
+            let run = |extra: Option<&'static str>| {
+                let ast = AstModule::parse(
+                    "t.bzl",
+                    "def f():\n    pass\nr = repr(f)\nl = str([lambda: 0])\n".to_owned(),
+                    &dialect::bzl_dialect(),
+                )
+                .unwrap();
+                Module::with_temp_heap(|module| {
+                    if let Some(extra) = extra {
+                        module.set_extra_value(module.heap().alloc(extra));
+                    }
+                    let mut e = Evaluator::new(&module);
+                    e.eval_module(ast, &globals).unwrap();
+                    (
+                        module.get("r").unwrap().unpack_str().unwrap().to_owned(),
+                        module.get("l").unwrap().unpack_str().unwrap().to_owned(),
+                    )
+                })
+            };
+            assert_eq!(
+                run(Some("//p:t.bzl")),
+                (
+                    "<function f from //p:t.bzl>".to_owned(),
+                    "[<function lambda from //p:t.bzl>]".to_owned()
+                )
+            );
+            assert_eq!(
+                run(None),
+                ("<function f>".to_owned(), "[<function lambda>]".to_owned())
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

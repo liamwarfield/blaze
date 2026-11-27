@@ -15,7 +15,6 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{self, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::time::Duration;
 
 use async_trait::async_trait;
 use blaze_actions::{

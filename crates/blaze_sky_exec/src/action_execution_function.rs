@@ -59,7 +59,7 @@ pub struct ActionExecutionFunction {
 }
 
 /// `ActionUtils.getActionForLookupData`.
-// PORT: skipped, ActionUtils.ActionUtils: the private constructor of a static utility class.
+// PORT: skipped, ActionUtils.<init>: the private constructor of a static utility class.
 // Java: com/google/devtools/build/lib/skyframe/ActionUtils.java:40 ActionUtils.getActionForLookupData
 pub fn get_action_for_lookup_data(
     seam: &dyn AnalysisSeam,
@@ -106,6 +106,9 @@ fn to_compute_error(e: ExecutionFailure) -> ComputeError {
             "IllegalStateException: unexpected lost inputs: {}",
             e.exception.get_message()
         ),
+        ExecutionFailure::RestartNode => {
+            panic!("IllegalStateException: unexpected restart of a shared action's node")
+        }
     }
 }
 
@@ -159,10 +162,10 @@ impl AllInputs {
 // `inputMetadataProviderIncludingLateDiscoveredInputs` are `input_artifact_data` itself.)
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1264 ActionExecutionFunction.InputDiscoveryState.getOrCreateLateDiscoveredInputArtifactData
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1277 ActionExecutionFunction.InputDiscoveryState.inputMetadataProviderIncludingLateDiscoveredInputs
-// PORT: skipped, a state that lives for one compute call has collected its inputs and artifact data and checked the action cache by construction (Java asks after a restart): InputDiscoveryState.hasCollectedInputs InputDiscoveryState.hasArtifactData InputDiscoveryState.hasCheckedActionCache
-// PORT: skipped, remote analysis caching retrieval stops with unported!: InputDiscoveryState.getRetrievalContext
-// PORT: skipped, debugging text: InputDiscoveryState.toString
-// PORT: skipped, the post-processing is a closure (execute_action's `postprocessing`) and the input check returns its input map directly (check_inputs): ActionPostprocessingImpl.ActionPostprocessingImpl CheckInputResults.CheckInputResults
+// PORT: skipped, a state that lives for one compute call has collected its inputs and artifact data and checked the action cache by construction (Java asks after a restart): ActionExecutionFunction.InputDiscoveryState.hasCollectedInputs ActionExecutionFunction.InputDiscoveryState.hasArtifactData ActionExecutionFunction.InputDiscoveryState.hasCheckedActionCache
+// PORT: skipped, remote analysis caching retrieval stops with unported!: ActionExecutionFunction.InputDiscoveryState.getRetrievalContext
+// PORT: skipped, debugging text: ActionExecutionFunction.InputDiscoveryState.toString
+// PORT: skipped, the post-processing is a closure (execute_action's `postprocessing`) and the input check returns its input map directly (check_inputs): ActionExecutionFunction.ActionPostprocessingImpl.<init> ActionExecutionFunction.CheckInputResults.<init>
 struct InputDiscoveryState {
     all_inputs: AllInputs,
     /// Mutable map containing metadata for known artifacts.
@@ -564,6 +567,15 @@ impl ActionExecutionFunction {
                 .into());
             }
             Err(e @ ExecutionFailure::Interrupted) => return Err(to_compute_error(e)),
+            // The primary action of this shared action rewound: the node starts over (Java's
+            // `state.getResultOrDependOnFuture` returns null after `scheduleRestart`, and the
+            // restarted compute waits for the rewound deps).
+            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:143 ActionExecutionState.scheduleRestart
+            Err(ExecutionFailure::RestartNode) => {
+                return Ok(Some(ActionExecutionFunctionValue::Reset(Reset::self_only(
+                    SkyKey::new(ActionExecutionKey(action_lookup_data.clone())),
+                ))));
+            }
             // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:347 ActionExecutionFunction.computeInternal
             Err(ExecutionFailure::LostInputs(e)) => {
                 return Ok(self

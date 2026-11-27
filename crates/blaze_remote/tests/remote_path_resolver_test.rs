@@ -6,7 +6,6 @@
 //! `UnixFileSystem` paths that are never touched.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use blaze_exec::actions::{
     ActionInputRef, BasicActionInput, ExecException, HierarchicalPath, InputMapping,

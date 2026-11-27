@@ -1242,8 +1242,34 @@ fn fail_top_level_output(
             artifacts_by_output_group: built_outputs,
             important_input_map,
         }));
-    // CompletionFunctionException(TopLevelOutputException): not catastrophic.
-    SkyFunctionException::new(exception, Transience::Persistent).into()
+    // CompletionFunctionException(TopLevelOutputException): transient, not catastrophic.
+    completion_function_exception_for_top_level_output(exception).into()
+}
+
+/// `new CompletionFunctionException(TopLevelOutputException e)`: `super(e, Transience.TRANSIENT)`,
+/// so that the next evaluation tries to stage the outputs again.
+// Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:479 CompletionFunction.CompletionFunctionException.<init>
+fn completion_function_exception_for_top_level_output(
+    exception: TopLevelOutputException,
+) -> SkyFunctionException {
+    SkyFunctionException::new(exception, Transience::Transient)
+}
+
+#[cfg(test)]
+mod top_level_output_exception_tests {
+    use super::*;
+
+    /// RW-1 of the 2026-11-26 rewinding review: a failed top-level output is retried by the next
+    /// evaluation (Java `super(e, Transience.TRANSIENT)`).
+    #[test]
+    fn top_level_output_exception_is_transient() {
+        let e = completion_function_exception_for_top_level_output(TopLevelOutputException {
+            message: "lost".to_owned(),
+            detailed_exit_code: blaze_util::DetailedExitCode::success(),
+        });
+        assert!(e.is_transient());
+        assert!(!e.is_catastrophic());
+    }
 }
 
 /// Thrown when an output provided by a top-level target could not be staged: an output is lost

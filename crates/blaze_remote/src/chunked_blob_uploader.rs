@@ -24,6 +24,91 @@ use crate::util::DigestUtil;
 // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:63 ChunkedBlobUploader.MAX_IN_FLIGHT_CHUNK_UPLOADS
 const MAX_IN_FLIGHT_CHUNK_UPLOADS: usize = 16;
 
+/// The calls the uploader makes on its `GrpcCacheClient` (`findMissingDigests`, `spliceBlob`)
+/// and its `CombinedCache` (`uploadBlob`).
+///
+/// PORT: the seam Java's tests mock. The real target is [`CacheClients`], which owns the cache's
+/// clients because a chunked upload runs as the task of the client's upload deduplication.
+pub trait ChunkedUploadTarget: Send + Sync {
+    // Java: com/google/devtools/build/lib/remote/GrpcCacheClient.java:314 GrpcCacheClient.findMissingDigests
+    fn find_missing_digests<'a>(
+        &'a self,
+        context: &'a RemoteActionExecutionContext<'_>,
+        digests: &'a [Digest],
+    ) -> BoxFuture<'a, io::Result<IndexSet<Digest>>>;
+
+    // Java: com/google/devtools/build/lib/remote/GrpcCacheClient.java:219 GrpcCacheClient.spliceBlob
+    fn splice_blob<'a>(
+        &'a self,
+        context: &'a RemoteActionExecutionContext<'_>,
+        blob_digest: &Digest,
+        chunk_digests: &[Digest],
+        chunking_function: chunking_function::Value,
+    ) -> Option<BoxFuture<'a, io::Result<()>>>;
+
+    // Java: com/google/devtools/build/lib/remote/CombinedCache.java:458 CombinedCache.uploadBlob
+    fn upload_blob<'a>(
+        &'a self,
+        context: &'a RemoteActionExecutionContext<'_>,
+        digest: &'a Digest,
+        blob: Arc<dyn Blob>,
+        force: bool,
+    ) -> BoxFuture<'a, io::Result<()>>;
+}
+
+/// The clients of a `CombinedCache`: the remote one (a `GrpcCacheClient`) and the disk one.
+pub struct CacheClients {
+    pub remote_cache_client: Arc<dyn RemoteCacheClient>,
+    pub disk_cache_client: Option<Arc<DiskCacheClient>>,
+}
+
+impl CacheClients {
+    fn grpc_cache_client(&self) -> &GrpcCacheClient {
+        self.remote_cache_client
+            .as_any()
+            .and_then(|any| any.downcast_ref::<GrpcCacheClient>())
+            .expect("ChunkedBlobUploader needs a GrpcCacheClient")
+    }
+}
+
+impl ChunkedUploadTarget for CacheClients {
+    fn find_missing_digests<'a>(
+        &'a self,
+        context: &'a RemoteActionExecutionContext<'_>,
+        digests: &'a [Digest],
+    ) -> BoxFuture<'a, io::Result<IndexSet<Digest>>> {
+        Box::pin(self.grpc_cache_client().find_missing_digests(context, digests))
+    }
+
+    fn splice_blob<'a>(
+        &'a self,
+        context: &'a RemoteActionExecutionContext<'_>,
+        blob_digest: &Digest,
+        chunk_digests: &[Digest],
+        chunking_function: chunking_function::Value,
+    ) -> Option<BoxFuture<'a, io::Result<()>>> {
+        self.grpc_cache_client()
+            .splice_blob(context, blob_digest, chunk_digests, chunking_function)
+    }
+
+    fn upload_blob<'a>(
+        &'a self,
+        context: &'a RemoteActionExecutionContext<'_>,
+        digest: &'a Digest,
+        blob: Arc<dyn Blob>,
+        force: bool,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        Box::pin(upload_blob_to_clients(
+            Some(&self.remote_cache_client),
+            self.disk_cache_client.as_ref(),
+            context,
+            digest,
+            blob,
+            force,
+        ))
+    }
+}
+
 /// Uploads blobs in chunks using Content-Defined Chunking.
 ///
 /// Upload flow for blobs above threshold: chunk the file with the configured chunking function,
@@ -31,32 +116,26 @@ const MAX_IN_FLIGHT_CHUNK_UPLOADS: usize = 16;
 /// SpliceBlob to register the blob as the concatenation of the chunks.
 ///
 /// PORT: Java holds the `GrpcCacheClient` and the `CombinedCache`; its upload runs as the task of
-/// the client's upload deduplication, which outlives the caller, so here the uploader owns the
-/// cache's clients: the remote one (which is the `GrpcCacheClient`, see
-/// [`Self::grpc_cache_client`]) and the disk one. A chunk is uploaded as `CombinedCache.uploadBlob`
-/// does ([`upload_blob_to_clients`]).
+/// the client's upload deduplication, which outlives the caller, so here the uploader owns its
+/// target ([`ChunkedUploadTarget`], for a cache its [`CacheClients`]).
 // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:58 ChunkedBlobUploader
 pub struct ChunkedBlobUploader {
-    remote_cache_client: Arc<dyn RemoteCacheClient>,
-    disk_cache_client: Option<Arc<DiskCacheClient>>,
+    target: Arc<dyn ChunkedUploadTarget>,
     chunker: Box<dyn ContentDefinedChunker>,
     chunking_function: chunking_function::Value,
     chunking_threshold: i64,
 }
 
 impl ChunkedBlobUploader {
-    /// Creates a new uploader with the given chunking configuration. `remote_cache_client` must
-    /// be a `GrpcCacheClient` (Java's parameter type).
+    /// Creates a new uploader with the given chunking configuration.
     // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:79 ChunkedBlobUploader.<init>
     pub fn new(
-        remote_cache_client: Arc<dyn RemoteCacheClient>,
-        disk_cache_client: Option<Arc<DiskCacheClient>>,
+        target: Arc<dyn ChunkedUploadTarget>,
         config: &ChunkingConfig,
         digest_util: DigestUtil,
     ) -> ChunkedBlobUploader {
         ChunkedBlobUploader {
-            remote_cache_client,
-            disk_cache_client,
+            target,
             chunker: config.new_chunker(digest_util),
             chunking_function: config.chunking_function(),
             chunking_threshold: config.chunking_threshold(),
@@ -67,13 +146,6 @@ impl ChunkedBlobUploader {
     // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:92 ChunkedBlobUploader.getChunkingThreshold
     pub fn get_chunking_threshold(&self) -> i64 {
         self.chunking_threshold
-    }
-
-    fn grpc_cache_client(&self) -> &GrpcCacheClient {
-        self.remote_cache_client
-            .as_any()
-            .and_then(|any| any.downcast_ref::<GrpcCacheClient>())
-            .expect("ChunkedBlobUploader needs a GrpcCacheClient")
     }
 
     /// Uploads a blob in content-defined chunks. The file is chunked with the configured chunking
@@ -99,13 +171,13 @@ impl ChunkedBlobUploader {
         if chunk_digests.is_empty() {
             return Ok(());
         }
-        let grpc_cache_client = self.grpc_cache_client();
-        let missing_digests = grpc_cache_client
+        let missing_digests = self
+            .target
             .find_missing_digests(context, &chunk_digests)
             .await?;
         self.upload_missing_chunks(context, &missing_digests, &chunk_digests, file, force)
             .await?;
-        match grpc_cache_client.splice_blob(
+        match self.target.splice_blob(
             context,
             blob_digest,
             &chunk_digests,
@@ -198,17 +270,8 @@ impl<'a, 'b> UploadSession<'a, 'b> {
             offset: chunk_offset,
             digest: chunk_digest.clone(),
         });
-        self.in_flight_uploads.push(Box::pin(async move {
-            upload_blob_to_clients(
-                Some(&uploader.remote_cache_client),
-                uploader.disk_cache_client.as_ref(),
-                context,
-                chunk_digest,
-                blob,
-                force,
-            )
-            .await
-        }));
+        self.in_flight_uploads
+            .push(uploader.target.upload_blob(context, chunk_digest, blob, force));
     }
 
     // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:194 ChunkedBlobUploader.UploadSession.drainCompletedUploads

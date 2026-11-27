@@ -201,11 +201,6 @@ impl SymlinkAction {
         self.target_type == TargetType::Fileset
     }
 
-    // Java: com/google/devtools/build/lib/analysis/actions/SymlinkAction.java:471 SymlinkAction.mayInsensitivelyPropagateInputs
-    pub fn may_insensitively_propagate_inputs(&self) -> bool {
-        true
-    }
-
     // Java: com/google/devtools/build/lib/analysis/actions/SymlinkAction.java:417 SymlinkAction.printInputs
     #[allow(dead_code)]
     fn print_inputs(&self) -> String {
@@ -235,6 +230,11 @@ impl Action for SymlinkAction {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/actions/SymlinkAction.java:471 SymlinkAction.mayInsensitivelyPropagateInputs
+    fn may_insensitively_propagate_inputs(&self) -> bool {
+        true
     }
 
     // Java: com/google/devtools/build/lib/analysis/actions/SymlinkAction.java:447 SymlinkAction.getMnemonic

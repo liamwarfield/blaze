@@ -69,11 +69,6 @@ impl RunfilesTreeAction {
     pub fn get_runfiles_tree(&self) -> &RunfilesTreeRef {
         &self.runfiles_tree
     }
-
-    // Java: com/google/devtools/build/lib/actions/RunfilesTreeAction.java:158 RunfilesTreeAction.mayInsensitivelyPropagateInputs
-    pub fn may_insensitively_propagate_inputs(&self) -> bool {
-        true
-    }
 }
 
 impl Action for RunfilesTreeAction {
@@ -83,6 +78,11 @@ impl Action for RunfilesTreeAction {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    // Java: com/google/devtools/build/lib/actions/RunfilesTreeAction.java:158 RunfilesTreeAction.mayInsensitivelyPropagateInputs
+    fn may_insensitively_propagate_inputs(&self) -> bool {
+        true
     }
 
     // Java: com/google/devtools/build/lib/actions/RunfilesTreeAction.java:153 RunfilesTreeAction.getMnemonic

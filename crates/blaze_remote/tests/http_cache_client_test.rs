@@ -83,6 +83,10 @@ enum Answer {
 
 type Handler = Arc<dyn Fn(&Request) -> Answer + Send + Sync>;
 
+/// Consulted with the request head (an empty body) before the body is read: `Some` answers at
+/// once, without reading the body, and keeps the connection open without reading from it.
+type EarlyHandler = Arc<dyn Fn(&Request) -> Option<Answer> + Send + Sync>;
+
 #[derive(Clone, Copy, Debug)]
 enum ServerKind {
     Inet,
@@ -99,6 +103,28 @@ impl Connection for TcpStream {}
 impl Connection for UnixStream {}
 
 fn read_request(reader: &mut BufReader<Box<dyn Connection>>) -> Option<Request> {
+    let mut request = read_request_head(reader)?;
+    read_request_body(reader, &mut request)?;
+    Some(request)
+}
+
+fn read_request_body(
+    reader: &mut BufReader<Box<dyn Connection>>,
+    request: &mut Request,
+) -> Option<()> {
+    let length: usize = request
+        .headers
+        .iter()
+        .find(|(k, _)| k == "content-length")
+        .and_then(|(_, v)| v.parse().ok())
+        .unwrap_or(0);
+    let mut body = vec![0u8; length];
+    reader.read_exact(&mut body).ok()?;
+    request.body = body;
+    Some(())
+}
+
+fn read_request_head(reader: &mut BufReader<Box<dyn Connection>>) -> Option<Request> {
     let mut line = String::new();
     if reader.read_line(&mut line).ok()? == 0 {
         return None;
@@ -117,24 +143,35 @@ fn read_request(reader: &mut BufReader<Box<dyn Connection>>) -> Option<Request> 
         let (k, v) = header.split_once(':')?;
         headers.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
     }
-    let length: usize = headers
-        .iter()
-        .find(|(k, _)| k == "content-length")
-        .and_then(|(_, v)| v.parse().ok())
-        .unwrap_or(0);
-    let mut body = vec![0u8; length];
-    reader.read_exact(&mut body).ok()?;
     Some(Request {
         method,
         path,
         headers,
-        body,
+        body: Vec::new(),
     })
 }
 
-fn serve(stream: Box<dyn Connection>, handler: Handler) {
+fn serve(stream: Box<dyn Connection>, handler: Handler, early: Option<EarlyHandler>) {
     let mut reader = BufReader::new(stream);
-    while let Some(request) = read_request(&mut reader) {
+    loop {
+        let Some(mut request) = read_request_head(&mut reader) else {
+            return;
+        };
+        if let Some(early) = &early
+            && let Some(answer) = early(&request)
+        {
+            let bytes = match answer {
+                Answer::Respond(bytes) | Answer::RespondAndClose(bytes) => bytes,
+                Answer::Silent => Vec::new(),
+            };
+            let _ = reader.get_mut().write_all(&bytes);
+            // The body is never read; the connection stays open.
+            std::thread::sleep(Duration::from_secs(5));
+            return;
+        }
+        if read_request_body(&mut reader, &mut request).is_none() {
+            return;
+        }
         match handler(&request) {
             Answer::Respond(bytes) => {
                 if reader.get_mut().write_all(&bytes).is_err() {
@@ -155,6 +192,14 @@ fn serve(stream: Box<dyn Connection>, handler: Handler) {
 
 impl TestServer {
     fn start(kind: ServerKind, handler: Handler) -> TestServer {
+        TestServer::start_with_early(kind, handler, None)
+    }
+
+    fn start_with_early(
+        kind: ServerKind,
+        handler: Handler,
+        early: Option<EarlyHandler>,
+    ) -> TestServer {
         match kind {
             ServerKind::Inet => {
                 let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -163,7 +208,8 @@ impl TestServer {
                     for stream in listener.incoming() {
                         let Ok(stream) = stream else { return };
                         let handler = handler.clone();
-                        std::thread::spawn(move || serve(Box::new(stream), handler));
+                        let early = early.clone();
+                        std::thread::spawn(move || serve(Box::new(stream), handler, early));
                     }
                 });
                 TestServer {
@@ -185,7 +231,8 @@ impl TestServer {
                     for stream in listener.incoming() {
                         let Ok(stream) = stream else { return };
                         let handler = handler.clone();
-                        std::thread::spawn(move || serve(Box::new(stream), handler));
+                        let early = early.clone();
+                        std::thread::spawn(move || serve(Box::new(stream), handler, early));
                     }
                 });
                 TestServer {
@@ -915,3 +962,144 @@ fn cache_miss_and_request_heads() {
     // observable here; the second request was answered.
     assert_eq!(seen.len(), 2);
 }
+
+/// Not in the Java test (review 2026-11-19 round 8, H1): a server that answers before it has
+/// read the body. Java's `HttpUploadHandler.channelRead0` takes the response while the body is
+/// still being written; the client must report the status at once, not wait for the body to be
+/// written (an upload timeout once the socket buffers are full).
+const LARGE_BODY: usize = 16 * 1024 * 1024;
+
+fn large_put_answered_early(answer: impl Fn(&Request) -> Option<Answer> + Send + Sync + 'static)
+-> EarlyHandler {
+    Arc::new(move |request: &Request| {
+        let length: usize = request
+            .header("content-length")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        if request.method == "PUT" && length > 1024 * 1024 {
+            answer(request)
+        } else {
+            None
+        }
+    })
+}
+
+fn ok_handler() -> Handler {
+    Arc::new(|_request: &Request| {
+        Answer::Respond(response(
+            "200 OK",
+            &[("connection", "keep-alive"), ("content-length", "0")],
+            b"",
+        ))
+    })
+}
+
+fn upload_answered_before_body_reports_the_status(kind: ServerKind) {
+    let server = TestServer::start_with_early(
+        kind,
+        ok_handler(),
+        Some(large_put_answered_early(|_| {
+            Some(Answer::Respond(response(
+                "403 Forbidden",
+                &[("content-length", "0")],
+                b"",
+            )))
+        })),
+    );
+    let blob_store = create_http_blob_store(&server, 10, true, Vec::new(), None, None);
+    let data = bytes::Bytes::from(vec![7u8; LARGE_BODY]);
+    let start = std::time::Instant::now();
+    let e = get_from_future(blob_store.upload_bytes(
+        &context(),
+        &digest_util().compute(&data),
+        data,
+        false,
+    ))
+    .unwrap_err();
+    assert!(start.elapsed() < Duration::from_secs(5), "{:?}", start.elapsed());
+    let http_exception = errors::downcast_ref::<HttpException>(&e).expect("an HttpException");
+    assert_eq!(http_exception.status, 403);
+    assert_eq!(e.to_string(), "403 Forbidden");
+}
+both_servers!(upload_answered_before_body_reports_the_status);
+
+/// A 401 for an expired token before the body is read: refreshed and uploaded again, for a blob
+/// whose stream Java can reset (a `ByteString`'s).
+fn expired_auth_token_before_body_is_refreshed(kind: ServerKind) {
+    let server = TestServer::start_with_early(
+        kind,
+        ok_handler(),
+        Some(large_put_answered_early(|request| {
+            (request.header("authorization") != Some("Bearer validToken")).then(|| {
+                Answer::Respond(response(
+                    "401 Unauthorized",
+                    &[
+                        (
+                            "www-authenticate",
+                            "Bearer realm=\"localhost\",error=\"invalid_token\"",
+                        ),
+                        ("content-length", "0"),
+                    ],
+                    b"",
+                ))
+            })
+        })),
+    );
+    let credentials = Arc::new(MockCredentials::default());
+    let blob_store =
+        create_http_blob_store(&server, 10, true, Vec::new(), Some(credentials.clone()), None);
+    let data = bytes::Bytes::from(vec![7u8; LARGE_BODY]);
+    get_from_future(blob_store.upload_bytes(
+        &context(),
+        &digest_util().compute(&data),
+        data,
+        false,
+    ))
+    .unwrap();
+    assert_eq!(credentials.refresh_count.load(Ordering::SeqCst), 1);
+}
+both_servers!(expired_auth_token_before_body_is_refreshed);
+
+/// Review round 8, S4: the upload of a file is not repeated after a refresh, as Java's
+/// `reset(in)` fails for a `LazyFileInputStream`; the 401 is the error.
+fn expired_auth_token_for_a_file_is_not_retried(kind: ServerKind) {
+    let server = TestServer::start_with_early(
+        kind,
+        ok_handler(),
+        Some(large_put_answered_early(|_| {
+            Some(Answer::Respond(response(
+                "401 Unauthorized",
+                &[
+                    (
+                        "www-authenticate",
+                        "Bearer realm=\"localhost\",error=\"invalid_token\"",
+                    ),
+                    ("content-length", "0"),
+                ],
+                b"",
+            )))
+        })),
+    );
+    let credentials = Arc::new(MockCredentials::default());
+    let blob_store =
+        create_http_blob_store(&server, 10, true, Vec::new(), Some(credentials.clone()), None);
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("big");
+    let data = vec![7u8; LARGE_BODY];
+    std::fs::write(&file_path, &data).unwrap();
+    let fs: blaze_vfs::FileSystemRef = Arc::new(blaze_vfs::UnixFileSystem::new(
+        DigestHashFunction::Sha256,
+    ));
+    let file = blaze_vfs::Path::create_from_str(file_path.to_str().unwrap(), &fs);
+    let e = get_from_future(blob_store.upload_file(
+        &context(),
+        &digest_util().compute(&data),
+        &file,
+        false,
+    ))
+    .unwrap_err();
+    let http_exception = errors::downcast_ref::<HttpException>(&e).expect("an HttpException");
+    assert_eq!(http_exception.status, 401);
+    assert_eq!(credentials.refresh_count.load(Ordering::SeqCst), 0);
+}
+both_servers!(expired_auth_token_for_a_file_is_not_retried);

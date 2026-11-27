@@ -1244,33 +1244,12 @@ fn add_artifact_deps_and_get_newly_visited_actions(
     newly_visited_actions
 }
 
-/// `action.mayInsensitivelyPropagateInputs()`: true for the actions that override it
-/// (`SymlinkAction`, `SymlinkTreeAction`, `RunfilesTreeAction`, `SolibSymlinkAction`), false
-/// otherwise (`ActionExecutionMetadata`'s default).
+/// `action.mayInsensitivelyPropagateInputs()`: the action trait's method (default false, as
+/// `ActionExecutionMetadata`'s; `SymlinkAction`, `SymlinkTreeAction`, `RunfilesTreeAction` and
+/// `SolibSymlinkAction` override it).
 // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:115 ActionExecutionMetadata.mayInsensitivelyPropagateInputs
 fn may_insensitively_propagate_inputs(action: &dyn Action) -> bool {
-    let any = action.as_any();
-    if let Some(a) =
-        any.downcast_ref::<blaze_actions::analysis::actions::symlink_action::SymlinkAction>()
-    {
-        return a.may_insensitively_propagate_inputs();
-    }
-    if let Some(a) = any
-        .downcast_ref::<blaze_actions::analysis::actions::symlink_tree_action::SymlinkTreeAction>()
-    {
-        return a.may_insensitively_propagate_inputs();
-    }
-    if let Some(a) =
-        any.downcast_ref::<blaze_actions::actions::runfiles_tree_action::RunfilesTreeAction>()
-    {
-        return a.may_insensitively_propagate_inputs();
-    }
-    if let Some(a) =
-        any.downcast_ref::<blaze_actions::rules::cpp::solib_symlink_action::SolibSymlinkAction>()
-    {
-        return a.may_insensitively_propagate_inputs();
-    }
-    false
+    action.may_insensitively_propagate_inputs()
 }
 
 /// Augments the given rewind graph with all chains of `ArtifactNestedSetKey` nodes reachable

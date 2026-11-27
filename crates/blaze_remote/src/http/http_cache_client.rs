@@ -689,8 +689,10 @@ impl HttpCacheClient {
                     return Err(cause);
                 };
                 // If the error is due to an expired auth token and we can reset the input stream,
-                // then try again. PORT: `reset(in)`: a `Blob` gives a new stream on each `get`.
-                if self.auth_token_expired(http_exception) {
+                // then try again. `reset(in)` succeeds only for a stream with `mark` support (or a
+                // `FileInputStream`); the retry then sends the body again from its start (a new
+                // stream of the blob).
+                if self.auth_token_expired(http_exception) && blob.supports_reset() {
                     self.refresh_credentials()?;
                     // uploadAfterCredentialRefresh
                     return self.upload(key, length, blob, cas_upload);
@@ -727,7 +729,7 @@ impl HttpCacheClient {
                 }
             },
         };
-        match Self::exchange_upload(connection, &request, blob, &path, length) {
+        match Self::exchange_upload(connection, &request, blob, &path, length, self.idle_timeout()) {
             Ok((kept, result)) => {
                 self.pool.release(kept);
                 result
@@ -747,6 +749,7 @@ impl HttpCacheClient {
         blob: &dyn Blob,
         path: &str,
         length: i64,
+        idle_timeout: Option<Duration>,
     ) -> io::Result<(Option<Connection>, io::Result<()>)> {
         let timeout = || -> io::Error { UploadTimeoutException::new(path, length).into() };
         let write_error = |e: io::Error| {
@@ -757,21 +760,29 @@ impl HttpCacheClient {
             }
         };
         // The body: `HttpChunkedInput(new ChunkedStream(data))`, sent as is (the request has a
-        // Content-Length, so the encoder adds no chunk framing).
+        // Content-Length, so the encoder adds no chunk framing). The response is read as soon as
+        // the server sends one, whatever has been written (see `write_watching`).
         let stream = connection.get_mut();
-        stream.write_all(request).map_err(write_error)?;
-        let mut data = blob.get()?;
-        let mut buf = vec![0u8; 8192];
-        loop {
-            let n = match data.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => n,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(e),
-            };
-            stream.write_all(&buf[..n]).map_err(write_error)?;
+        let mut answered_early =
+            write_watching(stream, request, idle_timeout).map_err(write_error)? == Written::Answered;
+        if !answered_early {
+            let mut data = blob.get()?;
+            let mut buf = vec![0u8; 8192];
+            loop {
+                let n = match data.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(e),
+                };
+                if write_watching(stream, &buf[..n], idle_timeout).map_err(write_error)?
+                    == Written::Answered
+                {
+                    answered_early = true;
+                    break;
+                }
+            }
         }
-        stream.flush().map_err(write_error)?;
 
         let head = match read_response_head(&mut connection) {
             Ok(head) => head,
@@ -824,7 +835,10 @@ impl HttpCacheClient {
         let Some(connection) = body.into_reader() else {
             return Err(ClosedChannelException.into());
         };
-        let kept = is_keep_alive(&head).then_some(connection);
+        // PORT: Java releases the channel to the pool after an early answer too, with part of the
+        // body unwritten (its `ChunkedWriteHandler` is removed), so that its next request would
+        // be read as the rest of this body; here such a connection is closed instead.
+        let kept = (is_keep_alive(&head) && !answered_early).then_some(connection);
         // Supporting more than OK status to be compatible with nginx webdav.
         let result = if !matches!(head.code, 200 | 202 | 201 | 204) {
             let mut error_msg = format!("{} {}", head.code, head.message);
@@ -1123,6 +1137,164 @@ fn request_head(method: &str, path: &str, headers: &[(String, String)]) -> Vec<u
     blaze_util::string_encoding::latin1_encode_lossy(&head).into_owned()
 }
 
+/// How a watched write ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Written {
+    /// Everything was written (and, for TLS, sent).
+    All,
+    /// The server answered (or closed the connection) before; the rest was not written.
+    Answered,
+}
+
+/// `poll(2)` of one descriptor; `Ok(0)` on timeout. `timeout` `None` waits forever.
+fn poll_fd(fd: std::os::fd::RawFd, events: i16, timeout: Option<Duration>) -> io::Result<i16> {
+    let timeout_ms = match timeout {
+        None => -1,
+        Some(t) => i32::try_from(t.as_millis()).unwrap_or(i32::MAX),
+    };
+    let mut pollfd = libc::pollfd {
+        fd,
+        events,
+        revents: 0,
+    };
+    loop {
+        // SAFETY: one valid pollfd for the duration of the call.
+        let n = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+        if n < 0 {
+            let e = io::Error::last_os_error();
+            if e.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(e);
+        }
+        return Ok(if n == 0 { 0 } else { pollfd.revents });
+    }
+}
+
+/// Writes `data` on a plain socket while watching for the server's answer.
+fn write_watching_plain<S: Write + std::os::fd::AsRawFd>(
+    sock: &mut S,
+    set_nonblocking: &dyn Fn(&S, bool) -> io::Result<()>,
+    data: &[u8],
+    timeout: Option<Duration>,
+) -> io::Result<Written> {
+    set_nonblocking(sock, true)?;
+    let result = (|| {
+        let mut off = 0;
+        while off < data.len() {
+            let revents = poll_fd(sock.as_raw_fd(), libc::POLLIN | libc::POLLOUT, timeout)?;
+            if revents == 0 {
+                return Err(io::Error::from(io::ErrorKind::TimedOut));
+            }
+            if revents & libc::POLLIN != 0 {
+                return Ok(Written::Answered);
+            }
+            match sock.write(&data[off..]) {
+                Ok(n) => off += n,
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(Written::All)
+    })();
+    set_nonblocking(sock, false)?;
+    result
+}
+
+/// Writes `data` on a TLS connection while watching for the server's answer: received records
+/// count as an answer once they decrypt to application data or close the connection (a TLS 1.3
+/// session ticket is not an answer). Plaintext that arrives stays in the connection for the
+/// response reader.
+fn write_watching_tls<S: Read + Write + std::os::fd::AsRawFd>(
+    tls: &mut StreamOwned<ClientConnection, S>,
+    set_nonblocking: &dyn Fn(&S, bool) -> io::Result<()>,
+    data: &[u8],
+    timeout: Option<Duration>,
+) -> io::Result<Written> {
+    set_nonblocking(&tls.sock, true)?;
+    let result = (|| {
+        let mut off = 0;
+        loop {
+            while off < data.len() {
+                let n = tls.conn.writer().write(&data[off..])?;
+                if n == 0 {
+                    break;
+                }
+                off += n;
+            }
+            let wants_write = tls.conn.wants_write();
+            if !wants_write && off == data.len() {
+                return Ok(Written::All);
+            }
+            let events = if wants_write {
+                libc::POLLIN | libc::POLLOUT
+            } else {
+                libc::POLLIN
+            };
+            let revents = poll_fd(tls.sock.as_raw_fd(), events, timeout)?;
+            if revents == 0 {
+                return Err(io::Error::from(io::ErrorKind::TimedOut));
+            }
+            if revents & libc::POLLIN != 0 {
+                match tls.conn.read_tls(&mut tls.sock) {
+                    Ok(0) => return Ok(Written::Answered),
+                    Ok(_) => {
+                        let state = tls
+                            .conn
+                            .process_new_packets()
+                            .map_err(io::Error::other)?;
+                        if state.plaintext_bytes_to_read() > 0 || state.peer_has_closed() {
+                            return Ok(Written::Answered);
+                        }
+                    }
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                        ) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            if revents & libc::POLLOUT != 0 && tls.conn.wants_write() {
+                match tls.conn.write_tls(&mut tls.sock) {
+                    Ok(_) => {}
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                        ) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+    })();
+    set_nonblocking(&tls.sock, false)?;
+    result
+}
+
+/// Writes part of an upload while reading for the answer, as Netty's event loop reads the
+/// response (`HttpUploadHandler.channelRead0`) while `ChunkedWriteHandler` writes the body: a
+/// server may answer (a 401, 403 or 413) before it has read the body. A timeout is a
+/// `TimedOut` error: no read or write within `timeout` (the `IdleTimeoutHandler`'s all-idle
+/// timer of the socket timeouts).
+// Java: com/google/devtools/build/lib/remote/http/HttpUploadHandler.java:54 HttpUploadHandler.channelRead0
+fn write_watching(
+    stream: &mut Stream,
+    data: &[u8],
+    timeout: Option<Duration>,
+) -> io::Result<Written> {
+    match stream {
+        Stream::Tcp(s) => write_watching_plain(s, &|s, b| s.set_nonblocking(b), data, timeout),
+        Stream::Unix(s) => write_watching_plain(s, &|s, b| s.set_nonblocking(b), data, timeout),
+        Stream::TlsTcp(s) => write_watching_tls(s, &|s, b| s.set_nonblocking(b), data, timeout),
+        Stream::TlsUnix(s) => write_watching_tls(s, &|s, b| s.set_nonblocking(b), data, timeout),
+    }
+}
+
 fn write_all_flush(stream: &mut Stream, bytes: &[u8]) -> io::Result<()> {
     stream.write_all(bytes)?;
     stream.flush()
@@ -1224,6 +1396,30 @@ fn client_connection(tls: &Arc<ClientConfig>, host: &str) -> io::Result<ClientCo
     ClientConnection::new(tls.clone(), server_name).map_err(io::Error::other)
 }
 
+/// A spawned task that is aborted when its handle is dropped.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> std::future::Future for AbortOnDrop<T> {
+    type Output = T;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<T> {
+        std::pin::Pin::new(&mut self.0).poll(cx).map(|result| match result {
+            Ok(value) => value,
+            Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+            Err(e) => panic!("upload task cancelled: {e}"),
+        })
+    }
+}
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Runs blocking network I/O from an async method: on the remote runtime's worker thread
 /// (`block_in_place`), or directly on a thread outside a multi-threaded runtime.
 fn blocking<T>(f: impl FnOnce() -> T) -> T {
@@ -1249,6 +1445,22 @@ impl MissingDigestsFinder for HttpCacheClient {
 
 #[async_trait]
 impl RemoteCacheClient for HttpCacheClient {
+    /// Each upload as a task of its own on the remote runtime: its network I/O blocks the task
+    /// (`blocking`), and the uploads a caller waits for together (the outputs of an action)
+    /// proceed at once, as each upload has its own channel in Java. Dropping the returned future
+    /// aborts the task (at its next await; a transfer in progress ends with its socket timeout).
+    fn upload_blob_owned(
+        self: Arc<Self>,
+        context: RemoteActionExecutionContext<'static>,
+        digest: Digest,
+        blob: Arc<dyn Blob>,
+    ) -> futures::future::BoxFuture<'static, io::Result<()>> {
+        let task = crate::runtime::runtime().spawn(async move {
+            self.upload_blob_impl(&context, &digest, &*blob).await
+        });
+        Box::pin(AbortOnDrop(task))
+    }
+
     fn cas_upload_cache(&self) -> &AsyncTaskCacheNoResult<Digest> {
         &self.cas_upload_cache
     }

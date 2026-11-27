@@ -44,6 +44,15 @@ pub trait Blob: Send + Sync {
     fn description(&self) -> Option<String> {
         None
     }
+
+    /// Whether the stream Java's blob gives can be rewound (`HttpCacheClient.reset(in)`: it
+    /// supports `mark`/`reset`, or it is a `FileInputStream`), which decides whether an HTTP
+    /// upload is repeated after a credential refresh. A `ByteString`'s stream can; a file's
+    /// (`LazyFileInputStream`) and a chunk of a file (`ByteStreams.limit`) cannot.
+    // Java: com/google/devtools/build/lib/remote/http/HttpCacheClient.java:734 HttpCacheClient.reset
+    fn supports_reset(&self) -> bool {
+        false
+    }
 }
 
 /// The blob of a file (`uploadFile`'s anonymous `Blob` over a `LazyFileInputStream`).
@@ -68,6 +77,11 @@ pub struct BytesBlob(pub bytes::Bytes);
 impl Blob for BytesBlob {
     fn get(&self) -> io::Result<Box<dyn Read + Send + '_>> {
         Ok(Box::new(io::Cursor::new(self.0.clone())))
+    }
+
+    /// `ByteString.newInput()` supports `mark`.
+    fn supports_reset(&self) -> bool {
+        true
     }
 }
 
@@ -152,6 +166,22 @@ pub trait RemoteCacheClient: MissingDigestsFinder {
         digest: &Digest,
         blob: &dyn Blob,
     ) -> io::Result<()>;
+
+    /// `uploadBlobImpl` as the task of `uploadBlob`, which owns the client, the context and the
+    /// blob. A client whose transfers block a thread (the HTTP cache) runs it as a task of its
+    /// own, so that the uploads a caller waits for together proceed at once, as each has its
+    /// own Netty pipeline in Java; the default awaits `upload_blob_impl` in place.
+    fn upload_blob_owned(
+        self: Arc<Self>,
+        context: RemoteActionExecutionContext<'static>,
+        digest: Digest,
+        blob: Arc<dyn Blob>,
+    ) -> futures::future::BoxFuture<'static, io::Result<()>>
+    where
+        Self: 'static,
+    {
+        Box::pin(async move { self.upload_blob_impl(&context, &digest, &*blob).await })
+    }
 
     /// Close resources associated with the remote cache.
     fn close(&self);
@@ -261,7 +291,7 @@ impl<T: RemoteCacheClient + ?Sized + 'static> RemoteCacheClientUploads for Arc<T
         // `Completable.defer(() -> uploadBlobImpl(context, digest, blob))`
         let upload = async move {
             client
-                .upload_blob_impl(&context, &task_digest, &*blob)
+                .upload_blob_owned(context, task_digest, blob)
                 .await
         };
         self.cas_upload_cache()

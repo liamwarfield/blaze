@@ -35,7 +35,7 @@ use std::collections::HashSet;
 use std::io::{self, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use blaze_actions::actions::command_lines::ParamFileActionInput;

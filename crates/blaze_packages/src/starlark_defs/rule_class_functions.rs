@@ -1499,6 +1499,22 @@ pub fn analysis_test<'v>(
 
     // Export the rule (in the BUILD thread).
     let state = starlark_rule_function.state.clone();
+    // createRule records `thread.getCallStack()` sans its last entry, the called builtin
+    // (here analysis_test). PORT: the testing module's method is dispatched through more than
+    // one native frame, so createRule's single pop leaves builtin entries; the stack Java
+    // records ends at the caller of analysis_test.
+    {
+        let mut callstack = call_stack(eval);
+        while callstack
+            .last()
+            .is_some_and(|entry| entry.location.is_none())
+        {
+            callstack.pop();
+        }
+        if let Some(builder) = state.builder.lock().as_mut() {
+            builder.set_call_stack(callstack);
+        }
+    }
     let rule_name = format!("{name}_test");
     if let Err(e) = export_rule_function(&state, &build_file_label, &rule_name, &[], &[]) {
         return Err(errorf(format!(
@@ -1517,7 +1533,13 @@ pub fn analysis_test<'v>(
     for ((_, v), k) in attr_values.iter().zip(&keys) {
         args.push((k.as_str(), *v));
     }
-    eval.eval_function(function, &[], &args)?;
+    // starlarkRuleFunction.call(thread, Tuple.of(), args): Java calls the rule function from
+    // Java, without a Starlark frame, so its EvalException is an error of analysis_test.
+    // PORT: eval_function pushes a frame for the rule function; its error is re-raised here
+    // without that frame.
+    if let Err(e) = eval.eval_function(function, &[], &args) {
+        return Err(errorf(e.without_diagnostic().to_string()));
+    }
     Ok(())
 }
 

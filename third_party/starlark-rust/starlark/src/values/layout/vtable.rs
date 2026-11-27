@@ -522,6 +522,10 @@ impl<'v> AValueDyn<'v> {
         (self.vtable.starlark_value.get_attr_error_message)(self.value, attribute) // BLAZE PATCH 0013
     } // BLAZE PATCH 0013
 
+    pub(crate) fn callable_location(self) -> Option<crate::codemap::FileSpan> { // BLAZE PATCH 0066
+        (self.vtable.starlark_value.callable_location)(self.value) // BLAZE PATCH 0066
+    } // BLAZE PATCH 0066
+
     pub(crate) fn get_attr_fallible( // BLAZE PATCH 0026
         self, // BLAZE PATCH 0026
         attribute: Hashed<&str>, // BLAZE PATCH 0026

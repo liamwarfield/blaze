@@ -244,6 +244,7 @@ fn driver_key() -> BuildDriverKey {
         true,
         false,
         false,
+        /* keep_going= */ false,
     )
 }
 
@@ -275,6 +276,7 @@ fn of_top_level_aspect_rejects_a_configured_target_key() {
         true,
         false,
         false,
+        /* keep_going= */ false,
     );
 }
 

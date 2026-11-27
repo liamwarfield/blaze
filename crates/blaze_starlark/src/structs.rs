@@ -125,6 +125,13 @@ impl fmt::Display for StructProvider {
 
 #[starlark_value(type = "Provider")]
 impl<'v> StarlarkValue<'v> for StructProvider {
+    // Java: the call-stack name of a builtin is `getName()`: `BuiltinProvider.getName` is "struct"
+    // (a traceback reads `Error in struct: ...`), not the repr `<function struct>`.
+    // Java: com/google/devtools/build/lib/packages/BuiltinProvider.java:127 BuiltinProvider.getName
+    fn name_for_call_stack(&self, _me: Value<'v>) -> String {
+        "struct".to_owned()
+    }
+
     fn invoke(
         &self,
         me: Value<'v>,

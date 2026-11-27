@@ -48,7 +48,7 @@ impl FileRoot {
 // (equals/hashCode derived over the mapped root's exec path)
 // Java: com/google/devtools/build/lib/actions/PathMapper.java:247 PathMapper.MappedArtifactRoot.equals
 // Java: com/google/devtools/build/lib/actions/PathMapper.java:259 PathMapper.MappedArtifactRoot.hashCode
-// PORT: skipped, serialization only (immutability of a codec value): MappedArtifactRoot.isImmutable
+// PORT: skipped, serialization only (immutability of a codec value): PathMapper.MappedArtifactRoot.isImmutable
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MappedArtifactRoot {
     mapped_root_exec_path: PathFragment,
@@ -202,7 +202,7 @@ pub static NOOP: NoopPathMapper = NoopPathMapper;
 
 /// `PathMapperConstants.FOR_FINGERPRINTING`: a path mapper that inserts `pm-` before the config
 /// segment of output paths, used to fingerprint path-mapped actions.
-// PORT: skipped, PathMapperConstants.PathMapperConstants: the private constructor of a static utility class.
+// PORT: skipped, PathMapperConstants.<init>: the private constructor of a static utility class.
 // Java: com/google/devtools/build/lib/actions/PathMapperConstants.java:63 PathMapperConstants.FOR_FINGERPRINTING
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ForFingerprintingPathMapper;

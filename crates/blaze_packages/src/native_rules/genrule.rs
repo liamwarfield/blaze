@@ -31,22 +31,25 @@ const IS_EXECUTABLE_ATTRIBUTE_NAME: &str = "$is_executable";
 /// The `$is_executable` computed default: one output and `executable = True`.
 // Java: com/google/devtools/build/lib/rules/genrule/GenRuleBaseRule.java:47 GenRuleBaseRule.build
 static IS_EXECUTABLE_DEFAULT: LazyLock<Arc<ComputedDefault>> = LazyLock::new(|| {
-    Arc::new(ComputedDefault::new_native(
-        Vec::new(),
-        Arc::new(|rule: &dyn AttributeMap| {
-            let outs = rule.get("outs", Type::OutputList);
-            let one_out = outs
-                .as_ref()
-                .and_then(AttrValue::as_label_list)
-                .is_some_and(|l| l.len() == 1);
-            let executable = rule
-                .get("executable", Type::Boolean)
-                .as_ref()
-                .and_then(AttrValue::as_bool)
-                .unwrap_or(false);
-            Some(AttrValue::Bool(one_out && executable))
-        }),
-    ))
+    Arc::new(
+        ComputedDefault::new_native(
+            Vec::new(),
+            Arc::new(|rule: &dyn AttributeMap| {
+                let outs = rule.get("outs", Type::OutputList);
+                let one_out = outs
+                    .as_ref()
+                    .and_then(AttrValue::as_label_list)
+                    .is_some_and(|l| l.len() == 1);
+                let executable = rule
+                    .get("executable", Type::Boolean)
+                    .as_ref()
+                    .and_then(AttrValue::as_bool)
+                    .unwrap_or(false);
+                Some(AttrValue::Bool(one_out && executable))
+            }),
+        )
+        .with_java_class_name("com.google.devtools.build.lib.rules.genrule.GenRuleBaseRule$1"),
+    )
 });
 
 /// The abstract base of genrules (Java `GenRuleBaseRule`).

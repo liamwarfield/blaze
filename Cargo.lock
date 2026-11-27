@@ -223,6 +223,7 @@ dependencies = [
  "blaze_runtime",
  "hex",
  "md-5",
+ "serde_json",
  "tar",
  "zstd",
 ]
@@ -384,6 +385,21 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "blaze_buildtool_testing"
+version = "0.1.0"
+dependencies = [
+ "blaze_events",
+ "blaze_protos",
+ "blaze_runtime",
+ "blaze_server",
+ "blaze_sky_top",
+ "blaze_skyframe",
+ "parking_lot",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -630,6 +646,7 @@ dependencies = [
  "blaze_events",
  "blaze_optdefs",
  "blaze_query_engine",
+ "blaze_shell",
  "blaze_starlark",
  "blaze_util",
  "blaze_vfs",
@@ -874,6 +891,7 @@ dependencies = [
  "blaze_bes",
  "blaze_build_config",
  "blaze_buildtool",
+ "blaze_buildtool_testing",
  "blaze_bzlmod",
  "blaze_bzlmod_model",
  "blaze_cmdline",
@@ -905,6 +923,7 @@ dependencies = [
  "libc",
  "parking_lot",
  "prost",
+ "serde_json",
  "starlark",
  "tempfile",
  "uuid",
@@ -996,6 +1015,7 @@ dependencies = [
  "blaze_options",
  "blaze_packages",
  "blaze_protos",
+ "blaze_shell",
  "blaze_sky_loading",
  "blaze_skyframe",
  "blaze_starlark",

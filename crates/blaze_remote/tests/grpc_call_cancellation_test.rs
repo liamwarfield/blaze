@@ -161,14 +161,19 @@ impl tonic::server::StreamingService<WriteRequest> for BidiHandler {
                     }
                 }
             });
-            let responses: BoxStream = Box::pin(DroppedStream(DropLog(log, true)));
+            let responses: BoxStream = Box::pin(DroppedStream {
+                _log: DropLog(log, true),
+            });
             Ok(tonic::Response::new(responses))
         })
     }
 }
 
 /// A response stream that never yields and logs its drop.
-struct DroppedStream(DropLog);
+struct DroppedStream {
+    /// Held for its `Drop`.
+    _log: DropLog,
+}
 
 impl Stream for DroppedStream {
     type Item = Result<WriteResponse, Status>;

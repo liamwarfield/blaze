@@ -43,6 +43,7 @@ impl InlinedFrame {
         frames.push(Frame {
             name: self.fun.to_value().name_for_call_stack(),
             location: Some(self.span.span.to_file_span()),
+            callable_location: None, // BLAZE PATCH 0066
         });
         self.span.inlined_frames.extend_frames(frames);
     }

@@ -280,6 +280,7 @@ fn driver_key(key: &ActionLookupKeyRef) -> SkyKey {
         skip_incompatible_explicit_targets: false,
         extra_action_top_level_only: false,
         test_type: TestType::NOT_TEST,
+        keep_going: false,
     })
 }
 

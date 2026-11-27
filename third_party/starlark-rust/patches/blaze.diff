@@ -708,7 +708,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                      });
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/def.rs starlark/src/eval/compiler/def.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/def.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/compiler/def.rs	2026-11-26 16:10:09.721682885 -0700
++++ starlark/src/eval/compiler/def.rs	2026-11-26 19:54:40.966961522 -0700
 @@ -42,6 +42,7 @@
  use crate as starlark;
  use crate::any::ProvidesStaticType;
@@ -771,7 +771,20 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              parameter_captures: self
                  .eval
                  .frozen_heap()
-@@ -602,14 +629,236 @@
+@@ -562,6 +589,12 @@
+     /// Values are either [`Value`] or [`FrozenValue`] pointing respectively to
+     /// [`ValueCaptured`] or [`FrozenValueCaptured`].
+     captured: Vec<V>,
++    /// BLAZE PATCH 0067: `str` of the extra value of the module the function was created in, // BLAZE PATCH 0067
++    /// when that module was still executing (`module` is then `None` until it is frozen): Java's // BLAZE PATCH 0067
++    /// `StarlarkFunction` knows its module (and the module's client data, printed by `repr`) // BLAZE PATCH 0067
++    /// from creation on. `None` without an extra value (or a `None` one). // BLAZE PATCH 0067
++    #[derivative(Debug = "ignore")] // BLAZE PATCH 0067
++    creation_module_extra: Option<String>, // BLAZE PATCH 0067
+     // Important to ignore these field as it probably references DefGen in a cycle
+     #[derivative(Debug = "ignore")]
+     /// A reference to the module where the function is defined after the module has been frozen.
+@@ -602,14 +635,239 @@
  }
  
  impl<V> Display for DefGen<V> {
@@ -786,7 +799,10 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +            if !extra.is_none() { // BLAZE PATCH 0009
 +                write!(f, " from {}", extra.to_value().to_str())?; // BLAZE PATCH 0009
 +            } // BLAZE PATCH 0009
-+        } // BLAZE PATCH 0009
++        } else if let Some(extra) = &self.creation_module_extra { // BLAZE PATCH 0067
++            // The defining module is still executing (Java: the module is known from creation). // BLAZE PATCH 0067
++            write!(f, " from {extra}")?; // BLAZE PATCH 0067
++        } // BLAZE PATCH 0067
 +        write!(f, ">") // BLAZE PATCH 0009
      }
  }
@@ -1009,7 +1025,51 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  starlark_complex_values!(Def);
  
  impl<'v> Def<'v> {
-@@ -773,6 +1022,39 @@
+@@ -624,13 +882,26 @@
+             .parent
+             .as_ref()
+             .map(|copy| eval.clone_slot_capture(copy, &stmt));
++        let frozen_module = eval.top_frame_def_frozen_module(false)?; // BLAZE PATCH 0067
++        // A function created by a function of an already frozen module has that module; one // BLAZE PATCH 0067
++        // created by the executing module's code has the executing module (Java // BLAZE PATCH 0067
++        // `StarlarkFunction.module`), whose extra value is read now. // BLAZE PATCH 0067
++        let creation_module_extra = match frozen_module { // BLAZE PATCH 0067
++            Some(_) => None, // BLAZE PATCH 0067
++            None => eval // BLAZE PATCH 0067
++                .module() // BLAZE PATCH 0067
++                .extra_value() // BLAZE PATCH 0067
++                .filter(|extra| !extra.is_none()) // BLAZE PATCH 0067
++                .map(|extra| extra.to_str()), // BLAZE PATCH 0067
++        }; // BLAZE PATCH 0067
+         Ok(eval.heap().alloc(Self {
+             parameters,
+             parameter_captures: stmt.parameter_captures,
+             parameter_types,
+             return_type,
+             captured,
+-            module: AtomicFrozenAnyValueOption::new(eval.top_frame_def_frozen_module(false)?),
++            creation_module_extra, // BLAZE PATCH 0067
++            module: AtomicFrozenAnyValueOption::new(frozen_module), // BLAZE PATCH 0067
+             optimized_on_freeze_stmt: StmtCompiledCell::new(),
+             def_info: stmt,
+         }))
+@@ -645,6 +916,7 @@
+         let parameter_types = self.parameter_types.freeze(freezer)?;
+         let return_type = self.return_type.freeze(freezer)?;
+         let captured = self.captured.try_map(|x| x.freeze(freezer))?;
++        let creation_module_extra = self.creation_module_extra; // BLAZE PATCH 0067
+         let module = AtomicFrozenAnyValueOption::new(self.module.load_relaxed());
+         Ok(FrozenDef {
+             parameters,
+@@ -653,6 +925,7 @@
+             return_type,
+             def_info: self.def_info,
+             captured,
++            creation_module_extra, // BLAZE PATCH 0067
+             module,
+             optimized_on_freeze_stmt: self.optimized_on_freeze_stmt,
+         })
+@@ -773,6 +1046,39 @@
          Ok(())
      }
  
@@ -1049,7 +1109,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      #[inline(always)]
      fn invoke_impl<'a, A: ArgumentsImpl<'v, 'a>>(
          &self,
-@@ -795,7 +1077,14 @@
+@@ -795,7 +1101,14 @@
                  //   We use `slots` only in `collect_inline`,
                  //   which does not have access to `eval` thus cannot access the frame indirectly.
                  let slots = unsafe { eval.current_frame.locals_mut() };
@@ -1794,8 +1854,16 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              if xs.len() >= REQUIRED && xs.len() <= REQUIRED + OPTIONAL {
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/cheap_call_stack.rs starlark/src/eval/runtime/cheap_call_stack.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/cheap_call_stack.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/runtime/cheap_call_stack.rs	2026-11-18 07:02:46.445228006 -0700
-@@ -209,6 +209,15 @@
++++ starlark/src/eval/runtime/cheap_call_stack.rs	2026-11-26 19:54:40.961005562 -0700
+@@ -58,6 +58,7 @@
+         Frame {
+             name: self.function.name_for_call_stack(),
+             location: self.location(),
++            callable_location: self.function.get_ref().callable_location(), // BLAZE PATCH 0066
+         }
+     }
+ }
+@@ -209,6 +210,15 @@
              .ok_or_else(|| CallStackError::StackIsTooShallowForNthTopFrame(n, self.count).into())
      }
  
@@ -1811,7 +1879,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      pub(crate) fn top_nth_function_opt(&self, n: usize) -> Option<Value<'v>> {
          let index = self.count.checked_sub(1).and_then(|x| x.checked_sub(n))?;
          Some(self.stack[index].function)
-@@ -224,6 +233,14 @@
+@@ -224,6 +234,14 @@
          CallStack { frames }
      }
  
@@ -2138,8 +2206,16 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              file: self.file,
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/inlined_frame.rs starlark/src/eval/runtime/inlined_frame.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/inlined_frame.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/runtime/inlined_frame.rs	2026-11-26 11:42:52.443582049 -0700
-@@ -75,7 +75,8 @@
++++ starlark/src/eval/runtime/inlined_frame.rs	2026-11-26 19:54:40.959609859 -0700
+@@ -43,6 +43,7 @@
+         frames.push(Frame {
+             name: self.fun.to_value().name_for_call_stack(),
+             location: Some(self.span.span.to_file_span()),
++            callable_location: None, // BLAZE PATCH 0066
+         });
+         self.span.inlined_frames.extend_frames(frames);
+     }
+@@ -75,7 +76,8 @@
          }
      }
  
@@ -2149,7 +2225,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          let mut r = Vec::new();
          let mut frames_iter = self;
          while let Some(frames) = frames_iter.frames {
-@@ -99,6 +100,7 @@
+@@ -99,6 +101,7 @@
              span: FrameSpan {
                  span: span.span,
                  inlined_frames: *self,
@@ -2157,7 +2233,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              },
              fun,
          }));
-@@ -107,6 +109,7 @@
+@@ -107,6 +110,7 @@
                  span: FrameSpan {
                      span: f.span.span,
                      inlined_frames: *self,
@@ -2165,7 +2241,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                  },
                  fun: f.fun,
              }));
-@@ -180,6 +183,7 @@
+@@ -180,6 +184,7 @@
              FrameSpan {
                  span: FrozenFileSpan::new(codemap, codemap.full_span()),
                  inlined_frames: InlinedFrames::default(),
@@ -3385,7 +3461,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/layout/vtable.rs starlark/src/values/layout/vtable.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/layout/vtable.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/layout/vtable.rs	2026-11-18 15:32:51.831530703 -0700
++++ starlark/src/values/layout/vtable.rs	2026-11-26 19:54:40.965146561 -0700
 @@ -457,6 +457,22 @@
          (self.vtable.starlark_value.at)(self.value, index, heap)
      }
@@ -3409,13 +3485,17 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      pub(crate) fn at2(
          self,
          index0: Value<'v>,
-@@ -502,6 +518,26 @@
+@@ -502,6 +518,30 @@
          (self.vtable.starlark_value.dir_attr)(self.value)
      }
  
 +    pub(crate) fn get_attr_error_message(self, attribute: &str) -> Option<String> { // BLAZE PATCH 0013
 +        (self.vtable.starlark_value.get_attr_error_message)(self.value, attribute) // BLAZE PATCH 0013
 +    } // BLAZE PATCH 0013
++
++    pub(crate) fn callable_location(self) -> Option<crate::codemap::FileSpan> { // BLAZE PATCH 0066
++        (self.vtable.starlark_value.callable_location)(self.value) // BLAZE PATCH 0066
++    } // BLAZE PATCH 0066
 +
 +    pub(crate) fn get_attr_fallible( // BLAZE PATCH 0026
 +        self, // BLAZE PATCH 0026
@@ -3436,7 +3516,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      #[inline]
      pub(crate) fn bit_and(self, other: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
          (self.vtable.starlark_value.bit_and)(self.value, other, heap)
-@@ -512,6 +548,11 @@
+@@ -512,6 +552,11 @@
          (self.vtable.starlark_value.bit_or)(self.value, other, heap)
      }
  
@@ -3586,7 +3666,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  /// Return opaque object which resets stack to previous value
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/traits.rs starlark/src/values/traits.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/traits.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/traits.rs	2026-11-26 11:43:10.140452000 -0700
++++ starlark/src/values/traits.rs	2026-11-26 19:54:40.963093881 -0700
 @@ -375,7 +375,8 @@
  
      /// Invoked to print `repr` when a cycle is the object stack is detected.
@@ -3633,7 +3713,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      /// Return the result of `a[index0, index1]` if `a` is indexable by two parameters.
      fn at2(
          &self,
-@@ -644,6 +665,41 @@
+@@ -644,6 +665,49 @@
          Vec::new()
      }
  
@@ -3643,6 +3723,14 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +    fn get_attr_error_message(&self, _attribute: &str) -> Option<String> { // BLAZE PATCH 0013
 +        None // BLAZE PATCH 0013
 +    } // BLAZE PATCH 0013
++
++    /// BLAZE PATCH 0066: the location of a callable native value, if it has one (Java // BLAZE PATCH 0066
++    /// `StarlarkCallable.getLocation()`: a provider's or rule's definition). A call of it is a // BLAZE PATCH 0066
++    /// frame at that location in a Bazel traceback, and an error it raises is that frame's // BLAZE PATCH 0066
++    /// (`Error: ...`), not a builtin's (`Error in NAME: ...`). Default: none (`Location.BUILTIN`). // BLAZE PATCH 0066
++    fn callable_location(&self) -> Option<crate::codemap::FileSpan> { // BLAZE PATCH 0066
++        None // BLAZE PATCH 0066
++    } // BLAZE PATCH 0066
 +
 +    /// Attribute access that may fail and may read the evaluator (Bazel's
 +    /// `Structure.getValue(StarlarkSemantics, String)`, which throws `EvalException`).
@@ -3675,7 +3763,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      /// Tell whether `other` is in the current value, if it is a container.
      ///
      /// # Examples
-@@ -659,6 +715,18 @@
+@@ -659,6 +723,18 @@
          ValueError::unsupported_owned(other.get_type(), "in", Some(Self::TYPE))
      }
  
@@ -3694,7 +3782,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      /// Apply the `+` unary operator to the current value.
      ///
      /// # Examples
-@@ -832,6 +900,13 @@
+@@ -832,6 +908,13 @@
          ValueError::unsupported_with(self, "|", other)
      }
  
@@ -3708,7 +3796,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      /// Bitwise `^` operator.
      fn bit_xor(&self, other: Value<'v>, _heap: Heap<'v>) -> crate::Result<Value<'v>> {
          ValueError::unsupported_with(self, "^", other)
-@@ -884,9 +959,12 @@
+@@ -884,9 +967,12 @@
      /// # "#);
      /// ```
      fn set_at(&self, _index: Value<'v>, _new_value: Value<'v>) -> crate::Result<()> {
@@ -4003,7 +4091,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict/value.rs starlark/src/values/types/dict/value.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict/value.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/dict/value.rs	2026-11-26 14:40:23.268518612 -0700
++++ starlark/src/values/types/dict/value.rs	2026-11-26 19:26:47.947700982 -0700
 @@ -16,6 +16,7 @@
   */
  
@@ -4012,7 +4100,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  use std::cell::Ref;
  use std::cell::RefCell;
  use std::cell::RefMut;
-@@ -117,7 +118,126 @@
+@@ -117,7 +118,158 @@
  /// Alias is used in `StarlarkDocs` derive.
  pub(crate) type FrozenDict = DictGen<FrozenDictData>;
  
@@ -4065,6 +4153,38 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +            }
 +        }
 +    }
++}
++
++/// BLAZE PATCH 0063 (round 2): the keys Java's `x.equals(y)` reads from a key-tracking `y`.
++/// `Dict.equals` is `contents.equals(y)`: an `ImmutableMap` `x` (`Maps.equalsImpl`) compares
++/// `entrySet()`s, which records every key of `y`; a `LinkedHashMap` `x` (`AbstractMap.equals`)
++/// returns at once on different sizes, else calls `y.get(k)` for its keys in order (recording a
++/// present key) until the first missing key or unequal value.
++// Java: net/starlark/java/eval/Dict.java:209 Dict.equals
++fn record_equals_accesses<'v, X: DictLike<'v>>(
++    x: &X,
++    y: &MutableDictData<'v>,
++    y_content: &SmallMap<Value<'v>, Value<'v>>,
++) -> crate::Result<()> {
++    if x.java_contents_immutable() {
++        y.record_all_keys_access();
++        return Ok(());
++    }
++    let x_content = x.content();
++    if x_content.len() != y_content.len() {
++        return Ok(());
++    }
++    for (xk, xv) in x_content.iter_hashed() {
++        let Some(i) = y_content.get_index_of_hashed_by_value(xk.copied()) else {
++            return Ok(());
++        };
++        y.record_index(i);
++        let yv = *y_content.get_index(i).expect("index of a key").1;
++        if !xv.equals(yv)? {
++            return Ok(());
++        }
++    }
++    Ok(())
 +}
 +
 +/// BLAZE PATCH 0018: Java's error for mutating a frozen dict (Starlark.checkMutable).
@@ -4140,7 +4260,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  
  static_starlark_value!(
      pub(crate) VALUE_EMPTY_FROZEN_DICT: DictGen<FrozenDictData> = DictGen(FrozenDictData {
-@@ -129,7 +249,7 @@
+@@ -129,7 +281,7 @@
  
  impl<'v> AllocValue<'v> for Dict<'v> {
      fn alloc_value(self, heap: Heap<'v>) -> Value<'v> {
@@ -4149,7 +4269,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  }
  
-@@ -154,13 +274,14 @@
+@@ -154,13 +306,14 @@
  impl<'v> Dict<'v> {
      pub(crate) fn is_dict_type(x: TypeId) -> bool {
          x == TypeId::of::<DictGen<FrozenDictData>>()
@@ -4167,7 +4287,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          }
      }
  }
-@@ -316,10 +437,10 @@
+@@ -316,10 +469,10 @@
      }
  }
  
@@ -4180,7 +4300,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          Ok(DictGen(FrozenDictData { content }))
      }
  }
-@@ -336,9 +457,14 @@
+@@ -336,9 +489,20 @@
      unsafe fn content_unchecked(&self) -> &SmallMap<Value<'v>, Value<'v>>;
      unsafe fn iter_stop(&self);
      fn set_at(&self, index: Hashed<Value<'v>>, value: Value<'v>) -> crate::Result<()>;
@@ -4188,6 +4308,12 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +    fn record_key_index_access(&self, _index: usize) {}
 +    /// BLAZE PATCH 0063: records an access of every key (key-tracking dicts only).
 +    fn record_all_keys_access(&self) {}
++    /// BLAZE PATCH 0063 (round 2): whether Java's `contents` of this dict is an `ImmutableMap`
++    /// (a dict made immutable, `Dict.immutableCopyOf`) rather than a `LinkedHashMap` (a mutable
++    /// dict, frozen or not).
++    fn java_contents_immutable(&self) -> bool {
++        false
++    }
  }
  
 -impl<'v> DictLike<'v> for RefCell<Dict<'v>> {
@@ -4196,7 +4322,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      type ContentRef<'a>
          = Ref<'a, SmallMap<Value<'v>, Value<'v>>>
      where
-@@ -346,18 +472,18 @@
+@@ -346,18 +510,18 @@
          'v: 'a;
  
      fn content<'a>(&'a self) -> Ref<'a, SmallMap<Value<'v>, Value<'v>>> {
@@ -4218,7 +4344,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          }
      }
  
-@@ -365,17 +491,35 @@
+@@ -365,17 +529,40 @@
      unsafe fn content_unchecked(&self) -> &SmallMap<Value<'v>, Value<'v>> {
          unsafe {
              // SAFETY: this function contract is, caller must ensure that the value is borrowed.
@@ -4230,6 +4356,11 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +    // BLAZE PATCH 0063
 +    fn record_key_index_access(&self, index: usize) {
 +        self.record_index(index);
++    }
++
++    // BLAZE PATCH 0063 (round 2)
++    fn java_contents_immutable(&self) -> bool {
++        self.immutable.get()
 +    }
 +
 +    // BLAZE PATCH 0063
@@ -4257,7 +4388,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          }
      }
  }
-@@ -400,9 +544,8 @@
+@@ -400,9 +587,8 @@
      }
  
      fn set_at(&self, _index: Hashed<Value<'v>>, _value: Value<'v>) -> crate::Result<()> {
@@ -4269,7 +4400,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  }
  
-@@ -423,6 +566,7 @@
+@@ -423,6 +609,7 @@
      }
  
      fn collect_repr(&self, r: &mut String) {
@@ -4277,7 +4408,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          // Fast path as repr() for dicts is quite hot
          r.push('{');
          for (i, (name, value)) in self.0.content().iter().enumerate() {
-@@ -437,7 +581,7 @@
+@@ -437,7 +624,7 @@
      }
  
      fn collect_repr_cycle(&self, collector: &mut String) {
@@ -4286,7 +4417,22 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      fn to_bool(&self) -> bool {
-@@ -454,11 +598,25 @@
+@@ -447,18 +634,38 @@
+     fn equals(&self, other: Value<'v>) -> crate::Result<bool> {
+         match DictRef::from_value(other) {
+             None => Ok(false),
+-            Some(other) => {
+-                equals_small_map(&*self.0.content(), &other.content, |x, y| x.equals(*y))
++            Some(other_ref) => {
++                // BLAZE PATCH 0063 (round 2): the reads of Java's `x.equals(y)` on a key-tracking `y`.
++                if let Some(tracking) = other.downcast_ref::<MutableDict>() {
++                    if tracking.0.accessed_keys.borrow().is_some() {
++                        record_equals_accesses(&self.0, &tracking.0, &other_ref.content)?;
++                    }
++                }
++                equals_small_map(&*self.0.content(), &other_ref.content, |x, y| x.equals(*y))
+             }
+         }
      }
  
      fn at(&self, index: Value<'v>, _heap: Heap<'v>) -> crate::Result<Value<'v>> {
@@ -4317,7 +4463,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          }
      }
  
-@@ -467,13 +625,22 @@
+@@ -467,13 +674,22 @@
      }
  
      fn is_in(&self, other: Value<'v>) -> crate::Result<bool> {
@@ -4342,7 +4488,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          unsafe {
              self.0.iter_start();
              Ok(me)
-@@ -502,8 +669,12 @@
+@@ -502,8 +718,12 @@
      }
  
      fn bit_or(&self, rhs: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
@@ -8950,7 +9096,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          heap: Heap<'v>,
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/unpack.rs starlark/src/values/unpack.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/unpack.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/unpack.rs	2026-11-26 18:28:10.194248421 -0700
++++ starlark/src/values/unpack.rs	2026-11-26 19:31:26.677561944 -0700
 @@ -226,17 +226,27 @@
      fn unpack_named_param(value: Value<'v>, param_name: &str) -> crate::Result<Self> {
          #[cold]
@@ -8988,7 +9134,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          Self::unpack_value(value)
              .into_anyhow_result()
              .with_context(|| {
-@@ -273,3 +283,313 @@
+@@ -273,3 +283,315 @@
          }
      }
  }
@@ -9139,7 +9285,8 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +/// BLAZE PATCH 0062: whether `v` is one of Java's allowed classes of the builtin's parameter, as
 +/// the table lists them (`Starlark.classType` names); `None` when the table has no text for it.
 +// Java: net/starlark/java/eval/BuiltinFunction.java:388 checkParamValue
-+pub(crate) fn java_param_accepts<'v>(
++#[doc(hidden)] // BLAZE PATCH 0062 (round 3): public for the conformance tests
++pub fn java_param_accepts<'v>(
 +    function: &str,
 +    receiver: Option<&str>,
 +    param: &str,
@@ -9302,10 +9449,11 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +pub fn bazel_argument_binding_error(message: String) -> crate::Error {
 +    crate::Error::new_value(crate::eval::runtime::java_call::JavaArgBinding(message))
 +}
++
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values.rs starlark/src/values.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values.rs	2026-11-26 18:28:10.194474450 -0700
-@@ -136,7 +136,9 @@
++++ starlark/src/values.rs	2026-11-26 19:31:26.677812833 -0700
+@@ -136,7 +136,11 @@
  pub mod type_repr;
  pub(crate) mod types;
  pub mod typing;
@@ -9313,6 +9461,8 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +pub(crate) mod unpack; // BLAZE PATCH 0052 (was private)
 +pub use unpack::bazel_argument_binding_error; // BLAZE PATCH 0061
 +pub use unpack::{JavaInterfaceMatcher, register_java_interface_matcher}; // BLAZE PATCH 0062 (round 3)
++#[doc(hidden)]
++pub use unpack::java_param_accepts; // BLAZE PATCH 0062 (round 3)
  mod unpack_and_discard;
  pub(crate) mod value_of;
  pub(crate) mod value_of_unchecked;
@@ -9571,6 +9721,20 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  
  #[inline]
  pub fn contains(haystack: &str, needle: &str) -> bool {
+diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/frame.rs starlark_syntax/src/frame.rs
+--- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/frame.rs	2006-07-23 19:21:28.000000000 -0600
++++ starlark_syntax/src/frame.rs	2026-11-26 19:54:40.957439570 -0700
+@@ -30,6 +30,10 @@
+     pub name: String,
+     /// The location of the definition, or [`None`] for native Rust functions.
+     pub location: Option<FileSpan>,
++    /// BLAZE PATCH 0066: the callee's own location when it is a native callable that has one // BLAZE PATCH 0066
++    /// (Java `StarlarkCallable.getLocation()` other than `Location.BUILTIN`, e.g. a provider's // BLAZE PATCH 0066
++    /// definition), from [`StarlarkValue::callable_location`]; [`None`] otherwise. // BLAZE PATCH 0066
++    pub callable_location: Option<FileSpan>, // BLAZE PATCH 0066
+ }
+ 
+ impl Display for Frame {
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/lexer.rs starlark_syntax/src/lexer.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark_syntax-0.14.2/src/lexer.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark_syntax/src/lexer.rs	2026-11-19 13:34:50.379141339 -0700

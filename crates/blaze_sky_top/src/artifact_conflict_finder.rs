@@ -57,51 +57,64 @@ impl<'a> MapBasedActionGraph<'a> {
     /// not guaranteed that all potential conflicts are detected, but at least one of them is.
     // Java: com/google/devtools/build/lib/actions/MapBasedActionGraph.java:46 MapBasedActionGraph.registerAction
     pub fn register_action(&mut self, action: &ActionRef) -> Result<(), RegisterActionError> {
-        for artifact in action.get_outputs() {
-            // putIfAbsent
-            let previous_action = match self
-                .generating_action_map
-                .entry(OwnerlessArtifactWrapper(artifact.clone()))
-            {
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    e.insert(action.clone());
-                    None
-                }
-                std::collections::hash_map::Entry::Occupied(e) => Some(e.get().clone()),
-            };
-            if let Some(previous_action) = previous_action
-                && !std::sync::Arc::ptr_eq(&previous_action, action)
-            {
-                if can_be_shared_log_for_potential_false_positives(
-                    self.action_key_context,
-                    action,
-                    &previous_action,
-                )? {
-                    // All outputs can be shared. No need to register the remaining outputs.
-                    return Ok(());
-                }
-                // TODO(blaze-configurability-team): May be possible to do some inspection here
-                // and provide advice on possible known-common reasons for conflicts.
-                // e.g. If only config diffs where one is missing TestOptions:
-                //   --trim_test_configuration or, if the --platforms differ but have same
-                //   shortname
-                return Err(RegisterActionError::ActionConflict(
-                    ActionConflictException::create(
-                        self.action_key_context,
-                        &artifact,
-                        &previous_action,
-                        action,
-                    ),
-                ));
-            }
-        }
-        Ok(())
+        register_action_in(
+            &mut self.generating_action_map,
+            self.action_key_context,
+            action,
+        )
     }
 
     // Java: com/google/devtools/build/lib/actions/MapBasedActionGraph.java:65 MapBasedActionGraph.getSize
     pub fn get_size(&self) -> i32 {
         self.generating_action_map.len() as i32
     }
+}
+
+/// `MapBasedActionGraph.registerAction` over a generating-action map and an action key context
+/// (the map of a [`MapBasedActionGraph`], or the incremental conflict finder's shared map).
+// Java: com/google/devtools/build/lib/actions/MapBasedActionGraph.java:46 MapBasedActionGraph.registerAction
+pub(crate) fn register_action_in(
+    generating_action_map: &mut HashMap<OwnerlessArtifactWrapper, ActionRef>,
+    action_key_context: &ActionKeyContext,
+    action: &ActionRef,
+) -> Result<(), RegisterActionError> {
+    for artifact in action.get_outputs() {
+        // putIfAbsent
+        let previous_action =
+            match generating_action_map.entry(OwnerlessArtifactWrapper(artifact.clone())) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(action.clone());
+                    None
+                }
+                std::collections::hash_map::Entry::Occupied(e) => Some(e.get().clone()),
+            };
+        if let Some(previous_action) = previous_action
+            && !std::sync::Arc::ptr_eq(&previous_action, action)
+        {
+            if can_be_shared_log_for_potential_false_positives(
+                action_key_context,
+                action,
+                &previous_action,
+            )? {
+                // All outputs can be shared. No need to register the remaining outputs.
+                return Ok(());
+            }
+            // TODO(blaze-configurability-team): May be possible to do some inspection here
+            // and provide advice on possible known-common reasons for conflicts.
+            // e.g. If only config diffs where one is missing TestOptions:
+            //   --trim_test_configuration or, if the --platforms differ but have same
+            //   shortname
+            return Err(RegisterActionError::ActionConflict(
+                ActionConflictException::create(
+                    action_key_context,
+                    &artifact,
+                    &previous_action,
+                    action,
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 impl From<blaze_collect::command_line_item::InterruptedException> for RegisterActionError {
@@ -131,6 +144,14 @@ pub struct ActionConflictsAndStats {
 }
 
 impl ActionConflictsAndStats {
+    // Java: com/google/devtools/build/lib/skyframe/ArtifactConflictFinder.java:148 ArtifactConflictFinder.ActionConflictsAndStats.create
+    pub(crate) fn create(conflicts: ActionConflicts, output_artifact_count: i32) -> Self {
+        ActionConflictsAndStats {
+            conflicts,
+            output_artifact_count,
+        }
+    }
+
     pub fn conflicts(&self) -> &ActionConflicts {
         &self.conflicts
     }

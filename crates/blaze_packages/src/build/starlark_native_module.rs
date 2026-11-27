@@ -123,8 +123,10 @@ fn run_glob_operation(
             Ok(Vec::new())
         }
         Err(GlobberError::BadGlob(e)) => Err(eval_err(e)),
-        // PORT: Java propagates InterruptedException; starlark-rust has no such error.
-        Err(GlobberError::Interrupted) => Err(eval_err("interrupted")),
+        // Java propagates InterruptedException out of the evaluation. starlark-rust has no such
+        // error: the evaluation stops as a cancelled one (blaze_starlark `EvalErrorKind::Cancelled`,
+        // which PackageFactory.executeBuildFile turns into an interrupted package).
+        Err(GlobberError::Interrupted) => Err(eval_err("Evaluation cancelled")),
     }
 }
 

@@ -1,15 +1,17 @@
 //! A Build Event Service that records every request it receives: the tool behind the oracle
 //! comparison of the Build Event Service client (`--bes_backend`).
 //!
-//! Usage: `blaze-bes-logging-server <port> <log file> [fail-first-stream]`
+//! Usage: `blaze-bes-logging-server <port> <log file> [fail-first-stream] [close-delay=<ms>]`
 //!
 //! Listens on `127.0.0.1:<port>` (0 picks a free port, printed as `port=<n>` on stdout), answers
 //! `PublishLifecycleEvent` with `Empty` and acknowledges every event of a
 //! `PublishBuildToolEventStream`, and appends each request to the log file in text format,
 //! preceded by `=== <method>` and the request headers that do not vary between runs. The
 //! `bazel_event` payload is decoded and its event id printed. With `fail-first-stream` the first
-//! stream is failed with `UNAVAILABLE` after its first event (to see the retries). Runs until
-//! killed.
+//! stream is failed with `UNAVAILABLE` after its first event (to see the retries). With
+//! `close-delay=<ms>` each stream ends that long after the client's half-close (a backend that
+//! closes late, as Java's `DelayingPublishBuildEventService.setDelayBeforeClosingStream`). Runs
+//! until killed.
 
 use std::io::Write;
 use std::pin::Pin;
@@ -31,14 +33,17 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status, Streaming};
 
-const USAGE: &str = "usage: blaze-bes-logging-server <port> <log file> [fail-first-stream]\n\
+const USAGE: &str = "usage: blaze-bes-logging-server <port> <log file> [fail-first-stream] \
+    [close-delay=<ms>]\n\
     Records every Build Event Service request in <log file> (text format) and acknowledges the\n\
-    events. Port 0 picks a free port (printed as port=<n>). Runs until killed.";
+    events. Port 0 picks a free port (printed as port=<n>). close-delay=<ms> ends each stream\n\
+    that long after the client's half-close. Runs until killed.";
 
 #[derive(Clone)]
 struct Logger {
     out: Arc<Mutex<std::fs::File>>,
     fail_first_stream: Arc<AtomicBool>,
+    close_delay: std::time::Duration,
 }
 
 /// The headers worth comparing: the request metadata and the `--bes_header`s (not the HTTP/2
@@ -163,6 +168,11 @@ impl PublishBuildEvent for Logger {
                     }
                     Ok(None) => {
                         logger.log("=== PublishBuildToolEventStream (half-closed)\n");
+                        if !logger.close_delay.is_zero() {
+                            tokio::time::sleep(logger.close_delay).await;
+                            logger.log("=== PublishBuildToolEventStream (closed after delay)\n");
+                        }
+                        drop(sender);
                         return;
                     }
                     Err(status) => {
@@ -200,8 +210,20 @@ fn main() {
     let logger = Logger {
         out: Arc::new(Mutex::new(out)),
         fail_first_stream: Arc::new(AtomicBool::new(
-            args.get(2).is_some_and(|a| a == "fail-first-stream"),
+            args[2..].iter().any(|a| a == "fail-first-stream"),
         )),
+        close_delay: std::time::Duration::from_millis(
+            args[2..]
+                .iter()
+                .find_map(|a| a.strip_prefix("close-delay="))
+                .map(|ms| {
+                    ms.parse().unwrap_or_else(|_| {
+                        eprintln!("{USAGE}");
+                        std::process::exit(2)
+                    })
+                })
+                .unwrap_or(0),
+        ),
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)

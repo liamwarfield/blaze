@@ -3099,7 +3099,8 @@ impl<'e> Run<'e> {
                 .ev
                 .has_user_progress_receiver
                 .then(|| temporary_direct_deps.clone());
-            // PORT: reset deps (getResetDirectDeps) are always empty: resets are not ported.
+            // `old_deps` is the union of the old deps and the reset deps (getResetDirectDeps),
+            // taken where the node starts evaluating (see `evaluate_node`).
             let deps_to_remove: Vec<SkyKey> = if old_deps.is_empty() {
                 vec![]
             } else {

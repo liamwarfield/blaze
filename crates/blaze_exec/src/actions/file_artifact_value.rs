@@ -187,7 +187,7 @@ pub enum FileArtifactValue {
     // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:224 TreeArtifactCompositeFileArtifactValue
     /// `equals` compares the digest and the resolved path (`is_remote` is [`NotInEquality`]).
     // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:236 TreeArtifactValue.TreeArtifactCompositeFileArtifactValue.equals
-    // PORT: skipped, FileArtifactValue is not hashed in Blaze: TreeArtifactCompositeFileArtifactValue.hashCode
+    // PORT: skipped, FileArtifactValue is not hashed in Blaze: TreeArtifactValue.TreeArtifactCompositeFileArtifactValue.hashCode
     TreeArtifactComposite {
         digest: Vec<u8>,
         is_remote: NotInEquality<bool>,

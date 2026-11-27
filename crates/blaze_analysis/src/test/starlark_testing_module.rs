@@ -94,7 +94,7 @@ fn testing_methods(builder: &mut MethodsBuilder) {
         ))
     }
 
-    // Java: com/google/devtools/build/lib/rules/test/StarlarkTestingModule.java:64 StarlarkTestingModule.analysisTest
+    // Java: com/google/devtools/build/lib/rules/test/StarlarkTestingModule.java:62 StarlarkTestingModule.analysisTest
     fn analysis_test<'v>(
         this: Value<'v>,
         name: Value<'v>,
@@ -105,25 +105,44 @@ fn testing_methods(builder: &mut MethodsBuilder) {
         attr_values: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<NoneType> {
-        let _ = (
-            this,
+        let _ = this;
+        // TODO(b/236456122): Refactor this check into a standard helper / error message
+        // PORT: Java checks for a Package.Builder and a RuleDefinitionEnvironment on the thread;
+        // both exist exactly in BUILD (loading-phase) threads that hold a package builder.
+        let cx = ThreadContext::get(eval)?;
+        if cx.phase != Phase::Loading
+            || blaze_packages::package::target_definition_context::TargetDefinitionContext::from_or_null(
+                eval,
+            )
+            .is_none()
+        {
+            return Err(errorf(
+                "analysis_test can only be called in a BUILD thread".to_owned(),
+            ));
+        }
+        let Some(name) = name.unpack_str() else {
+            return Err(errorf(format!(
+                "in call to analysis_test(), parameter 'name' got value of type '{}', want 'string'",
+                name.get_type()
+            )));
+        };
+        let empty_list = || eval.heap().alloc(starlark::values::list::AllocList::EMPTY);
+        let attrs =
+            attrs.unwrap_or_else(|| eval.heap().alloc(starlark::values::dict::AllocDict::EMPTY));
+        let fragments = fragments.unwrap_or_else(empty_list);
+        let toolchains = toolchains.unwrap_or_else(empty_list);
+        let attr_values = attr_values
+            .unwrap_or_else(|| eval.heap().alloc(starlark::values::dict::AllocDict::EMPTY));
+        blaze_packages::starlark_defs::rule_class_functions::analysis_test(
+            eval,
             name,
             implementation,
             attrs,
             fragments,
             toolchains,
             attr_values,
-        );
-        // TODO(b/236456122): Refactor this check into a standard helper / error message
-        // PORT: Java checks for a Package.Builder and a RuleDefinitionEnvironment on the thread;
-        // both exist exactly in BUILD (loading-phase) threads.
-        let cx = ThreadContext::get(eval)?;
-        if cx.phase != Phase::Loading {
-            return Err(errorf(
-                "analysis_test can only be called in a BUILD thread".to_owned(),
-            ));
-        }
-        blaze_util::unported!("StarlarkTestingModule.analysisTest")
+        )?;
+        Ok(NoneType)
     }
 }
 

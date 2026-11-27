@@ -213,6 +213,11 @@ pub enum ExecutionFailure {
     /// without it the executor reports the failure itself, see
     /// `SkyframeActionExecutor::handle_lost_inputs`).
     LostInputs(Box<LostInputsActionExecutionException>),
+    /// A shared action's copy found the primary action's state `Obsolete` (the primary action
+    /// lost inputs and rewound): Java's `scheduleRestart`, the copy's node starts over, finds
+    /// the rewound dependencies undone and waits for them before it executes.
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:143 ActionExecutionState.scheduleRestart
+    RestartNode,
 }
 
 /// An `ActionExecutionException` thrown when an action fails to execute because one or more of
@@ -251,13 +256,14 @@ impl LostInputsActionExecutionException {
 /// shared action wait on: how a state that ended with lost inputs is resolved.
 ///
 /// PORT: blocking engine. Java's non-owning node depends on the owner's `completionFuture` and
-/// restarts when it is set (`obsolete`), then finds the state `Obsolete` (or gone) and runs the
-/// action itself. Here its thread waits for the owner's result; when that result is lost inputs
-/// it waits for the owner to rewind (`Obsolete`) and tries again. If the owner's rewinding
-/// fails, Java's copy waits for ever (it stays in flight); here it fails with the owner's error.
-///
-/// The `Obsolete` state of Java's state machine is [`RewindOutcome::Obsolete`]; a copy that finds
-/// it tries again (Java's `scheduleRestart`).
+/// restarts when it is set (`obsolete`); the restarted `compute` requests its deps again, finds
+/// the rewound ones undone and waits for them before it runs the action. Here the copy's thread
+/// waits for the owner's result; when that result is lost inputs it waits for the owner to
+/// rewind ([`RewindOutcome::Obsolete`]) and then restarts its node
+/// ([`ExecutionFailure::RestartNode`]: `ActionExecutionFunction` returns `Reset.selfOnly`, after
+/// which the evaluator runs `compute` from the start, as Java's restart does). If the owner's
+/// rewinding fails, Java's copy waits for ever (it stays in flight); here it fails with the
+/// owner's error. The waits are interruptible.
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:143 ActionExecutionState.scheduleRestart
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:407 ActionExecutionState.Obsolete.isDone
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:412 ActionExecutionState.Obsolete.run
@@ -284,14 +290,75 @@ impl RewindSignal {
         self.changed.notify_all();
     }
 
-    fn wait(&self) -> RewindOutcome {
+    /// Waits for the outcome; an interrupt of the waiting thread ends the wait.
+    fn wait(self: &Arc<Self>) -> Result<RewindOutcome, ExecutionFailure> {
+        let me = self.clone();
+        let waiter = std::thread::current().id();
+        let _registration =
+            blaze_shell::ThreadInterrupt::current().add_interrupt_listener(Arc::new(move || {
+                if std::thread::current().id() == waiter {
+                    return;
+                }
+                let _slot = me.outcome.lock();
+                me.changed.notify_all();
+            }));
         let mut slot = self.outcome.lock();
         loop {
+            if blaze_shell::thread_interrupt::interrupted() {
+                return Err(ExecutionFailure::Interrupted);
+            }
             if let Some(outcome) = &*slot {
-                return outcome.clone();
+                return Ok(outcome.clone());
             }
             self.changed.wait(&mut slot);
         }
+    }
+}
+
+/// `OnceLock::wait` on a shared action's result cell, interruptible: the copy's thread waits
+/// for the primary action's result (Java's node is not blocked: it depends on the completion
+/// future and restarts).
+fn wait_for_shared_result(cell: &Arc<OnceLock<SharedResult>>) -> SharedResult {
+    if let Some(result) = cell.get() {
+        return result.clone();
+    }
+    let waiter = std::thread::current().id();
+    let interrupted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (lock, changed) = (
+        Arc::new(Mutex::new(())),
+        Arc::new(parking_lot::Condvar::new()),
+    );
+    let _registration = {
+        let (interrupted, lock, changed) = (interrupted.clone(), lock.clone(), changed.clone());
+        blaze_shell::ThreadInterrupt::current().add_interrupt_listener(Arc::new(move || {
+            if std::thread::current().id() == waiter {
+                return;
+            }
+            interrupted.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _guard = lock.lock();
+            changed.notify_all();
+        }))
+    };
+    // OnceLock has no interruptible wait: a helper thread waits on the cell and wakes this one.
+    {
+        let (cell, lock, changed) = (cell.clone(), lock.clone(), changed.clone());
+        std::thread::spawn(move || {
+            cell.wait();
+            let _guard = lock.lock();
+            changed.notify_all();
+        });
+    }
+    let mut guard = lock.lock();
+    loop {
+        if blaze_shell::thread_interrupt::interrupted()
+            || interrupted.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(ExecutionFailure::Interrupted);
+        }
+        if let Some(result) = cell.get() {
+            return result.clone();
+        }
+        changed.wait(&mut guard);
     }
 }
 
@@ -337,7 +404,7 @@ pub type ActionPostprocessing<'a> = dyn FnMut(
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:373 ActionExecutionState.Exceptional.<init>
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:381 ActionExecutionState.Exceptional.isDone
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:391 ActionExecutionState.Exceptional.get
-// PORT: skipped, a terminal state has no step to run and Blaze has no asynchronous action steps (see above): ActionStepOrResult.run Finished.run Exceptional.run ActionStep.isDone ActionStep.get
+// PORT: skipped, a terminal state has no step to run and Blaze has no asynchronous action steps (see above): ActionExecutionState.ActionStepOrResult.run ActionExecutionState.Finished.run ActionExecutionState.Exceptional.run ActionExecutionState.ActionStep.isDone ActionExecutionState.ActionStep.get
 type SharedResult = Result<Option<ActionExecutionValue>, ExecutionFailure>;
 
 /// The (shared) execution of the action that generates one primary output: the
@@ -500,7 +567,7 @@ impl Postable for CachedActionEvent {}
 /// Action executor: it executes actions for `ActionExecutionFunction`.
 // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:144 SkyframeActionExecutor
 //
-// PORT: skipped, remote analysis caching (retrieval of remote ActionExecutionValues) stops with unported! (--experimental_remote_analysis_cache_mode): SkyframeActionExecutor.shouldSkipRetrieval ExistingActionLookupValuePeeker.getExistingActionLookupValue
+// PORT: skipped, remote analysis caching (retrieval of remote ActionExecutionValues) stops with unported! (--experimental_remote_analysis_cache_mode): SkyframeActionExecutor.shouldSkipRetrieval SkyframeActionExecutor.ExistingActionLookupValuePeeker.getExistingActionLookupValue
 // PORT: skipped, the evaluator of the build driver keys runs at most --jobs functions at once (blaze_buildtool evaluate_build_driver_keys, parallelism config.jobs), which bounds the actions in execution as the meter does without --experimental_async_execution: SkyframeActionExecutor.acquireActionExecutionSemaphore SkyframeActionExecutor.releaseActionExecutionSemaphore
 // PORT: skipped, it only drops references for the garbage collector and stops the meter above: SkyframeActionExecutor.executionOver
 // PORT: skipped, the only ImportantOutputHandler of Bazel (RemoteImportantOutputHandler) does nothing for a large stdout/stderr (LostImportantOutputHandlerModule is a test module): SkyframeActionExecutor.informImportantOutputHandlerIfNecessary
@@ -551,7 +618,11 @@ pub struct SkyframeActionExecutor {
     /// The `MemoizingEvaluator` the `SkyframeInputMetadataProvider` of each action reads done
     /// values from (`evaluator.getExistingValue`); see
     /// [`SkyframeActionExecutor::set_memoizing_evaluator_graph`].
-    memoizing_evaluator_graph: RwLock<Option<Arc<dyn blaze_skyframe::WalkableGraph>>>,
+    ///
+    /// PORT: weak: the evaluator's functions hold this executor, so a strong reference would be
+    /// a cycle that keeps the evaluator referenced after the command (the server could then
+    /// neither strip nor keep its graph). Each action upgrades it while it runs.
+    memoizing_evaluator_graph: RwLock<Option<std::sync::Weak<dyn blaze_skyframe::WalkableGraph>>>,
     /// See [`SkyframeActionExecutor::set_timestamp_granularity_monitor`].
     tsgm: OnceLock<Arc<TimestampGranularityMonitor>>,
     /// Java: `buildActionMap`. Shared actions (same primary output) execute once; the entry
@@ -964,7 +1035,7 @@ impl SkyframeActionExecutor {
     /// PORT: set by the build once its evaluator exists, as the remote module's graph is.
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:154 ActionExecutionFunction.<init>
     pub fn set_memoizing_evaluator_graph(&self, graph: Arc<dyn blaze_skyframe::WalkableGraph>) {
-        *self.memoizing_evaluator_graph.write() = Some(graph);
+        *self.memoizing_evaluator_graph.write() = Some(Arc::downgrade(&graph));
     }
 
     pub fn configure_file_cache(&self, file_cache: Arc<SingleBuildFileCache>) {
@@ -1440,104 +1511,100 @@ impl SkyframeActionExecutor {
             return Err(e.into());
         }
 
-        // PORT: the loop is Java's restart of a shared action's node whose primary action's
-        // state was obsoleted by rewinding (see RewindSignal).
-        loop {
-            // Use computeIfAbsent to handle concurrent attempts to execute the same shared action.
-            let ActionExecutionState {
-                action_lookup_data: owner,
-                action: owning_action,
-                result: cell,
-                rewind_signal,
-            } = {
-                let mut map = self.build_action_map.lock();
-                map.entry(OwnerlessArtifactWrapper(action.get_primary_output()))
-                    .or_insert_with(|| ActionExecutionState {
-                        action_lookup_data: action_lookup_data.clone(),
-                        action: action.clone(),
-                        result: Arc::new(OnceLock::new()),
-                        rewind_signal: Arc::new(RewindSignal::default()),
-                    })
-                    .clone()
-            };
-            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:87 ActionExecutionState.getResultOrDependOnFuture
-            if owner == *action_lookup_data {
-                // This object is owned by the Skyframe node executed by the current thread, so we use
-                // it to run the state machine.
-                // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:149 ActionExecutionState.runStateMachine
-                return cell
-                    .get_or_init(|| {
-                        self.run_action(
-                            env,
-                            action,
-                            input_metadata,
-                            output_metadata_store,
-                            action_start_time,
-                            action_lookup_data,
-                            postprocessing,
-                        )
-                    })
-                    .clone();
-            }
+        // Use computeIfAbsent to handle concurrent attempts to execute the same shared action.
+        let ActionExecutionState {
+            action_lookup_data: owner,
+            action: owning_action,
+            result: cell,
+            rewind_signal,
+        } = {
+            let mut map = self.build_action_map.lock();
+            map.entry(OwnerlessArtifactWrapper(action.get_primary_output()))
+                .or_insert_with(|| ActionExecutionState {
+                    action_lookup_data: action_lookup_data.clone(),
+                    action: action.clone(),
+                    result: Arc::new(OnceLock::new()),
+                    rewind_signal: Arc::new(RewindSignal::default()),
+                })
+                .clone()
+        };
+        // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:87 ActionExecutionState.getResultOrDependOnFuture
+        if owner == *action_lookup_data {
+            // This object is owned by the Skyframe node executed by the current thread, so we use
+            // it to run the state machine.
+            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:149 ActionExecutionState.runStateMachine
+            return cell
+                .get_or_init(|| {
+                    self.run_action(
+                        env,
+                        action,
+                        input_metadata,
+                        output_metadata_store,
+                        action_start_time,
+                        action_lookup_data,
+                        postprocessing,
+                    )
+                })
+                .clone();
+        }
 
-            // This is a shared action, and the primary action is owned by another Skyframe node.
-            // PORT: Java relies on the analysis-time ArtifactConflictFinder ("file '<x>' is generated
-            // by these conflicting actions") for the two actions of one primary output to be
-            // shareable, and would hand the second one the first one's outputs. Until that guarantee
-            // is established before execution, a second action that cannot be shared with the one
-            // that runs is an illegal state here.
-            if !can_be_shared(
-                &self.action_key_context,
-                owning_action.as_ref(),
-                action.as_ref(),
-            )? {
-                panic!(
-                    "IllegalStateException: Cannot share {} and {}: file '{}' is generated by these \
-                 conflicting actions: {} and {}",
-                    owner,
-                    action_lookup_data,
-                    action.get_primary_output().pretty_print(),
-                    owning_action.pretty_print(),
-                    action.pretty_print()
-                );
-            }
-            // PORT: Java registers a dependency on the primary action's completion future and
-            // restarts; Blaze's evaluator does not restart, so this thread waits for the result.
-            // `sharedActionCallback.actionStarted()` when the primary action is not done yet.
-            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:116 ActionExecutionState.getResultOrDependOnFuture
-            if cell.get().is_none() {
-                self.shared_action_started(
-                    env.listener(),
-                    has_discovered_inputs,
-                    action,
-                    action_lookup_data,
-                );
-            }
-            return match cell.wait().clone() {
-                // sharedActionCallback.actionCompleted(), once the primary action's value is
-                // there (not when it failed: `state.get()` throws first).
-                // PORT: env.getListener().post(new SharedActionEvent(result, transformed)) is not
-                // posted: its only subscriber, ExecutionGraphModule, stops with unported!
-                // (--experimental_enable_execution_graph_log).
-                // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:131 ActionExecutionState.getResultOrDependOnFuture
-                Ok(Some(result)) => match {
-                    self.shared_action_completed(action_lookup_data);
-                    result.transform_for_shared_action(action.as_ref())
-                } {
-                    Ok(transformed) => Ok(Some(transformed)),
-                    Err(e) => panic!(
-                        "IllegalStateException: Cannot share {:?} and {:?}: {}",
-                        owner, action_lookup_data, e
-                    ),
-                },
-                // Java: the primary action lost inputs and its state is not done; this node waits for
-                // its completion future (`obsolete` sets it) and restarts.
-                Err(ExecutionFailure::LostInputs(_)) => match rewind_signal.wait() {
-                    RewindOutcome::Obsolete => continue,
-                    RewindOutcome::Failed(failure) => Err(failure),
-                },
-                other => other,
-            };
+        // This is a shared action, and the primary action is owned by another Skyframe node.
+        // PORT: Java relies on the analysis-time ArtifactConflictFinder ("file '<x>' is generated
+        // by these conflicting actions") for the two actions of one primary output to be
+        // shareable, and would hand the second one the first one's outputs. Until that guarantee
+        // is established before execution, a second action that cannot be shared with the one
+        // that runs is an illegal state here.
+        if !can_be_shared(
+            &self.action_key_context,
+            owning_action.as_ref(),
+            action.as_ref(),
+        )? {
+            panic!(
+                "IllegalStateException: Cannot share {} and {}: file '{}' is generated by these \
+             conflicting actions: {} and {}",
+                owner,
+                action_lookup_data,
+                action.get_primary_output().pretty_print(),
+                owning_action.pretty_print(),
+                action.pretty_print()
+            );
+        }
+        // PORT: Java registers a dependency on the primary action's completion future and
+        // restarts; Blaze's evaluator does not restart, so this thread waits for the result.
+        // `sharedActionCallback.actionStarted()` when the primary action is not done yet.
+        // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:116 ActionExecutionState.getResultOrDependOnFuture
+        if cell.get().is_none() {
+            self.shared_action_started(
+                env.listener(),
+                has_discovered_inputs,
+                action,
+                action_lookup_data,
+            );
+        }
+        match wait_for_shared_result(&cell) {
+            // sharedActionCallback.actionCompleted(), once the primary action's value is
+            // there (not when it failed: `state.get()` throws first).
+            // PORT: env.getListener().post(new SharedActionEvent(result, transformed)) is not
+            // posted: its only subscriber, ExecutionGraphModule, stops with unported!
+            // (--experimental_enable_execution_graph_log).
+            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:131 ActionExecutionState.getResultOrDependOnFuture
+            Ok(Some(result)) => match {
+                self.shared_action_completed(action_lookup_data);
+                result.transform_for_shared_action(action.as_ref())
+            } {
+                Ok(transformed) => Ok(Some(transformed)),
+                Err(e) => panic!(
+                    "IllegalStateException: Cannot share {:?} and {:?}: {}",
+                    owner, action_lookup_data, e
+                ),
+            },
+            // Java: the primary action lost inputs and its state is not done; this node waits for
+            // its completion future (`obsolete` sets it) and restarts.
+            Err(ExecutionFailure::LostInputs(_)) => match rewind_signal.wait()? {
+                RewindOutcome::Obsolete => Err(ExecutionFailure::RestartNode),
+                RewindOutcome::Failed(failure) => Err(failure),
+            },
+            other => other,
         }
     }
 
@@ -4100,7 +4167,7 @@ enum ActionInputMapValue {
 // Java: com/google/devtools/build/lib/actions/DelegatingPairInputMetadataProvider.java:27 DelegatingPairInputMetadataProvider
 //
 // PORT: skipped, Filesets: only the non-open-sourced fileset rule creates Fileset artifacts (RuleClass.setOutputFileKind), so no input is one: ActionInputMap.getFileset ActionInputMap.getFilesets ActionInputMap.putFileset ActionInputMap.isFileset
-// PORT: skipped, no caller at the pin outside the metadata providers' own delegation: ActionInputMap.getEnclosingTreeMetadata ActionInputMap.forEachTreeArtifact TrieArtifact.forEachTreeArtifact ActionInputMap.getMetadata
+// PORT: skipped, no caller at the pin outside the metadata providers' own delegation: ActionInputMap.getEnclosingTreeMetadata ActionInputMap.forEachTreeArtifact ActionInputMap.TrieArtifact.forEachTreeArtifact ActionInputMap.getMetadata
 // PORT: skipped, debugging and capacity management of the open-addressed table (a HashMap here): ActionInputMap.sizeForDebugging ActionInputMap.toString ActionInputMap.clear ActionInputMap.resize
 pub struct ActionInputMetadata {
     /// `ActionInputMap`: `paths[index]` to `(keys[index], values[index])`; a lookup is
@@ -4125,7 +4192,11 @@ impl ActionInputMetadata {
     pub fn new(executor: &SkyframeActionExecutor) -> ActionInputMetadata {
         let mut metadata =
             ActionInputMetadata::with_providers(executor.per_build_file_cache.get().cloned());
-        metadata.evaluator = executor.memoizing_evaluator_graph.read().clone();
+        metadata.evaluator = executor
+            .memoizing_evaluator_graph
+            .read()
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade);
         metadata
     }
 

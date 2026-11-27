@@ -55,3 +55,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Several commands on one in-process runtime (Java BuildIntegrationTestCase): ConfigCommandTest,
+# DumpCommandTest (tests/).
+blaze_buildtool_testing = { path = "../blaze_buildtool_testing" }
+serde_json.workspace = true

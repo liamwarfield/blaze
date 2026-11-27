@@ -25,6 +25,7 @@ use blaze_starlark::ThreadContext;
 use blaze_starlark::structs::ProviderInfo;
 use blaze_starlark::structs::StarlarkInfo;
 use starlark::any::ProvidesStaticType;
+use starlark::codemap::FileSpan;
 use starlark::coerce::Coerce;
 use starlark::environment::GlobalsBuilder;
 use starlark::eval::Arguments;
@@ -149,6 +150,11 @@ pub struct StarlarkProviderGen<V: ValueLifetimeless> {
     #[trace(unsafe_ignore)]
     #[allocative(skip)]
     location: Location,
+    /// The span of the `provider()` call (Java `location` as a callable's `getLocation()`, the
+    /// frame a call of the provider shows in a traceback); `None` for a provider built natively.
+    #[trace(unsafe_ignore)]
+    #[allocative(skip)]
+    definition_span: Option<FileSpan>,
     #[trace(unsafe_ignore)]
     documentation: Option<String>,
     /// For schemaful providers, the sorted list of allowed field names.
@@ -179,6 +185,7 @@ impl<'v> Freeze for StarlarkProvider<'v> {
     fn freeze(self, freezer: &Freezer) -> FreezeResult<FrozenStarlarkProvider> {
         Ok(StarlarkProviderGen {
             location: self.location,
+            definition_span: self.definition_span,
             documentation: self.documentation,
             fields: self.fields,
             schema: self.schema,
@@ -193,6 +200,7 @@ impl<'v> Freeze for StarlarkProvider<'v> {
 // Java: com/google/devtools/build/lib/packages/StarlarkProvider.java:145 StarlarkProvider.Builder
 pub struct StarlarkProviderBuilder<V> {
     location: Location,
+    definition_span: Option<FileSpan>,
     documentation: Option<String>,
     schema: Option<Vec<(String, Option<String>)>>,
     init: Option<V>,
@@ -204,10 +212,18 @@ impl<V: ValueLifetimeless> StarlarkProviderBuilder<V> {
     pub fn new(location: Location) -> Self {
         StarlarkProviderBuilder {
             location,
+            definition_span: None,
             documentation: None,
             schema: None,
             init: None,
         }
+    }
+
+    /// The span of the `provider()` call that defines the provider (see
+    /// `StarlarkProviderGen::definition_span`).
+    pub fn set_definition_span(mut self, definition_span: Option<FileSpan>) -> Self {
+        self.definition_span = definition_span;
+        self
     }
 
     /// Java `Builder.setSchema(Collection<String>)`: fields without documentation.
@@ -285,6 +301,7 @@ impl<V: ValueLifetimeless> StarlarkProviderBuilder<V> {
         });
         StarlarkProviderGen {
             location: self.location,
+            definition_span: self.definition_span,
             documentation: self.documentation,
             fields,
             schema: self.schema,
@@ -470,6 +487,11 @@ where
         self.get_name()
     }
 
+    // Java: com/google/devtools/build/lib/packages/StarlarkProvider.java:403 StarlarkProvider.getLocation
+    fn callable_location(&self) -> Option<FileSpan> {
+        self.definition_span.clone()
+    }
+
     // Java: com/google/devtools/build/lib/packages/StarlarkProvider.java:511 StarlarkProvider.equals
     fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
         Ok(match StarlarkProvider::from_value(other) {
@@ -525,6 +547,36 @@ where
     }
 }
 
+/// Java `ArgumentProcessor.pushCallableAndThrow`: the processor pushes the callable's frame (at
+/// its location, the provider's definition) and throws; the error is raised while binding the
+/// arguments, outside `Starlark.callViaArgumentProcessor`, and the pushed frame is never popped,
+/// so Java's traceback shows the callable's frame twice (oracle: `P(1)` prints two `in P` frames,
+/// then `Error: P: unexpected positional arguments`).
+// Java: net/starlark/java/eval/StarlarkCallable.java:146 StarlarkCallable.ArgumentProcessor.pushCallableAndThrow
+fn push_callable_and_throw<V: ValueLifetimeless>(
+    provider: &StarlarkProviderGen<V>,
+    message: String,
+    eval: &Evaluator,
+) -> starlark::Error {
+    let mut callstack = crate::starlark_defs::util::call_stack(eval);
+    if let Some(last) = callstack.last_mut()
+        && provider.definition_span.is_some()
+    {
+        last.location = Some(provider.location.clone());
+        last.source_line = None;
+        let pushed = last.clone();
+        callstack.push(pushed);
+    }
+    let mut ex = blaze_starlark::EvalError {
+        kind: blaze_starlark::error::EvalErrorKind::Eval,
+        message,
+        callstack,
+        include_stack: true,
+    };
+    ex.read_missing_source_lines();
+    blaze_starlark::error::EvalErrorWithStack(ex).into_starlark()
+}
+
 /// Java `RawArgumentProcessor` (calling a provider without init, or its raw constructor).
 // Java: com/google/devtools/build/lib/packages/StarlarkProvider.java:311 StarlarkProvider.RawArgumentProcessor
 fn raw_call<'v, V: ValueLifetimeless>(
@@ -536,9 +588,11 @@ fn raw_call<'v, V: ValueLifetimeless>(
 ) -> starlark::Result<Value<'v>> {
     // Java: RawArgumentProcessor.addPositionalArg
     if args.positions(eval.heap())?.next().is_some() {
-        return Err(errorf(format!(
-            "{owner_name}: unexpected positional arguments"
-        )));
+        return Err(push_callable_and_throw(
+            provider,
+            format!("{owner_name}: unexpected positional arguments"),
+            eval,
+        ));
     }
     let mut factory = provider.new_starlark_info_factory(provider_value);
     // Java: RawArgumentProcessor.addNamedArg
@@ -746,6 +800,11 @@ where
         self.get_name()
     }
 
+    // Java: com/google/devtools/build/lib/packages/StarlarkProvider.java:385 StarlarkProvider.RawConstructor.getLocation
+    fn callable_location(&self) -> Option<FileSpan> {
+        self.provider().definition_span.clone()
+    }
+
     // Java: StarlarkValue.checkHashable (isImmutable is false).
     fn write_hash(&self, _hasher: &mut StarlarkHasher) -> starlark::Result<()> {
         Err(errorf("unhashable type: 'RawConstructor'"))
@@ -811,7 +870,8 @@ pub fn register_provider(builder: &mut GlobalsBuilder) {
 
         let mut builder = StarlarkProviderBuilder::<Value<'v>>::new(
             crate::starlark_defs::util::caller_location(eval),
-        );
+        )
+        .set_definition_span(eval.call_stack_top_location());
         if let Some(doc) = doc.unpack_str() {
             builder = builder.set_documentation(trim_doc_string(doc));
         }

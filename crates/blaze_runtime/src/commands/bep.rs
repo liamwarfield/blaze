@@ -1358,7 +1358,10 @@ impl TimedCloseFuture {
         if deadline.is_some() && !future.is_done() {
             let timer_future = future.clone();
             let timer_flag = timed_out.clone();
-            let _ = std::thread::Builder::new()
+            // Java's scheduled executor starts its thread here; a JVM that cannot start it
+            // throws (OutOfMemoryError "unable to create native thread"), so a timer that does
+            // not run cannot latch a late completion: fail as the JVM does (review round 2, S4).
+            std::thread::Builder::new()
                 .name(format!("bes-close-{name}-0"))
                 .spawn(move || {
                     if let blaze_bep::buildeventstream::transport::CloseOutcome::TimedOut =
@@ -1366,6 +1369,9 @@ impl TimedCloseFuture {
                     {
                         timer_flag.store(true, Ordering::SeqCst);
                     }
+                })
+                .unwrap_or_else(|e| {
+                    panic!("OutOfMemoryError: unable to create native thread: {e}")
                 });
         }
         TimedCloseFuture {
@@ -3446,7 +3452,10 @@ pub(crate) mod bes_module_tests {
         });
     }
 
-    /// A transport closing as `service` makes it close.
+    /// A transport closing as `service` makes it close. The shapes of its futures are those
+    /// the real `BuildEventServiceTransport` shows against a port of Java's
+    /// `DelayingPublishBuildEventService`: `blaze_bes`' `tests/delaying_service_test.rs`
+    /// observes them, one test per service (review BES-5).
     fn transport(service: Service, mode: BesUploadMode, timeout: Duration) -> PendingUpload {
         let close = CloseFuture::create();
         let half_close = CloseFuture::create();
@@ -3459,16 +3468,21 @@ pub(crate) mod bes_module_tests {
                 half_close.set(Ok(()));
                 complete_later(&close, SLOW, Ok(()));
             }
+            // The uploader half-closes as soon as it has sent the final event
+            // (`halfCloseEventUploadingStream`); the service's delay holds back the acks and so
+            // the close only.
             Service::SlowHalfClose => {
-                complete_later(&half_close, SLOW, Ok(()));
+                half_close.set(Ok(()));
                 complete_later(&close, SLOW, Ok(()));
             }
+            // The service fails the call when the client half-closes: the half-close is done,
+            // the close fails.
             Service::Error(message) => {
                 let error = TransportCloseError {
                     message: format!("The Build Event Protocol upload failed: {message}"),
                     code: "BES_STREAM_NOT_RETRYING_FAILURE",
                 };
-                half_close.set(Err(error.clone()));
+                half_close.set(Ok(()));
                 close.set(Err(error));
             }
         }
@@ -3730,8 +3744,8 @@ pub(crate) mod bes_module_tests {
 
     #[test]
     fn test_before_second_command_fully_async_error_on_complete() {
-        // The second command waits for the half-close, which the failing service also fails;
-        // Java's delaying service half-closes before it fails the stream.
+        // The second command waits for the half-close, which is done before the failing service
+        // fails the stream (as `Service::Error` has it; kept as Java writes the case).
         let _serial = SERIAL.lock();
         reset_pending_uploads();
         let events = StoredEventHandler::new();

@@ -125,6 +125,13 @@ pub trait ConfiguredTargetView: Send + Sync + fmt::Debug {
     ) -> Option<(NestedSet<Artifact>, NestedSet<Artifact>)> {
         None
     }
+
+    /// The view as `Any`, for the analysis crates that created it to reach the `ConfiguredTarget`
+    /// behind it (Java passes the `ConfiguredTarget` itself). Views that do not override it are
+    /// reached by no one.
+    fn as_any(&self) -> &dyn std::any::Any {
+        &()
+    }
 }
 
 /// A configured aspect (an `AspectKey` with its `AspectValue`) as the execution phase
@@ -214,6 +221,121 @@ pub trait AnalysisSeam: Send + Sync {
         _env: &mut Environment<'_>,
     ) -> Result<Option<Arc<dyn ConfiguredAspectView>>, ComputeError> {
         blaze_util::unported!("AnalysisSeam.get_configured_aspect", "{key}")
+    }
+
+    /// `env.getValueOrThrow(actionLookupKey, AbstractSaneAnalysisException.class)` of
+    /// `BuildDriverFunction.compute`: the analyzed top-level value of a configured-target or a
+    /// top-level-aspects key, `Ok(Ok(None))` when it is missing, `Ok(Err(e))` with the
+    /// dependency's exception when it is an `AbstractSaneAnalysisException`.
+    ///
+    /// The default reads the value without catching ([`AnalysisSeam::get_configured_target`],
+    /// [`AnalysisSeam::get_top_level_aspects`]).
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:174 BuildDriverFunction.compute
+    fn get_top_level_value_or_throw(
+        &self,
+        key: &crate::keys::BuildDriverKey,
+        env: &mut Environment<'_>,
+    ) -> Result<
+        Result<Option<crate::build_driver_function::TopLevelSkyValue>, blaze_skyframe::SkyError>,
+        ComputeError,
+    > {
+        use crate::build_driver_function::TopLevelSkyValue;
+        Ok(Ok(if key.is_top_level_aspect_driver() {
+            self.get_top_level_aspects(&key.action_lookup_key, env)?
+                .map(TopLevelSkyValue::TopLevelAspects)
+        } else {
+            self.get_configured_target(&key.action_lookup_key, env)?
+                .map(TopLevelSkyValue::ConfiguredTarget)
+        }))
+    }
+
+    /// Whether `BuildDriverFunction` runs in a build with merged analysis and execution
+    /// (Skymeld): the build has installed the suppliers Java's function reads (the
+    /// `TestTypeResolver`, the conflict checking mode, the constraint semantics) and expects the
+    /// function to announce the analysis of its key. `false` (the default) for the path without
+    /// merged analysis and execution, whose analysis announced every top-level target before
+    /// the keys are evaluated.
+    fn is_merged_analysis_and_execution(&self) -> bool {
+        false
+    }
+
+    /// `announceTopLevelConfiguredTargetAnalyzed`: posts the `TargetConfiguredEvent` of the
+    /// target (when `post_target_configured`, the first time for the key) and returns the
+    /// `TopLevelTargetAnalyzedEvent` to post. `Ok(None)` when a value is missing.
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:415 BuildDriverFunction.announceTopLevelConfiguredTargetAnalyzed
+    fn announce_top_level_configured_target_analyzed(
+        &self,
+        _configured_target: &Arc<dyn ConfiguredTargetView>,
+        _post_target_configured: bool,
+        _env: &mut Environment<'_>,
+    ) -> Result<Option<Arc<dyn blaze_events::Postable>>, ComputeError> {
+        blaze_util::unported!("AnalysisSeam.announce_top_level_configured_target_analyzed")
+    }
+
+    /// `announceTopLevelAspectAnalyzed` (once per key): the `ToplevelAspectsIdentifiedEvent`, then
+    /// an `AspectConfiguredEvent` and an `AspectAnalyzedEvent` per aspect.
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:449 BuildDriverFunction.announceTopLevelAspectAnalyzed
+    fn announce_top_level_aspect_analyzed(
+        &self,
+        _key: &crate::keys::BuildDriverKey,
+        _env: &mut Environment<'_>,
+    ) -> Result<Option<()>, ComputeError> {
+        blaze_util::unported!("AnalysisSeam.announce_top_level_aspect_analyzed")
+    }
+
+    /// `shouldCheckForConflictWithTraversal.get()`: the build's conflict checking mode is
+    /// `WITH_TRAVERSAL`.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2487 SkyframeExecutor.evaluateBuildDriverKeys
+    fn should_check_for_conflict_with_traversal(&self) -> bool {
+        false
+    }
+
+    /// `checkActionConflicts(actionLookupKey)`: `Ok(())` without conflicts (or when the checker
+    /// is shut down), otherwise the `BuildDriverFunctionException(TopLevelConflictException(
+    /// "Action conflict(s) detected while analyzing top-level target <label>", conflicts))` to
+    /// throw.
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:661 BuildDriverFunction.checkActionConflicts
+    fn check_action_conflicts(
+        &self,
+        _key: &crate::keys::BuildDriverKey,
+    ) -> Result<(), ComputeError> {
+        Ok(())
+    }
+
+    /// `testTypeResolver.get().determineTestType(configuredTarget)`.
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:723 BuildDriverFunction.TestTypeResolver.determineTestType
+    fn determine_test_type(
+        &self,
+        _configured_target: &Arc<dyn ConfiguredTargetView>,
+        _env: &mut Environment<'_>,
+    ) -> crate::keys::TestType {
+        blaze_util::unported!("AnalysisSeam.determine_test_type")
+    }
+
+    /// `isConfiguredTargetCompatible`: `Ok(Some(compatible))`, `Ok(None)` when a value is missing,
+    /// or the `BuildDriverFunctionException(TargetCompatibilityCheckException)` to throw.
+    /// `checked_for_platform_compatibility` is the function's
+    /// `state.checkedForPlatformCompatibility`.
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:523 BuildDriverFunction.isConfiguredTargetCompatible
+    fn is_configured_target_compatible(
+        &self,
+        _configured_target: &Arc<dyn ConfiguredTargetView>,
+        _is_explicitly_requested: bool,
+        _skip_incompatible_explicit_targets: bool,
+        _checked_for_platform_compatibility: &mut bool,
+        _env: &mut Environment<'_>,
+    ) -> Result<Option<bool>, ComputeError> {
+        blaze_util::unported!("AnalysisSeam.is_configured_target_compatible")
+    }
+
+    /// `TopLevelTargetSkippedEvent.create(configuredTarget)` (the event lives in the analysis
+    /// crates).
+    // Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:92 TopLevelStatusEvents.TopLevelTargetSkippedEvent.create
+    fn top_level_target_skipped_event(
+        &self,
+        _configured_target: &Arc<dyn ConfiguredTargetView>,
+    ) -> Arc<dyn blaze_events::Postable> {
+        blaze_util::unported!("AnalysisSeam.top_level_target_skipped_event")
     }
 
     /// `extraActionFilterSupplier.get().isIncluded(ownerLabel)`: the

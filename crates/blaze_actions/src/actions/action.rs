@@ -622,6 +622,14 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
         Some(NestedSetBuilder::empty_set(Order::STABLE_ORDER))
     }
 
+    /// Returns true if the action may propagate its inputs to its outputs insensitively: the
+    /// outputs' contents are the inputs' (a symlink, a symlink tree), so a lost output is
+    /// recreated only by also rewinding the inputs' generating actions.
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:115 ActionExecutionMetadata.mayInsensitivelyPropagateInputs
+    fn may_insensitively_propagate_inputs(&self) -> bool {
+        false
+    }
+
     // ---------------------------------------------------------------------------------------
     // Interface hooks (Java `instanceof` on interfaces)
     // ---------------------------------------------------------------------------------------

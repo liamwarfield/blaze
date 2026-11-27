@@ -201,7 +201,7 @@ impl Key for ArtifactNestedSetKey {
 // Java: com/google/devtools/build/lib/skyframe/TargetCompletionValue.java:66 TargetCompletionValue.TargetCompletionKey.functionName
 // Java: com/google/devtools/build/lib/skyframe/TargetCompletionValue.java:33 TargetCompletionValue.key
 // Java: com/google/devtools/build/lib/skyframe/TargetCompletionValue.java:40 TargetCompletionValue.keys
-// PORT: skipped, shareability only matters to remote analysis caching (unported!): TargetCompletionKey.valueIsShareable
+// PORT: skipped, shareability only matters to remote analysis caching (unported!): TargetCompletionValue.TargetCompletionKey.valueIsShareable
 pub struct TargetCompletionKey {
     /// `actionLookupKey()` (the `ConfiguredTargetKey`).
     pub action_lookup_key: ActionLookupKeyRef,
@@ -288,7 +288,7 @@ impl Key for AspectCompletionKey {
 // Java: com/google/devtools/build/lib/skyframe/TestCompletionValue.java:78 TestCompletionValue.TestCompletionKey.functionName
 // Java: com/google/devtools/build/lib/skyframe/TestCompletionValue.java:36 TestCompletionValue.key
 // Java: com/google/devtools/build/lib/skyframe/TestCompletionValue.java:43 TestCompletionValue.keys
-// PORT: skipped, shareability (remote analysis caching, unported!) and key interning: TestCompletionKey.valueIsShareable TestCompletionKey.getSkyKeyInterner
+// PORT: skipped, shareability (remote analysis caching, unported!) and key interning: TestCompletionValue.TestCompletionKey.valueIsShareable TestCompletionValue.TestCompletionKey.getSkyKeyInterner
 pub struct TestCompletionKey {
     /// `configuredTargetKey()`.
     pub configured_target_key: ActionLookupKeyRef,
@@ -345,7 +345,7 @@ impl TestType {
 // Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:101 BuildDriverKey.shouldSkipIncompatibleExplicitTargets
 // Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:109 BuildDriverKey.isExtraActionTopLevelOnly
 // (these getters are the public fields)
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone)]
 pub struct BuildDriverKey {
     /// `getActionLookupKey()`.
     pub action_lookup_key: ActionLookupKeyRef,
@@ -358,7 +358,16 @@ pub struct BuildDriverKey {
     /// `isExtraActionTopLevelOnly()`.
     pub extra_action_top_level_only: bool,
     /// `getTestType()`.
+    ///
+    /// PORT: Java's key has no test type: `BuildDriverFunction` asks the build's
+    /// `TestTypeResolver` once the target is analyzed (`AnalysisSeam::determine_test_type`).
+    /// The path without merged analysis and execution, which evaluates these keys after its
+    /// analysis (blaze_runtime), resolves it when it creates the keys; with Skymeld the field is
+    /// `NOT_TEST` and unused.
     pub test_type: TestType,
+    /// `keepGoing()`.
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:113 BuildDriverKey.keepGoing
+    pub keep_going: bool,
 }
 
 /// `SkyFunctions.TOP_LEVEL_ASPECTS`: the function name of a `TopLevelAspectsKey`.
@@ -371,7 +380,7 @@ impl BuildDriverKey {
     /// every struct literal of this key); [`BuildDriverKey::is_top_level_aspect_driver`] derives
     /// it from the kind of the action lookup key, which Java's two factories pair the same way.
     /// The test type of an aspect driver is `NOT_TEST` (Java: `state.testType = NOT_TEST` for a
-    /// `TopLevelAspectsValue`). Java's `keepGoing` is the evaluation's.
+    /// `TopLevelAspectsValue`).
     // Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:55 BuildDriverKey.ofTopLevelAspect
     pub fn of_top_level_aspect(
         action_lookup_key: ActionLookupKeyRef,
@@ -379,6 +388,7 @@ impl BuildDriverKey {
         explicitly_requested: bool,
         skip_incompatible_explicit_targets: bool,
         extra_action_top_level_only: bool,
+        keep_going: bool,
     ) -> BuildDriverKey {
         blaze_util::check_argument!(
             action_lookup_key.function_name() == TOP_LEVEL_ASPECTS,
@@ -392,12 +402,35 @@ impl BuildDriverKey {
             skip_incompatible_explicit_targets,
             extra_action_top_level_only,
             test_type: TestType::NOT_TEST,
+            keep_going,
         }
     }
 
     // Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:103 BuildDriverKey.isTopLevelAspectDriver
     pub fn is_top_level_aspect_driver(&self) -> bool {
         self.action_lookup_key.function_name() == TOP_LEVEL_ASPECTS
+    }
+}
+
+/// Equality over the action lookup key, the top-level artifact context and
+/// `explicitlyRequested` (not `keepGoing` or the other fields).
+// Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:123 BuildDriverKey.equals
+impl PartialEq for BuildDriverKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.action_lookup_key == other.action_lookup_key
+            && self.output_groups == other.output_groups
+            && self.explicitly_requested == other.explicitly_requested
+    }
+}
+
+impl Eq for BuildDriverKey {}
+
+// Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:133 BuildDriverKey.hashCode
+impl std::hash::Hash for BuildDriverKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.action_lookup_key.hash(state);
+        self.output_groups.hash(state);
+        self.explicitly_requested.hash(state);
     }
 }
 

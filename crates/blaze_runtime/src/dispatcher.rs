@@ -314,6 +314,12 @@ impl BlazeCommandDispatcher {
                 }
                 break result;
             };
+            // PORT: Blaze-only check: the command and its executors are gone, so only the kept
+            // graph may hold its evaluator (panics in debug builds, logged in release builds).
+            self.runtime
+                .get_workspace()
+                .get_incremental_state()
+                .check_kept_graph_unshared(&command_name);
             if result.shutdown() {
                 self.set_shutdown_reason(format!(
                     "Server shut down {}",

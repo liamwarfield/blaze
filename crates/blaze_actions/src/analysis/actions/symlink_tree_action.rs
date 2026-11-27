@@ -181,11 +181,6 @@ impl SymlinkTreeAction {
     pub fn get_runfile_symlinks_mode(&self) -> RunfileSymlinksMode {
         self.runfile_symlinks_mode
     }
-
-    // Java: com/google/devtools/build/lib/analysis/actions/SymlinkTreeAction.java:251 SymlinkTreeAction.mayInsensitivelyPropagateInputs
-    pub fn may_insensitively_propagate_inputs(&self) -> bool {
-        true
-    }
 }
 
 impl Action for SymlinkTreeAction {
@@ -195,6 +190,11 @@ impl Action for SymlinkTreeAction {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/actions/SymlinkTreeAction.java:251 SymlinkTreeAction.mayInsensitivelyPropagateInputs
+    fn may_insensitively_propagate_inputs(&self) -> bool {
+        true
     }
 
     // Java: com/google/devtools/build/lib/analysis/actions/SymlinkTreeAction.java:190 SymlinkTreeAction.getMnemonic

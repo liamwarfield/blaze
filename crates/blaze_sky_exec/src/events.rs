@@ -4,14 +4,14 @@
 //! event keeps the action as an `ActionRef` (shared) plus the fields consumers read.
 
 // Events and small classes of the execution cluster with nothing to port at the pin:
-// PORT: skipped, no class of Bazel 9.3.2 posts or subscribes to it: InjectedActionExecutionEvent.InjectedActionExecutionEvent InjectedActionExecutionEvent.getAction
-// PORT: skipped, posted with no subscriber in Bazel: ChangedFilesMessage.ChangedFilesMessage ChangedFilesMessage.create BaselineClDiffEvent.BaselineClDiffEvent BaselineClDiffEvent.getBaselineClDiff WorkspaceInfoFromDiff.getEvaluatingVersion WorkspaceInfoFromDiff.getSnapshot
-// PORT: skipped, posted with no subscriber in Bazel (Google-internal consumers): SourceDirectoryEvent.SourceDirectoryEvent SourceDirectoryEvent.create ActionInputCollectedEvent.ActionInputCollectedEvent ActionInputCollectedEvent.create
-// PORT: skipped, its only subscriber, ExecutionGraphModule, stops with unported! (--experimental_enable_execution_graph_log): SharedActionEvent.SharedActionEvent SharedActionEvent.getExecuted SharedActionEvent.getTransformed
-// PORT: skipped, no user at the pin: SingleSourcePackageRoots.SingleSourcePackageRoots SingleSourcePackageRoots.getPackageRootsMap SingleSourcePackageRoots.getPackageRootLookup
+// PORT: skipped, no class of Bazel 9.3.2 posts or subscribes to it: InjectedActionExecutionEvent.<init> InjectedActionExecutionEvent.getAction
+// PORT: skipped, posted with no subscriber in Bazel: ChangedFilesMessage.<init> ChangedFilesMessage.create BaselineClDiffEvent.<init> BaselineClDiffEvent.getBaselineClDiff WorkspaceInfoFromDiff.getEvaluatingVersion WorkspaceInfoFromDiff.getSnapshot
+// PORT: skipped, posted with no subscriber in Bazel (Google-internal consumers): SourceDirectoryEvent.<init> SourceDirectoryEvent.create ActionInputCollectedEvent.<init> ActionInputCollectedEvent.create
+// PORT: skipped, its only subscriber, ExecutionGraphModule, stops with unported! (--experimental_enable_execution_graph_log): SharedActionEvent.<init> SharedActionEvent.getExecuted SharedActionEvent.getTransformed
+// PORT: skipped, no user at the pin: SingleSourcePackageRoots.<init> SingleSourcePackageRoots.getPackageRootsMap SingleSourcePackageRoots.getPackageRootLookup
 // PORT: skipped, key interning: InternerWithPresenceCheck.intern InternerWithPresenceCheck.getCanonical
 // PORT: skipped, no PRECOMPUTED function is registered: an unset precomputed value fails in the evaluator, as Java's compute throws IllegalStateException (blaze_skyframe precomputed): PrecomputedFunction.compute
-// PORT: skipped, private constructors of static classes: ActionUtils.ActionUtils ActionInputMapHelper.ActionInputMapHelper PathMapperConstants.PathMapperConstants
+// PORT: skipped, private constructors of static classes: ActionUtils.<init> ActionInputMapHelper.<init> PathMapperConstants.<init>
 
 use std::fmt;
 use std::sync::Arc;
@@ -335,6 +335,21 @@ pub struct DiscoveredInputsEvent {
     pub start_time_nanos: Instant,
 }
 
+/// An event that marks the conclusion of the analysis of a top level target/aspect, successful
+/// or otherwise.
+// Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:107 TopLevelStatusEvents.TopLevelEntityAnalysisConcludedEvent
+// Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:113 TopLevelStatusEvents.TopLevelEntityAnalysisConcludedEvent.create
+// (the getters are the public fields)
+#[derive(Clone, Debug)]
+pub struct TopLevelEntityAnalysisConcludedEvent {
+    /// `getAnalyzedTopLevelKey()`: the `BuildDriverKey`.
+    pub analyzed_top_level_key: crate::keys::BuildDriverKey,
+    /// `succeeded()`.
+    pub succeeded: bool,
+}
+
+impl blaze_events::Postable for TopLevelEntityAnalysisConcludedEvent {}
+
 /// Signals that the first target finished analysis and execution is about to start (or, not
 /// counted in execution time, that the workspace status actions of a Skymeld build may run).
 // Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:151 TopLevelStatusEvents.SomeExecutionStartedEvent
@@ -388,8 +403,18 @@ postable! {
     SomeExecutionStartedEvent => "SomeExecutionStartedEvent",
 }
 
-impl Postable for TargetCompleteEvent {}
-impl Postable for AspectCompleteEvent {}
+impl Postable for TargetCompleteEvent {
+    // Java: com/google/devtools/build/lib/analysis/TargetCompleteEvent.java:478 TargetCompleteEvent.storeForReplay
+    fn store_for_replay(&self) -> bool {
+        true
+    }
+}
+impl Postable for AspectCompleteEvent {
+    // Java: com/google/devtools/build/lib/analysis/AspectCompleteEvent.java:182 AspectCompleteEvent.storeForReplay
+    fn store_for_replay(&self) -> bool {
+        true
+    }
+}
 impl Postable for TopLevelTargetPendingExecutionEvent {}
 impl Postable for TopLevelTargetBuiltEvent {}
 impl Postable for TopLevelTargetReadyForSymlinkPlanting {}

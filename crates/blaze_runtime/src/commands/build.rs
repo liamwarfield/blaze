@@ -39,7 +39,6 @@ use blaze_buildtool::runtime::test_command_support::{
     TestCommandSupport, get_exit_code, make_test_log_path_formatter,
 };
 use blaze_events::{Clock, Event, EventHandler, ExtendedEventHandler, JavaClock, OutErr};
-use blaze_exec::actions::action_execution::ActionExecutionException;
 use blaze_exec::exec::spawn_log_module::{
     DeferredSpawnLogContext, SpawnLogModule, SpawnLogModuleEnv,
 };
@@ -57,9 +56,7 @@ use blaze_protos::failure_details::{self, FailureDetail, failure_detail::Categor
 use blaze_sky_analysis::top_level_status_events::{
     TopLevelTargetAnalyzedEvent, TopLevelTargetSkippedEvent,
 };
-use blaze_sky_exec::artifact_function::ArtifactNestedSetEvalException;
 use blaze_sky_exec::build_driver_function::TopLevelSkyValue;
-use blaze_sky_exec::completion_function::InputFileErrorException;
 use blaze_sky_exec::events::TestAnalyzedEvent;
 use blaze_sky_exec::keys::{
     AspectCompletionKey, BuildDriverKey, TargetCompletionKey, TestCompletionKey, TestType,
@@ -74,6 +71,9 @@ use blaze_sky_top::execution_seam::{
     BuildDriverKeyTestContext, build_driver_aspect_keys, build_driver_keys,
     configured_aspect_views, configured_target_views, get_explicit_target_patterns,
     top_level_output_groups, validation_mode,
+};
+use blaze_sky_top::skyframe_error_processor::{
+    ExecutionExceptionCause, RethrownException, rethrow,
 };
 use blaze_sky_top::skyframe_executor::{SkyframeExecutor, get_configuration_from_graph};
 use blaze_sky_top::target_pattern_phase::TargetPatternPhaseValue;
@@ -1382,8 +1382,8 @@ impl AnalysisPostProcessor for ExecutionToolConstruction<'_> {
     // (runAnalysisAndExecutionPhase is blaze_sky_top's BuildTool analysis with these hooks:
     // BuildView.update, then execute_build.)
     // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:173 AnalysisAndExecutionPhaseRunner.runAnalysisAndExecutionPhase
-    // PORT: skipped, Blaze analyzes before it executes, so no watcher follows each top-level entity's analysis to start its execution: TopLevelTargetAnalysisWatcher.TopLevelTargetAnalysisWatcher TopLevelTargetAnalysisWatcher.createAndRegisterWithEventBus TopLevelTargetAnalysisWatcher.handleTopLevelTargetAnalysisConcluded TopLevelTargetAnalysisWatcher.handleAspectAnalyzed
-    // PORT: skipped, same reason: TopLevelTargetAnalysisWatcher.handleTestAnalyzed TopLevelTargetAnalysisWatcher.handleKnownCoverageArtifacts TopLevelTargetAnalysisWatcher.close AnalysisAndExecutionPhaseRunner.AnalysisAndExecutionPhaseRunner
+    // PORT: skipped, Blaze analyzes before it executes, so no watcher follows each top-level entity's analysis to start its execution: AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.<init> AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.createAndRegisterWithEventBus AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.handleTopLevelTargetAnalysisConcluded AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.handleAspectAnalyzed
+    // PORT: skipped, same reason: AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.handleTestAnalyzed AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.handleKnownCoverageArtifacts AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.close AnalysisAndExecutionPhaseRunner.<init>
     fn before_merged_analysis(
         &self,
         _request: &BuildRequest,
@@ -2471,7 +2471,7 @@ impl RuntimeExecutionPhase {
     /// `--experimental_skyframe_error_handling_refactor` and `processResult` otherwise.
     // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:245 SkyframeErrorProcessor.processExecutionErrors
     // Java: com/google/devtools/build/lib/buildtool/SkyframeBuilder.java:119 SkyframeBuilder.buildArtifacts
-    // PORT: skipped, the builder's parts are the prepared execution state (blaze_buildtool ExecutionToolConfig, the action executor's cache checker, file cache and prefetcher): SkyframeBuilder.SkyframeBuilder SkyframeBuilder.getActionCacheChecker SkyframeBuilder.getFileCache SkyframeBuilder.getActionOutputDirectoryHelper SkyframeBuilder.getActionInputPrefetcher
+    // PORT: skipped, the builder's parts are the prepared execution state (blaze_buildtool ExecutionToolConfig, the action executor's cache checker, file cache and prefetcher): SkyframeBuilder.<init> SkyframeBuilder.getActionCacheChecker SkyframeBuilder.getFileCache SkyframeBuilder.getActionOutputDirectoryHelper SkyframeBuilder.getActionInputPrefetcher
     // PORT: skipped, without merged analysis and execution Java's progress receiver counts the exclusive tests' status artifacts; Blaze registers ExecutionTool's receiver (count 0) for every build, so the "[done / total]" totals of a non-merged build with exclusive tests are lower (open item): SkyframeBuilder.countTestActions
     fn uses_process_errors(&self, merged: bool) -> bool {
         merged
@@ -2636,6 +2636,7 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                 force_exclusive_if_local_tests_in_parallel: false,
             },
             reporter.as_ref(),
+            request.keep_going,
         );
         // Java's topLevelKeys: the union of the configured-target and the top-level aspect
         // BuildDriverKeys.
@@ -2647,6 +2648,7 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             &output_groups,
             request.skip_incompatible_explicit_targets,
             self.extra_action_top_level_only,
+            request.keep_going,
         ));
         // PORT: Blaze analyzed every top-level target before this point, and BuildView.update ran
         // the compatibility check of BuildDriverFunction for the Skymeld path (see
@@ -3156,78 +3158,6 @@ impl ExecutionPhase for RuntimeExecutionPhase {
     }
 }
 
-/// `SkyframeErrorProcessor.isExecutionException(cause)`, with the cause's class.
-///
-/// PORT: `TestExecException` is not a class of its own in blaze_exec (the test strategy raises
-/// it as a marked `UserExecException`); the `ActionExecutionException` it causes tells
-/// (`is_caused_by_test_exec_exception`), which is the `cause.getCause() instanceof
-/// TestExecException` of `rethrow`. A `TestExecException` is never the error of a node itself.
-// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:873 SkyframeErrorProcessor.isExecutionException
-enum ExecutionExceptionCause<'a> {
-    ActionExecution(&'a ActionExecutionException),
-    InputFileError(&'a InputFileErrorException),
-    ArtifactNestedSetEval(&'a ArtifactNestedSetEvalException),
-    // For top-level outputs errors in CompletionFunction.
-    TopLevelOutput(&'a blaze_sky_exec::completion_function::TopLevelOutputException),
-}
-
-impl<'a> ExecutionExceptionCause<'a> {
-    fn of(cause: &'a blaze_skyframe::SkyError) -> Option<ExecutionExceptionCause<'a>> {
-        if let Some(e) = cause.downcast_ref::<ActionExecutionException>() {
-            return Some(ExecutionExceptionCause::ActionExecution(e));
-        }
-        if let Some(e) = cause.downcast_ref::<InputFileErrorException>() {
-            return Some(ExecutionExceptionCause::InputFileError(e));
-        }
-        if let Some(e) = cause.downcast_ref::<ArtifactNestedSetEvalException>() {
-            return Some(ExecutionExceptionCause::ArtifactNestedSetEval(e));
-        }
-        if let Some(e) =
-            cause.downcast_ref::<blaze_sky_exec::completion_function::TopLevelOutputException>()
-        {
-            return Some(ExecutionExceptionCause::TopLevelOutput(e));
-        }
-        None
-    }
-
-    /// `DetailedException.getDetailedExitCode(cause)`, or the "unknown" code for a cause that is
-    /// not a `DetailedException`.
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:621 SkyframeErrorProcessor.getExecutionDetailedExitCodeFromCause
-    fn get_execution_detailed_exit_code(&self) -> blaze_util::DetailedExitCode {
-        match self {
-            ExecutionExceptionCause::ActionExecution(e) => match e.get_failure_detail() {
-                Some(failure_detail) => blaze_util::DetailedExitCode::of(failure_detail.clone()),
-                None => panic!(
-                    "NullPointerException: detailedExitCode of {}",
-                    e.get_message()
-                ),
-            },
-            ExecutionExceptionCause::InputFileError(e) => e.detailed_exit_code.clone(),
-            ExecutionExceptionCause::TopLevelOutput(e) => e.detailed_exit_code.clone(),
-            ExecutionExceptionCause::ArtifactNestedSetEval(e) => {
-                create_unknown_execution_detailed_exit_code(&e.to_string())
-            }
-        }
-    }
-}
-
-/// The exit code of an execution exception without a `DetailedExitCode`.
-///
-/// PORT: skipped, the non-fatal bug report Java sends first.
-// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:631 SkyframeErrorProcessor.sendBugReportAndCreateUnknownExecutionDetailedExitCode
-fn create_unknown_execution_detailed_exit_code(
-    cause_message: &str,
-) -> blaze_util::DetailedExitCode {
-    let message =
-        format!("Unexpected exception, please file an issue with the Bazel team: {cause_message}");
-    blaze_util::DetailedExitCode::of(FailureDetail {
-        message,
-        category: Some(Category::Execution(failure_details::Execution {
-            code: failure_details::execution::Code::UnexpectedException as i32,
-        })),
-    })
-}
-
 /// The part of `SkyframeErrorProcessor.processErrors` (with `includeExecutionPhase`) that
 /// handles execution exceptions, for the evaluation of the build driver keys.
 ///
@@ -3362,110 +3292,6 @@ fn effective_error_key_label(error_key: &blaze_skyframe::SkyKey) -> Option<blaze
     }
 }
 
-/// What [`rethrow`] throws.
-#[derive(Debug)]
-enum RethrownException {
-    /// A `BuildFailedException` (`BuildToolError::BuildFailed`), with its `isCatastrophic()`.
-    BuildFailed {
-        error: BuildToolError,
-        catastrophic: bool,
-    },
-    /// The `TestExecException` (its message) that caused an `ActionExecutionException`: a test
-    /// failed without `--test_keep_going`.
-    TestExec(String),
-}
-
-impl RethrownException {
-    fn build_failed(error: BuildToolError) -> RethrownException {
-        RethrownException::BuildFailed {
-            error,
-            catastrophic: false,
-        }
-    }
-}
-
-/// Figure out why an action's analysis/execution failed and rethrow the right kind of exception.
-///
-/// PORT: returns the `BuildFailedException`; an empty message stands for
-/// `isErrorAlreadyShown()` (`BuildTool.processRequest` reports the others).
-// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:974 SkyframeErrorProcessor.rethrow
-fn rethrow(cause: &ExecutionExceptionCause<'_>) -> RethrownException {
-    if let ExecutionExceptionCause::ActionExecution(e) = cause
-        && e.is_caused_by_test_exec_exception()
-    {
-        // innerCause instanceof TestExecException: throw testExecException.
-        // PORT: the ActionExecutionException's message is the TestExecException's
-        // (`ActionExecutionException.fromExecException` without a subtask).
-        return RethrownException::TestExec(e.get_message().to_owned());
-    }
-    match cause {
-        ExecutionExceptionCause::ActionExecution(action_execution_cause) => {
-            let mut message = action_execution_cause.get_message().to_owned();
-            if let Some(action) = action_execution_cause.get_action() {
-                message = format!("{} failed: {}", action.describe, message);
-                // Sometimes ActionExecutionExceptions are caused by Actions with no owner.
-                // PORT: the snapshot always has the owner's location.
-                message = format!("{} {}", action.location, message);
-            }
-            let failure_detail = cause
-                .get_execution_detailed_exit_code()
-                .get_failure_detail()
-                .cloned()
-                .expect("NullPointerException: detailedExitCode");
-            RethrownException::BuildFailed {
-                error: BuildToolError::BuildFailed {
-                    // errorAlreadyShown = !actionExecutionCause.showError()
-                    message: if action_execution_cause.show_error() {
-                        message
-                    } else {
-                        String::new()
-                    },
-                    failure_detail,
-                },
-                catastrophic: action_execution_cause.is_catastrophe(),
-            }
-        }
-        // throw inputFileErrorException: a BuildFailedException whose error is already shown.
-        ExecutionExceptionCause::InputFileError(input_file_error_exception) => {
-            RethrownException::build_failed(BuildToolError::BuildFailed {
-                message: String::new(),
-                failure_detail: input_file_error_exception
-                    .detailed_exit_code
-                    .get_failure_detail()
-                    .cloned()
-                    .expect("NullPointerException: detailedExitCode"),
-            })
-        }
-        // throw topLevelOutputException: a BuildFailedException whose error is already shown
-        // (TopLevelOutputException.<init>: errorAlreadyShown = true, not catastrophic).
-        // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:1000 SkyframeErrorProcessor.rethrow
-        ExecutionExceptionCause::TopLevelOutput(top_level_output_exception) => {
-            RethrownException::build_failed(BuildToolError::BuildFailed {
-                message: String::new(),
-                failure_detail: top_level_output_exception
-                    .detailed_exit_code
-                    .get_failure_detail()
-                    .cloned()
-                    .expect("NullPointerException: detailedExitCode"),
-            })
-        }
-        // We encountered an exception we don't think we should have encountered. This can
-        // indicate an exception-processing bug in our code, such as lower level exceptions not
-        // being properly handled, or in our expectations in this method.
-        ExecutionExceptionCause::ArtifactNestedSetEval(_) => {
-            let failure_detail = cause
-                .get_execution_detailed_exit_code()
-                .get_failure_detail()
-                .cloned()
-                .expect("NullPointerException: unknownExitCode.getFailureDetail()");
-            RethrownException::build_failed(BuildToolError::BuildFailed {
-                message: failure_detail.message.clone(),
-                failure_detail,
-            })
-        }
-    }
-}
-
 /// The UI's `TestSummary` subscription (`UiStateTracker.testSummary`): the failed-test count of
 /// the `Build completed, N tests FAILED` line.
 #[derive(Default)]
@@ -3533,6 +3359,7 @@ fn output_filter(
 
 #[cfg(test)]
 mod tests {
+    use blaze_exec::actions::action_execution::ActionExecutionException;
     use blaze_exec::actions::action_execution::FailedActionInfo;
     use blaze_skyframe::{
         ERROR_TRANSIENCE_KEY, ErrorInfo, EvaluationResult, SkyFunctionException, Transience,

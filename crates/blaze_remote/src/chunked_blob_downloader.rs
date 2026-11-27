@@ -11,7 +11,7 @@ use crate::chunking::ChunkingConfig;
 use crate::combined_cache::CombinedCache;
 use crate::common::{BlobNotSplittableException, RemoteActionExecutionContext};
 use crate::grpc_cache_client::GrpcCacheClient;
-use crate::reapi::{Digest, chunking_function};
+use crate::reapi::{Digest, SplitBlobResponse, chunking_function};
 use crate::util::DigestUtil;
 use crate::util::utils::verify_blob_contents;
 
@@ -21,14 +21,69 @@ use crate::util::utils::verify_blob_contents;
 // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:44 ChunkedBlobDownloader.MAX_IN_FLIGHT_CHUNK_DOWNLOADS
 const MAX_IN_FLIGHT_CHUNK_DOWNLOADS: usize = 16;
 
+/// The calls the downloader makes on its `GrpcCacheClient`.
+///
+/// PORT: Java's downloader takes the `GrpcCacheClient` itself (its tests mock it); the trait is
+/// that seam, implemented by [`GrpcCacheClient`].
+pub trait ChunkSplitter: Send + Sync {
+    // Java: com/google/devtools/build/lib/remote/GrpcCacheClient.java:137 GrpcCacheClient.shouldVerifyDownloads
+    fn should_verify_downloads(&self) -> bool;
+
+    // Java: com/google/devtools/build/lib/remote/GrpcCacheClient.java:260 GrpcCacheClient.splitBlob
+    fn split_blob<'a>(
+        &'a self,
+        context: &'a RemoteActionExecutionContext<'_>,
+        digest: &Digest,
+        chunking_function: chunking_function::Value,
+    ) -> Option<BoxFuture<'a, io::Result<SplitBlobResponse>>>;
+}
+
+impl ChunkSplitter for GrpcCacheClient {
+    fn should_verify_downloads(&self) -> bool {
+        GrpcCacheClient::should_verify_downloads(self)
+    }
+
+    fn split_blob<'a>(
+        &'a self,
+        context: &'a RemoteActionExecutionContext<'_>,
+        digest: &Digest,
+        chunking_function: chunking_function::Value,
+    ) -> Option<BoxFuture<'a, io::Result<SplitBlobResponse>>> {
+        GrpcCacheClient::split_blob(self, context, digest, chunking_function)
+    }
+}
+
+/// The call the downloader makes on its `CombinedCache` (`downloadBlob(context, digest)`).
+///
+/// PORT: the seam Java's tests mock, implemented by [`CombinedCache`]. Boxed: a chunk's download
+/// goes through the cache's download path again.
+pub trait ChunkSource: Send + Sync {
+    // Java: com/google/devtools/build/lib/remote/CombinedCache.java:479 CombinedCache.downloadBlob
+    fn download_blob<'a>(
+        &'a self,
+        context: &'a RemoteActionExecutionContext<'_>,
+        digest: &'a Digest,
+    ) -> BoxFuture<'a, io::Result<Vec<u8>>>;
+}
+
+impl ChunkSource for CombinedCache {
+    fn download_blob<'a>(
+        &'a self,
+        context: &'a RemoteActionExecutionContext<'_>,
+        digest: &'a Digest,
+    ) -> BoxFuture<'a, io::Result<Vec<u8>>> {
+        Box::pin(CombinedCache::download_blob(self, context, digest))
+    }
+}
+
 /// Downloads blobs by fetching chunks through a per-blob sliding window via the SplitBlob API.
 ///
 /// PORT: Java's downloader holds the client and the cache for its lifetime; here it borrows them
 /// for the download it is made for (CombinedCache makes one per chunked download).
 // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:41 ChunkedBlobDownloader
 pub struct ChunkedBlobDownloader<'a> {
-    grpc_cache_client: &'a GrpcCacheClient,
-    combined_cache: &'a CombinedCache,
+    grpc_cache_client: &'a dyn ChunkSplitter,
+    combined_cache: &'a dyn ChunkSource,
     digest_util: DigestUtil,
     chunking_function: chunking_function::Value,
 }
@@ -43,8 +98,8 @@ fn key(digest: &Digest) -> DigestKey {
 impl<'a> ChunkedBlobDownloader<'a> {
     // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:51 ChunkedBlobDownloader.<init>
     pub fn new(
-        grpc_cache_client: &'a GrpcCacheClient,
-        combined_cache: &'a CombinedCache,
+        grpc_cache_client: &'a dyn ChunkSplitter,
+        combined_cache: &'a dyn ChunkSource,
         chunking_config: &ChunkingConfig,
         digest_util: DigestUtil,
     ) -> ChunkedBlobDownloader<'a> {
@@ -134,7 +189,7 @@ type PendingDownload<'b> = BoxFuture<'b, (DigestKey, io::Result<Vec<u8>>)>;
 /// `cancelAllDownloads()` in the `finally` block.
 // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:137 ChunkedBlobDownloader.DownloadSession
 struct DownloadSession<'b, 'c> {
-    combined_cache: &'b CombinedCache,
+    combined_cache: &'b dyn ChunkSource,
     context: &'b RemoteActionExecutionContext<'c>,
     chunk_digests: &'b [Digest],
     out: &'b mut (dyn Write + Send),
@@ -185,11 +240,11 @@ impl<'b, 'c> DownloadSession<'b, 'c> {
             .insert(digest_key.clone(), vec![chunk_index]);
         self.downloads.push(Box::pin(async move {
             // The download of a chunk goes through CombinedCache again; a chunk is never above
-            // the chunking threshold, so it is not chunked itself. Boxed: the call recurses into
-            // the cache's download path.
-            let download: BoxFuture<'b, io::Result<Vec<u8>>> =
-                Box::pin(combined_cache.download_blob(context, chunk_digest));
-            (digest_key, download.await)
+            // the chunking threshold, so it is not chunked itself.
+            (
+                digest_key,
+                combined_cache.download_blob(context, chunk_digest).await,
+            )
         }));
     }
 

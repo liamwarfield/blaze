@@ -175,7 +175,7 @@ impl GlobCache {
         self: &Arc<Self>,
         pattern: &str,
         globber_operation: GlobberOperation,
-    ) -> Result<GlobResult, BadGlobException> {
+    ) -> Result<GlobResult, GlobberError> {
         let key = (pattern.to_owned(), globber_operation);
         if let Some(cached) = self.glob_cache.lock().get(&key) {
             return Ok(cached.clone());
@@ -234,18 +234,18 @@ impl GlobCache {
         self: &Arc<Self>,
         pattern: &str,
         globber_operation: GlobberOperation,
-    ) -> Result<GlobResult, BadGlobException> {
+    ) -> Result<GlobResult, GlobberError> {
         // Forbidden patterns:
         if pattern.contains('?') {
-            return Err(BadGlobException(format!(
+            return Err(GlobberError::BadGlob(BadGlobException(format!(
                 "glob pattern '{pattern}' contains forbidden '?' wildcard"
-            )));
+            ))));
         }
         // Patterns forbidden by UnixGlob library:
         if let Some(error) = unix_glob::check_pattern_for_error(pattern) {
-            return Err(BadGlobException(format!(
+            return Err(GlobberError::BadGlob(BadGlobException(format!(
                 "{error} (in glob pattern '{pattern}')"
-            )));
+            ))));
         }
         let mut builder = UnixGlobBuilder::new(
             self.package_directory.clone(),
@@ -257,10 +257,16 @@ impl GlobCache {
                 cache: self.clone(),
                 globber_operation,
             }));
-        match builder.glob() {
+        // Java: GlobCache waits on `globAsync`'s future (`getGlobUnsorted`: `future.get()`), which
+        // an interrupt stops.
+        match builder.glob_interruptible() {
             Ok(paths) => Ok(Ok(Arc::new(paths))),
-            Err(UnixGlobError::BadPattern(ex)) => Err(BadGlobException(ex.0)),
+            Err(UnixGlobError::BadPattern(ex)) => {
+                Err(GlobberError::BadGlob(BadGlobException(ex.0)))
+            }
             Err(UnixGlobError::Io(e)) => Ok(Err(Arc::new(e))),
+            // Not cached: Java's interrupted future is not a result.
+            Err(UnixGlobError::Interrupted) => Err(GlobberError::Interrupted),
         }
     }
 
