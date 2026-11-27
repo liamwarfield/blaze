@@ -675,3 +675,13 @@ Each entry: date, decision, why, who decided.
   unmeasured after an XML-writer overflow are rerun per function and reported in their own
   column. Ruling: the non-heap memory figures of `--memory_profile` are 0, 0, 0 and max -1
   (D15). Root.
+- 2026-11-26. Checkpoint 43 is b216603 (clean-checkout build; binary sha256 f029071c…; the
+  graph-reuse check's build-and-test scenario passes, its basic scenario failed on a missing
+  workspace directory of the tool itself, to be rerun). Reviews at b216603: query round 3 STOP
+  (the list of whole-dict readers for `ctx.var` key tracking was incomplete; SkyQuery's first
+  review found no S1); rewinding round 2 STOP on one word of an error text (AT-1), which root
+  fixed in the tree: the class name printed for a Java `Object` parameter in `dict_cast` /
+  `sequence_cast` errors is `unknown` (Starlark.classType), at ten call sites that said
+  `Object` or `any`; include scanning's first review found no S1. Declared deviation: SkyQuery
+  evaluates sequentially where Java visits in parallel (result sets equal; order compared only
+  where Bazel's is stable). Root.
