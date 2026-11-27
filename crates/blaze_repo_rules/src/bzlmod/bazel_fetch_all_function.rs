@@ -56,6 +56,7 @@ impl fmt::Debug for BazelFetchAllKey {
 
 impl Key for BazelFetchAllKey {
     type Value = BazelFetchAllValue;
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelFetchAllValue.java:68 BazelFetchAllValue.Key.functionName
     const FUNCTION: SkyFunctionName = BAZEL_FETCH_ALL;
     // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:174 SkyFunctions.BAZEL_FETCH_ALL (createHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;

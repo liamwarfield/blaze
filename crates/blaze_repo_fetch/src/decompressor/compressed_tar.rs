@@ -472,6 +472,15 @@ pub(crate) fn decompress(
             None => entry.path_bytes().into_owned(),
         };
         // Java: toRawBytesString(entry.getName()): the raw header bytes, one char per byte.
+        // Java: com/google/devtools/build/lib/bazel/repository/decompressor/CompressedTarFunction.java:181 CompressedTarFunction.toRawBytesString
+        // The marker charset only carries the header's raw bytes through Commons Compress's
+        // String API; the `tar` crate returns the raw bytes directly.
+        // PORT: skipped CompressedTarFunction.MarkedIso88591Charset.getRawBytesStringIfMarked: raw header bytes come from the `tar` crate.
+        // PORT: skipped CompressedTarFunction.MarkedIso88591Charset.newDecoder: raw header bytes come from the `tar` crate.
+        // PORT: skipped CompressedTarFunction.MarkedIso88591Charset.newEncoder: raw header bytes come from the `tar` crate.
+        // PORT: skipped CompressedTarFunction.MarkedIso88591Charset.contains: raw header bytes come from the `tar` crate.
+        // PORT: skipped CompressedTarFunction.MarkedIso88591CharsetProvider.charsets: raw header bytes come from the `tar` crate.
+        // PORT: skipped CompressedTarFunction.MarkedIso88591CharsetProvider.charsetForName: raw header bytes come from the `tar` crate.
         // PORT: Commons Compress decodes a PAX `path` record as UTF-8 and Java re-encodes it
         // with `unicodeToInternal`, which replaces malformed UTF-8 in such a record; the `tar`
         // crate hands over the record's raw bytes.

@@ -526,6 +526,23 @@ impl SkyframeActionGraph<'_> {
         let generating_action_key = artifact.get_generating_action_key();
         let lookup_key = generating_action_key.get_action_lookup_key();
         let graph = self.skyframe_executor.get_walkable_graph();
+        let actions = owner_actions(&*graph, lookup_key)?;
+        Some(actions[generating_action_key.get_action_index() as usize].clone())
+    }
+}
+
+/// `ActionLookupValue.getActions()` of the value of `lookup_key` in `graph` (`None` where the
+/// owner's value is missing or in error), for the owners whose values the build creates:
+/// configured targets, aspects, top-level aspects, action template expansions and the workspace
+/// status. Other owners (the coverage report) fail loudly.
+///
+/// Shared by `SkyframeActionGraph::get_generating_action` and the graph reads of the rewound
+/// action synchronizer (`build_remote`).
+pub(crate) fn owner_actions(
+    graph: &dyn blaze_skyframe::WalkableGraph,
+    lookup_key: &blaze_actions::ActionLookupKeyRef,
+) -> Option<Vec<ActionRef>> {
+    {
         // ActionLookupValue.getActions() of the key's value (result.hasError(): null).
         let any = lookup_key.as_any();
         let actions: Vec<ActionRef> = if let Some(key) = any.downcast_ref::<ConfiguredTargetKey>() {
@@ -574,7 +591,7 @@ impl SkyframeActionGraph<'_> {
                 lookup_key.function_name()
             );
         };
-        Some(actions[generating_action_key.get_action_index() as usize].clone())
+        Some(actions)
     }
 }
 

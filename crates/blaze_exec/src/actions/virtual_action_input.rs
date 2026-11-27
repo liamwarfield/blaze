@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use blaze_vfs::{Path, PathFragment};
-use sha2::Digest;
 
 use super::action_input::{ActionInput, ActionInputRef};
 use super::file_artifact_value::FileArtifactValue;
@@ -92,7 +91,11 @@ pub fn virtual_write_to_path<V: VirtualActionInput + ?Sized>(
         out.flush()?;
     }
     target.set_executable(true)?;
-    Ok(sha2::Sha256::digest(&bytes).to_vec())
+    // `HashingOutputStream(fs.getDigestFunction().getHashFunction(), out)`.
+    Ok(target
+        .get_file_system()
+        .get_digest_function()
+        .hash_bytes(&bytes))
 }
 
 trait PathExt {
@@ -114,15 +117,19 @@ pub struct EmptyActionInput {
 }
 
 impl ActionInput for EmptyActionInput {
+    // Java: com/google/devtools/build/lib/actions/cache/VirtualActionInput.java:162 VirtualActionInput.EmptyActionInput.getExecPath
     fn get_exec_path(&self) -> &PathFragment {
         panic!("UnsupportedOperationException: empty virtual artifact doesn't have an execpath")
     }
+    // Java: com/google/devtools/build/lib/actions/cache/VirtualActionInput.java:157 VirtualActionInput.EmptyActionInput.getExecPathString
     fn get_exec_path_string(&self) -> String {
         panic!("UnsupportedOperationException: empty virtual artifact doesn't have an execpath")
     }
+    // Java: com/google/devtools/build/lib/actions/cache/VirtualActionInput.java:138 VirtualActionInput.isDirectory
     fn is_directory(&self) -> bool {
         false
     }
+    // Java: com/google/devtools/build/lib/actions/cache/VirtualActionInput.java:143 VirtualActionInput.isSymlink
     fn is_symlink(&self) -> bool {
         false
     }
@@ -134,7 +141,13 @@ impl ActionInput for EmptyActionInput {
     }
 }
 
+// (`atomicallyWriteRelativeTo` / `atomicallyWriteTo` return the empty digest through
+// `is_empty_action_input`; `getBytes()` is the empty write.)
+// Java: com/google/devtools/build/lib/actions/cache/VirtualActionInput.java:167 VirtualActionInput.EmptyActionInput.atomicallyWriteRelativeTo
+// Java: com/google/devtools/build/lib/actions/cache/VirtualActionInput.java:172 VirtualActionInput.EmptyActionInput.atomicallyWriteTo
+// Java: com/google/devtools/build/lib/actions/cache/VirtualActionInput.java:182 VirtualActionInput.EmptyActionInput.getBytes
 impl VirtualActionInput for EmptyActionInput {
+    // Java: com/google/devtools/build/lib/actions/cache/VirtualActionInput.java:177 VirtualActionInput.EmptyActionInput.writeTo
     fn write_to(&self, _out: &mut dyn Write) -> io::Result<()> {
         Ok(())
     }
@@ -144,6 +157,7 @@ impl VirtualActionInput for EmptyActionInput {
 }
 
 impl fmt::Display for EmptyActionInput {
+    // Java: com/google/devtools/build/lib/actions/cache/VirtualActionInput.java:187 VirtualActionInput.EmptyActionInput.toString
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("EmptyActionInput")
     }

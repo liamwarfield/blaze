@@ -263,15 +263,19 @@ impl LastBuildEvent {
 }
 
 impl BuildEvent for LastBuildEvent {
+    // Java: com/google/devtools/build/lib/buildeventstream/LastBuildEvent.java:29 LastBuildEvent.getEventId
     fn get_event_id(&self) -> BuildEventId {
         self.event.get_event_id()
     }
+    // Java: com/google/devtools/build/lib/buildeventstream/LastBuildEvent.java:34 LastBuildEvent.getChildrenEvents
     fn get_children_events(&self) -> Vec<BuildEventId> {
         self.event.get_children_events()
     }
+    // Java: com/google/devtools/build/lib/buildeventstream/LastBuildEvent.java:39 LastBuildEvent.referencedLocalFiles
     fn referenced_local_files(&self) -> Vec<LocalFile> {
         self.event.referenced_local_files()
     }
+    // Java: com/google/devtools/build/lib/buildeventstream/LastBuildEvent.java:44 LastBuildEvent.remoteUploads
     fn remote_uploads(&self) -> Vec<Option<String>> {
         self.event.remote_uploads()
     }
@@ -299,9 +303,11 @@ impl NullConfiguration {
 }
 
 impl BuildEvent for NullConfiguration {
+    // Java: com/google/devtools/build/lib/buildeventstream/NullConfiguration.java:28 NullConfiguration.getEventId
     fn get_event_id(&self) -> BuildEventId {
         build_event_id_util::null_configuration_id()
     }
+    // Java: com/google/devtools/build/lib/buildeventstream/NullConfiguration.java:33 NullConfiguration.getChildrenEvents
     fn get_children_events(&self) -> Vec<BuildEventId> {
         Vec::new()
     }

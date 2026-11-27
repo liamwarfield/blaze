@@ -3,7 +3,6 @@
 
 use std::fmt;
 use std::sync::Arc;
-use std::time::Duration;
 
 use blaze_protos::tools::protos::Digest;
 use blaze_vfs::{Path, PathFragment};
@@ -59,7 +58,7 @@ pub trait SpawnExecutionContext: Send + Sync {
     /// `speculating()`.
     fn speculating(&self) -> bool;
     /// `getTimeout()`.
-    fn get_timeout(&self) -> Duration;
+    fn get_timeout(&self) -> blaze_util::java_duration::JavaDuration;
     /// `getFileOutErr()`.
     fn get_file_out_err(&self) -> &FileOutErr;
     /// `getInputMapping(baseDirectory, willAccessRepeatedly)`.

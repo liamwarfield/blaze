@@ -136,9 +136,15 @@ impl KeyType {
         }
     }
 
+    /// `getDigestFunction().getHashFunction().equals(keyType.hashFunction)`: the Guava
+    /// `HashFunction`s are singletons, shared by `SHA1`, `SHA256` and `BLAKE3`; no key type uses
+    /// GITSHA1's.
     fn matches_file_system_digest(self, f: DigestHashFunction) -> bool {
         match f {
+            DigestHashFunction::Sha1 => self == KeyType::SHA1,
             DigestHashFunction::Sha256 => self == KeyType::SHA256,
+            DigestHashFunction::Blake3 => self == KeyType::BLAKE3,
+            DigestHashFunction::GitSha1 => false,
         }
     }
 }

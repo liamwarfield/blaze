@@ -19,7 +19,7 @@ use crate::post_analysis_query_environment::NamedThreadSafeOutputFormatterCallba
 
 /// Cquery output formatter that prints the set of output files advertised by the matched
 /// targets.
-// Java: com/google/devtools/build/lib/query2/cquery/FilesOutputFormatterCallback.java:36 FilesOutputFormatterCallback
+// Java: com/google/devtools/build/lib/query2/cquery/FilesOutputFormatterCallback.java:33 FilesOutputFormatterCallback
 pub struct FilesOutputFormatterCallback<'a> {
     base: CqueryThreadsafeCallback<'a>,
     /// `topLevelArtifactContext.outputGroups()` (an `ImmutableSortedSet`).
@@ -30,7 +30,7 @@ pub struct FilesOutputFormatterCallback<'a> {
 }
 
 impl<'a> FilesOutputFormatterCallback<'a> {
-    // Java: com/google/devtools/build/lib/query2/cquery/FilesOutputFormatterCallback.java:40 FilesOutputFormatterCallback.<init>
+    // Java: com/google/devtools/build/lib/query2/cquery/FilesOutputFormatterCallback.java:37 FilesOutputFormatterCallback.<init>
     pub fn new(base: CqueryThreadsafeCallback<'a>, output_groups: Vec<String>) -> Self {
         // Different targets may provide the same artifact, so we deduplicate the collection of
         // all results at the end (`uniquifyResults= true` in `base`).
@@ -86,7 +86,7 @@ fn should_display(artifact: &Artifact) -> bool {
 }
 
 impl NamedThreadSafeOutputFormatterCallback<CqueryNode> for FilesOutputFormatterCallback<'_> {
-    // Java: com/google/devtools/build/lib/query2/cquery/FilesOutputFormatterCallback.java:53 FilesOutputFormatterCallback.getName
+    // Java: com/google/devtools/build/lib/query2/cquery/FilesOutputFormatterCallback.java:51 FilesOutputFormatterCallback.getName
     fn get_name(&self) -> String {
         "files".to_owned()
     }
@@ -101,7 +101,7 @@ impl Callback<CqueryNode> for FilesOutputFormatterCallback<'_> {
 }
 
 impl OutputFormatterCallback<CqueryNode> for FilesOutputFormatterCallback<'_> {
-    // Java: com/google/devtools/build/lib/query2/cquery/FilesOutputFormatterCallback.java:58 FilesOutputFormatterCallback.processOutput
+    // Java: com/google/devtools/build/lib/query2/cquery/FilesOutputFormatterCallback.java:56 FilesOutputFormatterCallback.processOutput
     fn process_output(&self, partial_result: &[CqueryNode]) -> Result<(), OutputFormatterError> {
         for target in partial_result {
             let Some(cf) = target.as_configured_target() else {

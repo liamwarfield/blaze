@@ -30,7 +30,11 @@ use blaze_remote::grpc::stubs::content_addressable_storage_server::{
     ContentAddressableStorage, ContentAddressableStorageServer,
 };
 use blaze_remote::grpc::stubs::execution_server::{Execution, ExecutionServer};
+use blaze_remote::grpc::stubs::fetch_server::{Fetch, FetchServer};
 use blaze_remote::grpc::{ClientInterceptor, ReferenceCountedChannel};
+use blaze_remote::reapi::asset::{
+    FetchBlobRequest, FetchBlobResponse, FetchDirectoryRequest, FetchDirectoryResponse,
+};
 use blaze_remote::reapi::bytestream::{
     QueryWriteStatusRequest, QueryWriteStatusResponse, ReadRequest, ReadResponse, WriteRequest,
     WriteResponse,
@@ -120,6 +124,16 @@ impl ServiceRegistry {
         self.add(
             <CapabilitiesServer<T> as NamedService>::NAME,
             CapabilitiesServer::new(service)
+                .max_decoding_message_size(usize::MAX)
+                .max_encoding_message_size(usize::MAX),
+        );
+    }
+
+    /// `serviceRegistry.addService(new FetchImplBase() {...})`.
+    pub fn add_fetch<T: Fetch>(&mut self, service: T) {
+        self.add(
+            <FetchServer<T> as NamedService>::NAME,
+            FetchServer::new(service)
                 .max_decoding_message_size(usize::MAX)
                 .max_encoding_message_size(usize::MAX),
         );
@@ -540,6 +554,34 @@ impl ActionCache for FakeActionCache {
             Some(handler) => handler(request).map(Response::new),
             None => Err(unimplemented(&format!("{ACTION_CACHE}/UpdateActionResult"))),
         }
+    }
+}
+
+/// `FetchImplBase` (Remote Asset API).
+#[derive(Default)]
+pub struct FakeFetch {
+    pub fetch_blob: Option<UnaryHandler<FetchBlobRequest, FetchBlobResponse>>,
+}
+
+#[tonic::async_trait]
+impl Fetch for FakeFetch {
+    async fn fetch_blob(
+        &self,
+        request: Request<FetchBlobRequest>,
+    ) -> Result<Response<FetchBlobResponse>, Status> {
+        match &self.fetch_blob {
+            Some(handler) => handler(request).map(Response::new),
+            None => Err(unimplemented("build.bazel.remote.asset.v1.Fetch/FetchBlob")),
+        }
+    }
+
+    async fn fetch_directory(
+        &self,
+        _request: Request<FetchDirectoryRequest>,
+    ) -> Result<Response<FetchDirectoryResponse>, Status> {
+        Err(unimplemented(
+            "build.bazel.remote.asset.v1.Fetch/FetchDirectory",
+        ))
     }
 }
 

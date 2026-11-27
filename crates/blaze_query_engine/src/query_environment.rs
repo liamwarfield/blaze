@@ -152,6 +152,12 @@ pub trait QueryFunctionBase: Send + Sync {
 
     /// The types of the arguments of the function.
     fn get_argument_types(&self) -> Vec<ArgumentType>;
+
+    /// Whether [`QueryFunctionBase::get_argument_types`] repeats forever (Java functions that
+    /// return `Iterables.cycle(...)`, e.g. `rbuildfiles`: any number of arguments).
+    fn get_argument_types_cycle(&self) -> bool {
+        false
+    }
 }
 
 /// A user-defined query function.
@@ -489,6 +495,13 @@ pub trait QueryEnvironment<T> {
 
     /// Java `env instanceof StreamableQueryEnvironment`.
     fn as_streamable(&self) -> Option<&dyn StreamableQueryEnvironment<T>> {
+        None
+    }
+
+    /// Java `env instanceof <a concrete environment class>` (e.g. `RBuildFilesFunction`'s
+    /// `env instanceof SkyQueryEnvironment`): the environment as `Any`, for the environments
+    /// that functions downcast to.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
         None
     }
 

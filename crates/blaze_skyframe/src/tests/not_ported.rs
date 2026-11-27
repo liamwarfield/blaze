@@ -180,16 +180,9 @@ mod memoizing_evaluator_test {
         )
     }
 
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:2444 MemoizingEvaluatorTest.resetSelfOnly_singleDep_initialBuild
-    #[test]
-    #[ignore = "SkyFunction.Reset and node rewinding are not ported"]
-    fn reset_self_only_single_dep_initial_build() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.resetSelfOnly_singleDep_initialBuild")
-    }
-
     // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:2491 MemoizingEvaluatorTest.resetSelfOnly_singleDep_incrementalBuild
     #[test]
-    #[ignore = "SkyFunction.Reset and node rewinding are not ported"]
+    #[ignore = "not ported yet: the engine ports Reset and rewinding (see rewinding_evaluator_test.rs); this case needs incremental builds, aborted evaluations or concurrent parents in that harness"]
     fn reset_self_only_single_dep_incremental_build() {
         unimplemented!(
             "not ported: MemoizingEvaluatorTest.resetSelfOnly_singleDep_incrementalBuild"
@@ -198,7 +191,7 @@ mod memoizing_evaluator_test {
 
     // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:2547 MemoizingEvaluatorTest.resetSelfOnly_extraDepMissingAfterReset_initialBuild
     #[test]
-    #[ignore = "SkyFunction.Reset and node rewinding are not ported"]
+    #[ignore = "not ported yet: the engine ports Reset and rewinding (see rewinding_evaluator_test.rs); this case needs incremental builds, aborted evaluations or concurrent parents in that harness"]
     fn reset_self_only_extra_dep_missing_after_reset_initial_build() {
         unimplemented!(
             "not ported: MemoizingEvaluatorTest.resetSelfOnly_extraDepMissingAfterReset_initialBuild"
@@ -207,46 +200,30 @@ mod memoizing_evaluator_test {
 
     // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:2604 MemoizingEvaluatorTest.resetSelfOnly_extraDepMissingAfterReset_incrementalBuild
     #[test]
-    #[ignore = "SkyFunction.Reset and node rewinding are not ported"]
+    #[ignore = "not ported yet: the engine ports Reset and rewinding (see rewinding_evaluator_test.rs); this case needs incremental builds, aborted evaluations or concurrent parents in that harness"]
     fn reset_self_only_extra_dep_missing_after_reset_incremental_build() {
         unimplemented!(
             "not ported: MemoizingEvaluatorTest.resetSelfOnly_extraDepMissingAfterReset_incrementalBuild"
         )
     }
 
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:2664 MemoizingEvaluatorTest.resetSelfOnly_depNotRequestedAgainAfterReset
-    #[test]
-    #[ignore = "SkyFunction.Reset and node rewinding are not ported"]
-    fn reset_self_only_dep_not_requested_again_after_reset() {
-        unimplemented!(
-            "not ported: MemoizingEvaluatorTest.resetSelfOnly_depNotRequestedAgainAfterReset"
-        )
-    }
-
     // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:2724 MemoizingEvaluatorTest.resetSelfOnly_evaluationAborted
     #[test]
-    #[ignore = "SkyFunction.Reset and node rewinding are not ported"]
+    #[ignore = "not ported yet: the engine ports Reset and rewinding (see rewinding_evaluator_test.rs); this case needs incremental builds, aborted evaluations or concurrent parents in that harness"]
     fn reset_self_only_evaluation_aborted() {
         unimplemented!("not ported: MemoizingEvaluatorTest.resetSelfOnly_evaluationAborted")
     }
 
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:2768 MemoizingEvaluatorTest.rewindOneDep
-    #[test]
-    #[ignore = "SkyFunction.Reset and node rewinding are not ported"]
-    fn rewind_one_dep() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.rewindOneDep")
-    }
-
     // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:2816 MemoizingEvaluatorTest.twoParentsRewindSameDep_markedDirtyOnce
     #[test]
-    #[ignore = "SkyFunction.Reset and node rewinding are not ported"]
+    #[ignore = "not ported yet: the engine ports Reset and rewinding (see rewinding_evaluator_test.rs); this case needs incremental builds, aborted evaluations or concurrent parents in that harness"]
     fn two_parents_rewind_same_dep_marked_dirty_once() {
         unimplemented!("not ported: MemoizingEvaluatorTest.twoParentsRewindSameDep_markedDirtyOnce")
     }
 
     // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:2879 MemoizingEvaluatorTest.twoParentsRewindSameDep_markedDirtyTwice
     #[test]
-    #[ignore = "SkyFunction.Reset and node rewinding are not ported"]
+    #[ignore = "not ported yet: the engine ports Reset and rewinding (see rewinding_evaluator_test.rs); this case needs incremental builds, aborted evaluations or concurrent parents in that harness"]
     fn two_parents_rewind_same_dep_marked_dirty_twice() {
         unimplemented!(
             "not ported: MemoizingEvaluatorTest.twoParentsRewindSameDep_markedDirtyTwice"
@@ -255,7 +232,7 @@ mod memoizing_evaluator_test {
 
     // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:2956 MemoizingEvaluatorTest.twoParentsRewindSameDep_depEvaluatesToErrorAfterRewind
     #[test]
-    #[ignore = "SkyFunction.Reset and node rewinding are not ported"]
+    #[ignore = "not ported yet: the engine ports Reset and rewinding (see rewinding_evaluator_test.rs); this case needs incremental builds, aborted evaluations or concurrent parents in that harness"]
     fn two_parents_rewind_same_dep_dep_evaluates_to_error_after_rewind() {
         unimplemented!(
             "not ported: MemoizingEvaluatorTest.twoParentsRewindSameDep_depEvaluatesToErrorAfterRewind"
@@ -264,23 +241,16 @@ mod memoizing_evaluator_test {
 
     // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:3041 MemoizingEvaluatorTest.depWithDoneParentEvaluatesToErrorAfterRewind_reverseTransitiveClosureDeleted
     #[test]
-    #[ignore = "SkyFunction.Reset and node rewinding are not ported"]
+    #[ignore = "not ported yet: the engine ports Reset and rewinding (see rewinding_evaluator_test.rs); this case needs incremental builds, aborted evaluations or concurrent parents in that harness"]
     fn dep_with_done_parent_evaluates_to_error_after_rewind_reverse_transitive_closure_deleted() {
         unimplemented!(
             "not ported: MemoizingEvaluatorTest.depWithDoneParentEvaluatesToErrorAfterRewind_reverseTransitiveClosureDeleted"
         )
     }
 
-    // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:3122 MemoizingEvaluatorTest.rewindTransitiveDep
-    #[test]
-    #[ignore = "SkyFunction.Reset and node rewinding are not ported"]
-    fn rewind_transitive_dep() {
-        unimplemented!("not ported: MemoizingEvaluatorTest.rewindTransitiveDep")
-    }
-
     // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:3194 MemoizingEvaluatorTest.evaluationAbortedWithRewoundNodeOnInvalidationPath_dirty
     #[test]
-    #[ignore = "SkyFunction.Reset and node rewinding are not ported"]
+    #[ignore = "not ported yet: the engine ports Reset and rewinding (see rewinding_evaluator_test.rs); this case needs incremental builds, aborted evaluations or concurrent parents in that harness"]
     fn evaluation_aborted_with_rewound_node_on_invalidation_path_dirty() {
         unimplemented!(
             "not ported: MemoizingEvaluatorTest.evaluationAbortedWithRewoundNodeOnInvalidationPath_dirty"
@@ -289,7 +259,7 @@ mod memoizing_evaluator_test {
 
     // Java: src/test/java/com/google/devtools/build/skyframe/MemoizingEvaluatorTest.java:3262 MemoizingEvaluatorTest.evaluationAbortedWithRewoundNodeOnInvalidationPath_inflight
     #[test]
-    #[ignore = "SkyFunction.Reset and node rewinding are not ported"]
+    #[ignore = "not ported yet: the engine ports Reset and rewinding (see rewinding_evaluator_test.rs); this case needs incremental builds, aborted evaluations or concurrent parents in that harness"]
     fn evaluation_aborted_with_rewound_node_on_invalidation_path_inflight() {
         unimplemented!(
             "not ported: MemoizingEvaluatorTest.evaluationAbortedWithRewoundNodeOnInvalidationPath_inflight"

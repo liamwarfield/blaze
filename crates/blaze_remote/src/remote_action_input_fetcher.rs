@@ -106,12 +106,16 @@ impl RemoteActionInputFetcher {
             let tracked = if output.artifact_class()
                 == blaze_actions::actions::artifact::ArtifactClass::TreeFileArtifact
             {
-                output.get_parent().expect("a TreeFileArtifact has a parent")
+                output
+                    .get_parent()
+                    .expect("a TreeFileArtifact has a parent")
             } else {
                 output
             };
             self.rewound_action_outputs
-                .add(&blaze_exec::actions::action_adapters::artifact_input(tracked));
+                .add(&blaze_exec::actions::action_adapters::artifact_input(
+                    tracked,
+                ));
         }
     }
 

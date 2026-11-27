@@ -38,7 +38,7 @@ pub fn edit_options(options_parser: &mut OptionsParser) {
     }
 }
 
-// Java: com/google/devtools/build/lib/runtime/commands/AqueryCommand.java:184 AqueryCommand.getFunctionsMap
+// Java: com/google/devtools/build/lib/runtime/commands/AqueryCommand.java:185 AqueryCommand.getFunctionsMap
 fn get_functions_map() -> HashMap<String, Arc<dyn QueryFunction<KeyedConfiguredTargetValue>>> {
     let mut functions_builder: HashMap<String, Arc<dyn QueryFunction<KeyedConfiguredTargetValue>>> =
         HashMap::new();
@@ -190,7 +190,7 @@ pub fn exec(env: &PostAnalysisCommandEnvironment<'_>) -> DetailedExitCode {
     process_request(env, &request, &aquery_build_tool)
 }
 
-// Java: com/google/devtools/build/lib/runtime/commands/AqueryCommand.java:175 AqueryCommand.createFailureResult
+// Java: com/google/devtools/build/lib/runtime/commands/AqueryCommand.java:177 AqueryCommand.createFailureResult
 fn create_failure_result(message: &str, detailed_code: action_query::Code) -> DetailedExitCode {
     DetailedExitCode::of(FailureDetail {
         message: message.to_owned(),

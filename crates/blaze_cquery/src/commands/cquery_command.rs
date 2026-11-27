@@ -22,7 +22,7 @@ use crate::cquery::config_function::ConfigFunctionSlot;
 use crate::cquery::configured_target_query_environment::{CqueryNode, functions};
 
 /// Allows the command to provide command-specific option defaults and/or requirements.
-// Java: com/google/devtools/build/lib/runtime/commands/CqueryCommand.java:79 CqueryCommand.editOptions
+// Java: com/google/devtools/build/lib/runtime/commands/CqueryCommand.java:80 CqueryCommand.editOptions
 pub fn edit_options(options_parser: &mut OptionsParser) {
     let cquery_options: CqueryOptions = options_parser
         .get_options::<CqueryOptions>()
@@ -80,7 +80,7 @@ pub fn edit_options(options_parser: &mut OptionsParser) {
 }
 
 /// The cquery `QueryFunction`s by name, with the slot `config()` reaches the environment through.
-// Java: com/google/devtools/build/lib/runtime/commands/CqueryCommand.java:149 CqueryCommand.exec
+// Java: com/google/devtools/build/lib/runtime/commands/CqueryCommand.java:120 CqueryCommand.exec
 pub fn function_map(
     slot: &ConfigFunctionSlot,
 ) -> HashMap<String, Arc<dyn QueryFunction<CqueryNode>>> {
@@ -93,7 +93,7 @@ pub fn function_map(
 }
 
 /// Handles the 'cquery' command on the Blaze command line.
-// Java: com/google/devtools/build/lib/runtime/commands/CqueryCommand.java:118 CqueryCommand.exec
+// Java: com/google/devtools/build/lib/runtime/commands/CqueryCommand.java:120 CqueryCommand.exec
 pub fn exec(env: &PostAnalysisCommandEnvironment<'_>) -> DetailedExitCode {
     // SkyQueryEnvironment.DEFAULT_THREAD_COUNT (a static initializer in Java).
     crate::post_analysis_query_environment::set_default_thread_count(env.available_processors);
@@ -177,7 +177,7 @@ pub fn exec(env: &PostAnalysisCommandEnvironment<'_>) -> DetailedExitCode {
     process_request(env, &request, &processor)
 }
 
-// Java: com/google/devtools/build/lib/runtime/commands/CqueryCommand.java:205 CqueryCommand.createFailureResult
+// Java: com/google/devtools/build/lib/runtime/commands/CqueryCommand.java:207 CqueryCommand.createFailureResult
 fn create_failure_result(
     message: &str,
     detailed_code: configurable_query::Code,

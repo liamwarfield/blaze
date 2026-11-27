@@ -62,10 +62,17 @@ impl BuildStartingEvent {
         BuildStartingEvent { data }
     }
 
+    /// The AutoValue accessors: the fields of [`BuildStartingData`].
+    // Java: com/google/devtools/build/lib/buildtool/buildevent/BuildStartingEvent.java:54 BuildStartingEvent.request
+    // Java: com/google/devtools/build/lib/buildtool/buildevent/BuildStartingEvent.java:57 BuildStartingEvent.workspace
+    // Java: com/google/devtools/build/lib/buildtool/buildevent/BuildStartingEvent.java:59 BuildStartingEvent.pwd
     pub fn data(&self) -> &BuildStartingData {
         &self.data
     }
 }
+
+// PORT: skipped, no reader in Bazel: BuildStartingEvent.outputFileSystem, BuildStartingEvent.usesInMemoryFileSystem
+// PORT: skipped, test-only factory (@VisibleForTesting; tests build the data directly): BuildStartingEvent.create
 
 impl BuildEvent for BuildStartingEvent {
     // Java: com/google/devtools/build/lib/buildtool/buildevent/BuildStartingEvent.java:91 BuildStartingEvent.getEventId

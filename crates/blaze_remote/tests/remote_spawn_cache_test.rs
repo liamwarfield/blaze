@@ -336,8 +336,8 @@ impl SpawnExecutionContext for TestSpawnExecutionContext {
         false
     }
 
-    fn get_timeout(&self) -> Duration {
-        Duration::ZERO
+    fn get_timeout(&self) -> blaze_util::java_duration::JavaDuration {
+        blaze_util::java_duration::JavaDuration::ZERO
     }
 
     fn get_file_out_err(&self) -> &FileOutErr {

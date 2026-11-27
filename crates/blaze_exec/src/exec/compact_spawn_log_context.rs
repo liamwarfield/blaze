@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::io::{self, BufWriter};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use blaze_actions::actions::command_lines::ParamFileActionInput;
 use blaze_collect::{NestedSet, NestedSetNode};
@@ -161,7 +160,7 @@ impl CompactSpawnLogContext {
         spawn: &dyn Spawn,
         input_metadata_provider: &dyn InputMetadataProvider,
         file_system: &FileSystemRef,
-        timeout: Duration,
+        timeout: blaze_util::java_duration::JavaDuration,
         result: &SpawnResult,
     ) -> Result<(), ExecException> {
         let mut builder = exec_log_entry::Spawn {
@@ -251,7 +250,7 @@ impl CompactSpawnLogContext {
             builder.digest = Some(digest);
         }
 
-        builder.timeout_millis = timeout.as_millis() as i64;
+        builder.timeout_millis = timeout.to_millis();
         builder.metrics = Some(get_spawn_metrics_proto(result));
 
         let mut spawn_entry = Some(builder);
@@ -875,7 +874,7 @@ impl SpawnLogContext for CompactSpawnLogContext {
         input_metadata_provider: &dyn InputMetadataProvider,
         _input_map: &dyn Fn() -> Arc<InputMapping>,
         file_system: &FileSystemRef,
-        timeout: Duration,
+        timeout: blaze_util::java_duration::JavaDuration,
         result: &SpawnResult,
     ) -> Result<(), ExecException> {
         self.log_spawn_impl(spawn, input_metadata_provider, file_system, timeout, result)

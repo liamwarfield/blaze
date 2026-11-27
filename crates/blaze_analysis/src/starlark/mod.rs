@@ -156,4 +156,6 @@ pub use thread_payload::{AnalysisThreadPayload, RuleContextHandle, register_acti
 /// to [`starlark_subrule::call_subrule`]. The lead calls this once at startup.
 pub fn install_hooks() {
     blaze_packages::starlark_defs::subrule::set_subrule_call_hook(starlark_subrule::call_subrule);
+    // The provider interfaces of the builtins' parameter types (`cc_toolchain: Info`, ...).
+    starlark::values::register_java_interface_matcher(crate::info::java_interface_matcher);
 }

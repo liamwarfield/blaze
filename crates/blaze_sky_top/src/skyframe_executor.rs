@@ -175,8 +175,8 @@ pub struct SkyframeExecutor {
     registry_fetcher: Arc<dyn blaze_bzlmod_model::registry::RegistryFetcher>,
     /// PORT: Blaze-only (decision D7). The evaluator's values and the services above hold frozen
     /// Starlark values whose heaps the build arena (`blaze_util::build_arena`) keeps: the arena
-    /// is not released while this executor exists. Declared last, so it is dropped after the
-    /// evaluator and everything else of the executor.
+    /// is not released while this executor exists. With a graph kept between commands,
+    /// `put_back` takes the graph's own lease before this one is dropped.
     _arena_lease: blaze_util::build_arena::Lease,
     /// The hold on the server's kept graph: the evaluator goes back when the executor is dropped.
     incremental: Option<crate::incremental::ExecutorHandle>,
@@ -562,15 +562,12 @@ impl SkyframeExecutor {
             let status_services = services.clone();
             builder = builder
                 .typed_function::<blaze_analysis::analysis_services::WorkspaceStatusKey, _>(
-                    move |_, env| {
-                        // PORT: Java's WorkspaceStatusFunction reads WORKSPACE_STATUS_KEY, which
-                        // SkyframeExecutor.injectWorkspaceStatusData injects per build with a new
-                        // action; BUILD_ID changes on the same schedule.
-                        if blaze_sky_loading::precomputed::BUILD_ID.get(env)?.is_none() {
-                            return Ok(None);
-                        }
-                        Ok(Some(status_services.compute_workspace_status_value()))
-                    },
+                    // The node has no dependency (SkyFunctions.BUILD_INFO is hermetic): it is
+                    // computed once per graph. The workspace status action runs again every
+                    // build because it is volatile (its ACTION_EXECUTION node depends on
+                    // BUILD_ID).
+                    // Java: com/google/devtools/build/lib/skyframe/WorkspaceStatusFunction.java:38 WorkspaceStatusFunction.compute
+                    move |_, _env| Ok(Some(status_services.compute_workspace_status_value())),
                 );
             // Java: CoverageReportFunction (SkyFunctions.COVERAGE_REPORT).
             // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:932 SkyframeExecutor.skyFunctions

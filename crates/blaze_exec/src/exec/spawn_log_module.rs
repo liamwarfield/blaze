@@ -351,7 +351,7 @@ impl SpawnLogContext for DeferredSpawnLogContext {
         input_metadata_provider: &dyn crate::actions::InputMetadataProvider,
         input_map: &dyn Fn() -> Arc<crate::actions::InputMapping>,
         file_system: &FileSystemRef,
-        timeout: std::time::Duration,
+        timeout: blaze_util::java_duration::JavaDuration,
         result: &crate::actions::SpawnResult,
     ) -> Result<(), crate::actions::ExecException> {
         match self.get() {

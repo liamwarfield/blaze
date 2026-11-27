@@ -266,3 +266,25 @@ fn wait_for_bulk_transfer_restores_the_interrupt_of_the_caller() {
     assert!(errors::is_interrupted(&e), "{e:?}");
     assert!(blaze_shell::thread_interrupt::interrupted());
 }
+
+/// Not in the Java test (review 2026-11-19 round 7, S4): `repository_ctx.execute(timeout = -5)`
+/// remotely gives `Duration.ofSeconds(-5)`, which is not zero, so the Action carries it as is
+/// (`Utils.java:430-445`).
+#[test]
+fn build_action_keeps_a_negative_timeout() {
+    let action = utils::build_action(
+        Default::default(),
+        Default::default(),
+        None,
+        blaze_util::java_duration::JavaDuration::of_seconds(-5),
+        /* cacheable= */ true,
+        None,
+    );
+    assert_eq!(
+        action.timeout,
+        Some(blaze_protos::google::protobuf::Duration {
+            seconds: -5,
+            nanos: 0
+        })
+    );
+}

@@ -535,5 +535,27 @@ where
     }
 }
 
+/// A [`SkyFunction`] (for example a closure or [`typed`]) with an `extractTag`: Java's
+/// functions that override `SkyFunction.extractTag` but are registered here as closures.
+pub struct Tagged<S, T> {
+    pub function: S,
+    pub tag: T,
+}
+
+impl<S, T> SkyFunction for Tagged<S, T>
+where
+    S: SkyFunction,
+    T: Fn(&SkyKey) -> Option<String> + Send + Sync + 'static,
+{
+    fn compute(&self, key: &SkyKey, env: &mut Environment<'_>) -> ComputeResult {
+        self.function.compute(key, env)
+    }
+
+    // Java: com/google/devtools/build/skyframe/SkyFunction.java:92 SkyFunction.extractTag
+    fn extract_tag(&self, key: &SkyKey) -> Option<String> {
+        (self.tag)(key)
+    }
+}
+
 #[cfg(test)]
 mod tests;

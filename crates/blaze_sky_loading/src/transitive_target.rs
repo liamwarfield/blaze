@@ -271,6 +271,16 @@ fn maybe_report_error_about_missing_edge(
 
 /// TRANSITIVE_TARGET (Java `TransitiveTargetFunction` over `TransitiveBaseTraversalFunction`).
 // Java: com/google/devtools/build/lib/skyframe/TransitiveBaseTraversalFunction.java:91 TransitiveBaseTraversalFunction.compute
+// (`argumentFromKey` is `key.get_label()`, `getKey` is `TransitiveTargetKey::of`, and the
+// builder's state is the locals `transitive` and `successful_transitive_loading`.)
+// Java: com/google/devtools/build/lib/skyframe/TransitiveTargetFunction.java:43 TransitiveTargetFunction.argumentFromKey
+// Java: com/google/devtools/build/lib/skyframe/TransitiveTargetFunction.java:48 TransitiveTargetFunction.getKey
+// Java: com/google/devtools/build/lib/skyframe/TransitiveTargetFunction.java:53 TransitiveTargetFunction.processTarget
+// Java: com/google/devtools/build/lib/skyframe/TransitiveTargetFunction.java:103 TransitiveTargetFunction.computeSkyValue
+// Java: com/google/devtools/build/lib/skyframe/TransitiveTargetFunction.java:173 TransitiveTargetFunction.TransitiveTargetValueBuilder.<init>
+// Java: com/google/devtools/build/lib/skyframe/TransitiveTargetFunction.java:183 TransitiveTargetFunction.TransitiveTargetValueBuilder.isSuccessfulTransitiveLoading
+// Java: com/google/devtools/build/lib/skyframe/TransitiveTargetFunction.java:187 TransitiveTargetFunction.TransitiveTargetValueBuilder.setSuccessfulTransitiveLoading
+// Java: com/google/devtools/build/lib/skyframe/TransitiveTargetFunction.java:191 TransitiveTargetFunction.TransitiveTargetValueBuilder.build
 pub fn transitive_target_function(
     key: &TransitiveTargetKey,
     env: &mut Environment<'_>,
@@ -296,6 +306,7 @@ pub fn transitive_target_function(
     }
 
     // Process deps from aspects.
+    // PORT: skipped, TransitiveTargetFunction.getAdvertisedProviderSet: the aspect deps (below).
     // PORT: Java also visits the label deps of the aspects of the rule's attributes
     // (getStrictLabelAspectDepKeys: Attribute.getAspects, AspectDefinition.satisfies,
     // forEachLabelDepFromAllAttributesOfAspect); those APIs are not ported in blaze_packages

@@ -7,6 +7,7 @@
 #![allow(clippy::too_many_arguments, clippy::new_without_default)]
 
 pub mod command_line_item;
+pub mod extrema;
 pub mod nestedset;
 
 pub use nestedset::{

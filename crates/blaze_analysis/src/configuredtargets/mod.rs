@@ -983,7 +983,14 @@ impl MergedConfiguredTarget {
         }
 
         // Merge analysis failures.
-        Self::get_analysis_failures(&base, aspects);
+        let analysis_failures = Self::get_analysis_failures(&base, aspects);
+        if !analysis_failures.is_empty() {
+            non_base_providers.put_info(crate::info::freeze_native_info(
+                crate::test::analysis_failure_info::AnalysisFailureInfo::for_analysis_failure_sets(
+                    analysis_failures,
+                ),
+            ));
+        }
 
         // Merge extra-actions provider.
         let merged_extra_action_providers =
@@ -1117,16 +1124,27 @@ impl MergedConfiguredTarget {
     }
 
     // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:335 MergedConfiguredTarget.getAnalysisFailures
-    fn get_analysis_failures(base: &ConfiguredTarget, aspects: &[ConfiguredAspect]) {
-        let base_failure_info = get_info(base, &ANALYSIS_FAILURE_INFO.key());
-        let any_aspect_failure_info = aspects
-            .iter()
-            .any(|a| a.get(&ANALYSIS_FAILURE_INFO.key()).is_some());
-        if base_failure_info.is_some() || any_aspect_failure_info {
-            // PORT: AnalysisFailureInfo (getCausesNestedSet, forAnalysisFailureSets) is not
-            // ported; Java collects the causes and adds AnalysisFailureInfo.
-            blaze_util::unported!("AnalysisFailureInfo.forAnalysisFailureSets");
+    fn get_analysis_failures(
+        base: &ConfiguredTarget,
+        aspects: &[ConfiguredAspect],
+    ) -> Vec<blaze_collect::NestedSet<crate::test::analysis_failure_info::AnalysisFailure>> {
+        use crate::test::analysis_failure_info::AnalysisFailureInfo;
+        let causes = |info: &starlark::values::OwnedFrozenValue| {
+            crate::info::downcast_info::<AnalysisFailureInfo>(info)
+                .expect("ClassCastException: AnalysisFailureInfo")
+                .get_causes_nested_set()
+                .clone()
+        };
+        let mut analysis_failures = Vec::new();
+        if let Some(base_failure_info) = get_info(base, &ANALYSIS_FAILURE_INFO.key()) {
+            analysis_failures.push(causes(&base_failure_info));
         }
+        for configured_aspect in aspects {
+            if let Some(aspect_failure_info) = configured_aspect.get(&ANALYSIS_FAILURE_INFO.key()) {
+                analysis_failures.push(causes(&aspect_failure_info));
+            }
+        }
+        analysis_failures
     }
 
     // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:352 MergedConfiguredTarget.getAllProviders

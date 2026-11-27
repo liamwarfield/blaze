@@ -319,6 +319,13 @@ impl FileSystem for DelegateFileSystem {
     fn stat(&self, path: &PathFragment, follow_symlinks: bool) -> io::Result<FileStatus> {
         self.delegate.stat(path, follow_symlinks)
     }
+    fn stat_metadata(
+        &self,
+        path: &PathFragment,
+        follow_symlinks: bool,
+    ) -> io::Result<Option<std::sync::Arc<dyn blaze_vfs::StatMetadata>>> {
+        self.delegate.stat_metadata(path, follow_symlinks)
+    }
     fn stat_nullable(&self, path: &PathFragment, follow_symlinks: bool) -> Option<FileStatus> {
         self.delegate.stat_nullable(path, follow_symlinks)
     }

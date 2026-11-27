@@ -64,24 +64,44 @@ impl BuildEventTransport for BuildEventServiceTransport {
     }
 }
 
-/// A builder for [`BuildEventServiceTransport`].
+/// A builder for [`BuildEventServiceTransport`]; its setters are the fields of the struct
+/// literal that builds it.
 // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceTransport.java:120 BuildEventServiceTransport.Builder
 pub struct Builder {
+    /// The setter `besClient`.
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceTransport.java:127 BuildEventServiceTransport.Builder.besClient
     pub bes_client: Arc<dyn BuildEventServiceClient>,
+    /// The setter `localFileUploader`.
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceTransport.java:133 BuildEventServiceTransport.Builder.localFileUploader
     pub local_file_uploader: Arc<dyn BuildEventArtifactUploader>,
+    /// The setter `besOptions`.
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceTransport.java:145 BuildEventServiceTransport.Builder.besOptions
     pub bes_options: BuildEventServiceOptions,
+    /// The setter `bepOptions`.
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceTransport.java:139 BuildEventServiceTransport.Builder.bepOptions
     pub bep_options: Arc<BuildEventProtocolOptions>,
+    /// The setter `clock`.
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceTransport.java:151 BuildEventServiceTransport.Builder.clock
     pub clock: Arc<dyn BesClock>,
+    /// The setter `artifactGroupNamer`.
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceTransport.java:157 BuildEventServiceTransport.Builder.artifactGroupNamer
     pub artifact_group_namer: Arc<dyn ArtifactGroupNamer>,
+    /// The setter `eventBus`.
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceTransport.java:163 BuildEventServiceTransport.Builder.eventBus
     pub event_bus: Arc<dyn EventBus>,
-    /// `null` is a `JavaSleeper`.
+    /// The setter `sleeper`; `null` is a `JavaSleeper`.
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceTransport.java:169 BuildEventServiceTransport.Builder.sleeper
     pub sleeper: Option<Arc<dyn Sleeper>>,
+    /// The setter `commandContext`.
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceTransport.java:176 BuildEventServiceTransport.Builder.commandContext
     pub command_context: CommandContext,
+    /// The setter `commandStartTime`.
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceTransport.java:182 BuildEventServiceTransport.Builder.commandStartTime
     pub command_start_time: Instant,
 }
 
 impl Builder {
-    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceTransport.java:186 BuildEventServiceTransport.Builder.build
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceTransport.java:188 BuildEventServiceTransport.Builder.build
     pub fn build(self) -> BuildEventServiceTransport {
         // (besOptions.besTimeout != null) ? besOptions.besTimeout : Duration.ZERO
         let bes_timeout = self.bes_options.bes_timeout;

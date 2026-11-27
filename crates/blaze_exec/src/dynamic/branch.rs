@@ -213,15 +213,17 @@ impl BranchFuture {
     fn get(&self) -> Result<BranchOutcome, GetError> {
         let mut inner = self.inner.lock();
         loop {
+            // Guava's AbstractFuture.get() tests Thread.interrupted() before it reads the value,
+            // on entry and after every wake-up: a pending interrupt wins over a finished result.
+            if blaze_shell::thread_interrupt::interrupted() {
+                return Err(GetError::Interrupted);
+            }
             match inner.state {
                 FutureState::Running => {}
                 FutureState::Cancelled => return Err(GetError::Cancelled),
                 FutureState::Success | FutureState::Failed => {
                     return Ok(inner.outcome.take().expect("the outcome is read once"));
                 }
-            }
-            if blaze_shell::thread_interrupt::interrupted() {
-                return Err(GetError::Interrupted);
             }
             self.changed.wait_for(&mut inner, INTERRUPT_POLL);
         }
@@ -777,5 +779,23 @@ pub(crate) fn interruptible_sleep(duration: Duration) -> Result<(), ()> {
             return Ok(());
         }
         std::thread::sleep((deadline - now).min(INTERRUPT_POLL));
+    }
+}
+
+#[cfg(test)]
+mod future_tests {
+    use super::*;
+
+    /// Guava's `AbstractFuture.get()`: a pending interrupt is thrown even when the future is done
+    /// (review exec-3, E3-1).
+    #[test]
+    fn get_on_done_future_with_pending_interrupt_throws_interrupted() {
+        let future = BranchFuture::new();
+        assert!(future.start_running());
+        assert!(future.complete(BranchOutcome::Success(Vec::new())));
+        blaze_shell::thread_interrupt::interrupt_current();
+        assert!(matches!(future.get(), Err(GetError::Interrupted)));
+        // Thread.interrupted() cleared the status; the result is still there.
+        assert!(matches!(future.get(), Ok(BranchOutcome::Success(_))));
     }
 }

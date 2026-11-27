@@ -278,7 +278,9 @@ impl StreamContext for BesGrpcStreamContext {
     // Java: com/google/devtools/build/lib/buildeventservice/client/BuildEventServiceGrpcClient.java:173 BESGrpcStreamContext.abortStream
     fn abort_stream(&self, status: Status) {
         self.stream_status.set(status);
-        self.requests.lock().take();
+        // The call is cancelled without a half-close (the request side stays open until the
+        // task drops the call), so the server sees the call fail, as with grpc-java's
+        // `onError`.
         self.abort.notify_one();
     }
 

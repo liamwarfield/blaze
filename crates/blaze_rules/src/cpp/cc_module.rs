@@ -3,6 +3,10 @@
 //!
 //! The Starlark-independent bodies are in `blaze_cc_features::cc_module`.
 
+// PORT: skipped, Java default methods of CcModuleApi that only throw UnsupportedOperationException (CcModule and BazelCcModule do not override them) and that the one caller of _builtins.internal.cc_common, builtins_bzl/common/cc/cc_common_bazel.bzl, never calls; user code sees the builtins' cc_common struct, not this object: CcModuleApi.compile, CcModuleApi.link, CcModuleApi.configureFeatures, CcModuleApi.createLtoCompilationContextFromStarlark, CcModuleApi.createCompilationOutputsFromStarlark, CcModuleApi.mergeCcCompilationOutputsFromStarlark
+// PORT: skipped, Java default methods of CcModuleApi that only throw UnsupportedOperationException and that cc_common_bazel.bzl never calls: CcModuleApi.getCompileBuildVariables, CcModuleApi.getLinkBuildVariables, CcModuleApi.createLibraryLinkerInput, CcModuleApi.createLinkerInput, CcModuleApi.createCcLinkingInfo, CcModuleApi.mergeCcInfos, CcModuleApi.createCcCompilationContext
+// PORT: skipped, Java default methods of CcModuleApi that only throw UnsupportedOperationException and that cc_common_bazel.bzl never calls: CcModuleApi.createCppModuleMap, CcModuleApi.ccToolchainConfigInfoFromStarlark, CcModuleApi.createLinkingContextFromCompilationOutputs, CcModuleApi.mergeCompilationContexts, CcModuleApi.createExtraLinkTimeLibrary
+
 use std::fmt;
 use std::sync::Arc;
 
@@ -29,7 +33,7 @@ use super::variables::{eval_error, expansion_error};
 
 /// Java `BazelCcModule` (`cc_common`).
 // Java: com/google/devtools/build/lib/bazel/rules/cpp/BazelCcModule.java:22 BazelCcModule
-// Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:52 CcModule
+// Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:49 CcModule
 #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative)]
 pub struct BazelCcModule;
 
@@ -89,6 +93,8 @@ fn cc_module_methods(builder: &mut MethodsBuilder) {
         Ok(NoneType)
     }
 
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/cpp/CcModuleApi.java:805 CcModuleApi.getToolForAction
+
     // Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:62 CcModule.getToolForAction
     fn get_tool_for_action<'v>(
         this: &BazelCcModule,
@@ -105,6 +111,8 @@ fn cc_module_methods(builder: &mut MethodsBuilder) {
         is_called_from_starlark_cc_common(eval)?;
         body::get_tool_for_action(&fc, action_name).map_err(eval_error)
     }
+
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/cpp/CcModuleApi.java:2090 CcModuleApi.getToolRequirementForAction
 
     // Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:77 CcModule.getToolRequirementForAction
     fn get_tool_requirement_for_action<'v>(
@@ -123,6 +131,8 @@ fn cc_module_methods(builder: &mut MethodsBuilder) {
         let requirements = body::get_tool_requirement_for_action(&fc, action_name);
         Ok(string_list(eval, &requirements))
     }
+
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/cpp/CcModuleApi.java:829 CcModuleApi.getExecutionRequirements
 
     // Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:88 CcModule.getExecutionRequirements
     fn get_execution_requirements<'v>(
@@ -153,6 +163,8 @@ fn cc_module_methods(builder: &mut MethodsBuilder) {
         panic!("UnsupportedOperationException")
     }
 
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/cpp/CcModuleApi.java:871 CcModuleApi.actionIsEnabled
+
     // Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:99 CcModule.actionIsEnabled
     fn action_is_enabled<'v>(
         this: &BazelCcModule,
@@ -169,6 +181,8 @@ fn cc_module_methods(builder: &mut MethodsBuilder) {
         is_called_from_starlark_cc_common(eval)?;
         Ok(body::action_is_enabled(&fc, action_name))
     }
+
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/cpp/CcModuleApi.java:904 CcModuleApi.getCommandLine
 
     // Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:109 CcModule.getCommandLine
     fn get_memory_inefficient_command_line<'v>(
@@ -194,6 +208,8 @@ fn cc_module_methods(builder: &mut MethodsBuilder) {
             body::get_command_line(&fc, action_name, &variables).map_err(expansion_error)?;
         Ok(string_list(eval, &command_line))
     }
+
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/cpp/CcModuleApi.java:936 CcModuleApi.getEnvironmentVariable
 
     // Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:121 CcModule.getEnvironmentVariable
     fn get_environment_variables<'v>(
@@ -222,6 +238,8 @@ fn cc_module_methods(builder: &mut MethodsBuilder) {
         blaze_starlark::dict::dict_immutable_copy_of(heap, heap.alloc(AllocDict(entries)))
     }
 
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/cpp/CcModuleApi.java:1251 CcModuleApi.getVariables
+
     // Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:135 CcModule.getVariables
     fn empty_variables<'v>(
         this: &BazelCcModule,
@@ -232,7 +250,9 @@ fn cc_module_methods(builder: &mut MethodsBuilder) {
         Ok(CcToolchainVariablesValue(body::get_variables()))
     }
 
-    // Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:155 CcModule.checkExperimentalCcSharedLibrary
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/cpp/CcModuleApi.java:1448 CcModuleApi.checkExperimentalCcSharedLibrary
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:156 CcModule.checkExperimentalCcSharedLibrary
     fn check_experimental_cc_shared_library<'v>(
         this: &BazelCcModule,
         eval: &mut Evaluator<'v, '_, '_>,
@@ -242,7 +262,9 @@ fn cc_module_methods(builder: &mut MethodsBuilder) {
         Ok(semantics(eval)?.experimental_cc_shared_library)
     }
 
-    // Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:161 CcModule.getIncompatibleDisableObjcLibraryTransition
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/cpp/CcModuleApi.java:1454 CcModuleApi.getIncompatibleDisableObjcLibraryTransition
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:162 CcModule.getIncompatibleDisableObjcLibraryTransition
     fn incompatible_disable_objc_library_transition<'v>(
         this: &BazelCcModule,
         eval: &mut Evaluator<'v, '_, '_>,
@@ -252,7 +274,9 @@ fn cc_module_methods(builder: &mut MethodsBuilder) {
         Ok(semantics(eval)?.incompatible_disable_objc_library_transition)
     }
 
-    // Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:169 CcModule.addGoExecGroupsToBinaryRules
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/cpp/CcModuleApi.java:1460 CcModuleApi.addGoExecGroupsToBinaryRules
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:171 CcModule.addGoExecGroupsToBinaryRules
     fn add_go_exec_groups_to_binary_rules<'v>(
         this: &BazelCcModule,
         eval: &mut Evaluator<'v, '_, '_>,
@@ -261,7 +285,9 @@ fn cc_module_methods(builder: &mut MethodsBuilder) {
         Ok(semantics(eval)?.add_go_exec_groups_to_binary_rules)
     }
 
-    // Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:175 CcModule.legacyCcFlagsMakeVariable
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/cpp/CcModuleApi.java:1716 CcModuleApi.legacyCcFlagsMakeVariable
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:177 CcModule.legacyCcFlagsMakeVariable
     fn legacy_cc_flags_make_variable_do_not_use<'v>(
         this: &BazelCcModule,
         #[starlark(require = named)] cc_toolchain: Value<'v>,

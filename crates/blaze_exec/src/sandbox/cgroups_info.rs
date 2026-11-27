@@ -166,17 +166,25 @@ fn third_part(s: &str) -> Result<String, String> {
 
 /// `Exception.toString()` of an `IOException` from reading or writing `file`.
 fn io_exception(file: &JavaFile, e: &io::Error) -> String {
-    match e.kind() {
-        io::ErrorKind::NotFound => format!(
-            "java.io.FileNotFoundException: {} (No such file or directory)",
-            file.get_path()
+    // The JDK's FileInputStream / FileOutputStream report a failed open as
+    // `FileNotFoundException: <path> (<strerror>)`; the reads and writes of these small files
+    // fail, if at all, at the open.
+    match e.raw_os_error() {
+        Some(errno) => format!(
+            "java.io.FileNotFoundException: {} ({})",
+            file.get_path(),
+            strerror(errno)
         ),
-        io::ErrorKind::PermissionDenied => format!(
-            "java.io.FileNotFoundException: {} (Permission denied)",
-            file.get_path()
-        ),
-        _ => format!("java.io.IOException: {e}"),
+        None => format!("java.io.IOException: {e}"),
     }
+}
+
+/// `strerror(errno)`: the message the JDK puts in an I/O exception.
+fn strerror(errno: i32) -> String {
+    // SAFETY: strerror returns a pointer to a NUL-terminated message for any errno.
+    unsafe { std::ffi::CStr::from_ptr(libc::strerror(errno)) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 impl CgroupsInfo {

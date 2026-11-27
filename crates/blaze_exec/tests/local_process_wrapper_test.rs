@@ -56,7 +56,7 @@ fn test_process_wrapper_command_line_builder_builds_with_optional_arguments() {
     let process_wrapper = ProcessWrapper::new(
         PathFragment::create("/path/process-wrapper"),
         ActionInputRef::new(BasicActionInput::from_path("/path/process-wrapper")),
-        Some(kill_delay),
+        Some(kill_delay.into()),
         /* graceful_sigterm= */ true,
     );
 

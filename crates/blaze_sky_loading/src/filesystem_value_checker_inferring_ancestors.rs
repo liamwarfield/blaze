@@ -47,7 +47,8 @@ impl StatFailedException {
     /// The `FailureDetail` of the `AbruptExitException` (`DiffAwareness.DIFF_STAT_FAILED`).
     ///
     /// PORT: the `DetailedIOException` branch (a cause with its own failure detail) is not
-    /// ported: no Blaze file system raises one.
+    /// ported: Blaze's only one (the remote repo contents cache's lost file) comes from reading
+    /// file contents, which this stat never does.
     // Java: com/google/devtools/build/lib/skyframe/FileSystemValueCheckerInferringAncestors.java:194 FileSystemValueCheckerInferringAncestors.processEntries
     pub fn failure_detail(&self) -> blaze_protos::failure_details::FailureDetail {
         use blaze_protos::failure_details::{self, FailureDetail, failure_detail::Category};

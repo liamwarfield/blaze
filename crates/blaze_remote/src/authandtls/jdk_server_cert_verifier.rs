@@ -28,17 +28,28 @@
 //!   ([`oracle_signature_verification_algorithms`]): no Ed25519 (`v3_ed25519_ca`), and SHA-1,
 //!   SHA-224 and P-521, which the oracle accepts, are not in the provider.
 //! - A directly trusted v1/v2 certificate is read with DER rules: a BIT STRING with unused bits
-//!   (`direct_key_unused_bits`) and BER lengths (`direct_ber_length`) are refused; a wildcard
-//!   commonName is not matched (`direct_wildcard`).
+//!   (`direct_key_unused_bits`), BER lengths (`direct_ber_length`), a long-form length for a
+//!   short value (`direct_non_minimal_length`) and a serial number with a redundant leading zero
+//!   (`direct_serial_leading_zero`) are refused; a wildcard commonName is not matched
+//!   (`direct_wildcard`), nor a GeneralString or UniversalString one (`cn_general`,
+//!   `cn_universal`).
+//! - Host names: only ASCII names (`direct_idn_host`), and a name whose labels are all digits is
+//!   taken as an IP address (`direct_all_digit_host`).
 //!
-//! Declared deviation, more lenient than Bazel (ruling D16, docs/decisions.md): for a
-//! certificate the user supplies as their own trust file (`--tls_certificate`) and the server
-//! presents byte for byte, Blaze does not re-validate the contents of the validity, the outer
-//! signature algorithm identifier (against the inner one) or an empty issuer
-//! (`direct_time_second_60`, `direct_alg_mismatch`, `direct_empty_issuer`): Bazel refuses to
-//! start with such a file, Blaze trusts the certificate by identity. No certificate from anyone
-//! else can take that route. The structure of a v1/v2 TBS is checked as the JDK's parser checks
-//! it (nothing after the key in v1, only the unique identifiers in v2: `direct_v1_extensions`).
+//! Declared deviation, more lenient than Bazel (ruling D16, docs/decisions.md, as generalised in
+//! review round 7, T8): for a certificate the user supplies as their own trust file
+//! (`--tls_certificate`) and the server presents byte for byte, Blaze makes the structural check
+//! of the TBS after the key (nothing after the key in v1, only the unique identifiers, each at
+//! most once and in order, in v2: `direct_v1_extensions`, `direct_v2_unique_ids_swapped`) and
+//! nothing more. Every other reason the JDK's parser would refuse the certificate is a declared
+//! lenient case, each pinned by a fixture in `LENIENT`: the contents of the validity
+//! (`direct_time_second_60`), the outer signature algorithm identifier against the inner one
+//! (`direct_alg_mismatch`), an empty issuer (`direct_empty_issuer`), the contents of a unique
+//! identifier (`direct_v2_issuer_uid_empty`, `direct_v2_issuer_uid_bad_padding`), the outer
+//! structure after the TBS (`direct_outer_tbs_only`, `direct_outer_fourth_element`,
+//! `direct_outer_signature_octet_string`) and OID contents (`direct_inner_alg_empty_oid`,
+//! `direct_name_attribute_empty_oid`). Bazel refuses to start with such a file; Blaze trusts the
+//! certificate by identity. No certificate from anyone else can take that route.
 //!
 //! Nothing in this file panics on certificate bytes; a v1/v2 certificate this file cannot fully
 //! read is refused.
@@ -510,7 +521,7 @@ fn name(input: &[u8]) -> Option<(Tlv<'_>, &[u8])> {
 /// Java (JDK 11): sun/security/util/DerInputStream.java getLength rejects a long form with a
 /// leading zero byte or a value below 128, and more than 4 length bytes.
 /// PORT: stricter: Java's X.509 parser also accepts indefinite lengths (BER) and, on JDK 25, a
-/// long form for a short length (`non_minimal_length`); both are rejected here.
+/// long form for a short length (`direct_non_minimal_length`); both are rejected here.
 fn read_tlv(input: &[u8]) -> Option<(Tlv<'_>, &[u8])> {
     let tag = *input.first()?;
     if tag & 0x1f == 0x1f {
@@ -556,7 +567,7 @@ fn read_tlv(input: &[u8]) -> Option<(Tlv<'_>, &[u8])> {
 /// Java (JDK 11): sun/security/util/DerInputBuffer.java:150-162 rejects an empty INTEGER and a
 /// redundant leading zero.
 /// PORT: stricter: also a redundant leading 0xff; JDK 25 accepts a redundant leading zero in a
-/// certificate's serial number (`serial_leading_zero`), which is rejected here.
+/// certificate's serial number (`direct_serial_leading_zero`), which is rejected here.
 fn small_integer(contents: &[u8]) -> Option<i64> {
     if !minimal_integer(contents) || contents.len() > 8 {
         return None;
@@ -591,7 +602,8 @@ fn bit_string_bits(contents: &[u8]) -> Option<&[u8]> {
 /// RDN.java:324-331; `two_cn_first`, `two_cn_second`, `cn_last_rdn`, `cn_first_rdn`), as a
 /// string; `None` if there is none or its value is not a string.
 ///
-/// PORT: stricter: GeneralString and UniversalString values are not read (no match).
+/// PORT: stricter: GeneralString and UniversalString values are not read (no match;
+/// `cn_general`, `cn_universal`).
 fn most_specific_common_name(name: &[u8]) -> Option<String> {
     const COMMON_NAME: [u8; 3] = [0x55, 0x04, 0x03];
     let mut found: Option<Tlv<'_>> = None;
@@ -645,7 +657,8 @@ fn most_specific_common_name(name: &[u8]) -> Option<String> {
 /// letters, digits and hyphens, not starting or ending with a hyphen, 1 to 63 characters) and
 /// no trailing dot.
 ///
-/// PORT: stricter: only ASCII names (Java converts internationalized names with IDN first).
+/// PORT: stricter: only ASCII names (Java converts internationalized names with IDN first;
+/// `direct_idn_host`).
 // Java: javax/net/ssl/SNIHostName.java SNIHostName.<init>
 fn is_sni_host_name(name: &str) -> bool {
     !name.is_empty()
@@ -665,14 +678,14 @@ fn is_sni_host_name(name: &str) -> bool {
 // Java (JDK 11): sun/security/util/HostnameChecker.java:189-236 HostnameChecker.matchDNS
 fn match_dns(expected_name: &str, subject: &[u8]) -> Result<(), Error> {
     let not_valid = || bad(CertificateError::NotValidForName);
-    // Check that the expected name is a valid domain name (`trailing_dot_host`, `underscore`).
+    // Check that the expected name is a valid domain name (`direct_trailing_dot_host`, `direct_underscore`).
     if !is_sni_host_name(expected_name) {
         return Err(not_valid());
     }
     // Java (JDK 11): HostnameChecker.java:100 isIpAddress: an IPv4 literal goes to matchIP,
     // which needs a subjectAltName.
     // PORT: stricter: every name whose labels are all digits is taken as one (Java's
-    // IPAddressUtil.isIPv4LiteralAddress also checks the ranges).
+    // IPAddressUtil.isIPv4LiteralAddress also checks the ranges; `direct_all_digit_host`).
     if expected_name
         .split('.')
         .all(|label| label.bytes().all(|b| b.is_ascii_digit()))
@@ -692,12 +705,12 @@ fn match_dns(expected_name: &str, subject: &[u8]) -> Result<(), Error> {
 /// `HostnameChecker.isMatched(name, template, chainsToPublicCA)` for TYPE_TLS.
 ///
 /// The template must be a valid SNI host name; then the names are compared label by label,
-/// lower-cased (`v1_upper_host`). A template that is not NFKC-normalized is not matched; an
+/// lower-cased (`direct_v1_upper_host`). A template that is not NFKC-normalized is not matched; an
 /// ASCII one always is.
 /// PORT: stricter: a template with a wildcard is not matched (Java's matchAllWildcards and,
 /// for an anchor among the JDK's public CAs, hasIllegalWildcard with the public suffix list are
 /// not ported; Java accepts `*.example.com` for `foo.example.com` under a private CA,
-/// `wildcard`).
+/// `direct_wildcard`).
 // Java (JDK 11): sun/security/util/HostnameChecker.java:271-310 HostnameChecker.isMatched
 fn is_matched(name: &str, template: &str) -> bool {
     if template.contains('*') {

@@ -23,7 +23,7 @@ use blaze_packages::builtins::BazelStarlarkEnvironment;
 use blaze_packages::builtins::env::{EnvEntry, StarlarkEnv, build_globals};
 use blaze_packages::bzl_context::BazelModuleContext;
 use blaze_packages::exceptions::{
-    DetailedExitCode, NoSuchPackageException, NoSuchPackageKind, PackageLoadingCode,
+    DetailedExitCode, FailureCode, NoSuchPackageException, NoSuchPackageKind, PackageLoadingCode,
 };
 use blaze_packages::package::NoSuchPackagePieceException;
 use blaze_packages::package::PackagePieceIdentifierForBuildFile;
@@ -259,12 +259,30 @@ enum ExceptionType {
     NoSuchPackage,
 }
 
+/// Bazel's `ActionOnFilesystemErrorCodeLoadingBzlFile`
+/// (`BazelSkyframeExecutorConstants.ACTION_ON_FILESYSTEM_ERROR_CODE_LOADING_BZL_FILE`): a
+/// `Filesystem` code, given by its enum value name, that takes precedence over the
+/// `PackageLoading` code of a package that failed to load.
+// Java: com/google/devtools/build/lib/skyframe/BazelSkyframeExecutorConstants.java:39 BazelSkyframeExecutorConstants.ACTION_ON_FILESYSTEM_ERROR_CODE_LOADING_BZL_FILE
+fn should_take_precedence_over_package_loading_code(filesystem_code: &str) -> bool {
+    filesystem_code == "REMOTE_FILE_EVICTED"
+}
+
+/// The `Filesystem.Code` name of a failure detail (`getFailureDetail().getFilesystem().getCode()`;
+/// `FILESYSTEM_UNKNOWN`, the default instance's, for another category).
+fn filesystem_code_of(detailed_exit_code: &DetailedExitCode) -> &str {
+    match &detailed_exit_code.code {
+        FailureCode::Other(name) => name
+            .strip_prefix("Filesystem.")
+            .unwrap_or("FILESYSTEM_UNKNOWN"),
+        FailureCode::PackageLoading(_) => "FILESYSTEM_UNKNOWN",
+    }
+}
+
 /// The builder of a `PackageFunctionException` and its `NoSuchPackageException` cause.
 ///
-/// PORT: Java's `setFilesystemCode` is not ported: Bazel's
-/// `ActionOnFilesystemErrorCodeLoadingBzlFile` is `ALWAYS_USE_PACKAGE_LOADING_CODE` and
-/// `ActionOnIOExceptionReadingBuildFile` is `UseOriginalIOException`, so only PackageLoading codes
-/// occur.
+/// PORT: Bazel's `ActionOnIOExceptionReadingBuildFile` is `UseOriginalIOException`, so it is not
+/// ported as a parameter.
 // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1776 PackageFunction.PackageFunctionException.Builder
 struct PackageFunctionExceptionBuilder {
     exception_type: ExceptionType,
@@ -274,6 +292,9 @@ struct PackageFunctionExceptionBuilder {
     exception: Option<String>,
     message: String,
     package_loading_code: PackageLoadingCode,
+    /// Java `filesystemCode`: when set, the failure detail is this `Filesystem` code (enum value
+    /// name) instead of `package_loading_code`.
+    filesystem_code: Option<String>,
 }
 
 impl PackageFunctionExceptionBuilder {
@@ -291,7 +312,14 @@ impl PackageFunctionExceptionBuilder {
             exception: None,
             message: message.into(),
             package_loading_code,
+            filesystem_code: None,
         }
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1822 PackageFunction.PackageFunctionException.Builder.setFilesystemCode
+    fn set_filesystem_code(mut self, filesystem_code: impl Into<String>) -> Self {
+        self.filesystem_code = Some(filesystem_code.into());
+        self
     }
 
     fn set_exception(mut self, exception: impl Into<String>) -> Self {
@@ -301,8 +329,16 @@ impl PackageFunctionExceptionBuilder {
 
     // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1846 PackageFunction.PackageFunctionException.Builder.buildCause
     fn build_cause(self) -> NoSuchPackageException {
-        let detailed_exit_code =
-            DetailedExitCode::package_loading(self.message.clone(), self.package_loading_code);
+        let detailed_exit_code = match &self.filesystem_code {
+            // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1880 PackageFunction.PackageFunctionException.Builder.createDetailedExitCodeWithFilesystemCode
+            Some(filesystem_code) => DetailedExitCode {
+                message: self.message.clone(),
+                code: FailureCode::Other(format!("Filesystem.{}", filesystem_code)),
+            },
+            None => {
+                DetailedExitCode::package_loading(self.message.clone(), self.package_loading_code)
+            }
+        };
         let (kind, cause) = match self.exception_type {
             // Java: BuildFileContainsErrorsException keeps an IOException cause only.
             ExceptionType::BuildFileContainsErrors => {
@@ -478,6 +514,8 @@ pub struct PackageFunction {
 struct LoadedPackage {
     builder: TargetDefinitionContext,
     glob_requests: Vec<GlobRequest>,
+    /// `new Metrics(loadTimeNanos, nonSkyframeGlobber.getGlobFilesystemOperationCost())`.
+    metrics: blaze_packages::package::package_loading_listener::Metrics,
 }
 
 impl PackageFunction {
@@ -630,6 +668,7 @@ impl PackageFunction {
         };
 
         let mut pfe_from_non_skyframe_globbing = None;
+        let loaded_package_metrics = loaded_package.metrics;
         let pkg_builder = &mut loaded_package.builder;
         match pkg_builder.build_partial() {
             Ok(()) => {
@@ -655,7 +694,9 @@ impl PackageFunction {
                 // exception encountered here and maybe use it later.
                 // PORT: Java picks the transience from the cause's class (DetailedIOException,
                 // SkyframeGlobbingIOException); the ported exception keeps only the cause's
-                // message, so this is Java's default branch.
+                // message, so this is Java's default branch. Blaze's only DetailedIOException
+                // (the remote repo contents cache's lost file) comes from reading file contents,
+                // which non-Skyframe globbing (stat, readdir) never does.
                 pfe_from_non_skyframe_globbing =
                     Some(package_function_exception(e, Transience::Transient));
             }
@@ -709,6 +750,7 @@ impl PackageFunction {
         if let Err(e) = self.config.package_factory.after_done_loading_package(
             &pkg,
             &starlark_builtins_value.starlark_semantics,
+            &loaded_package_metrics,
             env.listener(),
         ) {
             return Err(package_function_exception(e, Transience::Persistent));
@@ -850,6 +892,9 @@ impl PackageFunction {
         if let Err(e) = self.config.package_factory.after_done_loading_package(
             &pkg,
             &non_finalizer_package_pieces_value.starlark_semantics,
+            // new Metrics(/* loadTimeNanos= */ 0, /* globFilesystemOperationCost= */ 0)
+            // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1497 PackageFunction.computeWithPackagePieces
+            &blaze_packages::package::package_loading_listener::Metrics::default(),
             env.listener(),
         ) {
             return Err(package_function_exception(e, Transience::Persistent));
@@ -1171,6 +1216,10 @@ impl PackageFunction {
         // committed; counted here (the count is the same, no restart follows).
         crate::package_progress_receiver::PACKAGE_PROGRESS.done_read_package(package_id);
 
+        // long startTimeNanos = BlazeClock.nanoTime()
+        // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1169 PackageFunction.loadPackage
+        let start_time = std::time::Instant::now();
+
         let package_directory = build_file_rooted_path
             .as_path()
             .get_parent_directory()
@@ -1290,9 +1339,18 @@ impl PackageFunction {
         }
 
         let _ = build_file_value;
+        // long loadTimeNanos = Math.max(BlazeClock.nanoTime() - startTimeNanos, 0L)
+        // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1248 PackageFunction.loadPackage
+        let load_time_nanos = i64::try_from(start_time.elapsed().as_nanos()).unwrap_or(i64::MAX);
         Ok(Some(LoadedPackage {
             builder: pkg_builder,
             glob_requests: globber.get_glob_requests(),
+            metrics: blaze_packages::package::package_loading_listener::Metrics {
+                load_time_nanos,
+                glob_filesystem_operation_cost: globber
+                    .non_skyframe_globber
+                    .get_glob_filesystem_operation_cost(),
+            },
         }))
     }
 
@@ -1380,16 +1438,27 @@ impl PackageFunction {
             Err(e) => {
                 // Note that we did the work that led to this IOException, so we should
                 // conservatively report this error as transient.
-                let message = IOException::from_io(&e).get_message().to_owned();
-                return Err(PackageFunctionExceptionBuilder::new(
+                let e = IOException::from_io(&e);
+                let message = e.get_message().to_owned();
+                let builder = PackageFunctionExceptionBuilder::new(
                     ExceptionType::BuildFileContainsErrors,
                     package_id,
                     Transience::Transient,
                     message.clone(),
                     PackageLoadingCode::BuildFileMissing,
                 )
-                .set_exception(message)
-                .build());
+                .set_exception(message);
+                let builder = match e.as_detailed() {
+                    Some(detailed_io_exception)
+                        if should_take_precedence_over_package_loading_code(
+                            detailed_io_exception.get_filesystem_code(),
+                        ) =>
+                    {
+                        builder.set_filesystem_code(detailed_io_exception.get_filesystem_code())
+                    }
+                    _ => builder,
+                };
+                return Err(builder.build());
             }
         };
         let handler = StoredEventHandler::new();
@@ -1547,13 +1616,19 @@ fn bzl_load_failed(
 ) -> NoSuchPackageException {
     // PORT: Java attaches the root cause when it is an IOException; the ported exception keeps
     // no cause chain.
-    PackageFunctionExceptionBuilder::new(
+    let exception_builder = PackageFunctionExceptionBuilder::new(
         ExceptionType::BuildFileContainsErrors,
         package_id,
         e.get_transience(),
         e.get_message(),
         PackageLoadingCode::ImportStarlarkFileError,
-    )
+    );
+    let filesystem_code = filesystem_code_of(e.get_detailed_exit_code());
+    if should_take_precedence_over_package_loading_code(filesystem_code) {
+        exception_builder.set_filesystem_code(filesystem_code)
+    } else {
+        exception_builder
+    }
     .build_cause()
 }
 

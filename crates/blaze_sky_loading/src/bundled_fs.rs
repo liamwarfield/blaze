@@ -287,6 +287,14 @@ impl FileSystem for BundledFileSystem {
             ))
     }
 
+    /// A plain stat: no file here is remote.
+    fn stat_metadata(
+        &self,
+        _path: &PathFragment,
+        _follow_symlinks: bool,
+    ) -> io::Result<Option<std::sync::Arc<dyn blaze_vfs::StatMetadata>>> {
+        Ok(None)
+    }
     fn stat(&self, path: &PathFragment, _follow_symlinks: bool) -> io::Result<FileStatus> {
         // PORT: Java's InMemoryFileSystem records creation times and node ids; bundled files have
         // fast digests, so FileStateValue never uses them.

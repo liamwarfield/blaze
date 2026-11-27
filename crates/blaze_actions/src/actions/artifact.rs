@@ -804,14 +804,24 @@ impl Artifact {
         !self.is_constant_metadata()
     }
 
-    /// Returns the exec paths of the given artifacts.
+    /// Lazily converts artifacts into execution-time path strings. Runfiles trees are ignored by
+    /// this method.
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:1191 Artifact.toExecPaths
+    pub fn to_exec_paths<'a>(
+        artifacts: impl IntoIterator<Item = &'a Artifact>,
+    ) -> impl Iterator<Item = String> {
+        artifacts
+            .into_iter()
+            .filter(|a| !a.is_runfiles_tree())
+            .map(|a| a.get_exec_path_string().to_string())
+    }
+
+    /// Converts a collection of artifacts into execution-time path strings, and returns those as
+    /// an immutable list. Runfiles trees are ignored by this method.
     // Java: com/google/devtools/build/lib/actions/Artifact.java:1203 Artifact.asExecPaths
     // Java: com/google/devtools/build/lib/actions/Artifact.java:1211 Artifact.asExecPaths
     pub fn as_exec_paths<'a>(artifacts: impl IntoIterator<Item = &'a Artifact>) -> Vec<String> {
-        artifacts
-            .into_iter()
-            .map(|a| a.get_exec_path_string().to_string())
-            .collect()
+        Artifact::to_exec_paths(artifacts).collect()
     }
 
     /// Lazily converts artifacts into root-relative path strings.
@@ -921,6 +931,12 @@ impl Eq for Artifact {}
 
 // Java: com/google/devtools/build/lib/actions/Artifact.java:701 Artifact.hashCode
 // Source artifacts hash their exec path; derived artifacts their exec path and owning key.
+// (A derived artifact's owner for the hash is the ActionLookupKey of its ActionLookupData.)
+// Java: com/google/devtools/build/lib/actions/Artifact.java:287 Artifact.DerivedArtifact.getOwnerToUseForHashCode
+// PORT: skipped, serialization is not ported: ArtifactSerializationContext.getSourceArtifact ArtifactSerializationContext.includeGeneratingActionKey ArtifactSerializationContext.getOmittedGeneratingActionKey ArtifactSerializationContext.intern Artifact.objectForEncoding
+// PORT: skipped, the artifact SkyKeys are blaze_sky_exec's ArtifactKey (function name ARTIFACT), built by the callers: Artifact.keys Artifact.functionName
+// PORT: skipped, a checked cast; the Rust artifact kinds are matched instead: SpecialArtifact.cast
+// PORT: skipped, no caller at the pin: Artifact.filterFiles
 impl Hash for Artifact {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.exec_path.hash(state);
@@ -951,11 +967,15 @@ impl blaze_collect::command_line_item::CommandLineItem for Artifact {
 
 /// A utility class that compares Artifacts without taking their owners into account. Should only
 /// be used for detecting action conflicts and merging shared action data.
+///
+/// `toString()` is the `Debug` form.
 // Java: com/google/devtools/build/lib/actions/Artifact.java:1268 Artifact.OwnerlessArtifactWrapper
+// Java: com/google/devtools/build/lib/actions/Artifact.java:1288 Artifact.OwnerlessArtifactWrapper.toString
 #[derive(Clone, Debug)]
 pub struct OwnerlessArtifactWrapper(pub Artifact);
 
 impl PartialEq for OwnerlessArtifactWrapper {
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:1282 Artifact.OwnerlessArtifactWrapper.equals
     fn eq(&self, other: &Self) -> bool {
         self.0.equals_without_owner(&other.0)
     }
@@ -964,6 +984,9 @@ impl PartialEq for OwnerlessArtifactWrapper {
 impl Eq for OwnerlessArtifactWrapper {}
 
 impl Hash for OwnerlessArtifactWrapper {
+    /// `hashCodeWithoutOwner()`: the exec path and the root.
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:1277 Artifact.OwnerlessArtifactWrapper.hashCode
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:690 Artifact.hashCodeWithoutOwner
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.get_exec_path().hash(state);
         self.0.get_root().hash(state);

@@ -185,6 +185,8 @@ impl TargetCompleteEvent {
 /// Posted when a top-level target or aspect finished analysis (Skymeld), with the packages it
 /// transitively loaded, so that the execroot symlinks to their roots can be planted.
 // Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:68 TopLevelStatusEvents.TopLevelTargetReadyForSymlinkPlanting
+// (`create` is the struct literal)
+// Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:75 TopLevelStatusEvents.TopLevelTargetReadyForSymlinkPlanting.create
 #[derive(Clone, Debug)]
 pub struct TopLevelTargetReadyForSymlinkPlanting {
     pub transitive_packages_for_symlink_planting: blaze_collect::NestedSet<
@@ -194,6 +196,7 @@ pub struct TopLevelTargetReadyForSymlinkPlanting {
 
 /// Posted when a top-level target finished analysis and starts execution (Skymeld).
 // Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:80 TopLevelStatusEvents.TopLevelTargetPendingExecutionEvent
+// Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:134 TopLevelStatusEvents.TopLevelTargetPendingExecutionEvent.create
 #[derive(Clone, Debug)]
 pub struct TopLevelTargetPendingExecutionEvent {
     pub label: Label,
@@ -207,6 +210,7 @@ pub struct TopLevelTargetPendingExecutionEvent {
 /// `checksum()` and `getMnemonic()` only (`ConfigurationView`), and this crate sits below the
 /// configuration crate, so the event carries those two values.
 // Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:185 TopLevelStatusEvents.TestAnalyzedEvent
+// Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:195 TopLevelStatusEvents.TestAnalyzedEvent.create
 #[derive(Clone, Debug)]
 pub struct TestAnalyzedEvent {
     pub configured_target: Arc<dyn ConfiguredTargetView>,
@@ -219,6 +223,7 @@ pub struct TestAnalyzedEvent {
 
 /// Posted when a top-level target was built (Skymeld).
 // Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:120 TopLevelStatusEvents.TopLevelTargetBuiltEvent
+// Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:174 TopLevelStatusEvents.TopLevelTargetBuiltEvent.create
 #[derive(Clone, Debug)]
 pub struct TopLevelTargetBuiltEvent {
     pub label: Label,

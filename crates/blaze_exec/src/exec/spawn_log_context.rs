@@ -4,7 +4,7 @@
 use std::cmp::Ordering;
 use std::io::{self, Write};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use blaze_cmdline::Label;
 use blaze_optdefs::misc::remote_options::RemoteOptions;
@@ -47,7 +47,7 @@ pub trait SpawnLogContext: Send + Sync {
         input_metadata_provider: &dyn InputMetadataProvider,
         input_map: &dyn Fn() -> Arc<InputMapping>,
         file_system: &FileSystemRef,
-        timeout: Duration,
+        timeout: blaze_util::java_duration::JavaDuration,
         result: &SpawnResult,
     ) -> Result<(), ExecException>;
 
@@ -314,13 +314,13 @@ pub fn is_input_directory(
 
 /// A sink that hashes and counts what is written (`DigestOutputStream` over a null stream).
 struct HashingWriter {
-    hasher: sha2::Sha256,
+    hasher: blaze_vfs::DigestHasher,
     size: i64,
 }
 
 impl Write for HashingWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        sha2::Digest::update(&mut self.hasher, buf);
+        self.hasher.update(buf);
         self.size += buf.len() as i64;
         Ok(buf.len())
     }
@@ -336,17 +336,12 @@ pub(crate) fn compute_virtual_digest(
     input: &dyn VirtualActionInput,
     digest_hash_function: DigestHashFunction,
 ) -> io::Result<(String, i64)> {
-    match digest_hash_function {
-        DigestHashFunction::Sha256 => {
-            let mut writer = HashingWriter {
-                hasher: <sha2::Sha256 as sha2::Digest>::new(),
-                size: 0,
-            };
-            input.write_to(&mut writer)?;
-            let hash = sha2::Digest::finalize(writer.hasher);
-            Ok((hex::encode(hash), writer.size))
-        }
-    }
+    let mut writer = HashingWriter {
+        hasher: digest_hash_function.new_hasher(),
+        size: 0,
+    };
+    input.write_to(&mut writer)?;
+    Ok((hex::encode(writer.hasher.finish()), writer.size))
 }
 
 /// Computes the digest of an `ActionInput` or its path.
@@ -397,7 +392,10 @@ pub fn compute_digest(
     // Java: com/google/devtools/build/lib/vfs/DigestUtils.java:139 DigestUtils.getDigestWithManualFallback
     let digest = match path.get_fast_digest()? {
         Some(digest) => digest,
-        None => path.get_digest()?,
+        None => crate::actions::cache::digest_utils::DigestUtils::manually_compute_digest(
+            path,
+            Some(&status),
+        )?,
     };
     builder.hash = hex::encode(digest);
     builder.size_bytes = status.get_size();

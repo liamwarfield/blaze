@@ -925,7 +925,7 @@ fn process_wrapper_options_come_from_local_execution_options() {
     let functions = command.prepare(&["--repository_cache="]).unwrap();
     assert_eq!(
         functions.services.process_wrapper_kill_delay,
-        Some(Duration::from_secs(15))
+        Some(blaze_util::java_duration::JavaDuration::of_seconds(15))
     );
     assert!(!functions.services.process_wrapper_graceful_sigterm);
 
@@ -938,7 +938,7 @@ fn process_wrapper_options_come_from_local_execution_options() {
         .unwrap();
     assert_eq!(
         functions.services.process_wrapper_kill_delay,
-        Some(Duration::from_secs(3))
+        Some(blaze_util::java_duration::JavaDuration::of_seconds(3))
     );
     assert!(functions.services.process_wrapper_graceful_sigterm);
 }

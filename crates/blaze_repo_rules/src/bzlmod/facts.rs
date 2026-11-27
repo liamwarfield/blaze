@@ -77,6 +77,7 @@ pub(crate) fn cast_string_keyed_dict<'v>(
 // Java: com/google/devtools/build/lib/bazel/bzlmod/Facts.java:64 Facts.validateAndCreate
 pub fn validate_and_create(value: Value<'_>) -> Result<Facts, String> {
     cast_string_keyed_dict(value, "facts")?;
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/Facts.java:80 Facts.validateAndNormalize
     match validate_and_normalize(value, MAX_FACTS_DEPTH)? {
         FactValue::Dict(entries) => Ok(Facts::create_unchecked(entries)),
         _ => unreachable!("a dict normalizes to a dict"),
@@ -297,6 +298,19 @@ impl<'v> StarlarkValue<'v> for FactsValue {
     fn is_in(&self, other: Value<'v>) -> starlark::Result<bool> {
         Ok(self.dict().get(other)?.is_some())
     }
+
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/Facts.java:176 Facts.checkHashable
+    fn write_hash(
+        &self,
+        _hasher: &mut starlark::collections::StarlarkHasher,
+    ) -> starlark::Result<()> {
+        Err(starlark::Error::new_other(anyhow::anyhow!(
+            "unhashable type: '{}'",
+            Self::TYPE
+        )))
+    }
+
+    // PORT: skipped Facts.isImmutable: a `starlark_simple_value` is always frozen (immutable).
 }
 
 #[starlark_module]

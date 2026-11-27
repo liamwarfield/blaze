@@ -160,7 +160,7 @@ impl ShouldWatch {
 // Java: com/google/devtools/build/lib/runtime/ProcessWrapper.java:35 ProcessWrapper
 struct ProcessWrapper {
     bin_path: PathFragment,
-    kill_delay: Option<Duration>,
+    kill_delay: Option<blaze_util::java_duration::JavaDuration>,
     graceful_sigterm: bool,
 }
 
@@ -181,7 +181,7 @@ impl ProcessWrapper {
 struct ProcessWrapperCommandLine {
     process_wrapper_path: PathFragment,
     command_arguments: Vec<String>,
-    kill_delay: Option<Duration>,
+    kill_delay: Option<blaze_util::java_duration::JavaDuration>,
     graceful_sigterm: bool,
     /// Java `Duration timeout`, kept in milliseconds (Java durations may be negative).
     timeout_millis: Option<i64>,
@@ -205,7 +205,7 @@ impl ProcessWrapperCommandLine {
         // Java: `if (killDelay != null)`: a command without LocalExecutionOptions passes no
         // kill delay at all.
         if let Some(kill_delay) = self.kill_delay {
-            full_command_line.push(format!("--kill_delay={}", kill_delay.as_secs()));
+            full_command_line.push(format!("--kill_delay={}", kill_delay.to_seconds()));
         }
         // stdoutPath, stderrPath and statisticsPath are never set by repository rules.
         if self.graceful_sigterm {
@@ -245,7 +245,7 @@ pub struct StarlarkBaseExternalContext {
     /// Java `ProcessWrapper.killDelay` (`LocalExecutionOptions.getLocalSigkillGraceSeconds()`,
     /// `--local_termination_grace_seconds`, when the command has `LocalExecutionOptions`, else
     /// null: no `--kill_delay` argument).
-    pub process_wrapper_kill_delay: Option<Duration>,
+    pub process_wrapper_kill_delay: Option<blaze_util::java_duration::JavaDuration>,
     /// Java `ProcessWrapper.gracefulSigterm` (`--experimental_process_wrapper_graceful_sigterm`).
     pub process_wrapper_graceful_sigterm: bool,
     /// Java `remoteExecutor` (null unless remote execution is configured).
@@ -312,7 +312,7 @@ impl StarlarkBaseExternalContext {
     // Java: com/google/devtools/build/lib/runtime/ProcessWrapper.java:72 ProcessWrapper.fromCommandEnvironment
     pub fn with_process_wrapper_options(
         mut self,
-        kill_delay: Option<Duration>,
+        kill_delay: Option<blaze_util::java_duration::JavaDuration>,
         graceful_sigterm: bool,
     ) -> Self {
         self.process_wrapper_kill_delay = kill_delay;
@@ -1618,6 +1618,10 @@ impl ExternalContext {
             && let Err(e) = remote_fs
                 .ensure_materialized(label.get_repository(), self.base.env.get().listener())
         {
+            // InterruptedException is not caught here.
+            if e.kind() == std::io::ErrorKind::Interrupted {
+                return Err(self.abort(EvaluationAbort::Interrupted));
+            }
             return Err(eval_error(&format!(
                 "Failed to materialize remote repo {}: {}",
                 label.get_repository(),
@@ -2212,9 +2216,7 @@ impl ExternalContext {
             &execution_properties,
             environment,
             Some(working_directory),
-            // PORT: Java's Duration.ofSeconds takes a negative timeout as is; a Rust Duration
-            // cannot be negative, so it is zero (no timeout in the Action) here.
-            Duration::from_secs(timeout.max(0) as u64),
+            blaze_util::java_duration::JavaDuration::of_seconds(i64::from(timeout)),
         );
         match result {
             Ok(result) => {
@@ -2854,7 +2856,7 @@ mod tests {
 
     fn process_wrapper(
         bin_path: &str,
-        kill_delay: Option<Duration>,
+        kill_delay: Option<blaze_util::java_duration::JavaDuration>,
         graceful_sigterm: bool,
     ) -> ProcessWrapper {
         ProcessWrapper {
@@ -2894,12 +2896,12 @@ mod tests {
         let command_arguments = vec!["echo".to_owned(), "hello, world".to_owned()];
 
         let timeout = Duration::from_secs(10);
-        let kill_delay = Duration::from_secs(2);
+        let kill_delay = blaze_util::java_duration::JavaDuration::of_seconds(2);
 
         let expected_command_line = vec![
             "/path/process-wrapper".to_owned(),
             format!("--timeout={}", timeout.as_secs()),
-            format!("--kill_delay={}", kill_delay.as_secs()),
+            format!("--kill_delay={}", kill_delay.to_seconds()),
             "--graceful_sigterm".to_owned(),
             "echo".to_owned(),
             "hello, world".to_owned(),
@@ -2956,7 +2958,7 @@ mod tests {
             process_wrapper_command_line(
                 &process_wrapper(
                     "/install/process-wrapper",
-                    Some(Duration::from_secs(15)),
+                    Some(blaze_util::java_duration::JavaDuration::of_seconds(15)),
                     false
                 ),
                 args(),
@@ -2974,7 +2976,7 @@ mod tests {
             process_wrapper_command_line(
                 &process_wrapper(
                     "/install/process-wrapper",
-                    Some(Duration::from_secs(15)),
+                    Some(blaze_util::java_duration::JavaDuration::of_seconds(15)),
                     true
                 ),
                 args(),

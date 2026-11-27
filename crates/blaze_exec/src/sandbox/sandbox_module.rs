@@ -5,7 +5,6 @@ use std::io;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use blaze_events::Event;
 use blaze_optdefs::misc::sandbox_options::SandboxOptions;
@@ -300,12 +299,12 @@ impl SandboxModule {
             &cmd_env.client_env,
         )?;
 
-        let timeout_kill_delay: Duration = cmd_env
+        let timeout_kill_delay: blaze_util::java_duration::JavaDuration = cmd_env
             .local_execution_options
             .get_local_sigkill_grace_seconds();
 
         let process_wrapper_supported = ProcessWrapperSandboxedSpawnRunner::is_supported(cmd_env);
-        let linux_sandbox_supported = LinuxSandboxedSpawnRunner::is_supported(cmd_env);
+        let linux_sandbox_supported = LinuxSandboxedSpawnRunner::is_supported(cmd_env)?;
         // PORT: skipped, darwin only (DarwinSandboxedSpawnRunner.isSupported is false on Linux).
         let darwin_sandbox_supported = false;
 
@@ -337,7 +336,7 @@ impl SandboxModule {
             // DockerSandboxedSpawnRunner.isSupported is expensive! It runs docker as a
             // subprocess, and docker hangs sometimes.
             if let Some(path_to_docker) = path_to_docker
-                && DockerSandboxedSpawnRunner::is_supported(cmd_env, &path_to_docker)
+                && DockerSandboxedSpawnRunner::is_supported(cmd_env, &path_to_docker)?
             {
                 let default_image = options.docker_image.clone();
                 let use_customized_images = options.docker_use_customized_images;

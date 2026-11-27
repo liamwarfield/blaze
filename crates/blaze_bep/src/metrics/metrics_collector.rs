@@ -47,6 +47,7 @@ use blaze_protos::build_event_stream::build_metrics::artifact_metrics::FilesMetr
 use blaze_protos::build_event_stream::build_metrics::build_graph_metrics::{
     AspectCount, RuleClassCount,
 };
+use blaze_protos::build_event_stream::build_metrics::dynamic_execution_metrics::RaceStatistics;
 use blaze_protos::build_event_stream::build_metrics::memory_metrics::GarbageMetrics;
 use blaze_protos::build_event_stream::build_metrics::worker_pool_metrics::WorkerPoolStats as WorkerPoolStatsProto;
 use blaze_protos::build_event_stream::build_metrics::{
@@ -441,10 +442,27 @@ impl ActionStats {
 // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:655 MetricsCollector.DynamicExecutionStats
 #[derive(Debug, Default)]
 struct DynamicExecutionStats {
-    /// `branchWinners`: (mnemonic, local name, remote name) -> (local wins, remote wins), in
-    /// insertion order.
+    /// `branchWinners`: (mnemonic, local name, remote name) -> `RaceWinners` (local wins, remote
+    /// wins), in insertion order; the map's iteration order is `branch_winners_order`.
     #[allow(clippy::type_complexity)]
     branch_winners: Vec<((String, String, String), (i32, i32))>,
+    branch_winners_order: JavaConcurrentHashMapOrder,
+}
+
+/// `RaceIdentifier.hashCode()`: a record's hash code, `31 * h + c.hashCode()` over its
+/// components in order, starting from 0.
+// Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:710 MetricsCollector.DynamicExecutionStats.RaceIdentifier
+// Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:711 MetricsCollector.DynamicExecutionStats.RaceIdentifier.RaceIdentifier
+// Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:717 MetricsCollector.DynamicExecutionStats.RaceIdentifier.create
+// Java: java/lang/runtime/ObjectMethods.java ObjectMethods.makeHashCode
+fn race_identifier_hash_code(mnemonic: &str, local_name: &str, remote_name: &str) -> i32 {
+    let mut result: i32 = 0;
+    for component in [mnemonic, local_name, remote_name] {
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(java_string_hash(component));
+    }
+    result
 }
 
 impl DynamicExecutionStats {
@@ -461,31 +479,49 @@ impl DynamicExecutionStats {
             local_name.to_string(),
             remote_name.to_string(),
         );
-        let pos = match self.branch_winners.iter().position(|(k, _)| *k == key) {
-            Some(pos) => pos,
-            None => {
-                self.branch_winners.push((key, (0, 0)));
-                self.branch_winners.len() - 1
-            }
-        };
+        // branchWinners.compute(RaceIdentifier.create(...), ...): equality of the record is
+        // the equality of the three strings (joined with a NUL, which no name contains).
+        let hash_code = race_identifier_hash_code(menemonic, local_name, remote_name);
+        let joined = format!("{menemonic}\0{local_name}\0{remote_name}");
+        let next = self.branch_winners.len();
+        let pos = self
+            .branch_winners_order
+            .compute_if_absent_with_hash(hash_code, &joined, next);
+        if pos == next {
+            // new RaceWinners(/* localWins= */ 0, /* remoteWins= */ 0)
+            // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:688 MetricsCollector.DynamicExecutionStats.RaceWinners.RaceWinners
+            self.branch_winners.push((key, (0, 0)));
+        }
         let value = &mut self.branch_winners[pos].1;
         match winner {
+            // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:701 MetricsCollector.DynamicExecutionStats.RaceWinners.incrementLocalWins
             DynamicMode::Local => value.0 += 1,
+            // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:705 MetricsCollector.DynamicExecutionStats.RaceWinners.incrementRemoteWins
             DynamicMode::Remote => value.1 += 1,
         }
     }
 
     // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:722 DynamicExecutionStats.toMetrics
+    ///
+    /// PORT: java-hash-order. The races are listed in the iteration order of the
+    /// `ConcurrentHashMap` keyed by the record `RaceIdentifier` (see
+    /// [`race_identifier_hash_code`]).
     fn to_metrics(&self) -> DynamicExecutionMetrics {
-        if !self.branch_winners.is_empty() {
-            // PORT: java-hash-order. The races are listed in the iteration order of a
-            // ConcurrentHashMap keyed by the record RaceIdentifier, whose hashCode is not
-            // reproduced here; Blaze has no dynamic execution.
-            blaze_util::unported!(
-                "MetricsCollector.DynamicExecutionStats.toMetrics (ConcurrentHashMap<RaceIdentifier> order)"
-            );
+        let mut builder = DynamicExecutionMetrics::default();
+        for index in self.branch_winners_order.iteration_order() {
+            let ((mnemonic, local_name, remote_name), (local_wins, remote_wins)) =
+                &self.branch_winners[index];
+            builder.race_statistics.push(RaceStatistics {
+                mnemonic: mnemonic.clone(),
+                local_runner: local_name.clone(),
+                remote_runner: remote_name.clone(),
+                // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:693 MetricsCollector.DynamicExecutionStats.RaceWinners.getLocalWins
+                local_wins: *local_wins,
+                // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:697 MetricsCollector.DynamicExecutionStats.RaceWinners.getRemoteWins
+                remote_wins: *remote_wins,
+            });
         }
-        DynamicExecutionMetrics::default()
+        builder
     }
 }
 
@@ -1308,7 +1344,19 @@ impl JavaConcurrentHashMapOrder {
     /// `new_index` after inserting the key.
     // Java: java/util/concurrent/ConcurrentHashMap.java ConcurrentHashMap.computeIfAbsent
     fn compute_if_absent(&mut self, key: &str, new_index: usize) -> usize {
-        let h = Self::spread(java_string_hash(key));
+        self.compute_if_absent_with_hash(java_string_hash(key), key, new_index)
+    }
+
+    /// [`Self::compute_if_absent`] for a key whose `hashCode()` is `hash_code` and whose
+    /// `equals` is the equality of `key`.
+    // Java: java/util/concurrent/ConcurrentHashMap.java ConcurrentHashMap.computeIfAbsent
+    fn compute_if_absent_with_hash(
+        &mut self,
+        hash_code: i32,
+        key: &str,
+        new_index: usize,
+    ) -> usize {
+        let h = Self::spread(hash_code);
         if self.table.is_empty() {
             self.init_table();
         }
@@ -1490,5 +1538,64 @@ mod tests {
     fn integer_hash_map_order() {
         assert_eq!(java_integer_hash_map_order(&[200, 100]), vec![1, 0]);
         assert_eq!(java_integer_hash_map_order(&[17, 1, 16]), vec![2, 0, 1]);
+    }
+}
+
+#[cfg(test)]
+mod dynamic_execution_stats_tests {
+    use super::*;
+
+    /// Expected values from a JVM (openjdk 25): `ConcurrentHashMap.compute` of the record
+    /// `RaceIdentifier(mnemonic, localName, remoteName)` with the same calls, then
+    /// `keySet()` in iteration order (program `RaceOrder.java` of task ea-4).
+    #[test]
+    fn races_are_listed_in_the_concurrent_hash_map_order() {
+        let races = [
+            ("CppCompile", "sandboxed", "remote"),
+            ("Javac", "worker", "remote"),
+            ("Genrule", "local", "remote"),
+            ("CppLink", "sandboxed", "remote"),
+            ("CppCompile", "local", "remote"),
+            ("GoCompile", "sandboxed", "grpc"),
+        ];
+        let winners = [0, 1, 0, 1, 1, 0];
+        let mut stats = DynamicExecutionStats::default();
+        for r in 0..3 {
+            for (i, (mnemonic, local, remote)) in races.iter().enumerate() {
+                let winner = if winners[(i + r) % winners.len()] == 0 {
+                    DynamicMode::Local
+                } else {
+                    DynamicMode::Remote
+                };
+                stats.update(mnemonic, local, remote, winner);
+            }
+        }
+        let got: Vec<(String, String, String, i32, i32)> = stats
+            .to_metrics()
+            .race_statistics
+            .into_iter()
+            .map(|r| {
+                (
+                    r.mnemonic,
+                    r.local_runner,
+                    r.remote_runner,
+                    r.local_wins,
+                    r.remote_wins,
+                )
+            })
+            .collect();
+        let expected = [
+            ("CppCompile", "sandboxed", "remote", 2, 1),
+            ("CppCompile", "local", "remote", 2, 1),
+            ("CppLink", "sandboxed", "remote", 1, 2),
+            ("Javac", "worker", "remote", 1, 2),
+            ("Genrule", "local", "remote", 1, 2),
+            ("GoCompile", "sandboxed", "grpc", 2, 1),
+        ];
+        let expected: Vec<(String, String, String, i32, i32)> = expected
+            .iter()
+            .map(|(m, l, r, lw, rw)| (m.to_string(), l.to_string(), r.to_string(), *lw, *rw))
+            .collect();
+        assert_eq!(got, expected);
     }
 }

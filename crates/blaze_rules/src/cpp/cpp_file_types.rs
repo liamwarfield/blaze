@@ -23,6 +23,7 @@ impl FileType {
 
     /// Java `artifact.isFileType(fileType)`.
     // Java: com/google/devtools/build/lib/actions/Artifact.java:416 Artifact.isFileType
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:421 Artifact.isFileType
     pub fn matches_artifact(&self, artifact: &Artifact) -> bool {
         (self.apply)(artifact.file_path_for_file_type_matcher())
     }

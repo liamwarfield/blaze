@@ -6,7 +6,6 @@ use std::io::{self, Write};
 use blaze_exec::actions::VirtualActionInput;
 use blaze_protos::JavaMessage;
 use blaze_vfs::{DigestHashFunction, FileStatus, Path};
-use sha2::Digest as _;
 
 use crate::common::remote_cache_client::ActionKey;
 use crate::reapi::{Action, Digest, digest_function};
@@ -142,9 +141,7 @@ impl DigestUtil {
     /// Returns the hash of `data` in binary.
     // Java: com/google/devtools/build/lib/remote/util/DigestUtil.java:171 DigestUtil.hash
     pub fn hash(&self, data: &[u8]) -> Vec<u8> {
-        match self.hash_fn {
-            DigestHashFunction::Sha256 => sha2::Sha256::digest(data).to_vec(),
-        }
+        self.hash_fn.hash_bytes(data)
     }
 
     /// `buildDigest(byte[] hash, long size)`.
@@ -209,17 +206,21 @@ impl DigestUtil {
 
 // Java: com/google/devtools/build/lib/remote/util/DigestUtil.java:60 DigestUtil.getDigestFunctionFromHashFunction
 fn get_digest_function_from_hash_function(hash_fn: DigestHashFunction) -> digest_function::Value {
-    // Java: DigestHashFunction.SHA256 registers the names "SHA-256" and "SHA256".
-    match hash_fn {
-        DigestHashFunction::Sha256 => digest_function::Value::Sha256,
+    // The first of the function's names that names a `DigestFunction.Value` (SHA-1: "SHA1",
+    // SHA-256: "SHA256", "BLAKE3", "GITSHA1").
+    for name in hash_fn.names() {
+        if let Some(value) = digest_function::Value::from_str_name(name) {
+            return value;
+        }
     }
+    digest_function::Value::Unknown
 }
 
 /// An `OutputStream` that maintains a `Digest` of the data written to it.
 // Java: com/google/devtools/build/lib/remote/util/DigestOutputStream.java:27 DigestOutputStream
 pub struct DigestOutputStream<W: Write> {
     out: W,
-    hasher: sha2::Sha256,
+    hasher: blaze_vfs::DigestHasher,
     size: i64,
 }
 
@@ -228,19 +229,17 @@ impl<W: Write> DigestOutputStream<W> {
     /// [`DigestOutputStream::digest`] is called.
     // Java: com/google/devtools/build/lib/remote/util/DigestOutputStream.java:36 DigestOutputStream.<init>
     pub fn new(hash_function: DigestHashFunction, out: W) -> DigestOutputStream<W> {
-        match hash_function {
-            DigestHashFunction::Sha256 => DigestOutputStream {
-                out,
-                hasher: sha2::Sha256::new(),
-                size: 0,
-            },
+        DigestOutputStream {
+            out,
+            hasher: hash_function.new_hasher(),
+            size: 0,
         }
     }
 
     /// Returns the digest of the data written to this stream.
     // Java: com/google/devtools/build/lib/remote/util/DigestOutputStream.java:67 DigestOutputStream.digest
     pub fn digest(&self) -> Digest {
-        DigestUtil::build_digest_from_bytes(&self.hasher.clone().finalize(), self.size)
+        DigestUtil::build_digest_from_bytes(&self.hasher.clone().finish(), self.size)
     }
 
     /// The wrapped stream.

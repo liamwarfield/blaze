@@ -28,6 +28,9 @@ use crate::exec::action_execution_context::ActionExecutionContext;
 
 /// Holds the result(s) of an action's execution.
 // Java: com/google/devtools/build/lib/actions/ActionResult.java:31 ActionResult
+// PORT: skipped, no caller at the pin (MetricsCollector reads only the user and system times, which blaze_bep sums): ActionResult.cumulativeCommandExecutionBlockInputOperations ActionResult.cumulativeCommandExecutionBlockOutputOperations ActionResult.cumulativeCommandExecutionInvoluntaryContextSwitches ActionResult.cumulativeCommandExecutionMemoryInKb
+// PORT: skipped, no caller at the pin: ActionResult.cumulativeSpawnsTotalTimeInMs ActionResult.cumulativeSpawnsParseTimeInMs ActionResult.cumulativeSpawnsNetworkTimeInMs ActionResult.cumulativeSpawnsFetchTimeInMs ActionResult.cumulativeSpawnsQueueTimeInMs ActionResult.cumulativeSpawnsSetupTimeInMs
+// PORT: skipped, no caller at the pin: ActionResult.cumulativeSpawnsUploadTimeInMs ActionResult.cumulativeExecutionWallTimeInMs ActionResult.cumulativeProcessOutputTimeInMs ActionResult.cumulativeRetryTimeInMs ActionResult.cumulativeCommandExecutionCpuTimeInMs ActionResult.getCumulativeLong
 #[derive(Clone, Debug, Default)]
 pub struct ActionResult {
     spawn_results: Vec<SpawnResult>,
@@ -44,6 +47,9 @@ impl ActionResult {
 
     /// `ActionResult.create(spawnResults)`.
     // Java: com/google/devtools/build/lib/actions/ActionResult.java:45 ActionResult.create
+    // Java: com/google/devtools/build/lib/actions/ActionResult.java:40 ActionResult.builder
+    // Java: com/google/devtools/build/lib/actions/ActionResult.java:285 ActionResult.Builder.setSpawnResults
+    // Java: com/google/devtools/build/lib/actions/ActionResult.java:288 ActionResult.Builder.build
     pub fn create(spawn_results: Vec<SpawnResult>) -> ActionResult {
         ActionResult { spawn_results }
     }
@@ -60,6 +66,7 @@ impl ActionResult {
 
     /// Returns the cumulative command execution wall time for the action.
     // Java: com/google/devtools/build/lib/actions/ActionResult.java:87 ActionResult.cumulativeCommandExecutionWallTimeInMs
+    // Java: com/google/devtools/build/lib/actions/ActionResult.java:73 ActionResult.getCumulativeInt
     pub fn cumulative_command_execution_wall_time_in_ms(&self) -> i32 {
         self.spawn_results
             .iter()
@@ -438,6 +445,21 @@ pub trait ExecutableAction: Action {
             "IllegalStateException: Not an input-discovering action: {}",
             self.to_string_java()
         )
+    }
+
+    /// `getInputFilesForExtraAction(actionExecutionContext)`: the inputs an extra action
+    /// shadowing this action needs. `Ok(None)` where Java returns null (a Skyframe restart).
+    ///
+    /// PORT: [`Action::get_input_files_for_extra_action`] has no context; an action whose
+    /// answer needs one (`CppCompileAction` with include scanning) overrides this method. The
+    /// default is that context-free answer.
+    // Java: com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java:184 ActionAnalysisMetadata.getInputFilesForExtraAction
+    fn get_input_files_for_extra_action_with_context(
+        &self,
+        _action_execution_context: &dyn ActionExecutionContext,
+    ) -> Result<Option<blaze_collect::NestedSet<blaze_actions::Artifact>>, ActionExecutionException>
+    {
+        Ok(self.get_input_files_for_extra_action())
     }
 
     /// Prepares for executing this action; called by the Builder prior to executing the Action

@@ -62,6 +62,17 @@ pub struct BuildDriverValue {
 
 /// The types of the `TopLevelStatusEvents` this function posts.
 // Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:241 TopLevelStatusEvents.Type
+///
+/// `TopLevelStatusEventWithType.getType()` is the value each post passes with its event.
+// Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:38 TopLevelStatusEvents.TopLevelStatusEventWithType.getType
+// Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:80 TopLevelStatusEvents.TopLevelTargetReadyForSymlinkPlanting.getType
+// Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:139 TopLevelStatusEvents.TopLevelTargetPendingExecutionEvent.getType
+// Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:162 TopLevelStatusEvents.SomeExecutionStartedEvent.getType
+// Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:202 TopLevelStatusEvents.TestAnalyzedEvent.getType
+// PORT: skipped, Blaze analyzes before it executes, so the analysis events are posted once by the analysis (blaze_sky_analysis, blaze_sky_top) and no AnalysisOperationWatcher waits for each entity's conclusion: TopLevelTargetAnalyzedEvent.getType TopLevelTargetSkippedEvent.getType AspectAnalyzedEvent.getType TopLevelTargetBuiltEvent.getType
+// PORT: skipped, same reason: TopLevelEntityAnalysisConcludedEvent.TopLevelEntityAnalysisConcludedEvent TopLevelEntityAnalysisConcludedEvent.create TopLevelEntityAnalysisConcludedEvent.getType
+// PORT: skipped, the built aspects of the build result are read from the evaluation (blaze_runtime top_level_aspect_built), not collected from events: AspectBuiltEvent.aspectKey AspectBuiltEvent.create AspectBuiltEvent.getType
+// PORT: skipped, the private constructor of a holder class: TopLevelStatusEvents.TopLevelStatusEvents
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[allow(non_camel_case_types)]
 enum TopLevelStatusEventsType {
@@ -82,6 +93,9 @@ pub struct BuildDriverFunction {
 }
 
 impl BuildDriverFunction {
+    /// A new function per build: `resetStates()` (`keyToPostedEvents`; `checkedForConflicts`
+    /// belongs to the conflict check, see `compute`).
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:493 BuildDriverFunction.resetStates
     pub fn new(seam: Arc<dyn AnalysisSeam>) -> BuildDriverFunction {
         BuildDriverFunction {
             seam,
@@ -170,6 +184,14 @@ impl BuildDriverFunction {
     // TopLevelTargetReadyForSymlinkPlanting, SomeExecutionStartedEvent and TestAnalyzedEvent are
     // the
     // analysis side's (blaze_sky_top) and are not ported here.
+    // The key carries its test type (`TestTypeResolver.determineTestType`, resolved when the keys
+    // are created); `isTest(testType)` is `TestType::is_test`.
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:723 BuildDriverFunction.TestTypeResolver.determineTestType
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:512 BuildDriverFunction.isTest
+    // PORT: skipped, the analysis side's (see above): BuildDriverFunction.signalAnalysisConclusionIfKeepGoing BuildDriverFunction.getConfigurationValue BuildDriverFunction.getTarget BuildDriverFunction.setShouldCheckForConflictWithTraversal ActionLookupValuesCollectionResult.collectedValues ActionLookupValuesCollectionResult.create
+    // PORT: skipped, Bazel passes AdditionalPostAnalysisDepsRequestedAndAvailable.NO_OP (SkyframeExecutor): AdditionalPostAnalysisDepsRequestedAndAvailable.request
+    // PORT: skipped, the function's failures are ComputeError values: BuildDriverFunctionException.BuildDriverFunctionException BuildDriverFunctionException.ofConfiguredTargetOrAspectEval
+    // PORT: skipped, Blaze analyzes before it executes: the action conflicts of the analyzed graph are found once by blaze_sky_top's ArtifactConflictFinder, as without Skymeld (oracle scenario scripts/w4/scenarios/top-conflicts): IncrementalArtifactConflictFinder.IncrementalArtifactConflictFinder IncrementalArtifactConflictFinder.getOutputArtifactCount IncrementalArtifactConflictFinder.findArtifactConflicts IncrementalArtifactConflictFinder.shutdown IncrementalArtifactConflictFinder.actionRegistration IncrementalArtifactConflictFinder.conflictCheckPerAction IncrementalArtifactConflictFinder.checkOutputPrefix IncrementalArtifactConflictFinder.getOwningArtifactFromTrie CheckForConflictsUnderKey.CheckForConflictsUnderKey CheckForConflictsUnderKey.run BuildDriverFunction.checkActionConflicts
     pub fn compute(
         &self,
         key: &BuildDriverKey,

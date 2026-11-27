@@ -154,6 +154,16 @@ impl LoadingSignature {
     }
 }
 
+/// Whether the remote fail safe of `build_evaluator` is on: Blaze-only, `BLAZE_INCREMENTAL_REMOTE_
+/// FAILSAFE=off` in the server's environment turns it off, for the probes that compare the remote
+/// invalidations with the oracle (scripts/incremental/remote-seq).
+fn remote_fail_safe_enabled() -> bool {
+    static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        std::env::var("BLAZE_INCREMENTAL_REMOTE_FAILSAFE").as_deref() != Ok("off")
+    });
+    *ON
+}
+
 /// Whether the command has a remote cache, a disk cache or remote execution configured
 /// (`RemoteOptions.isRemoteCacheEnabled`, which includes the disk cache and remote execution).
 // Java: com/google/devtools/build/lib/remote/options/RemoteOptions.java:856 RemoteOptions.isRemoteCacheEnabled
@@ -492,6 +502,25 @@ impl SkyframeIncrementalState {
         self.inner.lock().pending_deletions.push(predicate);
     }
 
+    /// `SkyframeExecutor.notifyCommandComplete` for the graph kept between commands:
+    /// `memoizingEvaluator.noteEvaluationsAtSameVersionMayBeFinished` posts the evaluation
+    /// statistics of the command and resets them. The commands that report them (the build
+    /// command's `SkyframeGraphStatsEvent`) took them already from their executor; for the others
+    /// they are reset here, so the next command's statistics are its own.
+    ///
+    /// Returns the `SkyframeGraphStatsEvent` Java posts (`None` when no graph is kept: the
+    /// command's executor took its statistics with its graph).
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1196 SkyframeExecutor.notifyCommandComplete
+    pub fn notify_command_complete(
+        &self,
+    ) -> Option<blaze_skyframe::evaluation_stats::SkyframeGraphStatsEvent> {
+        let inner = self.inner.lock();
+        inner
+            .kept
+            .as_ref()
+            .map(|kept| kept.evaluator.post_logging_stats())
+    }
+
     /// Whether a graph is kept for the next command.
     pub fn has_kept_graph(&self) -> bool {
         self.inner.lock().kept.is_some()
@@ -595,7 +624,10 @@ impl SkyframeIncrementalState {
             debug("no kept graph");
         }
         let previous = kept.and_then(|kept| {
-            if kept.command_id != command.command_id && (kept.remote || remote) {
+            if kept.command_id != command.command_id
+                && (kept.remote || remote)
+                && remote_fail_safe_enabled()
+            {
                 // PORT: Blaze-only, fail safe until the remote invalidations are ported (review
                 // 2026-11-26 S1-1, S1-2): RemoteOutputChecker.maybeInvalidateSkyframeValues with
                 // the previous command's checker, the outputs materialized as top-level outputs,
@@ -851,6 +883,7 @@ impl SkyframeIncrementalState {
         inputs: &SyncInputs<'_>,
     ) {
         // ExecutionTool.prepareForExecution: `startBuildAndDetermineModifiedOutputFiles`;
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:493 ExecutionTool.startBuildAndDetermineModifiedOutputFiles
         // without an output service and with --experimental_check_output_files the modified set is
         // EVERYTHING_MODIFIED, without it NOTHING_MODIFIED.
         let check_output_files = inputs
@@ -887,14 +920,10 @@ impl SkyframeIncrementalState {
         evaluator.invalidate(dirty);
     }
 
-    /// `handleDiffs` without diff awareness: every package path entry is without diff
-    /// information.
-    ///
-    /// PORT: `DiffAwarenessManager`, `LocalDiffAwareness` and `WatchServiceDiffAwareness`
-    /// (`--watchfs`) are not ported. Without them every package root is checked here, which is
-    /// what Java does when no diff awareness is available (also with `--watchfs` when the
-    /// watcher cannot be used): correct, and as slow as Bazel without `--watchfs`.
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3950 SkyframeExecutor.handleDiffsWithMissingDiffInformation
+    /// `handleDiffs`: the diff awareness of each package path entry (`--watchfs`: the files it
+    /// names are checked; without it every entry is without diff information and checked
+    /// whole), then the external and output files.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3775 SkyframeExecutor.handleDiffs
     fn handle_diffs(
         state: &SkyframeIncrementalState,
         _inner: &mut Inner,
@@ -1292,6 +1321,17 @@ impl SkyframeIncrementalState {
     /// command by [`Self::reset_evaluator`] (Java `BlazeRuntime.afterCommand`), not here: the
     /// command's later executors still use it, as Java's one executor does.
     pub fn put_back(&self, handle: ExecutorHandle, evaluator: Arc<Evaluator>) {
+        // Blaze-only diagnostics: `BLAZE_INCREMENTAL_DEBUG_KEYS=<file>` in the server's
+        // environment writes the keys of every graph given back (one per line, sorted).
+        if let Some(path) = std::env::var_os("BLAZE_INCREMENTAL_DEBUG_KEYS") {
+            let mut keys: Vec<String> = evaluator
+                .get_all_keys()
+                .iter()
+                .map(|k| format!("{k:?}"))
+                .collect();
+            keys.sort();
+            let _ = std::fs::write(path, keys.join("\n") + "\n");
+        }
         if debug_enabled() {
             debug(&format!(
                 "put_back: {} nodes ({})",

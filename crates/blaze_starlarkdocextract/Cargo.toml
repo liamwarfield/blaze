@@ -16,3 +16,12 @@ starlark.workspace = true
 starlark_map.workspace = true
 regex.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+# The analysis test harness (BuildViewTestCase): .bzl files are loaded through Skyframe as in a
+# build; blaze_sky_top depends on this crate, so only integration tests (tests/) use it.
+blaze_actions = { path = "../blaze_actions" }
+blaze_sky_top = { path = "../blaze_sky_top", features = ["testing"] }
+blaze_sky_loading = { path = "../blaze_sky_loading" }
+blaze_skyframe = { path = "../blaze_skyframe" }
+prost.workspace = true

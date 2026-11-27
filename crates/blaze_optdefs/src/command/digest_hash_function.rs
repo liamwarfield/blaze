@@ -12,22 +12,12 @@ impl Converter for DigestFunctionConverter {
     fn convert(&self, input: Option<&str>, _: Option<&ConversionContext>) -> ConvResult {
         let input = non_null(input);
         // Java iterates hashFunctionRegistry: SHA-1/SHA1 and SHA-256/SHA256 (DigestHashFunction),
-        // BLAKE3 and GITSHA1 (vfs/bazel/BazelHashFunctions).
-        for name in ["SHA-256", "SHA256"] {
-            if name.eq_ignore_ascii_case(input) {
-                return Ok(Some(Value::new(Foreign(DigestHashFunction::Sha256))));
-            }
+        // BLAKE3 and GITSHA1 (vfs/bazel/BazelHashFunctions). No two names are equal ignoring
+        // case, so the map's order does not matter.
+        match DigestHashFunction::from_name(input) {
+            Some(f) => Ok(Some(Value::new(Foreign(f)))),
+            None => Err(OptionsParsingException::new("Not a valid hash function.")),
         }
-        for name in ["SHA-1", "SHA1", "BLAKE3", "GITSHA1"] {
-            if name.eq_ignore_ascii_case(input) {
-                unported!(
-                    "DigestHashFunction",
-                    "{} (blaze_vfs only has SHA-256)",
-                    name
-                );
-            }
-        }
-        Err(OptionsParsingException::new("Not a valid hash function."))
     }
     fn get_type_description(&self) -> String {
         "hash function".into()

@@ -460,7 +460,24 @@ fn error_reading_bzl(file: &PathFragment, cause: &FailedIOException) -> BzlLoadF
         "Encountered error while reading extension file '{}': {}",
         file, cause
     );
-    // PORT: DetailedIOException causes are never produced by Blaze's file systems.
+    if let Some(detailed_exception) = cause.get_cause().as_detailed() {
+        return BzlLoadFailedException::with_detailed_exit_code(
+            error_message,
+            DetailedExitCode {
+                message: detailed_exception.get_message().to_owned(),
+                code: FailureCode::Other(format!(
+                    "Filesystem.{}",
+                    detailed_exception.get_filesystem_code()
+                )),
+            },
+            if detailed_exception.is_transient() {
+                Transience::Transient
+            } else {
+                Transience::Persistent
+            },
+        );
+    }
+
     BzlLoadFailedException::with_detailed_exit_code(
         error_message.clone(),
         BzlLoadFailedException::create_detailed_exit_code(

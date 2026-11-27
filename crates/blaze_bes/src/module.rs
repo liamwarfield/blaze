@@ -37,8 +37,10 @@ use crate::uploader::BesClock;
 // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:113 BuildEventServiceModule.RUNS_PER_TEST_LIMIT
 pub const RUNS_PER_TEST_LIMIT: i32 = 100000;
 
-/// The commands that stream build events.
+/// The commands that stream build events (`allowedCommands(besOptions)` returns them).
 // Java: com/google/devtools/build/lib/buildeventservice/BazelBuildEventServiceModule.java:188 BazelBuildEventServiceModule.ALLOWED_COMMANDS
+// Java: com/google/devtools/build/lib/buildeventservice/BazelBuildEventServiceModule.java:201 BazelBuildEventServiceModule.allowedCommands
+// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:953 BuildEventServiceModule.allowedCommands
 pub const ALLOWED_COMMANDS: &[&str] = &[
     "fetch",
     "build",
@@ -356,7 +358,7 @@ pub fn create_bes_transport(
         });
     }
 
-    // logIds(): logging is not ported.
+    // PORT: skipped, logging: BuildEventServiceModule.logIds
     // The connectivity status (ConnectivityStatusProvider) is always OK in Bazel.
 
     let bes_client: Arc<dyn BuildEventServiceClient> =

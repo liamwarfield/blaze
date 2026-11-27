@@ -138,6 +138,7 @@ pub(crate) mod types;
 pub mod typing;
 pub(crate) mod unpack; // BLAZE PATCH 0052 (was private)
 pub use unpack::bazel_argument_binding_error; // BLAZE PATCH 0061
+pub use unpack::{JavaInterfaceMatcher, register_java_interface_matcher}; // BLAZE PATCH 0062 (round 3)
 mod unpack_and_discard;
 pub(crate) mod value_of;
 pub(crate) mod value_of_unchecked;

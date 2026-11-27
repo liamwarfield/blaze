@@ -131,6 +131,22 @@ pub trait BlazeModule: Send + Sync {
         Ok(())
     }
 
+    /// Returns a `PackageLoadingListener` for observing successful package loading, or `None`.
+    /// Called once during server startup some time after `server_init`.
+    ///
+    /// PORT: the `PackageSettings`, rule class provider and file system parameters are not
+    /// passed (the only implementation, `PackageMetricsModule`, does not read them).
+    // Java: com/google/devtools/build/lib/runtime/BlazeModule.java:439 BlazeModule.getPackageLoadingListener
+    fn get_package_loading_listener(
+        &self,
+    ) -> Option<
+        std::sync::Arc<
+            dyn blaze_packages::package::package_loading_listener::PackageLoadingListener,
+        >,
+    > {
+        None
+    }
+
     /// Called when Bazel initializes a new workspace; this is only called after `server_init`,
     /// and only if the server initialization was successful.
     ///

@@ -4,9 +4,10 @@
 //! PORT notes for the whole file:
 //! - Java's `materializationExecutor` (a virtual thread per materialization) and
 //!   `TaskDeduplicator` are a per-repo lock here: a materialization runs on the calling thread,
-//!   and a second caller for the same repo waits for the first one and then finds the repo
-//!   materialized. `afterCommand` has nothing to wait for (no materialization outlives its
-//!   caller).
+//!   and a second caller for the same repo waits for the first one (interruptibly, as Java's
+//!   `getFromFuture` waits) and then finds the repo materialized. An interrupted materialization
+//!   leaves the repo in memory for the next caller. `afterCommand` has nothing to wait for (no
+//!   materialization outlives its caller).
 //! - `invalidateRepoDirectories` deletes nodes of the server's `MemoizingEvaluator`; Blaze's
 //!   runtime hands a callback for it (`CommandState::invalidate_repo_directories`), which is a
 //!   no-op where the evaluator does not outlive the command.
@@ -34,7 +35,7 @@ use crate::common::bulk_transfer_exception::BulkTransferException;
 use crate::common::remote_action_execution_context::{CachePolicy, RemoteActionExecutionContext};
 use crate::reapi::{Digest, Directory, Tree};
 use crate::remote_action_input_fetcher::RemoteActionInputFetcher;
-use crate::runtime::get_from_future;
+use crate::runtime::{block_on_interruptibly, get_from_future};
 use crate::util::digest_util::DigestUtil;
 use crate::util::tracing_metadata_utils;
 use crate::util::utils::wait_for_bulk_transfer;
@@ -89,7 +90,9 @@ pub struct RemoteExternalOverlayFileSystem {
     shared: Arc<Shared>,
     external_fs: Arc<RemoteExternalFileSystem>,
     /// `materializations` (see the module comment): one lock per repo name.
-    materializations: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// An async lock, so that a caller waiting for another's materialization can be interrupted,
+    /// as Java's wait on the shared future (`getFromFuture`) can.
+    materializations: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// The names of the repos whose contents have been fully materialized to nativeFs.
     materialized_repos: Mutex<HashSet<String>>,
     /// As long as a repo name appears as a key in this map, the repo contents are available in
@@ -307,7 +310,11 @@ impl RemoteExternalOverlayFileSystem {
             .entry(repo.get_name().to_string())
             .or_default()
             .clone();
-        let _guard = lock.lock();
+        // getFromFuture: an interrupt while waiting for another caller's materialization throws
+        // InterruptedException.
+        let Some(_guard) = block_on_interruptibly(lock.lock_owned()) else {
+            return Err(crate::common::errors::interrupted());
+        };
         // Another caller may have finished since the presence check above.
         if !self
             .marker_file_contents
@@ -1085,13 +1092,18 @@ impl RemoteExternalFileSystem {
                     .repos_with_lost_files
                     .lock()
                     .insert(relative_path.get_segment(0).to_string());
-                // DetailedIOException(..., Filesystem.Code.REMOTE_FILE_EVICTED, TRANSIENT)
-                Err(io::Error::other(format!(
-                    "{}/{} with digest {} is no longer available in the remote cache",
-                    self.shared.external_directory.get_base_name(),
-                    relative_path,
-                    DigestUtil::to_string(&digest)
-                )))
+                // Java: com/google/devtools/build/lib/remote/RemoteExternalOverlayFileSystem.java:911 RemoteExternalFileSystem.getInputStream
+                Err(blaze_vfs::DetailedIOException::new(
+                    format!(
+                        "{}/{} with digest {} is no longer available in the remote cache",
+                        self.shared.external_directory.get_base_name(),
+                        relative_path,
+                        DigestUtil::to_string(&digest)
+                    ),
+                    "REMOTE_FILE_EVICTED",
+                    /* transient= */ true,
+                )
+                .into())
             }
             Err(e) => Err(e),
         }

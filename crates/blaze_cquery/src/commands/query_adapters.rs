@@ -138,9 +138,44 @@ impl TargetPatternPreloader for PackageManagerTargetPatternPreloader {
     }
 }
 
+/// The executor as SkyQuery's `WalkableGraphFactory` (Java: `SkyframeExecutor implements
+/// WalkableGraphFactory`).
+pub struct SkyframeWalkableGraphFactory(pub Arc<SkyframePackageManager>);
+
+impl blaze_query::sky_query::WalkableGraphFactory for SkyframeWalkableGraphFactory {
+    /// For internal use in queries: performs a graph update to make sure the transitive closure
+    /// of the specified `roots` is present in the graph, and returns the evaluation result. The
+    /// graph update is unconditionally done in keep-going mode, so that the query is guaranteed a
+    /// complete graph to work on.
+    ///
+    /// PORT: Java also sets `storeExactCycles(false)` (only the stored cycle detail).
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2689 SkyframeExecutor.prepareAndGet
+    fn prepare_and_get(
+        &self,
+        roots: &[blaze_skyframe::SkyKey],
+        parallelism: i32,
+        event_handler: Arc<dyn ExtendedEventHandler>,
+    ) -> Result<
+        (
+            blaze_skyframe::EvaluationResult,
+            Arc<dyn blaze_skyframe::WalkableGraph>,
+        ),
+        blaze_skyframe::Interrupted,
+    > {
+        let result = self.0.evaluate(
+            roots,
+            /* keep_going= */ true,
+            parallelism.max(1) as usize,
+            event_handler,
+        )?;
+        let graph: Arc<dyn blaze_skyframe::WalkableGraph> = self.0.get_evaluator().clone();
+        Ok((result, graph))
+    }
+}
+
 /// What `QueryEnvironmentBasedCommand.execInternal` reads from the `CommandEnvironment`, over the
 /// command's executor.
-// Java: com/google/devtools/build/lib/runtime/commands/QueryEnvironmentBasedCommand.java:96 QueryEnvironmentBasedCommand.execInternal
+// Java: com/google/devtools/build/lib/runtime/commands/QueryEnvironmentBasedCommand.java:102 QueryEnvironmentBasedCommand.execInternal
 pub fn query_command_environment(
     skyframe_executor: &SkyframeExecutor,
     reporter: Arc<dyn ExtendedEventHandler>,
@@ -148,6 +183,7 @@ pub fn query_command_environment(
     relative_working_directory: PathFragment,
     working_directory: blaze_vfs::Path,
     main_repo_mapping: RepositoryMapping,
+    query_evaluation_parallelism_level: i32,
 ) -> QueryCommandEnvironment {
     let package_manager = skyframe_executor.get_package_manager().clone();
     QueryCommandEnvironment {
@@ -169,7 +205,15 @@ pub fn query_command_environment(
             package_manager.clone(),
         )),
         query_transitive_package_preloader: Some(Arc::new(
-            SkyframeQueryTransitivePackagePreloader::new(package_manager),
+            SkyframeQueryTransitivePackagePreloader::new(package_manager.clone()),
         )),
+        graph_factory: Some(Arc::new(SkyframeWalkableGraphFactory(package_manager))),
+        package_path: Some(
+            skyframe_executor
+                .get_package_locator()
+                .get_path_entries()
+                .to_vec(),
+        ),
+        query_evaluation_parallelism_level,
     }
 }

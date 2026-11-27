@@ -67,8 +67,8 @@ enum Stat {
     /// An inode of the remote output tree; its metadata when it is a `RemoteInMemoryFileInfo`
     /// (a `FileStatusWithMetadata`), `None` for a directory or a symlink.
     Remote(FileStatus, Option<FileArtifactValue>),
-    /// The local file system's status.
-    Local(FileStatus),
+    /// The local file system's status, with the canonical path it was found at.
+    Local(FileStatus, PathFragment),
 }
 
 impl Stat {
@@ -77,7 +77,7 @@ impl Stat {
             Stat::Metadata(m, _) => m.get_type().is_symlink(),
             Stat::Directory(_) => false,
             Stat::Remote(s, _) => s.is_symbolic_link(),
-            Stat::Local(s) => s.is_symbolic_link(),
+            Stat::Local(s, _) => s.is_symbolic_link(),
         }
     }
 
@@ -548,7 +548,10 @@ impl RemoteActionFileSystem {
         }
 
         if stat_sources == StatSources::All {
-            return Ok(self.local_fs.stat_if_found(&path, false)?.map(Stat::Local));
+            return Ok(self
+                .local_fs
+                .stat_if_found(&path, false)?
+                .map(|s| Stat::Local(s, path)));
         }
 
         Ok(None)
@@ -559,7 +562,7 @@ impl RemoteActionFileSystem {
         match stat {
             Stat::Metadata(m, path) => stat_from_metadata(m, self.unknown_permissions(path)),
             Stat::Directory(path) => directory_file_status(self.unknown_permissions(path)),
-            Stat::Remote(s, _) | Stat::Local(s) => *s,
+            Stat::Remote(s, _) | Stat::Local(s, _) => *s,
         }
     }
 
@@ -937,6 +940,28 @@ impl FileSystem for RemoteActionFileSystem {
         Ok(self
             .stat_internal(path, follow_mode, StatSources::All)?
             .map(|s| self.to_file_status(&s)))
+    }
+    /// The metadata of `stat`'s `FileStatusWithMetadata`: the input's metadata, the remote output
+    /// tree's, or whatever the local file system's stat carries (it may be the remote repo
+    /// contents cache's overlay).
+    // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:631 RemoteActionFileSystem.stat
+    fn stat_metadata(
+        &self,
+        path: &PathFragment,
+        follow_symlinks: bool,
+    ) -> io::Result<Option<std::sync::Arc<dyn blaze_vfs::StatMetadata>>> {
+        let follow_mode = if follow_symlinks {
+            FollowMode::FollowAll
+        } else {
+            FollowMode::FollowParent
+        };
+        match self.stat_internal(path, follow_mode, StatSources::All)? {
+            None | Some(Stat::Directory(_)) => Ok(None),
+            Some(Stat::Local(_, canonical)) => self.local_fs.stat_metadata(&canonical, false),
+            Some(stat) => Ok(stat.metadata().cloned().map(|m| {
+                std::sync::Arc::new(m) as std::sync::Arc<dyn blaze_vfs::StatMetadata>
+            })),
+        }
     }
     // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:648 RemoteActionFileSystem.statNullable
     fn stat_nullable(&self, path: &PathFragment, follow_symlinks: bool) -> Option<FileStatus> {

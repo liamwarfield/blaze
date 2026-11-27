@@ -213,7 +213,17 @@ fn to_action_inputs(set: &NestedSet<blaze_actions::Artifact>) -> NestedSet<Actio
 }
 
 /// `StaticInputMetadataProvider` + `DelegatingPairInputMetadataProvider` (what
-/// `withOutputsAsInputs` installs): the given outputs' metadata first, then the action's.
+/// `withOutputsAsInputs` installs): the given outputs' metadata first, then the action's. The
+/// static provider answers null for trees, filesets and runfiles, so those come from the
+/// action's provider.
+// Java: com/google/devtools/build/lib/actions/StaticInputMetadataProvider.java:37 StaticInputMetadataProvider.<init>
+// Java: com/google/devtools/build/lib/actions/StaticInputMetadataProvider.java:42 StaticInputMetadataProvider.constructExecPathToInputMap
+// Java: com/google/devtools/build/lib/actions/StaticInputMetadataProvider.java:52 StaticInputMetadataProvider.getInputMetadataChecked
+// Java: com/google/devtools/build/lib/actions/StaticInputMetadataProvider.java:58 StaticInputMetadataProvider.getTreeMetadata
+// Java: com/google/devtools/build/lib/actions/StaticInputMetadataProvider.java:70 StaticInputMetadataProvider.getFileset
+// Java: com/google/devtools/build/lib/actions/StaticInputMetadataProvider.java:81 StaticInputMetadataProvider.getRunfilesMetadata
+// Java: com/google/devtools/build/lib/actions/StaticInputMetadataProvider.java:92 StaticInputMetadataProvider.getInput
+// PORT: skipped, not methods of Blaze's InputMetadataProvider (no caller at the pin reads them through the context): StaticInputMetadataProvider.getEnclosingTreeMetadata StaticInputMetadataProvider.getFilesets StaticInputMetadataProvider.getRunfilesTrees
 struct OutputsAsInputsMetadataProvider<'a> {
     additional_inputs: IndexMap<PathFragment, (ActionInputRef, FileArtifactValue)>,
     delegate: &'a dyn InputMetadataProvider,

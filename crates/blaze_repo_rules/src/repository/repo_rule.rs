@@ -67,6 +67,9 @@ impl fmt::Debug for RepoRule {
 }
 
 /// Builder type for [`RepoRule`] (Java `RepoRule.Builder`, an `@AutoBuilder`).
+///
+/// The builder only collects the attributes (Java's AutoBuilder setters for the other
+/// fields have no counterpart: they go straight into the [`RepoRule`] literal).
 // Java: com/google/devtools/build/lib/bazel/repository/RepoRule.java:118 RepoRule.Builder
 #[derive(Default)]
 pub struct RepoRuleBuilder {

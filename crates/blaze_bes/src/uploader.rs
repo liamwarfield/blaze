@@ -331,6 +331,9 @@ impl BuildEventServiceUploader {
         let weak = Arc::downgrade(inner);
         inner.close_future.add_cancel_listener(Box::new(move || {
             if let Some(inner) = weak.upgrade() {
+                // closeFuture.addListener(() -> halfCloseFuture.setFuture(closeFuture)): a
+                // cancelled close future cancels the half-close future (unless it is done).
+                inner.half_close_future.cancel();
                 inner.close_on_cancel();
             }
         }));
@@ -460,11 +463,16 @@ impl Inner {
                             .post(Arc::new(BuildEventServiceAvailabilityEvent::of_success()));
                     }
                     Err(UploadError::Interrupted) => {
-                        let state = self.lock.lock();
-                        blaze_util::check_state!(
-                            state.interrupt_caused_by_cancel,
-                            "Unexpected interrupt on BES uploader thread"
-                        );
+                        let caused_by_cancel = self.lock.lock().interrupt_caused_by_cancel;
+                        if !caused_by_cancel {
+                            // Preconditions.checkState throws from the catch block: the finally
+                            // block still runs (the close future completes normally), then the
+                            // IllegalStateException ends the thread.
+                            self.finish_run(Ok(()));
+                            panic!(
+                                "IllegalStateException: Unexpected interrupt on BES uploader thread"
+                            );
+                        }
                     }
                     Err(UploadError::DetailedStatus(e)) => {
                         let is_transient = should_retry_status(&e.status);
@@ -537,7 +545,11 @@ impl Inner {
         self.build_event_uploader.release();
         // MoreExecutors.shutdownAndAwaitTermination(timeoutExecutor, ...): no executor here.
         self.close_future.set(Ok(()));
-        self.half_close_future.set(close_result);
+        if self.close_future.is_cancelled() {
+            self.half_close_future.cancel();
+        } else {
+            self.half_close_future.set(close_result);
+        }
     }
 
     /// The `try` of `run`, up to the success event.
@@ -880,12 +892,27 @@ impl Inner {
         local_file_upload_progress: PathConverterFuture,
     ) -> Result<Box<dyn PathConverter>, UploadError> {
         // Wait for the local file and pending remote uploads to complete.
-        // PORT: remote uploads are already resolved (`BuildEvent::remote_uploads`); waiting for
-        // the local uploads is not interruptible (the uploaders bound their own waits).
-        local_file_upload_progress.get().map_err(|failure| {
-            // logger.atWarning(): logging is not ported.
-            UploadError::LocalFileUpload(failure)
-        })
+        // PORT: waitForRemoteUploads: an event's remote uploads are resolved values
+        // (`BuildEvent::remote_uploads`). In Bazel only `BuildToolLogs` has remote uploads, the
+        // URI futures of logs uploaded while they are written (`addUriFuture`: the Skyframe
+        // memory dump with --experimental_stream_log_file_uploads, ExecutionGraphModule's dump,
+        // BuildEventArtifactInstrumentationOutput); each of those fails loudly in Blaze, so no
+        // remote upload can be pending here.
+        //
+        // localFileUploadProgress().get(): an interrupt of this thread (a cancelled close)
+        // ends the wait with InterruptedException; the dropped future cancels the upload.
+        let mut future = local_file_upload_progress;
+        loop {
+            if thread_interrupt::interrupted() {
+                return Err(UploadError::Interrupted);
+            }
+            if let Some(result) = future.get_timeout(Duration::from_millis(10)) {
+                return result.map_err(|failure| {
+                    // logger.atWarning(): logging is not ported.
+                    UploadError::LocalFileUpload(failure)
+                });
+            }
+        }
     }
 
     // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceUploader.java:827 BuildEventServiceUploader.retrySleepMillis

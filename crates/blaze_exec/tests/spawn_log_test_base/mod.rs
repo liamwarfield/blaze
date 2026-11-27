@@ -267,7 +267,7 @@ impl Fixture {
                 input_metadata_provider,
                 &|| Arc::clone(&input_map),
                 file_system,
-                timeout,
+                timeout.into(),
                 result,
             )
             .unwrap();
@@ -675,6 +675,13 @@ impl FileSystem for FakeActionFileSystem {
     }
     fn stat(&self, path: &PathFragment, follow_symlinks: bool) -> io::Result<FileStatus> {
         self.delegate.stat(path, follow_symlinks)
+    }
+    fn stat_metadata(
+        &self,
+        path: &PathFragment,
+        follow_symlinks: bool,
+    ) -> io::Result<Option<std::sync::Arc<dyn blaze_vfs::StatMetadata>>> {
+        self.delegate.stat_metadata(path, follow_symlinks)
     }
     fn create_symbolic_link(
         &self,

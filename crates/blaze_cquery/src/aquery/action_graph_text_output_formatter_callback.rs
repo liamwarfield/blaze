@@ -116,7 +116,7 @@ impl<'a> ActionGraphTextOutputFormatterCallback<'a> {
         }
     }
 
-    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphTextOutputFormatterCallback.java:129 ActionGraphTextOutputFormatterCallback.writeAction
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphTextOutputFormatterCallback.java:130 ActionGraphTextOutputFormatterCallback.writeAction
     fn write_action(&self, action: &dyn Action) -> Result<(), ActionGraphDumpError> {
         if self.options.include_param_files {
             // `action instanceof ParameterFileWriteAction parameterFileWriteAction`
@@ -428,7 +428,7 @@ pub fn internal_to_escaped_unicode(internal: &str) -> String {
 /// dependency graph. e.g. [A -> B] would imply that aspect A is applied on top of aspect B.
 ///
 /// PORT: the aspect part of `writeText`, separate so that it can be tested alone.
-// Java: com/google/devtools/build/lib/query2/aquery/ActionGraphTextOutputFormatterCallback.java:182 ActionGraphTextOutputFormatterCallback.writeText
+// Java: com/google/devtools/build/lib/query2/aquery/ActionGraphTextOutputFormatterCallback.java:153 ActionGraphTextOutputFormatterCallback.writeText
 pub fn write_aspect_descriptors(
     owner_aspect_descriptors: &[AspectDescriptor],
     string_builder: &mut String,
@@ -465,7 +465,7 @@ pub fn write_aspect_descriptors(
 impl NamedThreadSafeOutputFormatterCallback<KeyedConfiguredTargetValue>
     for ActionGraphTextOutputFormatterCallback<'_>
 {
-    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphTextOutputFormatterCallback.java:93 ActionGraphTextOutputFormatterCallback.getName
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphTextOutputFormatterCallback.java:94 ActionGraphTextOutputFormatterCallback.getName
     fn get_name(&self) -> String {
         self.output_type.format_name().to_owned()
     }
@@ -485,7 +485,7 @@ impl Callback<KeyedConfiguredTargetValue> for ActionGraphTextOutputFormatterCall
 impl OutputFormatterCallback<KeyedConfiguredTargetValue>
     for ActionGraphTextOutputFormatterCallback<'_>
 {
-    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphTextOutputFormatterCallback.java:98 ActionGraphTextOutputFormatterCallback.processOutput
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphTextOutputFormatterCallback.java:99 ActionGraphTextOutputFormatterCallback.processOutput
     fn process_output(
         &self,
         partial_result: &[KeyedConfiguredTargetValue],

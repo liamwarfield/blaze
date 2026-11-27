@@ -1,6 +1,6 @@
 //! Port of `lib/sandbox/LinuxSandboxCommandLineBuilder.java`.
 
-use std::time::Duration;
+use blaze_util::java_duration::JavaDuration;
 
 use blaze_vfs::{Path, PathFragment};
 use indexmap::{IndexMap, IndexSet};
@@ -28,8 +28,8 @@ pub struct LinuxSandboxCommandLineBuilder {
     linux_sandbox_path: Path,
     hermetic_sandbox_path: Option<Path>,
     working_directory: Option<Path>,
-    timeout: Option<Duration>,
-    kill_delay: Option<Duration>,
+    timeout: Option<JavaDuration>,
+    kill_delay: Option<JavaDuration>,
     persistent_process: bool,
     stdout_path: Option<Path>,
     stderr_path: Option<Path>,
@@ -93,16 +93,16 @@ impl LinuxSandboxCommandLineBuilder {
 
     /// Sets the timeout for the command run using the `linux-sandbox` tool.
     // Java: com/google/devtools/build/lib/sandbox/LinuxSandboxCommandLineBuilder.java:87 LinuxSandboxCommandLineBuilder.setTimeout
-    pub fn set_timeout(&mut self, timeout: Duration) -> &mut Self {
-        self.timeout = Some(timeout);
+    pub fn set_timeout(&mut self, timeout: impl Into<JavaDuration>) -> &mut Self {
+        self.timeout = Some(timeout.into());
         self
     }
 
     /// Sets the kill delay for commands run using the `linux-sandbox` tool that exceed their
     /// timeout.
     // Java: com/google/devtools/build/lib/sandbox/LinuxSandboxCommandLineBuilder.java:97 LinuxSandboxCommandLineBuilder.setKillDelay
-    pub fn set_kill_delay(&mut self, kill_delay: Duration) -> &mut Self {
-        self.kill_delay = Some(kill_delay);
+    pub fn set_kill_delay(&mut self, kill_delay: impl Into<JavaDuration>) -> &mut Self {
+        self.kill_delay = Some(kill_delay.into());
         self
     }
 
@@ -250,11 +250,11 @@ impl LinuxSandboxCommandLineBuilder {
         }
         if let Some(timeout) = self.timeout {
             command_line_builder.push("-T".to_string());
-            command_line_builder.push(timeout.as_secs().to_string());
+            command_line_builder.push(timeout.to_seconds().to_string());
         }
         if let Some(kill_delay) = self.kill_delay {
             command_line_builder.push("-t".to_string());
-            command_line_builder.push(kill_delay.as_secs().to_string());
+            command_line_builder.push(kill_delay.to_seconds().to_string());
         }
         if let Some(stdout_path) = &self.stdout_path {
             command_line_builder.push("-l".to_string());

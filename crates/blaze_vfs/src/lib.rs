@@ -7,6 +7,7 @@
 //!
 //! Not ported: serialization codecs, interning, `InMemoryFileSystem`, globbing, xattrs.
 
+pub mod detailed_io_exception;
 pub mod digest_hash_function;
 pub mod dirent;
 pub mod file_status;
@@ -20,7 +21,8 @@ pub mod rooted_path;
 pub mod symlinks;
 pub mod unix_file_system;
 
-pub use digest_hash_function::DigestHashFunction;
+pub use detailed_io_exception::DetailedIOException;
+pub use digest_hash_function::{DigestHashFunction, DigestHasher};
 pub use dirent::{Dirent, DirentType};
 pub use file_status::{FileStatus, StatMetadata};
 pub use modified_file_set::ModifiedFileSet;

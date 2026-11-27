@@ -38,7 +38,7 @@ use crate::post_analysis_query_environment::NamedThreadSafeOutputFormatterCallba
 
 /// ResolvedTransition represents a single edge in the dependency graph, between some target and a
 /// target it depends on, reachable via a single attribute.
-// Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:56 CqueryTransitionResolver.ResolvedTransition
+// Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:72 CqueryTransitionResolver.ResolvedTransition
 #[derive(Clone, PartialEq, Eq)]
 struct ResolvedTransition {
     /// The label of the target being depended on.
@@ -65,7 +65,7 @@ enum DependenciesError {
 
 /// Output formatter that prints `ConfigurationTransition` information for rule configured
 /// targets in the results of a cquery call.
-// Java: com/google/devtools/build/lib/query2/cquery/TransitionsOutputFormatterCallback.java:51 TransitionsOutputFormatterCallback
+// Java: com/google/devtools/build/lib/query2/cquery/TransitionsOutputFormatterCallback.java:47 TransitionsOutputFormatterCallback
 pub struct TransitionsOutputFormatterCallback<'a> {
     base: CqueryThreadsafeCallback<'a>,
     skyframe_executor: &'a SkyframeExecutor,
@@ -76,7 +76,7 @@ pub struct TransitionsOutputFormatterCallback<'a> {
 }
 
 impl<'a> TransitionsOutputFormatterCallback<'a> {
-    // Java: com/google/devtools/build/lib/query2/cquery/TransitionsOutputFormatterCallback.java:66 TransitionsOutputFormatterCallback.<init>
+    // Java: com/google/devtools/build/lib/query2/cquery/TransitionsOutputFormatterCallback.java:62 TransitionsOutputFormatterCallback.<init>
     pub fn new(
         base: CqueryThreadsafeCallback<'a>,
         skyframe_executor: &'a SkyframeExecutor,
@@ -95,19 +95,26 @@ impl<'a> TransitionsOutputFormatterCallback<'a> {
     /// PORT: Java's resolver runs outside Skyframe and leaves nothing in the graph; Blaze's
     /// nodes are deleted here (marked, then removed by an evaluation of no roots, which applies
     /// pending deletions), so they neither count in the graph size the command reports
-    /// (`post_invocation_skyframe_node_count`) nor survive into later commands. The evaluation
-    /// statistics of the command still count their evaluations (docs/reviews/
-    /// 2026-11-26-query-2-response.md, S2-2).
+    /// (`post_invocation_skyframe_node_count`) nor survive into later commands, and their
+    /// evaluations are removed from the command's evaluation statistics.
     fn delete_resolver_nodes(&self) -> Result<(), OutputFormatterError> {
         self.skyframe_executor.get_evaluator().delete(|key, _| {
             key.function_name() == <CqueryTransitionResolverKey as blaze_skyframe::Key>::FUNCTION
         });
-        match self.skyframe_executor.evaluate(
+        let result = self.skyframe_executor.evaluate(
             &[],
             /* keep_going= */ false,
             DEFAULT_THREAD_COUNT,
             self.base.event_handler.clone(),
-        ) {
+        );
+        // Java computes the transitions without Skyframe: the resolver's nodes are not in the
+        // per-function evaluation statistics either.
+        self.skyframe_executor
+            .get_evaluator()
+            .remove_evaluation_stats_of(
+                <CqueryTransitionResolverKey as blaze_skyframe::Key>::FUNCTION,
+            );
+        match result {
             Ok(_) => Ok(()),
             Err(blaze_skyframe::Interrupted) => Err(OutputFormatterError::Interrupted(
                 blaze_query_engine::InterruptedException::new(),
@@ -173,7 +180,7 @@ impl<'a> TransitionsOutputFormatterCallback<'a> {
         };
         self.resolved_any.set(true);
         if evaluator.computed_count() - computed_before > 1 {
-            // Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:147 CqueryTransitionResolver.dependencies
+            // Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:130 CqueryTransitionResolver.dependencies
             return Err(DependenciesError::Evaluate(
                 "DependencyResolver.evaluate did not complete".to_owned(),
             ));
@@ -273,7 +280,7 @@ impl<'a> TransitionsOutputFormatterCallback<'a> {
         Ok(resolved)
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:217 CqueryTransitionResolver.usesNoTransition
+    // Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:226 CqueryTransitionResolver.usesNoTransition
     fn uses_no_transition(
         from_configuration: Option<&BuildConfigurationValue>,
         targets: &[&ConfiguredTargetAndData],
@@ -291,7 +298,7 @@ impl<'a> TransitionsOutputFormatterCallback<'a> {
         None
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:232 CqueryTransitionResolver.getDependencyName
+    // Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:240 CqueryTransitionResolver.getDependencyName
     fn get_dependency_name(kind: &DependencyKind) -> String {
         match kind {
             DependencyKind::Toolchain {
@@ -317,7 +324,7 @@ impl<'a> TransitionsOutputFormatterCallback<'a> {
     }
 
     /// Keep in sync with TargetAndConfigurationProducer.computeTransition.
-    // Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:244 CqueryTransitionResolver.getRuleTransition
+    // Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:253 CqueryTransitionResolver.getRuleTransition
     fn get_rule_transition(
         &self,
         configured_target: &ConfiguredTargetAndData,
@@ -351,7 +358,7 @@ impl<'a> TransitionsOutputFormatterCallback<'a> {
         }
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:265 CqueryTransitionResolver.getTransitionName
+    // Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:273 CqueryTransitionResolver.getTransitionName
     fn get_transition_name(
         attribute_transition: Option<&ConfigurationTransition>,
         rule_transition: Option<&ConfigurationTransition>,
@@ -368,7 +375,7 @@ impl<'a> TransitionsOutputFormatterCallback<'a> {
 }
 
 impl NamedThreadSafeOutputFormatterCallback<CqueryNode> for TransitionsOutputFormatterCallback<'_> {
-    // Java: com/google/devtools/build/lib/query2/cquery/TransitionsOutputFormatterCallback.java:58 TransitionsOutputFormatterCallback.getName
+    // Java: com/google/devtools/build/lib/query2/cquery/TransitionsOutputFormatterCallback.java:55 TransitionsOutputFormatterCallback.getName
     fn get_name(&self) -> String {
         "transitions".to_owned()
     }
@@ -383,7 +390,7 @@ impl Callback<CqueryNode> for TransitionsOutputFormatterCallback<'_> {
 }
 
 impl OutputFormatterCallback<CqueryNode> for TransitionsOutputFormatterCallback<'_> {
-    // Java: com/google/devtools/build/lib/query2/cquery/TransitionsOutputFormatterCallback.java:82 TransitionsOutputFormatterCallback.processOutput
+    // Java: com/google/devtools/build/lib/query2/cquery/TransitionsOutputFormatterCallback.java:78 TransitionsOutputFormatterCallback.processOutput
     fn process_output(&self, partial_result: &[CqueryNode]) -> Result<(), OutputFormatterError> {
         let verbosity = self.base.options.transitions;
         if verbosity == Transitions::NONE {

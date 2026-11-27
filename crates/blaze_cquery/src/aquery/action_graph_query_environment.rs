@@ -34,7 +34,7 @@ pub type KeyedConfiguredTargetValue = Arc<ConfiguredTargetValue>;
 // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:70 ActionGraphQueryEnvironment
 pub type ActionGraphQueryEnvironment = PostAnalysisQueryEnvironment<KeyedConfiguredTargetValue>;
 
-// Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:139 ActionGraphQueryEnvironment.populateAqueryFunctions
+// Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:138 ActionGraphQueryEnvironment.populateAqueryFunctions
 pub fn aquery_functions() -> Vec<Arc<dyn QueryFunction<KeyedConfiguredTargetValue>>> {
     vec![
         Arc::new(InputsFunction::new()),
@@ -43,13 +43,15 @@ pub fn aquery_functions() -> Vec<Arc<dyn QueryFunction<KeyedConfiguredTargetValu
     ]
 }
 
-// Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:135 ActionGraphQueryEnvironment.populateFunctions
+// Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:134 ActionGraphQueryEnvironment.populateFunctions
 pub fn functions() -> Vec<Arc<dyn QueryFunction<KeyedConfiguredTargetValue>>> {
     default_query_functions::<KeyedConfiguredTargetValue>()
 }
 
 /// Creates the environment (Java `new ActionGraphQueryEnvironment(..., aqueryOptions, ...)`).
-// Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:108 ActionGraphQueryEnvironment.<init>
+// PORT: skipped, the output format is read by AqueryProcessor from AqueryOptions itself (no environment accessor): ActionGraphQueryEnvironment.getOutputFormat
+// PORT: skipped, AqueryProcessor hands the action filters to the output formatter callbacks (the environment does not hold them): ActionGraphQueryEnvironment.setActionFilters
+// Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:109 ActionGraphQueryEnvironment.<init>
 pub fn new_action_graph_query_environment(
     keep_going: bool,
     event_handler: Arc<dyn ExtendedEventHandler>,
@@ -78,7 +80,7 @@ pub fn new_action_graph_query_environment(
 
 impl ActionGraphQueryEnvironment {
     /// The target of a value, dereferencing aliases.
-    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:151 ConfiguredTargetValueAccessor.getTargetFromConfiguredTargetValue
+    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:150 ConfiguredTargetValueAccessor.getTargetFromConfiguredTargetValue
     pub fn get_target_from_configured_target_value(
         &self,
         configured_target_value: &KeyedConfiguredTargetValue,
@@ -144,13 +146,13 @@ impl ActionGraphQueryEnvironment {
 }
 
 impl TargetAccessor<KeyedConfiguredTargetValue> for ActionGraphQueryEnvironment {
-    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:63 ConfiguredTargetValueAccessor.getTargetKind
+    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:65 ConfiguredTargetValueAccessor.getTargetKind
     fn get_target_kind(&self, configured_target_value: &KeyedConfiguredTargetValue) -> String {
         self.get_target_from_configured_target_value(configured_target_value)
             .get_target_kind()
     }
 
-    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:69 ConfiguredTargetValueAccessor.getLabel
+    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:71 ConfiguredTargetValueAccessor.getLabel
     fn get_label(&self, configured_target_value: &KeyedConfiguredTargetValue) -> String {
         configured_target_value
             .get_configured_target()
@@ -158,7 +160,7 @@ impl TargetAccessor<KeyedConfiguredTargetValue> for ActionGraphQueryEnvironment 
             .to_string()
     }
 
-    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:74 ConfiguredTargetValueAccessor.getPackage
+    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:76 ConfiguredTargetValueAccessor.getPackage
     fn get_package(&self, configured_target_value: &KeyedConfiguredTargetValue) -> String {
         configured_target_value
             .get_configured_target()
@@ -169,7 +171,7 @@ impl TargetAccessor<KeyedConfiguredTargetValue> for ActionGraphQueryEnvironment 
             .to_owned()
     }
 
-    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:84 ConfiguredTargetValueAccessor.isRule
+    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:86 ConfiguredTargetValueAccessor.isRule
     fn is_rule(&self, configured_target_value: &KeyedConfiguredTargetValue) -> bool {
         matches!(
             self.get_target_from_configured_target_value(configured_target_value),
@@ -177,7 +179,7 @@ impl TargetAccessor<KeyedConfiguredTargetValue> for ActionGraphQueryEnvironment 
         )
     }
 
-    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:90 ConfiguredTargetValueAccessor.isExecutableNonTestRule
+    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:92 ConfiguredTargetValueAccessor.isExecutableNonTestRule
     fn is_executable_non_test_rule(
         &self,
         configured_target_value: &KeyedConfiguredTargetValue,
@@ -187,21 +189,21 @@ impl TargetAccessor<KeyedConfiguredTargetValue> for ActionGraphQueryEnvironment 
         )
     }
 
-    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:96 ConfiguredTargetValueAccessor.isTestRule
+    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:98 ConfiguredTargetValueAccessor.isTestRule
     fn is_test_rule(&self, configured_target_value: &KeyedConfiguredTargetValue) -> bool {
         blaze_packages::target::target_utils::is_test_rule(
             &self.get_target_from_configured_target_value(configured_target_value),
         )
     }
 
-    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:102 ConfiguredTargetValueAccessor.isTestSuite
+    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:104 ConfiguredTargetValueAccessor.isTestSuite
     fn is_test_suite(&self, configured_target_value: &KeyedConfiguredTargetValue) -> bool {
         blaze_packages::target::target_utils::is_test_suite_rule(
             &self.get_target_from_configured_target_value(configured_target_value),
         )
     }
 
-    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:108 ConfiguredTargetValueAccessor.getPrerequisites
+    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:110 ConfiguredTargetValueAccessor.getPrerequisites
     fn get_prerequisites(
         &self,
         _caller: &QueryExpression,
@@ -218,7 +220,7 @@ impl TargetAccessor<KeyedConfiguredTargetValue> for ActionGraphQueryEnvironment 
         .into())
     }
 
-    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:120 ConfiguredTargetValueAccessor.getStringListAttr
+    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:122 ConfiguredTargetValueAccessor.getStringListAttr
     fn get_string_list_attr(
         &self,
         configured_target_value: &KeyedConfiguredTargetValue,
@@ -228,7 +230,7 @@ impl TargetAccessor<KeyedConfiguredTargetValue> for ActionGraphQueryEnvironment 
         blaze_target_accessor::get_string_list_attr(&actual_target, attr_name)
     }
 
-    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:127 ConfiguredTargetValueAccessor.getStringAttr
+    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:129 ConfiguredTargetValueAccessor.getStringAttr
     fn get_string_attr(
         &self,
         configured_target_value: &KeyedConfiguredTargetValue,
@@ -238,7 +240,7 @@ impl TargetAccessor<KeyedConfiguredTargetValue> for ActionGraphQueryEnvironment 
         blaze_target_accessor::get_string_attr(&actual_target, attr_name)
     }
 
-    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:133 ConfiguredTargetValueAccessor.getAttrAsString
+    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:135 ConfiguredTargetValueAccessor.getAttrAsString
     fn get_attr_as_string(
         &self,
         configured_target_value: &KeyedConfiguredTargetValue,
@@ -248,7 +250,7 @@ impl TargetAccessor<KeyedConfiguredTargetValue> for ActionGraphQueryEnvironment 
         blaze_target_accessor::get_attr_as_string(&actual_target, attr_name)
     }
 
-    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:140 ConfiguredTargetValueAccessor.getVisibility
+    // Java: com/google/devtools/build/lib/query2/aquery/ConfiguredTargetValueAccessor.java:142 ConfiguredTargetValueAccessor.getVisibility
     fn get_visibility<'a>(
         &'a self,
         _caller: &QueryExpression,

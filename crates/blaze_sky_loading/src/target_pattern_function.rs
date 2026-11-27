@@ -11,7 +11,7 @@
 //! result and are not ported.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -167,6 +167,142 @@ impl TargetPatternKey {
     pub fn get_excluded_subdirectories(&self) -> &[PathFragment] {
         &self.excluded_subdirectories
     }
+
+    // Java: com/google/devtools/build/lib/skyframe/TargetPatternValue.java:240 TargetPatternValue.TargetPatternKey.getSignedParsedPattern
+    pub fn get_signed_parsed_pattern(&self) -> &SignedTargetPattern {
+        &self.signed_parsed_pattern
+    }
+}
+
+/// Takes a list of [`TargetPatternKey`]s and, for each one, adds the directories of the later
+/// negative targets-below-directory patterns it contains as excluded subdirectories (and, with
+/// `exclude_single_targets`, the later negative single targets). A negative pattern so combined
+/// is dropped; the others are kept in order.
+// Java: com/google/devtools/build/lib/skyframe/TargetPatternValue.java:82 TargetPatternValue.combineTargetsBelowDirectoryWithNegativePatterns
+pub fn combine_targets_below_directory_with_negative_patterns(
+    keys: &[TargetPatternKey],
+    exclude_single_targets: bool,
+) -> Vec<TargetPatternKey> {
+    let mut builder = Vec::new();
+    // We use indicesOfNegativePatternsThatNeedToBeIncluded to avoid adding negative TBD or single
+    // target patterns that have already been combined with previous patterns as an excluded
+    // directory or excluded single target.
+    let mut indices_of_negative_patterns_that_need_to_be_included: HashSet<usize> = HashSet::new();
+    let mut positive_pattern_seen = false;
+    for (i, target_pattern_key) in keys.iter().enumerate() {
+        if target_pattern_key.is_negative() {
+            if indices_of_negative_patterns_that_need_to_be_included.contains(&i)
+                || !positive_pattern_seen
+            {
+                builder.push(target_pattern_key.clone());
+            }
+        } else {
+            positive_pattern_seen = true;
+            let (target_pattern_key_maybe, indices) = compute_target_pattern_key_with_exclusions(
+                target_pattern_key,
+                i,
+                keys,
+                exclude_single_targets,
+            );
+            if let Some(k) = target_pattern_key_maybe {
+                builder.push(k);
+            }
+            indices_of_negative_patterns_that_need_to_be_included.extend(indices);
+        }
+    }
+    builder
+}
+
+// Java: com/google/devtools/build/lib/skyframe/TargetPatternValue.java:108 TargetPatternValue.setExcludedDirectoriesAndTargets
+fn set_excluded_directories_and_targets(
+    original: &TargetPatternKey,
+    excluded_subdirectories: Vec<PathFragment>,
+    excluded_single_targets: Vec<Label>,
+) -> TargetPatternKey {
+    if !excluded_single_targets.is_empty() {
+        // Java: FilteringPolicies.and(policy, new TargetExcludingFilteringPolicy(...)).
+        blaze_util::unported!("TargetExcludingFilteringPolicy");
+    }
+    TargetPatternKey {
+        signed_parsed_pattern: original.signed_parsed_pattern.clone(),
+        policy: original.policy.clone(),
+        excluded_subdirectories,
+    }
+}
+
+/// Java `TargetPatternKeyWithExclusionsResult`: the key (absent when a later negative pattern
+/// excludes all of it) and the indices of the later negative patterns still to be applied.
+// Java: com/google/devtools/build/lib/skyframe/TargetPatternValue.java:132 TargetPatternValue.computeTargetPatternKeyWithExclusions
+fn compute_target_pattern_key_with_exclusions(
+    target_pattern_key: &TargetPatternKey,
+    position: usize,
+    keys: &[TargetPatternKey],
+    exclude_single_targets: bool,
+) -> (Option<TargetPatternKey>, Vec<usize>) {
+    use blaze_cmdline::{
+        TargetPatternTargetsBelowDirectoryContainsResult as Contains, TargetPatternType,
+    };
+    let target_pattern = target_pattern_key.get_parsed_pattern();
+    // ImmutableSet builders: insertion order, no duplicates.
+    let mut excluded_directories: Vec<PathFragment> = Vec::new();
+    let mut excluded_single_targets: Vec<Label> = Vec::new();
+    let mut indices_of_negative_patterns_that_need_to_be_included: Vec<usize> = Vec::new();
+    for (j, later_target_pattern_key) in keys.iter().enumerate().skip(position + 1) {
+        let later_parsed_pattern = later_target_pattern_key.get_parsed_pattern();
+        if !later_target_pattern_key.is_negative() {
+            continue;
+        }
+        if later_parsed_pattern.get_type() == TargetPatternType::TargetsBelowDirectory {
+            let later_parsed_targets_below_directory = later_parsed_pattern
+                .as_targets_below_directory()
+                .expect("TARGETS_BELOW_DIRECTORY");
+            if target_pattern.get_type() == TargetPatternType::TargetsBelowDirectory {
+                let targets_below_directory = target_pattern
+                    .as_targets_below_directory()
+                    .expect("TARGETS_BELOW_DIRECTORY");
+                if later_parsed_targets_below_directory.contains(targets_below_directory)
+                    == Contains::DirectoryExclusionWouldBeExact
+                {
+                    return (None, Vec::new());
+                } else {
+                    match targets_below_directory.contains(later_parsed_targets_below_directory) {
+                        Contains::DirectoryExclusionWouldBeExact => {
+                            let dir = later_parsed_targets_below_directory
+                                .get_directory()
+                                .get_package_fragment()
+                                .clone();
+                            if !excluded_directories.contains(&dir) {
+                                excluded_directories.push(dir);
+                            }
+                        }
+                        Contains::DirectoryExclusionWouldBeTooBroad => {
+                            indices_of_negative_patterns_that_need_to_be_included.push(j);
+                        }
+                        Contains::NotContained => {
+                            // Nothing to do with this pattern.
+                        }
+                    }
+                }
+            }
+        } else if exclude_single_targets
+            && later_parsed_pattern.get_type() == TargetPatternType::SingleTarget
+        {
+            let label = later_parsed_pattern.get_single_target_label().clone();
+            if !excluded_single_targets.contains(&label) {
+                excluded_single_targets.push(label);
+            }
+        } else {
+            indices_of_negative_patterns_that_need_to_be_included.push(j);
+        }
+    }
+    (
+        Some(set_excluded_directories_and_targets(
+            target_pattern_key,
+            excluded_directories,
+            excluded_single_targets,
+        )),
+        indices_of_negative_patterns_that_need_to_be_included,
+    )
 }
 
 // Java: com/google/devtools/build/lib/skyframe/TargetPatternValue.java:249 TargetPatternValue.TargetPatternKey.toString
@@ -347,6 +483,11 @@ impl<'e, 'x> EnvironmentBackedRecursivePackageProvider<'e, 'x> {
     // Java: com/google/devtools/build/lib/skyframe/EnvironmentBackedRecursivePackageProvider.java:76 EnvironmentBackedRecursivePackageProvider.maybeGetNoSuchPackageException
     pub fn maybe_get_no_such_package_exception(&self) -> Option<NoSuchPackageException> {
         self.no_such_package_exception.borrow().clone()
+    }
+
+    /// Runs `f` on the environment (Java code that holds both the provider and its `env`).
+    pub(crate) fn with_env<R>(&self, f: impl FnOnce(&mut Environment<'x>) -> R) -> R {
+        f(&mut self.env.borrow_mut())
     }
 
     fn set_no_such_package_exception_if_unset(&self, e: &NoSuchPackageException) {
@@ -622,7 +763,7 @@ impl RecursivePackageProvider for PackageBackedRecursivePackageProvider {
 }
 
 // Java: com/google/devtools/build/lib/pkgcache/TargetPatternResolverUtil.java:34 TargetPatternResolverUtil.getParsingErrorMessage
-fn get_parsing_error_message(message: &str, original_pattern: Option<&str>) -> String {
+pub(crate) fn get_parsing_error_message(message: &str, original_pattern: Option<&str>) -> String {
     match original_pattern {
         None => message.to_owned(),
         Some(p) => format!("while parsing '{}': {}", p, message),
@@ -630,7 +771,7 @@ fn get_parsing_error_message(message: &str, original_pattern: Option<&str>) -> S
 }
 
 // Java: com/google/devtools/build/lib/pkgcache/TargetPatternResolverUtil.java:42 TargetPatternResolverUtil.resolvePackageTargets
-fn resolve_package_targets(pkg: &Package, policy: &FilteringPolicy) -> Vec<Target> {
+pub(crate) fn resolve_package_targets(pkg: &Package, policy: &FilteringPolicy) -> Vec<Target> {
     if *policy == FilteringPolicy::NoFilter {
         return pkg.get_targets().values().cloned().collect();
     }
@@ -642,7 +783,7 @@ fn resolve_package_targets(pkg: &Package, policy: &FilteringPolicy) -> Vec<Targe
 }
 
 // Java: com/google/devtools/build/lib/pkgcache/TargetPatternResolverUtil.java:54 TargetPatternResolverUtil.getPathFragment
-fn get_path_fragment(path_prefix: &str) -> Result<PathFragment, TargetParsingException> {
+pub(crate) fn get_path_fragment(path_prefix: &str) -> Result<PathFragment, TargetParsingException> {
     let directory = PathFragment::create(path_prefix);
     if directory.contains_uplevel_references() {
         return Err(TargetParsingException::new(

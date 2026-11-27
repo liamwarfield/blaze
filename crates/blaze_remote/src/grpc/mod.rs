@@ -22,6 +22,10 @@ pub mod stubs {
         "/build.bazel.remote.execution.v2.Capabilities.rs"
     ));
     include!(concat!(env!("OUT_DIR"), "/google.bytestream.ByteStream.rs"));
+    include!(concat!(
+        env!("OUT_DIR"),
+        "/build.bazel.remote.asset.v1.Fetch.rs"
+    ));
 }
 
 pub mod channel;

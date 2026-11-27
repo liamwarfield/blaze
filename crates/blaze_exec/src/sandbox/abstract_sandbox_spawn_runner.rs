@@ -299,7 +299,7 @@ impl AbstractSandboxSpawnRunner {
         subprocess_builder.set_argv(sandbox.get_arguments());
         let use_subprocess_timeout = sandbox.use_subprocess_timeout();
         if use_subprocess_timeout {
-            subprocess_builder.set_timeout_millis(timeout.as_millis() as i64);
+            subprocess_builder.set_timeout_millis(timeout.to_millis());
         }
         let start_time = SystemTime::now();
         let start_instant = Instant::now();
@@ -522,8 +522,9 @@ fn get_sandbox_debug_output(sandbox: &dyn SandboxedSpawn) -> io::Result<String> 
 }
 
 // Java: com/google/devtools/build/lib/sandbox/AbstractSandboxSpawnRunner.java:341 AbstractSandboxSpawnRunner.wasTimeout
-fn was_timeout(timeout: Duration, wall_time: Duration) -> bool {
-    !timeout.is_zero() && wall_time > timeout
+fn was_timeout(timeout: blaze_util::java_duration::JavaDuration, wall_time: Duration) -> bool {
+    // wallTime.compareTo(timeout) > 0: a negative timeout is always exceeded.
+    !timeout.is_zero() && blaze_util::java_duration::JavaDuration::from(wall_time) > timeout
 }
 
 // Java: com/google/devtools/build/lib/sandbox/AbstractSandboxSpawnRunner.java:407 AbstractSandboxSpawnRunner.addWritablePath

@@ -69,6 +69,19 @@ fn from_multiset(multiset: &Mutex<IndexMap<&'static str, i32>>) -> Vec<(&'static
 }
 
 impl EvaluationStatsCounters {
+    /// Removes the counts of `function` from every statistic.
+    pub(crate) fn remove_function(&self, function: crate::SkyFunctionName) {
+        for multiset in [
+            &self.dirtied,
+            &self.changed,
+            &self.built,
+            &self.cleaned,
+            &self.evaluated,
+        ] {
+            multiset.lock().shift_remove(function.0);
+        }
+    }
+
     // Java: com/google/devtools/build/skyframe/InMemoryMemoizingEvaluator.java:82 InMemoryMemoizingEvaluator.ProgressReceiver.aggregateAndReset
     pub(crate) fn aggregate_and_reset(&self) -> EvaluationStats {
         EvaluationStats {

@@ -99,7 +99,7 @@ fn create_configuration_proto(
     configuration_value: &BuildConfigurationValue,
     id: u32,
 ) -> analysis::Configuration {
-    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:136 ConfigurationForOutput.getConfigurationForOutput
+    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:138 ConfigurationForOutput.getConfigurationForOutput
     // (the single-argument overload: the fragment definitions are the configuration's own
     // fragments).
     let fragment_defs = FragmentRegistry::create(
@@ -161,7 +161,7 @@ pub struct ProtoOutputFormatterCallback<'a> {
 }
 
 impl<'a> ProtoOutputFormatterCallback<'a> {
-    // Java: com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallback.java:166 ProtoOutputFormatterCallback.<init>
+    // Java: com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallback.java:165 ProtoOutputFormatterCallback.<init>
     pub fn new(
         base: CqueryThreadsafeCallback<'a>,
         resolver: Arc<dyn AspectResolver>,
@@ -188,7 +188,7 @@ impl<'a> ProtoOutputFormatterCallback<'a> {
             .get_configuration(Some(&BuildConfigurationKey::create(options.clone())))
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallback.java:194 ProtoOutputFormatterCallback.queryResultFromCqueryResult
+    // Java: com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallback.java:186 ProtoOutputFormatterCallback.queryResultFromCqueryResult
     fn query_result_from_cquery_result(cquery_result: &analysis::CqueryResult) -> QueryResult {
         let mut query_result = QueryResult::default();
         for ct in &cquery_result.results {
@@ -199,7 +199,7 @@ impl<'a> ProtoOutputFormatterCallback<'a> {
         query_result
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallback.java:244 ProtoOutputFormatterCallback.writeData
+    // Java: com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallback.java:240 ProtoOutputFormatterCallback.writeData
     fn write_data<M: JavaMessage>(&self, message: &M) -> std::io::Result<()> {
         let Some(out) = &self.base.out else {
             return Ok(());
@@ -235,7 +235,7 @@ impl<'a> ProtoOutputFormatterCallback<'a> {
 
     /// `ConfiguredProtoOutputFormatter.addAttributes`: the attribute values of the configured
     /// target (selects resolved).
-    // Java: com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallback.java:349 ConfiguredProtoOutputFormatter.addAttributes
+    // Java: com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallback.java:344 ConfiguredProtoOutputFormatter.addAttributes
     fn add_attributes(
         &self,
         current_target: &CqueryNode,
@@ -308,7 +308,7 @@ fn sort_attributes(attributes: &[Attribute]) -> Vec<&Attribute> {
 }
 
 impl NamedThreadSafeOutputFormatterCallback<CqueryNode> for ProtoOutputFormatterCallback<'_> {
-    // Java: com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallback.java:268 ProtoOutputFormatterCallback.getName
+    // Java: com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallback.java:261 ProtoOutputFormatterCallback.getName
     fn get_name(&self) -> String {
         self.output_type.format_name().to_owned()
     }
@@ -323,13 +323,13 @@ impl Callback<CqueryNode> for ProtoOutputFormatterCallback<'_> {
 }
 
 impl OutputFormatterCallback<CqueryNode> for ProtoOutputFormatterCallback<'_> {
-    // Java: com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallback.java:189 ProtoOutputFormatterCallback.start
+    // Java: com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallback.java:182 ProtoOutputFormatterCallback.start
     fn start(&self) -> Result<(), blaze_query_engine::callback::IoException> {
         *self.cquery_result_builder.borrow_mut() = analysis::CqueryResult::default();
         Ok(())
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallback.java:273 ProtoOutputFormatterCallback.processOutput
+    // Java: com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallback.java:266 ProtoOutputFormatterCallback.processOutput
     fn process_output(&self, partial_result: &[CqueryNode]) -> Result<(), OutputFormatterError> {
         let options = self.base.options;
         let formatter = ProtoOutputFormatter::new(ProtoKind::Proto);
@@ -339,7 +339,7 @@ impl OutputFormatterCallback<CqueryNode> for ProtoOutputFormatterCallback<'_> {
         // includeSyntheticAttributeHash: cquery ignores --proto:include_synthetic_attribute_hash
         // (scripts/w4/scenarios/query-errors). The base add_attributes still runs here (see
         // below), so the flag is cleared for it.
-        // Java: com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallback.java:343 ConfiguredProtoOutputFormatter.addAttributes
+        // Java: com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallback.java:344 ConfiguredProtoOutputFormatter.addAttributes
         formatter_options.proto_include_synthetic_attribute_hash = false;
         formatter.set_options(
             &formatter_options,
@@ -488,7 +488,7 @@ impl OutputFormatterCallback<CqueryNode> for ProtoOutputFormatterCallback<'_> {
         Ok(())
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallback.java:202 ProtoOutputFormatterCallback.close
+    // Java: com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallback.java:193 ProtoOutputFormatterCallback.close
     fn close(&self, fail_fast: bool) -> Result<(), OutputFormatterError> {
         if fail_fast || self.base.out.is_none() {
             return Ok(());

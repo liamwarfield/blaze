@@ -289,14 +289,15 @@ pub trait FileSystem: std::any::Any + Send + Sync + fmt::Debug {
     /// The metadata the stat of `path` carries (Java: `stat` returns a `FileStatusWithMetadata`),
     /// or `None` for a plain stat. A file system whose files are remote (the in-memory part of
     /// the remote repo contents cache's overlay) returns their remote metadata.
+    ///
+    /// No default: a file system that wraps another forwards it, so that the remote metadata of
+    /// a wrapped file is never dropped (the file would then be treated as local).
     // Java: com/google/devtools/build/lib/actions/FileStatusWithMetadata.java:25 FileStatusWithMetadata
     fn stat_metadata(
         &self,
-        _path: &PathFragment,
-        _follow_symlinks: bool,
-    ) -> io::Result<Option<std::sync::Arc<dyn crate::file_status::StatMetadata>>> {
-        Ok(None)
-    }
+        path: &PathFragment,
+        follow_symlinks: bool,
+    ) -> io::Result<Option<std::sync::Arc<dyn crate::file_status::StatMetadata>>>;
 
     /// Like `stat`, but returns `None` on failures.
     // Java: com/google/devtools/build/lib/vfs/FileSystem.java:471 FileSystem.statNullable

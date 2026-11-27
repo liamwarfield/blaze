@@ -39,6 +39,8 @@ blaze_actions = { path = "../blaze_actions" }
 blaze_analysis = { path = "../blaze_analysis" }
 blaze_rules = { path = "../blaze_rules" }
 blaze_cmdline = { path = "../blaze_cmdline" }
+# Extrema (ExtremaPackageMetricsRecorder).
+blaze_collect = { path = "../blaze_collect" }
 # lib/server (decision D3): GrpcServerImpl, CommandDispatcher, BlazeCommandResult.
 blaze_server = { path = "../blaze_server" }
 # FileSystemLock (BlazeRuntime.newRuntime's install base lock).

@@ -120,6 +120,7 @@ pub struct ProfilerStartedEvent {
 }
 
 impl ProfilerStartedEvent {
+    // Java: com/google/devtools/build/lib/buildtool/buildevent/ProfilerStartedEvent.java:29 ProfilerStartedEvent.getProfile
     pub fn get_profile(&self) -> Option<&Arc<LocalInstrumentationOutput>> {
         self.profile.as_ref()
     }

@@ -40,17 +40,23 @@ impl ExecutableAction for ExtraAction {
     // Java: com/google/devtools/build/lib/analysis/extra/ExtraAction.java:158 ExtraAction.discoverInputs
     fn discover_inputs(
         &self,
-        _action_execution_context: &dyn ActionExecutionContext,
+        action_execution_context: &dyn ActionExecutionContext,
     ) -> Result<Option<NestedSet<Artifact>>, ActionExecutionException> {
         blaze_util::check_state!(self.discovers_inputs(), "{}", self.to_string_java());
 
         // We need to update our inputs to take account of any additional
         // inputs the shadowed action may need to do its work.
         let old_inputs = self.get_inputs();
-        let Some(input_files_for_extra_action) = self
-            .get_shadowed_action()
-            .get_input_files_for_extra_action()
-        else {
+        // getShadowedAction().getInputFilesForExtraAction(actionExecutionContext): through the
+        // shadowed action's ExecutableAction where it has one (the context-taking form).
+        let shadowed_action = self.get_shadowed_action();
+        let input_files_for_extra_action =
+            match blaze_exec::actions::as_executable(shadowed_action.as_ref()) {
+                Some(executable) => executable
+                    .get_input_files_for_extra_action_with_context(action_execution_context)?,
+                None => shadowed_action.get_input_files_for_extra_action(),
+            };
+        let Some(input_files_for_extra_action) = input_files_for_extra_action else {
             return Ok(None);
         };
         self.update_inputs(create_inputs(

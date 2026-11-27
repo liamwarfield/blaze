@@ -76,6 +76,7 @@ impl fmt::Debug for ModuleExtensionRepoMappingEntriesKey {
 
 impl Key for ModuleExtensionRepoMappingEntriesKey {
     type Value = ModuleExtensionRepoMappingEntriesValue;
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionRepoMappingEntriesValue.java:74 ModuleExtensionRepoMappingEntriesValue.Key.functionName
     const FUNCTION: SkyFunctionName = MODULE_EXTENSION_REPO_MAPPING_ENTRIES;
     // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:181 SkyFunctions.MODULE_EXTENSION_REPO_MAPPING_ENTRIES (createHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;

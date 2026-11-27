@@ -13,6 +13,7 @@ blaze_vfs = { path = "../blaze_vfs" }
 blaze_skyframe = { path = "../blaze_skyframe" }
 blaze_events = { path = "../blaze_events" }
 blaze_starlark = { path = "../blaze_starlark" }
+blaze_starlarkdocextract = { path = "../blaze_starlarkdocextract" }
 blaze_collect = { path = "../blaze_collect" }
 blaze_packages = { path = "../blaze_packages" }
 blaze_config = { path = "../blaze_config" }

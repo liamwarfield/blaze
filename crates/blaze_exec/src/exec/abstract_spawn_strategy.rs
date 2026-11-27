@@ -320,7 +320,7 @@ struct SpawnExecutionContextImpl<'a> {
     spawn: &'a dyn Spawn,
     action_execution_context: &'a dyn ActionExecutionContext,
     stop_concurrent_spawns: Option<&'a dyn StopConcurrentSpawns>,
-    timeout: Duration,
+    timeout: blaze_util::java_duration::JavaDuration,
     id: i32,
     spawn_input_expander: &'a SpawnInputExpander,
     // Memoize the input mapping so that prefetchInputs can reuse it instead of recomputing it.
@@ -404,7 +404,7 @@ impl SpawnExecutionContext for SpawnExecutionContextImpl<'_> {
         self.stop_concurrent_spawns.is_some()
     }
 
-    fn get_timeout(&self) -> Duration {
+    fn get_timeout(&self) -> blaze_util::java_duration::JavaDuration {
         self.timeout
     }
 

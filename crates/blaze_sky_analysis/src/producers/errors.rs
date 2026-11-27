@@ -73,7 +73,14 @@ pub fn configuration_id_of_key(key: Option<&BuildConfigurationKey>) -> Option<St
 
 /// A root cause of an analysis failure (Java `Cause`: `AnalysisFailedCause`,
 /// `LoadingFailedCause`).
+///
+/// `equals` and `hashCode` compare the fields, as the derives do; `toString` (a
+/// `MoreObjects.toStringHelper` for debugging) is the `Debug` derive.
 // Java: com/google/devtools/build/lib/causes/Cause.java:24 Cause
+// Java: com/google/devtools/build/lib/causes/AnalysisFailedCause.java:70 AnalysisFailedCause.equals
+// Java: com/google/devtools/build/lib/causes/AnalysisFailedCause.java:83 AnalysisFailedCause.hashCode
+// Java: com/google/devtools/build/lib/causes/LabelCause.java:64 LabelCause.equals
+// PORT: skipped, debugging text (the Debug derive stands for it): AnalysisFailedCause.toString, LabelCause.toString
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Cause {
     // Java: com/google/devtools/build/lib/causes/AnalysisFailedCause.java:30 AnalysisFailedCause
@@ -96,6 +103,8 @@ pub enum Cause {
 }
 
 impl Cause {
+    // Java: com/google/devtools/build/lib/causes/AnalysisFailedCause.java:54 AnalysisFailedCause.getLabel
+    // Java: com/google/devtools/build/lib/causes/LabelCause.java:40 LabelCause.getLabel
     pub fn get_label(&self) -> &Label {
         match self {
             Cause::AnalysisFailed { label, .. }
@@ -104,6 +113,8 @@ impl Cause {
         }
     }
 
+    // Java: com/google/devtools/build/lib/causes/AnalysisFailedCause.java:65 AnalysisFailedCause.getDetailedExitCode
+    // Java: com/google/devtools/build/lib/causes/LabelCause.java:45 LabelCause.getDetailedExitCode
     pub fn get_detailed_exit_code(&self) -> &DetailedExitCode {
         match self {
             Cause::AnalysisFailed {

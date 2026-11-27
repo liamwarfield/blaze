@@ -19,3 +19,4 @@ pub mod common;
 pub mod compat;
 pub mod pkgcache;
 pub mod query;
+pub mod sky_query;

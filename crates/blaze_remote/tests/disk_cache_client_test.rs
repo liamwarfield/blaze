@@ -236,6 +236,13 @@ impl FileSystem for DeleteOnMtimeUpdateFileSystem {
     fn stat(&self, path: &PathFragment, follow_symlinks: bool) -> io::Result<FileStatus> {
         self.inner.stat(path, follow_symlinks)
     }
+    fn stat_metadata(
+        &self,
+        path: &PathFragment,
+        follow_symlinks: bool,
+    ) -> io::Result<Option<std::sync::Arc<dyn blaze_vfs::StatMetadata>>> {
+        self.inner.stat_metadata(path, follow_symlinks)
+    }
     fn stat_if_found(
         &self,
         path: &PathFragment,
@@ -362,21 +369,47 @@ fn to_path_for_ac_for_old_style_hash_function() {
 }
 
 #[test]
-#[ignore = "needs BLAKE3: blaze_vfs::DigestHashFunction has only Sha256 (BazelHashFunctions.BLAKE3 is not ported)"]
 fn to_path_for_cas_for_new_style_hash_function() {
-    // Java builds `new DiskCacheClient(root, new DigestUtil(NO_CACHE, BazelHashFunctions.BLAKE3),
-    // true)` and expects `client.toPath(digest, Store.CAS)` to be
-    // `root.getRelative("blake3/cas/01/0123456789abcdef")`.
-    unimplemented!("DigestHashFunction::Blake3");
+    let f = Fixture::new();
+    let client = DiskCacheClient::new(
+        f.root.clone(),
+        &DigestUtil::new(DigestHashFunction::Blake3),
+        /* check_action_result_integrity= */ true,
+    )
+    .unwrap();
+    let digest = Digest {
+        hash: "0123456789abcdef".to_string(),
+        size_bytes: 42,
+    };
+
+    let path = client.to_path(&digest, Store::Cas);
+
+    assert_eq!(
+        path,
+        f.root.get_relative_str("blake3/cas/01/0123456789abcdef")
+    );
 }
 
 #[test]
-#[ignore = "needs BLAKE3: blaze_vfs::DigestHashFunction has only Sha256 (BazelHashFunctions.BLAKE3 is not ported)"]
 fn to_path_for_ac_for_new_style_hash_function() {
-    // Java builds `new DiskCacheClient(root, new DigestUtil(NO_CACHE, BazelHashFunctions.BLAKE3),
-    // true)` and expects `client.toPath(digest, Store.AC)` to be
-    // `root.getRelative("blake3/ac/01/0123456789abcdef")`.
-    unimplemented!("DigestHashFunction::Blake3");
+    let f = Fixture::new();
+    let client = DiskCacheClient::new(
+        f.root.clone(),
+        &DigestUtil::new(DigestHashFunction::Blake3),
+        /* check_action_result_integrity= */ true,
+    )
+    .unwrap();
+    let digest = Digest {
+        hash: "0123456789abcdef".to_string(),
+        size_bytes: 42,
+    };
+
+    let path = client.to_path(&digest, Store::Ac);
+
+    assert_eq!(
+        path,
+        f.root.get_relative_str("blake3/ac/01/0123456789abcdef")
+    );
 }
 
 #[test]

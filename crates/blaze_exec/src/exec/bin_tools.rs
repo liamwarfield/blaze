@@ -8,7 +8,6 @@ use std::sync::Mutex;
 
 use blaze_vfs::{DirentType, Path, PathFragment, Symlinks};
 use indexmap::IndexMap;
-use sha2::Digest;
 
 use crate::actions::{
     ActionInput, ActionInputRef, FileArtifactValue, VirtualActionInput,
@@ -192,11 +191,15 @@ impl VirtualActionInput for PathActionInput {
 
     // Java: com/google/devtools/build/lib/exec/BinTools.java:183 BinTools.PathActionInput.getMetadata
     // Java: com/google/devtools/build/lib/exec/BinTools.java:223 BinTools.PathActionInput.hash
-    // (inlined; the file system's digest function is SHA-256, the only one Blaze has)
+    // (inlined: the hasher of the path's file system's digest function)
     fn get_metadata(&self) -> io::Result<Option<FileArtifactValue>> {
         let mut state = self.state.lock().unwrap();
         if state.0.is_none() {
-            let mut hasher = sha2::Sha256::new();
+            let mut hasher = self
+                .path
+                .get_file_system()
+                .get_digest_function()
+                .new_hasher();
             let mut bytes_copied: i64 = 0;
             let mut input = self.path.get_input_stream()?;
             let mut buffer = [0u8; 1024];
@@ -209,7 +212,7 @@ impl VirtualActionInput for PathActionInput {
                 bytes_copied += len as i64;
             }
             state.0 = Some(FileArtifactValue::create_for_virtual_action_input(
-                hasher.finalize().to_vec(),
+                hasher.finish(),
                 bytes_copied,
             ));
         }

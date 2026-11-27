@@ -133,12 +133,7 @@ fn tree_artifact_is_dirty(artifact: &Artifact, value: &TreeArtifactValue) -> boo
         return true;
     }
 
-    let is_entirely_remote = !value.child_values.is_empty()
-        && value
-            .child_values
-            .iter()
-            .all(|(_, metadata)| metadata.is_remote());
-    if current_local_children.is_empty() && is_entirely_remote {
+    if current_local_children.is_empty() && value.is_entirely_remote() {
         return false;
     }
 

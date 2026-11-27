@@ -298,7 +298,13 @@ pub fn hash_with(key_type: KeyType, content: &[u8]) -> Vec<u8> {
         KeyType::Sha256 => Sha256::digest(content).to_vec(),
         KeyType::Sha384 => sha2::Sha384::digest(content).to_vec(),
         KeyType::Sha512 => sha2::Sha512::digest(content).to_vec(),
-        KeyType::Sha1 => blaze_util::unported!("Hashing.sha1"),
-        KeyType::Blake3 => blaze_util::unported!("Blake3HashFunction"),
+        // Hashing.sha1()
+        KeyType::Sha1 => {
+            use sha1::Digest as _;
+            sha1::Sha1::digest(content).to_vec()
+        }
+        // Blake3HashFunction: 256-bit (OUT_LEN 32) unkeyed BLAKE3.
+        // Java: com/google/devtools/build/lib/vfs/bazel/Blake3HashFunction.java:31 Blake3HashFunction.bits
+        KeyType::Blake3 => blake3::hash(content).as_bytes().to_vec(),
     }
 }

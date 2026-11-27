@@ -115,6 +115,8 @@ action_filter_function!(
     ///
     /// `expr ::= INPUTS '(' WORD ',' expr ')'`
     // Java: com/google/devtools/build/lib/query2/engine/InputsFunction.java:34 InputsFunction
+    // Java: com/google/devtools/build/lib/query2/engine/InputsFunction.java:38 InputsFunction.getName
+    // Java: com/google/devtools/build/lib/query2/engine/InputsFunction.java:43 InputsFunction.getArgumentTypes
     InputsFunction,
     INPUTS,
     "inputs",
@@ -128,6 +130,8 @@ action_filter_function!(
     ///
     /// `expr ::= OUTPUTS '(' WORD ',' expr ')'`
     // Java: com/google/devtools/build/lib/query2/engine/OutputsFunction.java:34 OutputsFunction
+    // Java: com/google/devtools/build/lib/query2/engine/OutputsFunction.java:38 OutputsFunction.getName
+    // Java: com/google/devtools/build/lib/query2/engine/OutputsFunction.java:43 OutputsFunction.getArgumentTypes
     OutputsFunction,
     OUTPUTS,
     "outputs",
@@ -141,6 +145,8 @@ action_filter_function!(
     ///
     /// `expr ::= MNEMONIC '(' WORD ',' expr ')'`
     // Java: com/google/devtools/build/lib/query2/engine/MnemonicFunction.java:35 MnemonicFunction
+    // Java: com/google/devtools/build/lib/query2/engine/MnemonicFunction.java:39 MnemonicFunction.getName
+    // Java: com/google/devtools/build/lib/query2/engine/MnemonicFunction.java:44 MnemonicFunction.getArgumentTypes
     MnemonicFunction,
     MNEMONIC,
     "mnemonic",

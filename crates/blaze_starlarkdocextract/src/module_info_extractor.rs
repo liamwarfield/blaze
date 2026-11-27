@@ -213,8 +213,6 @@ impl<'p> ModuleInfoExtractor<'p> {
 /// structs.
 // Java: com/google/devtools/build/lib/starlarkdocextract/ModuleInfoExtractor.java:197 ModuleInfoExtractor.GlobalsVisitor
 trait GlobalsVisitor {
-    fn filename(&self) -> Option<&str>;
-
     /// Returns whether the visitor should visit (and possibly recurse into) the value with the
     /// given qualified name.
     fn should_visit(&self, qualified_name: &str) -> bool;
@@ -419,10 +417,6 @@ struct ProviderQualifiedNameCollector {
 }
 
 impl GlobalsVisitor for ProviderQualifiedNameCollector {
-    fn filename(&self) -> Option<&str> {
-        None
-    }
-
     /// Returns true always: a non-wanted provider symbol may still be referred to by a wanted
     /// rule.
     // Java: com/google/devtools/build/lib/starlarkdocextract/ModuleInfoExtractor.java:363 ProviderQualifiedNameCollector.shouldVisit
@@ -482,10 +476,6 @@ impl DocumentationExtractor<'_, '_> {
 }
 
 impl GlobalsVisitor for DocumentationExtractor<'_, '_> {
-    fn filename(&self) -> Option<&str> {
-        self.filename.as_deref()
-    }
-
     // Java: com/google/devtools/build/lib/starlarkdocextract/ModuleInfoExtractor.java:416 DocumentationExtractor.shouldVisit
     fn should_visit(&self, qualified_name: &str) -> bool {
         (self.is_wanted_qualified_name)(qualified_name)

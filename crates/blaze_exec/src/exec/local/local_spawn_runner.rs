@@ -406,7 +406,7 @@ impl<'a> SubprocessHandler<'a> {
             statistics_path = Some(stats);
             args = command_line_builder.build();
         } else {
-            subprocess_builder.set_timeout_millis(context.get_timeout().as_millis() as i64);
+            subprocess_builder.set_timeout_millis(context.get_timeout().to_millis());
             args = spawn.get_arguments().to_vec();
         }
         // SubprocessBuilder does not accept relative paths for the first argument, even though
@@ -513,8 +513,9 @@ impl<'a> SubprocessHandler<'a> {
     }
 
     // Java: com/google/devtools/build/lib/exec/local/LocalSpawnRunner.java:486 LocalSpawnRunner.SubprocessHandler.wasTimeout
-    fn was_timeout(timeout: Duration, wall_time: Duration) -> bool {
-        !timeout.is_zero() && wall_time > timeout
+    fn was_timeout(timeout: blaze_util::java_duration::JavaDuration, wall_time: Duration) -> bool {
+        // wallTime.compareTo(timeout) > 0: a negative timeout is always exceeded.
+        !timeout.is_zero() && blaze_util::java_duration::JavaDuration::from(wall_time) > timeout
     }
 
     /// Clean up any known side-effects that the running spawn may have had on the output tree.

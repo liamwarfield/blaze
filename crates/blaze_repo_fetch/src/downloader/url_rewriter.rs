@@ -321,19 +321,23 @@ impl UrlRewriterConfig {
         Ok(())
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/UrlRewriterConfig.java:205 UrlRewriterConfig.getAllowList
     pub fn get_allow_list(&self) -> &IndexSet<String> {
         &self.allow_list
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/UrlRewriterConfig.java:210 UrlRewriterConfig.getBlockList
     pub fn get_block_list(&self) -> &IndexSet<String> {
         &self.block_list
     }
 
     /// Patterns (matching everything in the URL after the scheme) with their replacements.
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/UrlRewriterConfig.java:218 UrlRewriterConfig.getRewrites
     pub fn get_rewrites(&self) -> &[(RewritePattern, Vec<String>)] {
         &self.rewrites
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/UrlRewriterConfig.java:222 UrlRewriterConfig.getAllBlockedMessage
     pub fn get_all_blocked_message(&self) -> Option<&str> {
         self.all_blocked_message.as_deref()
     }

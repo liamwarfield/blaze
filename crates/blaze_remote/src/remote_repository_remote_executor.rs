@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::sync::Arc;
-use std::time::Duration;
+use blaze_util::java_duration::JavaDuration;
 
 use blaze_optdefs::fragment::fragment_options::java_string_compare;
 use blaze_protos::JavaMessage;
@@ -117,7 +117,7 @@ impl RepositoryRemoteExecutor for RemoteRepositoryRemoteExecutor {
         execution_properties: &IndexMap<String, String>,
         environment: &IndexMap<String, String>,
         working_directory: Option<&str>,
-        timeout: Duration,
+        timeout: JavaDuration,
     ) -> io::Result<ExecutionResult> {
         let metadata = tracing_metadata_utils::build_metadata(
             &self.build_request_id,

@@ -372,6 +372,14 @@ impl FileSystem for UnixFileSystem {
     // Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:104 NativePosixFiles.stat
     // Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:106 NativePosixFiles.lstat
     // Java: com/google/devtools/build/lib/unix/NativePosixFiles.java:118 NativePosixFiles.lstat
+    /// A plain stat: no file here is remote.
+    fn stat_metadata(
+        &self,
+        _path: &PathFragment,
+        _follow_symlinks: bool,
+    ) -> io::Result<Option<std::sync::Arc<dyn crate::StatMetadata>>> {
+        Ok(None)
+    }
     fn stat(&self, path: &PathFragment, follow_symlinks: bool) -> io::Result<FileStatus> {
         let name = path.get_path_string();
         let start_time = Profiler::nano_time_maybe();

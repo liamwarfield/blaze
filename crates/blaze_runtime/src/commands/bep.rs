@@ -64,8 +64,8 @@ use blaze_bep::events::target_complete_event::{
 };
 use blaze_bep::metrics::metrics_collector::{
     AnalysisPhaseCompleteInfo, BuildMetricsFinishInputs, JvmMemoryFacts, MetricsCollector,
-    RemoteAnalysisCachingFacts, SkyframeStats, TotalAndConfiguredTargetOnlyMetric,
-    WorkerProcessMetricsInfo,
+    PackageMetricsRecorderSnapshot, RemoteAnalysisCachingFacts, SkyframeStats,
+    TotalAndConfiguredTargetOnlyMetric, WorkerProcessMetricsInfo,
 };
 use blaze_bep::runtime::BuildEventArtifactUploaderFactoryMap;
 use blaze_bep::runtime::ReleaseReplaceableBuildEvent;
@@ -109,7 +109,6 @@ use blaze_optdefs::misc::build_event_protocol_options::BuildEventProtocolOptions
 use blaze_optdefs::misc::build_event_service_options::{BesUploadMode, BuildEventServiceOptions};
 use blaze_optdefs::misc::build_event_stream_options::BuildEventStreamOptions;
 use blaze_optdefs::misc::metrics_module::MetricsModuleOptions;
-use blaze_optdefs::misc::package_metrics_module::PackageMetricsModuleOptions;
 use blaze_packages::attribute::{AttributeMap, RawAttributeMapper};
 use blaze_packages::target::Target;
 use blaze_packages::target::target_utils;
@@ -929,7 +928,6 @@ pub struct BepCommandSupport {
     exec_root: Path,
     /// `BuildTool.shouldStopOnFailure(request)` (`None` for a command without `ExecutionOptions`).
     stop_on_first_failure: Option<bool>,
-    publish_package_metrics_in_bep: bool,
     /// The uploader factory map of the file transports with path conversion.
     uploader_factory_map: Arc<DeferredUploaderFactory>,
     /// The UI's subscriber on the event bus: `reporter.post` of `AnnounceBuildEventTransportsEvent`
@@ -1305,6 +1303,15 @@ fn create_abrupt_exit_exception(
     }))
 }
 
+// Events of Bazel that no module of Bazel subscribes to are not posted:
+// PORT: skipped, no subscriber in Bazel: UpdateOptionsEvent.<init>, UpdateOptionsEvent.getOptions
+// PORT: skipped, no subscriber in Bazel: StartingAqueryDumpAfterBuildEvent.<init>, StartingAqueryDumpAfterBuildEvent.getStreamingContext
+// PORT: skipped, no subscriber in Bazel: StartingAqueryDumpAfterBuildEvent.getLocalAqueryDumpPath, StartingAqueryDumpAfterBuildEvent.getAqueryDumpName
+// The ExecutionStartingEvent of the non-merged ExecutionTool reaches its subscribers
+// (MetricsCollector.logExecutionStartingEvent, BuildSummaryStatsModule.executionPhaseStarting)
+// as direct calls (blaze_buildtool execution_tool.rs).
+// PORT: skipped, direct calls to the subscribers: ExecutionStartingEvent.<init>, ExecutionStartingEvent.getTargets
+
 /// `e.getMessage()` of the `ExecutionException` whose cause is the `TimeoutException` of
 /// `Futures.withTimeout`.
 ///
@@ -1324,11 +1331,19 @@ enum TimedOutcome {
 /// A transport's close (or half-close) future with the timeout of the transport attached
 /// (`constructCloseFuturesMapWithTimeouts`): `Futures.withTimeout(nonCancellationPropagating(
 /// closeFuture), transport.getTimeout())`, whose `cancel` cancels the close future itself.
+///
+/// `Futures.withTimeout` fails the returned future with a `TimeoutException` when its timer fires
+/// before the close future is done, and that failure stays, whatever the close future does
+/// later: `timed_out` latches it. Its timer is a thread that waits for the close future until
+/// the deadline (Java: a single-thread scheduled executor per transport,
+/// `bes-close-<name>-%d`).
 #[derive(Clone)]
 struct TimedCloseFuture {
     future: blaze_bep::buildeventstream::transport::CloseFuture,
     /// `None` for a zero (or negative) timeout.
     deadline: Option<std::time::Instant>,
+    /// The timer fired while the close future was pending.
+    timed_out: Arc<AtomicBool>,
 }
 
 impl TimedCloseFuture {
@@ -1336,15 +1351,35 @@ impl TimedCloseFuture {
     fn new(
         future: blaze_bep::buildeventstream::transport::CloseFuture,
         timeout: std::time::Duration,
+        name: &str,
     ) -> TimedCloseFuture {
+        let deadline = (!timeout.is_zero()).then(|| std::time::Instant::now() + timeout);
+        let timed_out = Arc::new(AtomicBool::new(false));
+        if deadline.is_some() && !future.is_done() {
+            let timer_future = future.clone();
+            let timer_flag = timed_out.clone();
+            let _ = std::thread::Builder::new()
+                .name(format!("bes-close-{name}-0"))
+                .spawn(move || {
+                    if let blaze_bep::buildeventstream::transport::CloseOutcome::TimedOut =
+                        timer_future.get_outcome(Some(timeout))
+                    {
+                        timer_flag.store(true, Ordering::SeqCst);
+                    }
+                });
+        }
         TimedCloseFuture {
             future,
-            deadline: (!timeout.is_zero()).then(|| std::time::Instant::now() + timeout),
+            deadline,
+            timed_out,
         }
     }
 
     fn outcome(&self, wait_until: Option<std::time::Instant>) -> Option<TimedOutcome> {
         use blaze_bep::buildeventstream::transport::CloseOutcome;
+        if self.timed_out.load(Ordering::SeqCst) {
+            return Some(TimedOutcome::TimedOut);
+        }
         // The earlier of the caller's wait and the timeout.
         let until = match (wait_until, self.deadline) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -1352,10 +1387,14 @@ impl TimedCloseFuture {
         };
         let timeout = until.map(|u| u.saturating_duration_since(std::time::Instant::now()));
         match self.future.get_outcome(timeout) {
+            // A close that completes after the timer fired is still a timeout.
+            _ if self.timed_out.load(Ordering::SeqCst) => Some(TimedOutcome::TimedOut),
             CloseOutcome::Done(result) => Some(TimedOutcome::Done(result)),
             CloseOutcome::Cancelled => Some(TimedOutcome::Cancelled),
             CloseOutcome::TimedOut => match self.deadline {
                 Some(deadline) if std::time::Instant::now() >= deadline => {
+                    // The timer fires at the deadline.
+                    self.timed_out.store(true, Ordering::SeqCst);
                     Some(TimedOutcome::TimedOut)
                 }
                 _ => None,
@@ -1366,11 +1405,6 @@ impl TimedCloseFuture {
     /// Whether the future is done, without waiting (`None`: still pending).
     fn poll(&self) -> Option<TimedOutcome> {
         self.outcome(Some(std::time::Instant::now()))
-    }
-
-    /// Waits until the future is done, it times out, or `until` passes (`None`).
-    fn wait(&self, until: Option<std::time::Instant>) -> Option<TimedOutcome> {
-        self.outcome(until)
     }
 
     /// `cancel(true)`: cancels the close future.
@@ -1398,11 +1432,12 @@ impl PendingUpload {
         half_close: blaze_bep::buildeventstream::transport::CloseFuture,
     ) -> PendingUpload {
         let timeout = transport.get_timeout();
+        let name = transport.name();
         PendingUpload {
             transport,
             id,
-            close: TimedCloseFuture::new(close, timeout),
-            half_close: TimedCloseFuture::new(half_close, timeout),
+            close: TimedCloseFuture::new(close, timeout, &name),
+            half_close: TimedCloseFuture::new(half_close, timeout, &name),
         }
     }
 
@@ -1436,6 +1471,97 @@ fn remove_from_pending_uploads(uploads: &[PendingUpload]) {
         .retain(|pending| !uploads.iter().any(|u| u.same_transport(pending)));
 }
 
+/// The part of `closeBepTransports` after the close futures are known: they become the pending
+/// uploads; the blocking ones are waited for, the UI is told at once of the others.
+// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:637 BuildEventServiceModule.closeBepTransports
+fn close_pending_uploads(
+    pending: Vec<PendingUpload>,
+    notify: &dyn Fn(Option<&TransportId>),
+) -> Result<(), AbruptExitException> {
+    *PENDING_UPLOADS.lock() = pending.clone();
+    let mut blocking = Vec::new();
+    for upload in pending {
+        let bes_upload_mode_is_synchronous =
+            upload.transport.get_bes_upload_mode() == BesUploadMode::WAIT_FOR_UPLOAD_COMPLETE;
+        if !upload.transport.may_be_slow() || bes_upload_mode_is_synchronous {
+            blocking.push(upload);
+        } else {
+            // When running asynchronously notify the UI immediately since we won't wait for the
+            // uploads to close.
+            notify(upload.id.as_ref());
+        }
+    }
+    if !blocking.is_empty() {
+        wait_for_build_event_transports_to_close(&blocking, notify)?;
+    }
+    Ok(())
+}
+
+/// Waits for `uploads` to close: the UI is told of each one as it finishes; a timed-out
+/// upload fails with `BES_UPLOAD_TIMEOUT_ERROR`, a failed one with its own failure (the
+/// first to fail, as `Futures.allAsList` does). The waited futures are cancelled and removed
+/// from the pending uploads afterwards (`removeFromPendingUploads`).
+///
+/// PORT: Java's listeners notify the UI from a `bes-notify-ui` thread as each future
+/// completes; here the waiting thread polls the futures (every 10 ms) and notifies. A
+/// cancelled upload ends the wait (`CancellationException`), as in Java.
+// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:533 BuildEventServiceModule.waitForBuildEventTransportsToClose
+fn wait_for_build_event_transports_to_close(
+    uploads: &[PendingUpload],
+    notify: &dyn Fn(Option<&TransportId>),
+) -> Result<(), AbruptExitException> {
+    let mut notified = vec![false; uploads.len()];
+    let result = loop {
+        let mut all_done = true;
+        let mut outcome = None;
+        for (index, upload) in uploads.iter().enumerate() {
+            match upload.close.poll() {
+                None => all_done = false,
+                Some(result) => {
+                    if !notified[index] {
+                        notified[index] = true;
+                        notify(upload.id.as_ref());
+                    }
+                    match result {
+                        TimedOutcome::Done(Ok(())) => {}
+                        other => {
+                            outcome = Some(other);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(outcome) = outcome {
+            break match outcome {
+                // catch (CancellationException e): expected if the upload needs to be
+                // cancelled for some reason, e.g. an error interrupting the build.
+                TimedOutcome::Cancelled => Ok(()),
+                // Futures.withTimeout wraps the TimeoutException in an ExecutionException
+                // when the future times out (isTimeoutException).
+                // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:233 BuildEventServiceModule.isTimeoutException
+                TimedOutcome::TimedOut => Err(create_abrupt_exit_exception(
+                    TIMEOUT_EXCEPTION_MESSAGE,
+                    "The Build Event Protocol upload timed out.",
+                    failure_details::build_progress::Code::BesUploadTimeoutError,
+                )),
+                // Throwables.throwIfInstanceOf(e.getCause(), AbruptExitException.class)
+                TimedOutcome::Done(Err(e)) => Err(transport_close_exception(&e)),
+                TimedOutcome::Done(Ok(())) => unreachable!(),
+            };
+        }
+        if all_done {
+            // PORT: BuildEventServiceUploadCompleteEvent (the time the wait took) has no
+            // subscriber in Bazel; it is not posted.
+            break Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    // finally: removeFromPendingUploads(transportFutures)
+    remove_from_pending_uploads(uploads);
+    result
+}
+
 /// `blazeShutdown()`: waits (at most `getMaxWaitForPreviousInvocation()`, five seconds) for the
 /// uploads the last command left running, then cancels what is left. A failure or a timeout is
 /// only logged by Java (logging is not ported).
@@ -1448,7 +1574,7 @@ pub(crate) fn blaze_shutdown_pending_uploads() {
     }
     // Uninterruptibles.getUninterruptibly(Futures.allAsList(...), 5, SECONDS): the first failure
     // ends the wait.
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = std::time::Instant::now() + max_wait_for_previous_invocation();
     'wait: loop {
         let mut all_done = true;
         for upload in &pending {
@@ -1504,8 +1630,7 @@ pub(crate) fn wait_for_previous_invocation(reporter: &dyn EventHandler, is_shutd
         .collect();
 
     let started = std::time::Instant::now();
-    // getMaxWaitForPreviousInvocation()
-    let until = started + std::time::Duration::from_secs(5);
+    let until = started + max_wait_for_previous_invocation();
     // Uninterruptibles.getUninterruptibly(Futures.allAsList(...), 5s): the first failure ends
     // the wait.
     let mut failure: Option<TimedOutcome> = None;
@@ -1577,7 +1702,23 @@ pub(crate) fn wait_for_previous_invocation(reporter: &dyn EventHandler, is_shutd
     for upload in &cancel_close_futures {
         upload.close.cancel();
     }
-    // resetPendingUploads()
+    reset_pending_uploads();
+}
+
+/// Maximum duration Bazel waits for the previous invocation to finish before cancelling it.
+// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:175 BuildEventServiceModule.getMaxWaitForPreviousInvocation
+fn max_wait_for_previous_invocation() -> std::time::Duration {
+    // BazelBuildEventServiceModuleTest overrides the method (WAIT_FOR_LAST_INVOCATION_TIMEOUT).
+    #[cfg(test)]
+    if let Some(wait) = bes_module_tests::MAX_WAIT_FOR_PREVIOUS_INVOCATION.with(|w| w.get()) {
+        return wait;
+    }
+    std::time::Duration::from_secs(5)
+}
+
+/// Resets the maps tracking the state of closing/half-closing BES transports.
+// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:204 BuildEventServiceModule.resetPendingUploads
+fn reset_pending_uploads() {
     PENDING_UPLOADS.lock().clear();
 }
 
@@ -1748,9 +1889,6 @@ impl BepCommandSupport {
         // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:133 MetricsCollector.<init>
         blaze_exec::worker::worker_process_metrics::WorkerProcessMetricsCollector::instance()
             .set_clock(clock.clone());
-        let publish_package_metrics_in_bep = parsing_result
-            .get_options::<PackageMetricsModuleOptions>()
-            .is_some_and(|o| o.publish_package_metrics_in_bep);
 
         let shared = Arc::new(Shared {
             streamer,
@@ -1794,7 +1932,6 @@ impl BepCommandSupport {
             // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1127 BuildTool.shouldStopOnFailure
             stop_on_first_failure: test_keep_going
                 .map(|test_keep_going| !(keep_going && test_keep_going)),
-            publish_package_metrics_in_bep,
             uploader_factory_map,
             output_listener,
             precompleted: AtomicBool::new(false),
@@ -1947,6 +2084,9 @@ impl BepCommandSupport {
         // first point after the replay where the UI's subscriber is known.
         // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:581 BlazeCommandDispatcher.execExclusively
         // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:442 BuildEventServiceModule.beforeCommand
+        // The event is the UI subscriber's call with the transports.
+        // Java: com/google/devtools/build/lib/buildeventstream/AnnounceBuildEventTransportsEvent.java:28 AnnounceBuildEventTransportsEvent.<init>
+        // Java: com/google/devtools/build/lib/buildeventstream/AnnounceBuildEventTransportsEvent.java:35 AnnounceBuildEventTransportsEvent.transports
         if let Some(subscriber) = env.get_ui_event_subscriber() {
             *self.ui_subscriber.lock() = Some(subscriber.clone());
             subscriber
@@ -2188,9 +2328,28 @@ impl BepCommandSupport {
             return;
         }
         let stats = analysis_result.get_analysis_phase_complete_stats();
-        if self.publish_package_metrics_in_bep {
-            blaze_util::unported!("PackageMetricsPackageLoadingListener.getPackageMetricsRecorder");
-        }
+        // PackageMetricsPackageLoadingListener.getInstance(): the recorder's metrics, read here
+        // for the MetricsCollector.
+        // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:164 MetricsCollector.onAnalysisPhaseComplete
+        let listener = crate::package_metrics::PackageMetricsPackageLoadingListener::get_instance();
+        let package_metrics_recorder = if listener.get_publish_package_metrics_in_bep() {
+            listener
+                .get_package_metrics_recorder()
+                .map(|recorder| PackageMetricsRecorderSnapshot {
+                    package_load_metrics: recorder.get_package_load_metrics(),
+                    only_extremes_num_packages_to_track: match recorder.get_recorder_type() {
+                        crate::package_metrics::RecorderType::OnlyExtremes => Some(
+                            recorder
+                                .as_extrema()
+                                .expect("ClassCastException: ExtremaPackageMetricsRecorder")
+                                .get_num_packages_to_track(),
+                        ),
+                        crate::package_metrics::RecorderType::All => None,
+                    },
+                })
+        } else {
+            None
+        };
         metrics.on_analysis_phase_complete(&AnalysisPhaseCompleteInfo {
             actions_constructed: TotalAndConfiguredTargetOnlyMetric::create(
                 stats.actions_constructed_total,
@@ -2203,7 +2362,7 @@ impl BepCommandSupport {
             time_in_ms: stats.time_in_ms,
             packages_successfully_loaded: stats.packages_successfully_loaded,
             actions_constructed_by_mnemonic: stats.actions_constructed_by_mnemonic.clone(),
-            package_metrics_recorder: None,
+            package_metrics_recorder,
         });
         // AnalysisGraphStatsEvent: posted only when the analysis checked for action conflicts.
         // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:454 SkyframeBuildView.configureTargets
@@ -2491,6 +2650,16 @@ impl BepCommandSupport {
     ) {
         // env.getEventBus().post(skyframeExecutor.createExecutionFinishedEvent())
         // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:267 MetricsCollector.onExecutionComplete
+        // The event is this call with the four artifact counts (its other subscriber,
+        // BuildSummaryStatsModule.executionPhaseFinish, is blaze_buildtool's ExecutionTool).
+        // PORT: skipped, read by no subscriber at the pin: ExecutionFinishedEvent.builderWithDefaults Builder.setOutputDirtyFiles Builder.setOutputDirtyFileExecPathSample Builder.setOutputModifiedFilesDuringPreviousBuild Builder.setSourceDiffCheckingDuration Builder.setNumSourceFilesCheckedBecauseOfMissingDiffs Builder.setOutputTreeDiffCheckingDuration
+        // Java: com/google/devtools/build/lib/skyframe/ExecutionFinishedEvent.java:38 ExecutionFinishedEvent.<init>
+        // Java: com/google/devtools/build/lib/skyframe/ExecutionFinishedEvent.java:64 ExecutionFinishedEvent.builder
+        // Java: com/google/devtools/build/lib/skyframe/ExecutionFinishedEvent.java:85 ExecutionFinishedEvent.Builder.setSourceArtifactsRead
+        // Java: com/google/devtools/build/lib/skyframe/ExecutionFinishedEvent.java:87 ExecutionFinishedEvent.Builder.setOutputArtifactsSeen
+        // Java: com/google/devtools/build/lib/skyframe/ExecutionFinishedEvent.java:89 ExecutionFinishedEvent.Builder.setOutputArtifactsFromActionCache
+        // Java: com/google/devtools/build/lib/skyframe/ExecutionFinishedEvent.java:91 ExecutionFinishedEvent.Builder.setTopLevelArtifacts
+        // Java: com/google/devtools/build/lib/skyframe/ExecutionFinishedEvent.java:93 ExecutionFinishedEvent.Builder.build
         let metrics = action_executor
             .map(|e| {
                 e.artifact_metrics()
@@ -2506,7 +2675,10 @@ impl BepCommandSupport {
             },
         );
         if let Some(start) = self.shared.execution_timer.lock().take() {
-            // new ExecutionPhaseCompleteEvent(executionTimer.stop().elapsed().toMillis())
+            // new ExecutionPhaseCompleteEvent(executionTimer.stop().elapsed().toMillis()): the
+            // event is this call with its time.
+            // Java: com/google/devtools/build/lib/buildtool/buildevent/ExecutionPhaseCompleteEvent.java:28 ExecutionPhaseCompleteEvent.<init>
+            // Java: com/google/devtools/build/lib/buildtool/buildevent/ExecutionPhaseCompleteEvent.java:32 ExecutionPhaseCompleteEvent.getTimeInMs
             // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:233 MetricsCollector.handleExecutionPhaseComplete
             self.shared
                 .metrics
@@ -2596,95 +2768,19 @@ impl BepCommandSupport {
                 )
             })
             .collect();
-        *PENDING_UPLOADS.lock() = pending.clone();
-        let mut blocking = Vec::new();
-        for upload in pending {
-            let bes_upload_mode_is_synchronous =
-                upload.transport.get_bes_upload_mode() == BesUploadMode::WAIT_FOR_UPLOAD_COMPLETE;
-            if !upload.transport.may_be_slow() || bes_upload_mode_is_synchronous {
-                blocking.push(upload);
-            } else {
-                // When running asynchronously notify the UI immediately since we won't wait for
-                // the uploads to close.
-                self.notify_transport_closed(upload.id.as_ref());
-            }
-        }
-        if !blocking.is_empty() {
-            self.wait_for_build_event_transports_to_close(&blocking)?;
-        }
-        Ok(())
+        close_pending_uploads(pending, &|id| self.notify_transport_closed(id))
     }
 
-    /// `reporter.post(new BuildEventTransportClosedEvent(bepTransport))` to the UI.
+    /// `reporter.post(new BuildEventTransportClosedEvent(bepTransport))` to the UI: the event is
+    /// the subscriber's call with the transport.
+    // Java: com/google/devtools/build/lib/buildeventstream/BuildEventTransportClosedEvent.java:25 BuildEventTransportClosedEvent.<init>
+    // Java: com/google/devtools/build/lib/buildeventstream/BuildEventTransportClosedEvent.java:32 BuildEventTransportClosedEvent.transport
     fn notify_transport_closed(&self, id: Option<&TransportId>) {
         if let (Some(subscriber), Some(id)) = (&*self.ui_subscriber.lock(), id) {
             subscriber.build_event_transport_closed(id, self.ui_debug_all_events);
         }
     }
 
-    /// Waits for `uploads` to close: the UI is told of each one as it finishes; a timed-out
-    /// upload fails with `BES_UPLOAD_TIMEOUT_ERROR`, a failed one with its own failure (the
-    /// first to fail, as `Futures.allAsList` does). The waited futures are cancelled and removed
-    /// from the pending uploads afterwards (`removeFromPendingUploads`).
-    ///
-    /// PORT: Java's listeners notify the UI from a `bes-notify-ui` thread as each future
-    /// completes; here the waiting thread polls the futures (every 10 ms) and notifies. A
-    /// cancelled upload ends the wait (`CancellationException`), as in Java.
-    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:533 BuildEventServiceModule.waitForBuildEventTransportsToClose
-    fn wait_for_build_event_transports_to_close(
-        &self,
-        uploads: &[PendingUpload],
-    ) -> Result<(), AbruptExitException> {
-        let mut notified = vec![false; uploads.len()];
-        let result = loop {
-            let mut all_done = true;
-            let mut outcome = None;
-            for (index, upload) in uploads.iter().enumerate() {
-                match upload.close.poll() {
-                    None => all_done = false,
-                    Some(result) => {
-                        if !notified[index] {
-                            notified[index] = true;
-                            self.notify_transport_closed(upload.id.as_ref());
-                        }
-                        match result {
-                            TimedOutcome::Done(Ok(())) => {}
-                            other => {
-                                outcome = Some(other);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            if let Some(outcome) = outcome {
-                break match outcome {
-                    // catch (CancellationException e): expected if the upload needs to be
-                    // cancelled for some reason, e.g. an error interrupting the build.
-                    TimedOutcome::Cancelled => Ok(()),
-                    // Futures.withTimeout wraps the TimeoutException in an ExecutionException
-                    // when the future times out.
-                    TimedOutcome::TimedOut => Err(create_abrupt_exit_exception(
-                        TIMEOUT_EXCEPTION_MESSAGE,
-                        "The Build Event Protocol upload timed out.",
-                        failure_details::build_progress::Code::BesUploadTimeoutError,
-                    )),
-                    // Throwables.throwIfInstanceOf(e.getCause(), AbruptExitException.class)
-                    TimedOutcome::Done(Err(e)) => Err(transport_close_exception(&e)),
-                    TimedOutcome::Done(Ok(())) => unreachable!(),
-                };
-            }
-            if all_done {
-                // PORT: BuildEventServiceUploadCompleteEvent (the time the wait took) has no
-                // subscriber in Bazel; it is not posted.
-                break Ok(());
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        };
-        // finally: removeFromPendingUploads(transportFutures)
-        remove_from_pending_uploads(uploads);
-        result
-    }
     /// `BuildEventServiceModule.forceShutdownBuildEventStreamer`: closes the streamer with the
     /// abort reason (each announced event not yet posted gets an `Aborted` event, then the last
     /// message) and waits for the transports to close.
@@ -2715,8 +2811,20 @@ impl BepCommandSupport {
         });
         // A failed close is only logged by Java (`logger.atSevere()...log("Failed to close a
         // build event transport")`); logging is not ported, so the results are not read.
-        for upload in &uploads {
-            let _ = upload.close.wait(deadline);
+        // Futures.allAsList(...).get(): the first failure (or the deadline) ends the wait.
+        'wait: loop {
+            let mut all_done = true;
+            for upload in &uploads {
+                match upload.close.poll() {
+                    None => all_done = false,
+                    Some(TimedOutcome::Done(Ok(()))) => {}
+                    Some(_) => break 'wait,
+                }
+            }
+            if all_done || deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
         // finally: cancelAndResetPendingUploads()
         cancel_and_reset_pending_uploads();
@@ -3235,4 +3343,554 @@ impl EventBus for MetricsOnlySubscriber {
             self.metrics.handle_execution_phase_start();
         }
     }
+}
+
+/// Port of `BazelBuildEventServiceModuleTest`.
+///
+/// PORT: Java runs whole builds (`BuildIntegrationTestCase`) against an in-process
+/// `DelayingPublishBuildEventService`. Blaze has no in-process build harness; the tests of the
+/// three upload modes, `--bes_timeout` and the second command's wait drive the module's closing
+/// and waiting code (`close_pending_uploads`, `wait_for_previous_invocation`) with a fake
+/// Build Event Service transport whose close and half-close futures behave as the delaying
+/// service makes the real transport's behave: `setDelayBeforeClosingStream` (half-closed at once,
+/// closed late), `setDelayBeforeHalfClosingStream` (both late) and `setErrorMessage` (the close
+/// fails). The uploader itself is covered by `blaze_bes`' transport tests. Times are scaled
+/// down: `--bes_timeout` 1s -> 200ms, `WAIT_FOR_LAST_INVOCATION_TIMEOUT` 2s -> 500ms, the
+/// service's 10s delays -> 3s. The tests that need a build are ignored with the reason.
+// Java: com/google/devtools/build/lib/buildeventservice/BazelBuildEventServiceModuleTest.java
+#[cfg(test)]
+pub(crate) mod bes_module_tests {
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    use blaze_bep::buildeventstream::artifact_uploader::BuildEventArtifactUploader;
+    use blaze_bep::buildeventstream::build_event::BuildEvent;
+    use blaze_bep::buildeventstream::transport::{CloseFuture, TransportCloseError};
+    use blaze_events::{EventKind, StoredEventHandler};
+
+    use super::*;
+
+    thread_local! {
+        /// `getMaxWaitForPreviousInvocation()` of the test's module subclass.
+        pub(crate) static MAX_WAIT_FOR_PREVIOUS_INVOCATION: Cell<Option<Duration>> =
+            const { Cell::new(None) };
+    }
+
+    /// The pending uploads are the module's (a process global): one test at a time.
+    static SERIAL: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+    const BES_TIMEOUT: Duration = Duration::from_millis(200);
+    const SLOW: Duration = Duration::from_secs(3);
+
+    /// What the delaying service does to the stream.
+    #[derive(Clone, Copy)]
+    enum Service {
+        /// Closes the stream at once.
+        Fast,
+        /// `setDelayBeforeClosingStream(10s)`: the half-close is done, the close is late.
+        SlowFullClose,
+        /// `setDelayBeforeHalfClosingStream(10s)`: both are late.
+        SlowHalfClose,
+        /// `setErrorMessage(message)`: the upload fails.
+        Error(&'static str),
+    }
+
+    struct FakeBesTransport {
+        close: CloseFuture,
+        half_close: CloseFuture,
+        timeout: Duration,
+        mode: BesUploadMode,
+    }
+
+    impl BuildEventTransport for FakeBesTransport {
+        fn name(&self) -> String {
+            "Build Event Service".to_string()
+        }
+        fn send_build_event(&self, _event: &Arc<dyn BuildEvent>) {}
+        fn close(&self) -> CloseFuture {
+            self.close.clone()
+        }
+        fn get_half_close_future(&self) -> CloseFuture {
+            self.half_close.clone()
+        }
+        fn get_timeout(&self) -> Duration {
+            self.timeout
+        }
+        fn may_be_slow(&self) -> bool {
+            true
+        }
+        fn get_bes_upload_mode(&self) -> BesUploadMode {
+            self.mode
+        }
+        fn get_uploader(&self) -> Option<Arc<dyn BuildEventArtifactUploader>> {
+            None
+        }
+    }
+
+    fn complete_later(
+        future: &CloseFuture,
+        after: Duration,
+        result: Result<(), TransportCloseError>,
+    ) {
+        let future = future.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(after);
+            future.set(result);
+        });
+    }
+
+    /// A transport closing as `service` makes it close.
+    fn transport(service: Service, mode: BesUploadMode, timeout: Duration) -> PendingUpload {
+        let close = CloseFuture::create();
+        let half_close = CloseFuture::create();
+        match service {
+            Service::Fast => {
+                half_close.set(Ok(()));
+                close.set(Ok(()));
+            }
+            Service::SlowFullClose => {
+                half_close.set(Ok(()));
+                complete_later(&close, SLOW, Ok(()));
+            }
+            Service::SlowHalfClose => {
+                complete_later(&half_close, SLOW, Ok(()));
+                complete_later(&close, SLOW, Ok(()));
+            }
+            Service::Error(message) => {
+                let error = TransportCloseError {
+                    message: format!("The Build Event Protocol upload failed: {message}"),
+                    code: "BES_STREAM_NOT_RETRYING_FAILURE",
+                };
+                half_close.set(Err(error.clone()));
+                close.set(Err(error));
+            }
+        }
+        let transport: Arc<dyn BuildEventTransport> = Arc::new(FakeBesTransport {
+            close: close.clone(),
+            half_close: half_close.clone(),
+            timeout,
+            mode,
+        });
+        PendingUpload::new(transport, None, close, half_close)
+    }
+
+    /// The first command: the module's `afterCommand` (closeBepTransports), with the error the
+    /// dispatcher reports.
+    fn after_build_command(upload: PendingUpload, events: &StoredEventHandler) {
+        if let Err(e) = close_pending_uploads(vec![upload], &|_| {}) {
+            events.handle(&Event::error(e.get_message().to_string()));
+        }
+    }
+
+    /// The second command's `beforeCommand`.
+    fn before_second_command(events: &StoredEventHandler) {
+        MAX_WAIT_FOR_PREVIOUS_INVOCATION.with(|w| w.set(Some(Duration::from_millis(500))));
+        wait_for_previous_invocation(events, /* is_shutdown= */ false);
+    }
+
+    fn messages(events: &StoredEventHandler, kind: EventKind) -> Vec<String> {
+        events
+            .get_events()
+            .iter()
+            .filter(|e| e.get_kind() == kind)
+            .map(|e| e.get_message().to_string())
+            .collect()
+    }
+
+    fn assert_no_warnings_or_errors(events: &StoredEventHandler) {
+        assert!(
+            messages(events, EventKind::Warning).is_empty(),
+            "{:?}",
+            events.get_events()
+        );
+        assert!(
+            messages(events, EventKind::Error).is_empty(),
+            "{:?}",
+            events.get_events()
+        );
+    }
+
+    fn assert_contains(events: &StoredEventHandler, kind: EventKind, text: &str) {
+        assert!(
+            messages(events, kind).iter().any(|m| m.contains(text)),
+            "no {kind:?} containing {text:?} in {:?}",
+            events.get_events()
+        );
+    }
+
+    /// Runs one test case: `before` sets the scene, then the first command's afterCommand, then
+    /// (when `second` is set) the second command's beforeCommand.
+    fn run(
+        service: Service,
+        mode: BesUploadMode,
+        timeout: Duration,
+        second: bool,
+    ) -> StoredEventHandler {
+        let _serial = SERIAL.lock();
+        reset_pending_uploads();
+        let events = StoredEventHandler::new();
+        after_build_command(transport(service, mode, timeout), &events);
+        if second {
+            before_second_command(&events);
+        }
+        cancel_and_reset_pending_uploads();
+        events
+    }
+
+    const WAIT: BesUploadMode = BesUploadMode::WAIT_FOR_UPLOAD_COMPLETE;
+    const NOWAIT: BesUploadMode = BesUploadMode::NOWAIT_FOR_UPLOAD_COMPLETE;
+    const ASYNC: BesUploadMode = BesUploadMode::FULLY_ASYNC;
+    const NO_TIMEOUT: Duration = Duration::ZERO;
+
+    #[test]
+    fn test_after_command_wait_for_upload_complete() {
+        assert_no_warnings_or_errors(&run(Service::Fast, WAIT, NO_TIMEOUT, false));
+    }
+
+    #[test]
+    #[ignore = "BuildEventServiceUploadCompleteEvent has no subscriber in Bazel and is not posted (bep.rs)"]
+    fn test_after_command_wait_for_upload_complete_posts_event() {}
+
+    #[test]
+    fn test_after_command_wait_for_upload_complete_slow_full_close_error() {
+        let events = run(Service::SlowFullClose, WAIT, BES_TIMEOUT, false);
+        assert_contains(
+            &events,
+            EventKind::Error,
+            "The Build Event Protocol upload timed out",
+        );
+    }
+
+    #[test]
+    fn test_after_command_wait_for_upload_complete_slow_half_close_error() {
+        let events = run(Service::SlowHalfClose, WAIT, BES_TIMEOUT, false);
+        assert_contains(
+            &events,
+            EventKind::Error,
+            "The Build Event Protocol upload timed out",
+        );
+    }
+
+    #[test]
+    fn test_after_command_no_wait_for_upload_complete() {
+        assert_no_warnings_or_errors(&run(Service::Fast, NOWAIT, NO_TIMEOUT, false));
+    }
+
+    #[test]
+    fn test_after_command_no_wait_for_upload_complete_slow_full_close_ignored() {
+        assert_no_warnings_or_errors(&run(Service::SlowFullClose, NOWAIT, NO_TIMEOUT, false));
+    }
+
+    #[test]
+    fn test_after_command_no_wait_for_upload_complete_slow_half_close_ignored() {
+        assert_no_warnings_or_errors(&run(Service::SlowHalfClose, NOWAIT, NO_TIMEOUT, false));
+    }
+
+    const FAILED_TO_COMPLETE: &str = "The background upload of the Build Event Protocol for the previous invocation failed to complete in";
+    const NETWORK_TIMEOUT: &str = "The background upload of the Build Event Protocol for the previous invocation failed due to a network timeout";
+
+    #[test]
+    fn test_before_second_command_no_wait_for_upload_complete_slow_full_close_warning() {
+        let events = run(Service::SlowFullClose, NOWAIT, NO_TIMEOUT, true);
+        assert_contains(&events, EventKind::Warning, FAILED_TO_COMPLETE);
+    }
+
+    #[test]
+    fn test_before_second_command_no_wait_for_upload_complete_slow_half_close_warning() {
+        let events = run(Service::SlowHalfClose, NOWAIT, NO_TIMEOUT, true);
+        assert_contains(&events, EventKind::Warning, FAILED_TO_COMPLETE);
+    }
+
+    #[test]
+    fn test_before_second_command_no_wait_for_upload_complete_bes_timeout_slow_full_close_warning()
+    {
+        let events = run(Service::SlowFullClose, NOWAIT, BES_TIMEOUT, true);
+        assert_contains(&events, EventKind::Warning, NETWORK_TIMEOUT);
+    }
+
+    #[test]
+    fn test_before_second_command_no_wait_for_upload_bes_timeout_slow_half_close_warning() {
+        let events = run(Service::SlowHalfClose, NOWAIT, BES_TIMEOUT, true);
+        assert_contains(&events, EventKind::Warning, NETWORK_TIMEOUT);
+    }
+
+    /// Review 2026-11-26 BES-1 (not a Java test): the upload outlives `--bes_timeout` but
+    /// finishes before the next command; `Futures.withTimeout` has failed for good, so the
+    /// next command still reports the network timeout.
+    #[test]
+    fn before_second_command_no_wait_bes_timeout_late_completion_warning() {
+        let _serial = SERIAL.lock();
+        reset_pending_uploads();
+        let events = StoredEventHandler::new();
+        let close = CloseFuture::create();
+        let half_close = CloseFuture::create();
+        half_close.set(Ok(()));
+        let transport: Arc<dyn BuildEventTransport> = Arc::new(FakeBesTransport {
+            close: close.clone(),
+            half_close: half_close.clone(),
+            timeout: BES_TIMEOUT,
+            mode: NOWAIT,
+        });
+        after_build_command(
+            PendingUpload::new(transport, None, close.clone(), half_close),
+            &events,
+        );
+        // The upload completes after the timeout, before the next command.
+        std::thread::sleep(BES_TIMEOUT * 2);
+        close.set(Ok(()));
+        before_second_command(&events);
+        cancel_and_reset_pending_uploads();
+        assert_contains(&events, EventKind::Warning, NETWORK_TIMEOUT);
+    }
+
+    #[test]
+    fn test_after_command_fully_async() {
+        assert_no_warnings_or_errors(&run(Service::Fast, ASYNC, NO_TIMEOUT, false));
+    }
+
+    #[test]
+    #[ignore = "needs a build with a file transport whose output stream closes late (BuildIntegrationTestCase); the mode logic is covered by the tests above"]
+    fn test_after_command_build_event_file_wait_for_upload_complete() {}
+
+    #[test]
+    fn test_after_command_fully_async_slow_half_close_ignored() {
+        assert_no_warnings_or_errors(&run(Service::SlowHalfClose, ASYNC, NO_TIMEOUT, false));
+    }
+
+    #[test]
+    fn test_before_second_command_fully_async_slow_full_close_ignored() {
+        assert_no_warnings_or_errors(&run(Service::SlowFullClose, ASYNC, NO_TIMEOUT, true));
+    }
+
+    #[test]
+    #[ignore = "@Ignore(\"b/246912214\") in Java"]
+    fn test_before_second_command_fully_async_slow_half_close_warning() {
+        let events = run(Service::SlowHalfClose, ASYNC, NO_TIMEOUT, true);
+        assert_contains(&events, EventKind::Warning, FAILED_TO_COMPLETE);
+    }
+
+    #[test]
+    fn test_before_second_command_fully_async_bes_timeout_slow_full_close_ignored() {
+        assert_no_warnings_or_errors(&run(Service::SlowFullClose, ASYNC, BES_TIMEOUT, true));
+    }
+
+    #[test]
+    #[ignore = "@Ignore(\"b/246912214\") in Java"]
+    fn test_before_second_command_fully_async_bes_timeout_slow_half_close_warning() {
+        let events = run(Service::SlowHalfClose, ASYNC, BES_TIMEOUT, true);
+        assert_contains(&events, EventKind::Warning, NETWORK_TIMEOUT);
+    }
+
+    #[test]
+    fn test_after_command_wait_for_upload_complete_error_on_complete() {
+        let events = run(Service::Error("Boom1"), WAIT, NO_TIMEOUT, false);
+        assert_contains(
+            &events,
+            EventKind::Error,
+            "The Build Event Protocol upload failed: Boom1",
+        );
+    }
+
+    #[test]
+    fn test_after_command_wait_for_upload_complete_bes_timeout_error_on_complete() {
+        let events = run(Service::Error("Boom2"), WAIT, Duration::from_secs(5), false);
+        assert_contains(
+            &events,
+            EventKind::Error,
+            "The Build Event Protocol upload failed: Boom2",
+        );
+    }
+
+    #[test]
+    fn test_after_command_no_wait_for_upload_complete_error_on_complete() {
+        assert_no_warnings_or_errors(&run(Service::Error("Boom3"), NOWAIT, NO_TIMEOUT, false));
+    }
+
+    #[test]
+    fn test_before_second_command_no_wait_for_upload_complete_error_on_complete() {
+        let events = run(Service::Error("Boom4"), NOWAIT, NO_TIMEOUT, true);
+        assert_contains(
+            &events,
+            EventKind::Warning,
+            "The Build Event Protocol upload failed: Boom4",
+        );
+    }
+
+    #[test]
+    fn test_after_command_fully_async_error_on_complete() {
+        assert_no_warnings_or_errors(&run(Service::Error("Boom5"), ASYNC, NO_TIMEOUT, false));
+    }
+
+    #[test]
+    fn test_before_second_command_fully_async_error_on_complete() {
+        // The second command waits for the half-close, which the failing service also fails;
+        // Java's delaying service half-closes before it fails the stream.
+        let _serial = SERIAL.lock();
+        reset_pending_uploads();
+        let events = StoredEventHandler::new();
+        let close = CloseFuture::create();
+        let half_close = CloseFuture::create();
+        half_close.set(Ok(()));
+        close.set(Err(TransportCloseError {
+            message: "The Build Event Protocol upload failed: Boom6".to_string(),
+            code: "BES_STREAM_NOT_RETRYING_FAILURE",
+        }));
+        let transport: Arc<dyn BuildEventTransport> = Arc::new(FakeBesTransport {
+            close: close.clone(),
+            half_close: half_close.clone(),
+            timeout: NO_TIMEOUT,
+            mode: ASYNC,
+        });
+        after_build_command(
+            PendingUpload::new(transport, None, close, half_close),
+            &events,
+        );
+        before_second_command(&events);
+        cancel_and_reset_pending_uploads();
+        assert_no_warnings_or_errors(&events);
+    }
+
+    // The tests below run builds with BuildIntegrationTestCase (transport creation from the
+    // options, the results URL lines, retries against a server, OOM crashes, flagsets); Blaze
+    // has no in-process build harness. The parts they check are covered as noted.
+
+    #[test]
+    #[ignore = "needs an in-process build (BuildIntegrationTestCase); transport creation: blaze_bep's file transport tests and the oracle comparison of BES runs"]
+    fn test_creates_streamer_for_text_format_file_transport() {}
+
+    #[test]
+    #[ignore = "needs an in-process build (BuildIntegrationTestCase)"]
+    fn test_creates_streamer_for_binary_format_file_transport() {}
+
+    #[test]
+    #[ignore = "needs an in-process build (BuildIntegrationTestCase)"]
+    fn test_creates_streamer_for_json_format_file_transport() {}
+
+    #[test]
+    #[ignore = "needs an in-process build (BuildIntegrationTestCase)"]
+    fn test_creates_streamer_for_bes_transport() {}
+
+    #[test]
+    #[ignore = "needs an in-process build; the retry limit and its message: blaze_bes transport tests and the oracle comparison (unreachable backend)"]
+    fn test_retry_count() {}
+
+    #[test]
+    #[ignore = "ConnectivityStatusProvider is not ported: Bazel's status is always OK"]
+    fn test_connectivity_failure_disables_bes_streaming() {}
+
+    #[test]
+    #[ignore = "needs an in-process build (BuildIntegrationTestCase)"]
+    fn test_creates_streamer_for_grpc_bes_results_url() {}
+
+    #[test]
+    #[ignore = "needs an in-process build; the check itself is blaze_bes::module::create_bes_transport"]
+    fn test_creates_streamer_for_grpc_runs_per_test_too_high_disables_streaming() {}
+
+    #[test]
+    #[ignore = "needs an in-process build; the line is compared with the oracle (BES runs)"]
+    fn test_before_command_grpc_reports_bes_results_url() {}
+
+    #[test]
+    #[ignore = "needs an in-process build; the line is compared with the oracle (BES runs)"]
+    fn test_after_command_grpc_reports_bes_results_url() {}
+
+    #[test]
+    #[ignore = "needs an in-process build (BuildIntegrationTestCase)"]
+    fn test_after_command_streamer_is_closed_no_warning() {}
+
+    #[test]
+    #[ignore = "needs an in-process build; retries and codes: blaze_bes transport tests"]
+    fn test_after_command_wait_for_upload_complete_retryable_error_early_in_stream() {}
+
+    #[test]
+    #[ignore = "needs an in-process build; retries and codes: blaze_bes transport tests"]
+    fn test_after_command_wait_for_upload_complete_permission_denied_error_early_in_stream() {}
+
+    #[test]
+    #[ignore = "needs an in-process build; retries and codes: blaze_bes transport tests"]
+    fn test_after_command_wait_for_upload_complete_invalid_argument_error_early_in_stream() {}
+
+    #[test]
+    #[ignore = "needs an in-process build (BuildIntegrationTestCase)"]
+    fn test_creates_streamer_for_all_transports() {}
+
+    #[test]
+    #[ignore = "needs an in-process build; the supplier is blaze_bep::bep_module's ThrowingBuildEventArtifactUploaderSupplier"]
+    fn test_uploader_sharing() {}
+
+    #[test]
+    #[ignore = "needs an in-process build (BuildIntegrationTestCase)"]
+    fn test_does_not_creates_streamer_without_transports() {}
+
+    #[test]
+    fn test_keywords() {
+        let bes_options = BuildEventServiceOptions {
+            bes_keywords: vec!["keyword0".into(), "keyword1".into(), "keyword0".into()],
+            bes_system_keywords: vec![
+                "sys_keyword0".into(),
+                "sys_keyword1".into(),
+                "sys_keyword0".into(),
+            ],
+            ..BuildEventServiceOptions::default()
+        };
+        let keywords: Vec<String> = blaze_bes::module::get_bes_keywords("build", &bes_options)
+            .into_iter()
+            .collect();
+        // containsExactly (any order).
+        let mut sorted = keywords.clone();
+        sorted.sort();
+        let mut expected = vec![
+            "protocol_name=BEP",
+            "command_name=build",
+            "user_keyword=keyword0",
+            "user_keyword=keyword1",
+            "sys_keyword0",
+            "sys_keyword1",
+        ];
+        expected.sort();
+        assert_eq!(sorted, expected);
+    }
+
+    #[test]
+    fn test_make_grpc_metadata() {
+        let bes_options = BuildEventServiceOptions {
+            bes_backend: "bes-backend".into(),
+            bes_proxy: Some("bes-proxy".into()),
+            bes_headers: vec![
+                ("key1".into(), "val1".into()),
+                ("key2".into(), "val2".into()),
+                ("key3".into(), "val3".into()),
+                ("key1".into(), "val4".into()),
+            ],
+            ..BuildEventServiceOptions::default()
+        };
+        let config =
+            blaze_bes::module::BackendConfig::create(&bes_options, &AuthAndTLSOptions::default());
+        let metadata = blaze_bes::module::make_grpc_metadata(&config);
+        let get = |k: &str| {
+            metadata
+                .iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(get("key1"), Some("val4"));
+        assert_eq!(get("key2"), Some("val2"));
+        assert_eq!(get("key3"), Some("val3"));
+    }
+
+    #[test]
+    #[ignore = "OOM handling (GcThrashingDetector, BugReport.handleCrash) is JVM-only"]
+    fn oom_first_reported_via_handle_crash() {}
+
+    #[test]
+    #[ignore = "OOM handling (OutOfMemoryError thrown from Skyframe) is JVM-only"]
+    fn oom_first_thrown_from_skyframe() {}
+
+    #[test]
+    #[ignore = "OOM handling (OutOfMemoryError thrown from Skyframe) is JVM-only"]
+    fn oom_bes_closes_after_special_case_timeout_thrown_from_skyframe() {}
+
+    #[test]
+    #[ignore = "needs an in-process build with flagsets (BuildIntegrationTestCase)"]
+    fn command_line_events_includes_flags_from_flagsets() {}
 }

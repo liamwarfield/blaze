@@ -79,12 +79,8 @@ pub(crate) fn check_unported_options(command: &CommandAnnotation, options: &Opti
                 );
             }
         }
-        if command.build_phase.loads() && set(&remote_options.remote_downloader) {
-            blaze_util::unported!(
-                "RemoteModule.beforeCommand",
-                "--experimental_remote_downloader"
-            );
-        }
+        // --experimental_remote_downloader: RemoteModule.setup builds the GrpcRemoteDownloader
+        // for every command the remote module runs for (crate::commands::build::build_remote).
     }
 
     // The Build Event Protocol of the commands whose build events are not posted yet (the

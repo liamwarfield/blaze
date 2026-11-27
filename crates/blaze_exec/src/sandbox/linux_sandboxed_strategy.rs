@@ -1,7 +1,6 @@
 //! Port of `lib/sandbox/LinuxSandboxedStrategy.java`.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use blaze_events::Event;
 use blaze_optdefs::command::execution_options::ExecutionOptions;
@@ -42,7 +41,7 @@ impl LinuxSandboxedStrategy {
     pub fn create(
         cmd_env: &ExecCommandEnvironment,
         sandbox_base: &Path,
-        timeout_kill_delay: Duration,
+        timeout_kill_delay: impl Into<blaze_util::java_duration::JavaDuration>,
         tree_deleter: Arc<dyn TreeDeleter>,
         options: &SandboxOptions,
     ) -> LinuxSandboxedSpawnRunner {

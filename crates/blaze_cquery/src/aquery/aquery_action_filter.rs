@@ -7,7 +7,7 @@ use blaze_util::java_regex::Pattern;
 use indexmap::IndexMap;
 
 /// Represents the filters (inputs, outputs, mnemonic) of an aquery expression.
-// Java: com/google/devtools/build/lib/query2/aquery/AqueryActionFilter.java:28 AqueryActionFilter
+// Java: com/google/devtools/build/lib/query2/aquery/AqueryActionFilter.java:23 AqueryActionFilter
 #[derive(Clone, Debug, Default)]
 pub struct AqueryActionFilter {
     /// Java `ImmutableMultimap<String, Pattern>` (from a `HashMultimap`).
@@ -16,26 +16,26 @@ pub struct AqueryActionFilter {
 }
 
 impl AqueryActionFilter {
-    // Java: com/google/devtools/build/lib/query2/aquery/AqueryActionFilter.java:35 AqueryActionFilter.emptyInstance
+    // Java: com/google/devtools/build/lib/query2/aquery/AqueryActionFilter.java:31 AqueryActionFilter.emptyInstance
     pub fn empty_instance() -> Self {
         Self::builder().build()
     }
 
-    // Java: com/google/devtools/build/lib/query2/aquery/AqueryActionFilter.java:39 AqueryActionFilter.builder
+    // Java: com/google/devtools/build/lib/query2/aquery/AqueryActionFilter.java:35 AqueryActionFilter.builder
     pub fn builder() -> AqueryActionFilterBuilder {
         AqueryActionFilterBuilder {
             filter_map: IndexMap::new(),
         }
     }
 
-    // Java: com/google/devtools/build/lib/query2/aquery/AqueryActionFilter.java:43 AqueryActionFilter.hasFilterForFunction
+    // Java: com/google/devtools/build/lib/query2/aquery/AqueryActionFilter.java:39 AqueryActionFilter.hasFilterForFunction
     pub fn has_filter_for_function(&self, function: &str) -> bool {
         self.filter_map.contains_key(function)
     }
 
     /// Returns whether the input string matches ALL the filter patterns of a specific type parsed
     /// from aquery command.
-    // Java: com/google/devtools/build/lib/query2/aquery/AqueryActionFilter.java:54 AqueryActionFilter.matchesAllPatternsForFunction
+    // Java: com/google/devtools/build/lib/query2/aquery/AqueryActionFilter.java:50 AqueryActionFilter.matchesAllPatternsForFunction
     pub fn matches_all_patterns_for_function(&self, function: &str, input: &str) -> bool {
         if !self.has_filter_for_function(function) {
             return false;
@@ -70,13 +70,13 @@ impl AqueryActionFilterTrait for AqueryActionFilter {
 }
 
 /// Builder class for `AqueryActionFilter`.
-// Java: com/google/devtools/build/lib/query2/aquery/AqueryActionFilter.java:63 AqueryActionFilter.Builder
+// Java: com/google/devtools/build/lib/query2/aquery/AqueryActionFilter.java:59 AqueryActionFilter.Builder
 pub struct AqueryActionFilterBuilder {
     filter_map: IndexMap<String, Vec<Pattern>>,
 }
 
 impl AqueryActionFilterBuilder {
-    // Java: com/google/devtools/build/lib/query2/aquery/AqueryActionFilter.java:70 AqueryActionFilter.Builder.put
+    // Java: com/google/devtools/build/lib/query2/aquery/AqueryActionFilter.java:67 AqueryActionFilter.Builder.put
     pub fn put(&mut self, key: &str, value: Pattern) -> &mut Self {
         // HashMultimap: a (key, value) pair is stored once.
         let values = self.filter_map.entry(key.to_owned()).or_default();
@@ -86,7 +86,7 @@ impl AqueryActionFilterBuilder {
         self
     }
 
-    // Java: com/google/devtools/build/lib/query2/aquery/AqueryActionFilter.java:75 AqueryActionFilter.Builder.build
+    // Java: com/google/devtools/build/lib/query2/aquery/AqueryActionFilter.java:72 AqueryActionFilter.Builder.build
     pub fn build(&self) -> AqueryActionFilter {
         AqueryActionFilter {
             filter_map: self.filter_map.clone(),

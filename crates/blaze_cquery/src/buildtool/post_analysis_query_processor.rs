@@ -46,7 +46,7 @@ impl From<EvaluateQueryError> for PostAnalysisQueryError {
 }
 
 /// The configurations of the graph keyed by checksum, sorted by checksum.
-// Java: com/google/devtools/build/lib/buildtool/PostAnalysisQueryProcessor.java:150 PostAnalysisQueryProcessor.getTransitiveConfigurations
+// Java: com/google/devtools/build/lib/buildtool/PostAnalysisQueryProcessor.java:157 PostAnalysisQueryProcessor.getTransitiveConfigurations
 pub fn get_transitive_configurations(
     transitive_configuration_keys: &[SkyKey],
     graph: &dyn WalkableGraph,
@@ -76,7 +76,7 @@ pub fn get_transitive_configurations(
 
 /// The query part of `doPostAnalysisQuery`: selects the output callback, evaluates the query
 /// into an aggregating callback and replays the full result to the output callback.
-// Java: com/google/devtools/build/lib/buildtool/PostAnalysisQueryProcessor.java:162 PostAnalysisQueryProcessor.doPostAnalysisQuery
+// Java: com/google/devtools/build/lib/buildtool/PostAnalysisQueryProcessor.java:168 PostAnalysisQueryProcessor.doPostAnalysisQuery
 pub fn do_post_analysis_query<T: PostAnalysisNode>(
     post_analysis_query_environment: &PostAnalysisQueryEnvironment<T>,
     callbacks: &[Box<dyn NamedThreadSafeOutputFormatterCallback<T> + '_>],
@@ -133,7 +133,7 @@ where
         // reports "build interrupted" (exit code 8). That is what Bazel 9.3.2 prints for an
         // aquery action whose command line cannot be expanded
         // (scripts/w4/scenarios/query-map-each).
-        // Java: com/google/devtools/build/lib/query2/engine/OutputFormatterCallback.java:49 OutputFormatterCallback.process
+        // Java: com/google/devtools/build/lib/query2/engine/OutputFormatterCallback.java:52 OutputFormatterCallback.process
         Err(QueryError::Interrupted(_)) => return Err(PostAnalysisQueryError::Interrupted),
         Err(QueryError::Query(e)) => return Err(PostAnalysisQueryError::Query(e)),
         Err(QueryError::Cancellation) => panic!("java.util.concurrent.CancellationException"),
@@ -154,7 +154,7 @@ where
 }
 
 /// The message of `new ViewCreationFailedException(message, failureDetail, cause)`.
-// Java: com/google/devtools/build/lib/analysis/ViewCreationFailedException.java:51 ViewCreationFailedException.combineMessages
+// Java: com/google/devtools/build/lib/analysis/ViewCreationFailedException.java:49 ViewCreationFailedException.combineMessages
 fn combine_messages(message: &str, cause_message: &str) -> String {
     // isNullOrEmpty(cause.getMessage())
     if cause_message.is_empty() {
@@ -165,7 +165,7 @@ fn combine_messages(message: &str, cause_message: &str) -> String {
 }
 
 /// The error handling of `PostAnalysisQueryProcessor.process` around `doPostAnalysisQuery`.
-// Java: com/google/devtools/build/lib/buildtool/PostAnalysisQueryProcessor.java:71 PostAnalysisQueryProcessor.process
+// Java: com/google/devtools/build/lib/buildtool/PostAnalysisQueryProcessor.java:72 PostAnalysisQueryProcessor.process
 pub fn handle_post_analysis_query_result(
     result: Result<(), PostAnalysisQueryError>,
     keep_going: bool,
@@ -224,7 +224,7 @@ pub fn handle_post_analysis_query_result(
 }
 
 /// The checks `process` makes before running the query.
-// Java: com/google/devtools/build/lib/buildtool/PostAnalysisQueryProcessor.java:84 PostAnalysisQueryProcessor.process
+// Java: com/google/devtools/build/lib/buildtool/PostAnalysisQueryProcessor.java:72 PostAnalysisQueryProcessor.process
 pub fn before_post_analysis_query(
     tracks_state_for_incrementality: bool,
 ) -> Result<(), BuildToolError> {
@@ -248,7 +248,7 @@ pub fn before_post_analysis_query(
 /// `env.getRuntime().getQueryRuntimeHelperFactory().create(env, getQueryOptions(env))` of
 /// `PostAnalysisQueryProcessor.process`; a `QueryRuntimeHelperException` is its
 /// `ExitException(DetailedExitCode.of(e.getFailureDetail()))`.
-// Java: com/google/devtools/build/lib/buildtool/PostAnalysisQueryProcessor.java:104 PostAnalysisQueryProcessor.process
+// Java: com/google/devtools/build/lib/buildtool/PostAnalysisQueryProcessor.java:72 PostAnalysisQueryProcessor.process
 pub fn create_query_runtime_helper(
     stdout: &blaze_query::query::output::output_formatter::OutputStream,
     working_directory: &blaze_vfs::Path,

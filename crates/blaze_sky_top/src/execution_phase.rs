@@ -126,6 +126,12 @@ pub fn prepare_execution(
         for (type_id, ctx) in blaze_rules::executable_actions::executable_action_contexts(
             artifact_factory.clone(),
             setup.sibling_repository_layout,
+            setup.config.exec_root.clone(),
+            // Java: com/google/devtools/build/lib/analysis/BlazeDirectories.java:257 BlazeDirectories.getRelativeOutputPath
+            setup
+                .config
+                .exec_root
+                .get_relative_str(&format!("{}-out", services.directories.product_name)),
         ) {
             contexts.register_raw(type_id, ctx);
         }

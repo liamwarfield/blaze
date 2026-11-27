@@ -331,7 +331,14 @@ pub(crate) fn run_build(
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:795 BlazeRuntime.afterCommand
     match module_exit_code {
         Some(code) if !result.get_exit_code().is_infrastructure_failure() => {
-            BlazeCommandResult::detailed_exit_code(code)
+            // A run keeps its exec request: BlazeCommandResult.execute(execRequest,
+            // moduleExitCode).
+            match result.get_exec_request() {
+                Some(exec_request) => {
+                    BlazeCommandResult::execute_with_detailed_exit_code(exec_request.clone(), code)
+                }
+                None => BlazeCommandResult::detailed_exit_code(code),
+            }
         }
         _ => result,
     }
@@ -662,6 +669,7 @@ fn run_build_with_bep(
         if let Some(execution) = skyframe_executor.get_execution() {
             remote.set_was_rewound(execution.prepared.executor.clone());
         }
+        remote.set_rewinding_action_graph(skyframe_executor.get_walkable_graph());
     }
     if let Some(bep) = bep {
         bep.set_merged_analysis_and_execution(merged_analysis_and_execution);
@@ -801,6 +809,7 @@ fn run_build_with_bep(
             should_run_tests: run_tests,
             // BuildRequest.Builder.setOutErr(env.getReporter().getOutErr())
             out_err: env.get_reporter_out_err().clone(),
+            running_in_emacs: ui_options.running_in_emacs,
         },
         bep: bep.cloned(),
         remote: remote.cloned(),
@@ -1336,6 +1345,12 @@ impl AnalysisPostProcessor for ExecutionToolConstruction<'_> {
         self.execution_phase
             .prepare_incremental_package_roots(skyframe_executor)?;
         set_salt_and_delete_actions_if_changed(skyframe_executor);
+        // The end of prepareForExecution: announceEnteringDirIfEmacs().
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:358 ExecutionTool.prepareForExecution
+        if let Some(state) = skyframe_executor.get_execution() {
+            self.execution_phase
+                .announce_entering_dir_if_emacs(&state.config.exec_root);
+        }
         self.spawn_log.executor_init();
         if let Err(e) = self.spawn_log.module_environment.throw_pending_exception() {
             // catch (AbruptExitException e): result.setCatastrophe().
@@ -1404,8 +1419,14 @@ impl AnalysisPostProcessor for ExecutionToolConstruction<'_> {
 }
 
 impl ExecutionToolConstruction<'_> {
-    /// `new ExecutionTool(env, request)`.
+    /// `new ExecutionTool(env, request)`, and `init()`: `getExecutor()` creates the
+    /// `BlazeExecutor` (here the prepared execution state, `check_execution_tool_created`).
+    ///
+    /// PORT: skipped, ExecutionTool.shutdown and the executorCreated call of getExecutor notify ExecutorLifecycleListeners, whose only implementation at the pin, IncludeScanningModule, is not ported (include scanning stops with unported!).
     // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:171 ExecutionTool.<init>
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:239 ExecutionTool.init
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:216 ExecutionTool.getExecutor
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:227 ExecutionTool.createExecutor
     fn construct(&self, skyframe_executor: &SkyframeExecutor) -> Result<(), BuildToolError> {
         let state = skyframe_executor
             .get_execution()
@@ -1427,6 +1448,15 @@ impl ExecutionToolConstruction<'_> {
             state,
         );
         if let Err(e) = state.prepared.check_execution_tool_created() {
+            // catch (InterruptedException e): an interrupted sandbox probe (see
+            // blaze_exec::exec::executor_setup); not a catastrophe.
+            // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:943 BuildTool.processRequest
+            if matches!(
+                e.failure_detail.category,
+                Some(blaze_protos::failure_details::failure_detail::Category::Interrupted(_))
+            ) {
+                return Err(BuildToolError::Interrupted);
+            }
             // catch (AbruptExitException e): result.setCatastrophe().
             // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:999 BuildTool.processRequest
             self.execution_phase
@@ -1620,6 +1650,10 @@ struct RuntimeBuildRequestView {
     execution_options: ExecutionOptions,
     should_run_tests: bool,
     out_err: OutErr,
+    /// `isRunningInEmacs()`: `UiOptions.runningInEmacs` (`--emacs`, which the client adds when
+    /// `EMACS=t` or `INSIDE_EMACS` is set).
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:305 BuildRequest.isRunningInEmacs
+    running_in_emacs: bool,
 }
 
 impl BuildRequestView for RuntimeBuildRequestView {
@@ -2125,6 +2159,7 @@ impl RuntimeExecutionPhase {
                     keep_going,
                     skyframe_executor.get_cycles_reporter(),
                     &reporter,
+                    self.uses_process_errors(merged),
                 ) {
                     Ok(code) => outcome.detailed_exit_codes.push(code),
                     Err(rethrown) => {
@@ -2351,6 +2386,44 @@ impl Drop for InstalledExplanationHandler {
     }
 }
 
+impl RuntimeExecutionPhase {
+    /// Whether the execution errors go through `SkyframeErrorProcessor.processErrors`: always with
+    /// merged analysis and execution; without it, `SkyframeBuilder` calls
+    /// `processExecutionErrors`, which uses `processErrors` only with
+    /// `--experimental_skyframe_error_handling_refactor` and `processResult` otherwise.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:245 SkyframeErrorProcessor.processExecutionErrors
+    // Java: com/google/devtools/build/lib/buildtool/SkyframeBuilder.java:119 SkyframeBuilder.buildArtifacts
+    fn uses_process_errors(&self, merged: bool) -> bool {
+        merged
+            || self
+                .request_view
+                .build_options
+                .skyframe_error_handling_refactor
+    }
+
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:516 ExecutionTool.announceEnteringDirIfEmacs
+    fn announce_entering_dir_if_emacs(&self, exec_root: &blaze_vfs::Path) {
+        if self.request_view.running_in_emacs {
+            // The syntax of this message is tightly constrained by lisp/progmodes/compile.el in
+            // emacs
+            self.request_view.out_err.print_err_ln(&format!(
+                "{}: Entering directory `{}/'",
+                self.product_name, exec_root
+            ));
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:525 ExecutionTool.announceLeavingDirIfEmacs
+    fn announce_leaving_dir_if_emacs(&self, exec_root: &blaze_vfs::Path) {
+        if self.request_view.running_in_emacs {
+            self.request_view.out_err.print_err_ln(&format!(
+                "{}: Leaving directory `{}/'",
+                self.product_name, exec_root
+            ));
+        }
+    }
+}
+
 impl ExecutionPhase for RuntimeExecutionPhase {
     // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:367 ExecutionTool.executeBuild
     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:595 BuildTool.buildTargetsWithMergedAnalysisExecution
@@ -2364,6 +2437,7 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         let state = skyframe_executor
             .get_execution()
             .expect("IllegalStateException: the executor was created without execution");
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:1007 ExecutionTool.getReporter
         let reporter = self.reporter.clone();
 
         // The loading and analysis BEP events are posted by BuildTool's hooks
@@ -2379,6 +2453,9 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         // forest of the exec root ("plantSymlinkForest"); Skymeld planted it incrementally
         // (prepare_incremental_package_roots).
         // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:620 ExecutionTool.executeBuild
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:615 ExecutionTool.prepare
+        // PORT: skipped, ExecutionTool.logDeleteTreeFailure: logging only (Java log).
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:1011 ExecutionTool.getExecRoot
         let exec_root = state.config.exec_root.clone();
         let planted = if request.with_merged_analysis_and_execution_source_of_truth() {
             Ok(Vec::new())
@@ -2472,9 +2549,9 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             self.extra_action_top_level_only,
             &BuildDriverKeyTestContext {
                 test_strategy: self.execution_options.test_strategy.clone(),
-                // executionTool.getTestActionContext(): StandaloneTestStrategy keeps the
-                // TestActionContext defaults (false); only the remote test strategies force
-                // exclusive tests to run in parallel.
+                // executionTool.getTestActionContext(): no TestActionContext at the pin
+                // overrides the defaults (false).
+                // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:249 ExecutionTool.getTestActionContext
                 force_exclusive_tests_in_parallel: false,
                 force_exclusive_if_local_tests_in_parallel: false,
             },
@@ -2589,6 +2666,13 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:421 ExecutionTool.executeBuild
         let _explanation_handler = self.install_explanation_handler();
 
+        // announceEnteringDirIfEmacs() of executeBuild: the path without merged analysis and
+        // execution (Skymeld announces in prepareForExecution: `before_merged_analysis`).
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:426 ExecutionTool.executeBuild
+        if !request.with_merged_analysis_and_execution_source_of_truth() {
+            self.announce_entering_dir_if_emacs(&exec_root);
+        }
+
         let evaluated = evaluate_build_driver_keys(
             skyframe_executor.get_evaluator(),
             &keys_to_execute,
@@ -2700,6 +2784,9 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                             request.keep_going,
                             skyframe_executor.get_cycles_reporter(),
                             &reporter,
+                            self.uses_process_errors(
+                                request.with_merged_analysis_and_execution_source_of_truth(),
+                            ),
                         ));
                     }
                 }
@@ -2715,8 +2802,10 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             watchdog.stop();
         }
 
-        // ExecutionTool.nonCatastrophicFinalizations: `if (buildCompleted)
-        // saveActionCache(actionCache)`.
+        // ExecutionTool.nonCatastrophicFinalizations: announceLeavingDirIfEmacs(), then
+        // `if (buildCompleted) saveActionCache(actionCache)`.
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:542 ExecutionTool.nonCatastrophicFinalizations
+        self.announce_leaving_dir_if_emacs(&exec_root);
         if !interrupted {
             // RemoteOutputService.onExecutionPhaseCompleteEvent → LeaseService
             // .finalizeExecution (Java: after the save, on the server's in-memory cache).
@@ -2755,6 +2844,9 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                         request.keep_going,
                         skyframe_executor.get_cycles_reporter(),
                         &reporter,
+                        self.uses_process_errors(
+                            request.with_merged_analysis_and_execution_source_of_truth(),
+                        ),
                     )
                     .map(|main| {
                         let mut codes = exclusive_tests.detailed_exit_codes;
@@ -3064,6 +3156,11 @@ fn create_unknown_execution_detailed_exit_code(
 /// - `--nokeep_going`: throws for the first error (`throwOrReturnAspectAnalysisException` →
 ///   `rethrow`).
 ///
+/// With `uses_process_errors` false it is `processResult` (the path without merged analysis and
+/// execution): the same results, but no keep-going warning for a cycle; its keep-going exit code
+/// (`getDetailedExitCodeKeepGoing`) is the most important detailed one, a cycle's `CYCLE_CODE`,
+/// as here.
+///
 /// PORT: Blaze analyzes before it executes (module comment), so the loading and analysis errors
 /// of the top-level keys were processed by blaze_sky_top's `SkyframeErrorProcessor` and the keys
 /// evaluated here are those of analyzed targets: an error that is not an execution exception or
@@ -3071,11 +3168,14 @@ fn create_unknown_execution_detailed_exit_code(
 /// (`maybePostFailureEventsForNonConflictError` posts an `AnalysisFailureEvent` only for
 /// analysis errors) are none.
 // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:302 SkyframeErrorProcessor.processErrors
+// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:899 SkyframeErrorProcessor.processResult
+// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:936 SkyframeErrorProcessor.getDetailedExitCodeKeepGoing
 fn process_execution_errors(
     result: &blaze_skyframe::EvaluationResult,
     keep_going: bool,
     cycles_reporter: &blaze_sky_top::cycles_reporter::CyclesReporter,
     event_handler: &Arc<dyn ExtendedEventHandler>,
+    uses_process_errors: bool,
 ) -> Result<Option<blaze_util::DetailedExitCode>, RethrownException> {
     let mut execution_detailed_exit_code: Option<blaze_util::DetailedExitCode> = None;
     for (error_key, error_info) in result.error_map() {
@@ -3113,12 +3213,14 @@ fn process_execution_errors(
                 // logOrPrintWarningsKeepGoing: a cycle is not an execution exception (the cause
                 // is null).
                 // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:665 SkyframeErrorProcessor.logOrPrintWarningsKeepGoing
-                let label = effective_error_key_label(error_key)
-                    .map_or_else(|| "null".to_string(), |l| l.to_string());
-                event_handler.handle(&Event::warn(format!(
-                    "errors encountered while analyzing target '{}', it will not be built.",
-                    label
-                )));
+                if uses_process_errors {
+                    let label = effective_error_key_label(error_key)
+                        .map_or_else(|| "null".to_string(), |l| l.to_string());
+                    event_handler.handle(&Event::warn(format!(
+                        "errors encountered while analyzing target '{}', it will not be built.",
+                        label
+                    )));
+                }
                 continue;
             }
             // If a --nokeep_going build found a cycle, that means there were no other errors
@@ -3321,6 +3423,7 @@ impl blaze_events::EventBus for UiTestSummaryCounter {
 /// filter has no effect on them either way. `packages` and `subpackages` need the labels of the
 /// `TargetParsingCompleteEvent`, which blaze_sky_top's target pattern phase does not post; they
 /// fail loudly.
+// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1132 BuildTool.initializeOutputFilter
 // Java: com/google/devtools/build/lib/outputfilter/OutputFilteringModule.java:78 OutputFilteringModule.buildStarting
 // Java: com/google/devtools/build/lib/outputfilter/OutputFilteringModule.java:98 OutputFilteringModule.targetParsingComplete
 fn output_filter(
@@ -3369,6 +3472,7 @@ mod tests {
             keep_going,
             &blaze_sky_top::cycles_reporter::CyclesReporter::new(Vec::new()),
             &event_handler,
+            /* uses_process_errors= */ true,
         )
     }
 

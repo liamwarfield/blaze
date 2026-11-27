@@ -53,3 +53,16 @@ v3_rsa1024_ca	ACCEPT
 v3_sha1_signed	ACCEPT	
 v3_p521_ca	ACCEPT	
 v3_issued_trailing_dot_host	ACCEPT	
+direct_v2_issuer_uid_empty	REJECT	parse: java.security.cert.CertificateParsingException: java.io.IOException: Invalid encoding: zero length bit string
+direct_v2_issuer_uid_bad_padding	REJECT	parse: java.security.cert.CertificateParsingException: java.io.IOException: Invalid number of padding bits
+direct_outer_tbs_only	REJECT	parse: java.security.cert.CertificateException: Unable to initialize, java.io.IOException: Too short
+direct_outer_fourth_element	REJECT	parse: java.security.cert.CertificateParsingException: signed overrun, bytes = 2
+direct_outer_signature_octet_string	REJECT	parse: java.security.cert.CertificateException: Unable to initialize, java.io.IOException: DerValue.getBitString, not a bit string 4
+direct_inner_alg_empty_oid	REJECT	parse: java.security.cert.CertificateParsingException: java.io.IOException: ObjectIdentifier() -- Invalid DER encoding, not ended
+direct_name_attribute_empty_oid	REJECT	parse: java.security.cert.CertificateParsingException: java.io.IOException: ObjectIdentifier() -- Invalid DER encoding, not ended
+direct_non_minimal_length	ACCEPT	
+direct_serial_leading_zero	ACCEPT	
+cn_general	ACCEPT	
+cn_universal	ACCEPT	
+direct_idn_host	ACCEPT	
+direct_all_digit_host	ACCEPT	

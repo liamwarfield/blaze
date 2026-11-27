@@ -22,9 +22,9 @@ use crate::target_literal::TargetLiteral;
 /// PORT: every `QueryExpressionMapper<C>` is a `QueryExpressionVisitor<QueryExpression, C>`
 /// (blanket impl). Java's `super.visit(...)` from an override is the matching free function
 /// (`default_visit_binary_operator_expression`, ...).
-// Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:26 QueryExpressionMapper
+// Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:28 QueryExpressionMapper
 pub trait QueryExpressionMapper<C> {
-    // Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:30 QueryExpressionMapper.visit
+    // Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:32 QueryExpressionMapper.visit
     fn map_target_literal(
         &mut self,
         target_literal: &Arc<TargetLiteral>,
@@ -33,7 +33,7 @@ pub trait QueryExpressionMapper<C> {
         QueryExpression::TargetLiteral(target_literal.clone())
     }
 
-    // Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:35 QueryExpressionMapper.visit
+    // Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:37 QueryExpressionMapper.visit
     fn map_binary_operator_expression(
         &mut self,
         binary_operator_expression: &Arc<BinaryOperatorExpression>,
@@ -45,7 +45,7 @@ pub trait QueryExpressionMapper<C> {
         default_visit_binary_operator_expression(self, binary_operator_expression, context)
     }
 
-    // Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:52 QueryExpressionMapper.visit
+    // Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:54 QueryExpressionMapper.visit
     fn map_function_expression(
         &mut self,
         function_expression: &Arc<FunctionExpression>,
@@ -57,7 +57,7 @@ pub trait QueryExpressionMapper<C> {
         default_visit_function_expression(self, function_expression, context)
     }
 
-    // Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:74 QueryExpressionMapper.visit
+    // Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:76 QueryExpressionMapper.visit
     fn map_let_expression(
         &mut self,
         let_expression: &Arc<LetExpression>,
@@ -69,7 +69,7 @@ pub trait QueryExpressionMapper<C> {
         default_visit_let_expression(self, let_expression, context)
     }
 
-    // Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:90 QueryExpressionMapper.visit
+    // Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:92 QueryExpressionMapper.visit
     fn map_set_expression(
         &mut self,
         set_expression: &Arc<SetExpression>,
@@ -122,7 +122,7 @@ impl<C, M: QueryExpressionMapper<C>> QueryExpressionVisitor<QueryExpression, C> 
 }
 
 /// Java `QueryExpressionMapper.visit(BinaryOperatorExpression, C)`.
-// Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:35 QueryExpressionMapper.visit
+// Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:37 QueryExpressionMapper.visit
 pub fn default_visit_binary_operator_expression<C>(
     mapper: &mut (impl QueryExpressionVisitor<QueryExpression, C> + ?Sized),
     binary_operator_expression: &Arc<BinaryOperatorExpression>,
@@ -149,7 +149,7 @@ pub fn default_visit_binary_operator_expression<C>(
 }
 
 /// Java `QueryExpressionMapper.visit(FunctionExpression, C)`.
-// Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:52 QueryExpressionMapper.visit
+// Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:54 QueryExpressionMapper.visit
 pub fn default_visit_function_expression<C>(
     mapper: &mut (impl QueryExpressionVisitor<QueryExpression, C> + ?Sized),
     function_expression: &Arc<FunctionExpression>,
@@ -180,7 +180,7 @@ pub fn default_visit_function_expression<C>(
 }
 
 /// Java `QueryExpressionMapper.visit(LetExpression, C)`.
-// Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:74 QueryExpressionMapper.visit
+// Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:76 QueryExpressionMapper.visit
 pub fn default_visit_let_expression<C>(
     mapper: &mut (impl QueryExpressionVisitor<QueryExpression, C> + ?Sized),
     let_expression: &Arc<LetExpression>,
@@ -208,27 +208,27 @@ pub fn default_visit_let_expression<C>(
 }
 
 /// Java `QueryExpressionMapper.identity()`.
-// Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:94 QueryExpressionMapper.identity
+// Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:96 QueryExpressionMapper.identity
 pub fn identity() -> IdentityMapper {
     IdentityMapper
 }
 
 /// Returns a `QueryExpressionMapper` which applies all the mappings provided by `mappers`, in
 /// the reverse order of mapper array.
-// Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:102 QueryExpressionMapper.compose
+// Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:104 QueryExpressionMapper.compose
 pub fn compose<C>(
     mappers: Vec<Box<dyn QueryExpressionVisitor<QueryExpression, C>>>,
 ) -> ComposedQueryExpressionMapper<C> {
     ComposedQueryExpressionMapper { mappers }
 }
 
-// Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:107 QueryExpressionMapper.ComposedQueryExpressionMapper
+// Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:109 QueryExpressionMapper.ComposedQueryExpressionMapper
 pub struct ComposedQueryExpressionMapper<C> {
     mappers: Vec<Box<dyn QueryExpressionVisitor<QueryExpression, C>>>,
 }
 
 impl<C> ComposedQueryExpressionMapper<C> {
-    // Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:139 ComposedQueryExpressionMapper.mapAll
+    // Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:141 ComposedQueryExpressionMapper.mapAll
     fn map_all(&mut self, expression: QueryExpression, context: &C) -> QueryExpression {
         let mut expr = expression;
         for mapper in self.mappers.iter_mut().rev() {
@@ -239,6 +239,7 @@ impl<C> ComposedQueryExpressionMapper<C> {
 }
 
 impl<C> QueryExpressionMapper<C> for ComposedQueryExpressionMapper<C> {
+    // Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:117 ComposedQueryExpressionMapper.visit
     fn map_target_literal(
         &mut self,
         target_literal: &Arc<TargetLiteral>,
@@ -250,6 +251,7 @@ impl<C> QueryExpressionMapper<C> for ComposedQueryExpressionMapper<C> {
         )
     }
 
+    // Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:122 ComposedQueryExpressionMapper.visit
     fn map_binary_operator_expression(
         &mut self,
         binary_operator_expression: &Arc<BinaryOperatorExpression>,
@@ -261,6 +263,7 @@ impl<C> QueryExpressionMapper<C> for ComposedQueryExpressionMapper<C> {
         )
     }
 
+    // Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:127 ComposedQueryExpressionMapper.visit
     fn map_function_expression(
         &mut self,
         function_expression: &Arc<FunctionExpression>,
@@ -272,6 +275,7 @@ impl<C> QueryExpressionMapper<C> for ComposedQueryExpressionMapper<C> {
         )
     }
 
+    // Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:132 ComposedQueryExpressionMapper.visit
     fn map_let_expression(
         &mut self,
         let_expression: &Arc<LetExpression>,
@@ -280,6 +284,7 @@ impl<C> QueryExpressionMapper<C> for ComposedQueryExpressionMapper<C> {
         self.map_all(QueryExpression::Let(let_expression.clone()), context)
     }
 
+    // Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:137 ComposedQueryExpressionMapper.visit
     fn map_set_expression(
         &mut self,
         set_expression: &Arc<SetExpression>,
@@ -289,10 +294,14 @@ impl<C> QueryExpressionMapper<C> for ComposedQueryExpressionMapper<C> {
     }
 }
 
-// Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:150 QueryExpressionMapper.IdentityMapper
+// Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:152 QueryExpressionMapper.IdentityMapper
 pub struct IdentityMapper;
 
+// Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:159 IdentityMapper.visit
+// Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:179 IdentityMapper.visit
+// (the trait's defaults return the target literal and the set expression unchanged)
 impl QueryExpressionMapper<()> for IdentityMapper {
+    // Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:164 IdentityMapper.visit
     fn map_binary_operator_expression(
         &mut self,
         binary_operator_expression: &Arc<BinaryOperatorExpression>,
@@ -301,6 +310,7 @@ impl QueryExpressionMapper<()> for IdentityMapper {
         QueryExpression::BinaryOperator(binary_operator_expression.clone())
     }
 
+    // Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:169 IdentityMapper.visit
     fn map_function_expression(
         &mut self,
         function_expression: &Arc<FunctionExpression>,
@@ -309,6 +319,7 @@ impl QueryExpressionMapper<()> for IdentityMapper {
         QueryExpression::Function(function_expression.clone())
     }
 
+    // Java: com/google/devtools/build/lib/query2/engine/QueryExpressionMapper.java:174 IdentityMapper.visit
     fn map_let_expression(
         &mut self,
         let_expression: &Arc<LetExpression>,

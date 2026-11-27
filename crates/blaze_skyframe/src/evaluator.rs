@@ -531,6 +531,16 @@ impl Evaluator {
         }
     }
 
+    /// Removes the evaluation statistics (`postLoggingStats`) gathered for `function` since the
+    /// last [`Evaluator::post_logging_stats`].
+    ///
+    /// PORT: not a Bazel method. For a Blaze-only function that computes on Skyframe what Java
+    /// computes outside it (cquery's CQUERY_TRANSITION_RESOLVER, decisions.md), so that the
+    /// per-function statistics are Java's.
+    pub fn remove_evaluation_stats_of(&self, function: crate::SkyFunctionName) {
+        self.evaluation_stats.remove_function(function);
+    }
+
     pub fn computed_count(&self) -> u64 {
         self.computed.load(Ordering::Relaxed)
     }

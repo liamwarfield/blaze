@@ -563,12 +563,12 @@ impl SpawnLogContext for MockSpawnLogContext {
         _input_metadata_provider: &dyn InputMetadataProvider,
         _input_map: &dyn Fn() -> Arc<InputMapping>,
         file_system: &FileSystemRef,
-        timeout: Duration,
+        timeout: blaze_util::java_duration::JavaDuration,
         result: &SpawnResult,
     ) -> Result<(), ExecException> {
         self.calls.lock().push((
             spawn.get_mnemonic(),
-            timeout,
+            timeout.to_std().expect("a non-negative timeout"),
             result.status(),
             Arc::as_ptr(file_system) as *const () as usize,
         ));

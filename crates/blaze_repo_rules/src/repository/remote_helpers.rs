@@ -106,7 +106,7 @@ pub trait RepositoryRemoteExecutor: Send + Sync {
         execution_properties: &indexmap::IndexMap<String, String>,
         environment: &indexmap::IndexMap<String, String>,
         working_directory: Option<&str>,
-        timeout: std::time::Duration,
+        timeout: blaze_util::java_duration::JavaDuration,
     ) -> std::io::Result<ExecutionResult>;
 }
 
@@ -153,6 +153,34 @@ pub fn create_remote_repo_contents_cache() -> Option<Arc<dyn RemoteRepoContentsC
 pub fn create_repository_remote_executor() -> Option<Arc<dyn RepositoryRemoteExecutor>> {
     let delegate = DELEGATE.read().clone()?;
     delegate.create_executor()
+}
+
+/// The remote downloader of the command (`RemoteModule.setup`'s `GrpcRemoteDownloader`), built
+/// from the command's HTTP downloader, which it falls back to.
+pub type RemoteDownloaderFactory = Arc<
+    dyn Fn(
+            Arc<dyn blaze_repo_fetch::downloader::Downloader>,
+        ) -> Arc<dyn blaze_repo_fetch::downloader::Downloader>
+        + Send
+        + Sync,
+>;
+
+static REMOTE_DOWNLOADER: RwLock<Option<RemoteDownloaderFactory>> = RwLock::new(None);
+
+/// `env.getDownloaderDelegate().setDelegate(remoteDownloader)`: set by the remote module for the
+/// command (`None` resets it after the command).
+///
+/// PORT: Java's command environment owns the `DelegatingDownloader` that the repository module
+/// builds its `DownloadManager` with; here the repository setup builds its own
+/// (`crate::setup`), after the remote module's `beforeCommand`, and applies this factory to it.
+// Java: com/google/devtools/build/lib/remote/RemoteModule.java:960 RemoteModule.setup
+pub fn set_remote_downloader(factory: Option<RemoteDownloaderFactory>) {
+    *REMOTE_DOWNLOADER.write() = factory;
+}
+
+/// The command's remote downloader factory, if `--experimental_remote_downloader` is set.
+pub fn remote_downloader() -> Option<RemoteDownloaderFactory> {
+    REMOTE_DOWNLOADER.read().clone()
 }
 
 /// `RemoteExternalOverlayFileSystem.ensureMaterialized`, as `StarlarkBaseExternalContext` calls

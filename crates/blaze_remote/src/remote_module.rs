@@ -187,6 +187,66 @@ pub struct RemoteModule {
     /// The disk cache garbage collection task `beforeCommand` registers with `env.addIdleTask`
     /// (see [`RemoteModule::take_disk_cache_gc_idle_task`]).
     disk_cache_gc_idle_task: Option<crate::disk::DiskCacheGarbageCollectorIdleTask>,
+    /// `remoteDownloader`, as the factory that builds it (see [`RemoteDownloaderFactory`]).
+    remote_downloader: Option<Arc<RemoteDownloaderFactory>>,
+}
+
+/// `remoteDownloader = new GrpcRemoteDownloader(..., env.getHttpDownloader(), ...)` and
+/// `env.getDownloaderDelegate().setDelegate(remoteDownloader)`.
+///
+/// PORT: the HTTP downloader of the command is built by the repository setup
+/// (`blaze_repo_rules::setup`), after this module's `beforeCommand`; the runtime hands this
+/// factory to it, which builds the downloader with its HTTP downloader as the fallback and makes
+/// it the delegate of its `DelegatingDownloader`.
+pub struct RemoteDownloaderFactory {
+    build_request_id: String,
+    command_id: String,
+    /// `downloaderChannel` (one reference, released by `afterCommand`).
+    channel: ReferenceCountedChannel,
+    credentials: Option<Arc<dyn crate::grpc::channel::CallCredentials>>,
+    retrier: Arc<RemoteRetrier>,
+    cache_client: Arc<dyn RemoteCacheClient>,
+    digest_function: crate::reapi::digest_function::Value,
+    options: Arc<RemoteOptions>,
+    verbose_failures: bool,
+    created: parking_lot::Mutex<
+        Vec<Arc<crate::downloader::grpc_remote_downloader::GrpcRemoteDownloader>>,
+    >,
+}
+
+impl RemoteDownloaderFactory {
+    /// The command's remote downloader, falling back to `http_downloader`.
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:946 RemoteModule.setup
+    pub fn create(
+        &self,
+        http_downloader: Arc<dyn blaze_repo_fetch::downloader::Downloader>,
+    ) -> Arc<dyn blaze_repo_fetch::downloader::Downloader> {
+        let downloader = Arc::new(
+            crate::downloader::grpc_remote_downloader::GrpcRemoteDownloader::new(
+                self.build_request_id.clone(),
+                self.command_id.clone(),
+                self.channel.retain(),
+                self.credentials.clone(),
+                self.retrier.clone(),
+                self.cache_client.clone(),
+                self.digest_function,
+                self.options.clone(),
+                self.verbose_failures,
+                http_downloader,
+                self.options.remote_downloader_local_fallback,
+            ),
+        );
+        self.created.lock().push(downloader.clone());
+        downloader
+    }
+
+    /// `remoteDownloader.close()` of `afterCommandTask`, and the factory's own reference.
+    fn close(&self) {
+        for downloader in self.created.lock().drain(..) {
+            downloader.close();
+        }
+        self.channel.release();
+    }
 }
 
 // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1370 RemoteModule.createOptionsExitException
@@ -300,6 +360,7 @@ impl RemoteModule {
             command_id: env.command_id.clone(),
             build_event_artifact_uploader_factory: None,
             disk_cache_gc_idle_task: None,
+            remote_downloader: None,
         };
         // PORT: `knownMissingCasDigests` survives across commands in the Bazel server (cleared
         // by `clean`); one command per process here.
@@ -427,7 +488,10 @@ impl RemoteModule {
         if self.rewind_lost_inputs {
             let synchronizer = Arc::new(
                 crate::remote_rewound_action_synchronizer::RemoteRewoundActionSynchronizer::new(
-                    fetcher.clone(),
+                    fetcher.clone()
+                        as Arc<
+                            dyn crate::remote_rewound_action_synchronizer::RewoundActionOutputsHandler,
+                        >,
                 ),
             );
             if let Some(provider) = &self.action_context_provider {
@@ -536,8 +600,8 @@ impl RemoteModule {
         } = env;
         tracing_metadata_utils::set_tool_version(&tool_version);
 
-        // Java: `env.getRuntime().getFileSystem().getDigestFunction()`.
-        let hash_fn = DigestHashFunction::Sha256;
+        // Java: com/google/devtools/build/lib/remote/RemoteModule.java:440 RemoteModule.beforeCommand
+        let hash_fn: DigestHashFunction = file_system.get_digest_function();
         let digest_util = DigestUtil::new(hash_fn);
 
         // If --remote_cache is empty but --remote_executor is not, reuse the latter for the
@@ -969,6 +1033,32 @@ impl RemoteModule {
             digest_util.clone(),
         ));
         cache_channel.release();
+        // What the remote downloader takes (`remoteCacheClient`, `callCredentials`), before the
+        // cache client and the credentials provider move into the services below.
+        let downloader_parts = enable_remote_downloader.then(|| {
+            // Create a separate channel if --remote_downloader and --remote_cache point to
+            // different endpoints. (Java creates it at the end of `setup`; no call is made on it
+            // before the downloader's first download.)
+            let downloader_channel =
+                if remote_options_arc.remote_downloader == remote_options_arc.remote_cache {
+                    cache_channel.retain()
+                } else {
+                    create(
+                        /* headers_interceptor= */ None,
+                        remote_options_arc
+                            .remote_downloader
+                            .as_deref()
+                            .unwrap_or_default(),
+                        ServerCapabilitiesRequirement::None,
+                    )
+                };
+            (
+                remote_cache_client.clone(),
+                call_credentials_provider.get_call_credentials(),
+                digest_util.get_digest_function(),
+                downloader_channel,
+            )
+        });
 
         let mut disk_cache_client: Option<Arc<DiskCacheClient>> = None;
         if enable_disk_cache {
@@ -1072,12 +1162,29 @@ impl RemoteModule {
                 remote_options_arc.remote_build_event_upload_mode,
             )));
 
-        if enable_remote_downloader {
-            blaze_util::unported!(
-                "RemoteModule.setup (--experimental_remote_downloader: GrpcRemoteDownloader)"
-            );
+        if let Some((cache_client, call_credentials, digest_util_function, downloader_channel)) =
+            downloader_parts
+        {
+            self.remote_downloader = Some(Arc::new(RemoteDownloaderFactory {
+                build_request_id: build_request_id.clone(),
+                command_id: command_id.clone(),
+                channel: downloader_channel,
+                credentials: call_credentials,
+                retrier: retrier.clone(),
+                cache_client,
+                digest_function: digest_util_function,
+                options: remote_options_arc.clone(),
+                verbose_failures: execution_options.verbose_failures,
+                created: parking_lot::Mutex::new(Vec::new()),
+            }));
         }
         Ok(true)
+    }
+
+    /// The remote downloader of this command (`env.getDownloaderDelegate().setDelegate(...)`),
+    /// as the factory the repository setup applies.
+    pub fn get_remote_downloader(&self) -> Option<&Arc<RemoteDownloaderFactory>> {
+        self.remote_downloader.as_ref()
     }
 
     /// `afterCommand()`: shuts the services down (waiting for background uploads), deletes the
@@ -1093,8 +1200,10 @@ impl RemoteModule {
             provider.after_command();
         }
 
-        // PORT: `remoteDownloader.close()`: the remote downloader is not ported (setup fails
-        // loudly when it is requested).
+        // remoteDownloader.close() (afterCommandTask).
+        if let Some(remote_downloader) = self.remote_downloader.take() {
+            remote_downloader.close();
+        }
 
         if let Some(temp_path_generator) = self.temp_path_generator.take() {
             let temp_dir = temp_path_generator.get_temp_dir();

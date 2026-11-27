@@ -1,6 +1,6 @@
 //! Port of `lib/runtime/ProcessWrapper.java`: the command line of the `process-wrapper` tool.
 
-use std::time::Duration;
+use blaze_util::java_duration::JavaDuration;
 
 use blaze_vfs::PathFragment;
 use indexmap::IndexMap;
@@ -15,7 +15,7 @@ use crate::exec::bin_tools::BinTools;
 pub struct ProcessWrapper {
     bin_path: PathFragment,
     action_input: ActionInputRef,
-    kill_delay: Option<Duration>,
+    kill_delay: Option<JavaDuration>,
     graceful_sigterm: bool,
 }
 
@@ -27,7 +27,7 @@ impl ProcessWrapper {
     pub fn new(
         bin_path: PathFragment,
         action_input: ActionInputRef,
-        kill_delay: Option<Duration>,
+        kill_delay: Option<JavaDuration>,
         graceful_sigterm: bool,
     ) -> ProcessWrapper {
         ProcessWrapper {
@@ -44,7 +44,7 @@ impl ProcessWrapper {
     // Java: com/google/devtools/build/lib/runtime/ProcessWrapper.java:66 ProcessWrapper.fromCommandEnvironment
     pub fn from_bin_tools(
         bin_tools: &BinTools,
-        kill_delay: Option<Duration>,
+        kill_delay: Option<JavaDuration>,
         graceful_sigterm: bool,
     ) -> Option<ProcessWrapper> {
         let action_input = bin_tools.get_action_input(ProcessWrapper::BIN_BASENAME)?;
@@ -86,11 +86,11 @@ impl ProcessWrapper {
 pub struct CommandLineBuilder {
     process_wrapper_path: PathFragment,
     command_arguments: Vec<String>,
-    kill_delay: Option<Duration>,
+    kill_delay: Option<JavaDuration>,
     graceful_sigterm: bool,
     stdout_path: Option<PathFragment>,
     stderr_path: Option<PathFragment>,
-    timeout: Option<Duration>,
+    timeout: Option<JavaDuration>,
     statistics_path: Option<PathFragment>,
 }
 
@@ -110,8 +110,9 @@ impl CommandLineBuilder {
         self.stderr_path = Some(p);
         self
     }
-    pub fn set_timeout(&mut self, timeout: Duration) -> &mut Self {
-        self.timeout = Some(timeout);
+    // Java: com/google/devtools/build/lib/runtime/ProcessWrapper.java:155 ProcessWrapper.CommandLineBuilder.setTimeout
+    pub fn set_timeout(&mut self, timeout: impl Into<JavaDuration>) -> &mut Self {
+        self.timeout = Some(timeout.into());
         self
     }
     // Java: com/google/devtools/build/lib/runtime/ProcessWrapper.java:161 ProcessWrapper.CommandLineBuilder.setStatisticsPath
@@ -133,10 +134,11 @@ impl CommandLineBuilder {
     pub fn build(&self) -> Vec<String> {
         let mut full = vec![self.process_wrapper_path.get_path_string().to_string()];
         if let Some(t) = self.timeout {
-            full.push(format!("--timeout={}", t.as_secs()));
+            // Duration.toSeconds(): signed.
+            full.push(format!("--timeout={}", t.to_seconds()));
         }
         if let Some(k) = self.kill_delay {
-            full.push(format!("--kill_delay={}", k.as_secs()));
+            full.push(format!("--kill_delay={}", k.to_seconds()));
         }
         if let Some(p) = &self.stdout_path {
             full.push(format!("--stdout={}", p.get_path_string()));

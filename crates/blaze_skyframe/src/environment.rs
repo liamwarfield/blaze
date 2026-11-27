@@ -857,6 +857,16 @@ impl SkyframeLookupResult {
             .map(downcast_value::<K>))
     }
 
+    /// Untyped [`SkyframeLookupResult::get_or_throw_with`], for a batch of keys of several
+    /// types (Java `getOrThrow(key, E1.class, E2.class)` on a `SkyKey`).
+    pub fn get_or_throw_dyn_with<T>(
+        &self,
+        key: &SkyKey,
+        catch: impl FnOnce(&SkyError) -> Option<T>,
+    ) -> Result<Option<SkyValue>, T> {
+        self.get_or_throw_internal(key, catch)
+    }
+
     // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:667 SkyFunctionEnvironment.getOrThrow
     fn get_or_throw_internal<T>(
         &self,

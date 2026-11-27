@@ -13,7 +13,7 @@
 
 use std::fmt;
 
-use blaze_vfs::RootedPath;
+use blaze_vfs::{DetailedIOException, RootedPath};
 
 /// Which Java `IOException` class an [`IOException`] stands for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,6 +32,8 @@ pub enum IOExceptionKind {
         path_to_chain: Vec<RootedPath>,
         chain: Vec<RootedPath>,
     },
+    /// `DetailedIOException` (vfs), thrown by a file system with its own failure detail.
+    Detailed(DetailedIOException),
 }
 
 /// A Java `IOException` (or subclass, see [`IOExceptionKind`]). `Display` is `getMessage()`.
@@ -50,9 +52,23 @@ impl IOException {
         }
     }
 
-    /// An `IOException` thrown by the file system layer.
+    /// An `IOException` thrown by the file system layer: a `DetailedIOException` keeps its class.
     pub fn from_io(e: &std::io::Error) -> IOException {
-        IOException::new(e.to_string())
+        match DetailedIOException::find(e) {
+            Some(detailed) => IOException {
+                kind: IOExceptionKind::Detailed(detailed.clone()),
+                message: detailed.get_message().to_owned(),
+            },
+            None => IOException::new(e.to_string()),
+        }
+    }
+
+    /// `e instanceof DetailedIOException ? (DetailedIOException) e : null`.
+    pub fn as_detailed(&self) -> Option<&DetailedIOException> {
+        match &self.kind {
+            IOExceptionKind::Detailed(detailed) => Some(detailed),
+            _ => None,
+        }
     }
 
     /// Used to indicate a filesystem inconsistency, e.g. file 'a/b' exists but directory 'a'

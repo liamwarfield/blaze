@@ -5,8 +5,9 @@
 //! `blaze_remote::remote_module`.
 //!
 //! PORT: Java's `BlazeCommandDispatcher` / `BlazeRuntime` call the module hooks for every
-//! command; Blaze calls them from the build command (`crate::commands::build`) for build/test and
-//! from the dispatcher ([`dispatcher_before_command`]) for the other commands, which get
+//! command; Blaze runs `beforeCommand` from the dispatcher for every command
+//! ([`dispatcher_before_command`]) and the other hooks from the build command
+//! (`crate::commands::build`), which takes the module over; the commands that do not build get
 //! `beforeCommand` / `afterCommand` only (the commands other than build/test that execute
 //! actions refuse the remote options loudly in `crate::unported_options`). A command without
 //! any remote option keeps the placeholder provider of `blaze_exec::exec::executor_setup`.
@@ -96,9 +97,10 @@ pub(crate) fn before_command(
     env: &CommandEnvironment,
     options: &OptionsParsingResult,
 ) -> Result<Option<RemoteSupport>, AbruptExitException> {
-    // A command other than build/test that builds (coverage, run, fetch, vendor, print_action):
-    // the dispatcher already ran RemoteModule.beforeCommand for it; its module (if any) is this
-    // command's, and dispatcher_after_command then has nothing left to do for it.
+    // The dispatcher already ran RemoteModule.beforeCommand for the command (see
+    // dispatcher_before_command); its module (if any) is this command's, and
+    // dispatcher_after_command then has nothing left to do for it. Without the dispatcher (a
+    // build run directly, as in tests) the module is set up here.
     let module = if DISPATCHER_RAN.load(std::sync::atomic::Ordering::SeqCst) {
         DISPATCHER_MODULE.lock().take()
     } else {
@@ -314,6 +316,14 @@ fn set_up_module(
     if !module.cache_available() {
         notify_no_cache_available(env);
     }
+    // env.getDownloaderDelegate().setDelegate(remoteDownloader) (RemoteModule.setup).
+    blaze_repo_rules::repository::remote_helpers::set_remote_downloader(
+        module.get_remote_downloader().map(|factory| {
+            let factory = factory.clone();
+            Arc::new(move |http_downloader| factory.create(http_downloader))
+                as blaze_repo_rules::repository::remote_helpers::RemoteDownloaderFactory
+        }),
+    );
     Ok(Some(module))
 }
 
@@ -435,6 +445,8 @@ fn init_repo_helpers_and_overlay_fs(
 pub(crate) fn reset_repo_helpers_and_overlay_fs(env: &CommandEnvironment) {
     blaze_remote::remote_module::end_command_for_last_remote_output_checker();
     blaze_repo_rules::repository::remote_helpers::reset_repository_remote_helpers_factory();
+    // The command's DelegatingDownloader ends with the command.
+    blaze_repo_rules::repository::remote_helpers::set_remote_downloader(None);
     if let Some(remote_fs) = remote_external_overlay_file_system(env) {
         remote_fs.after_command();
     }
@@ -542,10 +554,12 @@ static DISPATCHER_MODULE: Mutex<Option<RemoteModule>> = Mutex::new(None);
 /// (Java runs `beforeCommand` once per command).
 static DISPATCHER_RAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// `RemoteModule.beforeCommand(env)` for the commands other than `build` / `test` (which set the
-/// module up in `crate::commands::build`, see [`before_command`]): `RemoteOptions` is a common
-/// command option (`RemoteModule.getCommonCommandOptions`), so `beforeCommand` runs for every
-/// command. When nothing remote is requested, `setup` returns with the placeholder provider
+/// `RemoteModule.beforeCommand(env)` for every command, from the dispatcher before the Starlark
+/// options are parsed (`BlazeCommandDispatcher.java:493`, before `:768`), so that a repository
+/// a Starlark flag needs is already served by the remote repo contents cache and `Invocation
+/// ID` is reported first. `build` / `test` and the other commands that build take the module
+/// over in [`before_command`]. `RemoteOptions` is a common command option
+/// (`RemoteModule.getCommonCommandOptions`), so `beforeCommand` runs for every command. When nothing remote is requested, `setup` returns with the placeholder provider
 /// after `tempPathGenerator = getTempPathGenerator(env)` ("Found stale downloads from previous
 /// build, deleting..."); otherwise it sets the module up as for a build (the eager capabilities
 /// check, the caches, the stale-downloads cleanup). `executorInit` and the build hooks are not
@@ -561,11 +575,11 @@ pub(crate) fn dispatcher_before_command(
     *DISPATCHER_TEMP_DIR.lock() = None;
     *DISPATCHER_MODULE.lock() = None;
     DISPATCHER_RAN.store(false, std::sync::atomic::Ordering::SeqCst);
-    if matches!(env.get_command_name(), "build" | "test") {
-        return Ok(());
-    }
     let Some(remote_options) = env.get_options().get_options::<RemoteOptions>() else {
-        // Quit if no supported command is being used.
+        // Quit if no supported command is being used: `setup` returns false, so
+        // `beforeCommand` tells the overlay that no cache is available.
+        // Java: com/google/devtools/build/lib/remote/RemoteModule.java:416 RemoteModule.beforeCommand
+        notify_no_cache_available(env);
         return Ok(());
     };
     DISPATCHER_RAN.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -582,6 +596,9 @@ pub(crate) fn dispatcher_before_command(
         *DISPATCHER_MODULE.lock() = module;
         return Ok(());
     }
+    // Nothing remote requested: `setup` returns false (no cache).
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:416 RemoteModule.beforeCommand
+    notify_no_cache_available(env);
     let exec_root = env.get_exec_root();
     match blaze_remote::remote_module::get_temp_path_generator(
         &env.get_directories().get_action_temps_directory(&exec_root),
@@ -910,6 +927,16 @@ impl RemoteSupport {
         }
     }
 
+    /// The `WalkableGraph` of `RemoteOutputService.setActionInputFetcher(actionInputFetcher,
+    /// SkyframeExecutorWrappingWalkableGraph.of(env.getSkyframeExecutor()))`, given to the
+    /// rewound action synchronizer once the command's Skyframe executor exists.
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1298 RemoteModule.executorInit
+    pub(crate) fn set_rewinding_action_graph(&self, graph: Arc<dyn blaze_skyframe::WalkableGraph>) {
+        if let Some(synchronizer) = self.module.lock().get_rewound_action_synchronizer() {
+            synchronizer.set_graph(Arc::new(SkyframeRewindingActionGraph { graph }));
+        }
+    }
+
     /// `RemoteExecutionService.onBuildInterrupted(BuildInterruptedEvent)`.
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:2091 RemoteExecutionService.onBuildInterrupted
     pub(crate) fn build_interrupted(&self) {
@@ -1091,4 +1118,47 @@ fn is_owned_by_coverage_report(input: &ActionInputRef) -> bool {
                 if key == blaze_analysis::coverage_report_value::CoverageReportKey::action_lookup_key()
         )
     })
+}
+
+/// The reads of `RemoteRewoundActionSynchronizer.lockKeysFor` on the command's Skyframe graph
+/// (`SkyframeExecutorWrappingWalkableGraph`).
+struct SkyframeRewindingActionGraph {
+    graph: Arc<dyn blaze_skyframe::WalkableGraph>,
+}
+
+impl blaze_remote::remote_rewound_action_synchronizer::RewindingActionGraph
+    for SkyframeRewindingActionGraph
+{
+    // Java: com/google/devtools/build/lib/remote/RemoteRewoundActionSynchronizer.java:389 RemoteRewoundActionSynchronizer.lockKeysFor
+    fn is_action_template(&self, key: &blaze_actions::ActionLookupData) -> bool {
+        // (ActionLookupValue) checkNotNull(graph.getValue(key.getActionLookupKey()), artifact)
+        let actions =
+            crate::commands::print_action::owner_actions(&*self.graph, key.get_action_lookup_key())
+                .unwrap_or_else(|| panic!("NullPointerException: {key:?}"));
+        // owner.getActions().get(key.getActionIndex()) instanceof ActionTemplate
+        blaze_exec::actions::action_template::as_action_template(
+            &*actions[key.get_action_index() as usize],
+        )
+        .is_some()
+    }
+
+    // Java: com/google/devtools/build/lib/remote/RemoteRewoundActionSynchronizer.java:389 RemoteRewoundActionSynchronizer.lockKeysFor
+    fn get_expansion_generating_action_keys(
+        &self,
+        key: &blaze_actions::ActionLookupData,
+        tree: &blaze_actions::Artifact,
+    ) -> Vec<blaze_actions::ActionLookupData> {
+        use blaze_sky_exec::action_template_expansion_value::ActionTemplateExpansionValue;
+        let expansion_key = ActionTemplateExpansionValue::key(
+            key.get_action_lookup_key().clone(),
+            key.get_action_index(),
+        );
+        let expansion = self
+            .graph
+            .get_value(&blaze_skyframe::SkyKey::new(expansion_key))
+            .unwrap_or_else(|| panic!("NullPointerException: {tree}"))
+            .downcast::<ActionTemplateExpansionValue>()
+            .unwrap_or_else(|_| panic!("ClassCastException: ACTION_TEMPLATE_EXPANSION value"));
+        expansion.get_generating_action_keys(tree)
+    }
 }

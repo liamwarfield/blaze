@@ -62,7 +62,7 @@ impl QueryFunctionBase for ConfigFunction {
 
 impl QueryFunction<CqueryNode> for ConfigFunction {
     /// This function is only viable with ConfiguredTargetQueryEnvironment.
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfigFunction.java:65 ConfigFunction.eval
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfigFunction.java:66 ConfigFunction.eval
     fn eval(
         &self,
         env: &dyn QueryEnvironment<CqueryNode>,
@@ -104,7 +104,7 @@ impl QueryFunction<CqueryNode> for ConfigFunction {
 ///   configuration's checksum, any prefix of its checksum, or the special identifiers "target"
 ///   or "null".
 /// - `callback`: the callback to receive the results of this method.
-// Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:409 ConfiguredTargetQueryEnvironment.getConfiguredTargetsForConfigFunction
+// Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:405 ConfiguredTargetQueryEnvironment.getConfiguredTargetsForConfigFunction
 fn get_configured_targets_for_config_function(
     env: &PostAnalysisGraph,
     pattern: &str,

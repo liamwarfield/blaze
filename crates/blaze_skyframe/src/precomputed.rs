@@ -47,6 +47,7 @@ impl fmt::Debug for ClientEnvironmentKey {
 
 impl Key for ClientEnvironmentKey {
     type Value = EnvironmentVariableValue;
+    // Java: com/google/devtools/build/lib/skyframe/ClientEnvironmentFunction.java:54 ClientEnvironmentFunction.Key.functionName
     const FUNCTION: SkyFunctionName = CLIENT_ENVIRONMENT_VARIABLE;
     // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:24 SkyFunctions.CLIENT_ENVIRONMENT_VARIABLE (createNonHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
@@ -116,6 +117,8 @@ impl PartialEq for PrecomputedValue {
     }
 }
 
+// PORT: skipped, the value is type-erased, so the text has no value; it appears only in Skyframe dumps: PrecomputedValue.toString
+// PORT: skipped, PrecomputedValue is compared (values_equal), never hashed: PrecomputedValue.hashCode
 impl fmt::Debug for PrecomputedValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // PORT: Java prints "<BuildVariable " + value + ">"; the value is type-erased here.
@@ -127,7 +130,13 @@ impl fmt::Debug for PrecomputedValue {
 /// (Java `AbstractSkyKey.toString`).
 ///
 /// PORT: Java's `UnshareableKey` (remote caching of values) is not represented.
+///
+/// `Key.create(name)` is the tuple constructor; `functionName()` is [`Key::FUNCTION`].
 // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:191 PrecomputedValue.Key
+// Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:198 PrecomputedValue.Key.create
+// Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:208 PrecomputedValue.Key.functionName
+// PORT: skipped, key interning (the keys are plain values here): PrecomputedValue.Key.intern Key.getSkyKeyInterner
+// PORT: skipped, shareability only matters to remote analysis caching, which stops with unported!: UnshareableKey.UnshareableKey UnshareableKey.create UnshareableKey.intern UnshareableKey.functionName UnshareableKey.valueIsShareable UnshareableKey.getSkyKeyInterner
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PrecomputedKey(pub &'static str);
 
@@ -207,7 +216,14 @@ impl<T: PartialEq + Send + Sync + 'static> Precomputed<T> {
     }
 
     /// Injects a value between evaluations.
+    ///
+    /// The modules' `getPrecomputedValues()` (`PrecomputedValue.injected(precomputed, value)`,
+    /// `Injected.inject`) are set this way by the commands.
     // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:176 Precomputed.set
+    // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:71 PrecomputedValue.injected
+    // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:56 PrecomputedValue.Injected.<init>
+    // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:61 PrecomputedValue.Injected.inject
+    // PORT: skipped, debugging text: PrecomputedValue.Injected.toString
     pub fn set_on(&self, evaluator: &Evaluator, value: T) {
         evaluator.inject(self.key, PrecomputedValue::new(value));
     }

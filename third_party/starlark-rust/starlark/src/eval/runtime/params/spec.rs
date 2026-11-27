@@ -1390,11 +1390,14 @@ impl<V: Copy> ParametersSpec<V> { // BLAZE PATCH 0065
                 result.push((self.param_names[i].clone(), DefParameterRole::KeywordOnly, default_of(i))); // BLAZE PATCH 0065
             } // BLAZE PATCH 0065
         } // BLAZE PATCH 0065
+        // The names of `*args` and `**kwargs` are kept with their stars; Java's are the bare // BLAZE PATCH 0065
+        // identifiers. // BLAZE PATCH 0065
+        let bare = |name: &str| name.trim_start_matches('*').to_owned(); // BLAZE PATCH 0065
         if let Some(i) = args { // BLAZE PATCH 0065
-            result.push((self.param_names[i].clone(), DefParameterRole::Varargs, None)); // BLAZE PATCH 0065
+            result.push((bare(&self.param_names[i]), DefParameterRole::Varargs, None)); // BLAZE PATCH 0065
         } // BLAZE PATCH 0065
         if let Some(i) = kwargs { // BLAZE PATCH 0065
-            result.push((self.param_names[i].clone(), DefParameterRole::Kwargs, None)); // BLAZE PATCH 0065
+            result.push((bare(&self.param_names[i]), DefParameterRole::Kwargs, None)); // BLAZE PATCH 0065
         } // BLAZE PATCH 0065
         result // BLAZE PATCH 0065
     } // BLAZE PATCH 0065

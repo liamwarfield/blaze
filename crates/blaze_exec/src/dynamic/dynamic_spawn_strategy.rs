@@ -199,11 +199,14 @@ impl DynamicSpawnStrategy {
                 .load(std::sync::atomic::Ordering::SeqCst)
             {
                 // PORT: skipped, profiling ("delay local branch").
-                if branch::interruptible_sleep(Duration::from_millis(
-                    self.options.local_execution_delay.max(0) as u64,
-                ))
-                .is_err()
-                {
+                // Thread.sleep(options.localExecutionDelay): a negative value is an
+                // IllegalArgumentException, unchecked.
+                // Java: com/google/devtools/build/lib/dynamic/LocalBranch.java:154 LocalBranch.callImpl
+                let delay = self.options.local_execution_delay;
+                if delay < 0 {
+                    panic!("java.lang.IllegalArgumentException: timeout value is negative");
+                }
+                if branch::interruptible_sleep(Duration::from_millis(delay as u64)).is_err() {
                     return Err(ExecException::Interrupted);
                 }
             }

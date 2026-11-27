@@ -91,6 +91,13 @@ impl FileSystem for HookFs {
     fn stat(&self, path: &PathFragment, follow_symlinks: bool) -> io::Result<FileStatus> {
         self.inner.stat(path, follow_symlinks)
     }
+    fn stat_metadata(
+        &self,
+        path: &PathFragment,
+        follow_symlinks: bool,
+    ) -> io::Result<Option<std::sync::Arc<dyn blaze_vfs::StatMetadata>>> {
+        self.inner.stat_metadata(path, follow_symlinks)
+    }
     fn stat_if_found(
         &self,
         path: &PathFragment,

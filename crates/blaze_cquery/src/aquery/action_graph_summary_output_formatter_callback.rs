@@ -97,7 +97,7 @@ impl<'a> ActionGraphSummaryOutputFormatterCallback<'a> {
         }
     }
 
-    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphSummaryOutputFormatterCallback.java:83 ActionGraphSummaryOutputFormatterCallback.processAction
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphSummaryOutputFormatterCallback.java:84 ActionGraphSummaryOutputFormatterCallback.processAction
     fn process_action(&self, action: &dyn Action) {
         if !matches_aquery_filters(
             action,
@@ -169,7 +169,7 @@ impl<'a> ActionGraphSummaryOutputFormatterCallback<'a> {
 impl NamedThreadSafeOutputFormatterCallback<KeyedConfiguredTargetValue>
     for ActionGraphSummaryOutputFormatterCallback<'_>
 {
-    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphSummaryOutputFormatterCallback.java:53 ActionGraphSummaryOutputFormatterCallback.getName
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphSummaryOutputFormatterCallback.java:54 ActionGraphSummaryOutputFormatterCallback.getName
     fn get_name(&self) -> String {
         "summary".to_owned()
     }
@@ -189,7 +189,7 @@ impl Callback<KeyedConfiguredTargetValue> for ActionGraphSummaryOutputFormatterC
 impl OutputFormatterCallback<KeyedConfiguredTargetValue>
     for ActionGraphSummaryOutputFormatterCallback<'_>
 {
-    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphSummaryOutputFormatterCallback.java:58 ActionGraphSummaryOutputFormatterCallback.processOutput
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphSummaryOutputFormatterCallback.java:59 ActionGraphSummaryOutputFormatterCallback.processOutput
     fn process_output(
         &self,
         partial_result: &[KeyedConfiguredTargetValue],
@@ -227,7 +227,7 @@ impl OutputFormatterCallback<KeyedConfiguredTargetValue>
         Ok(())
     }
 
-    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphSummaryOutputFormatterCallback.java:114 ActionGraphSummaryOutputFormatterCallback.close
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphSummaryOutputFormatterCallback.java:116 ActionGraphSummaryOutputFormatterCallback.close
     fn close(&self, fail_fast: bool) -> Result<(), OutputFormatterError> {
         if fail_fast {
             return Ok(());

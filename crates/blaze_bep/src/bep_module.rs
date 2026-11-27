@@ -419,6 +419,12 @@ impl ThrowingBuildEventArtifactUploaderSupplier {
 }
 
 // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:1029 BuildEventServiceModule.BuildEventOutputStreamFactoryImpl.create
+// The factory itself (an interface with one implementation, made per command) is this function
+// with the base it closes over.
+// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:1017 BuildEventServiceModule.BuildEventOutputStreamFactory.create
+// Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:1024 BuildEventServiceModule.BuildEventOutputStreamFactoryImpl.<init>
+// PORT: skipped, one implementation called directly: BuildEventServiceModule.createBuildEventOutputStreamFactory
+// PORT: skipped, test-only hooks (@VisibleForTesting): BuildEventServiceModule.setBuildEventOutputStreamFactory, BuildEventServiceModule.getBepTransports
 // Java: com/google/devtools/build/lib/runtime/LocalInstrumentationOutput.java:64 LocalInstrumentationOutput.createOutputStream
 fn open_output(base: &blaze_vfs::Path, file_path: &str) -> std::io::Result<Box<dyn Write + Send>> {
     // createInstrumentationOutput(..., DestinationRelativeTo.WORKSPACE_OR_HOME, ...,

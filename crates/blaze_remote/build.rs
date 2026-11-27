@@ -160,5 +160,34 @@ fn main() {
         ))
         .build();
 
-    Builder::new().compile(&[execution, action_cache, cas, capabilities, byte_stream]);
+    // The Remote Asset API's `Fetch` (the remote downloader; Java: `FetchGrpc` generated from
+    // `build/bazel/remote/asset/v1/remote_asset.proto`).
+    let asset = |t: &str| format!("blaze_protos::build::bazel::remote::asset::v1::{t}");
+    let fetch = Service::builder()
+        .name("Fetch")
+        .package("build.bazel.remote.asset.v1")
+        .method(method(
+            "fetch_blob",
+            "FetchBlob",
+            asset("FetchBlobRequest"),
+            asset("FetchBlobResponse"),
+            Streaming::Unary,
+        ))
+        .method(method(
+            "fetch_directory",
+            "FetchDirectory",
+            asset("FetchDirectoryRequest"),
+            asset("FetchDirectoryResponse"),
+            Streaming::Unary,
+        ))
+        .build();
+
+    Builder::new().compile(&[
+        execution,
+        action_cache,
+        cas,
+        capabilities,
+        byte_stream,
+        fetch,
+    ]);
 }

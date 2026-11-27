@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# Runs the shell functions of the `http-cache` family of Bazel's tests by hand on the oracle or on
+# Blaze: the 11 functions of src/test/shell/bazel/remote/remote_execution_http_test.sh that use
+# the HTTP cache and test_async_upload_works_for_flaky_tests of remote_execution_test.sh. The
+# functions are taken verbatim from the pinned source; the test framework's helpers they use
+# (bazel, fail, expect_log, expect_not_log, add_rules_cc, add_rules_shell, start_worker,
+# stop_worker, pick_random_unused_tcp_port, is_linux) are defined here.
+#
+# usage: scripts/remote-http/http-cache-probe <oracle|BINARY> <side-name> [FUNCTION_REGEX]
+#        scripts/remote-http/http-cache-probe help
+#
+# One workspace and one output user root per side, reused by every function:
+#   ~/.cache/blaze/work/remote-7/http-probe/<side-name>/{ws,ur,tmp,worker,log/<function>.log}
+# Between functions the workspace is emptied and its output base expunged; the worker (Bazel's
+# remote worker from worker_deploy.jar, with --http_listen_port as the test's set_up starts it)
+# is started and stopped per function as the tests do. startup --max_idle_secs=60,
+# build --jobs=4; the server is shut down after each function. Everything runs inside one
+#   systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0
+# unit. Blaze runs with BLAZE_SERVER_MODE=daemon. Prints one line per function: name, PASS or
+# FAIL and the failure message.
+set -uo pipefail
+if [[ "${1:-help}" == "help" || "${1:-}" == "--help" || $# -lt 2 ]]; then
+  sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+CACHE="$HOME/.cache/blaze"
+SRC="$CACHE/src/bazel-9.3.2"
+if [[ "$1" == "oracle" ]]; then
+  BIN="$CACHE/oracle/bazel-9.3.2-linux-x86_64"
+else
+  BIN="$(realpath "$1")"
+fi
+SIDE="$2"
+REGEX="${3:-.*}"
+BASE="$CACHE/work/remote-7/http-probe/$SIDE"
+
+if [[ "${HTTP_PROBE_IN_UNIT:-}" != "1" ]]; then
+  mkdir -p "$BASE"
+  exec systemd-run --user --collect --wait --quiet --pipe -p MemoryMax=12G -p MemorySwapMax=0 \
+    --setenv=HOME="$HOME" --setenv=PATH=/usr/bin:/bin:/usr/sbin --setenv=HTTP_PROBE_IN_UNIT=1 \
+    --setenv=BLAZE_SERVER_MODE=daemon "$(realpath "$0")" "$@"
+fi
+
+INSTALL="$CACHE/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9"
+JAVA="$INSTALL/embedded_tools/jdk/bin/java"
+JAR="$CACHE/work/upstream-src/bazel-bin/src/tools/remote/worker_deploy.jar"
+LOCKFILE="$SRC/src/test/tools/bzlmod/MODULE.bazel.lock"
+WS="$BASE/ws"
+UR="$BASE/ur"
+export TEST_TMPDIR="$BASE/tmp"
+BAZELRC="$BASE/bazelrc"
+mkdir -p "$WS" "$UR" "$TEST_TMPDIR" "$BASE/log" "$BASE/home"
+# testenv.sh's setup_bazelrc (without its output user root), then the memory rule's options.
+cat > "$BAZELRC" <<EOF
+common --show_progress_rate_limit=-1
+common --color=no --curses=no
+build --sandbox_tmpfs_path=/tmp
+build --incompatible_skip_genfiles_symlink=false
+build --incompatible_use_toolchain_resolution_for_java_rules
+build --java_runtime_version=21
+build --tool_java_runtime_version=21
+common --repository_cache=$CACHE/repo-cache
+common --repo_env=BAZEL_HTTP_RULES_URLS_AS_DEFAULT_CANONICAL_ID=0
+startup --max_idle_secs=60
+build --jobs=4
+EOF
+
+# --- the test framework's helpers -------------------------------------------------------------
+bazel() {
+  HOME="$BASE/home" "$BIN" --bazelrc="$BAZELRC" --output_user_root="$UR" "$@"
+}
+fail() {
+  echo "FAIL: $*" >> "$RESULT"
+  exit 1
+}
+expect_log() {
+  grep -q -- "$1" "$TEST_log" || fail "${2:-Expected regexp \"$1\" not found}"
+}
+expect_not_log() {
+  grep -q -- "$1" "$TEST_log" && fail "${2:-Unexpected regexp \"$1\" found}"
+  return 0
+}
+is_linux() { return 0; }
+pick_random_unused_tcp_port() {
+  python3 -c 'import socket; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1])'
+}
+get_version_from_default_lock_file() {
+  sed -n "s|.*modules/$1/\([^/]*\)/source\.json.*|\1|p" "$LOCKFILE" | head -1
+}
+add_bazel_dep() {
+  echo "bazel_dep(name = \"$1\", version = \"$(get_version_from_default_lock_file "$1")\")" >> "$2"
+}
+add_rules_cc() { add_bazel_dep rules_cc "$1"; }
+add_rules_shell() { add_bazel_dep rules_shell "$1"; }
+start_worker() {
+  work_path="$BASE/worker/work"
+  cas_path="$BASE/worker/cas"
+  pid_file="$BASE/worker/pid"
+  mkdir -p "$work_path" "$cas_path" \
+    "$BASE/worker/runfiles/io_bazel/src/tools/remote/src/main/java/com/google/devtools/build/remote/worker"
+  worker_port=$(pick_random_unused_tcp_port)
+  RUNFILES_DIR="$BASE/worker/runfiles" "$JAVA" -jar "$JAR" --work_path="$work_path" \
+    --cas_path="$cas_path" --listen_port="$worker_port" --pid_file="$pid_file" "$@" \
+    >> "$BASE/worker/log" 2>&1 &
+  WORKER_PID=$!
+  local i
+  for i in $(seq 1 150); do [[ -s "$pid_file" ]] && break; sleep 0.2; done
+}
+stop_worker() {
+  if [[ -n "${WORKER_PID:-}" ]]; then
+    kill -9 "$WORKER_PID" 2>/dev/null
+    wait "$WORKER_PID" 2>/dev/null
+    WORKER_PID=
+  fi
+  chmod -R u+w "$BASE/worker" 2>/dev/null
+  rm -rf "$BASE/worker"
+}
+
+# --- the functions under test ---------------------------------------------------------------
+HTTP_TEST="$SRC/src/test/shell/bazel/remote/remote_execution_http_test.sh"
+REMOTE_TEST="$SRC/src/test/shell/bazel/remote/remote_execution_test.sh"
+REMOTE_UTILS="$SRC/src/test/shell/bazel/remote/remote_utils.sh"
+function_body() {
+  awk -v name="$2" '$0 ~ "^function " name "\\(\\) \\{" {p=1} p {print} p && /^}/ {exit}' "$1"
+}
+for f in count_remote_ac_files count_remote_cas_files remote_cas_file_exist \
+    delete_remote_cas_files; do
+  eval "$(function_body "$REMOTE_UTILS" "$f")"
+done
+HTTP_FUNCTIONS=(
+  test_remote_http_cache_flag
+  test_cc_binary_http_cache
+  test_cc_binary_http_cache_bad_server
+  test_directory_artifact_starlark_http_cache
+  test_directory_artifact_in_runfiles_starlark_http_cache
+  test_remote_state_cleared
+  test_genrule_combined_disk_http_cache
+  test_remote_http_cache_with_bad_netrc_content
+  test_remote_http_cache_with_unused_netrc_no_warning
+  test_remote_http_cache_with_netrc_warning
+  test_remote_http_cache_with_missing_cas_referenced_by_ac
+)
+eval "$(function_body "$HTTP_TEST" set_directory_artifact_starlark_testfixtures)"
+for f in "${HTTP_FUNCTIONS[@]}"; do eval "$(function_body "$HTTP_TEST" "$f")"; done
+eval "$(function_body "$REMOTE_TEST" test_async_upload_works_for_flaky_tests)"
+
+reset_workspace() {
+  if [[ -f "$WS/MODULE.bazel" ]]; then
+    (cd "$WS" && bazel clean --expunge >/dev/null 2>&1)
+    (cd "$WS" && bazel shutdown >/dev/null 2>&1)
+  fi
+  chmod -R u+w "$WS" 2>/dev/null
+  rm -rf "$WS"
+  mkdir -p "$WS"
+  : > "$WS/MODULE.bazel"
+  cp "$LOCKFILE" "$WS/MODULE.bazel.lock"
+}
+
+run_one() {
+  local name="$1" setup="$2"
+  reset_workspace
+  export TEST_log="$BASE/log/$name.log"
+  RESULT="$BASE/log/$name.result"
+  : > "$TEST_log"
+  : > "$RESULT"
+  (
+    cd "$WS" || exit 1
+    if [[ "$setup" == http ]]; then
+      http_port=$(pick_random_unused_tcp_port)
+      start_worker --http_listen_port=${http_port}
+    else
+      start_worker
+    fi
+    "$name"
+    rc=$?
+    bazel clean >> "$TEST_log" 2>&1
+    stop_worker
+    exit $rc
+  ) >> "$BASE/log/$name.out" 2>&1
+  local rc=$?
+  (cd "$WS" && bazel shutdown >/dev/null 2>&1)
+  if [[ $rc -eq 0 ]]; then
+    echo -e "$name\tPASS"
+  else
+    echo -e "$name\tFAIL\t$(head -1 "$RESULT")"
+  fi
+}
+
+for f in "${HTTP_FUNCTIONS[@]}"; do
+  [[ "$f" =~ $REGEX ]] && run_one "$f" http
+done
+[[ test_async_upload_works_for_flaky_tests =~ $REGEX ]] && \
+  run_one test_async_upload_works_for_flaky_tests grpc
+reset_workspace
+(cd "$WS" && bazel shutdown >/dev/null 2>&1)
+exit 0

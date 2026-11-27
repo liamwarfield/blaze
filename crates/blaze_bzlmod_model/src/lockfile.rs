@@ -22,6 +22,12 @@ use crate::repo_spec::{AttributeValuesAdapter, RepoRuleId, RepoSpec};
 use crate::resolution::LockfileMode;
 use crate::version::java_string_compare;
 
+// Gson's adapter registry has no counterpart: the writer and reader below apply each type's
+// adapter directly at the field it serializes (marked per adapter).
+// PORT: skipped GsonTypeAdapterUtil.newGsonBuilder: Gson adapter registry (see above).
+// PORT: skipped OptionalChecksumTypeAdapterFactory.create: Gson adapter registry (see above).
+// PORT: skipped DelegateTypeAdapterFactory.create: Gson adapter registry (see above).
+
 /// The current lockfile version.
 // Java: com/google/devtools/build/lib/bazel/bzlmod/BazelLockFileValue.java:46 BazelLockFileValue.LOCK_FILE_VERSION
 pub const LOCK_FILE_VERSION: i32 = 28;
@@ -351,6 +357,7 @@ impl BazelLockFileValue {
             // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:64 GsonTypeAdapterUtil.STRING_ADAPTER
             out.name(&internal_to_unicode(url));
             // OptionalChecksumTypeAdapter: checksums are ASCII.
+            // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:377 GsonTypeAdapterUtil.OptionalChecksumTypeAdapterFactory.OptionalChecksumTypeAdapter.write
             match checksum {
                 Some(c) => out.value_str(&c.to_string()),
                 None => out.value_str("not found"),
@@ -447,6 +454,7 @@ impl BazelLockFileValue {
                         v,
                         &path,
                         |k| Ok(string_adapter_read(k)),
+                        // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:386 GsonTypeAdapterUtil.OptionalChecksumTypeAdapterFactory.OptionalChecksumTypeAdapter.read
                         |c, p| {
                             let s = expect_string(c, p)?;
                             if s == "not found" {
@@ -546,6 +554,7 @@ fn write_lock_file_module_extension(out: &mut JsonWriter, ext: &LockFileModuleEx
     out.name("moduleExtensionMetadata");
     match &ext.module_extension_metadata {
         // Optional.empty with serializeNulls false: the name is dropped.
+        // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:306 GsonTypeAdapterUtil.OptionalTypeAdapter.write
         None => {
             out.null_value();
         }
@@ -686,6 +695,7 @@ fn read_lock_file_module_extension(
                 )?);
             }
             "moduleExtensionMetadata" => {
+                // Java: com/google/devtools/build/lib/bazel/bzlmod/GsonTypeAdapterUtil.java:322 GsonTypeAdapterUtil.OptionalTypeAdapter.read
                 module_extension_metadata = match val {
                     JsonValue::Null => None,
                     other => Some(read_metadata(other, &p)?),

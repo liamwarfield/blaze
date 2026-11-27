@@ -39,17 +39,27 @@ const INTERRUPTED_EXIT_CODE: i32 = 8;
 
 /// A BuildRequest represents a single invocation of the build tool by a user (the parts the
 /// analysis-only path reads).
+//
+// PORT: skipped, BuildRequest as an OptionsProvider (BuildOptions are created from the command's options parser, blaze_runtime createBuildOptions); getExplicitStarlarkOptions throws in Java: BuildRequest.getStarlarkOptions BuildRequest.getScopesAttributes BuildRequest.getExplicitStarlarkOptions
+// PORT: skipped, always false at the pin and read by no caller: BuildRequest.isMultiConfigBuild
+// PORT: skipped, the build id (the command id) is only logged and passed to OutputService.startBuild, whose implementations at the pin ignore it; the start time and the OutErr are the command's (blaze_runtime new_build_result, RuntimeBuildRequestView): BuildRequest.getId BuildRequest.getStartTime
+// PORT: skipped, the setters of the values above and the startup options, which no reader of BuildRequest takes: Builder.setId Builder.setStartTimeMillis Builder.setOutErr Builder.setStartupOptions
 // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:57 BuildRequest
 pub struct BuildRequest {
     /// `getCommandName()`.
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:301 BuildRequest.getCommandName
     pub command_name: String,
     /// `getTargets()`.
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:315 BuildRequest.getTargets
     pub targets: Vec<String>,
     /// `getKeepGoing()`.
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:354 BuildRequest.getKeepGoing
     pub keep_going: bool,
     /// `getLoadingPhaseThreadCount()`.
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:359 BuildRequest.getLoadingPhaseThreadCount
     pub loading_phase_threads: usize,
     /// `getLoadingOptions()`.
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:344 BuildRequest.getLoadingOptions
     pub loading_options: LoadingOptions,
     /// `getBuildOptions().performAnalysisPhase`.
     pub perform_analysis_phase: bool,
@@ -58,10 +68,13 @@ pub struct BuildRequest {
     /// `getAspects()`.
     pub aspects: Vec<String>,
     /// `getCheckForActionConflicts()`.
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:462 BuildRequest.getCheckForActionConflicts
     pub check_for_action_conflicts: bool,
     /// `reportIncompatibleTargets()`.
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:466 BuildRequest.reportIncompatibleTargets
     pub report_incompatible_targets: bool,
     /// `getViewOptions().skipIncompatibleExplicitTargets`.
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:349 BuildRequest.getViewOptions
     pub skip_incompatible_explicit_targets: bool,
     /// `getOptions(RemoteAnalysisCachingOptions.class)` (`None`: the command has no such
     /// options).
@@ -69,6 +82,7 @@ pub struct BuildRequest {
     /// `getBuildOptions()`.
     build_request_options: BuildRequestOptions,
     /// `getExecutionOptions().localTestJobs` (`None`: the command has no `ExecutionOptions`).
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:364 BuildRequest.getExecutionOptions
     local_test_jobs: Option<i32>,
     run_tests: bool,
     needs_instrumentation_filter: bool,
@@ -124,7 +138,19 @@ const VALIDATION_ASPECT_NAME: &str = "ValidateTarget";
 impl BuildRequest {
     /// `BuildRequest.builder().setCommandName(...).setOptions(options).setTargets(targets)
     /// .setCheckforActionConflicts(...).setReportIncompatibleTargets(...).build()`.
+    ///
+    /// `getOptions(Class)` and `getPackageOptions()` are read here, into the fields above, or by
+    /// the command from its options parser.
     // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:225 BuildRequest.<init>
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:73 BuildRequest.builder
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:99 BuildRequest.Builder.setOptions
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:111 BuildRequest.Builder.setCommandName
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:123 BuildRequest.Builder.setTargets
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:147 BuildRequest.Builder.setCheckforActionConflicts
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:162 BuildRequest.Builder.setReportIncompatibleTargets
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:168 BuildRequest.Builder.build
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:327 BuildRequest.getOptions
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:339 BuildRequest.getPackageOptions
     pub fn new(
         command_name: &str,
         options: &OptionsParser,
@@ -186,6 +212,7 @@ impl BuildRequest {
     /// order (seen in `FlagSetFunction.validateNoExtraFlagsSet`'s "Found [...]" list). Blaze's
     /// `get_user_options` keeps insertion order; it is reordered here.
     // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:225 BuildRequest.<init>
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:290 BuildRequest.getUserOptions
     fn user_options(options: &OptionsParser) -> IndexMap<String, String> {
         let user_options = options.get_user_options();
         let keys: Vec<String> = user_options.keys().cloned().collect();
@@ -394,7 +421,10 @@ pub enum BuildToolError {
     /// `InvalidConfigurationException`.
     #[error("{}", .0.get_message())]
     InvalidConfiguration(InvalidConfigurationException),
-    /// `ExitException` / `AbruptExitException` (already a detailed exit code).
+    /// `ExitException` / `AbruptExitException` (already a detailed exit code): its message is
+    /// the failure detail's.
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1253 BuildTool.ExitException.<init>
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1258 BuildTool.ExitException.getDetailedExitCode
     #[error("{}", .0.get_failure_detail().map(|f| f.message.as_str()).unwrap_or(""))]
     Exit(DetailedExitCode),
     /// `InterruptedException`.
@@ -549,9 +579,22 @@ pub trait BuildEventHooks {
 }
 
 /// Provides the bulk of the implementation of the 'blaze build' command.
+//
+// Remote analysis caching (Skycache) needs --experimental_remote_analysis_cache_mode other than
+// OFF, which stops with unported! in `project::evaluate_project_file` (with OFF Java uses
+// DisabledDependenciesProvider, whose mode serializes nothing and logs no statistics):
+// PORT: skipped, behind the unported! remote analysis cache mode: BuildTool.serializeValues BuildTool.tryWriteSkycacheMetadata BuildTool.logAnalysisCachingStats BuildTool.reportRemoteAnalysisServiceStats BuildTool.reportRemoteAnalysisCachingStats BuildTool.formatBytes BuildTool.getActiveDirectoriesMatcher
+// PORT: skipped, behind the unported! remote analysis cache mode: RemoteAnalysisCachingDependenciesProviderImpl.forAnalysis RemoteAnalysisCachingDependenciesProviderImpl.finalizeActiveDirectoriesMatcher RemoteAnalysisCachingDependenciesProviderImpl.RemoteAnalysisCachingDependenciesProviderImpl RemoteAnalysisCachingDependenciesProviderImpl.initAnalysisObjectCodecs
+// PORT: skipped, behind the unported! remote analysis cache mode: RemoteAnalysisCachingDependenciesProviderImpl.mode RemoteAnalysisCachingDependenciesProviderImpl.serializedFrontierProfile RemoteAnalysisCachingDependenciesProviderImpl.hasActiveDirectoriesMatcher RemoteAnalysisCachingDependenciesProviderImpl.withinActiveDirectories RemoteAnalysisCachingDependenciesProviderImpl.getSkyValueVersion
+// PORT: skipped, behind the unported! remote analysis cache mode: RemoteAnalysisCachingDependenciesProviderImpl.getObjectCodecs RemoteAnalysisCachingDependenciesProviderImpl.getFingerprintValueService RemoteAnalysisCachingDependenciesProviderImpl.getFileInvalidationWriter RemoteAnalysisCachingDependenciesProviderImpl.getAnalysisCacheClient RemoteAnalysisCachingDependenciesProviderImpl.getMetadataWriter
+// PORT: skipped, behind the unported! remote analysis cache mode: RemoteAnalysisCachingDependenciesProviderImpl.getJsonLogWriter RemoteAnalysisCachingDependenciesProviderImpl.recordRetrievalResult RemoteAnalysisCachingDependenciesProviderImpl.recordSerializationException RemoteAnalysisCachingDependenciesProviderImpl.setTopLevelConfigChecksum RemoteAnalysisCachingDependenciesProviderImpl.setConfigMetadata
+// PORT: skipped, behind the unported! remote analysis cache mode: RemoteAnalysisCachingDependenciesProviderImpl.queryMetadataAndMaybeBailout RemoteAnalysisCachingDependenciesProviderImpl.getConfigurationOptionsAsStrings RemoteAnalysisCachingDependenciesProviderImpl.lookupKeysToInvalidate RemoteAnalysisCachingDependenciesProviderImpl.getAnalysisCacheInvalidator
+// PORT: skipped, behind the unported! remote analysis cache mode: RemoteAnalysisCachingDependenciesProviderImpl.getSkycacheMetadataParams RemoteAnalysisCachingDependenciesProviderImpl.bailedOut RemoteAnalysisCachingDependenciesProviderImpl.areMetadataQueriesEnabled
+// PORT: skipped, the Skyframe memory dump stops with unported! in process_request (Java measures Java objects): BuildTool.dumpSkyframeMemory
 // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:206 BuildTool
 pub struct BuildTool<'a> {
     skyframe_executor: &'a SkyframeExecutor,
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1243 BuildTool.getReporter
     reporter: Arc<dyn ExtendedEventHandler>,
     relative_working_directory: PathFragment,
     analysis_post_processor: &'a dyn AnalysisPostProcessor,
@@ -632,7 +675,21 @@ impl<'a> BuildTool<'a> {
     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:858 BuildTool.processRequest
     pub fn process_request(&self, request: &BuildRequest) -> DetailedExitCode {
         match self.build_targets(request) {
-            Ok(()) => DetailedExitCode::success(),
+            Ok(()) => {
+                // if (env.getSkyframeExecutor() instanceof SequencedSkyframeExecutor &&
+                // request.getBuildOptions().skyframeMemoryDump != null) dumpSkyframeMemory(...):
+                // Bazel's executor is the sequenced one.
+                // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:922 BuildTool.processRequest
+                if request.get_build_options().skyframe_memory_dump.is_some() {
+                    // PORT: SkyframeMemoryDumper measures the Java objects of the graph; the
+                    // dump (`skyframe_memory.json` in the output base) cannot be reproduced.
+                    blaze_util::unported!(
+                        "BuildTool.dumpSkyframeMemory",
+                        "--experimental_skyframe_memory_dump"
+                    );
+                }
+                DetailedExitCode::success()
+            }
             Err(BuildToolError::BuildFailed {
                 message,
                 failure_detail,
@@ -862,6 +919,7 @@ impl<'a> BuildTool<'a> {
                 &analysis_result,
             )?;
 
+            // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1141 BuildTool.needsExecutionPhase
             if request.perform_execution_phase {
                 match self.execution_phase {
                     Some(execution_phase) => execution_phase.execute_build(

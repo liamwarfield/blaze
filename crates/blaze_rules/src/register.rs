@@ -14,6 +14,7 @@ pub fn register_factories(builder: &mut ConfiguredRuleClassProviderBuilder) {
     crate::java::register(builder);
     crate::extra::register(builder);
     crate::rules_core::register(builder);
+    crate::starlarkdocextract::register(builder);
 }
 
 /// Bazel's analysis rule class provider.

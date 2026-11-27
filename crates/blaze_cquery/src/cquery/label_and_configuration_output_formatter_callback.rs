@@ -17,7 +17,7 @@ use crate::cquery::cquery_threadsafe_callback::{CqueryThreadsafeCallback, short_
 use crate::post_analysis_query_environment::NamedThreadSafeOutputFormatterCallback;
 
 /// Default Output callback for cquery. Prints a label and configuration pair per result.
-// Java: com/google/devtools/build/lib/query2/cquery/LabelAndConfigurationOutputFormatterCallback.java:31 LabelAndConfigurationOutputFormatterCallback
+// Java: com/google/devtools/build/lib/query2/cquery/LabelAndConfigurationOutputFormatterCallback.java:32 LabelAndConfigurationOutputFormatterCallback
 pub struct LabelAndConfigurationOutputFormatterCallback<'a> {
     base: CqueryThreadsafeCallback<'a>,
     show_kind: bool,
@@ -25,7 +25,7 @@ pub struct LabelAndConfigurationOutputFormatterCallback<'a> {
 }
 
 impl<'a> LabelAndConfigurationOutputFormatterCallback<'a> {
-    // Java: com/google/devtools/build/lib/query2/cquery/LabelAndConfigurationOutputFormatterCallback.java:35 LabelAndConfigurationOutputFormatterCallback.<init>
+    // Java: com/google/devtools/build/lib/query2/cquery/LabelAndConfigurationOutputFormatterCallback.java:36 LabelAndConfigurationOutputFormatterCallback.<init>
     pub fn new(
         base: CqueryThreadsafeCallback<'a>,
         show_kind: bool,
@@ -42,7 +42,7 @@ impl<'a> LabelAndConfigurationOutputFormatterCallback<'a> {
 impl NamedThreadSafeOutputFormatterCallback<CqueryNode>
     for LabelAndConfigurationOutputFormatterCallback<'_>
 {
-    // Java: com/google/devtools/build/lib/query2/cquery/LabelAndConfigurationOutputFormatterCallback.java:49 LabelAndConfigurationOutputFormatterCallback.getName
+    // Java: com/google/devtools/build/lib/query2/cquery/LabelAndConfigurationOutputFormatterCallback.java:50 LabelAndConfigurationOutputFormatterCallback.getName
     fn get_name(&self) -> String {
         if self.show_kind {
             "label_kind"
@@ -99,7 +99,7 @@ fn required_fragment_strings(keyed_configured_target: &CqueryNode) -> String {
 }
 
 impl OutputFormatterCallback<CqueryNode> for LabelAndConfigurationOutputFormatterCallback<'_> {
-    // Java: com/google/devtools/build/lib/query2/cquery/LabelAndConfigurationOutputFormatterCallback.java:54 LabelAndConfigurationOutputFormatterCallback.processOutput
+    // Java: com/google/devtools/build/lib/query2/cquery/LabelAndConfigurationOutputFormatterCallback.java:55 LabelAndConfigurationOutputFormatterCallback.processOutput
     fn process_output(&self, partial_result: &[CqueryNode]) -> Result<(), OutputFormatterError> {
         for keyed_configured_target in partial_result {
             let mut output = String::new();

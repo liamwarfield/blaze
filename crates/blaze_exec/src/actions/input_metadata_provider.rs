@@ -14,7 +14,7 @@ use blaze_util::Fingerprint;
 
 use super::action_input::ActionInputRef;
 use super::cache::metadata_digest_utils::{MetadataDigestUtils, add_to};
-use super::file_artifact_value::FileArtifactValue;
+use super::file_artifact_value::{FileArtifactValue, FileStateType};
 
 /// Port of `InputMetadataProvider`: metadata of the inputs of the action being executed.
 // Java: com/google/devtools/build/lib/actions/InputMetadataProvider.java:31 InputMetadataProvider
@@ -86,17 +86,29 @@ pub fn expand_artifacts(
 }
 
 /// Port of `TreeArtifactValue` (the parts the execution layer reads).
+///
+/// `toString()` is the `Debug` form.
 // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java TreeArtifactValue
+// Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:414 TreeArtifactValue.toString
+// PORT: skipped, equality serves only change pruning, and blaze_sky_exec's ActionExecutionValue values_equal treats a value with tree artifacts as never equal (it prunes less, which no output shows): TreeArtifactValue.equals TreeArtifactValue.hashCode
+// PORT: skipped, no caller at the pin (TreeArtifactValueCodec, serialization, is not ported): TreeArtifactValue.empty TreeArtifactValue.getChildPaths TreeArtifactValue.childDataBuilder TreeArtifactValue.newMultiBuilder
+// PORT: skipped, no caller at the pin: MultiBuilder.MultiBuilder MultiBuilder.addTree MultiBuilder.putChild MultiBuilder.setArchivedRepresentation MultiBuilder.forEach
 #[derive(Debug, Clone, Default)]
 pub struct TreeArtifactValue {
     /// `getChildValues()`: the `TreeFileArtifact` children (sorted by exec path, as Java's
     /// `ImmutableSortedMap`) with their metadata.
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:368 TreeArtifactValue.getChildValues
     pub child_values: Vec<(ActionInputRef, FileArtifactValue)>,
-    /// `getArchivedRepresentation()`: the archived artifact and its metadata.
+    /// `getArchivedRepresentation()`: the archived artifact and its metadata
+    /// (`ArchivedRepresentation.create(archivedTreeFileArtifact, archivedFileValue)`).
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:348 TreeArtifactValue.getArchivedRepresentation
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:181 TreeArtifactValue.ArchivedRepresentation.<init>
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:186 TreeArtifactValue.ArchivedRepresentation.create
     pub archived_representation: Option<(ActionInputRef, FileArtifactValue)>,
     /// `getMetadata()`: the aggregate value.
     pub metadata: Option<FileArtifactValue>,
     /// `getResolvedPath()`.
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:357 TreeArtifactValue.getResolvedPath
     pub resolved_path: Option<PathFragment>,
 }
 
@@ -124,6 +136,10 @@ impl TreeArtifactValue {
     /// DIRECTORY, the digest, size 0, not remote, no resolved path); a remote or resolved-path
     /// tree gets [`FileArtifactValue::TreeArtifactComposite`].
     // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:686 TreeArtifactValue.Builder.build
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:625 TreeArtifactValue.Builder.<init>
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:641 TreeArtifactValue.Builder.putChild
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:653 TreeArtifactValue.Builder.setArchivedRepresentation
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:676 TreeArtifactValue.Builder.setResolvedPath
     pub fn build(
         mut child_values: Vec<(ActionInputRef, FileArtifactValue)>,
         archived_representation: Option<(ActionInputRef, FileArtifactValue)>,
@@ -213,6 +229,7 @@ impl TreeArtifactValue {
     /// first exception of any thread; here the walk is a sequential depth-first traversal in
     /// `readdir` order.
     // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:612 TreeArtifactValue.visitTree
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:524 TreeArtifactValue.Visitor.<init>
     pub fn visit_tree(
         parent_dir: &Path,
         tree_artifact_visitor: &mut dyn FnMut(&PathFragment, DirentType, bool) -> io::Result<()>,
@@ -288,6 +305,31 @@ impl TreeArtifactValue {
     // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:257 TreeArtifactValue.TreeArtifactCompositeFileArtifactValue.getDigest
     pub fn get_digest(&self) -> Option<&[u8]> {
         self.metadata.as_ref().and_then(|m| m.get_digest())
+    }
+
+    /// Returns true if the `TreeFileArtifact`s are only stored remotely: `entirelyRemote` of
+    /// [`TreeArtifactValue::build`] (an archived representation and every child remote; false
+    /// for `EMPTY`), which the aggregate metadata carries.
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:389 TreeArtifactValue.isEntirelyRemote
+    pub fn is_entirely_remote(&self) -> bool {
+        matches!(
+            self.metadata,
+            Some(FileArtifactValue::TreeArtifactComposite {
+                is_remote: super::file_artifact_value::NotInEquality(true),
+                ..
+            })
+        )
+    }
+
+    /// `getTotalChildBytes()`: the sizes of the regular-file children (`totalChildSize` of
+    /// [`TreeArtifactValue::build`]).
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:343 TreeArtifactValue.getTotalChildBytes
+    pub fn get_total_child_bytes(&self) -> i64 {
+        self.child_values
+            .iter()
+            .filter(|(_, metadata)| metadata.get_type() == FileStateType::RegularFile)
+            .map(|(_, metadata)| metadata.get_size())
+            .sum()
     }
 }
 
@@ -366,6 +408,15 @@ pub struct RunfilesArtifactValue {
 }
 
 impl RunfilesArtifactValue {
+    /// The file and tree artifacts of this runfiles tree.
+    ///
+    /// PORT: Java also concatenates the filesets; this value holds none (a fileset input is
+    /// `unported!` where the input map is built).
+    // Java: com/google/devtools/build/lib/actions/RunfilesArtifactValue.java:141 RunfilesArtifactValue.getAllArtifacts
+    pub fn get_all_artifacts(&self) -> impl Iterator<Item = &ActionInputRef> {
+        self.files.iter().chain(self.trees.iter())
+    }
+
     // Java: com/google/devtools/build/lib/actions/RunfilesArtifactValue.java:60 RunfilesArtifactValue.<init>
     pub fn new(
         runfiles_tree: Arc<dyn RunfilesTree>,
@@ -501,6 +552,7 @@ pub struct FilesetOutputSymlink {
 
 /// Port of `FilesetOutputTree`.
 // Java: com/google/devtools/build/lib/actions/FilesetOutputTree.java FilesetOutputTree
+// PORT: skipped, only the non-open-sourced fileset rule creates Fileset artifacts (RuleClass.setOutputFileKind), so Bazel has no fileset output trees: FilesetOutputTree.forward FilesetOutputTree.create FilesetOutputTree.symlinks FilesetOutputTree.isForwarded FilesetOutputTree.size FilesetOutputTree.isEmpty FilesetOutputTree.hashCode FilesetOutputTree.equals FilesetOutputTree.toString FilesetOutputTree.addTo
 #[derive(Debug, Clone, Default)]
 pub struct FilesetOutputTree {
     pub symlinks: Vec<FilesetOutputSymlink>,

@@ -54,6 +54,12 @@ use crate::precomputed::{
     AUTOLOAD_SYMBOLS, CONFIG_SETTING_VISIBILITY_POLICY, DEFAULT_VISIBILITY,
     LAZY_MACRO_EXPANSION_PACKAGES, PATH_PACKAGE_LOCATOR, REPOSITORY_OVERRIDES, STARLARK_SEMANTICS,
 };
+use crate::prepare_deps::{
+    CollectPackagesUnderDirectoryFunction, CollectPackagesUnderDirectoryKey,
+    CollectTargetsInPackageKey, PrepareDepsOfPatternFunction, PrepareDepsOfPatternKey,
+    PrepareDepsOfTargetsUnderDirectoryFunction, PrepareDepsOfTargetsUnderDirectoryKey,
+    TargetPatternSequence, collect_targets_in_package_function, prepare_deps_of_patterns_function,
+};
 use crate::recursive_pkg::{
     PackageErrorKey, PackageErrorMessageKey, RecursivePkgFunction, RecursivePkgKey,
     package_error_function, package_error_message_function,
@@ -68,6 +74,7 @@ use crate::repos::{
 use crate::starlark_builtins::{StarlarkBuiltinsFunction, StarlarkBuiltinsKey};
 use crate::target_pattern_function::{TargetPatternKey, target_pattern_function};
 use crate::transitive_target::{TransitiveTargetKey, transitive_target_function};
+use crate::transitive_traversal::{TransitiveTraversalKey, transitive_traversal_function};
 use blaze_packages::build::package_factory::PackageFactory;
 use blaze_packages::builtins::{AutoloadSymbols, BazelStarlarkEnvironment};
 use blaze_packages::native_rules::RuleClassProvider;
@@ -346,6 +353,12 @@ pub fn register_loading_functions(
         }))
     });
     let recursive_pkg_function = RecursivePkgFunction::new(config.directories.clone());
+    let collect_packages_under_directory_function =
+        CollectPackagesUnderDirectoryFunction::new(config.directories.clone());
+    let prepare_deps_of_targets_under_directory_function =
+        PrepareDepsOfTargetsUnderDirectoryFunction::new(config.directories.clone());
+    let prepare_deps_of_pattern_function =
+        PrepareDepsOfPatternFunction::new(config.pkg_locator.clone());
     let repo_file_function = RepoFileFunction::new(
         config.native_registry.clone(),
         Root::from_path(config.directories.get_workspace().clone()),
@@ -386,7 +399,44 @@ pub fn register_loading_functions(
         .typed_function::<PackageErrorMessageKey, _>(package_error_message_function)
         .typed_function::<PackageErrorKey, _>(package_error_function)
         .typed_function::<TargetPatternKey, _>(target_pattern_function)
-        .typed_function::<TransitiveTargetKey, _>(transitive_target_function)
+        .function(
+            <TransitiveTargetKey as blaze_skyframe::Key>::FUNCTION,
+            blaze_skyframe::Tagged {
+                function: blaze_skyframe::typed::<TransitiveTargetKey, _>(
+                    transitive_target_function,
+                ),
+                // Java: com/google/devtools/build/lib/skyframe/TransitiveBaseTraversalFunction.java:159 TransitiveBaseTraversalFunction.extractTag
+                tag: |k: &blaze_skyframe::SkyKey| {
+                    k.downcast::<TransitiveTargetKey>()
+                        .map(|k| blaze_cmdline::Label::print(Some(k.get_label())))
+                },
+            },
+        )
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:807 SkyframeExecutor.skyFunctions (SkyQuery's universe)
+        .function(
+            <TransitiveTraversalKey as blaze_skyframe::Key>::FUNCTION,
+            blaze_skyframe::Tagged {
+                function: blaze_skyframe::typed::<TransitiveTraversalKey, _>(
+                    transitive_traversal_function,
+                ),
+                // Java: com/google/devtools/build/lib/skyframe/TransitiveBaseTraversalFunction.java:159 TransitiveBaseTraversalFunction.extractTag
+                tag: |k: &blaze_skyframe::SkyKey| {
+                    k.downcast::<TransitiveTraversalKey>()
+                        .map(|k| blaze_cmdline::Label::print(Some(k.get_label())))
+                },
+            },
+        )
+        .typed_function::<TargetPatternSequence, _>(prepare_deps_of_patterns_function)
+        .typed_function::<PrepareDepsOfPatternKey, _>(move |k, env| {
+            prepare_deps_of_pattern_function.compute(k, env)
+        })
+        .typed_function::<PrepareDepsOfTargetsUnderDirectoryKey, _>(move |k, env| {
+            prepare_deps_of_targets_under_directory_function.compute(k, env)
+        })
+        .typed_function::<CollectTargetsInPackageKey, _>(collect_targets_in_package_function)
+        .typed_function::<CollectPackagesUnderDirectoryKey, _>(move |k, env| {
+            collect_packages_under_directory_function.compute(k, env)
+        })
         // Java: PACKAGE takes a PackageIdentifier or a PackagePieceIdentifier.ForBuildFile.
         .function(crate::sky_functions::PACKAGE, {
             let package_function = package_function.map(Arc::new);

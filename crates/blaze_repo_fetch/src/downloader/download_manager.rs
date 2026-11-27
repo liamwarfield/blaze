@@ -21,6 +21,7 @@ use crate::fs_utils;
 use crate::uri::{JavaUri, uri_list_to_string};
 
 /// Creates `Credentials` from a map of per-URI authentication headers.
+// Java: com/google/devtools/build/lib/bazel/repository/downloader/DownloadManager.java:78 DownloadManager.CredentialFactory.create
 pub type CredentialFactory =
     Arc<dyn Fn(&HashMap<JavaUri, Headers>) -> Arc<dyn Credentials> + Send + Sync>;
 
@@ -40,14 +41,17 @@ impl Postable for CacheProgress {
 }
 
 impl FetchProgress for CacheProgress {
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/DownloadManager.java:587 DownloadManager.CacheProgress.getResourceIdentifier
     fn get_resource_identifier(&self) -> String {
         self.original_url.clone()
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/DownloadManager.java:592 DownloadManager.CacheProgress.getProgress
     fn get_progress(&self) -> String {
         self.progress.clone()
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/DownloadManager.java:597 DownloadManager.CacheProgress.isFinished
     fn is_finished(&self) -> bool {
         self.is_finished
     }
@@ -121,27 +125,33 @@ impl DownloadManager {
         self.download_cache = download_cache;
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/DownloadManager.java:100 DownloadManager.setDistdir
     pub fn set_distdir(&mut self, distdir: Vec<Path>) {
         self.distdir = distdir;
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/DownloadManager.java:104 DownloadManager.setUrlRewriter
     pub fn set_url_rewriter(&mut self, rewriter: Option<UrlRewriter>) {
         self.rewriter = rewriter;
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/DownloadManager.java:108 DownloadManager.setDisableDownload
     pub fn set_disable_download(&mut self, disable_download: bool) {
         self.disable_download = disable_download;
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/DownloadManager.java:112 DownloadManager.setRetries
     pub fn set_retries(&mut self, retries: i32) {
         assert!(retries >= 0, "IllegalArgumentException: Invalid retries");
         self.retries = retries;
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/DownloadManager.java:117 DownloadManager.setNetrcCreds
     pub fn set_netrc_creds(&mut self, netrc_creds: Option<Arc<dyn Credentials>>) {
         self.netrc_creds = netrc_creds;
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/DownloadManager.java:121 DownloadManager.setCredentialFactory
     pub fn set_credential_factory(&mut self, credential_factory: CredentialFactory) {
         self.credential_factory = credential_factory;
     }
@@ -150,6 +160,7 @@ impl DownloadManager {
     ///
     /// PORT: Java submits to an executor and registers with a `Phaser` for cancellation; Blaze
     /// runs one thread per download and has no cancellation.
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/DownloadManager.java:125 DownloadManager.startDownload
     pub fn start_download(
         self: &Arc<Self>,
         original_urls: Vec<JavaUri>,

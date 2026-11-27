@@ -97,9 +97,19 @@ pub fn register_execution_functions(
                     .map(action_execution_function::ActionExecutionFunctionValue::into_sky_value))
             },
         )
-        .typed_function::<ArtifactKey, _>(move |k, env| {
-            artifact_function::compute_artifact(&artifact_executor, &*seam_artifact, k, env)
-        })
+        .function(
+            <ArtifactKey as blaze_skyframe::Key>::FUNCTION,
+            blaze_skyframe::Tagged {
+                function: blaze_skyframe::typed::<ArtifactKey, _>(move |k, env| {
+                    artifact_function::compute_artifact(&artifact_executor, &*seam_artifact, k, env)
+                }),
+                // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:372 ArtifactFunction.extractTag
+                tag: |k: &blaze_skyframe::SkyKey| {
+                    k.downcast::<ArtifactKey>()
+                        .map(|k| blaze_cmdline::Label::print(k.0.get_owner().as_ref()))
+                },
+            },
+        )
         .typed_function::<ArtifactNestedSetKey, _>(artifact_function::compute_artifact_nested_set)
         .typed_function::<DirectoryArtifactTraversalRequest, _>(move |k, env| {
             recursive_filesystem_traversal.compute(k, env)
@@ -108,39 +118,72 @@ pub fn register_execution_functions(
         // registered untyped.
         .function(
             <TargetCompletionKey as blaze_skyframe::Key>::FUNCTION,
-            move |k: &blaze_skyframe::SkyKey, env: &mut blaze_skyframe::Environment<'_>| {
-                let k = k
-                    .downcast::<TargetCompletionKey>()
-                    .expect("key type matches function name");
-                completion_function::compute_target_completion(
-                    &completion_executor,
-                    &*seam_tc,
-                    k,
-                    env,
-                )
+            blaze_skyframe::Tagged {
+                function:
+                    move |k: &blaze_skyframe::SkyKey, env: &mut blaze_skyframe::Environment<'_>| {
+                        let k = k
+                            .downcast::<TargetCompletionKey>()
+                            .expect("key type matches function name");
+                        completion_function::compute_target_completion(
+                            &completion_executor,
+                            &*seam_tc,
+                            k,
+                            env,
+                        )
+                    },
+                // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:461 CompletionFunction.extractTag
+                tag: |k: &blaze_skyframe::SkyKey| {
+                    k.downcast::<TargetCompletionKey>().map(|k| {
+                        blaze_cmdline::Label::print(k.action_lookup_key.get_label().as_ref())
+                    })
+                },
             },
         )
         .function(
             <AspectCompletionKey as blaze_skyframe::Key>::FUNCTION,
-            move |k: &blaze_skyframe::SkyKey, env: &mut blaze_skyframe::Environment<'_>| {
-                let k = k
-                    .downcast::<AspectCompletionKey>()
-                    .expect("key type matches function name");
-                completion_function::compute_aspect_completion(
-                    &aspect_completion_executor,
-                    &*seam_ac,
-                    k,
-                    env,
-                )
+            blaze_skyframe::Tagged {
+                function:
+                    move |k: &blaze_skyframe::SkyKey, env: &mut blaze_skyframe::Environment<'_>| {
+                        let k = k
+                            .downcast::<AspectCompletionKey>()
+                            .expect("key type matches function name");
+                        completion_function::compute_aspect_completion(
+                            &aspect_completion_executor,
+                            &*seam_ac,
+                            k,
+                            env,
+                        )
+                    },
+                // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:461 CompletionFunction.extractTag
+                tag: |k: &blaze_skyframe::SkyKey| {
+                    k.downcast::<AspectCompletionKey>().map(|k| {
+                        blaze_cmdline::Label::print(k.action_lookup_key.get_label().as_ref())
+                    })
+                },
             },
         )
-        .typed_function::<TestCompletionKey, _>(move |k, env| {
-            test_completion_function::compute_test_completion(
-                &*seam_test,
-                unrunnable_test_reporter.as_deref(),
-                k,
-                env,
-            )
-        })
+        .function(
+            <TestCompletionKey as blaze_skyframe::Key>::FUNCTION,
+            blaze_skyframe::Tagged {
+                function: blaze_skyframe::typed::<TestCompletionKey, _>(move |k, env| {
+                    test_completion_function::compute_test_completion(
+                        &*seam_test,
+                        unrunnable_test_reporter.as_deref(),
+                        k,
+                        env,
+                    )
+                }),
+                // `((ConfiguredTargetKey) skyKey.argument())`: a TestCompletionKey's argument()
+                // is the key itself, so the cast fails. Java never gets here: the function posts
+                // only events that are not stored, and reports no warning.
+                // Java: com/google/devtools/build/lib/skyframe/TestCompletionFunction.java:100 TestCompletionFunction.extractTag
+                tag: |k: &blaze_skyframe::SkyKey| -> Option<String> {
+                    panic!(
+                        "ClassCastException: class TestCompletionKey cannot be cast to class \
+                         ConfiguredTargetKey ({k:?})"
+                    )
+                },
+            },
+        )
         .typed_function::<BuildDriverKey, _>(move |k, env| build_driver.compute(k, env))
 }

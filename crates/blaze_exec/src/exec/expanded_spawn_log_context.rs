@@ -2,7 +2,6 @@
 
 use std::io::{self, BufWriter};
 use std::sync::Arc;
-use std::time::Duration;
 
 use blaze_optdefs::misc::remote_options::RemoteOptions;
 use blaze_protos::tools::protos::{File, SpawnExec};
@@ -128,7 +127,7 @@ impl ExpandedSpawnLogContext {
         input_metadata_provider: &dyn InputMetadataProvider,
         input_map: &dyn Fn() -> Arc<InputMapping>,
         file_system: &FileSystemRef,
-        timeout: Duration,
+        timeout: blaze_util::java_duration::JavaDuration,
         result: &SpawnResult,
     ) -> Result<(), ExecException> {
         let mut builder = SpawnExec {
@@ -292,7 +291,7 @@ impl ExpandedSpawnLogContext {
             builder.status = result.status().name().to_string();
         }
         if !timeout.is_zero() {
-            builder.timeout_millis = timeout.as_millis() as i64;
+            builder.timeout_millis = timeout.to_millis();
         }
         builder.cacheable = spawns::may_be_cached(spawn);
         builder.remote_cacheable = spawns::may_be_cached_remotely(spawn);
@@ -375,7 +374,7 @@ impl SpawnLogContext for ExpandedSpawnLogContext {
         input_metadata_provider: &dyn InputMetadataProvider,
         input_map: &dyn Fn() -> Arc<InputMapping>,
         file_system: &FileSystemRef,
-        timeout: Duration,
+        timeout: blaze_util::java_duration::JavaDuration,
         result: &SpawnResult,
     ) -> Result<(), ExecException> {
         self.log_spawn_impl(

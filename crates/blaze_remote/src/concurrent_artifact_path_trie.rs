@@ -27,7 +27,7 @@ impl PartialOrd for Hierarchical {
 /// one of them.
 ///
 /// PORT: Java's `ConcurrentSkipListSet` is a locked `BTreeSet` here.
-// Java: com/google/devtools/build/lib/remote/ConcurrentArtifactPathTrie.java:31 ConcurrentArtifactPathTrie
+// Java: com/google/devtools/build/lib/remote/ConcurrentArtifactPathTrie.java:27 ConcurrentArtifactPathTrie
 #[derive(Debug, Default)]
 pub(crate) struct ConcurrentArtifactPathTrie {
     // Invariant: no path in this set is a prefix of another path.
@@ -42,7 +42,7 @@ impl ConcurrentArtifactPathTrie {
     /// must not pass in `TreeFileArtifact`s (which have exec paths that have their parent tree
     /// artifact's exec path as a prefix) or non-Artifact `ActionInput`s that violate this
     /// invariant.
-    // Java: com/google/devtools/build/lib/remote/ConcurrentArtifactPathTrie.java:46 ConcurrentArtifactPathTrie.add
+    // Java: com/google/devtools/build/lib/remote/ConcurrentArtifactPathTrie.java:41 ConcurrentArtifactPathTrie.add
     pub(crate) fn add(&self, input: &ActionInputRef) {
         blaze_util::check_argument!(
             !blaze_exec::actions::action_adapters::as_blaze_artifact(input).is_some_and(|a| {
@@ -58,15 +58,13 @@ impl ConcurrentArtifactPathTrie {
     }
 
     /// Checks whether the given `PathFragment` is contained in an artifact in the trie.
-    // Java: com/google/devtools/build/lib/remote/ConcurrentArtifactPathTrie.java:55 ConcurrentArtifactPathTrie.contains
+    // Java: com/google/devtools/build/lib/remote/ConcurrentArtifactPathTrie.java:50 ConcurrentArtifactPathTrie.contains
     pub(crate) fn contains(&self, exec_path: &PathFragment) -> bool {
         // By the invariant of this set, there is at most one prefix of execPath in the set. Since
         // the comparator sorts all children of a path right after the path itself, if such a
         // prefix exists, it must thus sort right before execPath (or be equal to it).
         let paths = self.paths.lock();
-        let floor_path = paths
-            .range(..=Hierarchical(exec_path.clone()))
-            .next_back();
+        let floor_path = paths.range(..=Hierarchical(exec_path.clone())).next_back();
         floor_path.is_some_and(|floor_path| exec_path.starts_with(&floor_path.0))
     }
 }

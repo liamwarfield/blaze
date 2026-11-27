@@ -419,6 +419,7 @@ dependencies = [
 name = "blaze_bzlmod_model"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "blaze_cmdline",
  "blaze_events",
  "blaze_util",
@@ -427,6 +428,7 @@ dependencies = [
  "indexmap",
  "num-bigint",
  "regex",
+ "sha1",
  "sha2",
  "thiserror",
 ]
@@ -672,6 +674,7 @@ dependencies = [
  "blaze_sky_loading",
  "blaze_skyframe",
  "blaze_starlark",
+ "blaze_starlarkdocextract",
  "blaze_util",
  "blaze_vfs",
  "indexmap",
@@ -840,6 +843,7 @@ dependencies = [
  "blaze_sky_loading",
  "blaze_skyframe",
  "blaze_starlark",
+ "blaze_starlarkdocextract",
  "blaze_util",
  "blaze_vfs",
  "dupe",
@@ -870,6 +874,7 @@ dependencies = [
  "blaze_bzlmod",
  "blaze_bzlmod_model",
  "blaze_cmdline",
+ "blaze_collect",
  "blaze_cquery",
  "blaze_events",
  "blaze_exec",
@@ -1112,11 +1117,16 @@ dependencies = [
 name = "blaze_starlarkdocextract"
 version = "0.1.0"
 dependencies = [
+ "blaze_actions",
  "blaze_cmdline",
  "blaze_packages",
  "blaze_protos",
+ "blaze_sky_loading",
+ "blaze_sky_top",
+ "blaze_skyframe",
  "blaze_starlark",
  "blaze_util",
+ "prost",
  "regex",
  "starlark",
  "starlark_map",
@@ -1144,9 +1154,11 @@ dependencies = [
 name = "blaze_vfs"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "blaze_util",
  "indexmap",
  "libc",
+ "sha1",
  "sha2",
 ]
 

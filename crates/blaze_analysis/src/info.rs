@@ -49,6 +49,26 @@ pub fn is_info(v: Value) -> bool {
         || v.request_value::<InfoProviderKey>().is_some()
 }
 
+/// Java `instanceof` for the provider interface names of the builtins' parameter table
+/// (starlark-rust BLAZE PATCH 0062, round 3): `Info`, `NativeInfo`, `Provider` and
+/// `structure` (Java's `Structure`, implemented by `StructImpl`, whose instances are
+/// [`StarlarkInfo`] values).
+// Java: com/google/devtools/build/lib/packages/Info.java:52 Info
+// Java: com/google/devtools/build/lib/packages/NativeInfo.java:39 NativeInfo
+// Java: com/google/devtools/build/lib/packages/Provider.java:36 Provider
+// Java: net/starlark/java/eval/Structure.java:24 Structure
+pub fn java_interface_matcher(name: &str, v: Value) -> Option<bool> {
+    match name {
+        "Info" => Some(is_info(v)),
+        "NativeInfo" => Some(
+            StarlarkInfo::from_value(v).is_none() && v.request_value::<InfoProviderKey>().is_some(),
+        ),
+        "Provider" => Some(provider_view(v).is_some() || builtin_provider_key(v).is_some()),
+        "structure" => Some(StarlarkInfo::from_value(v).is_some()),
+        _ => None,
+    }
+}
+
 /// Allocates a native info on a new frozen heap.
 pub fn freeze_native_info<T: AllocFrozenValue>(info: T) -> OwnedFrozenValue {
     let heap = FrozenHeap::new();

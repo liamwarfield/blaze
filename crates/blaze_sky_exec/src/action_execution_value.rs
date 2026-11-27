@@ -14,7 +14,16 @@ use indexmap::IndexMap;
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:56 ActionExecutionValue
 // PORT: Java's four size-specialized subclasses (a memory optimization) are one struct. The
 // "rich artifact data" (`RunfilesArtifactValue` of a runfiles tree action, `FilesetOutputTree`)
-// is `rich_artifact_data`.
+// is `rich_artifact_data`. `toString()` is the `Debug` form.
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:350 ActionExecutionValue.SingleOutputFile.<init>
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:379 ActionExecutionValue.WithRichData.<init>
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:417 ActionExecutionValue.MultiOutputFile.<init>
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:434 ActionExecutionValue.SingleTree.<init>
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:466 ActionExecutionValue.MultiTree.<init>
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:223 ActionExecutionValue.toString
+// PORT: skipped, C++ modules (discovered modules) stop with unported! in blaze_rules (CppCompileAction.findUsedModules), so a value never has them: ActionExecutionValue.getDiscoveredModules ModuleDiscovering.ModuleDiscovering ModuleDiscovering.getDiscoveredModules
+// PORT: skipped, values are compared (keys.rs values_equal), never hashed: ActionExecutionValue.hashCode
+// PORT: skipped, the transform failure is the Err(String) of transform_for_shared_action: ActionTransformException.ActionTransformException
 #[derive(Clone, Debug, Default)]
 pub struct ActionExecutionValue {
     artifact_data: IndexMap<Artifact, FileArtifactValue>,

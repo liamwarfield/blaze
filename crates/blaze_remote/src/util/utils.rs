@@ -580,7 +580,7 @@ pub fn build_action(
     command: Digest,
     input_root: Digest,
     platform: Option<Platform>,
-    timeout: Duration,
+    timeout: impl Into<blaze_util::java_duration::JavaDuration>,
     cacheable: bool,
     salt: Option<Vec<u8>>,
 ) -> Action {
@@ -589,9 +589,11 @@ pub fn build_action(
         input_root_digest: Some(input_root),
         ..Default::default()
     };
+    let timeout = timeout.into();
     if !timeout.is_zero() {
         action.timeout = Some(blaze_protos::google::protobuf::Duration {
-            seconds: timeout.as_secs() as i64,
+            // Duration.toSeconds(): signed.
+            seconds: timeout.to_seconds(),
             nanos: 0,
         });
     }

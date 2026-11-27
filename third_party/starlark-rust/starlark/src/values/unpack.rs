@@ -411,6 +411,22 @@ pub(crate) fn java_param_type_error_message(
     java_allowed_types(function, param, ty)
 }
 
+/// BLAZE PATCH 0062 (round 3): a test of Java's `instanceof` for a class name of the table that
+/// is not a Starlark type name and that only the embedder knows (Bazel's provider interfaces:
+/// `Info`, `NativeInfo`, `Provider`, `structure`); `None` for a name it does not know.
+pub type JavaInterfaceMatcher = for<'v> fn(&str, Value<'v>) -> Option<bool>; // BLAZE PATCH 0062 (round 3)
+
+static JAVA_INTERFACE_MATCHERS: std::sync::RwLock<Vec<JavaInterfaceMatcher>> = // BLAZE PATCH 0062 (round 3)
+    std::sync::RwLock::new(Vec::new()); // BLAZE PATCH 0062 (round 3)
+
+/// BLAZE PATCH 0062 (round 3): registers a [`JavaInterfaceMatcher`] (once per function).
+pub fn register_java_interface_matcher(matcher: JavaInterfaceMatcher) { // BLAZE PATCH 0062 (round 3)
+    let mut matchers = JAVA_INTERFACE_MATCHERS.write().unwrap(); // BLAZE PATCH 0062 (round 3)
+    if !matchers.iter().any(|m| std::ptr::fn_addr_eq(*m, matcher)) { // BLAZE PATCH 0062 (round 3)
+        matchers.push(matcher); // BLAZE PATCH 0062 (round 3)
+    } // BLAZE PATCH 0062 (round 3)
+} // BLAZE PATCH 0062 (round 3)
+
 /// BLAZE PATCH 0062: whether `v` is one of Java's allowed classes of the builtin's parameter, as
 /// the table lists them (`Starlark.classType` names); `None` when the table has no text for it.
 // Java: net/starlark/java/eval/BuiltinFunction.java:388 checkParamValue
@@ -436,13 +452,23 @@ pub(crate) fn java_param_accepts<'v>(
         "NoneType" => v.is_none(),
         "string" => v.unpack_str().is_some(),
         "sequence" => ty == "list" || ty == "tuple",
-        "iterable" => matches!(ty, "list" | "tuple" | "dict" | "set" | "range" | "depset"),
+        // BLAZE PATCH 0062 (round 3): Java's `StarlarkIterable` (a `Sequence`, `Dict` or
+        // `StarlarkSet`; `Depset` is not one) and `java.lang.Iterable` (the same Starlark
+        // values).
+        "iterable" | "Iterable" => matches!(ty, "list" | "tuple" | "dict" | "set" | "range"), // BLAZE PATCH 0062 (round 3)
+        // BLAZE PATCH 0062 (round 3): every Starlark value but Java's `String` and `Boolean`.
+        "StarlarkValue" => ty != "string" && ty != "bool", // BLAZE PATCH 0062 (round 3)
         "callable" => v.vtable().starlark_value.HAS_invoke,
         "unknown" | "Object" => true,
         // BLAZE PATCH 0062 (round 2): a Java interface is not a Starlark type name: every class
         // implementing `CqueryNode` (the configured target classes) has the type `Target`.
         "CqueryNode" => ty == "Target", // BLAZE PATCH 0062 (round 2)
-        other => ty == other,
+        other => JAVA_INTERFACE_MATCHERS // BLAZE PATCH 0062 (round 3)
+            .read() // BLAZE PATCH 0062 (round 3)
+            .unwrap() // BLAZE PATCH 0062 (round 3)
+            .iter() // BLAZE PATCH 0062 (round 3)
+            .find_map(|m| m(other, v)) // BLAZE PATCH 0062 (round 3)
+            .unwrap_or(ty == other), // BLAZE PATCH 0062 (round 3)
     }))
 }
 

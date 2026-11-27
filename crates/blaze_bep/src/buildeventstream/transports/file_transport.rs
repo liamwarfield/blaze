@@ -385,7 +385,7 @@ impl JsonFormatFileTransport {
 
     /// The registry `BuildEventServiceModule` passes: `TypeRegistry.newBuilder().add(
     /// SpawnExec.getDescriptor()).build()`.
-    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java BuildEventServiceModule.createBepTransports
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:821 BuildEventServiceModule.makeJsonTypeRegistry
     pub fn bep_type_registry() -> TypeRegistry {
         TypeRegistry::new_builder().add::<SpawnExec>().build()
     }

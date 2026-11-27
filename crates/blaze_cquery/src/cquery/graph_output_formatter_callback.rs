@@ -54,7 +54,7 @@ impl fmt::Debug for CqueryGraphNode {
 }
 
 /// cquery output formatter that prints the result as factored graph in AT&T GraphViz format.
-// Java: com/google/devtools/build/lib/query2/cquery/GraphOutputFormatterCallback.java:35 GraphOutputFormatterCallback
+// Java: com/google/devtools/build/lib/query2/cquery/GraphOutputFormatterCallback.java:32 GraphOutputFormatterCallback
 pub struct GraphOutputFormatterCallback<'a> {
     base: CqueryThreadsafeCallback<'a>,
     label_printer: LabelPrinter,
@@ -66,7 +66,7 @@ struct CqueryNodeReader<'b, 'a> {
 }
 
 impl NodeReader<CqueryGraphNode> for CqueryNodeReader<'_, '_> {
-    // Java: com/google/devtools/build/lib/query2/cquery/GraphOutputFormatterCallback.java:72 GraphOutputFormatterCallback.nodeReader.getLabel
+    // Java: com/google/devtools/build/lib/query2/cquery/GraphOutputFormatterCallback.java:69 GraphOutputFormatterCallback.nodeReader.getLabel
     fn get_label(&self, node: &CqueryGraphNode, label_printer: &LabelPrinter) -> String {
         // Node payloads are ConfiguredTargets. Output node labels are target labels + config
         // hashes.
@@ -82,7 +82,7 @@ impl NodeReader<CqueryGraphNode> for CqueryNodeReader<'_, '_> {
         )
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/GraphOutputFormatterCallback.java:52 GraphOutputFormatterCallback.nodeReader.configuredTargetOrdering
+    // Java: com/google/devtools/build/lib/query2/cquery/GraphOutputFormatterCallback.java:49 GraphOutputFormatterCallback.nodeReader.configuredTargetOrdering
     fn comparator(&self, ct1: &CqueryGraphNode, ct2: &CqueryGraphNode) -> Ordering {
         // Order graph output first by target label, then by configuration hash.
         let label1 = ct1.0.get_original_label();
@@ -102,7 +102,7 @@ impl NodeReader<CqueryGraphNode> for CqueryNodeReader<'_, '_> {
 }
 
 impl<'a> GraphOutputFormatterCallback<'a> {
-    // Java: com/google/devtools/build/lib/query2/cquery/GraphOutputFormatterCallback.java:88 GraphOutputFormatterCallback.<init>
+    // Java: com/google/devtools/build/lib/query2/cquery/GraphOutputFormatterCallback.java:87 GraphOutputFormatterCallback.<init>
     pub fn new(base: CqueryThreadsafeCallback<'a>, label_printer: LabelPrinter) -> Self {
         GraphOutputFormatterCallback {
             base,
@@ -121,7 +121,7 @@ impl<'a> GraphOutputFormatterCallback<'a> {
 }
 
 impl NamedThreadSafeOutputFormatterCallback<CqueryNode> for GraphOutputFormatterCallback<'_> {
-    // Java: com/google/devtools/build/lib/query2/cquery/GraphOutputFormatterCallback.java:37 GraphOutputFormatterCallback.getName
+    // Java: com/google/devtools/build/lib/query2/cquery/GraphOutputFormatterCallback.java:34 GraphOutputFormatterCallback.getName
     fn get_name(&self) -> String {
         "graph".to_owned()
     }
@@ -136,7 +136,7 @@ impl Callback<CqueryNode> for GraphOutputFormatterCallback<'_> {
 }
 
 impl OutputFormatterCallback<CqueryNode> for GraphOutputFormatterCallback<'_> {
-    // Java: com/google/devtools/build/lib/query2/cquery/GraphOutputFormatterCallback.java:102 GraphOutputFormatterCallback.processOutput
+    // Java: com/google/devtools/build/lib/query2/cquery/GraphOutputFormatterCallback.java:101 GraphOutputFormatterCallback.processOutput
     fn process_output(&self, partial_result: &[CqueryNode]) -> Result<(), OutputFormatterError> {
         // Transform the cquery-backed graph into a Digraph to make it suitable for
         // GraphOutputWriter. Note that this involves an extra iteration over the entire query

@@ -53,3 +53,16 @@ v3_rsa1024_ca	v3_rsa1024_ca.root.pem	localhost	v3 with SAN, issued by a trusted 
 v3_sha1_signed	ca.pem	localhost	v3 with SAN, signed by the trusted CA with sha1WithRSA
 v3_p521_ca	v3_p521_ca.root.pem	localhost	v3 with SAN, issued by a trusted P-521 CA
 v3_issued_trailing_dot_host	ca.pem	localhost.	v3 with SAN localhost, issued by the trusted CA, host localhost.
+direct_v2_issuer_uid_empty	direct_v2_issuer_uid_empty.root.pem	localhost	v2, issuerUniqueID with empty contents (81 00)
+direct_v2_issuer_uid_bad_padding	direct_v2_issuer_uid_bad_padding.root.pem	localhost	v2, issuerUniqueID with 9 padding bits (81 01 09)
+direct_outer_tbs_only	direct_outer_tbs_only.root.pem	localhost	SEQUENCE { tbs } without signature algorithm and signature
+direct_outer_fourth_element	direct_outer_fourth_element.root.pem	localhost	a fourth element (NULL) after the signature
+direct_outer_signature_octet_string	direct_outer_signature_octet_string.root.pem	localhost	the signature as an OCTET STRING
+direct_inner_alg_empty_oid	direct_inner_alg_empty_oid.root.pem	localhost	inner signature algorithm with an empty OID (06 00)
+direct_name_attribute_empty_oid	direct_name_attribute_empty_oid.root.pem	localhost	subject attribute with an empty OID (06 00), then CN=localhost
+direct_non_minimal_length	direct_non_minimal_length.root.pem	localhost	v1, issuer Name with a long-form length for a short value (30 81 xx)
+direct_serial_leading_zero	direct_serial_leading_zero.root.pem	localhost	v1, serial number with a redundant leading zero
+cn_general	cn_general.root.pem	localhost	CN as a GeneralString
+cn_universal	cn_universal.root.pem	localhost	CN as a UniversalString
+direct_idn_host	direct_idn_host.root.pem	bücher.example	CN=xn--bcher-kva.example, host bücher.example
+direct_all_digit_host	direct_all_digit_host.root.pem	256.0.0.1	CN and host 256.0.0.1 (all-digit labels, not an IPv4 literal)

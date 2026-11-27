@@ -77,7 +77,7 @@ impl StreamedFormatter for XmlOutputFormatter {
 
     fn set_event_handler(&self, _event_handler: Option<Arc<dyn EventHandler>>) {}
 
-    // Java: com/google/devtools/build/lib/query2/query/output/XmlOutputFormatter.java:73 XmlOutputFormatter.createStreamCallback
+    // Java: com/google/devtools/build/lib/query2/query/output/XmlOutputFormatter.java:74 XmlOutputFormatter.createStreamCallback
     fn create_stream_callback(
         &self,
         out: OutputStream,
@@ -175,7 +175,7 @@ impl XmlCallback {
     /// class="cc_library">, following the terminology of `Target.getTargetKind()`. - 'name'
     /// attribute is target's label. - 'location' attribute is consistent with output of --output
     /// location. - rule attributes are represented in the DOM structure.
-    // Java: com/google/devtools/build/lib/query2/query/output/XmlOutputFormatter.java:148 XmlOutputFormatter.createTargetElement
+    // Java: com/google/devtools/build/lib/query2/query/output/XmlOutputFormatter.java:147 XmlOutputFormatter.createTargetElement
     fn create_target_element(&self, target: &Target) -> Result<Element, InterruptedException> {
         let state = &self.state;
         let label_printer = &self.label_printer;
@@ -476,7 +476,7 @@ fn scalar_to_string(value: &AttrValue) -> String {
 /// In the case of configurable attributes, multi-value attributes (e.g. lists) merge all
 /// configured lists into an aggregate flattened list. Single-value attributes simply refrain to
 /// set a value and annotate the DOM element as configurable.
-// Java: com/google/devtools/build/lib/query2/query/output/XmlOutputFormatter.java:306 XmlOutputFormatter.createValueElement
+// Java: com/google/devtools/build/lib/query2/query/output/XmlOutputFormatter.java:305 XmlOutputFormatter.createValueElement
 fn create_value_element(
     type_: Type,
     values: &[Option<AttrValue>],
@@ -489,6 +489,8 @@ fn create_value_element(
         elem = Element::new("list");
         for value in values {
             for elem_value in list_elements(value.as_ref()) {
+                // The single-value overload: `createValueElement(doc, type, ImmutableList.of(value))`.
+                // Java: com/google/devtools/build/lib/query2/query/output/XmlOutputFormatter.java:368 XmlOutputFormatter.createValueElement
                 elem.append_child(create_value_element(
                     elem_type,
                     &[elem_value],

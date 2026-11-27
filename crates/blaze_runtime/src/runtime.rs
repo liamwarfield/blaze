@@ -1006,12 +1006,18 @@ impl BlazeRuntime {
                 as FileSystemRef),
         ));
 
-        // PORT: BazelFileSystemModule.getFileSystem: on Linux the Unix file system with the
-        // digest function of --digest_function (its converter only accepts SHA-256, the only
-        // function ported) and --unix_digest_hash_attribute_name.
-        // Java: com/google/devtools/build/lib/bazel/BazelFileSystemModule.java:90 BazelFileSystemModule.getFileSystem
+        // BazelFileSystemModule.getFileSystem: on Linux the Unix file system with the digest
+        // function of --digest_function and --unix_digest_hash_attribute_name.
+        // PORT: without --digest_function Java reads the system property `bazel.DigestFunction`
+        // (default "SHA256"); Blaze has no JVM system properties, so the default applies.
+        // Java: com/google/devtools/build/lib/bazel/BazelFileSystemModule.java:52 BazelFileSystemModule.getFileSystem
+        let digest_hash_function = startup_options
+            .digest_hash_function
+            .as_ref()
+            .map(|f| f.0)
+            .unwrap_or(blaze_vfs::DigestHashFunction::Sha256);
         let native_fs: FileSystemRef = Arc::new(UnixFileSystem::with_hash_attribute_name(
-            blaze_vfs::DigestHashFunction::Sha256,
+            digest_hash_function,
             startup_options.unix_digest_hash_attribute_name.clone(),
         ));
 
@@ -1137,6 +1143,16 @@ impl BlazeRuntime {
                 .server_init(&options, &mut server_builder)
                 .map_err(NewRuntimeError::Abrupt)?;
         }
+        // The package factory's PackageLoadingListener: Blaze's package factory is created per
+        // command and reads the listener from a process-wide slot.
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1738 BlazeRuntime.Builder.build
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1913 BlazeRuntime.getPackageLoadingListener
+        blaze_packages::package::package_loading_listener::set_package_loading_listener(
+            blaze_modules
+                .iter()
+                .filter_map(|module| module.get_package_loading_listener())
+                .collect(),
+        );
         // PORT: blazeStartup, rule classes, package factory, project files and query helpers
         // are not ported.
         let mut runtime = BlazeRuntime {

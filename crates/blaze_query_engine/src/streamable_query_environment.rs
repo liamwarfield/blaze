@@ -12,6 +12,7 @@ use crate::query_task_future::QueryTaskFuture;
 /// [`QueryEnvironment::as_streamable`].
 // Java: com/google/devtools/build/lib/query2/engine/StreamableQueryEnvironment.java:21 StreamableQueryEnvironment
 pub trait StreamableQueryEnvironment<T>: QueryEnvironment<T> {
+    // Java: com/google/devtools/build/lib/query2/engine/StreamableQueryEnvironment.java:22 StreamableQueryEnvironment.getAllRdepsBoundedParallel
     fn get_all_rdeps_bounded_parallel(
         &self,
         expression: &QueryExpression,
@@ -20,6 +21,7 @@ pub trait StreamableQueryEnvironment<T>: QueryEnvironment<T> {
         callback: &dyn Callback<T>,
     ) -> QueryTaskFuture<()>;
 
+    // Java: com/google/devtools/build/lib/query2/engine/StreamableQueryEnvironment.java:28 StreamableQueryEnvironment.getAllRdepsUnboundedParallel
     fn get_all_rdeps_unbounded_parallel(
         &self,
         expression: &QueryExpression,
@@ -27,6 +29,7 @@ pub trait StreamableQueryEnvironment<T>: QueryEnvironment<T> {
         callback: &dyn Callback<T>,
     ) -> QueryTaskFuture<()>;
 
+    // Java: com/google/devtools/build/lib/query2/engine/StreamableQueryEnvironment.java:31 StreamableQueryEnvironment.getRdepsBoundedParallel
     fn get_rdeps_bounded_parallel(
         &self,
         expression: &QueryExpression,
@@ -36,6 +39,7 @@ pub trait StreamableQueryEnvironment<T>: QueryEnvironment<T> {
         callback: &dyn Callback<T>,
     ) -> QueryTaskFuture<()>;
 
+    // Java: com/google/devtools/build/lib/query2/engine/StreamableQueryEnvironment.java:38 StreamableQueryEnvironment.getRdepsUnboundedParallel
     fn get_rdeps_unbounded_parallel(
         &self,
         expression: &QueryExpression,
@@ -44,6 +48,7 @@ pub trait StreamableQueryEnvironment<T>: QueryEnvironment<T> {
         callback: &dyn Callback<T>,
     ) -> QueryTaskFuture<()>;
 
+    // Java: com/google/devtools/build/lib/query2/engine/StreamableQueryEnvironment.java:44 StreamableQueryEnvironment.getDepsUnboundedParallel
     fn get_deps_unbounded_parallel(
         &self,
         expression: &QueryExpression,
@@ -53,6 +58,7 @@ pub trait StreamableQueryEnvironment<T>: QueryEnvironment<T> {
     ) -> QueryTaskFuture<()>;
 
     // TODO(bazel-team): Make this parallel.
+    // Java: com/google/devtools/build/lib/query2/engine/StreamableQueryEnvironment.java:51 StreamableQueryEnvironment.getDepsBounded
     fn get_deps_bounded(
         &self,
         expression: &QueryExpression,
@@ -62,6 +68,7 @@ pub trait StreamableQueryEnvironment<T>: QueryEnvironment<T> {
         caller: &QueryExpression,
     ) -> QueryTaskFuture<()>;
 
+    // Java: com/google/devtools/build/lib/query2/engine/StreamableQueryEnvironment.java:58 StreamableQueryEnvironment.somePath
     fn some_path(
         &self,
         from_expression: &QueryExpression,
@@ -71,6 +78,7 @@ pub trait StreamableQueryEnvironment<T>: QueryEnvironment<T> {
         caller: &QueryExpression,
     ) -> QueryTaskFuture<()>;
 
+    // Java: com/google/devtools/build/lib/query2/engine/StreamableQueryEnvironment.java:65 StreamableQueryEnvironment.allPaths
     fn all_paths(
         &self,
         from_expression: &QueryExpression,

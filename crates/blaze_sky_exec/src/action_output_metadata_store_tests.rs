@@ -36,7 +36,7 @@
 //! | cannotEnterExecutionModeTwice (707)                                  | here      | pass |
 //! | fileArtifactValueFromArtifactCompatibleWithGetMetadata_changed (714) | here      | ignored: `FileArtifactValue.couldBeModifiedSince` is not ported |
 //! | fileArtifactValueFromArtifactCompatibleWithGetMetadata_notChanged (735) | here   | ignored: `FileArtifactValue.couldBeModifiedSince` is not ported |
-//! | fileArtifactValueForSymlink_readFromCache (755)                      | here      | ignored: the `DigestUtils` digest cache is not ported |
+//! | fileArtifactValueForSymlink_readFromCache (755)                      | tests/action_output_metadata_store_digest_cache_test.rs | pass (own binary: the digest cache is a process static) |
 //!
 //! PORT: Java's `Scratch` file system is an `InMemoryFileSystem` that records `chmod` calls
 //! (`chmodCalls`); here it is [`ChmodRecordingFileSystem`], the local file system under a
@@ -172,6 +172,13 @@ impl FileSystem for ChmodRecordingFileSystem {
     }
     fn stat(&self, path: &PathFragment, follow_symlinks: bool) -> io::Result<FileStatus> {
         self.delegate.stat(path, follow_symlinks)
+    }
+    fn stat_metadata(
+        &self,
+        path: &PathFragment,
+        follow_symlinks: bool,
+    ) -> io::Result<Option<std::sync::Arc<dyn blaze_vfs::StatMetadata>>> {
+        self.delegate.stat_metadata(path, follow_symlinks)
     }
     fn stat_nullable(&self, path: &PathFragment, follow_symlinks: bool) -> Option<FileStatus> {
         self.delegate.stat_nullable(path, follow_symlinks)
@@ -998,33 +1005,9 @@ fn file_artifact_value_from_artifact_compatible_with_get_metadata_not_changed() 
     assert!(!could_be_modified_since);
 }
 
-// Java: src/test/java/com/google/devtools/build/lib/skyframe/ActionOutputMetadataStoreTest.java:755 ActionOutputMetadataStoreTest.fileArtifactValueForSymlink_readFromCache
-#[test]
-#[ignore = "the digest cache of DigestUtils (vfs/DigestUtils.java:84 configureCache, :109 \
-            getCacheStats) is not ported"]
-#[allow(unreachable_code, unused_variables, clippy::diverging_sub_expression)]
-fn file_artifact_value_for_symlink_read_from_cache() {
-    // DigestUtils.configureCache(1);
-    blaze_util::unported!("DigestUtils.configureCache");
-    let f = Fixture::new();
-    let target = create_artifact_with_root_relative_path(&f.output_root, "target");
-    scratch_file(&target.get_path(), &["contents"]);
-    let symlink = create_artifact_with_root_relative_path(&f.output_root, "symlink");
-    symlink
-        .get_path()
-        .create_symbolic_link(&target.get_path())
-        .unwrap();
-    let store = f.create_store(&[target.clone(), symlink.clone()]);
-    let target_metadata = get_output_metadata(&store, &target).unwrap();
-    let hit_count: u64 = blaze_util::unported!("DigestUtils.getCacheStats");
-    assert_eq!(hit_count, 0);
-
-    let symlink_metadata = get_output_metadata(&store, &symlink).unwrap();
-
-    assert_eq!(symlink_metadata, target_metadata);
-    let hit_count: u64 = blaze_util::unported!("DigestUtils.getCacheStats");
-    assert_eq!(hit_count, 1);
-}
+// ActionOutputMetadataStoreTest.fileArtifactValueForSymlink_readFromCache (Java :755) is ported in
+// tests/action_output_metadata_store_digest_cache_test.rs, a binary of its own: it configures the
+// process-wide digest cache, which tests running in parallel here would disturb.
 
 /// Not a Java test: no `ActionOutputMetadataStoreTest` method covers `getAllTreeArtifactData`
 /// with a missing tree. Java `ActionOutputMetadataStore.getAllTreeArtifactData`

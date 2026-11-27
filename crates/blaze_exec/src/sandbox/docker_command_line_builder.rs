@@ -1,7 +1,5 @@
 //! Port of `lib/sandbox/DockerCommandLineBuilder.java`.
 
-use std::time::Duration;
-
 use blaze_vfs::{Path, PathFragment};
 use indexmap::IndexMap;
 
@@ -16,7 +14,7 @@ pub struct DockerCommandLineBuilder {
     command_arguments: Option<Vec<String>>,
     sandbox_exec_root: Option<Path>,
     environment_variables: Option<IndexMap<String, String>>,
-    timeout: Option<Duration>,
+    timeout: Option<blaze_util::java_duration::JavaDuration>,
     create_network_namespace: bool,
     /// `UUID.toString()`.
     uuid: Option<String>,
@@ -72,8 +70,11 @@ impl DockerCommandLineBuilder {
     }
 
     // Java: com/google/devtools/build/lib/sandbox/DockerCommandLineBuilder.java:84 DockerCommandLineBuilder.setTimeout
-    pub fn set_timeout(&mut self, timeout: Duration) -> &mut Self {
-        self.timeout = Some(timeout);
+    pub fn set_timeout(
+        &mut self,
+        timeout: impl Into<blaze_util::java_duration::JavaDuration>,
+    ) -> &mut Self {
+        self.timeout = Some(timeout.into());
         self
     }
 

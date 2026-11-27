@@ -12,6 +12,7 @@ pub mod event_kind;
 pub mod handler;
 pub mod io;
 pub mod java_format;
+pub mod time_utilities;
 pub mod location;
 pub mod output_filter;
 pub mod printing;

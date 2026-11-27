@@ -33,8 +33,15 @@ impl SkyframeQueryTransitivePackagePreloader {
 
 /// Java `exception instanceof DetailedException`: the `FailureDetail` of the loading exceptions
 /// TRANSITIVE_TARGET throws, or `None` for another exception.
-fn detailed_failure_detail(exception: &SkyError) -> Option<FailureDetail> {
+pub(crate) fn detailed_failure_detail(exception: &SkyError) -> Option<FailureDetail> {
     let e: &(dyn std::error::Error + 'static) = &**exception;
+    if let Some(e) =
+        e.downcast_ref::<blaze_sky_loading::prepare_deps::PrepareDepsOfPatternException>()
+    {
+        return Some(failure_details::packages_failure_detail(
+            &e.get_detailed_exit_code(),
+        ));
+    }
     if let Some(e) = e.downcast_ref::<NoSuchPackageException>() {
         return Some(failure_details::packages_failure_detail(
             &e.get_detailed_exit_code(),

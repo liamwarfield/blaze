@@ -37,6 +37,7 @@ use crate::common::abstract_blaze_query_environment::{
 use crate::common::query_util_targets::{
     LexicographicallySortedTargetAggregator, new_lexicographically_sorted_target_aggregator,
 };
+use crate::common::universe_scope::UniverseScope;
 use crate::pkgcache::{
     CachingPackageLocator, PackageProvider, QueryTransitivePackagePreloader,
     TargetPatternPreloader, TargetProvider,
@@ -85,11 +86,19 @@ pub struct QueryCommandEnvironment {
     pub target_pattern_preloader: Arc<dyn TargetPatternPreloader>,
     /// `env.getSkyframeExecutor().getQueryTransitivePackagePreloader()`.
     pub query_transitive_package_preloader: Option<Arc<dyn QueryTransitivePackagePreloader>>,
+    /// `env.getSkyframeExecutor()` as SkyQuery's `WalkableGraphFactory`.
+    pub graph_factory: Option<Arc<dyn crate::sky_query::WalkableGraphFactory>>,
+    /// `env.getPackageManager().getPackagePath().getPathEntries()`; `None` (Java: a null package
+    /// path) disables SkyQuery.
+    pub package_path: Option<Vec<blaze_vfs::Root>>,
+    /// `SkyQueryEnvironment.DEFAULT_THREAD_COUNT` (`Runtime.availableProcessors()`).
+    pub query_evaluation_parallelism_level: i32,
 }
 
 /// Java `QueryRuntimeHelper` writing to stdout: nothing to do after the output.
 fn after_query_output_is_written() {}
 
+// Java: com/google/devtools/build/lib/runtime/commands/QueryEnvironmentBasedCommand.java:299 QueryEnvironmentBasedCommand.createFailureResult
 fn failure(message: impl Into<String>, code: query::Code) -> DetailedExitCode {
     DetailedExitCode::of(FailureDetail {
         message: message.into(),
@@ -168,7 +177,7 @@ pub fn read_query(
 
 /// The query part of `QueryEnvironmentBasedCommand.execInternal`, after `syncPackageLoading` and
 /// the main repository mapping.
-// Java: com/google/devtools/build/lib/runtime/commands/QueryEnvironmentBasedCommand.java:96 QueryEnvironmentBasedCommand.execInternal
+// Java: com/google/devtools/build/lib/runtime/commands/QueryEnvironmentBasedCommand.java:102 QueryEnvironmentBasedCommand.execInternal
 pub fn exec_internal(
     env: &QueryCommandEnvironment,
     query_options: &QueryOptions,
@@ -204,6 +213,7 @@ pub fn exec_internal(
                     query_options.output_format,
                     output_formatters::formatter_names(&formatters)
                 );
+                // Java: com/google/devtools/build/lib/runtime/commands/QueryEnvironmentBasedCommand.java:293 QueryEnvironmentBasedCommand.reportAndCreateFailureResult
                 env.reporter.handle(&Event::error(message.clone()));
                 return failure(message, query::Code::OutputFormatInvalid);
             }
@@ -229,13 +239,12 @@ pub fn exec_internal(
     );
 
     // PORT: env.getSkyframeExecutor().maybeGetHardcodedUniverseScope() is empty for Bazel.
-    let universe_scope_is_empty =
-        query_options.universe_scope.is_empty() && !query_options.infer_universe_scope;
+    let universe_scope = get_universe_scope(query_options);
     let query_env = new_query_environment(
         env,
         keep_going,
         /* ordered_results= */ !stream_results,
-        universe_scope_is_empty,
+        universe_scope,
         loading_phase_threads,
         settings,
         use_graphless_query,
@@ -273,14 +282,26 @@ pub fn exec_internal(
     }
 }
 
+// Java: com/google/devtools/build/lib/runtime/commands/QueryEnvironmentBasedCommand.java:221 QueryEnvironmentBasedCommand.getUniverseScope
+fn get_universe_scope(query_options: &QueryOptions) -> UniverseScope {
+    if !query_options.universe_scope.is_empty() {
+        return UniverseScope::from_universe_scope_list(query_options.universe_scope.clone());
+    }
+    if query_options.infer_universe_scope {
+        UniverseScope::InferFromQueryExpression
+    } else {
+        UniverseScope::empty()
+    }
+}
+
 /// Java `QueryEnvironmentBasedCommand.newQueryEnvironment` with
 /// `QueryEnvironmentFactory.create`.
-// Java: com/google/devtools/build/lib/runtime/commands/QueryEnvironmentBasedCommand.java:232 QueryEnvironmentBasedCommand.newQueryEnvironment
+// Java: com/google/devtools/build/lib/runtime/commands/QueryEnvironmentBasedCommand.java:239 QueryEnvironmentBasedCommand.newQueryEnvironment
 fn new_query_environment(
     env: &QueryCommandEnvironment,
     keep_going: bool,
     ordered_results: bool,
-    universe_scope_is_empty: bool,
+    universe_scope: UniverseScope,
     loading_phase_threads: i32,
     settings: std::collections::HashSet<blaze_query_engine::Setting>,
     use_graphless_query: bool,
@@ -298,10 +319,27 @@ fn new_query_environment(
         ),
     ));
 
-    // Java: com/google/devtools/build/lib/query2/QueryEnvironmentFactory.java:41 QueryEnvironmentFactory.create
-    // canUseSkyQuery(orderedResults, universeScope, packagePath, strictScope=true, ALL_LABELS)
-    if !ordered_results && !universe_scope_is_empty {
-        blaze_util::unported!("SkyQueryEnvironment");
+    // Java: com/google/devtools/build/lib/query2/QueryEnvironmentFactory.java:43 QueryEnvironmentFactory.create
+    // Java: com/google/devtools/build/lib/query2/QueryEnvironmentFactory.java:110 QueryEnvironmentFactory.canUseSkyQuery
+    // (strictScope is true and the label filter is Rule.ALL_LABELS here.)
+    if !ordered_results
+        && !universe_scope.is_empty()
+        && let (Some(graph_factory), Some(package_path)) = (&env.graph_factory, &env.package_path)
+    {
+        Box::new(crate::sky_query::SkyQueryEnvironment::new(
+            keep_going,
+            loading_phase_threads,
+            env.query_evaluation_parallelism_level,
+            env.reporter.clone(),
+            settings,
+            env.query_functions.clone(),
+            main_repo_target_parser,
+            env.relative_working_directory.clone(),
+            graph_factory.clone(),
+            universe_scope,
+            package_path.clone(),
+            label_printer,
+        ))
     } else if use_graphless_query {
         Box::new(GraphlessBlazeQueryEnvironment::new(
             env.query_transitive_package_preloader.clone(),
@@ -338,7 +376,7 @@ fn new_query_environment(
 }
 
 /// The query command, which evaluates a query and outputs its result.
-// Java: com/google/devtools/build/lib/runtime/commands/QueryCommand.java:89 QueryCommand.doQuery
+// Java: com/google/devtools/build/lib/runtime/commands/QueryCommand.java:76 QueryCommand.doQuery
 pub fn do_query(
     query: &str,
     env: &QueryCommandEnvironment,
@@ -513,7 +551,7 @@ impl QueryCallback {
     }
 }
 
-// Java: com/google/devtools/build/lib/runtime/commands/QueryCommand.java:201 QueryCommand.reportAndCreateFlushFailureResult
+// Java: com/google/devtools/build/lib/runtime/commands/QueryCommand.java:219 QueryCommand.reportAndCreateFlushFailureResult
 fn report_and_create_flush_failure_result(
     env: &QueryCommandEnvironment,
     e: &str,
@@ -523,14 +561,14 @@ fn report_and_create_flush_failure_result(
     failure(message, query::Code::QueryResultsFlushFailure)
 }
 
-// Java: com/google/devtools/build/lib/runtime/commands/QueryCommand.java:213 QueryCommand.reportAndCreateInterruptedResult
+// Java: com/google/devtools/build/lib/runtime/commands/QueryCommand.java:231 QueryCommand.reportAndCreateInterruptedResult
 fn report_and_create_interrupted_result(env: &QueryCommandEnvironment) -> DetailedExitCode {
     let message = "query interrupted";
     env.reporter.handle(&Event::error(message));
     interrupted_detailed_exit_code(message)
 }
 
-// Java: com/google/devtools/build/lib/runtime/commands/QueryCommand.java:221 QueryCommand.reportAndCreateIOExceptionResult
+// Java: com/google/devtools/build/lib/runtime/commands/QueryCommand.java:239 QueryCommand.reportAndCreateIOExceptionResult
 fn report_and_create_io_exception_result(
     env: &QueryCommandEnvironment,
     message: &str,
@@ -540,7 +578,7 @@ fn report_and_create_io_exception_result(
     failure(prefixed_message, query::Code::OutputFormatterIoException)
 }
 
-// Java: com/google/devtools/build/lib/runtime/commands/QueryCommand.java:233 QueryCommand.finalizeBlazeCommandResult
+// Java: com/google/devtools/build/lib/runtime/commands/QueryCommand.java:251 QueryCommand.finalizeBlazeCommandResult
 fn finalize_blaze_command_result(exit_code: i32, e: &QueryException) -> DetailedExitCode {
     DetailedExitCode::of_exit_code(exit_code, e.get_failure_detail().clone())
 }

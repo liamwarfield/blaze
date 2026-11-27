@@ -46,6 +46,7 @@ pub mod workspace;
 
 pub mod bazel_modules;
 pub mod command_registry;
+pub mod package_metrics;
 pub mod commands;
 pub mod fragment_options;
 pub mod local_resources;

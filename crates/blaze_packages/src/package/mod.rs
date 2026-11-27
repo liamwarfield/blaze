@@ -10,6 +10,7 @@ pub mod globber;
 #[allow(clippy::module_inception)]
 pub mod package;
 pub mod package_args;
+pub mod package_loading_listener;
 pub mod package_piece;
 pub mod package_validator;
 pub mod rule_factory;

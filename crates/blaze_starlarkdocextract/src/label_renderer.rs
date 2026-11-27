@@ -143,3 +143,120 @@ fn repr_with(value: Value<'_>, out: &mut String, on_label: &dyn Fn(&Label, &mut 
         out.push_str(&value.to_repr());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blaze_cmdline::RepositoryName;
+    use starlark::values::dict::AllocDict;
+    use starlark::values::list::AllocList;
+
+    fn label(s: &str) -> Label {
+        Label::parse_canonical(s).unwrap()
+    }
+
+    // Java: src/test/java/com/google/devtools/build/lib/starlarkdocextract/LabelRendererTest.java:35 LabelRendererTest.defaultRenderer
+    #[test]
+    fn default_renderer() {
+        let main_repo_label = label("//foo:bar");
+        let dep_repo_label = label("@dep//foo:baz");
+        let renderer = LabelRenderer::default_renderer();
+        Heap::temp(|heap| {
+            assert_eq!(renderer.render(&main_repo_label), "//foo:bar");
+            let v = heap.alloc(LabelValue(main_repo_label.clone()));
+            assert_eq!(renderer.repr_without_label_constructor(v), "\"//foo:bar\"");
+            assert_eq!(renderer.repr(v), "Label(\"//foo:bar\")");
+
+            assert_eq!(renderer.render(&dep_repo_label), "@@dep//foo:baz");
+            let v = heap.alloc(LabelValue(dep_repo_label.clone()));
+            assert_eq!(
+                renderer.repr_without_label_constructor(v),
+                "\"@@dep//foo:baz\""
+            );
+            assert_eq!(renderer.repr(v), "Label(\"@@dep//foo:baz\")");
+        });
+    }
+
+    // Java: src/test/java/com/google/devtools/build/lib/starlarkdocextract/LabelRendererTest.java:50 LabelRendererTest.mainRepoLabel_withoutMainRepoName
+    #[test]
+    fn main_repo_label_without_main_repo_name() {
+        let l = label("//foo:bar");
+        let shorthand_label = label("//foo");
+        let renderer = LabelRenderer::new(blaze_cmdline::repository_mapping::EMPTY.clone(), None);
+        assert_eq!(renderer.render(&l), "//foo:bar");
+        assert_eq!(renderer.render(&shorthand_label), "//foo");
+        Heap::temp(|heap| {
+            let dict = heap.alloc(AllocDict([(
+                heap.alloc(LabelValue(l.clone())),
+                heap.alloc(LabelValue(shorthand_label.clone())),
+            )]));
+            assert_eq!(
+                renderer.repr_without_label_constructor(dict),
+                "{\"//foo:bar\": \"//foo\"}"
+            );
+            assert_eq!(
+                renderer.repr(dict),
+                "{Label(\"//foo:bar\"): Label(\"//foo:foo\")}"
+            );
+        });
+    }
+
+    // Java: src/test/java/com/google/devtools/build/lib/starlarkdocextract/LabelRendererTest.java:67 LabelRendererTest.mainRepoLabel_withMainRepoName
+    #[test]
+    fn main_repo_label_with_main_repo_name() {
+        let l = label("//foo:bar");
+        let shorthand_label = label("//foo");
+        let ultra_shorthand_label = label("//:my_main");
+        let renderer = LabelRenderer::new(
+            blaze_cmdline::repository_mapping::EMPTY.clone(),
+            Some("my_main".to_owned()),
+        );
+        assert_eq!(renderer.render(&l), "@my_main//foo:bar");
+        assert_eq!(renderer.render(&shorthand_label), "@my_main//foo");
+        assert_eq!(renderer.render(&ultra_shorthand_label), "@my_main");
+        Heap::temp(|heap| {
+            let list = heap.alloc(AllocList([
+                heap.alloc(LabelValue(l.clone())),
+                heap.alloc(LabelValue(shorthand_label.clone())),
+                heap.alloc(LabelValue(ultra_shorthand_label.clone())),
+            ]));
+            assert_eq!(
+                renderer.repr_without_label_constructor(list),
+                "[\"@my_main//foo:bar\", \"@my_main//foo\", \"@my_main\"]"
+            );
+            assert_eq!(
+                renderer.repr(list),
+                "[Label(\"@my_main//foo:bar\"), Label(\"@my_main//foo:foo\"), \
+                 Label(\"@my_main//:my_main\")]"
+            );
+        });
+    }
+
+    // Java: src/test/java/com/google/devtools/build/lib/starlarkdocextract/LabelRendererTest.java:89 LabelRendererTest.remappedRepoLabel
+    #[test]
+    fn remapped_repo_label() {
+        let l = label("@canonical//foo:bar");
+        let shorthand_label = label("@canonical//foo");
+        let repository_mapping = RepositoryMapping::create(
+            [("local", RepositoryName::create("canonical").unwrap())],
+            blaze_cmdline::repository_name::MAIN.clone(),
+        );
+        let renderer = LabelRenderer::new(repository_mapping, Some("my_main".to_owned()));
+        assert_eq!(renderer.render(&l), "@local//foo:bar");
+        assert_eq!(renderer.render(&shorthand_label), "@local//foo");
+        Heap::temp(|heap| {
+            let list = heap.alloc(AllocList([
+                heap.alloc(LabelValue(l.clone())),
+                heap.alloc(LabelValue(shorthand_label.clone())),
+            ]));
+            assert_eq!(
+                renderer.repr_without_label_constructor(list),
+                "[\"@local//foo:bar\", \"@local//foo\"]"
+            );
+            assert_eq!(
+                renderer.repr(list),
+                "[Label(\"@local//foo:bar\"), Label(\"@local//foo:foo\")]"
+            );
+        });
+    }
+}

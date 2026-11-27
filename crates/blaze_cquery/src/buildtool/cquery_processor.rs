@@ -26,7 +26,7 @@ use crate::cquery::cquery_options::CommonQueryOptionsView;
 use crate::post_analysis_query_environment::TopLevelConfigurations;
 
 /// Performs `cquery` processing.
-// Java: com/google/devtools/build/lib/buildtool/CqueryProcessor.java:31 CqueryProcessor
+// Java: com/google/devtools/build/lib/buildtool/CqueryProcessor.java:35 CqueryProcessor
 pub struct CqueryProcessor {
     query_expression: Option<QueryExpression>,
     main_repo_target_parser: TargetPatternParser,
@@ -45,7 +45,7 @@ pub struct CqueryProcessor {
 }
 
 impl CqueryProcessor {
-    // Java: com/google/devtools/build/lib/buildtool/CqueryProcessor.java:34 CqueryProcessor.<init>
+    // Java: com/google/devtools/build/lib/buildtool/CqueryProcessor.java:37 CqueryProcessor.<init>
     pub fn new(
         query_expression: Option<QueryExpression>,
         main_repo_target_parser: TargetPatternParser,
@@ -106,7 +106,7 @@ impl CqueryProcessor {
 }
 
 impl AnalysisPostProcessor for CqueryProcessor {
-    // Java: com/google/devtools/build/lib/buildtool/PostAnalysisQueryProcessor.java:71 PostAnalysisQueryProcessor.process
+    // Java: com/google/devtools/build/lib/buildtool/PostAnalysisQueryProcessor.java:72 PostAnalysisQueryProcessor.process
     fn process(
         &self,
         request: &BuildRequest,

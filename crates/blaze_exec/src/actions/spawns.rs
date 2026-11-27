@@ -1,6 +1,6 @@
 //! Port of `lib/actions/Spawns.java`: helpers reading a spawn's execution info.
 
-use std::time::Duration;
+use blaze_util::java_duration::JavaDuration;
 
 use blaze_protos::failure_details::{FailureDetail, failure_detail, spawn};
 
@@ -148,25 +148,22 @@ pub fn get_worker_protocol_format(spawn: &dyn Spawn) -> Result<er::WorkerProtoco
 
 /// `getTimeout(Spawn)`.
 // Java: com/google/devtools/build/lib/actions/Spawns.java:154 Spawns.getTimeout
-pub fn get_timeout(spawn: &dyn Spawn) -> Result<Duration, ExecException> {
-    get_timeout_with_default(spawn, Some(Duration::ZERO))
+pub fn get_timeout(spawn: &dyn Spawn) -> Result<JavaDuration, ExecException> {
+    get_timeout_with_default(spawn, Some(JavaDuration::ZERO))
 }
 
 /// `getTimeout(Spawn, Duration defaultTimeout)`.
 // Java: com/google/devtools/build/lib/actions/Spawns.java:164 Spawns.getTimeout
 pub fn get_timeout_with_default(
     spawn: &dyn Spawn,
-    default_timeout: Option<Duration>,
-) -> Result<Duration, ExecException> {
+    default_timeout: Option<JavaDuration>,
+) -> Result<JavaDuration, ExecException> {
     let Some(timeout_str) = spawn.get_execution_info().get(er::TIMEOUT) else {
-        return Ok(default_timeout.unwrap_or(Duration::ZERO));
+        return Ok(default_timeout.unwrap_or(JavaDuration::ZERO));
     };
+    // Duration.ofSeconds(Integer.parseInt(timeoutStr)): a negative value stays negative.
     match timeout_str.parse::<i32>() {
-        Ok(secs) if secs >= 0 => Ok(Duration::from_secs(secs as u64)),
-        Ok(_) => blaze_util::unported!(
-            "Spawns.getTimeout(negative timeout)",
-            "a negative 'timeout' execution requirement: java.time.Duration may be negative, std::time::Duration may not"
-        ),
+        Ok(secs) => Ok(JavaDuration::of_seconds(i64::from(secs))),
         Err(e) => Err(UserExecException::with_cause(
             &format!("For input string: \"{timeout_str}\" ({e})"),
             FailureDetail {

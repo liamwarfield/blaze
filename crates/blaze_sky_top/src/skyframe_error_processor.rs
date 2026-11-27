@@ -108,6 +108,12 @@ impl ViewCreationFailedException {
 ///
 /// PORT: `aspectKeysForConflictReporting` (Skymeld, aspects) is not ported.
 // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:116 SkyframeErrorProcessor.ErrorProcessingResult
+// (`newBuilder()` is `Default`, and the aggregating builder is the value itself.)
+// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:126 SkyframeErrorProcessor.ErrorProcessingResult.newBuilder
+// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:160 SkyframeErrorProcessor.ErrorProcessingResult.AggregatingBuilder.build
+// PORT: skipped, a private constructor of a static class: SkyframeErrorProcessor.SkyframeErrorProcessor
+// PORT: skipped, logging only (BugReport.logUnexpected and logger lines, not shown to the user): SkyframeErrorProcessor.assertValidAnalysisException SkyframeErrorProcessor.assertValidAnalysisOrExecutionException SkyframeErrorProcessor.logUnexpectedExceptionOrigin SkyframeErrorProcessor.logUnexpectedException SkyframeErrorProcessor.isExecutionCauseWorthLogging
+// PORT: skipped, BuildViewTestCase only (inBuildViewTest: no event bus): SkyframeErrorProcessor.isValidErrorKeyType
 #[derive(Debug, Default)]
 pub struct ErrorProcessingResult {
     /// Whether there are loading errors.
@@ -118,6 +124,7 @@ pub struct ErrorProcessingResult {
     action_conflicts: ActionConflicts,
     /// The detailed exit code for execution errors: `None` if the result had no errors or the
     /// errors were all analysis errors.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:154 SkyframeErrorProcessor.ErrorProcessingResult.AggregatingBuilder.setExecutionDetailedExitCode
     execution_detailed_exit_code: Option<blaze_util::DetailedExitCode>,
 }
 
@@ -160,6 +167,8 @@ impl ErrorProcessingResult {
 /// Represents the information around one single error in the build. These are the building
 /// blocks for the final `ErrorProcessingResult`.
 // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:176 SkyframeErrorProcessor.IndividualErrorProcessingResult
+// (`create(...)` is the struct literal.)
+// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:200 SkyframeErrorProcessor.IndividualErrorProcessingResult.create
 struct IndividualErrorProcessingResult {
     action_conflicts: ActionConflicts,
     execution_detailed_exit_code: Option<blaze_util::DetailedExitCode>,
@@ -888,6 +897,7 @@ pub(crate) fn detailed_exception_failure_detail_of(
 
 /// `CYCLE_CODE`.
 // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:1038 SkyframeErrorProcessor.CYCLE_CODE
+// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:1050 SkyframeErrorProcessor.createDetailedExecutionExitCode
 pub fn cycle_code() -> blaze_util::DetailedExitCode {
     blaze_util::DetailedExitCode::of(FailureDetail {
         message: "cycle found during execution".to_owned(),

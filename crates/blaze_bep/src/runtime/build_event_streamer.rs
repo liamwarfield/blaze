@@ -1146,17 +1146,19 @@ fn consume_as_pairs_of_strings(
 }
 
 /// Posted to release a buffered replaceable event (`ReleaseReplaceableBuildEvent`).
-// Java: com/google/devtools/build/lib/buildeventstream/ReleaseReplaceableBuildEvent.java:22 ReleaseReplaceableBuildEvent
+// Java: com/google/devtools/build/lib/buildtool/buildevent/ReleaseReplaceableBuildEvent.java:22 ReleaseReplaceableBuildEvent
 #[derive(Clone, Debug)]
 pub struct ReleaseReplaceableBuildEvent {
     event_id: BuildEventId,
 }
 
 impl ReleaseReplaceableBuildEvent {
+    // Java: com/google/devtools/build/lib/buildtool/buildevent/ReleaseReplaceableBuildEvent.java:25 ReleaseReplaceableBuildEvent.<init>
     pub fn new(event_id: BuildEventId) -> Self {
         ReleaseReplaceableBuildEvent { event_id }
     }
 
+    // Java: com/google/devtools/build/lib/buildtool/buildevent/ReleaseReplaceableBuildEvent.java:29 ReleaseReplaceableBuildEvent.getEventId
     pub fn get_event_id(&self) -> &BuildEventId {
         &self.event_id
     }

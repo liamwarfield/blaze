@@ -1227,35 +1227,309 @@ fn get_all_direct_deps_for_incomplete_node_incremental_build() {
 
 // Java: src/test/java/com/google/devtools/build/skyframe/IncrementalInMemoryNodeEntryTest.java:705 IncrementalInMemoryNodeEntryTest.getAllDirectDepsForIncompleteNode_afterReset
 #[test]
-#[ignore = "rewinding and resetEvaluationFromScratch are not ported (docs/decisions.md 2026-11-19)"]
 fn get_all_direct_deps_for_incomplete_node_after_reset() {
-    unimplemented!(
-        "not ported: IncrementalInMemoryNodeEntryTest.getAllDirectDepsForIncompleteNode_afterReset"
-    )
+    let mut entry = create_entry();
+    entry.add_reverse_dep_and_check_if_done(None);
+    entry.mark_rebuilding();
+
+    let dep = key("dep");
+    entry.add_singleton_temporary_direct_dep(dep.clone());
+    entry.signal_dep(initial_version(), Some(&dep));
+    entry.reset_evaluation_from_scratch();
+
+    assert_contains_exactly(
+        &entry
+            .get_all_direct_deps_for_incomplete_node()
+            .into_iter()
+            .collect::<Vec<_>>(),
+        &[dep],
+    );
 }
 
 // Java: src/test/java/com/google/devtools/build/skyframe/IncrementalInMemoryNodeEntryTest.java:719 IncrementalInMemoryNodeEntryTest.resetOnDirtyNode
 // (@TestParameter boolean valueChanges: both values)
 #[test]
-#[ignore = "rewinding and resetEvaluationFromScratch are not ported (docs/decisions.md 2026-11-19)"]
 fn reset_on_dirty_node() {
-    unimplemented!("not ported: IncrementalInMemoryNodeEntryTest.resetOnDirtyNode")
+    for value_changes in [false, true] {
+        let mut entry = create_entry();
+        entry.add_reverse_dep_and_check_if_done(None); // Start evaluation.
+        entry.mark_rebuilding();
+
+        // Rdep added on initial build that stays on incremental build.
+        let old_and_new_parent = key("oldAndNewParent");
+        entry.add_reverse_dep_and_check_if_done(Some(old_and_new_parent.clone()));
+
+        // Rdep added on initial build that is removed on incremental build.
+        let old_parent = key("oldParent");
+        entry.add_reverse_dep_and_check_if_done(Some(old_parent.clone()));
+
+        // Dep added on initial build that stays on incremental build.
+        let old_and_new_dep = key("oldAndNewDep");
+        entry.add_singleton_temporary_direct_dep(old_and_new_dep.clone());
+        entry.signal_dep(initial_version(), Some(&old_and_new_dep));
+
+        // Dep added on initial build that is removed on incremental build.
+        let old_dep = key("oldDep");
+        entry.add_singleton_temporary_direct_dep(old_dep.clone());
+        entry.signal_dep(initial_version(), Some(&old_dep));
+
+        // Initial build completes.
+        set_value(&mut entry, Some(integer_value(1)), None, initial_version());
+
+        // Start of incremental build.
+        entry.mark_dirty(DirtyType::Dirty);
+
+        // One rdep added, one rdep stays, one rdep removed.
+        let new_parent = key("newParent");
+        entry.add_reverse_dep_and_check_if_done(Some(new_parent.clone()));
+        entry.check_if_done_for_dirty_reverse_dep(old_and_new_parent.clone());
+        entry.remove_reverse_dep(old_parent.clone());
+
+        // Old dep added before reset, triggers rebuild.
+        assert_contains_exactly(
+            &entry.get_next_dirty_direct_deps(),
+            std::slice::from_ref(&old_and_new_dep),
+        );
+        entry.add_singleton_temporary_direct_dep(old_and_new_dep.clone());
+        entry.signal_dep(incremental_version(), Some(&old_and_new_dep));
+        entry.mark_rebuilding();
+        assert!(entry.get_reset_direct_deps().is_empty());
+
+        // Reset clears temporary direct deps, but preserves the dirty value.
+        entry.reset_evaluation_from_scratch();
+        assert_eq!(entry.get_lifecycle_state(), LifecycleState::Rebuilding);
+        assert!(temporary_direct_deps(&mut entry).is_empty());
+        assert_eq!(as_integer(entry.to_value()), Some(1));
+
+        // Add back same dep.
+        entry.add_singleton_temporary_direct_dep(old_and_new_dep.clone());
+        assert!(entry.signal_dep(incremental_version(), Some(&old_and_new_dep)));
+        assert_eq!(
+            temporary_direct_deps(&mut entry),
+            vec![old_and_new_dep.clone()]
+        );
+
+        // New dep added after reset.
+        let new_dep = key("newDep");
+        entry.add_singleton_temporary_direct_dep(new_dep.clone());
+        assert!(entry.signal_dep(incremental_version(), Some(&new_dep)));
+        assert_eq!(
+            temporary_direct_deps(&mut entry),
+            vec![old_and_new_dep.clone(), new_dep.clone()]
+        );
+
+        // Check dep accounting.
+        assert_contains_exactly(
+            &entry
+                .get_reset_direct_deps()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            std::slice::from_ref(&old_and_new_dep),
+        );
+        assert_contains_exactly(
+            &entry
+                .get_all_remaining_dirty_direct_deps()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            &[old_dep],
+        );
+
+        // Set value and check that new parents will be signaled.
+        let new_value = if value_changes { 2 } else { 1 };
+        assert_contains_exactly(
+            &set_value(
+                &mut entry,
+                Some(integer_value(new_value)),
+                None,
+                incremental_version(),
+            )
+            .into_iter()
+            .collect::<Vec<_>>(),
+            &[old_and_new_parent, new_parent],
+        );
+
+        if value_changes {
+            assert_eq!(entry.get_version(), incremental_version());
+        } else {
+            assert_eq!(entry.get_version(), initial_version()); // Change pruning.
+        }
+    }
 }
 
 // Java: src/test/java/com/google/devtools/build/skyframe/IncrementalInMemoryNodeEntryTest.java:799 IncrementalInMemoryNodeEntryTest.rewindOnIncrementalBuild
 // (@TestParameter boolean valueChanges: both values)
 #[test]
-#[ignore = "rewinding and resetEvaluationFromScratch are not ported (docs/decisions.md 2026-11-19)"]
 fn rewind_on_incremental_build() {
-    unimplemented!("not ported: IncrementalInMemoryNodeEntryTest.rewindOnIncrementalBuild")
+    for value_changes in [false, true] {
+        let mut entry = create_entry();
+
+        // Initial build.
+        entry.add_reverse_dep_and_check_if_done(None); // Start evaluation.
+        entry.mark_rebuilding();
+        set_value(&mut entry, Some(integer_value(1)), None, initial_version());
+
+        // Rdeps that exhibit various behavior and timing on the incremental build.
+        let early_old_parent = key("earlyOldParent");
+        let late_old_parent = key("lateOldParent");
+        let clean_parent = key("cleanParent");
+        let reset_dirty_parent = key("resetDirtyParent");
+        let early_dirty_parent = key("earlyDirtyParent");
+        let late_dirty_parent = key("lateDirtyParent");
+        for parent in [
+            &early_old_parent,
+            &late_old_parent,
+            &clean_parent,
+            &reset_dirty_parent,
+            &early_dirty_parent,
+            &late_dirty_parent,
+        ] {
+            entry.add_reverse_dep_and_check_if_done(Some(parent.clone()));
+        }
+
+        // Start of incremental build.
+
+        // Rdep removed before rewinding.
+        entry.remove_reverse_dep(early_old_parent.clone());
+
+        // Dirty rdep registered before rewinding.
+        assert_eq!(
+            entry.check_if_done_for_dirty_reverse_dep(early_dirty_parent.clone()),
+            DependencyState::Done
+        );
+
+        // New rdep registered before rewinding.
+        let early_new_parent = key("earlyNewParent");
+        assert_eq!(
+            entry.add_reverse_dep_and_check_if_done(Some(early_new_parent.clone())),
+            DependencyState::Done
+        );
+
+        // Rewinding initiated.
+        assert_eq!(
+            entry.check_if_done_for_dirty_reverse_dep(reset_dirty_parent.clone()),
+            DependencyState::Done
+        );
+        assert!(entry.mark_dirty(DirtyType::Rewind).is_some());
+        assert_eq!(as_integer(entry.to_value()), Some(1));
+
+        // Parent declares dep again after resetting.
+        assert_eq!(
+            entry.check_if_done_for_dirty_reverse_dep(reset_dirty_parent.clone()),
+            DependencyState::NeedsScheduling
+        );
+        assert_eq!(entry.get_lifecycle_state(), LifecycleState::NeedsRebuilding);
+        entry.mark_rebuilding();
+        assert_eq!(entry.get_lifecycle_state(), LifecycleState::Rebuilding);
+
+        // Rdep removed after rewinding was initiated.
+        entry.remove_reverse_dep(late_old_parent.clone());
+
+        // Dirty rdep registered after rewinding was initiated.
+        assert_eq!(
+            entry.check_if_done_for_dirty_reverse_dep(late_dirty_parent.clone()),
+            DependencyState::AlreadyEvaluating
+        );
+
+        // New rdep registered after rewinding was initiated.
+        let late_new_parent = key("lateNewParent");
+        assert_eq!(
+            entry.add_reverse_dep_and_check_if_done(Some(late_new_parent.clone())),
+            DependencyState::AlreadyEvaluating
+        );
+
+        // Rewound evaluation completes. Only parents that are waiting on the node (registered
+        // after rewinding was initiated) are signalled.
+        let new_value = if value_changes { 2 } else { 1 };
+        assert_contains_exactly(
+            &set_value(
+                &mut entry,
+                Some(integer_value(new_value)),
+                None,
+                incremental_version(),
+            )
+            .into_iter()
+            .collect::<Vec<_>>(),
+            &[
+                reset_dirty_parent.clone(),
+                late_dirty_parent.clone(),
+                late_new_parent.clone(),
+            ],
+        );
+        assert_eq!(as_integer(entry.get_value()), Some(new_value));
+        if value_changes {
+            assert_eq!(entry.get_version(), incremental_version());
+        } else {
+            assert_eq!(entry.get_version(), initial_version()); // Change pruning.
+        }
+
+        // Check rdep accounting.
+        assert_contains_exactly(
+            &entry.get_reverse_deps_for_done_entry(),
+            &[
+                clean_parent,
+                early_dirty_parent,
+                early_new_parent,
+                reset_dirty_parent,
+                late_dirty_parent,
+                late_new_parent,
+            ],
+        );
+    }
 }
 
 // Java: src/test/java/com/google/devtools/build/skyframe/IncrementalInMemoryNodeEntryTest.java:885 IncrementalInMemoryNodeEntryTest.rewindOnDirtyNodeIgnored
 // (@TestParameter boolean valueChanges: both values)
 #[test]
-#[ignore = "rewinding and resetEvaluationFromScratch are not ported (docs/decisions.md 2026-11-19)"]
 fn rewind_on_dirty_node_ignored() {
-    unimplemented!("not ported: IncrementalInMemoryNodeEntryTest.rewindOnDirtyNodeIgnored")
+    for value_changes in [false, true] {
+        let mut entry = create_entry();
+        entry.add_reverse_dep_and_check_if_done(None); // Start evaluation.
+        entry.mark_rebuilding();
+
+        // Dep added on initial build that stays on incremental build.
+        let dep = key("dep");
+        entry.add_singleton_temporary_direct_dep(dep.clone());
+        entry.signal_dep(initial_version(), Some(&dep));
+
+        // Initial build completes.
+        set_value(&mut entry, Some(integer_value(1)), None, initial_version());
+
+        // Start of incremental build.
+        entry.mark_dirty(DirtyType::Dirty);
+        entry.add_reverse_dep_and_check_if_done(None);
+        assert_eq!(
+            entry.get_lifecycle_state(),
+            LifecycleState::CheckDependencies
+        );
+
+        // Attempt to rewind node while it is dirty. Its lifecycle state does not change.
+        entry.mark_dirty(DirtyType::Rewind);
+        assert_eq!(
+            entry.get_lifecycle_state(),
+            LifecycleState::CheckDependencies
+        );
+
+        // Add back same dep.
+        entry.add_singleton_temporary_direct_dep(dep.clone());
+        assert!(entry.signal_dep(incremental_version(), Some(&dep)));
+        entry.mark_rebuilding();
+        assert_eq!(temporary_direct_deps(&mut entry), vec![dep]);
+
+        // Set value and check version.
+        let new_value = if value_changes { 2 } else { 1 };
+        set_value(
+            &mut entry,
+            Some(integer_value(new_value)),
+            None,
+            incremental_version(),
+        );
+
+        if value_changes {
+            assert_eq!(entry.get_version(), incremental_version());
+        } else {
+            assert_eq!(entry.get_version(), initial_version()); // Change pruning.
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

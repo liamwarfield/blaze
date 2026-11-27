@@ -61,12 +61,44 @@ const STRICTER: &[(&str, &str)] = &[
         "v3_p521_ca",
         "P-521 is not in the provider (the oracle accepts it)",
     ),
+    (
+        "direct_non_minimal_length",
+        "a long-form length for a short value is not read (DER rules; JDK 25 accepts it)",
+    ),
+    (
+        "direct_serial_leading_zero",
+        "a serial number with a redundant leading zero is not read (DER rules; JDK 25 accepts \
+         it)",
+    ),
+    (
+        "cn_general",
+        "a GeneralString commonName is not read (no match)",
+    ),
+    (
+        "cn_universal",
+        "a UniversalString commonName is not read (no match)",
+    ),
+    (
+        "direct_idn_host",
+        "only ASCII host names: rustls' ServerName refuses an internationalized name before the \
+         verifier (the JDK converts it with IDN)",
+    ),
+    (
+        "direct_all_digit_host",
+        "a host whose labels are all digits is taken as an IP address (rustls' ServerName \
+         refuses 256.0.0.1; the JDK's isIPv4LiteralAddress checks the ranges and matches it as \
+         a DNS name)",
+    ),
 ];
 
-/// Cases the JDK rejects and Blaze accepts: ruling D16 (docs/decisions.md). A certificate that is
-/// both the trust file and the server's certificate is trusted by identity; Blaze does not
-/// re-validate the validity contents, the outer algorithm identifier or an empty issuer, where
-/// the JDK cannot parse the trust file (Bazel refuses to start with it).
+/// Cases the JDK rejects and Blaze accepts: ruling D16 (docs/decisions.md), as root generalised it
+/// in review round 7 (T8). A certificate that is both the user's own trust file and the server's
+/// certificate, byte for byte, is trusted by identity: of a directly trusted v1/v2 certificate
+/// Blaze makes the structural check of the TBS (up to the key, then only the unique identifiers
+/// of v2) and nothing more. Every other reason the JDK's parser would refuse it (Bazel refuses to
+/// start with such a trust file) is a declared lenient case, one fixture per class: the validity
+/// contents, the outer algorithm identifier, an empty issuer, unique-identifier contents, the
+/// outer structure after the TBS, OID contents.
 const LENIENT: &[(&str, &str)] = &[
     (
         "direct_time_second_60",
@@ -79,6 +111,34 @@ const LENIENT: &[(&str, &str)] = &[
     (
         "direct_empty_issuer",
         "D16: the issuer of a directly trusted certificate is not checked for emptiness",
+    ),
+    (
+        "direct_v2_issuer_uid_empty",
+        "D16 (T8): the contents of a unique identifier are not read (81 00)",
+    ),
+    (
+        "direct_v2_issuer_uid_bad_padding",
+        "D16 (T8): the contents of a unique identifier are not read (81 01 09)",
+    ),
+    (
+        "direct_outer_tbs_only",
+        "D16 (T8): nothing after the TBS is read (no signature algorithm, no signature)",
+    ),
+    (
+        "direct_outer_fourth_element",
+        "D16 (T8): nothing after the TBS is read (a fourth element)",
+    ),
+    (
+        "direct_outer_signature_octet_string",
+        "D16 (T8): nothing after the TBS is read (a signature that is not a BIT STRING)",
+    ),
+    (
+        "direct_inner_alg_empty_oid",
+        "D16 (T8): OID contents are not read (06 00 as the inner signature algorithm)",
+    ),
+    (
+        "direct_name_attribute_empty_oid",
+        "D16 (T8): OID contents are not read (06 00 as a name attribute type)",
     ),
 ];
 

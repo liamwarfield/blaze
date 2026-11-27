@@ -3,8 +3,9 @@
 //! Java: rules/test/StarlarkTestingModule.java (starlarkbuildapi/test/TestingModuleApi.java),
 //! analysis/test/ExecutionInfo.java (`ExecutionInfo.PROVIDER`) and
 //! analysis/test/CoverageCommon.java (starlarkbuildapi/test/CoverageCommonApi.java).
-//! Their functions build analysis-time objects and are not ported; the modules, their members
-//! and the providers exist with Java's names, types and reprs.
+//! `testing.analysis_test` is ported (`rule_class_functions::analysis_test`); the other
+//! functions build analysis-time objects and are not ported; the modules, their members and the
+//! providers exist with Java's names, types and reprs.
 
 use std::fmt;
 
@@ -114,7 +115,7 @@ fn testing_methods(builder: &mut MethodsBuilder) {
         blaze_util::unported!("StarlarkTestingModule.testEnvironment")
     }
 
-    // Java: com/google/devtools/build/lib/rules/test/StarlarkTestingModule.java:64 StarlarkTestingModule.analysisTest
+    // Java: com/google/devtools/build/lib/rules/test/StarlarkTestingModule.java:62 StarlarkTestingModule.analysisTest
     fn analysis_test<'v>(
         this: Value<'v>,
         name: Value<'v>,
@@ -156,10 +157,31 @@ fn testing_methods(builder: &mut MethodsBuilder) {
         // PORT: Java checks for a Package.Builder and a RuleDefinitionEnvironment on the thread;
         // both exist exactly in BUILD (loading-phase) threads.
         let cx = ThreadContext::get(eval)?;
-        if cx.phase != Phase::Loading {
+        if cx.phase != Phase::Loading
+            || crate::package::target_definition_context::TargetDefinitionContext::from_or_null(
+                eval,
+            )
+            .is_none()
+        {
             return Err(errorf("analysis_test can only be called in a BUILD thread"));
         }
-        blaze_util::unported!("StarlarkTestingModule.analysisTest")
+        let empty = || eval.heap().alloc(starlark::values::list::AllocList::EMPTY);
+        let attrs =
+            attrs.unwrap_or_else(|| eval.heap().alloc(starlark::values::dict::AllocDict::EMPTY));
+        let fragments = fragments.unwrap_or_else(empty);
+        let toolchains = toolchains.unwrap_or_else(empty);
+        let attr_values = attr_values
+            .unwrap_or_else(|| eval.heap().alloc(starlark::values::dict::AllocDict::EMPTY));
+        crate::starlark_defs::rule_class_functions::analysis_test(
+            eval,
+            name.unpack_str().unwrap(),
+            implementation,
+            attrs,
+            fragments,
+            toolchains,
+            attr_values,
+        )?;
+        Ok(NoneType)
     }
 }
 
@@ -287,6 +309,7 @@ result = ",".join([
     fn test_environment() {}
 
     #[test]
-    #[ignore = "needs BUILD loading and rule creation (StarlarkRuleClassFunctions.createRule)"]
+    #[ignore = "needs BUILD loading (a package builder on the thread); covered end to end by \
+                the oracle comparison of testing.analysis_test"]
     fn analysis_test() {}
 }

@@ -1390,6 +1390,137 @@ fn export_rule_function(
     Ok(())
 }
 
+/// The body of `testing.analysis_test` after the BUILD-thread check: defines a rule class and
+/// instantiates a *single* target of it.
+///
+/// PORT: Java's export accumulates every error event into one "Errors in exporting" message;
+/// [`export_rule_function`] stops at its first error, so the message carries that one.
+// Java: com/google/devtools/build/lib/rules/test/StarlarkTestingModule.java:62 StarlarkTestingModule.analysisTest
+pub fn analysis_test<'v>(
+    eval: &mut Evaluator<'v, '_, '_>,
+    name: &str,
+    implementation: Value<'v>,
+    attrs: Value<'v>,
+    fragments: Value<'v>,
+    toolchains: Value<'v>,
+    attr_values_api: Value<'v>,
+) -> starlark::Result<()> {
+    // RULE_NAME_PATTERN = [A-Za-z_][A-Za-z0-9_]*
+    let mut chars = name.chars();
+    let matches = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !matches {
+        return Err(errorf(format!(
+            "'name' is limited to Starlark identifiers, got {name}"
+        )));
+    }
+    let attr_values = dict_cast(
+        attr_values_api,
+        "string",
+        |k| k.unpack_str().is_some(),
+        "any",
+        |_| true,
+        "attr_values",
+    )?;
+    if attr_values
+        .iter()
+        .any(|(k, _)| k.unpack_str() == Some("name"))
+    {
+        return Err(errorf(
+            "'name' cannot be set or overridden in 'attr_values'",
+        ));
+    }
+
+    let label_converter =
+        crate::types::LabelConverter::for_bzl_evaluating_thread(eval).map_err(eval_exception)?;
+
+    // Each call to analysis_test defines a rule class and then instantiates a *single* target of
+    // that rule class. The digest is the combo of the package name and the target name (see
+    // http://b/291752414#comment6).
+    let dummy_bzl_file = Label::create_unvalidated(
+        blaze_cmdline::package_identifier::EMPTY_PACKAGE_ID.clone(),
+        "dummy_label",
+    );
+    let (build_file_label, transitive_digest_to_use) = {
+        let pkg_builder =
+            crate::package::target_definition_context::TargetDefinitionContext::from_or_null(eval)
+                .unwrap_or_else(|| panic!("NullPointerException: Package.Builder.fromOrNull"));
+        let mut fingerprint = blaze_util::Fingerprint::new();
+        fingerprint.add_string(pkg_builder.get_metadata().get_name());
+        fingerprint.add_string(name);
+        // TODO: b/291752414 - also include the BUILD file digest
+        fingerprint.add_bytes(&pkg_builder.transitive_bzl_digest);
+        (
+            pkg_builder.get_metadata().build_file_label.clone(),
+            fingerprint.digest_and_reset(),
+        )
+    };
+
+    // Java: thread.getThreadLocal(RuleDefinitionEnvironment.class), the rule class provider,
+    // whose tools repository is @bazel_tools in Bazel (BazelRuleClassProvider.setup).
+    let env = BzlRuleDefinitionEnvironment {
+        tools_repository: blaze_cmdline::repository_name::BAZEL_TOOLS.clone(),
+    };
+    let empty = eval.heap().alloc(starlark::values::list::AllocList::EMPTY);
+    let starlark_rule_function = create_rule(
+        eval,
+        &env,
+        &dummy_bzl_file,
+        &transitive_digest_to_use,
+        label_converter,
+        CreateRuleArgs {
+            parent: None,
+            extendable_unchecked: None,
+            implementation,
+            initializer: None,
+            test: true,
+            attrs,
+            implicit_outputs: Value::new_none(),
+            executable: false,
+            output_to_genfiles: false,
+            fragments,
+            starlark_testable: false,
+            toolchains,
+            doc: None,
+            provides_arg: empty,
+            dependency_resolution_rule: false,
+            is_materializer_rule: false,
+            allow_materializer_rule_real_deps: false,
+            exec_compatible_with: empty,
+            analysis_test: true,
+            build_setting: Value::new_none(),
+            cfg: Value::new_none(),
+            exec_groups: Value::new_none(),
+            subrules_unchecked: empty,
+        },
+    )?;
+
+    // Export the rule (in the BUILD thread).
+    let state = starlark_rule_function.state.clone();
+    let rule_name = format!("{name}_test");
+    if let Err(e) = export_rule_function(&state, &build_file_label, &rule_name, &[], &[]) {
+        return Err(errorf(format!(
+            "Errors in exporting {name}: \n{}",
+            e.without_diagnostic()
+        )));
+    }
+
+    // Instantiate the target
+    let function = eval.heap().alloc(starlark_rule_function);
+    let mut args: Vec<(&str, Value<'v>)> = vec![("name", eval.heap().alloc(name))];
+    let keys: Vec<String> = attr_values
+        .iter()
+        .map(|(k, _)| k.unpack_str().unwrap().to_owned())
+        .collect();
+    for ((_, v), k) in attr_values.iter().zip(&keys) {
+        args.push((k.as_str(), *v));
+    }
+    eval.eval_function(function, &[], &args)?;
+    Ok(())
+}
+
 // -------------------------------------------------------------------------------------------
 // createRule
 

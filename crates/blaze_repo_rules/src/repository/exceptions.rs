@@ -67,6 +67,7 @@ fn io_exception_class_name(e: &IOException) -> &'static str {
         IOExceptionKind::FileSymlinkInfiniteExpansion { .. } => {
             "com.google.devtools.build.lib.io.FileSymlinkInfiniteExpansionException"
         }
+        IOExceptionKind::Detailed(_) => "com.google.devtools.build.lib.vfs.DetailedIOException",
     }
 }
 

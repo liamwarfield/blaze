@@ -125,6 +125,8 @@ impl ConfiguredTargetFunction {
         let services = &*self.services;
         // PORT: remote analysis caching (RemoteAnalysisCachingDependenciesProvider) and the
         // CPU-bound semaphore are not ported.
+        // PORT: skipped, the environment wrapper only releases and reacquires that semaphore around dependency fetches (scheduling, nothing a build shows): StateInformingSkyFunctionEnvironment.StateInformingSkyFunctionEnvironment StateInformingSkyFunctionEnvironment.getValue StateInformingSkyFunctionEnvironment.getValueOrThrow StateInformingSkyFunctionEnvironment.valuesMissing StateInformingSkyFunctionEnvironment.getValuesAndExceptions StateInformingSkyFunctionEnvironment.getListener StateInformingSkyFunctionEnvironment.inErrorBubbling
+        // PORT: skipped, same wrapper: StateInformingSkyFunctionEnvironment.getTemporaryDirectDeps StateInformingSkyFunctionEnvironment.injectVersionForNonHermeticFunction StateInformingSkyFunctionEnvironment.registerDependencies StateInformingSkyFunctionEnvironment.dependOnFuture StateInformingSkyFunctionEnvironment.getLookupHandleForPreviouslyRequestedDeps StateInformingSkyFunctionEnvironment.getState StateInformingSkyFunctionEnvironment.getMaxTransitiveSourceVersionSoFar Informee.inform
         let mut state = DependencyResolverState::new(self.store_transitive_packages);
 
         // computeTargetAndConfiguration

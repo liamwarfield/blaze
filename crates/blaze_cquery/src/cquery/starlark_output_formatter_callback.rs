@@ -104,10 +104,10 @@ fn payload_lookup(eval: &Evaluator) -> anyhow::Result<ConfigurationLookup> {
 }
 
 /// Java's inner class `CqueryDialectGlobals`.
-// Java: com/google/devtools/build/lib/query2/cquery/StarlarkOutputFormatterCallback.java:58 StarlarkOutputFormatterCallback.CqueryDialectGlobals
+// Java: com/google/devtools/build/lib/query2/cquery/StarlarkOutputFormatterCallback.java:59 StarlarkOutputFormatterCallback.CqueryDialectGlobals
 #[starlark_module]
 fn cquery_dialect_globals(builder: &mut GlobalsBuilder) {
-    // Java: com/google/devtools/build/lib/query2/cquery/StarlarkOutputFormatterCallback.java:65 StarlarkOutputFormatterCallback.CqueryDialectGlobals.buildOptions
+    // Java: com/google/devtools/build/lib/query2/cquery/StarlarkOutputFormatterCallback.java:66 StarlarkOutputFormatterCallback.CqueryDialectGlobals.buildOptions
     fn build_options<'v>(
         #[starlark(require = pos)] target: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
@@ -170,7 +170,7 @@ fn cquery_dialect_globals(builder: &mut GlobalsBuilder) {
         Ok(heap.alloc(AllocDict(result)))
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/StarlarkOutputFormatterCallback.java:109 StarlarkOutputFormatterCallback.CqueryDialectGlobals.providers
+    // Java: com/google/devtools/build/lib/query2/cquery/StarlarkOutputFormatterCallback.java:115 StarlarkOutputFormatterCallback.CqueryDialectGlobals.providers
     fn providers<'v>(
         #[starlark(require = pos)] target: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
@@ -330,7 +330,7 @@ fn native_provider_value<'v>(
 
 /// Attempts to add a provider instance to `dict` under an unspecified stringification of the
 /// given key. Takes no action if the provider instance is not a valid Starlark value.
-// Java: com/google/devtools/build/lib/analysis/configuredtargets/AbstractConfiguredTarget.java:298 AbstractConfiguredTarget.tryAddProviderForQuery
+// Java: com/google/devtools/build/lib/analysis/configuredtargets/AbstractConfiguredTarget.java:297 AbstractConfiguredTarget.tryAddProviderForQuery
 fn try_add_provider_for_query<'v>(
     dict: &mut IndexMap<String, Value<'v>>,
     key: &ProviderMapKey,
@@ -374,7 +374,7 @@ fn native_simple_class_name(v: Value) -> &'static str {
 
 /// Starlark output formatter for cquery results. Each configured target will result in an
 /// evaluation of the Starlark expression specified by `--expr`.
-// Java: com/google/devtools/build/lib/query2/cquery/StarlarkOutputFormatterCallback.java:57 StarlarkOutputFormatterCallback
+// Java: com/google/devtools/build/lib/query2/cquery/StarlarkOutputFormatterCallback.java:58 StarlarkOutputFormatterCallback
 pub struct StarlarkOutputFormatterCallback<'a> {
     base: CqueryThreadsafeCallback<'a>,
     // Starlark function with single required parameter "target", a CqueryNode query result.
@@ -408,7 +408,7 @@ impl<'a> StarlarkOutputFormatterCallback<'a> {
     /// `workspace` is the directory a relative `--starlark:file` is read from (PORT: Java reads
     /// it relative to the server process's working directory, which Bazel's client sets to the
     /// workspace before it starts the server).
-    // Java: com/google/devtools/build/lib/query2/cquery/StarlarkOutputFormatterCallback.java:125 StarlarkOutputFormatterCallback.<init>
+    // Java: com/google/devtools/build/lib/query2/cquery/StarlarkOutputFormatterCallback.java:128 StarlarkOutputFormatterCallback.<init>
     pub fn new(
         base: CqueryThreadsafeCallback<'a>,
         skyframe_executor: &'a SkyframeExecutor,

@@ -19,7 +19,7 @@ use parking_lot::RwLock;
 use crate::actions::FileValue;
 use crate::build_file_name::BuildFileName;
 use crate::exceptions::{
-    DetailedExitCode, ErrorDeterminingRepositoryException, NoSuchPackageException,
+    DetailedExitCode, ErrorDeterminingRepositoryException, FailureCode, NoSuchPackageException,
     PackageLoadingCode, build_file_not_found_with_detailed_exit_code,
 };
 use crate::file::FileKey;
@@ -515,8 +515,32 @@ impl PackageLookupFunction {
                     Transience::Persistent,
                 ))
             }
-            // PORT: `DetailedIOException` (which keeps its own transience and failure detail) is
-            // only thrown by remote/output-service file systems Blaze does not have.
+            IOExceptionKind::Detailed(detailed) => {
+                let message = format!(
+                    "IO errors while looking for {} file reading {}: {}",
+                    basename,
+                    path,
+                    e.get_message()
+                );
+                Err(package_lookup_function_exception(
+                    build_file_not_found_with_detailed_exit_code(
+                        package_identifier.clone(),
+                        message.clone(),
+                        DetailedExitCode {
+                            message,
+                            code: FailureCode::Other(format!(
+                                "Filesystem.{}",
+                                detailed.get_filesystem_code()
+                            )),
+                        },
+                    ),
+                    if detailed.is_transient() {
+                        Transience::Transient
+                    } else {
+                        Transience::Persistent
+                    },
+                ))
+            }
             IOExceptionKind::Plain => {
                 let message = format!(
                     "IO errors while looking for {} file reading {}: {}",

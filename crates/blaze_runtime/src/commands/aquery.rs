@@ -46,6 +46,10 @@ impl BlazeCommand for AqueryCommand {
             Err(result) => return result,
         };
         let _after_command = AfterCommand(&skyframe_executor);
+        let _post_graph_stats = crate::commands::query::PostGraphStatsAfterCommand(
+            &skyframe_executor,
+            env.get_bep().cloned(),
+        );
         // new ExecutionTool(env, request) (see `construct_execution_tool`).
         // BuildSummaryStatsModule's state for this request: executorInit when the ExecutionTool
         // is constructed, buildComplete in stopRequest.

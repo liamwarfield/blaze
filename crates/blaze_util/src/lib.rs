@@ -3,16 +3,19 @@
 pub mod bug_report;
 pub mod build_arena;
 pub mod concurrent;
+pub mod java_idioms;
 pub mod exit_code;
 pub mod fingerprint;
 pub mod graph;
 pub mod io;
+pub mod java_duration;
 pub mod java_hash_map;
 pub mod java_regex;
 pub mod process_utils;
 pub mod profiler;
 pub mod server_logger;
 pub mod string_encoding;
+pub mod test_type;
 pub mod uncaught_exception;
 
 pub use exit_code::DetailedExitCode;

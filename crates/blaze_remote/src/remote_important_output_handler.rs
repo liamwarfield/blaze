@@ -208,8 +208,20 @@ impl ImportantOutputHandler for RemoteImportantOutputHandler {
         runfiles_tree_artifacts: &[ActionInputRef],
         metadata_provider: &dyn InputMetadataProvider,
     ) -> Result<LostArtifacts, ImportantOutputError> {
+        // ensureToplevelArtifacts also downloads the artifacts of every runfiles tree known to the
+        // metadata provider. Runfiles trees are hidden top-level outputs and thus not among the
+        // important outputs, but the producers of the artifacts they contain must be guarded from
+        // rewinding during the download just like those of the important outputs.
+        let artifacts_to_guard: Vec<ActionInputRef> = important_outputs
+            .iter()
+            .chain(runfiles_tree_artifacts.iter())
+            .cloned()
+            .collect();
         let _lock = self
-            .maybe_enter_process_outputs_and_get_lost_artifacts(important_outputs, metadata_provider)
+            .maybe_enter_process_outputs_and_get_lost_artifacts(
+                &artifacts_to_guard,
+                metadata_provider,
+            )
             .map_err(|_| ImportantOutputError::Interrupted)?;
         match self.ensure_toplevel_artifacts(
             important_outputs,

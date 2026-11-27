@@ -15,7 +15,7 @@ use crate::sky_functions;
 
 /// A value that represents a local repository lookup result.
 // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:33 LocalRepositoryLookupValue
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug)]
 pub enum LocalRepositoryLookupValue {
     /// A successful lookup of the main repository.
     // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:105 LocalRepositoryLookupValue.MainRepositoryLookupValue
@@ -54,7 +54,14 @@ impl LocalRepositoryLookupValue {
     /// useful result.
     // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:89 LocalRepositoryLookupValue.exists
     pub fn exists(&self) -> bool {
-        !matches!(self, LocalRepositoryLookupValue::NotFound)
+        match self {
+            // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:110 LocalRepositoryLookupValue.MainRepositoryLookupValue.exists
+            LocalRepositoryLookupValue::MainRepository => true,
+            // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:153 LocalRepositoryLookupValue.SuccessfulLocalRepositoryLookupValue.exists
+            LocalRepositoryLookupValue::Successful { .. } => true,
+            // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:193 LocalRepositoryLookupValue.NotFoundLocalRepositoryLookupValue.exists
+            LocalRepositoryLookupValue::NotFound => false,
+        }
     }
 
     /// Returns the name of the local repository contained in the directory which was looked up,
@@ -63,10 +70,13 @@ impl LocalRepositoryLookupValue {
     // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:96 LocalRepositoryLookupValue.getRepository
     pub fn get_repository(&self) -> &RepositoryName {
         match self {
+            // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:115 LocalRepositoryLookupValue.MainRepositoryLookupValue.getRepository
             LocalRepositoryLookupValue::MainRepository => &MAIN,
+            // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:158 LocalRepositoryLookupValue.SuccessfulLocalRepositoryLookupValue.getRepository
             LocalRepositoryLookupValue::Successful {
                 repository_name, ..
             } => repository_name,
+            // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:198 LocalRepositoryLookupValue.NotFoundLocalRepositoryLookupValue.getRepository
             LocalRepositoryLookupValue::NotFound => {
                 panic!("IllegalStateException: Repository was not found")
             }
@@ -77,10 +87,75 @@ impl LocalRepositoryLookupValue {
     // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:102 LocalRepositoryLookupValue.getPath
     pub fn get_path(&self) -> PathFragment {
         match self {
+            // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:120 LocalRepositoryLookupValue.MainRepositoryLookupValue.getPath
             LocalRepositoryLookupValue::MainRepository => PathFragment::empty_fragment(),
+            // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:163 LocalRepositoryLookupValue.SuccessfulLocalRepositoryLookupValue.getPath
             LocalRepositoryLookupValue::Successful { path, .. } => path.clone(),
+            // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:203 LocalRepositoryLookupValue.NotFoundLocalRepositoryLookupValue.getPath
             LocalRepositoryLookupValue::NotFound => {
                 panic!("IllegalStateException: Repository was not found")
+            }
+        }
+    }
+}
+
+impl fmt::Display for LocalRepositoryLookupValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:125 LocalRepositoryLookupValue.MainRepositoryLookupValue.toString
+            LocalRepositoryLookupValue::MainRepository => f.write_str("MainRepositoryLookupValue"),
+            // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:168 LocalRepositoryLookupValue.SuccessfulLocalRepositoryLookupValue.toString
+            LocalRepositoryLookupValue::Successful {
+                repository_name, ..
+            } => write!(f, "SuccessfulLocalRepositoryLookupValue({repository_name})"),
+            // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:208 LocalRepositoryLookupValue.NotFoundLocalRepositoryLookupValue.toString
+            LocalRepositoryLookupValue::NotFound => {
+                f.write_str("NotFoundLocalRepositoryLookupValue")
+            }
+        }
+    }
+}
+
+/// Java: every main-repository value and every not-found value is equal; a successful lookup
+/// compares the repository name only, not the path.
+impl PartialEq for LocalRepositoryLookupValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:130 LocalRepositoryLookupValue.MainRepositoryLookupValue.equals
+            (
+                LocalRepositoryLookupValue::MainRepository,
+                LocalRepositoryLookupValue::MainRepository,
+            ) => true,
+            // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:173 LocalRepositoryLookupValue.SuccessfulLocalRepositoryLookupValue.equals
+            (
+                LocalRepositoryLookupValue::Successful {
+                    repository_name: a, ..
+                },
+                LocalRepositoryLookupValue::Successful {
+                    repository_name: b, ..
+                },
+            ) => a == b,
+            // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:213 LocalRepositoryLookupValue.NotFoundLocalRepositoryLookupValue.equals
+            (LocalRepositoryLookupValue::NotFound, LocalRepositoryLookupValue::NotFound) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for LocalRepositoryLookupValue {}
+
+impl std::hash::Hash for LocalRepositoryLookupValue {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:136 LocalRepositoryLookupValue.MainRepositoryLookupValue.hashCode
+            LocalRepositoryLookupValue::MainRepository => "MainRepositoryLookupValue".hash(state),
+            // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:181 LocalRepositoryLookupValue.SuccessfulLocalRepositoryLookupValue.hashCode
+            LocalRepositoryLookupValue::Successful {
+                repository_name, ..
+            } => repository_name.hash(state),
+            // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:219 LocalRepositoryLookupValue.NotFoundLocalRepositoryLookupValue.hashCode
+            LocalRepositoryLookupValue::NotFound => {
+                "NotFoundLocalRepositoryLookupValue".hash(state)
             }
         }
     }
@@ -109,23 +184,9 @@ impl Key for LocalRepositoryLookupKey {
     const FUNCTION: SkyFunctionName = sky_functions::LOCAL_REPOSITORY_LOOKUP;
     // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:138 SkyFunctions.LOCAL_REPOSITORY_LOOKUP (createHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
-    /// Java: every main-repository value and every not-found value is equal; a successful lookup
-    /// compares the repository name only, not the path.
-    // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupValue.java:174 LocalRepositoryLookupValue.SuccessfulLocalRepositoryLookupValue.equals
+    /// Java `equals` (see the `PartialEq` impl).
     fn values_equal(old: &LocalRepositoryLookupValue, new: &LocalRepositoryLookupValue) -> bool {
-        match (old, new) {
-            (
-                LocalRepositoryLookupValue::Successful {
-                    repository_name: old,
-                    ..
-                },
-                LocalRepositoryLookupValue::Successful {
-                    repository_name: new,
-                    ..
-                },
-            ) => old == new,
-            _ => old == new,
-        }
+        old == new
     }
 }
 

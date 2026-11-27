@@ -272,13 +272,16 @@ impl PackageFactory {
         )))
     }
 
-    /// Runs the package validator and enforces `--max_computation_steps`.
-    // PORT: the Metrics argument and the loading listener are not ported (profiling only).
+    /// Runs the package validator, enforces `--max_computation_steps` and tells the loading
+    /// listener.
+    ///
+    /// PORT: the validator does not take the `Metrics` (Bazel's validators do not read them).
     // Java: com/google/devtools/build/lib/packages/PackageFactory.java:371 PackageFactory.afterDoneLoadingPackage
     pub fn after_done_loading_package(
         &self,
         pkg: &Package,
         starlark_semantics: &StarlarkSemantics,
+        metrics: &crate::package::package_loading_listener::Metrics,
         event_handler: &dyn ExtendedEventHandler,
     ) -> Result<(), InvalidPackageException> {
         self.package_validator.validate(pkg, event_handler)?;
@@ -298,6 +301,13 @@ impl PackageFactory {
                     PackageLoadingCode::MaxComputationStepsExceeded,
                 ),
             ));
+        }
+        // packageLoadingListener.onLoadingCompleteAndSuccessful(pkg, starlarkSemantics,
+        // lazyMacroExpansionPackages, metrics)
+        // Java: com/google/devtools/build/lib/packages/PackageFactory.java:405 PackageFactory.afterDoneLoadingPackage
+        if let Some(listener) = crate::package::package_loading_listener::package_loading_listener()
+        {
+            listener.on_loading_complete_and_successful(pkg, metrics);
         }
         Ok(())
     }

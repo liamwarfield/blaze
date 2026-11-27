@@ -106,7 +106,9 @@ fn run_glob_operation(
             let loc = caller_location(eval);
             // PORT: Java picks the code from the exception class (DetailedIOException ->
             // its own code, FileSymlinkException -> EVAL_GLOBS_SYMLINK_ERROR); Globber
-            // errors carry only the message, so every I/O error is GLOB_IO_EXCEPTION.
+            // errors carry only the message, so every I/O error is GLOB_IO_EXCEPTION. Blaze's
+            // only DetailedIOException (the remote repo contents cache's lost file) comes from
+            // reading file contents, which globbing (stat, readdir) never does.
             let code = PackageLoadingCode::GlobIoException;
             let error = Package::error(loc.as_ref(), &error_message, code);
             let mut pkg_builder =

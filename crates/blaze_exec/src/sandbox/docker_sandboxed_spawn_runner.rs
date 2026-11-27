@@ -81,8 +81,13 @@ pub struct DockerSandboxedSpawnRunner {
 impl DockerSandboxedSpawnRunner {
     /// Returns whether the darwin sandbox is supported on the local machine by running docker
     /// info. This is expensive, and we have also reports of docker hanging for a long time!
+    ///
+    /// An `Err` is Java's `InterruptedException` (a [`sandbox_helpers::interrupted_error`]).
     // Java: com/google/devtools/build/lib/sandbox/DockerSandboxedSpawnRunner.java:79 DockerSandboxedSpawnRunner.isSupported
-    pub fn is_supported(cmd_env: &ExecCommandEnvironment, docker_client: &Path) -> bool {
+    pub fn is_supported(
+        cmd_env: &ExecCommandEnvironment,
+        docker_client: &Path,
+    ) -> io::Result<bool> {
         let verbose = cmd_env.sandbox_options.docker_verbose;
 
         if process_wrapper_from_command_environment(cmd_env).is_none() {
@@ -91,7 +96,7 @@ impl DockerSandboxedSpawnRunner {
                     "Docker sandboxing is disabled because ProcessWrapper is not supported. This should never happen - is your Bazel binary corrupted?",
                 ));
             }
-            return false;
+            return Ok(false);
         }
 
         // On Linux we need to know the UID and GID that we're running as, because otherwise
@@ -111,10 +116,8 @@ impl DockerSandboxedSpawnRunner {
         // PORT: Java streams the output to null streams; it is captured and dropped here.
         if let Err(e) = cmd.execute() {
             let Some(command_exception) = e.as_command_exception() else {
-                // PORT: Java propagates the InterruptedException; the `is_supported -> bool` API
-                // cannot, so the interrupt is re-asserted and Docker reported as unsupported.
-                thread_interrupt::interrupt_current();
-                return false;
+                // The InterruptedException leaves isSupported.
+                return Err(sandbox_helpers::interrupted_error(None));
             };
             if verbose {
                 // `Throwables.getStackTraceAsString(e)`: the exception's `toString()`, then its
@@ -131,7 +134,7 @@ impl DockerSandboxedSpawnRunner {
                     "Docker sandboxing is disabled, because running 'docker info' failed: com.google.devtools.build.lib.shell.{class}: {command_exception}"
                 )));
             }
-            return false;
+            return Ok(false);
         }
 
         if verbose {
@@ -140,7 +143,7 @@ impl DockerSandboxedSpawnRunner {
                 .handle(&Event::info("Docker sandboxing is supported"));
         }
 
-        true
+        Ok(true)
     }
 
     /// Creates a sandboxed spawn runner that uses Docker.

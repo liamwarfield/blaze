@@ -103,6 +103,8 @@ pub mod methods {
     /// `CapabilitiesGrpc.getGetCapabilitiesMethod()`.
     pub const GET_CAPABILITIES: Method =
         Method::new("/build.bazel.remote.execution.v2.Capabilities/GetCapabilities");
+    /// `FetchGrpc.getFetchBlobMethod()` (Remote Asset API).
+    pub const FETCH_BLOB: Method = Method::new("/build.bazel.remote.asset.v1.Fetch/FetchBlob");
     /// `ByteStreamGrpc.getReadMethod()`.
     pub const READ: Method = Method::new("/google.bytestream.ByteStream/Read");
     /// `ByteStreamGrpc.getWriteMethod()`.
@@ -211,6 +213,10 @@ pub struct CallOptions {
     pub call_credentials: Option<Arc<dyn CallCredentials>>,
     /// `withDeadlineAfter(timeout)`.
     pub deadline: Option<Duration>,
+    /// `withInterceptors(...)` of the stub besides the request metadata (the remote
+    /// downloader's `newDownloaderHeadersInterceptor`); they add their headers after the
+    /// request metadata, before the channel's interceptors.
+    pub stub_interceptors: Vec<Arc<dyn ClientInterceptor>>,
 }
 
 impl CallOptions {
@@ -244,6 +250,12 @@ impl CallOptions {
     /// `--remote_timeout=0`.
     pub fn with_deadline_after(mut self, timeout: Duration) -> CallOptions {
         self.deadline = Some(timeout);
+        self
+    }
+
+    /// `withInterceptors(interceptor)` of the stub.
+    pub fn with_interceptor(mut self, interceptor: Arc<dyn ClientInterceptor>) -> CallOptions {
+        self.stub_interceptors.push(interceptor);
         self
     }
 }
@@ -620,7 +632,11 @@ impl ReferenceCountedChannel {
             }
         }
         let mut listeners: Vec<Box<dyn CallListener>> = Vec::new();
-        for interceptor in &self.inner.interceptors {
+        for interceptor in options
+            .stub_interceptors
+            .iter()
+            .chain(self.inner.interceptors.iter())
+        {
             if let Some(listener) = interceptor.intercept_call(method, &mut headers) {
                 listeners.push(listener);
             }

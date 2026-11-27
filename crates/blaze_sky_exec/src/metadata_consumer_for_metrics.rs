@@ -31,17 +31,6 @@ impl MetadataConsumerForMetrics for NoOpMetadataConsumer {
     fn accumulate_fileset(&self, _fileset_output_size: usize) {}
 }
 
-/// `TreeArtifactValue.getTotalChildBytes()`: the sizes of the regular-file children.
-// Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:697 TreeArtifactValue.Builder.build
-fn get_total_child_bytes(tree_artifact_value: &TreeArtifactValue) -> i64 {
-    tree_artifact_value
-        .child_values
-        .iter()
-        .filter(|(_, metadata)| metadata.get_type() == FileStateType::RegularFile)
-        .map(|(_, metadata)| metadata.get_size())
-        .sum()
-}
-
 /// Accumulates file metadata for later export to a `ArtifactMetrics.FilesMetric` object.
 // Java: com/google/devtools/build/lib/skyframe/MetadataConsumerForMetrics.java:46 MetadataConsumerForMetrics.FilesMetricConsumer
 #[derive(Debug, Default)]
@@ -93,7 +82,7 @@ impl MetadataConsumerForMetrics for FilesMetricConsumer {
 
     // Java: com/google/devtools/build/lib/skyframe/MetadataConsumerForMetrics.java:61 MetadataConsumerForMetrics.FilesMetricConsumer.accumulate
     fn accumulate_tree(&self, tree_artifact_value: &TreeArtifactValue) {
-        let total_child_bytes = get_total_child_bytes(tree_artifact_value);
+        let total_child_bytes = tree_artifact_value.get_total_child_bytes();
         self.size.fetch_add(total_child_bytes, Ordering::SeqCst);
         if total_child_bytes > 0 {
             // Skip omitted/missing tree artifacts: they will throw here.

@@ -98,6 +98,25 @@ impl SourceArtifactException {
         }
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:532 SourceArtifactException.createdDetailed
+    pub fn created_detailed(
+        artifact: &Artifact,
+        e: &blaze_vfs::DetailedIOException,
+    ) -> SourceArtifactException {
+        let mut failure_detail_with_updated_error_message = e
+            .get_detailed_exit_code()
+            .get_failure_detail()
+            .cloned()
+            .expect("DetailedIOException has a FailureDetail");
+        failure_detail_with_updated_error_message.message = construct_error_message(
+            artifact,
+            &format!("error reading file: {}", e.get_message()),
+        );
+        SourceArtifactException {
+            failure_detail: failure_detail_with_updated_error_message,
+        }
+    }
+
     // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:546 SourceArtifactException.create
     pub fn create_for_traversal(
         artifact: &Artifact,
@@ -457,8 +476,16 @@ fn create_source_value(
             blaze_sky_loading::file::FileKey::key(rooted_path),
         )? {
         Ok(v) => v,
-        // PORT: Java's DetailedIOException branch (`createdDetailed`) is not reachable: FILE
-        // throws plain IOExceptions here.
+        Err(e) if e.as_detailed().is_some() => {
+            return Err(SkyFunctionException::new(
+                SourceArtifactException::created_detailed(
+                    artifact,
+                    e.as_detailed().expect("checked"),
+                ),
+                Transience::Persistent,
+            )
+            .into());
+        }
         Err(e) => {
             return Err(SkyFunctionException::new(
                 SourceArtifactException::create_from_message(artifact, e.get_message()),

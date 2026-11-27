@@ -377,6 +377,10 @@ fn main() {
         query_transitive_package_preloader: Some(Arc::new(
             SkyframeQueryTransitivePackagePreloader::new(package_manager.clone()),
         )),
+        // PORT: the dev binary has no SkyframeExecutor: no SkyQuery.
+        graph_factory: None,
+        package_path: None,
+        query_evaluation_parallelism_level: 1,
     };
 
     let detailed_exit_code = exec_internal(

@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""Runs CacheDecompressionTest.testDecompressionWorks (src/test/py/bazel/remote/
+cache_decompression_test.py) by hand on the oracle or on Blaze.
+
+usage: scripts/remote-http/decompression-probe <oracle|BINARY> <side-name>
+       scripts/remote-http/decompression-probe help
+
+The test's MemoryStorageHandler (copied from the pinned source: PUT answers 200 without a
+Content-Length, GET answers gzip-encoded content when the client accepts gzip, else 404) runs in
+this process; the binary builds a genrule with --remote_cache twice around a clean --expunge.
+One workspace and output user root per side under ~/.cache/blaze/work/remote-7/decompression/
+<side-name>; startup --max_idle_secs=60, the server is shut down at the end. Prints PASS or FAIL
+with the failed assertion, and keeps the commands' stderr in log.txt.
+"""
+import gzip
+import io
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+if len(sys.argv) < 3 or sys.argv[1] == "help":
+    print(__doc__.strip())
+    sys.exit(0)
+
+CACHE = os.path.expanduser("~/.cache/blaze")
+BIN = (os.path.join(CACHE, "oracle", "bazel-9.3.2-linux-x86_64") if sys.argv[1] == "oracle"
+       else os.path.abspath(sys.argv[1]))
+BASE = os.path.join(CACHE, "work", "remote-7", "decompression", sys.argv[2])
+WS = os.path.join(BASE, "ws")
+UR = os.path.join(BASE, "ur")
+
+
+class MemoryStorageHandler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+
+    def do_PUT(self):
+        self.send_response(200)
+        self.end_headers()
+        self.server.storage[self.path] = self.rfile.read(
+            int(self.headers['Content-Length']))
+        self.finish()
+
+    def do_GET(self):
+        if self.path in self.server.storage and 'gzip' in self.headers[
+                'Accept-Encoding']:
+            out = io.BytesIO()
+            with gzip.GzipFile(fileobj=out, mode='w') as f:
+                f.write(self.server.storage[self.path])
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(out.getvalue())))
+            self.send_header('Content-Encoding', 'gzip')
+            self.end_headers()
+            self.wfile.write(out.getvalue())
+        else:
+            self.send_response(404)
+            self.end_headers()
+        self.finish()
+
+    def log_message(self, *args):
+        pass
+
+
+def free_port():
+    tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    tcp.bind(('localhost', 0))
+    _, port = tcp.getsockname()
+    tcp.close()
+    return port
+
+
+def main():
+    if os.path.exists(WS):
+        subprocess.run(["chmod", "-R", "u+w", WS])
+        shutil.rmtree(WS)
+    os.makedirs(WS)
+    os.makedirs(UR, exist_ok=True)
+    home = os.path.join(BASE, "home")
+    os.makedirs(home, exist_ok=True)
+    rc = os.path.join(BASE, "bazelrc")
+    with open(rc, "w") as f:
+        f.write("startup --max_idle_secs=60\ncommon --repository_cache=%s\nbuild --jobs=4\n"
+                % os.path.join(CACHE, "repo-cache"))
+    for name, lines in [("WORKSPACE", []), ("MODULE.bazel", []), ("input.txt", ["Hello HTTP"]),
+                        ("BUILD", ['genrule(', '    name = "genrule",',
+                                   '    cmd = "cp \\"$<\\" \\"$@\\"",',
+                                   '    srcs = ["//:input.txt"],', '    outs = ["genrule.txt"],',
+                                   ')'])]:
+        with open(os.path.join(WS, name), "w") as f:
+            for line in lines:
+                f.write(line + "\n")
+    shutil.copy(os.path.join(CACHE, "src", "bazel-9.3.2", "src/test/tools/bzlmod/MODULE.bazel.lock"),
+                os.path.join(WS, "MODULE.bazel.lock"))
+    port = free_port()
+    httpd = HTTPServer(('localhost', port), MemoryStorageHandler)
+    httpd.storage = {}
+    url = 'http://localhost:{}'.format(port)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    env = {"HOME": home, "PATH": "/usr/bin:/bin", "BLAZE_SERVER_MODE": "daemon"}
+    log = open(os.path.join(BASE, "log.txt"), "w")
+
+    def run(args):
+        p = subprocess.run([BIN, "--bazelrc=" + rc, "--output_user_root=" + UR] + args, cwd=WS,
+                           env=env, capture_output=True, text=True)
+        log.write("$ %s\nexit %d\n%s\n%s\n" % (" ".join(args), p.returncode, p.stdout, p.stderr))
+        if p.returncode != 0:
+            raise AssertionError("exit %d of %s" % (p.returncode, args))
+        return p.stdout, p.stderr
+
+    try:
+        _, stderr = run(['build', '//:genrule.txt', '--remote_cache', url])
+        assert 'INFO: 2 processes: 1 remote cache hit, 1 internal' not in stderr, "hit on first"
+        assert 'HTTP version 1.1 is required' not in stderr, "HTTP version (1)"
+        run(['clean', '--expunge'])
+        _, stderr = run(['build', '//:genrule.txt', '--remote_cache', url])
+        assert 'INFO: 2 processes: 1 remote cache hit, 1 internal.' in stderr, "no hit on second"
+        assert 'HTTP version 1.1 is required' not in stderr, "HTTP version (2)"
+        stdout, _ = run(['info', 'bazel-genfiles'])
+        with open(os.path.join(stdout.splitlines()[0], 'genrule.txt')) as f:
+            assert f.read().splitlines() == ['Hello HTTP'], "content"
+        print("testDecompressionWorks\tPASS")
+    except AssertionError as e:
+        print("testDecompressionWorks\tFAIL\t%s" % e)
+    finally:
+        subprocess.run([BIN, "--bazelrc=" + rc, "--output_user_root=" + UR, "shutdown"], cwd=WS,
+                       env=env, capture_output=True)
+        httpd.shutdown()
+
+
+main()

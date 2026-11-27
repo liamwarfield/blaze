@@ -222,6 +222,8 @@ impl FrozenMarker for FrozenValue {
     const FROZEN: bool = true;
 }
 
+// Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkRepositoryModule.java:128 StarlarkRepositoryModule.StarlarkRepoRule.getName
+// PORT: skipped StarlarkRepositoryModule.StarlarkRepoRule.isImmutable: a frozen value is immutable.
 #[starlark_value(type = "repository_rule")]
 impl<'v, V: ValueLike<'v> + FrozenMarker> StarlarkValue<'v> for StarlarkRepoRuleGen<V>
 where
@@ -314,6 +316,7 @@ where
 }
 
 /// Builds the [`RepoRule`] of a frozen `repository_rule` value (Java `getRepoRule`), once.
+// Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkRepositoryModule.java:180 StarlarkRepositoryModule.StarlarkRepoRule.getRepoRule
 fn get_repo_rule(
     data: &Arc<RepoRuleData>,
     implementation: FrozenValue,

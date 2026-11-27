@@ -626,12 +626,41 @@ fn symlink_not_uploaded() {
     artifact_uploader.release();
 }
 
+// Java: src/test/java/com/google/devtools/build/lib/remote/ByteStreamBuildEventArtifactUploaderTest.java:277 ByteStreamBuildEventArtifactUploaderTest.customHashFunction_uploaded
 #[test]
-#[ignore = "assumeNotNull(BazelHashFunctions.BLAKE3): Blaze's file systems offer SHA-256 only \
-            (blaze_vfs::DigestHashFunction), so Java skips it here too; the URI format of a \
-            new-style digest function is covered by the unit test \
-            path_converter_names_new_style_digest_functions"]
-fn custom_hash_function_uploaded() {}
+fn custom_hash_function_uploaded() {
+    let mut f = Fixture::set_up();
+    f.server.start();
+    // `new InMemoryFileSystem(new JavaClock(), BazelHashFunctions.BLAKE3)`: a file system whose
+    // digest function is BLAKE3 (the Unix one under the temporary directory here).
+    let fs = UnixFileSystem::create(DigestHashFunction::Blake3);
+    let file = Path::create_from_str(&format!("{}/file", f.root), &fs);
+    fs_utils::write_content(&file, b"").unwrap();
+    let mut files_to_upload = HashMap::new();
+    files_to_upload.insert(
+        file.clone(),
+        LocalFile::new(
+            file.clone(),
+            LocalFileType::OutputFile,
+            /* artifact_metadata= */ None,
+        ),
+    );
+    let ref_cnt_channel = f.new_channel();
+    let (combined_cache, _) = f.new_combined_cache(&ref_cnt_channel);
+    let artifact_uploader = f.new_artifact_uploader(&combined_cache);
+
+    let path_converter = artifact_uploader.upload_and_wait(files_to_upload).unwrap();
+    let hash = hex::encode(file.get_digest().unwrap());
+    let size = file.get_file_size().unwrap();
+    let conversion = path_converter.apply(&file);
+    assert_eq!(
+        conversion,
+        Some(format!(
+            "bytestream://localhost/instance/blobs/blake3/{hash}/{size}"
+        ))
+    );
+    artifact_uploader.release();
+}
 
 #[test]
 fn test_outputs_uploaded_if_files() {

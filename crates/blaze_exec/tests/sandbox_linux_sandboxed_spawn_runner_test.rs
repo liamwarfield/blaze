@@ -118,8 +118,8 @@ impl SpawnExecutionContext for SpawnExecutionContextForTesting {
     fn speculating(&self) -> bool {
         false
     }
-    fn get_timeout(&self) -> Duration {
-        self.timeout
+    fn get_timeout(&self) -> blaze_util::java_duration::JavaDuration {
+        self.timeout.into()
     }
     fn get_file_out_err(&self) -> &FileOutErr {
         &self.file_out_err
@@ -268,7 +268,7 @@ fn exec_or_skip(
     spawn: &dyn Spawn,
     context: &SpawnExecutionContextForTesting,
 ) -> Option<SpawnResult> {
-    if !LinuxSandboxedSpawnRunner::is_supported(&f.env) {
+    if !LinuxSandboxedSpawnRunner::is_supported(&f.env).unwrap() {
         eprintln!("skipped: linux-sandbox is not supported on this machine");
         return None;
     }

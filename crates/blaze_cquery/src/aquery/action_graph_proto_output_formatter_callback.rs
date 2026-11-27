@@ -48,7 +48,7 @@ impl Write for PrintStream {
 }
 
 /// Default output callback for aquery, prints proto output.
-// Java: com/google/devtools/build/lib/query2/aquery/ActionGraphProtoOutputFormatterCallback.java:48 ActionGraphProtoOutputFormatterCallback
+// Java: com/google/devtools/build/lib/query2/aquery/ActionGraphProtoOutputFormatterCallback.java:49 ActionGraphProtoOutputFormatterCallback
 pub struct ActionGraphProtoOutputFormatterCallback<'a> {
     // AqueryThreadsafeCallback
     // Java: com/google/devtools/build/lib/query2/aquery/AqueryThreadsafeCallback.java:24 AqueryThreadsafeCallback
@@ -65,7 +65,7 @@ pub struct ActionGraphProtoOutputFormatterCallback<'a> {
 }
 
 impl<'a> ActionGraphProtoOutputFormatterCallback<'a> {
-    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphProtoOutputFormatterCallback.java:62 ActionGraphProtoOutputFormatterCallback.<init>
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphProtoOutputFormatterCallback.java:63 ActionGraphProtoOutputFormatterCallback.<init>
     pub fn new(
         event_handler: Arc<dyn ExtendedEventHandler>,
         options: &'a AqueryOptions,
@@ -88,7 +88,7 @@ impl<'a> ActionGraphProtoOutputFormatterCallback<'a> {
         }
     }
 
-    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphProtoOutputFormatterCallback.java:133 ActionGraphProtoOutputFormatterCallback.processSingleEntry
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphProtoOutputFormatterCallback.java:134 ActionGraphProtoOutputFormatterCallback.processSingleEntry
     fn process_single_entry(
         &self,
         action_graph_dump: &mut ActionGraphDump<'_>,
@@ -173,7 +173,7 @@ mod field_number {
 /// the tasks in queue order, which is the order of the `output*` calls. Blaze prints each task
 /// on the calling thread, in the same order. The class belongs to
 /// `skyframe/actiongraph/v2` (blaze_actions); it is ported next to its only user.
-// Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:41 StreamedConsumingOutputHandler
+// Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:43 StreamedConsumingOutputHandler
 pub struct StreamedConsumingOutputHandler {
     output_type: OutputType,
     output_stream: OutputStream,
@@ -186,7 +186,7 @@ pub struct StreamedConsumingOutputHandler {
 const OUTPUT_BUFFER_SIZE: usize = 16384;
 
 impl StreamedConsumingOutputHandler {
-    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:53 StreamedConsumingOutputHandler.<init>
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:55 StreamedConsumingOutputHandler.<init>
     pub fn new(output_type: OutputType, output_stream: OutputStream) -> Self {
         blaze_util::check_argument!(
             matches!(
@@ -204,7 +204,7 @@ impl StreamedConsumingOutputHandler {
 
     /// Construct the printing task and print it (Java: put it in the queue, whose consumer
     /// prints it).
-    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:132 StreamedConsumingOutputHandler.addTaskToQueue
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:133 StreamedConsumingOutputHandler.addTaskToQueue
     fn add_task_to_queue<M: JavaMessage>(
         &mut self,
         message: M,
@@ -214,7 +214,7 @@ impl StreamedConsumingOutputHandler {
     ) {
         match self.output_type {
             OutputType::BINARY => {
-                // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/PrintTask.java:44 PrintTask.ProtoPrintTask.print
+                // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/PrintTask.java:54 PrintTask.ProtoPrintTask.print
                 // codedOutputStream.writeMessage(fieldNumber, message)
                 encode_varint(u64::from((field_number << 3) | 2), &mut self.buffer);
                 message.write_delimited_to(&mut self.buffer);
@@ -223,14 +223,14 @@ impl StreamedConsumingOutputHandler {
                 }
             }
             OutputType::DELIMITED_BINARY => {
-                // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/PrintTask.java:66 PrintTask.StreamedProtoPrintTask.print
+                // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/PrintTask.java:77 PrintTask.StreamedProtoPrintTask.print
                 let mut bytes = Vec::new();
                 wrap(message).write_delimited_to(&mut bytes);
                 // builder.build().writeDelimitedTo(out): straight to the stream.
                 let _ = self.output_stream.borrow_mut().write_all(&bytes);
             }
             OutputType::TEXT => {
-                // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/PrintTask.java:118 PrintTask.TextProtoPrintTask.print
+                // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/PrintTask.java:129 PrintTask.TextProtoPrintTask.print
                 let text = format!("{message_label} {{\n{}}}\n", message_to_string(&message));
                 // PrintStream(out): the default charset (ISO-8859-1 on Bazel's server).
                 self.buffer.extend_from_slice(&latin1_encode_lossy(&text));
@@ -246,7 +246,7 @@ impl StreamedConsumingOutputHandler {
 }
 
 impl AqueryOutputHandler for StreamedConsumingOutputHandler {
-    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:69 StreamedConsumingOutputHandler.outputArtifact
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:72 StreamedConsumingOutputHandler.outputArtifact
     fn output_artifact(&mut self, message: analysis::Artifact) {
         self.add_task_to_queue(message, field_number::ARTIFACTS, "artifacts", |m| {
             analysis::ActionGraphContainer {
@@ -255,7 +255,7 @@ impl AqueryOutputHandler for StreamedConsumingOutputHandler {
             }
         });
     }
-    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:74 StreamedConsumingOutputHandler.outputAction
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:77 StreamedConsumingOutputHandler.outputAction
     fn output_action(&mut self, message: analysis::Action) {
         self.add_task_to_queue(message, field_number::ACTIONS, "actions", |m| {
             analysis::ActionGraphContainer {
@@ -264,7 +264,7 @@ impl AqueryOutputHandler for StreamedConsumingOutputHandler {
             }
         });
     }
-    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:79 StreamedConsumingOutputHandler.outputTarget
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:82 StreamedConsumingOutputHandler.outputTarget
     fn output_target(&mut self, message: analysis::Target) {
         self.add_task_to_queue(message, field_number::TARGETS, "targets", |m| {
             analysis::ActionGraphContainer {
@@ -273,7 +273,7 @@ impl AqueryOutputHandler for StreamedConsumingOutputHandler {
             }
         });
     }
-    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:84 StreamedConsumingOutputHandler.outputDepSetOfFiles
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:87 StreamedConsumingOutputHandler.outputDepSetOfFiles
     fn output_dep_set_of_files(&mut self, message: analysis::DepSetOfFiles) {
         self.add_task_to_queue(
             message,
@@ -285,7 +285,7 @@ impl AqueryOutputHandler for StreamedConsumingOutputHandler {
             },
         );
     }
-    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:89 StreamedConsumingOutputHandler.outputConfiguration
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:92 StreamedConsumingOutputHandler.outputConfiguration
     fn output_configuration(&mut self, message: analysis::Configuration) {
         self.add_task_to_queue(message, field_number::CONFIGURATION, "configuration", |m| {
             analysis::ActionGraphContainer {
@@ -294,7 +294,7 @@ impl AqueryOutputHandler for StreamedConsumingOutputHandler {
             }
         });
     }
-    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:94 StreamedConsumingOutputHandler.outputAspectDescriptor
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:97 StreamedConsumingOutputHandler.outputAspectDescriptor
     fn output_aspect_descriptor(&mut self, message: analysis::AspectDescriptor) {
         self.add_task_to_queue(
             message,
@@ -306,7 +306,7 @@ impl AqueryOutputHandler for StreamedConsumingOutputHandler {
             },
         );
     }
-    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:100 StreamedConsumingOutputHandler.outputRuleClass
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:103 StreamedConsumingOutputHandler.outputRuleClass
     fn output_rule_class(&mut self, message: analysis::RuleClass) {
         self.add_task_to_queue(message, field_number::RULE_CLASSES, "rule_classes", |m| {
             analysis::ActionGraphContainer {
@@ -315,7 +315,7 @@ impl AqueryOutputHandler for StreamedConsumingOutputHandler {
             }
         });
     }
-    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:105 StreamedConsumingOutputHandler.outputPathFragment
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:108 StreamedConsumingOutputHandler.outputPathFragment
     fn output_path_fragment(&mut self, message: analysis::PathFragment) {
         self.add_task_to_queue(
             message,
@@ -328,7 +328,7 @@ impl AqueryOutputHandler for StreamedConsumingOutputHandler {
         );
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:156 StreamedConsumingOutputHandler.close
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:160 StreamedConsumingOutputHandler.close
     fn close(&mut self) -> std::io::Result<()> {
         // codedOutputStream.flush() / outputStream.flush() / printStream.flush()
         self.flush_buffer();

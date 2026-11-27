@@ -28,7 +28,8 @@ The memory rule (AGENTS.md "Memory") shapes the stand-in:
 BLAZE_SERVER_MODE (Blaze's server mode, see crates/blaze_client/src/server.rs) and
 BLAZE_INCREMENTAL_DEBUG are passed through to the binary: set BLAZE_SERVER_MODE to `daemon` for
 Blaze, since the test functions assume a server that keeps its state between commands, as Bazel's
-does. RRC_KEEP=1 keeps the last function's workspace and output base (only its server is shut
+does. RRC_EXTRA=<file.py> adds the test functions of the file's class `Extra` to the test class
+(hand-written cases, e.g. scripts/rrc-probe/extra_round7.py). RRC_KEEP=1 keeps the last function's workspace and output base (only its server is shut
 down); the next run expunges them.
 
 Results: ~/.cache/blaze/work/remote-6/rrc/<side-name>/results.tsv (name, PASS/FAIL/SKIP, first
@@ -358,7 +359,10 @@ def main(argv):
         cmd = ["systemd-run", "--user", "--collect", "--wait", "--quiet", "--pipe",
                "-p", "MemoryMax=12G", "-p", "MemorySwapMax=0",
                "--setenv=HOME=" + os.environ["HOME"], "--setenv=PATH=/usr/bin:/bin",
-               *["--setenv=%s=%s" % (n, os.environ.get(n, "")) for n in PASSED_ENV + ["RRC_KEEP"]],
+               *["--setenv=%s=%s" % (n, os.environ.get(n, ""))
+                 for n in PASSED_ENV + ["RRC_KEEP"]],
+               "--setenv=RRC_EXTRA=" + (os.path.abspath(os.environ["RRC_EXTRA"])
+                                        if os.environ.get("RRC_EXTRA") else ""),
                sys.executable, os.path.abspath(__file__), "--unit"] + argv
         return subprocess.call(cmd)
 
@@ -386,6 +390,15 @@ def main(argv):
         code = compile(f.read(), TEST_FILE, "exec")
     exec(code, module.__dict__)
     cls = module.RemoteRepoContentsCacheTest
+    extra = os.environ.get("RRC_EXTRA")
+    if extra:
+        # Hand-written functions (class Extra of the file) added to the test class.
+        extra_module = types.ModuleType("rrc_extra")
+        with open(extra) as f:
+            exec(compile(f.read(), extra, "exec"), extra_module.__dict__)
+        for attr, value in vars(extra_module.Extra).items():
+            if attr.startswith("test"):
+                setattr(cls, attr, value)
     names = [n for n in sorted(dir(cls)) if n.startswith("test") and pattern.search(n)]
     results = []
     start_worker()

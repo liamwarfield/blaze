@@ -43,7 +43,7 @@ use crate::post_analysis_query_environment::{
 
 /// A node of the configured target graph: the information necessary to traverse the
 /// different types of nodes that can be visited during a cquery call.
-// Java: com/google/devtools/build/lib/query2/common/CqueryNode.java:33 CqueryNode
+// Java: com/google/devtools/build/lib/query2/common/CqueryNode.java:31 CqueryNode
 #[derive(Clone)]
 pub enum CqueryNode {
     ConfiguredTarget(ConfiguredTarget),
@@ -208,13 +208,13 @@ impl PostAnalysisNode for CqueryNode {
 pub type ConfiguredTargetQueryEnvironment = PostAnalysisQueryEnvironment<CqueryNode>;
 
 /// Cquery specific functions.
-// Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:170 ConfiguredTargetQueryEnvironment.getCqueryFunctions
+// Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:166 ConfiguredTargetQueryEnvironment.getCqueryFunctions
 pub fn cquery_functions(slot: &ConfigFunctionSlot) -> Vec<Arc<dyn QueryFunction<CqueryNode>>> {
     vec![Arc::new(ConfigFunction::new(slot.clone()))]
 }
 
 /// Common query functions and cquery specific functions.
-// Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:163 ConfiguredTargetQueryEnvironment.populateFunctions
+// Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:159 ConfiguredTargetQueryEnvironment.populateFunctions
 pub fn functions(slot: &ConfigFunctionSlot) -> Vec<Arc<dyn QueryFunction<CqueryNode>>> {
     let mut functions = default_query_functions::<CqueryNode>();
     functions.extend(cquery_functions(slot));
@@ -222,7 +222,7 @@ pub fn functions(slot: &ConfigFunctionSlot) -> Vec<Arc<dyn QueryFunction<CqueryN
 }
 
 /// Creates the environment (Java `new ConfiguredTargetQueryEnvironment(..., cqueryOptions, ...)`).
-// Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:129 ConfiguredTargetQueryEnvironment.<init>
+// Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:130 ConfiguredTargetQueryEnvironment.<init>
 pub fn new_configured_target_query_environment(
     keep_going: bool,
     event_handler: Arc<dyn ExtendedEventHandler>,
@@ -317,7 +317,7 @@ impl ConfiguredTargetQueryEnvironment {
     }
 
     /// The target of a configured target, dereferencing aliases.
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:278 ConfiguredTargetAccessor.getTarget
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:264 ConfiguredTargetAccessor.getTarget
     pub fn get_accessor_target(&self, configured_target: &CqueryNode) -> Target {
         // Dereference any aliases that might be present.
         let label = configured_target.get_original_label();
@@ -326,13 +326,13 @@ impl ConfiguredTargetQueryEnvironment {
 
     /// Returns all of `keyed_configured_target`'s prerequisites (cquery's canonical direct
     /// dependencies).
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:158 ConfiguredTargetAccessor.getPrerequisites
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:160 ConfiguredTargetAccessor.getPrerequisites
     pub fn get_all_prerequisites(&self, keyed_configured_target: &CqueryNode) -> Vec<CqueryNode> {
         self.get_fwd_deps_set(std::slice::from_ref(keyed_configured_target))
             .to_vec()
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:250 ConfiguredTargetAccessor.getAttributes
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:246 ConfiguredTargetAccessor.getAttributes
     fn with_attributes<R>(
         &self,
         target: &CqueryNode,
@@ -353,17 +353,17 @@ impl ConfiguredTargetQueryEnvironment {
 }
 
 impl TargetAccessor<CqueryNode> for ConfiguredTargetQueryEnvironment {
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:104 ConfiguredTargetAccessor.getTargetKind
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:106 ConfiguredTargetAccessor.getTargetKind
     fn get_target_kind(&self, target: &CqueryNode) -> String {
         self.get_accessor_target(target).get_target_kind()
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:110 ConfiguredTargetAccessor.getLabel
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:112 ConfiguredTargetAccessor.getLabel
     fn get_label(&self, target: &CqueryNode) -> String {
         target.get_original_label().to_string()
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:115 ConfiguredTargetAccessor.getPackage
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:117 ConfiguredTargetAccessor.getPackage
     fn get_package(&self, target: &CqueryNode) -> String {
         target
             .get_original_label()
@@ -373,27 +373,27 @@ impl TargetAccessor<CqueryNode> for ConfiguredTargetQueryEnvironment {
             .to_owned()
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:120 ConfiguredTargetAccessor.isRule
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:122 ConfiguredTargetAccessor.isRule
     fn is_rule(&self, target: &CqueryNode) -> bool {
         matches!(self.get_accessor_target(target), Target::Rule(_))
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:126 ConfiguredTargetAccessor.isExecutableNonTestRule
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:128 ConfiguredTargetAccessor.isExecutableNonTestRule
     fn is_executable_non_test_rule(&self, target: &CqueryNode) -> bool {
         target_utils::is_executable_non_test_rule(&self.get_accessor_target(target))
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:132 ConfiguredTargetAccessor.isTestRule
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:134 ConfiguredTargetAccessor.isTestRule
     fn is_test_rule(&self, target: &CqueryNode) -> bool {
         target_utils::is_test_rule(&self.get_accessor_target(target))
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:138 ConfiguredTargetAccessor.isTestSuite
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:140 ConfiguredTargetAccessor.isTestSuite
     fn is_test_suite(&self, target: &CqueryNode) -> bool {
         target_utils::is_test_suite_rule(&self.get_accessor_target(target))
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:163 ConfiguredTargetAccessor.getPrerequisites
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:160 ConfiguredTargetAccessor.getPrerequisites
     fn get_prerequisites(
         &self,
         caller: &QueryExpression,
@@ -452,7 +452,7 @@ impl TargetAccessor<CqueryNode> for ConfiguredTargetQueryEnvironment {
         Ok(to_return)
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:200 ConfiguredTargetAccessor.getStringListAttr
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:203 ConfiguredTargetAccessor.getStringListAttr
     fn get_string_list_attr(&self, target: &CqueryNode, attr_name: &str) -> Vec<String> {
         self.with_attributes(target, |attribute_mapper, _| {
             match attribute_mapper.get(attr_name, Type::StringList) {
@@ -462,7 +462,7 @@ impl TargetAccessor<CqueryNode> for ConfiguredTargetQueryEnvironment {
         })
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:206 ConfiguredTargetAccessor.getStringAttr
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:209 ConfiguredTargetAccessor.getStringAttr
     fn get_string_attr(&self, target: &CqueryNode, attr_name: &str) -> Option<String> {
         self.with_attributes(target, |attribute_mapper, _| {
             attribute_mapper
@@ -474,7 +474,7 @@ impl TargetAccessor<CqueryNode> for ConfiguredTargetQueryEnvironment {
         })
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:212 ConfiguredTargetAccessor.getAttrAsString
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:215 ConfiguredTargetAccessor.getAttrAsString
     fn get_attr_as_string(&self, target: &CqueryNode, attr_name: &str) -> Vec<String> {
         self.with_attributes(target, |attribute_mapper, rule| {
             let Some(attribute) = attribute_mapper.get_attribute_definition(attr_name) else {
@@ -505,7 +505,7 @@ impl TargetAccessor<CqueryNode> for ConfiguredTargetQueryEnvironment {
         })
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:242 ConfiguredTargetAccessor.getVisibility
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetAccessor.java:256 ConfiguredTargetAccessor.getVisibility
     fn get_visibility<'a>(
         &'a self,
         _caller: &QueryExpression,

@@ -82,6 +82,7 @@ fn same_registry(old: &InterimModule, new: &InterimModule) -> bool {
 
 impl Key for ModuleFileKey {
     type Value = ModuleFileValue;
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleFileValue.java:96 ModuleFileValue.Key.functionName
     const FUNCTION: SkyFunctionName = MODULE_FILE;
     // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:150 SkyFunctions.MODULE_FILE (createNonHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
@@ -497,6 +498,7 @@ impl fmt::Debug for SingleExtensionKey {
 
 impl Key for SingleExtensionKey {
     type Value = SingleExtensionValue;
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/SingleExtensionValue.java:107 SingleExtensionValue.Key.functionName
     const FUNCTION: SkyFunctionName = SINGLE_EXTENSION;
     // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:166 SkyFunctions.SINGLE_EXTENSION (createHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
@@ -527,6 +529,7 @@ impl fmt::Debug for SingleExtensionEvalKey {
 
 impl Key for SingleExtensionEvalKey {
     type Value = SingleExtensionValue;
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/SingleExtensionValue.java:140 SingleExtensionValue.EvalKey.functionName
     const FUNCTION: SkyFunctionName = SINGLE_EXTENSION_EVAL;
     // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:168 SkyFunctions.SINGLE_EXTENSION_EVAL (createNonHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;

@@ -482,7 +482,58 @@ def main(argv):
          "v3 with SAN localhost, issued by the trusted CA, host localhost.", host="localhost.",
          roots="ca.pem")
 
-    with open(os.path.join(out, "cases.tsv"), "w") as f:
+    # Trust-file certificates the JDK's parser refuses for a reason past the key (review round 7,
+    # T8; ruling D16 as generalised: of a directly trusted v1/v2 certificate Blaze makes the
+    # structural check after the key and nothing more). One case per class.
+    v2 = explicit_version(1)
+    case("direct_v2_issuer_uid_empty", ee(version=v2, trailing=tlv(0x81, b"")),
+         "v2, issuerUniqueID with empty contents (81 00)")
+    case("direct_v2_issuer_uid_bad_padding", ee(version=v2, trailing=tlv(0x81, b"\x09")),
+         "v2, issuerUniqueID with 9 padding bits (81 01 09)")
+
+    def outer(tbs_fields, *after_tbs):
+        return seq(seq(tbs_fields), *after_tbs)
+
+    def tbs_fields(subject=cn_name("localhost"), inner=None):
+        return (integer(b"\x01\x02") + (inner if inner is not None else alg(SHA256_RSA))
+                + ca_name + VALID + subject + spki(ee_key))
+
+    plain_tbs = seq(tbs_fields())
+    plain_sig = sign(ca_key, plain_tbs)
+    case("direct_outer_tbs_only", outer(tbs_fields()),
+         "SEQUENCE { tbs } without signature algorithm and signature")
+    case("direct_outer_fourth_element",
+         outer(tbs_fields(), alg(SHA256_RSA), bit_string(plain_sig), NULL),
+         "a fourth element (NULL) after the signature")
+    case("direct_outer_signature_octet_string",
+         outer(tbs_fields(), alg(SHA256_RSA), tlv(0x04, plain_sig)),
+         "the signature as an OCTET STRING")
+    case("direct_inner_alg_empty_oid",
+         ee(inner_alg=seq(b"\x06\x00", NULL)),
+         "inner signature algorithm with an empty OID (06 00)")
+    case("direct_name_attribute_empty_oid",
+         with_subject(seq(set_(seq(b"\x06\x00", printable("x"))),
+                          set_(ava(CN, printable("localhost"))))),
+         "subject attribute with an empty OID (06 00), then CN=localhost")
+
+    # Stricter cases named in the verifier's function comments (review round 7, D1 residual).
+    if ca_name[1] < 0x80:
+        long_issuer = b"\x30\x81" + ca_name[1:]
+        case("direct_non_minimal_length",
+             certificate(ca_key, long_issuer, cn_name("localhost"), ee_key),
+             "v1, issuer Name with a long-form length for a short value (30 81 xx)")
+    case("direct_serial_leading_zero", ee(serial=b"\x00\x01\x02"),
+         "v1, serial number with a redundant leading zero")
+    case("cn_general", with_subject(name([(CN, tlv(0x1B, b"localhost"))])),
+         "CN as a GeneralString")
+    case("cn_universal", with_subject(name([(CN, tlv(0x1C, "localhost".encode("utf-32-be")))])),
+         "CN as a UniversalString")
+    case("direct_idn_host", with_subject(cn_name("xn--bcher-kva.example")),
+         "CN=xn--bcher-kva.example, host b\u00fccher.example", host="b\u00fccher.example")
+    case("direct_all_digit_host", with_subject(cn_name("256.0.0.1")),
+         "CN and host 256.0.0.1 (all-digit labels, not an IPv4 literal)", host="256.0.0.1")
+
+    with open(os.path.join(out, "cases.tsv"), "w", encoding="utf-8") as f:
         f.write("# case\troots\thost\tdescription\n")
         for row in cases:
             f.write("\t".join(row) + "\n")

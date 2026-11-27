@@ -104,7 +104,7 @@ pub fn bazel_modules() -> Vec<Arc<dyn BlazeModule>> {
         Arc::new(BazelStrategyModule),
         Arc::new(NoOpConnectivityModule),
         Arc::new(AllocationTrackerModule),
-        Arc::new(PackageMetricsModule),
+        Arc::new(PackageMetricsModule::default()),
         Arc::new(ExecutionGraphModule),
         Arc::new(BazelBuiltinCommandModule),
         Arc::new(IncludeScanningModule),
@@ -925,26 +925,56 @@ impl CacheFileDigestsModule {
     }
 }
 
-/// Java `String.format("%g", x)` for `0 <= x <= 1` (a hit rate): six significant digits, fixed
-/// notation (Java switches to scientific notation below 10^-4).
+/// Java `String.format("%g", x)` for `x >= 0` (a hit rate): the shortest decimal digits of `x`
+/// rounded half-up to six significant digits (`FormattedFloatingDecimal`, GENERAL form); fixed
+/// notation when the rounded value is in `[10^-4, 10^6)`, scientific notation otherwise.
+// Java: java/util/Formatter.java FormatSpecifier.print(double) (Conversion.GENERAL)
 fn java_format_g(x: f64) -> String {
+    const PRECISION: i32 = 6;
     if x == 0.0 {
         return "0.00000".to_string();
     }
-    if x < 1e-4 {
-        // %g with precision 6: one digit, 5 decimals, the exponent with at least two digits.
-        let exponent = x.log10().floor() as i32;
-        let mantissa = x / 10f64.powi(exponent);
-        return format!(
-            "{:.5}e{}{:02}",
-            mantissa,
-            if exponent < 0 { '-' } else { '+' },
-            exponent.abs()
+    // Rust's `{:e}` prints the shortest round-trip digits: "d.ddde-N".
+    let shortest = format!("{x:e}");
+    let (mantissa, exponent) = shortest.split_once('e').unwrap();
+    let mut exponent: i32 = exponent.parse().unwrap();
+    let mut digits: Vec<u8> = mantissa.bytes().filter(|b| *b != b'.').collect();
+    if digits.len() > PRECISION as usize {
+        let round_up = digits[PRECISION as usize] >= b'5';
+        digits.truncate(PRECISION as usize);
+        if round_up {
+            let mut k = digits.len();
+            loop {
+                if k == 0 {
+                    digits.insert(0, b'1');
+                    digits.pop();
+                    exponent += 1;
+                    break;
+                }
+                k -= 1;
+                if digits[k] == b'9' {
+                    digits[k] = b'0';
+                } else {
+                    digits[k] += 1;
+                    break;
+                }
+            }
+        }
+    }
+    if (-4..PRECISION).contains(&exponent) {
+        return blaze_events::java_format::java_format_fixed(
+            x,
+            (PRECISION - 1 - exponent) as usize,
         );
     }
-    let exponent = x.log10().floor() as i32;
-    let decimals = (5 - exponent).max(0) as usize;
-    format!("{:.*}", decimals, x)
+    digits.resize(PRECISION as usize, b'0');
+    format!(
+        "{}.{}e{}{:02}",
+        digits[0] as char,
+        std::str::from_utf8(&digits[1..]).unwrap(),
+        if exponent < 0 { '-' } else { '+' },
+        exponent.abs()
+    )
 }
 
 impl BlazeModule for CacheFileDigestsModule {
@@ -1112,21 +1142,66 @@ impl BlazeModule for AllocationTrackerModule {
 }
 
 /// Module providing metrics on package loading.
-/// PORT: getPackageLoadingListener, beforeCommand, afterCommand are not ported: the package
-/// metrics only reach the server log and, with
-/// `--experimental_publish_package_metrics_in_bep`, the BEP, where they fail loudly
-/// (`crate::commands::bep`).
 // Java: com/google/devtools/build/lib/packages/metrics/PackageMetricsModule.java:31 PackageMetricsModule
-pub struct PackageMetricsModule;
+pub struct PackageMetricsModule {
+    package_loading_listener: Arc<crate::package_metrics::PackageMetricsPackageLoadingListener>,
+}
+
+impl Default for PackageMetricsModule {
+    // Java: com/google/devtools/build/lib/packages/metrics/PackageMetricsModule.java:63 PackageMetricsModule.<init>
+    fn default() -> Self {
+        PackageMetricsModule {
+            package_loading_listener:
+                crate::package_metrics::PackageMetricsPackageLoadingListener::get_instance(),
+        }
+    }
+}
 
 impl BlazeModule for PackageMetricsModule {
     fn name(&self) -> &'static str {
         "PackageMetricsModule"
     }
 
+    // Java: com/google/devtools/build/lib/packages/metrics/PackageMetricsModule.java:74 PackageMetricsModule.getPackageLoadingListener
+    fn get_package_loading_listener(
+        &self,
+    ) -> Option<Arc<dyn blaze_packages::package::package_loading_listener::PackageLoadingListener>>
+    {
+        Some(self.package_loading_listener.clone())
+    }
+
     // Java: com/google/devtools/build/lib/packages/metrics/PackageMetricsModule.java:82 PackageMetricsModule.getCommonCommandOptions
     fn get_common_command_options(&self) -> Vec<OptionsClassRef> {
         vec![PackageMetricsModuleOptions::class()]
+    }
+
+    // Java: com/google/devtools/build/lib/packages/metrics/PackageMetricsModule.java:87 PackageMetricsModule.beforeCommand
+    fn before_command(&self, env: &mut CommandEnvironment) -> Result<(), AbruptExitException> {
+        let options = env
+            .get_options()
+            .get_options::<PackageMetricsModuleOptions>()
+            .expect("PackageMetricsModule.Options");
+        let recorder: Arc<dyn crate::package_metrics::PackageMetricsRecorder> =
+            if options.enable_all_metrics {
+                Arc::new(crate::package_metrics::CompletePackageMetricsRecorder::new())
+            } else {
+                Arc::new(crate::package_metrics::ExtremaPackageMetricsRecorder::new(
+                    options.number_of_packages_to_track.max(0),
+                ))
+            };
+        self.package_loading_listener
+            .set_package_metrics_recorder(Some(recorder));
+        self.package_loading_listener
+            .set_publish_package_metrics_in_bep(options.publish_package_metrics_in_bep);
+        Ok(())
+    }
+
+    // Java: com/google/devtools/build/lib/packages/metrics/PackageMetricsModule.java:98 PackageMetricsModule.afterCommand
+    fn after_command(&self) -> Result<(), AbruptExitException> {
+        if let Some(recorder) = self.package_loading_listener.get_package_metrics_recorder() {
+            recorder.loading_finished();
+        }
+        Ok(())
     }
 }
 
@@ -1266,6 +1341,9 @@ pub struct BazelBuildEventServiceModule {
     /// The command's streamer support, between beforeCommand and afterCommand (Java: the
     /// module's `streamer`, `bepTransports`, ... fields, reset by `commandComplete`).
     current: parking_lot::Mutex<Option<Arc<crate::commands::bep::BepCommandSupport>>>,
+    /// `besStreamOptions.keepBackendConnections` of the command (beforeCommand reads the
+    /// options for every command, before the allowed-commands check).
+    keep_backend_connections: std::sync::atomic::AtomicBool,
 }
 
 impl BlazeModule for BazelBuildEventServiceModule {
@@ -1275,6 +1353,11 @@ impl BlazeModule for BazelBuildEventServiceModule {
 
     /// `optionsClass()` is `BuildEventServiceOptions` for Bazel.
     // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:195 BuildEventServiceModule.getCommonCommandOptions
+    // Java: com/google/devtools/build/lib/buildeventservice/BazelBuildEventServiceModule.java:92 BazelBuildEventServiceModule.optionsClass
+    // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:945 BuildEventServiceModule.optionsClass
+    // workspaceInit looks the CredentialModule up for getBesClient; the port's credential cache
+    // is a process global (`credential_module()`).
+    // PORT: skipped, a process global replaces the lookup: BazelBuildEventServiceModule.workspaceInit
     fn get_common_command_options(&self) -> Vec<OptionsClassRef> {
         vec![
             BuildEventServiceOptions::class(),
@@ -1286,6 +1369,14 @@ impl BlazeModule for BazelBuildEventServiceModule {
 
     // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:337 BuildEventServiceModule.beforeCommand
     fn before_command(&self, env: &mut CommandEnvironment) -> Result<(), AbruptExitException> {
+        // this.besStreamOptions = parsingResult.getOptions(BuildEventStreamOptions.class)
+        // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:353 BuildEventServiceModule.beforeCommand
+        self.keep_backend_connections.store(
+            env.get_options()
+                .get_options::<BuildEventStreamOptions>()
+                .is_some_and(|o| o.keep_backend_connections),
+            std::sync::atomic::Ordering::SeqCst,
+        );
         let bep = crate::commands::bep::BepCommandSupport::module_before_command(env);
         *self.current.lock() = bep.clone();
         env.set_bep(bep);
@@ -1302,7 +1393,18 @@ impl BlazeModule for BazelBuildEventServiceModule {
     // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:662 BuildEventServiceModule.afterCommand
     fn after_command(&self) -> Result<(), AbruptExitException> {
         // commandComplete: the module forgets the command's streamer.
+        // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:690 BuildEventServiceModule.commandComplete
         let Some(bep) = self.current.lock().take() else {
+            // Without a streamer: `if (!besStreamOptions.keepBackendConnections)
+            // clearBesClient()` (the streaming commands do it at the end of their own
+            // afterCommand, `BepCommandSupport::after_command`).
+            // Java: com/google/devtools/build/lib/buildeventservice/BuildEventServiceModule.java:682 BuildEventServiceModule.afterCommand
+            if !self
+                .keep_backend_connections
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                blaze_bes::module::clear_bes_client();
+            }
             return Ok(());
         };
         bep.after_command()
@@ -1409,6 +1511,26 @@ impl BlazeModule for MetricsModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Not a Java test: `CacheFileDigestsModule`'s hit rate (`%g`); the expected strings are the
+    /// oracle JDK's `String.format("%g", d)`.
+    #[test]
+    fn java_format_g_matches_java() {
+        for (d, expected) in [
+            (0.0, "0.00000"),
+            (1.0, "1.00000"),
+            (0.5, "0.500000"),
+            (1.0 / 3.0, "0.333333"),
+            (0.9999995, "1.00000"),
+            (1.0 / 1024.0, "0.000976563"),
+            (5e-05, "5.00000e-05"),
+            (0.000123456789, "0.000123457"),
+            (0.1234565, "0.123457"),
+            (2.0 / 3.0, "0.666667"),
+        ] {
+            assert_eq!(java_format_g(d), expected, "{d}");
+        }
+    }
 
     #[test]
     fn module_names_in_bazel_modules_order() {

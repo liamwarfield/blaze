@@ -80,7 +80,8 @@ replays them for nodes it does not re-run (decision 9.2 of docs/skyframe-increme
 | Registry contents | Java's one-hour `LAST_INVALIDATION` |
 | `--discard_analysis_cache` | Java's next-command deletion and message |
 | Interrupt, failed build | in-flight nodes and their reverse closure deleted at the next evaluation (I1) |
-| `--watchfs` | no diff awareness: every root is checked (Java's path without diff information); correct, not faster |
+| `--watchfs` | ported: `LocalDiffAwareness` (inotify) names the changed files, `FileSystemValueCheckerInferringAncestors` checks only them and their ancestors; without `--watchfs` (or after a broken watcher: Java's warning "... temporarily falling back to manually checking files for changes") every root is checked. Oracle: `scripts/incremental/watchfs` (the four functions of `watchfs_test.sh`) |
+| Remote cache, disk cache, remote execution | **discards the graph** (fail safe, review S1-1/S1-2) when the command or the command that gave the graph back has one configured; the Java mechanisms (last `RemoteOutputChecker`, materialized-output record, execution salt) are ported behind it |
 
 ## What a kept graph keeps alive between commands
 
@@ -166,19 +167,21 @@ blaze_actions, blaze_exec, blaze_starlark).
 
 ## Not ported (ranked)
 
-1. `DiffAwareness`, `DiffAwarenessManager`, `LocalDiffAwareness`, `WatchServiceDiffAwareness`,
-   `BrokenDiffAwarenessException`, `WorkspaceInfoFromDiff`, `FileSystemValueCheckerInferringAncestors`
-   (`--watchfs`): every root is checked instead (Java's fallback). Their JUnit classes
-   (`LocalDiffAwarenessTest`, `DiffAwarenessManagerTest`) are not ported.
+1. `MacOSXFsEventsDiffAwareness` and the Windows branches of `--watchfs` (Linux only).
 2. `SequencedSkyframeExecutorTest` (35 tests, a full analysis/execution harness) not ported; the
    behaviour is covered by the oracle probe and the randomized test below.
 3. `getDirtyActionValues` tests of `FilesystemValueCheckerTest` (tree artifacts, remote files,
-   batch stat) not ported; `BatchStat` (no Bazel output service provides one) not ported; remote
-   outputs missing locally are always treated as modified (re-evaluated; never stale).
+   batch stat) not ported; `BatchStat` (no Bazel output service provides one) not ported. With an
+   output checker that trusts remote metadata (`RemoteOutputChecker`) a missing remote output is
+   not modified, as in Java; the protection Java has for it (the previous command's checker, the
+   materialized-output record) is ported, behind the remote fail safe (review S1-1).
 4. Arena growth with a kept graph: the build arena is not released while a graph is kept, so the
    frozen heaps of `.bzl` modules and packages the graph no longer references accumulate until
-   the graph is dropped. Outputs are unaffected; memory of a long-lived server with many edits
-   can grow (not measured). Needs per-heap ownership by the values (decision D7 revisited) — root's call.
+   the graph is dropped. Outputs are unaffected. Measured (scripts/incremental/arena-growth,
+   brotli, 200 rounds of a .bzl edit and `build //...`): +0.93 MB per round, linear (254 MB to
+   440 MB), with +1 frozen module, +5 generator-name heaps and +14 depset heaps kept per round;
+   `BLAZE_INCREMENTAL=none` stays flat (about 250 MB); the oracle's JVM grows 1.1 MB per round
+   until its collector runs. Proposal for decision D7 in the i3-b report — root's call.
 5. The counters of `ExecutionFinishedEvent` (modified output files) and the incremental build
    monitor are not ported (metrics).
 

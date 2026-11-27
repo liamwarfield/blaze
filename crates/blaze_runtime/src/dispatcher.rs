@@ -982,6 +982,18 @@ impl BlazeCommandDispatcher {
             .set_output_filter(blaze_events::output_filter::output_everything());
 
         let mut module_exit_code: Option<DetailedExitCode> = None;
+        // workspace.getSkyframeExecutor().notifyCommandComplete(env.getReporter()): the
+        // evaluation statistics of the graph kept for the next command are reset (the build
+        // command took its own already, where its executor ends).
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:760 BlazeRuntime.afterCommand
+        let graph_stats = env
+            .get_blaze_workspace()
+            .get_incremental_state()
+            .notify_command_complete();
+        // The event's subscriber is the MetricsCollector of the command's build event stream.
+        if let (Some(graph_stats), Some(bep)) = (graph_stats, env.get_bep()) {
+            bep.skyframe_graph_stats(&graph_stats);
+        }
         // Ensure deterministic ordering of doing the metrics upload before everything else that
         // happens when BuildCompleteEvent is posted.
         // env.getEventBus().post(new CommandPrecompleteEvent()): its only subscriber with an

@@ -6,6 +6,11 @@
 pub use blaze_protos::build::bazel::remote::execution::v2::*;
 pub use blaze_protos::build::bazel::semver::SemVer;
 
+/// `build.bazel.remote.asset.v1` (the Remote Asset API of the remote downloader).
+pub mod asset {
+    pub use blaze_protos::build::bazel::remote::asset::v1::*;
+}
+
 /// `com.google.bytestream.ByteStreamProto`.
 pub mod bytestream {
     pub use blaze_protos::google::bytestream::*;

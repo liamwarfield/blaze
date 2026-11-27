@@ -4,8 +4,12 @@
 //! and `HeaderDiscovery`, include validation, `updateInputs`) as
 //! `blaze_exec::actions::ExecutableAction`.
 //!
-//! PORT: include scanning (`--experimental_cc_include_scanning`), C++ module discovery after
-//! include scanning and `/showIncludes` parsing (MSVC) are `unported!`.
+//! Include scanning (`--experimental_unsupported_and_brittle_include_scanning` with the
+//! `cc_include_scanning` feature) goes through `CppIncludeScanningContext`
+//! (`crate::includescanning`).
+//!
+//! PORT: C++ module discovery after include scanning (header modules) and `/showIncludes`
+//! parsing (MSVC) are `unported!`.
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -67,6 +71,8 @@ use super::cpp_file_types;
 use super::cpp_include_extraction_context::{
     experimental_sibling_repository_layout, get_cpp_include_extraction_context,
 };
+use super::cpp_include_scanning_context::get_cpp_include_scanning_context;
+use super::include_scanner::{IncludeScanningHeaderData, ValidUndeclaredHeaderPredicate};
 
 /// `UUID.fromString("97493805-894f-493a-be66-9a698f45c31d")`: (least, most) significant bits.
 // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:122 CppCompileAction.GUID
@@ -806,6 +812,10 @@ impl Action for CppCompileAction {
 
     /// Without include scanning: the declared include sources and the additional prunable
     /// headers.
+    ///
+    /// PORT: with include scanning the headers are found by scanning, which needs the
+    /// `ActionExecutionContext` this trait method does not get; the extra action asks
+    /// `ExecutableAction::get_input_files_for_extra_action_with_context`, which has it.
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1927 CppCompileAction.getInputFilesForExtraAction
     fn get_input_files_for_extra_action(&self) -> Option<NestedSet<Artifact>> {
         if !self.should_scan_includes {
@@ -817,7 +827,7 @@ impl Action for CppCompileAction {
         }
         blaze_util::unported!(
             "CppCompileAction.getInputFilesForExtraAction",
-            "include scanning (findUsedHeaders)"
+            "include scanning without an ActionExecutionContext"
         )
     }
 
@@ -1089,6 +1099,24 @@ fn create_failure_detail(
             code: detailed_code as i32,
         })),
     }
+}
+
+// Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:939 CppCompileAction.getCmdlineIncludes
+fn get_cmdline_includes(args: &[String]) -> Vec<String> {
+    let mut cmdline_includes = Vec::new();
+    let mut argi = args.iter().peekable();
+    while let Some(arg) = argi.next() {
+        if arg == "-include" && argi.peek().is_some() {
+            cmdline_includes.push(argi.next().unwrap().clone());
+        } else if arg.starts_with("-FI") || arg.starts_with("/FI") {
+            if arg.len() > 3 {
+                cmdline_includes.push(java_trim(&arg[3..]).to_owned());
+            } else if let Some(next) = argi.next() {
+                cmdline_includes.push(next.clone());
+            }
+        }
+    }
+    cmdline_includes
 }
 
 // Java: com/google/devtools/build/lib/vfs/FileSystemUtils.java:919 FileSystemUtils.startsWithAny
@@ -1584,6 +1612,180 @@ impl CppCompileAction {
         system_include_dirs_from_options(compiler_options, &|| self.pretty_print())
     }
 
+    /// Returns the results of include scanning.
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:575 CppCompileAction.findUsedHeaders
+    fn find_used_headers(
+        &self,
+        action_execution_context: &dyn ActionExecutionContext,
+        header_data: &IncludeScanningHeaderData,
+    ) -> Result<Option<NestedSet<Artifact>>, ActionExecutionException> {
+        check_state!(
+            self.should_scan_includes,
+            "findUsedHeaders() called although include scanning is disabled"
+        );
+        let context =
+            get_cpp_include_scanning_context(action_execution_context).unwrap_or_else(|| {
+                panic!(
+                    "NullPointerException: getContext(CppIncludeScanningContext.class) returned \
+                     null"
+                )
+            });
+        // PORT: the UncheckedIOException branch ("Find used headers failure",
+        // FIND_USED_HEADERS_IO_EXCEPTION) wraps I/O errors thrown on the include pool's threads;
+        // the scan runs in this thread and reports them as ExecException.
+        match context.find_additional_inputs(self, action_execution_context, header_data) {
+            Ok(None) => Ok(None),
+            Ok(Some(mut includes)) => {
+                includes.sort_by(Artifact::exec_path_comparator);
+                Ok(Some(NestedSetBuilder::wrap(Order::STABLE_ORDER, includes)))
+            }
+            Err(e) => Err(ActionExecutionException::from_exec_exception(
+                &e,
+                Some("include scanning"),
+                self,
+            )),
+        }
+    }
+
+    /// Finds used modules based on results of include scanning; `None` without header modules.
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:604 CppCompileAction.findUsedModules
+    fn find_used_modules(&self, _used_headers: &NestedSet<Artifact>) -> Option<Vec<Artifact>> {
+        if !self.use_header_modules {
+            return None;
+        }
+        blaze_util::unported!(
+            "CppCompileAction.findUsedModules",
+            "header modules with include scanning (CcCompilationContext.computeUsedModules, \
+             findMinimalSetOfRequiredModules)"
+        )
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:769 CppCompileAction.getValidUndeclaredHeaderPredicate
+    fn get_valid_undeclared_header_predicate(&self) -> Option<ValidUndeclaredHeaderPredicate> {
+        if self.get_dotd_file().is_some() {
+            // If we'll be looking at .d files later, don't remove undeclared inputs now.
+            return None;
+        }
+
+        let ignore_dirs: Vec<PathFragment> = if self.cpp_configuration().is_strict_system_includes()
+        {
+            self.get_built_in_include_directories().to_vec()
+        } else {
+            self.get_validation_ignored_dirs()
+        };
+        let additional_prunable_headers_set: HashSet<Artifact> = self
+            .additional_prunable_headers
+            .to_list()
+            .iter()
+            .cloned()
+            .collect();
+        Some(Arc::new(move |header: &Artifact| {
+            additional_prunable_headers_set.contains(header)
+                || starts_with_any(header.get_exec_path(), &ignore_dirs)
+        }))
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:957 CppCompileAction.getMainIncludeScannerSource
+    pub fn get_main_include_scanner_source(&self) -> Artifact {
+        // getIncludeScannerSources() needs to return the main file first. This is used for
+        // determining what file command line includes should be interpreted relative to.
+        self.get_include_scanner_sources()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("IndexOutOfBoundsException: Index 0 out of bounds"))
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:965 CppCompileAction.getIncludeScannerSources
+    pub fn get_include_scanner_sources(&self) -> Vec<Artifact> {
+        if cpp_file_types::CPP_MODULE_MAP.matches_artifact(&self.source_file) {
+            let output_file = self.get_primary_output();
+            let is_separate = self
+                .cc_compilation_context
+                .get_separate_header_module(self.use_pic)
+                == Some(&output_file);
+            check_state!(
+                self.cc_compilation_context.get_header_module(self.use_pic) == Some(&output_file)
+                    || is_separate,
+                "Trying to build unknown module [{}]",
+                output_file
+            );
+
+            // If this is an action that compiles the header module itself, the source we build
+            // is the module map, and we need to include-scan all headers that are referenced in
+            // the module map.
+            return self
+                .cc_compilation_context
+                .get_header_module_srcs(is_separate);
+        }
+        let mut builder = vec![self.source_file.clone()];
+        builder.extend(self.additional_include_scanning_roots.iter().cloned());
+        builder
+    }
+
+    /// `getInputFilesForExtraAction(actionExecutionContext)` with include scanning.
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1927 CppCompileAction.getInputFilesForExtraAction
+    fn get_input_files_for_extra_action_in(
+        &self,
+        action_execution_context: &dyn ActionExecutionContext,
+    ) -> Result<Option<NestedSet<Artifact>>, ActionExecutionException> {
+        if !self.should_scan_includes {
+            return Ok(self.get_input_files_for_extra_action());
+        }
+        let Some(include_scanning_header_data) = self
+            .cc_compilation_context
+            .create_include_scanning_header_data(self.use_pic, self.use_header_modules)
+        else {
+            return Ok(None);
+        };
+        // getSystemIncludeDirs() and getCompilerOptions() each compute the compiler options;
+        // the catch (CommandLineExpansionException e) at the end of the Java method reports a
+        // failure.
+        let compiler_options = match self
+            .compile_command_line
+            .get_compiler_options(None, &CC_NOOP)
+        {
+            Ok(options) => options,
+            Err(e) => {
+                let message = format!(
+                    "failed to generate compile environment variables for rule '{}: {}",
+                    self.owner_label_string(),
+                    e.message
+                );
+                let code = create_failure_detail(
+                    &message,
+                    failure_details::cpp_compile::Code::CommandGenerationFailure,
+                );
+                return Err(ActionExecutionException::new(
+                    message,
+                    Some(self),
+                    /* catastrophe= */ false,
+                    Some(code),
+                ));
+            }
+        };
+        let system_include_dirs = self.get_system_include_dirs_from(&compiler_options);
+        let Some(used_headers) = self.find_used_headers(
+            action_execution_context,
+            &include_scanning_header_data
+                .set_system_include_dirs(system_include_dirs)
+                .set_cmdline_includes(get_cmdline_includes(&compiler_options))
+                // Register generated prunable/toolchain headers as declared so the include
+                // scanner can resolve them; it never stats output-directory paths. Keep in sync
+                // with the matching call in discoverInputs. See
+                // IncludeScanningHeaderData.Builder#addDeclaredHeaders.
+                .add_declared_headers(&self.additional_prunable_headers)
+                .build(),
+        )?
+        else {
+            return Ok(None);
+        };
+
+        if self.find_used_modules(&used_headers).is_none() {
+            return Ok(Some(used_headers));
+        }
+        unreachable!("findUsedModules is unported! with header modules")
+    }
+
     /// `getArguments(pathMapper)`.
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1032 CppCompileAction.getArguments
     fn get_arguments_with(
@@ -2074,6 +2276,14 @@ impl CppCompileAction {
 
 #[allow(clippy::result_large_err)]
 impl ExecutableAction for CppCompileAction {
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1927 CppCompileAction.getInputFilesForExtraAction
+    fn get_input_files_for_extra_action_with_context(
+        &self,
+        action_execution_context: &dyn ActionExecutionContext,
+    ) -> Result<Option<NestedSet<Artifact>>, ActionExecutionException> {
+        self.get_input_files_for_extra_action_in(action_execution_context)
+    }
+
     /// This method returns null when a required SkyValue is missing and a Skyframe restart is
     /// required.
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:663 CppCompileAction.discoverInputs
@@ -2124,10 +2334,36 @@ impl ExecutableAction for CppCompileAction {
                 }
                 return Ok(Some(additional_inputs));
             }
-            blaze_util::unported!(
-                "CppCompileAction.discoverInputs",
-                "include scanning (IncludeScanningHeaderData, CppIncludeScanningContext.findAdditionalInputs)"
-            );
+            let Some(include_scanning_header_data_builder) = self
+                .cc_compilation_context
+                .create_include_scanning_header_data(self.use_pic, self.use_header_modules)
+            else {
+                return Ok(None);
+            };
+            // In theory, we could verify include paths even earlier, but we want to avoid the
+            // restart above necessitating a double-execution.
+            if self.needs_include_validation {
+                self.verify_action_include_paths(&system_include_dirs, sibling_layout)?;
+            }
+            let include_scanning_header_data = include_scanning_header_data_builder
+                .set_system_include_dirs(system_include_dirs)
+                .set_cmdline_includes(get_cmdline_includes(&options))
+                .set_is_valid_undeclared_header(self.get_valid_undeclared_header_predicate())
+                // Register generated prunable/toolchain headers as declared so the include
+                // scanner can resolve them; it never stats output-directory paths. Keep in sync
+                // with the matching call in the rediscovery path below. See
+                // IncludeScanningHeaderData.Builder#addDeclaredHeaders.
+                .add_declared_headers(&self.additional_prunable_headers)
+                .build();
+            let Some(additional_inputs) =
+                self.find_used_headers(action_execution_context, &include_scanning_header_data)?
+            else {
+                return Ok(None);
+            };
+            *self.additional_inputs.lock() = Some(additional_inputs.clone());
+            if self.find_used_modules(&additional_inputs).is_some() {
+                unreachable!("findUsedModules is unported! with header modules");
+            }
         }
 
         // usedModules == null: there are two paths in which this can be reached:
@@ -2136,7 +2372,8 @@ impl ExecutableAction for CppCompileAction {
         // 2. This function has completed on a previous execution, adding all used modules to
         //    additionalInputs and resetting usedModules to null below.
         // In either case, there is nothing more to do here.
-        // PORT: usedModules is only set by the include-scanning path (unported above).
+        // PORT: usedModules is only set by the include-scanning path with header modules
+        // (findUsedModules, unported!).
         Ok(self.additional_inputs.lock().clone())
     }
 

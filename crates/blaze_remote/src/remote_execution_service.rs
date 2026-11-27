@@ -36,6 +36,7 @@ use indexmap::{IndexMap, IndexSet};
 use parking_lot::{Condvar, Mutex};
 
 use crate::api_version::ApiVersion;
+use crate::cancellable_task::CancellableTask;
 use crate::client_api_version::{ClientApiVersion, ServerSupportedStatus};
 use crate::combined_cache::{CachedActionResult, CombinedCache};
 use crate::common::bulk_transfer_exception::BulkTransferException;
@@ -458,9 +459,8 @@ pub struct RemoteExecutionService {
     pub(crate) was_rewound: OnceLock<WasRewound>,
     /// `getRewoundActionSynchronizer()`: the `RemoteRewoundActionSynchronizer` of the output
     /// service, set by the module with the action input fetcher.
-    pub(crate) rewound_action_synchronizer: OnceLock<
-        Arc<crate::remote_rewound_action_synchronizer::RemoteRewoundActionSynchronizer>,
-    >,
+    pub(crate) rewound_action_synchronizer:
+        OnceLock<Arc<crate::remote_rewound_action_synchronizer::RemoteRewoundActionSynchronizer>>,
     /// `Boolean useOutputPaths`, initialized on first use.
     pub(crate) use_output_paths: OnceLock<bool>,
 
@@ -789,91 +789,54 @@ impl ActionExecutionMetadata for SpawnOwner {
 }
 
 /// The background upload of an action's outputs: the `CancellableTask` of an
-/// `OutputUploadTask`, with its body (`doUploadOutputs`) and its completion action
-/// (`onUploadComplete`).
+/// `OutputUploadTask` (its body `doUploadOutputs` and its completion action `onUploadComplete`)
+/// with the task's `unregisterHandle`.
 ///
 /// PORT: the body starts where `doUploadOutputs` no longer needs the spawn: the
 /// `UploadManifest` is already built (see [`OutputUploadTask::start`]), the context is the
 /// detached copy of the action's context and the spawn owner is a copy too.
 // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1821 RemoteExecutionService.OutputUploadTask.upload
 struct OutputUpload {
-    manifest: UploadManifest,
-    context: RemoteActionExecutionContext<'static>,
-    /// `context.getSpawnOwner()` of the action's own context.
-    spawn_owner: Option<SpawnOwner>,
-    combined_cache: Arc<CombinedCache>,
-    upload_error_reporter: UploadErrorReporter,
-    force: bool,
-    on_upload_complete: Box<dyn FnOnce() + Send>,
-    /// The completion the synchronizer awaits and the `unregisterHandle`, when the task was
-    /// registered with a `RemoteRewoundActionSynchronizer`.
-    registration: Option<(Arc<UploadCompletion>, Box<dyn FnOnce() + Send>)>,
+    upload: Arc<CancellableTask<std::convert::Infallible>>,
+    unregister_handle: Box<dyn FnOnce() + Send>,
 }
 
-/// `CancellableTask.awaitCompletion()` of an output upload: done once the body and the completion
-/// action ran (or the upload was prevented from running).
-#[derive(Default)]
-pub(crate) struct UploadCompletion {
-    done: parking_lot::Mutex<bool>,
-    changed: parking_lot::Condvar,
-}
+/// The `OutputUploadTask` as the synchronizer sees it (`RemoteRewoundActionSynchronizer
+/// .Cancellable`).
+struct OutputUploadCancellable(Arc<CancellableTask<std::convert::Infallible>>);
 
-impl UploadCompletion {
-    fn complete(&self) {
-        *self.done.lock() = true;
-        self.changed.notify_all();
+impl crate::remote_rewound_action_synchronizer::Cancellable for OutputUploadCancellable {
+    // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1883 RemoteExecutionService.OutputUploadTask.requestCancellation
+    fn request_cancellation(&self) {
+        self.0.request_cancellation();
     }
-}
 
-impl crate::remote_rewound_action_synchronizer::Cancellable for UploadCompletion {
-    // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1890 RemoteExecutionService.OutputUploadTask.awaitCompletion
-    fn await_completion(&self) {
-        let mut done = self.done.lock();
-        while !*done {
-            self.changed.wait(&mut done);
-        }
+    // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1888 RemoteExecutionService.OutputUploadTask.awaitCompletion
+    fn await_completion(&self) -> Result<(), blaze_shell::InterruptedException> {
+        self.0.await_completion()
     }
 }
 
 impl OutputUpload {
-    /// The end of `run()`'s `finally`: the completion is signalled and the task unregistered.
-    fn finish(registration: Option<(Arc<UploadCompletion>, Box<dyn FnOnce() + Send>)>) {
-        if let Some((completion, unregister_handle)) = registration {
-            completion.complete();
-            unregister_handle();
-        }
-    }
-
-    /// `OutputUploadTask.run()`: `upload.runIfNotCancelled()`, which runs the body and then the
-    /// completion action.
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1872 RemoteExecutionService.OutputUploadTask.run
     fn run(self) {
-        // The rest of `doUploadOutputs(action, spawnResult, force, /* onUploadComplete= */ () -> {})`.
-        //
-        // PORT: the detached context has no spawn, so the spawn owner that `manifest.upload`
-        // reads from its context (for the upload events) is passed next to it.
-        match self.manifest.upload_for_spawn_owner(
-            &self.context,
-            self.spawn_owner
-                .as_ref()
-                .map(|spawn_owner| spawn_owner as &dyn ActionExecutionMetadata),
-            &self.combined_cache,
-            &*self.upload_error_reporter.reporter,
-            self.force,
-        ) {
-            Ok(_unused) => {}
-            Err(error) => report_background_upload_error(&self.upload_error_reporter, error),
-        }
-        (self.on_upload_complete)();
-        OutputUpload::finish(self.registration);
+        // InterruptedException: ThreadPerTaskExecutor does not care about interrupt status (the
+        // body has no other exception).
+        let _unused = self.upload.run_if_not_cancelled();
+        // finally
+        (self.unregister_handle)();
     }
 
-    /// `upload.requestCancellation()` for an upload that has not started: prevents it from
-    /// starting and runs the completion action on its behalf.
-    // Java: com/google/devtools/build/lib/concurrent/CancellableTask.java:138 CancellableTask.requestCancellation
-    fn request_cancellation(self) {
-        (self.on_upload_complete)();
-        OutputUpload::finish(self.registration);
+    /// The `RejectedExecutionException` path of `start()`: the upload will never run.
+    /// Cancelling it runs the completion callback if no cancellation got there first. A
+    /// concurrent cancellation may still be running the callback, whose effects are part of the
+    /// upload's completion contract, so wait for it before propagating the rejection.
+    // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1846 RemoteExecutionService.OutputUploadTask.start
+    fn reject(self) {
+        self.upload.request_cancellation();
+        self.upload.await_completion_uninterruptibly();
+        // finally
+        (self.unregister_handle)();
     }
 }
 
@@ -902,8 +865,6 @@ fn report_background_upload_error(
 /// `CancellableTask` ensures that the completion callback runs exactly once and that
 /// cancellation only completes once the upload no longer accesses the action's outputs.
 ///
-/// PORT: cancellation (`requestCancellation`) is not ported; the synchronizer awaits the upload
-/// (`awaitCompletion`, [`UploadCompletion`]).
 // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1820 RemoteExecutionService.OutputUploadTask
 struct OutputUploadTask<'t, 'a> {
     service: &'t RemoteExecutionService,
@@ -973,45 +934,62 @@ impl<'t, 'a> OutputUploadTask<'t, 'a> {
             }
         };
 
-        let upload = OutputUpload {
-            manifest,
-            context: self.action.get_remote_action_execution_context().detached(),
-            spawn_owner: self
-                .action
-                .get_remote_action_execution_context()
-                .get_spawn_owner()
-                .map(SpawnOwner::of),
-            combined_cache: service.combined_cache_not_null().clone(),
-            upload_error_reporter,
-            force: self.force,
-            on_upload_complete: self.on_upload_complete,
-            registration: None,
-        };
-        let mut upload = upload;
+        let context = self.action.get_remote_action_execution_context().detached();
+        let spawn_owner = self
+            .action
+            .get_remote_action_execution_context()
+            .get_spawn_owner()
+            .map(SpawnOwner::of);
+        let combined_cache = service.combined_cache_not_null().clone();
+        let force = self.force;
+        let upload = CancellableTask::with_completion(
+            Box::new(move || {
+                // The rest of `doUploadOutputs(action, spawnResult, force,
+                // /* onUploadComplete= */ () -> {})`.
+                //
+                // PORT: the detached context has no spawn, so the spawn owner that
+                // `manifest.upload` reads from its context (for the upload events) is passed next
+                // to it.
+                match manifest.upload_for_spawn_owner(
+                    &context,
+                    spawn_owner
+                        .as_ref()
+                        .map(|spawn_owner| spawn_owner as &dyn ActionExecutionMetadata),
+                    &combined_cache,
+                    &*upload_error_reporter.reporter,
+                    force,
+                ) {
+                    Ok(_unused) => {}
+                    Err(error) => report_background_upload_error(&upload_error_reporter, error),
+                }
+                Ok(())
+            }),
+            self.on_upload_complete,
+        );
         // Register before starting the upload so that it can't unregister itself before it has
         // been registered.
+        let mut unregister_handle: Box<dyn FnOnce() + Send> = Box::new(|| {});
         if let (Some(synchronizer), Some(spawn_owner)) = (
             service.rewound_action_synchronizer.get(),
             self.action
                 .get_remote_action_execution_context()
                 .get_spawn_owner(),
         ) {
-            let completion = Arc::new(UploadCompletion::default());
-            let unregister_handle = synchronizer.register_output_upload_task(
+            unregister_handle = synchronizer.register_output_upload_task(
                 spawn_owner,
-                completion.clone() as Arc<dyn crate::remote_rewound_action_synchronizer::Cancellable>,
+                Arc::new(OutputUploadCancellable(upload.clone()))
+                    as Arc<dyn crate::remote_rewound_action_synchronizer::Cancellable>,
             );
-            upload.registration = Some((completion, unregister_handle));
         }
+        let upload = OutputUpload {
+            upload,
+            unregister_handle,
+        };
         // Executes rather than submits the upload: the body of a task submitted to an
         // ExecutorService is skipped entirely if its future is cancelled before the body starts,
         // which is why cancellation goes through the task itself instead of its future.
         if let Err(upload) = service.background_task_executor.execute(upload) {
-            // The upload will never run. Cancelling it runs the completion callback if no
-            // cancellation got there first. A concurrent cancellation may still be running the
-            // callback, whose effects are part of the upload's completion contract, so wait for
-            // it before propagating the rejection.
-            upload.request_cancellation();
+            upload.reject();
             panic!("RejectedExecutionException");
         }
     }
@@ -1150,7 +1128,9 @@ impl RemoteExecutionService {
     /// (`getRewoundActionSynchronizer()`).
     pub fn set_rewound_action_synchronizer(
         &self,
-        synchronizer: Arc<crate::remote_rewound_action_synchronizer::RemoteRewoundActionSynchronizer>,
+        synchronizer: Arc<
+            crate::remote_rewound_action_synchronizer::RemoteRewoundActionSynchronizer,
+        >,
     ) {
         let _ = self.rewound_action_synchronizer.set(synchronizer);
     }
@@ -1887,7 +1867,6 @@ impl RemoteExecutionService {
             self.do_upload_outputs(action, spawn_result, force, on_upload_complete)
         }
     }
-
 
     // Java: com/google/devtools/build/lib/remote/RemoteExecutionService.java:1893 RemoteExecutionService.doUploadOutputs
     fn do_upload_outputs(

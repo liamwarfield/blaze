@@ -48,6 +48,8 @@ const PROTOS: &[&str] = &[
     "src/main/protobuf/remote_execution_log.proto",
     "src/main/protobuf/cache_salt.proto",
     "src/main/protobuf/remote_scrubbing.proto",
+    // The Remote Asset API (`--experimental_remote_downloader`: GrpcRemoteDownloader).
+    "build/bazel/remote/asset/v1/remote_asset.proto",
     // Extra actions (`ExtraActionInfo` and its extensions; `print_action`, `.xa` files).
     "src/main/protobuf/extra_actions_base.proto",
     // Build Event Service (`--bes_backend`): `google.devtools.build.v1.PublishBuildEvent` of

@@ -22,7 +22,7 @@ use crate::cquery::cquery_threadsafe_callback::CqueryThreadsafeCallback;
 use crate::post_analysis_query_environment::NamedThreadSafeOutputFormatterCallback;
 
 /// Cquery implementation of BUILD-style output.
-// Java: com/google/devtools/build/lib/query2/cquery/BuildOutputFormatterCallback.java:40 BuildOutputFormatterCallback
+// Java: com/google/devtools/build/lib/query2/cquery/BuildOutputFormatterCallback.java:36 BuildOutputFormatterCallback
 pub struct BuildOutputFormatterCallback<'a> {
     base: CqueryThreadsafeCallback<'a>,
     label_printer: LabelPrinter,
@@ -32,7 +32,7 @@ pub struct BuildOutputFormatterCallback<'a> {
 }
 
 impl<'a> BuildOutputFormatterCallback<'a> {
-    // Java: com/google/devtools/build/lib/query2/cquery/BuildOutputFormatterCallback.java:44 BuildOutputFormatterCallback.<init>
+    // Java: com/google/devtools/build/lib/query2/cquery/BuildOutputFormatterCallback.java:40 BuildOutputFormatterCallback.<init>
     pub fn new(base: CqueryThreadsafeCallback<'a>, label_printer: LabelPrinter) -> Self {
         let writer_out = base.out.clone().expect("cquery output stream");
         BuildOutputFormatterCallback {
@@ -43,7 +43,7 @@ impl<'a> BuildOutputFormatterCallback<'a> {
         }
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/BuildOutputFormatterCallback.java:77 BuildOutputFormatterCallback.getAttributeMap
+    // Java: com/google/devtools/build/lib/query2/cquery/BuildOutputFormatterCallback.java:76 BuildOutputFormatterCallback.getAttributeMap
     fn get_attribute_map(&self, kct: &CqueryNode) -> Option<ConfiguredAttributeMapper> {
         let target = self.base.accessor.get_accessor_target(kct);
         let associated_rule = target.get_associated_rule()?;
@@ -73,7 +73,7 @@ impl<'a> BuildOutputFormatterCallback<'a> {
 }
 
 impl NamedThreadSafeOutputFormatterCallback<CqueryNode> for BuildOutputFormatterCallback<'_> {
-    // Java: com/google/devtools/build/lib/query2/cquery/BuildOutputFormatterCallback.java:55 BuildOutputFormatterCallback.getName
+    // Java: com/google/devtools/build/lib/query2/cquery/BuildOutputFormatterCallback.java:52 BuildOutputFormatterCallback.getName
     fn get_name(&self) -> String {
         "build".to_owned()
     }
@@ -103,7 +103,7 @@ impl OutputFormatterCallback<CqueryNode> for BuildOutputFormatterCallback<'_> {
         for configured_target in partial_result {
             let target = self.base.accessor.get_accessor_target(configured_target);
             let attribute_map = self.get_attribute_map(configured_target);
-            // Java: com/google/devtools/build/lib/query2/cquery/BuildOutputFormatterCallback.java:66 CqueryAttributeReader.getPossibleValues
+            // Java: com/google/devtools/build/lib/query2/cquery/BuildOutputFormatterCallback.java:69 CqueryAttributeReader.getPossibleValues
             let reader = |_rule: &Rule, attr: &Attribute| -> Vec<Option<AttrValue>> {
                 // Cquery knows which select path is taken so it knows the exact value the
                 // attribute takes. Note that null values are also possible - these are

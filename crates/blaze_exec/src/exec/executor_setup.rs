@@ -226,6 +226,22 @@ pub fn build_spawn_strategy_registry_with_policy(
     if let Err(e) =
         sandbox_module.register_spawn_strategies(&mut spawn_strategy_registry_builder, env)
     {
+        if crate::sandbox::sandbox_helpers::is_interrupted_error(&e) {
+            // An InterruptedException of registerSpawnStrategies (a sandbox's isSupported probe):
+            // BuildTool reports "build interrupted". PORT: the executor is made before Java
+            // makes its ExecutionTool, so the interruption travels as an AbruptExitException
+            // with the Interrupted detail of InterruptedFailureDetails.detailedExitCode, which the
+            // build command turns back into an interrupted build.
+            // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:943 BuildTool.processRequest
+            return Err(AbruptExitException::new(FailureDetail {
+                message: "build interrupted".to_string(),
+                category: Some(failure_detail::Category::Interrupted(
+                    failure_details::Interrupted {
+                        code: failure_details::interrupted::Code::Interrupted as i32,
+                    },
+                )),
+            }));
+        }
         return Err(AbruptExitException::new(FailureDetail {
             message: format!("Failed to initialize sandbox: {e}"),
             category: Some(failure_detail::Category::Sandbox(

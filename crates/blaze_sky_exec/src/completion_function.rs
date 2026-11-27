@@ -1316,7 +1316,8 @@ fn inform_important_output_handler(
         .filter(|artifact| !artifact.is_fileset())
         .map(|artifact| blaze_exec::actions::action_adapters::artifact_input(artifact))
         .collect();
-    let failure = |message: String, failure_detail: blaze_protos::failure_details::FailureDetail| {
+    let failure = |message: String,
+                   failure_detail: blaze_protos::failure_details::FailureDetail| {
         InformFailure::TopLevelOutput {
             cause: CompletionRootCause::Label {
                 label: label.clone(),
@@ -1356,8 +1357,13 @@ fn inform_important_output_handler(
             .iter()
             .find(|(name, _)| name == HIDDEN_TOP_LEVEL)
     {
-        artifacts_relevant_for_rewinding
-            .extend(hidden_top_level_artifacts.artifacts.to_list().iter().cloned());
+        artifacts_relevant_for_rewinding.extend(
+            hidden_top_level_artifacts
+                .artifacts
+                .to_list()
+                .iter()
+                .cloned(),
+        );
     }
     let failed_key_deps: IndexSet<SkyKey> = artifacts_relevant_for_rewinding
         .iter()

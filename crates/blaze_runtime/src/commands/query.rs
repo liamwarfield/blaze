@@ -79,6 +79,29 @@ pub(crate) fn create_skyframe_executor(
 /// of a command). Bind it right after creating the command's executor.
 pub(crate) struct AfterCommand<'a>(pub &'a SkyframeExecutor);
 
+/// BlazeRuntime.afterCommand: SkyframeExecutor.notifyCommandComplete posts the evaluator's
+/// SkyframeGraphStatsEvent (resetting its statistics) for every command, before the
+/// CommandPrecompleteEvent whose MetricsCollector subscriber builds the BuildMetricsEvent.
+///
+/// PORT: taken when the command's executor ends (as `build` does in `run_build`); declared after
+/// [`AfterCommand`], so it runs first. The dispatcher posts the kept graph's statistics again,
+/// which `post_logging_stats` has reset.
+// Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:759 BlazeRuntime.afterCommand
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1196 SkyframeExecutor.notifyCommandComplete
+pub(crate) struct PostGraphStatsAfterCommand<'a>(
+    pub &'a SkyframeExecutor,
+    pub Option<Arc<crate::commands::bep::BepCommandSupport>>,
+);
+
+impl Drop for PostGraphStatsAfterCommand<'_> {
+    fn drop(&mut self) {
+        let graph_stats = self.0.get_evaluator().post_logging_stats();
+        if let Some(bep) = &self.1 {
+            bep.skyframe_graph_stats(&graph_stats);
+        }
+    }
+}
+
 impl Drop for AfterCommand<'_> {
     fn drop(&mut self) {
         self.0.after_command();
@@ -357,6 +380,8 @@ impl QueryCommand {
             Err(result) => return result,
         };
         let _after_command = AfterCommand(&skyframe_executor);
+        let _post_graph_stats =
+            PostGraphStatsAfterCommand(&skyframe_executor, env.get_bep().cloned());
         let reporter = reporter(env);
         let query_options: QueryOptions = options.get_options().expect("QueryOptions");
         let keep_going = options
@@ -420,6 +445,8 @@ impl QueryCommand {
             env.get_relative_working_directory().clone(),
             env.get_working_directory().clone(),
             main_repo_mapping,
+            // SkyQueryEnvironment.DEFAULT_THREAD_COUNT
+            crate::local_resources::available_processors(),
         );
         let residue = options.get_residue();
         let detailed_exit_code = blaze_query::commands::query_command::exec_internal(

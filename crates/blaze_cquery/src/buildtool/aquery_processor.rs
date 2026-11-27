@@ -32,7 +32,7 @@ use crate::cquery::cquery_options::CommonQueryOptionsView;
 use crate::post_analysis_query_environment::TopLevelConfigurations;
 
 /// Custom exception class for aquery filtering.
-// Java: com/google/devtools/build/lib/buildtool/AqueryProcessor.java:249 AqueryProcessor.AqueryActionFilterException
+// Java: com/google/devtools/build/lib/buildtool/AqueryProcessor.java:251 AqueryProcessor.AqueryActionFilterException
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("{0}")]
 pub struct AqueryActionFilterException(pub String);
@@ -159,7 +159,7 @@ impl AqueryProcessor {
         }
     }
 
-    // Java: com/google/devtools/build/lib/buildtool/AqueryProcessor.java:149 AqueryProcessor.getQueryEnvironment
+    // Java: com/google/devtools/build/lib/buildtool/AqueryProcessor.java:146 AqueryProcessor.getQueryEnvironment
     fn get_query_environment(
         &self,
         request: &BuildRequest,
@@ -197,7 +197,7 @@ impl AqueryProcessor {
 /// Return the action filters in the form { inputs: <pattern>, outputs: <pattern>, ... }.
 ///
 /// Fails if an aquery filter function is preceded by any other function types.
-// Java: com/google/devtools/build/lib/buildtool/AqueryProcessor.java:191 AqueryProcessor.buildActionFilters
+// Java: com/google/devtools/build/lib/buildtool/AqueryProcessor.java:190 AqueryProcessor.buildActionFilters
 fn build_action_filters(
     query_expression: Option<&QueryExpression>,
 ) -> Result<AqueryActionFilter, AqueryActionFilterException> {
@@ -270,7 +270,7 @@ fn get_next_function_expression(
 }
 
 impl AnalysisPostProcessor for AqueryProcessor {
-    // Java: com/google/devtools/build/lib/buildtool/PostAnalysisQueryProcessor.java:71 PostAnalysisQueryProcessor.process
+    // Java: com/google/devtools/build/lib/buildtool/PostAnalysisQueryProcessor.java:72 PostAnalysisQueryProcessor.process
     fn process(
         &self,
         request: &BuildRequest,
@@ -438,7 +438,7 @@ fn dump_skyframe_state(
 
 /// The target `ActionGraphDump.dumpSingleAction` records for a configured target: its actual
 /// target (aliases dereferenced), which must be a rule.
-// Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/ActionGraphDump.java:163 ActionGraphDump.dumpSingleAction
+// Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/ActionGraphDump.java:143 ActionGraphDump.dumpSingleAction
 fn dumped_target(configured_target: &ConfiguredTarget) -> DumpedTarget {
     let actual = configured_target.get_actual();
     let ConfiguredTarget::Rule(rule_configured_target) = &actual else {
@@ -461,7 +461,7 @@ pub struct DumpSkyframeStateAfterBuild {
     pub streaming_log_file_uploads: bool,
 }
 
-// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:830 BuildTool.getDefaultOutputFileName
+// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:834 BuildTool.getDefaultOutputFileName
 fn get_default_output_file_name(format: &str) -> &'static str {
     match format {
         "proto" => "aquery_dump.proto",
@@ -504,6 +504,7 @@ impl blaze_sky_top::build_tool::AqueryDumpAfterBuild for DumpSkyframeStateAfterB
         // outputFileName)) is not posted: no module of Bazel subscribes to it.
 
         // initOutputStream(streamingContext, localOutputFilePath)
+        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:844 BuildTool.initOutputStream
         let output_stream = match local_output_file_path.get_output_stream() {
             Ok(s) => s,
             Err(e) => blaze_util::unported!(

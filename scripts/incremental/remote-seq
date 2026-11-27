@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""Remote-cache command sequences on a persistent server, oracle against Blaze (review S1-1/S1-2).
+
+usage: scripts/incremental/remote-seq help
+       scripts/incremental/remote-seq list
+       scripts/incremental/remote-seq run [--blaze B] [--oracle O] [--only NAME] [--port P]
+                                          [--keep]
+
+Each sequence runs first with the oracle (~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64), then
+with Blaze (BLAZE_SERVER_MODE=daemon, BLAZE_INCREMENTAL_REMOTE_FAILSAFE=off so the kept graph is
+used with remote options), each side on its own workspace and output user root under
+~/.cache/blaze/work/i3/remote/<sequence>/<side>/ and, for the gRPC sequences, its own fresh
+remote worker (scripts/remote/worker start i3-<side> PORT; stopped right after the side's
+sequence). The workspace: //lib:lib (a genrule writing lib.out) and //app:app (a genrule reading
+it). Per step it records the exit code, which of bazel-bin/lib/lib.out and bazel-bin/app/app.out
+exist, the "INFO: ... process(es)" line and the "INFO: Analyzed" line, and prints one line per
+step where the sides differ. Exit 1 if any differ.
+
+Sequences (`list` prints them):
+  s1-1-grpc   build //app, clean, build //app (lib.out a remote hit, not downloaded),
+              build //lib (downloads it), rm lib.out, build //lib (Java restores it)
+  s1-1-disk   the same with --disk_cache
+  s1-1b-grpc  build //app, clean, build --remote_download_minimal //app,
+              build --remote_download_toplevel //app (Java deletes the completion nodes)
+  s1-1b-disk  the same with --disk_cache
+  s1-2        --remote_executor with --remote_default_exec_properties=image=a, then image=b
+              (Java deletes every ACTION_EXECUTION node: the actions run again)
+
+Startup options --max_idle_secs=60 --nohome_rc --nosystem_rc; builds --jobs=4 --color=no
+--curses=no --repository_cache=~/.cache/blaze/repo-cache. Servers are shut down after each
+side; the directories are deleted unless --keep.
+"""
+
+import os
+import shutil
+import signal
+import subprocess
+import sys
+
+HOME = os.path.expanduser("~")
+ROOT = os.path.join(HOME, ".cache/blaze/work/i3/remote")
+ORACLE = os.path.join(HOME, ".cache/blaze/oracle/bazel-9.3.2-linux-x86_64")
+REPO_CACHE = os.path.join(HOME, ".cache/blaze/repo-cache")
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+WORKER = os.path.join(REPO, "scripts/remote/worker")
+
+LIB_OUT = "bazel-bin/lib/lib.out"
+APP_OUT = "bazel-bin/app/app.out"
+
+
+def write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+
+
+def setup_workspace(ws):
+    write(os.path.join(ws, "MODULE.bazel"), "")
+    write(os.path.join(ws, "lib", "BUILD"),
+          'genrule(name = "lib", outs = ["lib.out"], cmd = "echo lib-contents > $@",\n'
+          '        visibility = ["//visibility:public"])\n')
+    write(os.path.join(ws, "app", "BUILD"),
+          'genrule(name = "app", srcs = ["//lib"], outs = ["app.out"],\n'
+          '        cmd = "cat $(location //lib) > $@; echo app >> $@")\n')
+
+
+def sequences(cache):
+    """{name: [step]}; a step is ("build"|"clean"|"rm", args)."""
+    return {
+        "s1-1-grpc": [("build", ["//app"]), ("clean", []), ("build", ["//app"]),
+                      ("build", ["//lib"]), ("rm", [LIB_OUT]), ("build", ["//lib"])],
+        "s1-1-disk": [("build", ["//app"]), ("clean", []), ("build", ["//app"]),
+                      ("build", ["//lib"]), ("rm", [LIB_OUT]), ("build", ["//lib"])],
+        "s1-1b-grpc": [("build", ["//app"]), ("clean", []),
+                       ("build", ["--remote_download_minimal", "//app"]),
+                       ("build", ["--remote_download_toplevel", "//app"])],
+        "s1-1b-disk": [("build", ["//app"]), ("clean", []),
+                       ("build", ["--remote_download_minimal", "//app"]),
+                       ("build", ["--remote_download_toplevel", "//app"])],
+        "s1-2": [("build", ["--remote_default_exec_properties=image=a", "//app"]),
+                 ("build", ["--remote_default_exec_properties=image=a", "//app"]),
+                 ("build", ["--remote_default_exec_properties=image=b", "//app"])],
+    }
+
+
+def cache_flags(name, port, root):
+    if name.endswith("-disk"):
+        return ["--disk_cache=" + os.path.join(root, "disk-cache")]
+    if name == "s1-2":
+        return ["--remote_executor=grpc://localhost:%d" % port]
+    return ["--remote_cache=grpc://localhost:%d" % port]
+
+
+def remove(path):
+    if os.path.isdir(path):
+        subprocess.run(["chmod", "-R", "u+w", path], capture_output=True)
+        shutil.rmtree(path)
+
+
+def run_side(name, side, binary, port):
+    root = os.path.join(ROOT, name, side)
+    remove(root)
+    ws = os.path.join(root, "ws")
+    out_root = os.path.join(root, "ur")
+    setup_workspace(ws)
+    env = {"HOME": HOME, "PATH": "/usr/bin:/bin"}
+    if side == "blaze":
+        env["BLAZE_SERVER_MODE"] = "daemon"
+        env["BLAZE_INCREMENTAL_REMOTE_FAILSAFE"] = "off"
+    startup = [binary, "--output_user_root=" + out_root, "--max_idle_secs=60", "--nohome_rc",
+               "--nosystem_rc"]
+    grpc = not name.endswith("-disk")
+    worker = "i3-" + side
+    rows = []
+    if grpc:
+        subprocess.run([WORKER, "start", worker, str(port)], check=True, capture_output=True)
+    try:
+        for step, args in sequences(None)[name]:
+            if step == "rm":
+                for rel in args:
+                    p = os.path.join(ws, rel)
+                    if os.path.lexists(p):
+                        os.chmod(p, 0o644)
+                        os.remove(p)
+                rows.append(("rm " + " ".join(args), ""))
+                continue
+            cmd = startup + [step]
+            if step == "build":
+                cmd += ["--jobs=4", "--color=no", "--curses=no",
+                        "--repository_cache=" + REPO_CACHE] + cache_flags(name, port, root) + args
+            p = subprocess.run(cmd, cwd=ws, env=env, capture_output=True, timeout=900)
+            err = p.stderr.decode("utf-8", "replace")
+            procs = next((l for l in err.splitlines()
+                          if l.startswith("INFO:") and " process" in l), "")
+            analyzed = next((l for l in err.splitlines() if l.startswith("INFO: Analyzed")), "")
+            present = "lib.out=%s app.out=%s" % (os.path.exists(os.path.join(ws, LIB_OUT)),
+                                                 os.path.exists(os.path.join(ws, APP_OUT)))
+            rows.append(("%s %s" % (step, " ".join(args)),
+                         "exit=%d %s | %s | %s" % (p.returncode, present, analyzed, procs)))
+            if p.returncode != 0:
+                tail = [l for l in err.splitlines() if "ERROR" in l][:3]
+                rows.append(("  stderr", " / ".join(tail)))
+    finally:
+        subprocess.run(startup + ["shutdown"], cwd=ws, env=env, capture_output=True, timeout=120)
+        for d in os.listdir(out_root) if os.path.isdir(out_root) else []:
+            try:
+                pid = int(open(os.path.join(out_root, d, "server", "server.pid.txt")).read())
+                os.kill(pid, signal.SIGKILL)
+            except Exception:
+                pass
+        if grpc:
+            subprocess.run([WORKER, "stop", worker], capture_output=True)
+    return rows
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("help", "-h", "--help"):
+        print(__doc__)
+        return 0
+    if sys.argv[1] == "list":
+        for n, steps in sequences(None).items():
+            print(n + ": " + "; ".join(s + " " + " ".join(a) for s, a in steps))
+        return 0
+    if sys.argv[1] != "run":
+        print(__doc__)
+        return 2
+    args = sys.argv[2:]
+
+    def opt(name, default):
+        return args[args.index(name) + 1] if name in args else default
+
+    blaze = opt("--blaze", os.path.join(HOME, ".cache/blaze/work/i3/bin/blaze"))
+    oracle = opt("--oracle", ORACLE)
+    port = int(opt("--port", "18980"))
+    only = opt("--only", None)
+    differences = 0
+    for name in sequences(None):
+        if only and only != name:
+            continue
+        o = run_side(name, "oracle", oracle, port)
+        b = run_side(name, "blaze", blaze, port)
+        print("== %s" % name)
+        for i in range(max(len(o), len(b))):
+            ro = o[i] if i < len(o) else ("-", "-")
+            rb = b[i] if i < len(b) else ("-", "-")
+            same = ro == rb
+            print("  %s %s" % ("SAME     " if same else "DIFFERENT", ro[0]))
+            if not same:
+                differences += 1
+                print("      oracle: %s" % ro[1])
+                print("      blaze:  %s" % rb[1])
+            else:
+                print("      %s" % ro[1])
+        if "--keep" not in args:
+            remove(os.path.join(ROOT, name))
+    print("== differences: %d" % differences)
+    return 1 if differences else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

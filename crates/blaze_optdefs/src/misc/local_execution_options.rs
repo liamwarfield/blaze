@@ -1,7 +1,5 @@
 //! Port of `exec/local/LocalExecutionOptions.java` (the `OptionsBase` subclass and what it uses).
 
-use std::time::Duration;
-
 use blaze_options::{RegexPatternConverter, RegexPatternOption, options};
 
 // Java: com/google/devtools/build/lib/exec/local/LocalExecutionOptions.java:27 LocalExecutionOptions
@@ -79,13 +77,12 @@ options! {
 
 impl LocalExecutionOptions {
     // Java: com/google/devtools/build/lib/exec/local/LocalExecutionOptions.java:86 LocalExecutionOptions.getLocalSigkillGraceSeconds
-    pub fn get_local_sigkill_grace_seconds(&self) -> Duration {
+    pub fn get_local_sigkill_grace_seconds(&self) -> blaze_util::java_duration::JavaDuration {
         // TODO(ulfjack): Change localSigkillGraceSeconds type to Duration.
-        // Java: Duration.ofSeconds(long) accepts negative values; std Duration cannot hold them.
-        if self.local_sigkill_grace_seconds < 0 {
-            blaze_util::unported!("Duration.ofSeconds (negative duration)");
-        }
-        Duration::from_secs(self.local_sigkill_grace_seconds as u64)
+        // Duration.ofSeconds(long): a negative value stays negative.
+        blaze_util::java_duration::JavaDuration::of_seconds(i64::from(
+            self.local_sigkill_grace_seconds,
+        ))
     }
 }
 
@@ -112,11 +109,14 @@ mod tests {
             "--allowed_local_actions_regex=Genrule.*",
         ])
         .unwrap();
-        assert_eq!(o.get_local_sigkill_grace_seconds(), Duration::from_secs(3));
+        assert_eq!(
+            o.get_local_sigkill_grace_seconds(),
+            blaze_util::java_duration::JavaDuration::of_seconds(3)
+        );
         assert!(o.allowed_local_action.unwrap().matches("GenruleFoo"));
         assert_eq!(
             LocalExecutionOptions::default().get_local_sigkill_grace_seconds(),
-            Duration::from_secs(15)
+            blaze_util::java_duration::JavaDuration::of_seconds(15)
         );
     }
 }

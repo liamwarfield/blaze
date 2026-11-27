@@ -558,6 +558,17 @@ pub struct RecursiveFilesystemTraversalException {
 }
 
 impl RecursiveFilesystemTraversalException {
+    /// `new RecursiveFilesystemTraversalException(message, detailedIOException)`.
+    ///
+    /// PORT: Java keeps the `DetailedIOException` as the cause; only the type is read later.
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalFunction.java:127 RecursiveFilesystemTraversalException.<init>
+    pub fn with_detailed_io_exception(message: String) -> RecursiveFilesystemTraversalException {
+        RecursiveFilesystemTraversalException {
+            message,
+            type_: RecursiveFilesystemTraversalExceptionType::DetailedIoException,
+        }
+    }
+
     // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalFunction.java:132 RecursiveFilesystemTraversalException.<init>
     pub fn new(
         message: String,
@@ -732,7 +743,13 @@ impl RecursiveFilesystemTraversalFunction {
             e.get_message()
         );
 
-        // PORT: Blaze's file systems throw no DetailedIOException.
+        if let TraversalError::Io(io) = &e
+            && io.as_detailed().is_some()
+        {
+            return Err(recursive_filesystem_traversal_function_exception(
+                RecursiveFilesystemTraversalException::with_detailed_io_exception(message),
+            ));
+        }
 
         // Trying to stat the starting point of this root may have failed with a symlink cycle or
         // trying to get a package lookup value may have failed due to a symlink cycle.

@@ -113,8 +113,8 @@ impl SpawnExecutionContext for FakeSpawnExecutionContext {
     }
 
     // Java: com/google/devtools/build/lib/remote/util/FakeSpawnExecutionContext.java:112 FakeSpawnExecutionContext.getTimeout
-    fn get_timeout(&self) -> Duration {
-        Duration::ZERO
+    fn get_timeout(&self) -> blaze_util::java_duration::JavaDuration {
+        blaze_util::java_duration::JavaDuration::ZERO
     }
 
     // Java: com/google/devtools/build/lib/remote/util/FakeSpawnExecutionContext.java:117 FakeSpawnExecutionContext.getFileOutErr

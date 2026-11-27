@@ -2245,4 +2245,5 @@ mod not_ported;
 mod parallel_evaluator_test;
 mod progress_receiver_test;
 mod reverse_deps_utility_test;
+mod rewinding_evaluator_test;
 mod tracking_progress_receiver;

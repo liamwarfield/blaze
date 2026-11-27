@@ -517,9 +517,14 @@ pub fn prepare_repository_functions_with(
     // `bazel_modules.rs`); the repository functions do not hold it, so a graph kept between
     // commands does not keep it either.
 
+    // env.getDownloaderDelegate(): the remote downloader when the remote module set one.
+    let delegating_downloader = DelegatingDownloader::new(http_downloader.clone());
+    if let Some(remote_downloader) = crate::repository::remote_helpers::remote_downloader() {
+        delegating_downloader.set_delegate(Some(remote_downloader(http_downloader.clone())));
+    }
     let mut download_manager = DownloadManager::new(
         repository_cache.get_download_cache().clone(),
-        Arc::new(DelegatingDownloader::new(http_downloader.clone())),
+        Arc::new(delegating_downloader),
         http_downloader,
         reporter.clone(),
     );

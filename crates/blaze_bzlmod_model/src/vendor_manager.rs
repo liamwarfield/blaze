@@ -10,9 +10,8 @@ use std::io;
 
 use blaze_util::string_encoding::internal_to_platform;
 use blaze_vfs::PathFragment;
-use sha2::Digest;
 
-use crate::checksum::{Checksum, KeyType};
+use crate::checksum::Checksum;
 use crate::java_uri::JavaUri;
 
 // Java: com/google/devtools/build/lib/bazel/bzlmod/VendorManager.java:46 VendorManager.REGISTRIES_DIR
@@ -78,16 +77,8 @@ impl VendorManager {
         let path = self.get_vendor_path_for_url(url).map_err(|e| e.0)?;
         let content = std::fs::read(&*internal_to_platform(path.get_path_string()))
             .map_err(|e| format!("{} ({})", path.get_path_string(), io_reason(&e)))?;
-        let actual: Vec<u8> = match checksum.get_key_type() {
-            KeyType::Sha256 => sha2::Sha256::digest(&content).to_vec(),
-            KeyType::Sha384 => sha2::Sha384::digest(&content).to_vec(),
-            KeyType::Sha512 => sha2::Sha512::digest(&content).to_vec(),
-            other => blaze_util::unported!(
-                "VendorManager.readRegistryUrl",
-                "{} checksums of vendored registry files",
-                other
-            ),
-        };
+        // checksum.getKeyType().newHasher().putBytes(content).hash()
+        let actual: Vec<u8> = crate::checksum::hash_with(checksum.get_key_type(), &content);
         if checksum.get_hash_code() != actual.as_slice() {
             return Err(format!(
                 "Checksum was {} but wanted {}",

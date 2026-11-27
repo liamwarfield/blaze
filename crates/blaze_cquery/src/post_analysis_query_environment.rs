@@ -173,7 +173,7 @@ pub trait PostAnalysisNode: Clone + 'static {
 
     /// Java `node instanceof RuleConfiguredTarget`, on the node object itself: true for a rule's
     /// `CqueryNode`, never true for aquery's `ConfiguredTargetValue`.
-    // Java: com/google/devtools/build/lib/query2/PostAnalysisQueryEnvironment.java:357 PostAnalysisQueryEnvironment.filterReverseDeps
+    // Java: com/google/devtools/build/lib/query2/PostAnalysisQueryEnvironment.java:348 PostAnalysisQueryEnvironment.filterReverseDeps
     fn is_instance_of_rule_configured_target(&self) -> bool;
 }
 
@@ -212,6 +212,7 @@ impl PostAnalysisNode for Arc<ConfiguredTargetValue> {
 }
 
 /// The `ActionLookupKey` of a node (Java `getConfiguredTargetKey(T)`).
+// Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:429 ActionGraphQueryEnvironment.getConfiguredTargetKeyImpl
 pub fn get_configured_target_key<T: PostAnalysisNode>(target: &T) -> ActionLookupKeyRef {
     target.get_lookup_key()
 }
@@ -241,6 +242,7 @@ pub fn lookup_key_to_sky_key(key: &ActionLookupKeyRef) -> SkyKey {
 }
 
 /// A `KeyExtractor` over [`get_configured_target_key`].
+// Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:212 ActionGraphQueryEnvironment.getConfiguredTargetKeyExtractor
 pub fn configured_target_key_extractor<T: PostAnalysisNode>()
 -> Arc<dyn KeyExtractor<T, ActionLookupKeyRef>> {
     Arc::new(|t: &T| get_configured_target_key(t))
@@ -521,7 +523,7 @@ fn java_boolean_hash_code(b: bool) -> i32 {
 /// value's hash code or 0, and the record `ToolchainTypeRequirement` hashes as
 /// `(31 * (31 * toolchainType.hashCode() + hash(mandatory)) + hash(ignoreIfInvalid))`
 /// (`java.lang.runtime.ObjectMethods`).
-// Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainContextKey.java:30 ToolchainContextKey
+// Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainContextKey.java:31 ToolchainContextKey
 fn java_hash_code_of_toolchain_context_key(key: &ToolchainContextKey) -> i32 {
     let mut toolchain_types: i32 = 0;
     for requirement in key.toolchain_types() {
@@ -632,7 +634,7 @@ pub fn java_hash_map_key_order<K: PartialEq>(
 /// The key order of `Maps.newHashMapWithExpectedSize(expected_size)` after `put`ting `keys` in
 /// order (`targetsByKey` of `getFwdDeps` and `getReverseDeps`, where `expected_size` is
 /// `Iterables.size(targets)`).
-// Java: com/google/devtools/build/lib/query2/PostAnalysisQueryEnvironment.java:288 PostAnalysisQueryEnvironment.getFwdDeps
+// Java: com/google/devtools/build/lib/query2/PostAnalysisQueryEnvironment.java:287 PostAnalysisQueryEnvironment.getFwdDeps
 pub fn targets_by_key_order<K: PartialEq>(
     expected_size: usize,
     keys: Vec<K>,
@@ -909,12 +911,12 @@ impl TopLevelConfigurations {
 // NamedThreadSafeOutputFormatterCallback.
 
 /// A `ThreadSafeOutputFormatterCallback` with a name (the `--output` value it implements).
-// Java: com/google/devtools/build/lib/query2/NamedThreadSafeOutputFormatterCallback.java:25 NamedThreadSafeOutputFormatterCallback
+// Java: com/google/devtools/build/lib/query2/NamedThreadSafeOutputFormatterCallback.java:23 NamedThreadSafeOutputFormatterCallback
 pub trait NamedThreadSafeOutputFormatterCallback<T>: ThreadSafeOutputFormatterCallback<T> {
     fn get_name(&self) -> String;
 }
 
-// Java: com/google/devtools/build/lib/query2/NamedThreadSafeOutputFormatterCallback.java:30 NamedThreadSafeOutputFormatterCallback.callbackNames
+// Java: com/google/devtools/build/lib/query2/NamedThreadSafeOutputFormatterCallback.java:27 NamedThreadSafeOutputFormatterCallback.callbackNames
 pub fn callback_names<T>(
     callbacks: &[Box<dyn NamedThreadSafeOutputFormatterCallback<T> + '_>],
 ) -> String {
@@ -926,7 +928,7 @@ pub fn callback_names<T>(
 }
 
 /// Returns the index of the callback named `type_`, if any.
-// Java: com/google/devtools/build/lib/query2/NamedThreadSafeOutputFormatterCallback.java:38 NamedThreadSafeOutputFormatterCallback.selectCallback
+// Java: com/google/devtools/build/lib/query2/NamedThreadSafeOutputFormatterCallback.java:35 NamedThreadSafeOutputFormatterCallback.selectCallback
 pub fn select_callback<T>(
     type_: &str,
     callbacks: &[Box<dyn NamedThreadSafeOutputFormatterCallback<T> + '_>],
@@ -1128,7 +1130,7 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
     }
 
     /// The configuration of a node.
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:537 ConfiguredTargetQueryEnvironment.getConfiguration
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:549 ConfiguredTargetQueryEnvironment.getConfiguration
     pub fn get_configuration(&self, target: &T) -> Option<Arc<BuildConfigurationValue>> {
         let key = target.get_configuration_key()?;
         blaze_sky_top::skyframe_executor::get_configuration_from_graph(&*self.graph, Some(&key))
@@ -1136,13 +1138,13 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
 
     /// This method has to exist because `AliasConfiguredTarget.getLabel()` returns the label of
     /// the "actual" target instead of the alias target.
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:477 ConfiguredTargetQueryEnvironment.getCorrectLabel
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:494 ConfiguredTargetQueryEnvironment.getCorrectLabel
     pub fn get_correct_label(&self, target: &T) -> Label {
         // Dereference any aliases that might be present.
         target.get_original_label()
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:325 ConfiguredTargetQueryEnvironment.getConfiguredTarget
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:302 ConfiguredTargetQueryEnvironment.getConfiguredTarget
     pub fn get_configured_target(
         &self,
         label: &Label,
@@ -1152,12 +1154,14 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
             .get_configured_target(label, configuration)
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:483 ConfiguredTargetQueryEnvironment.getTargetConfiguredTarget
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:501 ConfiguredTargetQueryEnvironment.getTargetConfiguredTarget
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:239 ActionGraphQueryEnvironment.getTargetConfiguredTarget
     pub fn get_target_configured_target(&self, label: &Label) -> Option<T> {
         self.graph_lookup().get_target_configured_target(label)
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:501 ConfiguredTargetQueryEnvironment.getNullConfiguredTarget
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:519 ConfiguredTargetQueryEnvironment.getNullConfiguredTarget
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:266 ActionGraphQueryEnvironment.getNullConfiguredTarget
     pub fn get_null_configured_target(&self, label: &Label) -> Option<T> {
         self.graph_lookup().get_null_configured_target(label)
     }
@@ -1165,7 +1169,8 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
     /// Returns all configured targets in Skyframe with the given label.
     ///
     /// If there are no matches, returns an empty list.
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:363 ConfiguredTargetQueryEnvironment.getConfiguredTargetsForLabel
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:344 ConfiguredTargetQueryEnvironment.getConfiguredTargetsForLabel
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:369 ActionGraphQueryEnvironment.getConfiguredTargetsForLabel
     fn get_configured_targets_for_label(&self, label: &Label) -> Vec<T> {
         let mut ans: Vec<T> = Vec::new();
         let mut extra_configured_target_keys: Option<HashSet<ConfiguredTargetKey>> = None;
@@ -1217,7 +1222,7 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
     /// `targetsByKey` of `getFwdDeps` and `getReverseDeps`
     /// (`Maps.newHashMapWithExpectedSize(Iterables.size(targets))` filled in the order of
     /// `targets`) and its key set in Java's iteration order.
-    // Java: com/google/devtools/build/lib/query2/PostAnalysisQueryEnvironment.java:288 PostAnalysisQueryEnvironment.getFwdDeps
+    // Java: com/google/devtools/build/lib/query2/PostAnalysisQueryEnvironment.java:287 PostAnalysisQueryEnvironment.getFwdDeps
     fn targets_by_key(&self, targets: &[T]) -> (HashMap<SkyKey, T>, Vec<SkyKey>) {
         let mut targets_by_key: HashMap<SkyKey, T> = HashMap::with_capacity(targets.len());
         let mut keys: Vec<SkyKey> = Vec::with_capacity(targets.len());
@@ -1520,6 +1525,7 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
 
     /// Java `getRuleConfiguredTarget(T)`.
     // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:525 ConfiguredTargetQueryEnvironment.getRuleConfiguredTarget
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:280 ActionGraphQueryEnvironment.getRuleConfiguredTarget
     fn get_rule_configured_target(target: &T) -> Option<&Arc<RuleConfiguredTarget>> {
         match target.as_configured_target() {
             Some(ConfiguredTarget::Rule(r)) => Some(r),
@@ -1529,6 +1535,7 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
 
     /// If `target` is an `OutputFileConfiguredTarget`, return the rule that produces it.
     // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:534 ConfiguredTargetQueryEnvironment.getOwningRuleforOutputConfiguredTarget
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:291 ActionGraphQueryEnvironment.getOwningRuleforOutputConfiguredTarget
     fn get_owning_rule_for_output_configured_target(
         target: &T,
     ) -> Option<Arc<RuleConfiguredTarget>> {
@@ -1539,6 +1546,7 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
     }
 
     // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:543 ConfiguredTargetQueryEnvironment.isAliasConfiguredTarget
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:301 ActionGraphQueryEnvironment.isAliasConfiguredTarget
     fn is_alias_configured_target(target: &T) -> bool {
         matches!(
             target.as_configured_target(),
@@ -1712,7 +1720,8 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
     }
 
     /// `getTargetsMatchingPattern` of both subclasses.
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:257 ConfiguredTargetQueryEnvironment.getTargetsMatchingPattern
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:259 ConfiguredTargetQueryEnvironment.getTargetsMatchingPattern
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:325 ActionGraphQueryEnvironment.getTargetsMatchingPattern
     fn get_targets_matching_pattern_impl(
         &self,
         owner: &QueryExpression,
@@ -1780,7 +1789,7 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
             // RecursivePkgValueRootPackageExtractor throws
             // `new QueryException(message, Code.TARGET_NOT_IN_UNIVERSE_SCOPE)`: no expression, so
             // the top level describes it as "Evaluation failed: ...".
-            // Java: com/google/devtools/build/lib/skyframe/RecursivePkgValueRootPackageExtractor.java:60 RecursivePkgValueRootPackageExtractor.streamPackagesFromRoots
+            // Java: com/google/devtools/build/lib/skyframe/RecursivePkgValueRootPackageExtractor.java:36 RecursivePkgValueRootPackageExtractor.streamPackagesFromRoots
             Err(TargetPatternEvalError::ProcessPackageDirectory(message)) => Err(
                 QueryException::new(None, message, query::Code::TargetNotInUniverseScope).into(),
             ),
@@ -1793,7 +1802,7 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
 
     /// Handle an error during evaluation of `expression` by either throwing `QueryException` or
     /// emitting an event, depending on whether the evaluation is running in a "keep going" mode.
-    // Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:422 AbstractBlazeQueryEnvironment.handleError
+    // Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:431 AbstractBlazeQueryEnvironment.handleError
     fn handle_error_impl(
         &self,
         expression: &QueryExpression,
@@ -1828,7 +1837,7 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
     /// Evaluate the specified query expression in this environment, streaming results to the
     /// given `callback`. `callback.start()` will be called before query evaluation and
     /// `callback.close()` will be unconditionally called at the end of query evaluation.
-    // Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:160 AbstractBlazeQueryEnvironment.evaluateQueryInternal
+    // Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:165 AbstractBlazeQueryEnvironment.evaluateQueryInternal
     fn evaluate_query_internal(
         &self,
         expr: &QueryExpression,
@@ -1940,7 +1949,7 @@ impl<T: PostAnalysisNode> PostAnalysisQueryEnvironment<T> {
 }
 
 /// Whether `constructDependencyFilter(settings)` returns `DependencyFilter.ALL_DEPS` itself.
-// Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:117 AbstractBlazeQueryEnvironment.constructDependencyFilter
+// Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:122 AbstractBlazeQueryEnvironment.constructDependencyFilter
 fn is_all_deps_filter(settings: &HashSet<Setting>) -> bool {
     // ONLY_TARGET_DEPS starts from ONLY_TARGET_DEPS; NO_IMPLICIT_DEPS and NO_NODEP_DEPS `and` a
     // new filter onto it; otherwise the ALL_DEPS constant is returned.
@@ -1998,7 +2007,7 @@ fn target_parsing_detailed_exit_code(e: &TargetParsingException) -> DetailedExit
     )
 }
 
-// Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:584 AbstractBlazeQueryEnvironment.createErrorEvent
+// Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:593 AbstractBlazeQueryEnvironment.createErrorEvent
 fn create_error_event(
     expr: &QueryExpression,
     message: &str,
@@ -2032,7 +2041,7 @@ fn get_dependencies<T: Clone>(classified_dependencies: &[ClassifiedDependency<T>
 }
 
 /// A callback counting the targets it forwards.
-// Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:337 AbstractBlazeQueryEnvironment.EmptinessSensingCallback
+// Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:396 AbstractBlazeQueryEnvironment.EmptinessSensingCallback
 struct EmptinessSensingCallback<'a, T> {
     callback: &'a dyn OutputFormatterCallback<T>,
     num_targets: AtomicI32,
@@ -2072,7 +2081,7 @@ impl<T> OutputFormatterCallback<T> for EmptinessSensingCallback<'_, T> {
 }
 
 /// Wrapper for evaluating query expression in a non-streaming blaze query environment.
-// Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:224 AbstractBlazeQueryEnvironment.AbstractBlazeQueryEvaluateExpressionImpl
+// Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:283 AbstractBlazeQueryEnvironment.AbstractBlazeQueryEvaluateExpressionImpl
 struct EvaluateExpressionImpl<'a, T> {
     env: &'a dyn QueryEnvironment<T>,
     expression: QueryExpression,
@@ -2081,7 +2090,7 @@ struct EvaluateExpressionImpl<'a, T> {
 }
 
 impl<T: Clone + 'static> EvaluateExpression<T> for EvaluateExpressionImpl<'_, T> {
-    // Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:236 AbstractBlazeQueryEvaluateExpressionImpl.eval
+    // Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:256 AbstractBlazeQueryEvaluateExpressionImpl.eval
     fn eval(&self, callback: &dyn Callback<T>) -> QueryTaskFuture<()> {
         let query_task_future = self.env.eval(&self.expression, &self.context, callback);
         self.query_task_future_cancelled
@@ -2089,12 +2098,12 @@ impl<T: Clone + 'static> EvaluateExpression<T> for EvaluateExpressionImpl<'_, T>
         query_task_future
     }
 
-    // Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:244 AbstractBlazeQueryEvaluateExpressionImpl.gracefullyCancel
+    // Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:303 AbstractBlazeQueryEvaluateExpressionImpl.gracefullyCancel
     fn gracefully_cancel(&self) -> bool {
         false
     }
 
-    // Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:251 AbstractBlazeQueryEvaluateExpressionImpl.isUngracefullyCancelled
+    // Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:310 AbstractBlazeQueryEvaluateExpressionImpl.isUngracefullyCancelled
     fn is_ungracefully_cancelled(&self) -> bool {
         self.query_task_future_cancelled.get().unwrap_or(false)
     }
@@ -2157,7 +2166,7 @@ where
         targets: &dyn ThreadSafeMutableSet<T>,
         _context: &QueryExpressionContext<T>,
     ) -> Result<Arc<dyn ThreadSafeMutableSet<T>>, InterruptedException> {
-        // Java: com/google/devtools/build/lib/query2/SkyQueryUtils.java:36 SkyQueryUtils.getTransitiveClosure
+        // Java: com/google/devtools/build/lib/query2/SkyQueryUtils.java:39 SkyQueryUtils.getTransitiveClosure
         let visited = self.create_set();
         let mut current: Vec<T> = targets.to_vec();
         while !current.is_empty() {
@@ -2191,7 +2200,7 @@ where
         to: &T,
         _context: &QueryExpressionContext<T>,
     ) -> Result<Vec<T>, InterruptedException> {
-        // Java: com/google/devtools/build/lib/query2/SkyQueryUtils.java:63 SkyQueryUtils.getNodesOnPath
+        // Java: com/google/devtools/build/lib/query2/SkyQueryUtils.java:64 SkyQueryUtils.getNodesOnPath
         let label = |t: &T| get_configured_target_key(t);
         // Tree of nodes visited so far.
         let mut node_to_parent: HashMap<ActionLookupKeyRef, Option<ActionLookupKeyRef>> =
@@ -2240,7 +2249,7 @@ where
         Ok(Vec::new())
     }
 
-    // Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:197 AbstractBlazeQueryEnvironment.eval
+    // Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:256 AbstractBlazeQueryEnvironment.eval
     fn eval(
         &self,
         expr: &QueryExpression,
@@ -2266,7 +2275,7 @@ where
         })
     }
 
-    // Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:263 AbstractBlazeQueryEnvironment.createEvaluateExpression
+    // Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:323 AbstractBlazeQueryEnvironment.createEvaluateExpression
     fn create_evaluate_expression<'a>(
         &'a self,
         expr: &QueryExpression,
@@ -2280,7 +2289,8 @@ where
         })
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:557 ConfiguredTargetQueryEnvironment.createThreadSafeMutableSet
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:565 ConfiguredTargetQueryEnvironment.createThreadSafeMutableSet
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:418 ActionGraphQueryEnvironment.createThreadSafeMutableSet
     fn create_thread_safe_mutable_set(&self) -> Arc<dyn ThreadSafeMutableSet<T>> {
         self.create_set()
     }
@@ -2318,7 +2328,7 @@ where
         ))
     }
 
-    // Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:502 AbstractBlazeQueryEnvironment.transitiveLoadFiles
+    // Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:511 AbstractBlazeQueryEnvironment.transitiveLoadFiles
     fn transitive_load_files(
         &self,
         _targets: &[T],
@@ -2334,16 +2344,17 @@ where
         panic!("IllegalStateException: transitiveLoadFiles without a TransitiveLoadFilesHelper")
     }
 
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:143 ActionGraphQueryEnvironment.getAccessor
     fn get_accessor(&self) -> &dyn TargetAccessor<T> {
         self
     }
 
-    // Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:560 AbstractBlazeQueryEnvironment.isSettingEnabled
+    // Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:569 AbstractBlazeQueryEnvironment.isSettingEnabled
     fn is_setting_enabled(&self, setting: Setting) -> bool {
         self.settings.contains(&setting)
     }
 
-    // Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:565 AbstractBlazeQueryEnvironment.getFunctions
+    // Java: com/google/devtools/build/lib/query2/common/AbstractBlazeQueryEnvironment.java:574 AbstractBlazeQueryEnvironment.getFunctions
     fn get_functions(&self) -> Vec<Arc<dyn QueryFunction<T>>> {
         let mut builder = default_query_functions::<T>();
         builder.extend(self.extra_functions.iter().cloned());
@@ -2370,7 +2381,8 @@ impl PostAnalysisGraph {
     }
 
     /// Returns the node for the given label and configuration if it exists, else `None`.
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:325 ConfiguredTargetQueryEnvironment.getConfiguredTarget
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:302 ConfiguredTargetQueryEnvironment.getConfiguredTarget
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:224 ActionGraphQueryEnvironment.createConfiguredTargetValueFromKey
     pub fn get_configured_target<T: PostAnalysisNode>(
         &self,
         label: &Label,
@@ -2391,7 +2403,8 @@ impl PostAnalysisGraph {
         Some(target)
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:483 ConfiguredTargetQueryEnvironment.getTargetConfiguredTarget
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:501 ConfiguredTargetQueryEnvironment.getTargetConfiguredTarget
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:239 ActionGraphQueryEnvironment.getTargetConfiguredTarget
     pub fn get_target_configured_target<T: PostAnalysisNode>(&self, label: &Label) -> Option<T> {
         if self.top_level_configurations.is_top_level_target(label) {
             self.get_configured_target::<T>(
@@ -2411,7 +2424,8 @@ impl PostAnalysisGraph {
         }
     }
 
-    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:501 ConfiguredTargetQueryEnvironment.getNullConfiguredTarget
+    // Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:519 ConfiguredTargetQueryEnvironment.getNullConfiguredTarget
+    // Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:266 ActionGraphQueryEnvironment.getNullConfiguredTarget
     pub fn get_null_configured_target<T: PostAnalysisNode>(&self, label: &Label) -> Option<T> {
         self.get_configured_target::<T>(label, None)
     }
@@ -2429,7 +2443,7 @@ pub struct GraphBackedRecursivePackageProvider<'g> {
 }
 
 impl GraphBackedRecursivePackageProvider<'_> {
-    // Java: com/google/devtools/build/lib/skyframe/GraphBackedRecursivePackageProvider.java:131 GraphBackedRecursivePackageProvider.getPackageInternal
+    // Java: com/google/devtools/build/lib/skyframe/GraphBackedRecursivePackageProvider.java:132 GraphBackedRecursivePackageProvider.getPackageInternal
     fn get_package_internal(
         &self,
         package_name: &PackageIdentifier,
@@ -2456,7 +2470,7 @@ impl GraphBackedRecursivePackageProvider<'_> {
         Ok(None)
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/GraphBackedRecursivePackageProvider.java:213 GraphBackedRecursivePackageProvider.bulkIsPackage
+    // Java: com/google/devtools/build/lib/skyframe/GraphBackedRecursivePackageProvider.java:217 GraphBackedRecursivePackageProvider.bulkIsPackage
     fn bulk_is_package(
         &self,
         event_handler: &dyn ExtendedEventHandler,
@@ -2500,7 +2514,7 @@ impl GraphBackedRecursivePackageProvider<'_> {
         result_builder
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/GraphBackedRecursivePackageProvider.java:266 GraphBackedRecursivePackageProvider.checkValidDirectoryAndGetRoots
+    // Java: com/google/devtools/build/lib/skyframe/GraphBackedRecursivePackageProvider.java:259 GraphBackedRecursivePackageProvider.checkValidDirectoryAndGetRoots
     fn check_valid_directory_and_get_roots(&self, repository: &RepositoryName) -> Vec<Root> {
         // Check that this package is covered by at least one of our universe patterns.
         // UniverseTargetPattern.all(): every package is in the universe.
@@ -2528,7 +2542,7 @@ impl GraphBackedRecursivePackageProvider<'_> {
 }
 
 impl RecursivePackageProvider for GraphBackedRecursivePackageProvider<'_> {
-    // Java: com/google/devtools/build/lib/skyframe/GraphBackedRecursivePackageProvider.java:119 GraphBackedRecursivePackageProvider.getPackage
+    // Java: com/google/devtools/build/lib/skyframe/GraphBackedRecursivePackageProvider.java:120 GraphBackedRecursivePackageProvider.getPackage
     fn get_package(
         &self,
         _event_handler: &dyn ExtendedEventHandler,
@@ -2546,7 +2560,7 @@ impl RecursivePackageProvider for GraphBackedRecursivePackageProvider<'_> {
         .into())
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/GraphBackedRecursivePackageProvider.java:258 GraphBackedRecursivePackageProvider.isPackage
+    // Java: com/google/devtools/build/lib/skyframe/GraphBackedRecursivePackageProvider.java:254 GraphBackedRecursivePackageProvider.isPackage
     fn is_package(
         &self,
         event_handler: &dyn ExtendedEventHandler,
@@ -2557,7 +2571,7 @@ impl RecursivePackageProvider for GraphBackedRecursivePackageProvider<'_> {
             .is_empty())
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/GraphBackedRecursivePackageProvider.java:300 GraphBackedRecursivePackageProvider.streamPackagesUnderDirectory
+    // Java: com/google/devtools/build/lib/skyframe/GraphBackedRecursivePackageProvider.java:298 GraphBackedRecursivePackageProvider.streamPackagesUnderDirectory
     fn stream_packages_under_directory(
         &self,
         results: &mut dyn FnMut(Vec<PackageIdentifier>),

@@ -243,7 +243,7 @@ impl RemoteRepositoryRemoteExecutorTest {
                 /* execution_properties= */ &IndexMap::new(),
                 /* environment= */ &IndexMap::new(),
                 /* working_directory= */ None,
-                /* timeout= */ std::time::Duration::ZERO,
+                /* timeout= */ blaze_util::java_duration::JavaDuration::of_seconds(0),
             )
             .unwrap()
     }

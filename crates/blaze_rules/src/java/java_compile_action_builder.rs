@@ -67,10 +67,9 @@ impl JavaCompileExtraActionInfoSupplier {
         builder: &mut blaze_protos::blaze::ExtraActionInfo,
         arguments: Vec<String>,
     ) {
+        // Artifact.toExecPaths: runfiles trees are left out.
         let exec_paths = |artifacts: &mut dyn Iterator<Item = &Artifact>| -> Vec<String> {
-            artifacts
-                .map(|a| a.get_exec_path_string().to_owned())
-                .collect()
+            Artifact::to_exec_paths(artifacts).collect()
         };
         let mut info = blaze_protos::blaze::JavaCompileInfo {
             source_file: exec_paths(&mut self.source_files.iter()),

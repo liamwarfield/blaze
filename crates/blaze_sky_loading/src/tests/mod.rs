@@ -24,6 +24,7 @@ mod package_function_test;
 mod package_group_test;
 mod package_loading_test_case;
 mod package_lookup_function_test;
+mod prepare_deps_of_patterns_function_test;
 mod repo_file_function_test;
 mod resolve_names_test;
 mod review_2026_11_18_test;

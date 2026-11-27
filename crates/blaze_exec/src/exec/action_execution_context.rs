@@ -62,7 +62,14 @@ pub trait ActionContextRegistry: Send + Sync {
 /// `getContext(T.class)` for a context registered through
 /// [`ActionContextRegistry::get_context_any`] under `TypeId::of::<T>()`. Register the context as
 /// `Arc<T>` (wrapped as `Arc<dyn Any>`), so trait-object contexts use `T = Arc<dyn Trait>`.
+///
+/// `ActionExecutionContext.getContext(type)` is `executor.getContext(type)`: the context's
+/// registry. `getOptions()` (`executor.getOptions()`) is read by actions only for
+/// `CppCompileAction`'s `BuildLanguageOptions.experimentalSiblingRepositoryLayout`, which the C++
+/// rules register as a context (`blaze_rules` `experimental_sibling_repository_layout`).
 // Java: com/google/devtools/build/lib/actions/ActionContext.java:46 ActionContext.ActionContextRegistry.getContext
+// Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:449 ActionExecutionContext.getContext
+// Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:416 ActionExecutionContext.getOptions
 pub fn get_context<T: Send + Sync + 'static>(
     registry: &(impl ActionContextRegistry + ?Sized),
 ) -> Option<Arc<T>> {
@@ -72,6 +79,16 @@ pub fn get_context<T: Send + Sync + 'static>(
 }
 
 /// The parts of `ActionExecutionContext` that spawn strategies read.
+//
+// Methods of the Java class no caller at the pin reaches, or reaches only through features that
+// stop loudly elsewhere:
+// PORT: skipped, no caller in Bazel 9.3.2 (main or test): ActionExecutionContext.withOverriddenRunfilesPath ActionExecutionContext.withInputMetadataProvider ActionExecutionContext.getRoot ActionExecutionContext.getFileSystem ActionExecutionContext.getBugReporter ActionExecutionContext.getActionKeyContext
+// PORT: skipped, used only by withOverriddenRunfilesPath: OverriddenPathRunfilesTree.OverriddenPathRunfilesTree OverriddenPathRunfilesTree.getExecPath OverriddenPathRunfilesTree.getMapping OverriddenPathRunfilesTree.getArtifacts OverriddenPathRunfilesTree.getSymlinksMode OverriddenPathRunfilesTree.isBuildRunfileLinks OverriddenPathRunfilesTree.getWorkspaceName
+// PORT: skipped, used only by withOverriddenRunfilesPath: OverriddenPathRunfilesTree.getArtifactsAtCanonicalLocationsForLogging OverriddenPathRunfilesTree.getEmptyFilenamesForLogging OverriddenPathRunfilesTree.getSymlinksForLogging OverriddenPathRunfilesTree.getRootSymlinksForLogging OverriddenPathRunfilesTree.getRepoMappingManifestForLogging OverriddenPathRunfilesTree.isMappingCached OverriddenPathRunfilesTree.fingerprint
+// PORT: skipped, used only by withOverriddenRunfilesPath: OverriddenRunfilesPathInputMetadataProvider.OverriddenRunfilesPathInputMetadataProvider OverriddenRunfilesPathInputMetadataProvider.getInputMetadataChecked OverriddenRunfilesPathInputMetadataProvider.getTreeMetadata OverriddenRunfilesPathInputMetadataProvider.getEnclosingTreeMetadata OverriddenRunfilesPathInputMetadataProvider.getInput
+// PORT: skipped, used only by withOverriddenRunfilesPath: OverriddenRunfilesPathInputMetadataProvider.getFileset OverriddenRunfilesPathInputMetadataProvider.getFilesets OverriddenRunfilesPathInputMetadataProvider.getRunfilesMetadata OverriddenRunfilesPathInputMetadataProvider.getRunfilesTrees
+// PORT: skipped, C++ header modules and include scanning only (CppCompileAction.findUsedModules and the include scanner stop with unported! in blaze_rules): ActionExecutionContext.getEnvironmentForDiscoveringInputs ActionExecutionContext.getDiscoveredModulesPruner ActionExecutionContext.getThreadStateReceiverForMetrics
+// PORT: skipped, the syscall cache of actions is not ported; its one reader, SymlinkAction.maybeVerifyTargetIsExecutable, stats the file directly (same answer, the cache only saves a stat): ActionExecutionContext.getSyscallCache
 // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:64 ActionExecutionContext
 pub trait ActionExecutionContext: ActionContextRegistry {
     /// `getExecRoot()`.
@@ -100,6 +117,7 @@ pub trait ActionExecutionContext: ActionContextRegistry {
     /// (`TransformResolver`), or `path` itself (`IdentityResolver`).
     // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:124 TransformResolver.convertPath
     // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:86 IdentityResolver.convertPath
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:409 ActionExecutionContext.getPathResolver
     fn convert_path(&self, path: &Path) -> Path {
         match self.get_action_file_system() {
             Some(file_system) => Path::create(path.as_fragment().clone(), &file_system),
@@ -137,6 +155,7 @@ pub trait ActionExecutionContext: ActionContextRegistry {
     /// .setActionInputPrefetcher`, the remote module's `RemoteActionInputFetcher`), else
     /// `ActionInputPrefetcher.NONE` (no remote outputs).
     // Java: com/google/devtools/build/lib/exec/SpawnRunner.java:170 SpawnRunner.SpawnExecutionContext.prefetchInputsAndWait
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:350 ActionExecutionContext.getActionInputPrefetcher
     fn prefetch_files(
         &self,
         owner: &dyn ActionExecutionMetadata,

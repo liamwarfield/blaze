@@ -71,7 +71,7 @@ pub struct PostAnalysisCommandEnvironment<'a> {
     /// targets and options: the project file's flag definitions and the applier that parses a
     /// project file's flags into the command's options parser (BuildTool.buildTargets). The
     /// command crate (blaze_runtime) owns the applier.
-    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:343 BuildTool.buildTargets
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:257 BuildTool.buildTargets
     pub configure_request: &'a dyn Fn(&mut blaze_sky_top::build_tool::BuildRequest),
 }
 
@@ -79,7 +79,7 @@ pub struct PostAnalysisCommandEnvironment<'a> {
 /// `ExecutionTool` after the analysis and before `analysisPostProcessor.process` (it sets up the
 /// tools' symlinks), for cquery and aquery too; an `AbruptExitException` from its constructor
 /// ends the request (`BuildTool.processRequest` reports its message).
-// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:520 BuildTool.buildTargetsWithoutMergedAnalysisExecution
+// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:496 BuildTool.buildTargetsWithoutMergedAnalysisExecution
 struct ExecutionToolConstruction<'a> {
     execution_tool: &'a dyn Fn() -> Result<(), DetailedExitCode>,
     post_processor: &'a dyn blaze_sky_top::build_tool::AnalysisPostProcessor,

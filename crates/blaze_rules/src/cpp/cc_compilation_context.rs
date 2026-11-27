@@ -6,6 +6,7 @@
 //! built ([`CcCompilationContext::of`]); the values are immutable, so this is equivalent. Fields
 //! only read during execution (include directories) are read leniently and fail when used.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use blaze_actions::Artifact;
@@ -17,6 +18,7 @@ use indexmap::IndexSet;
 use starlark::values::Value;
 
 use super::header_info::{HeaderInfoData, header_info_of};
+use super::include_scanner::IncludeScanningHeaderDataBuilder;
 use super::util::{depset_get_set_artifacts, depset_get_set_strings, field_type_error};
 
 /// Immutable data of one compilation context, as the compile action uses it.
@@ -213,6 +215,146 @@ impl CcCompilationContext {
         self.external_include_dirs
             .clone()
             .unwrap_or_else(|e| panic!("IllegalStateException: {e}"))
+    }
+
+    /// Returns `None` when a required SkyValue is missing and a Skyframe restart is required.
+    ///
+    /// PORT: the tree artifacts among the headers are expanded through Skyframe
+    /// (`IncludeScanningHeaderDataHelper.handleTreeArtifacts` with the environment for
+    /// discovering inputs), which the execution context does not give: a tree artifact header
+    /// is `unported!`.
+    // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:300 CcCompilationContext.createIncludeScanningHeaderData
+    pub fn create_include_scanning_header_data(
+        &self,
+        use_pic: bool,
+        create_modular_headers: bool,
+    ) -> Option<IncludeScanningHeaderDataBuilder> {
+        let header_info = self.get_header_info();
+        let transitive_header_infos = header_info.get_transitive_collection();
+        let mut tree_artifacts: Vec<Artifact> = Vec::new();
+        let mut path_to_legal_artifact: HashMap<PathFragment, Artifact> =
+            HashMap::with_capacity(transitive_header_infos.len());
+        let mut modular_headers: HashSet<Artifact> =
+            HashSet::with_capacity(transitive_header_infos.len());
+        for transitive_header_info in &transitive_header_infos {
+            let is_module =
+                create_modular_headers && transitive_header_info.get_module(use_pic).is_some();
+            handle_headers_for_include_scanning(
+                &transitive_header_info.modular_public_headers,
+                &mut path_to_legal_artifact,
+                &mut tree_artifacts,
+                is_module,
+                Some(&mut modular_headers),
+            );
+            handle_headers_for_include_scanning(
+                &transitive_header_info.modular_private_headers,
+                &mut path_to_legal_artifact,
+                &mut tree_artifacts,
+                is_module,
+                Some(&mut modular_headers),
+            );
+            handle_headers_for_include_scanning(
+                &transitive_header_info.separate_module_headers,
+                &mut path_to_legal_artifact,
+                &mut tree_artifacts,
+                is_module,
+                Some(&mut modular_headers),
+            );
+            handle_headers_for_include_scanning(
+                &transitive_header_info.textual_headers,
+                &mut path_to_legal_artifact,
+                &mut tree_artifacts,
+                /* is_module= */ false,
+                None,
+            );
+        }
+        if !handle_tree_artifacts(&mut path_to_legal_artifact, &tree_artifacts) {
+            return None;
+        }
+        remove_artifacts_from_set(&mut modular_headers, &header_info.modular_public_headers);
+        remove_artifacts_from_set(&mut modular_headers, &header_info.modular_private_headers);
+        remove_artifacts_from_set(&mut modular_headers, &header_info.textual_headers);
+        remove_artifacts_from_set(&mut modular_headers, &header_info.separate_module_headers);
+        Some(IncludeScanningHeaderDataBuilder::new(
+            path_to_legal_artifact,
+            modular_headers,
+        ))
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:506 CcCompilationContext.getHeaderModuleSrcs
+    pub fn get_header_module_srcs(&self, separate_module: bool) -> Vec<Artifact> {
+        let header_info = self.get_header_info();
+        if separate_module {
+            return header_info.separate_module_headers.clone();
+        }
+        let mut set: IndexSet<Artifact> = IndexSet::new();
+        set.extend(header_info.modular_public_headers.iter().cloned());
+        set.extend(header_info.modular_private_headers.iter().cloned());
+        set.extend(header_info.textual_headers.iter().cloned());
+        set.extend(header_info.separate_module_headers.iter().cloned());
+        set.into_iter().collect()
+    }
+}
+
+// Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:222 IncludeScanningHeaderDataHelper.handleArtifact
+fn handle_artifact(
+    artifact: &Artifact,
+    path_to_legal_artifact: &mut HashMap<PathFragment, Artifact>,
+    tree_artifacts: &mut Vec<Artifact>,
+) {
+    if artifact.is_tree_artifact() {
+        tree_artifacts.push(artifact.clone());
+        return;
+    }
+    path_to_legal_artifact.insert(artifact.get_exec_path().clone(), artifact.clone());
+}
+
+/// Enter the TreeArtifactValues in each TreeArtifact into pathToLegalArtifact. Returns true on
+/// success.
+///
+/// PORT: see [`CcCompilationContext::create_include_scanning_header_data`].
+// Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:240 IncludeScanningHeaderDataHelper.handleTreeArtifacts
+fn handle_tree_artifacts(
+    _path_to_legal_artifact: &mut HashMap<PathFragment, Artifact>,
+    tree_artifacts: &[Artifact],
+) -> bool {
+    if tree_artifacts.is_empty() {
+        return true;
+    }
+    blaze_util::unported!(
+        "IncludeScanningHeaderDataHelper.handleTreeArtifacts",
+        "a tree artifact header needs ActionExecutionContext.getEnvironmentForDiscoveringInputs"
+    )
+}
+
+/// Passes a list of headers to the include scanning helper for handling, and optionally adds
+/// them to a set that tracks modular headers.
+// Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:278 CcCompilationContext.handleHeadersForIncludeScanning
+fn handle_headers_for_include_scanning(
+    headers: &[Artifact],
+    path_to_legal_artifact: &mut HashMap<PathFragment, Artifact>,
+    tree_artifacts: &mut Vec<Artifact>,
+    is_module: bool,
+    mut modular_headers: Option<&mut HashSet<Artifact>>,
+) {
+    for a in headers {
+        handle_artifact(a, path_to_legal_artifact, tree_artifacts);
+        if is_module {
+            modular_headers
+                .as_deref_mut()
+                .unwrap_or_else(|| panic!("NullPointerException: modularHeaders"))
+                .insert(a.clone());
+        }
+    }
+}
+
+// Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:437 CcCompilationContext.removeArtifactsFromSet
+fn remove_artifacts_from_set(set: &mut HashSet<Artifact>, artifacts: &[Artifact]) {
+    // Not using iterators here as the resulting overhead is significant in profiles. Do not use
+    // Iterables.removeAll() or Set.removeAll() here as with the given container sizes, that
+    // needlessly deteriorates to a quadratic algorithm.
+    for artifact in artifacts {
+        set.remove(artifact);
     }
 }
 

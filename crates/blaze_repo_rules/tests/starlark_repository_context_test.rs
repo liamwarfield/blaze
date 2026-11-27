@@ -96,11 +96,12 @@ impl blaze_repo_rules::repository::remote_helpers::RepositoryRemoteExecutor
         execution_properties: &indexmap::IndexMap<String, String>,
         environment: &indexmap::IndexMap<String, String>,
         working_directory: Option<&str>,
-        timeout: std::time::Duration,
+        timeout: blaze_util::java_duration::JavaDuration,
     ) -> std::io::Result<blaze_repo_rules::repository::remote_helpers::ExecutionResult> {
         self.calls.lock().unwrap().push(format!(
-            "{arguments:?} {:?} {execution_properties:?} {environment:?} {working_directory:?} {timeout:?}",
-            input_files.keys().collect::<Vec<_>>()
+            "{arguments:?} {:?} {execution_properties:?} {environment:?} {working_directory:?} {}s",
+            input_files.keys().collect::<Vec<_>>(),
+            timeout.to_seconds()
         ));
         Ok(
             blaze_repo_rules::repository::remote_helpers::ExecutionResult::new(

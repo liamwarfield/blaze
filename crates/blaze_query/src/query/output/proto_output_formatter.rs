@@ -113,7 +113,10 @@ pub struct ProtoFormatterState {
     include_starlark_rule_env: bool,
     include_attribute_source_aspects: bool,
     hash_function: Option<DigestHashFunction>,
-    rule_class_info_formatter: bool,
+    /// Non-null if and only if --proto:rule_classes option is set: Java's
+    /// `RuleClassInfoFormatter`, the rule class keys already given a `rule_class_info`
+    /// (shared by the converters made from this state).
+    rule_class_info_formatter: Option<Arc<std::sync::Mutex<std::collections::HashSet<String>>>>,
     event_handler: Option<Arc<dyn EventHandler>>,
 }
 
@@ -136,7 +139,7 @@ impl Default for ProtoFormatterState {
             include_starlark_rule_env: true,
             include_attribute_source_aspects: false,
             hash_function: None,
-            rule_class_info_formatter: false,
+            rule_class_info_formatter: None,
             event_handler: None,
         }
     }
@@ -221,7 +224,10 @@ impl StreamedFormatter for ProtoOutputFormatter {
         state.include_attribute_source_aspects = options.proto_include_attribute_source_aspects;
         state.include_starlark_rule_env = options.proto_include_starlark_rule_env;
         state.hash_function = Some(hash_function);
-        state.rule_class_info_formatter = options.proto_rule_classes;
+        // Java: com/google/devtools/build/lib/query2/query/output/ProtoOutputFormatter.java:152 ProtoOutputFormatter.setOptions
+        state.rule_class_info_formatter = options
+            .proto_rule_classes
+            .then(|| Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())));
     }
 
     // Java: com/google/devtools/build/lib/query2/query/output/ProtoOutputFormatter.java:155 ProtoOutputFormatter.setEventHandler
@@ -494,8 +500,8 @@ impl TargetProtoConverter {
                     }
                 }
 
-                if state.rule_class_info_formatter {
-                    blaze_util::unported!("ProtoOutputFormatter.RuleClassInfoFormatter");
+                if let Some(rule_class_keys) = &state.rule_class_info_formatter {
+                    add_rule_class_key_and_info_if_needed(rule_class_keys, &mut rule_pb, rule);
                 }
 
                 target_pb.set_type(TargetDiscriminator::Rule);
@@ -764,6 +770,40 @@ impl TargetProtoConverter {
 
 /// Java `StringEncoding.internalToUnicode(s)` on an owned internal string (the proto fields of
 /// `toTargetProtoBuffer` hold Unicode text).
+/// Adds the rule class key to the rule, and the rule class info the first time the key is
+/// seen (Java `RuleClassInfoFormatter`, whose `ExtractorContext` renders labels with
+/// `LabelRenderer.DEFAULT` and extracts natively defined attributes).
+// Java: com/google/devtools/build/lib/query2/query/output/ProtoOutputFormatter.java:590 ProtoOutputFormatter.RuleClassInfoFormatter.addRuleClassKeyAndInfoIfNeeded
+fn add_rule_class_key_and_info_if_needed(
+    rule_class_keys: &std::sync::Mutex<std::collections::HashSet<String>>,
+    rule_pb: &mut RulePb,
+    rule: &blaze_packages::target::Rule,
+) {
+    let rule_class_key = rule.get_rule_class_object().get_key();
+    rule_pb.rule_class_key = Some(internal_to_unicode(rule_class_key).into_owned());
+    if rule_class_keys
+        .lock()
+        .unwrap()
+        .insert(rule_class_key.to_owned())
+    {
+        // Java: com/google/devtools/build/lib/query2/query/output/ProtoOutputFormatter.java:580 ProtoOutputFormatter.RuleClassInfoFormatter.extractorContext
+        let mut extractor_context =
+            blaze_starlarkdocextract::extractor_context::ExtractorContext::new(
+                blaze_starlarkdocextract::label_renderer::LabelRenderer::default_renderer(),
+            );
+        extractor_context.extract_natively_defined_attrs = true;
+        // TODO(b/368091415): instead of rule.getRuleClass(), we should be using the rule's
+        // public name.
+        rule_pb.rule_class_info = Some(
+            blaze_starlarkdocextract::rule_info_extractor::build_rule_info(
+                &extractor_context,
+                rule.get_rule_class(),
+                rule.get_rule_class_object(),
+            ),
+        );
+    }
+}
+
 fn u(s: String) -> String {
     match internal_to_unicode(&s) {
         Cow::Borrowed(_) => s,

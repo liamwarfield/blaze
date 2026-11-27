@@ -126,3 +126,34 @@ fn base_spawn_get_local_resources_fixed_declaration_keeps_declared_resources() {
     assert_eq!(spawn.get_local_resources().unwrap(), declared_resources());
     assert!(spawn.get_execution_info().contains_key("resources:cpu:4"));
 }
+
+/// `Spawns.getTimeout` keeps a negative `timeout` execution requirement negative
+/// (`Duration.ofSeconds(Integer.parseInt(timeoutStr))`).
+#[test]
+fn get_timeout_negative_stays_negative() {
+    let spawn = spawn(Arc::new(declared_resources()), &[("timeout", "-1")], &[]);
+    assert_eq!(
+        blaze_exec::actions::spawns::get_timeout(&spawn).unwrap(),
+        blaze_util::java_duration::JavaDuration::of_seconds(-1)
+    );
+}
+
+/// `ProcessWrapper.CommandLineBuilder.build`: `--timeout=` and `--kill_delay=` carry
+/// `Duration.toSeconds()`, negative values included.
+#[test]
+fn process_wrapper_negative_timeout_and_kill_delay() {
+    use blaze_exec::actions::{ActionInputRef, BasicActionInput};
+    use blaze_exec::runtime::process_wrapper::ProcessWrapper;
+    use blaze_util::java_duration::JavaDuration;
+    let process_wrapper = ProcessWrapper::new(
+        blaze_vfs::PathFragment::create("/pw"),
+        ActionInputRef::new(BasicActionInput::from_path("/pw")),
+        Some(JavaDuration::of_seconds(-1)),
+        false,
+    );
+    let mut builder = process_wrapper.command_line_builder(vec!["/bin/true".to_string()]);
+    builder.set_timeout(JavaDuration::of_seconds(-1));
+    let args = builder.build();
+    assert!(args.contains(&"--timeout=-1".to_string()), "{args:?}");
+    assert!(args.contains(&"--kill_delay=-1".to_string()), "{args:?}");
+}

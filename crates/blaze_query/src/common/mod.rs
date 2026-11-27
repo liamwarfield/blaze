@@ -4,3 +4,4 @@
 pub mod abstract_blaze_query_environment;
 pub mod query_transitive_package_preloader;
 pub mod query_util_targets;
+pub mod universe_scope;

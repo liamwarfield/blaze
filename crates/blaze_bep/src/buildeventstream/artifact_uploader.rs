@@ -77,6 +77,8 @@ pub struct PathConverterFuture {
 enum FutureInner {
     Done(UploadResult),
     Pending(mpsc::Receiver<UploadResult>),
+    /// The result was handed out by [`PathConverterFuture::get_timeout`].
+    Taken,
 }
 
 impl PathConverterFuture {
@@ -117,6 +119,37 @@ impl PathConverterFuture {
         matches!(self.inner, FutureInner::Done(_))
     }
 
+    /// `Future.get(timeout)`: waits at most `timeout` for the upload; `None` when it is still
+    /// running (the future can be asked again). A promise dropped without a value is a
+    /// cancelled future.
+    pub fn get_timeout(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> Option<Result<Box<dyn PathConverter>, UploadFailure>> {
+        match &mut self.inner {
+            FutureInner::Done(_) => {
+                let FutureInner::Done(result) =
+                    std::mem::replace(&mut self.inner, FutureInner::Taken)
+                else {
+                    unreachable!()
+                };
+                Some(result)
+            }
+            FutureInner::Pending(receiver) => match receiver.recv_timeout(timeout) {
+                Ok(result) => {
+                    self.inner = FutureInner::Taken;
+                    Some(result)
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    self.inner = FutureInner::Taken;
+                    Some(Err(UploadFailure::Cancelled))
+                }
+            },
+            FutureInner::Taken => panic!("IllegalStateException: the upload's result was taken"),
+        }
+    }
+
     /// `Future.get()`: waits for the upload. A promise dropped without a value is a cancelled
     /// future.
     pub fn get(self) -> Result<Box<dyn PathConverter>, UploadFailure> {
@@ -126,6 +159,7 @@ impl PathConverterFuture {
                 Ok(result) => result,
                 Err(mpsc::RecvError) => Err(UploadFailure::Cancelled),
             },
+            FutureInner::Taken => panic!("IllegalStateException: the upload's result was taken"),
         }
     }
 }
@@ -186,6 +220,12 @@ pub trait BuildEventArtifactUploader: Send + Sync {
         }
         self.upload(local_file_map)
     }
+
+    // The remote uploads of an event are plain values (`BuildEvent::remote_uploads`), so there
+    // is nothing to wait for.
+    // PORT: skipped, remote uploads are resolved values: BuildEventArtifactUploader.waitForRemoteUploads
+    // `--experimental_stream_log_file_uploads` (the only user of streamed uploads) fails loudly
+    // where it is read (crate blaze_runtime, profiler_init.rs).
 
     /// `ReferenceCounted.retain()`.
     // Java: io/netty/util/ReferenceCounted.java ReferenceCounted.retain

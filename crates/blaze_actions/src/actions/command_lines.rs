@@ -640,6 +640,7 @@ impl CommandLine for SingletonCommandLine {
         let s = match &self.arg {
             // Java: `case PathStrippable ps -> ps.expand(pathMapper::map)`; only derived
             // artifacts and path fragments are PathStrippable.
+            // Java: com/google/devtools/build/lib/actions/Artifact.java:322 Artifact.DerivedArtifact.expand
             SingleArgument::Artifact(a) if a.is_derived_artifact_instance() => path_mapper
                 .map(a.get_exec_path())
                 .get_path_string()

@@ -185,6 +185,9 @@ pub enum FileArtifactValue {
     /// PORT: a local tree without a resolved path keeps [`FileArtifactValue::HashedDirectory`],
     /// which answers every method the port reads as the composite value does.
     // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:224 TreeArtifactCompositeFileArtifactValue
+    /// `equals` compares the digest and the resolved path (`is_remote` is [`NotInEquality`]).
+    // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:236 TreeArtifactValue.TreeArtifactCompositeFileArtifactValue.equals
+    // PORT: skipped, FileArtifactValue is not hashed in Blaze: TreeArtifactCompositeFileArtifactValue.hashCode
     TreeArtifactComposite {
         digest: Vec<u8>,
         is_remote: NotInEquality<bool>,
@@ -263,6 +266,7 @@ impl FileArtifactValue {
             FileArtifactValue::RemoteFile { size, .. } => *size,
             FileArtifactValue::ResolvedSymlink { delegate, .. } => delegate.get_size(),
             FileArtifactValue::Proxy { delegate, .. } => delegate.get_size(),
+            // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:268 TreeArtifactValue.TreeArtifactCompositeFileArtifactValue.getSize
             _ => 0,
         }
     }
@@ -278,6 +282,7 @@ impl FileArtifactValue {
             } => *cell.lock(),
             FileArtifactValue::ResolvedSymlink { delegate, .. } => delegate.get_contents_proxy(),
             FileArtifactValue::Proxy { delegate, .. } => delegate.get_contents_proxy(),
+            // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:262 TreeArtifactValue.TreeArtifactCompositeFileArtifactValue.getContentsProxy
             _ => None,
         }
     }

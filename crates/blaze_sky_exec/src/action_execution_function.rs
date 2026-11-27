@@ -117,6 +117,7 @@ fn action_execution_function_exception(e: ActionExecutionException) -> SkyFuncti
     // distinguish non-transient errors (e.g. compilation error from a deterministic compiler)
     // from transient ones (e.g. IO error).
     // isCatastrophic(): actionException.isCatastrophe().
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1328 ActionExecutionFunction.ActionExecutionFunctionException.isCatastrophic
     let catastrophic = e.is_catastrophe();
     SkyFunctionException {
         catastrophic,
@@ -154,6 +155,14 @@ impl AllInputs {
 /// (Java's separate `lateDiscoveredInputArtifactData`, kept apart only because the action file
 /// system reads `inputArtifactData` concurrently) goes into the same map.
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1190 ActionExecutionFunction.InputDiscoveryState
+// (`getOrCreateLateDiscoveredInputArtifactData` and
+// `inputMetadataProviderIncludingLateDiscoveredInputs` are `input_artifact_data` itself.)
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1264 ActionExecutionFunction.InputDiscoveryState.getOrCreateLateDiscoveredInputArtifactData
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1277 ActionExecutionFunction.InputDiscoveryState.inputMetadataProviderIncludingLateDiscoveredInputs
+// PORT: skipped, a state that lives for one compute call has collected its inputs and artifact data and checked the action cache by construction (Java asks after a restart): InputDiscoveryState.hasCollectedInputs InputDiscoveryState.hasArtifactData InputDiscoveryState.hasCheckedActionCache
+// PORT: skipped, remote analysis caching retrieval stops with unported!: InputDiscoveryState.getRetrievalContext
+// PORT: skipped, debugging text: InputDiscoveryState.toString
+// PORT: skipped, the post-processing is a closure (execute_action's `postprocessing`) and the input check returns its input map directly (check_inputs): ActionPostprocessingImpl.ActionPostprocessingImpl CheckInputResults.CheckInputResults
 struct InputDiscoveryState {
     all_inputs: AllInputs,
     /// Mutable map containing metadata for known artifacts.
@@ -452,6 +461,13 @@ impl ActionExecutionFunction {
             .skyframe_action_executor
             .should_emit_progress_events(action.as_ref())
         {
+            // env = new ProgressEventSuppressingEnvironment(env): the environment switches its
+            // listener (Environment::suppress_progress_events); every other method is the
+            // environment's own.
+            // Java: com/google/devtools/build/lib/skyframe/ProgressEventSuppressingEnvironment.java:37 ProgressEventSuppressingEnvironment.<init>
+            // Java: com/google/devtools/build/lib/skyframe/ProgressEventSuppressingEnvironment.java:43 ProgressEventSuppressingEnvironment.getListener
+            // PORT: skipped, delegations to the same environment: ProgressEventSuppressingEnvironment.getValue ProgressEventSuppressingEnvironment.getValueOrThrow ProgressEventSuppressingEnvironment.valuesMissing ProgressEventSuppressingEnvironment.getValuesAndExceptions ProgressEventSuppressingEnvironment.getTemporaryDirectDeps ProgressEventSuppressingEnvironment.injectVersionForNonHermeticFunction
+            // PORT: skipped, delegations to the same environment: ProgressEventSuppressingEnvironment.registerDependencies ProgressEventSuppressingEnvironment.inErrorBubbling ProgressEventSuppressingEnvironment.dependOnFuture ProgressEventSuppressingEnvironment.getLookupHandleForPreviouslyRequestedDeps ProgressEventSuppressingEnvironment.getState ProgressEventSuppressingEnvironment.getMaxTransitiveSourceVersionSoFar
             env.suppress_progress_events();
         }
 
@@ -754,6 +770,8 @@ impl ActionExecutionFunction {
                 action_start_time,
                 action_lookup_data,
                 &mut |_, _, _, _, _| Ok(()),
+                // state.discoveredInputs != null
+                state.discovered_inputs.is_some(),
             );
         }
 
@@ -858,6 +876,7 @@ impl ActionExecutionFunction {
         }
 
         let input_artifact_data = state.input_artifact_data.clone();
+        let has_discovered_inputs = state.discovered_inputs.is_some();
         executor.execute_action(
             env,
             action,
@@ -885,6 +904,8 @@ impl ActionExecutionFunction {
                     client_env,
                 )
             },
+            // state.discoveredInputs != null (before the postprocessing sets it)
+            has_discovered_inputs,
         )
     }
 
@@ -1635,6 +1656,9 @@ impl<'a> ActionExecutionFunctionExceptionHandler<'a> {
     ) {
         // createLabelCause: a bug report if the input has no owner, then
         // createLabelCauseNullOwnerOk.
+        // PORT: the bug report (BugReporter.sendBugReport, a log line and a crash report in
+        // tests) is not sent.
+        // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1145 ActionExecutionFunction.createLabelCause
         self.missing_artifact_causes
             .push(create_label_cause_null_owner_ok(
                 input,

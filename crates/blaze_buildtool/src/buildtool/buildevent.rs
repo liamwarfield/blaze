@@ -118,6 +118,12 @@ impl TestFilteringCompleteEvent {
     }
 }
 
+// The readers of the targets, the skipped tests and the configurations (TargetSummaryPublisher
+// and AggregatingTestListener) get them from TestAnalyzedEvent and the analysis result.
+// PORT: skipped, read elsewhere (see above): TestFilteringCompleteEvent.getTargets
+// PORT: skipped, read elsewhere (see above): TestFilteringCompleteEvent.getSkippedTests
+// PORT: skipped, read elsewhere (see above): TestFilteringCompleteEvent.getConfigurationForTarget
+
 /// An event that is fired when an execution progress receiver is available.
 // Java: com/google/devtools/build/lib/buildtool/buildevent/ExecutionProgressReceiverAvailableEvent.java:22 ExecutionProgressReceiverAvailableEvent
 pub struct ExecutionProgressReceiverAvailableEvent {

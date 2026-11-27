@@ -163,9 +163,11 @@ impl RecursivePkgValue {
 
 /// The result of processing a directory (Java `ProcessPackageDirectoryResult`).
 // Java: com/google/devtools/build/lib/skyframe/ProcessPackageDirectoryResult.java:27 ProcessPackageDirectoryResult
-struct ProcessPackageDirectoryResult {
-    package_exists: bool,
-    child_deps: Vec<RecursivePkgKey>,
+pub(crate) struct ProcessPackageDirectoryResult {
+    pub(crate) package_exists: bool,
+    /// Java `getChildDeps()`: the subdirectories to visit, as the RECURSIVE_PKG keys whose fields
+    /// are Java's `getSkyKeyForSubdirectory` arguments (callers map them to their own keys).
+    pub(crate) child_deps: Vec<RecursivePkgKey>,
 }
 
 impl ProcessPackageDirectoryResult {
@@ -184,16 +186,16 @@ const SENTINEL_FILE_NAME_FOR_NOT_TRAVERSING_SYMLINKS: &str =
 /// Computes whether a directory is a package and which subdirectories to visit (Java
 /// `ProcessPackageDirectory`, with RECURSIVE_PKG's key transformer).
 // Java: com/google/devtools/build/lib/skyframe/ProcessPackageDirectory.java:56 ProcessPackageDirectory
-struct ProcessPackageDirectory<'a> {
-    directories: &'a LoadingDirectories,
+pub(crate) struct ProcessPackageDirectory<'a> {
+    pub(crate) directories: &'a LoadingDirectories,
 }
 
 /// A processing outcome: a result, or values missing.
-type ProcessResult = Result<Option<ProcessPackageDirectoryResult>, ComputeError>;
+pub(crate) type ProcessResult = Result<Option<ProcessPackageDirectoryResult>, ComputeError>;
 
 impl ProcessPackageDirectory<'_> {
     // Java: com/google/devtools/build/lib/skyframe/ProcessPackageDirectory.java:83 ProcessPackageDirectory.getPackageExistenceAndSubdirDeps
-    fn get_package_existence_and_subdir_deps(
+    pub(crate) fn get_package_existence_and_subdir_deps(
         &self,
         rooted_path: &RootedPath,
         repository_name: &RepositoryName,

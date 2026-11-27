@@ -115,8 +115,8 @@ impl SpawnExecutionContext for SpawnExecutionContextForTesting {
     fn speculating(&self) -> bool {
         false
     }
-    fn get_timeout(&self) -> Duration {
-        self.timeout
+    fn get_timeout(&self) -> blaze_util::java_duration::JavaDuration {
+        self.timeout.into()
     }
     fn get_file_out_err(&self) -> &FileOutErr {
         &self.file_out_err

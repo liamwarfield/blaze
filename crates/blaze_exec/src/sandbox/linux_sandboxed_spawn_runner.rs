@@ -5,10 +5,9 @@ use crate::sandbox::cgroups_info::CgroupsInfo;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::sync::Arc;
-use std::time::Duration;
 
 use blaze_optdefs::misc::sandbox_options::SandboxOptions;
-use blaze_shell::{Command, JavaFile, thread_interrupt};
+use blaze_shell::{Command, JavaFile};
 use blaze_vfs::{FileSystemExt, FileSystemRef, Path, PathFragment, Symlinks};
 use indexmap::{IndexMap, IndexSet};
 use parking_lot::Mutex;
@@ -46,7 +45,7 @@ pub struct LinuxSandboxedSpawnRunner {
     inaccessible_helper_file: Option<Path>,
     inaccessible_helper_dir: Option<Path>,
     local_env_provider: PosixLocalEnvProvider,
-    timeout_kill_delay: Duration,
+    timeout_kill_delay: blaze_util::java_duration::JavaDuration,
     tree_deleter: Arc<dyn TreeDeleter>,
     slash_tmp: Path,
     known_paths_to_mount_under_hermetic_tmp: IndexSet<Path>,
@@ -59,21 +58,24 @@ impl LinuxSandboxedSpawnRunner {
     /// Returns whether the linux sandbox is supported on the local machine by running a small
     /// command in it.
     // Java: com/google/devtools/build/lib/sandbox/LinuxSandboxedSpawnRunner.java:83 LinuxSandboxedSpawnRunner.isSupported
-    pub fn is_supported(cmd_env: &ExecCommandEnvironment) -> bool {
+    ///
+    /// An `Err` is Java's `InterruptedException` (a [`sandbox_helpers::interrupted_error`]); the
+    /// answer is then not remembered.
+    pub fn is_supported(cmd_env: &ExecCommandEnvironment) -> io::Result<bool> {
         // PORT: skipped, the OS.getCurrent() != OS.LINUX check (Linux only).
         if !linux_sandbox_util::is_supported(&cmd_env.bin_tools) {
-            return false;
+            return Ok(false);
         }
         let linux_sandbox = linux_sandbox_util::get_linux_sandbox(&cmd_env.bin_tools)
             .expect("checked by isSupported");
         let mut map = IS_SUPPORTED_MAP.lock();
         let map = map.get_or_insert_with(HashMap::new);
         if let Some(is_supported) = map.get(linux_sandbox.get_path_string()) {
-            return *is_supported;
+            return Ok(*is_supported);
         }
-        let is_supported = compute_is_supported(cmd_env, &linux_sandbox);
+        let is_supported = compute_is_supported(cmd_env, &linux_sandbox)?;
         map.insert(linux_sandbox.get_path_string().to_string(), is_supported);
-        is_supported
+        Ok(is_supported)
     }
 
     /// Creates a sandboxed spawn runner that uses the `linux-sandbox` tool.
@@ -88,7 +90,7 @@ impl LinuxSandboxedSpawnRunner {
         sandbox_base: Path,
         inaccessible_helper_file: Option<Path>,
         inaccessible_helper_dir: Option<Path>,
-        timeout_kill_delay: Duration,
+        timeout_kill_delay: impl Into<blaze_util::java_duration::JavaDuration>,
         tree_deleter: Arc<dyn TreeDeleter>,
     ) -> LinuxSandboxedSpawnRunner {
         let base = AbstractSandboxSpawnRunner::new(cmd_env);
@@ -117,7 +119,7 @@ impl LinuxSandboxedSpawnRunner {
             sandbox_base,
             inaccessible_helper_file,
             inaccessible_helper_dir,
-            timeout_kill_delay,
+            timeout_kill_delay: timeout_kill_delay.into(),
             local_env_provider: PosixLocalEnvProvider::new(cmd_env.client_env.clone()),
             tree_deleter,
             slash_tmp,
@@ -597,7 +599,10 @@ impl LinuxSandboxedSpawnRunner {
 }
 
 // Java: com/google/devtools/build/lib/sandbox/LinuxSandboxedSpawnRunner.java:103 LinuxSandboxedSpawnRunner.computeIsSupported
-fn compute_is_supported(cmd_env: &ExecCommandEnvironment, linux_sandbox: &Path) -> bool {
+fn compute_is_supported(
+    cmd_env: &ExecCommandEnvironment,
+    linux_sandbox: &Path,
+) -> io::Result<bool> {
     let options = &cmd_env.local_execution_options;
     let linux_sandbox_argv =
         LinuxSandboxCommandLineBuilder::command_line_builder(linux_sandbox.clone())
@@ -615,16 +620,14 @@ fn compute_is_supported(cmd_env: &ExecCommandEnvironment, linux_sandbox: &Path) 
     );
     // PORT: Java streams the output to null streams; it is captured and dropped here.
     match cmd.execute() {
-        Ok(_) => true,
-        Err(e) => {
-            if e.as_command_exception().is_none() {
-                // PORT: Java propagates the InterruptedException; the fixed `is_supported(env) ->
-                // bool` API cannot, so the interrupt is re-asserted and the sandbox reported as
-                // unsupported.
-                thread_interrupt::interrupt_current();
-            }
+        Ok(_) => Ok(true),
+        // The InterruptedException leaves isSupported.
+        Err(e) if e.as_command_exception().is_none() => {
+            Err(sandbox_helpers::interrupted_error(None))
+        }
+        Err(_) => {
             // PORT: skipped, tracing (Java log) ("Checking for linux sandbox support failed: %s").
-            false
+            Ok(false)
         }
     }
 }

@@ -57,12 +57,9 @@ use super::resource_converter::{
     ResourceConverter, host_cpus_supplier, resource_integer_converter,
 };
 
-// Java: com/google/devtools/build/lib/util/TestType.java:48 TestType.isInTest
-/// Whether this process runs under a test (`TEST_TMPDIR` is set), read once.
-pub fn is_in_test() -> bool {
-    static IN_TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    // Java: TestType.getTestTypeFromEnvVars (TestType.java:38)
-    *IN_TEST.get_or_init(|| std::env::var_os("TEST_TMPDIR").is_some())
+/// `TestType.isInTest()`.
+fn is_in_test() -> bool {
+    blaze_util::test_type::TestType::is_in_test()
 }
 
 resource_integer_converter!(

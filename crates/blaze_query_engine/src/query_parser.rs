@@ -305,7 +305,16 @@ impl<'a, T: 'static> QueryParser<'a, T> {
                     let mut args = Vec::new();
                     let mut token_kind = TokenKind::Lparen;
                     let mut args_seen = 0;
-                    for type_ in function.get_argument_types() {
+                    // Java iterates `getArgumentTypes()`, which may be an infinite
+                    // `Iterables.cycle`.
+                    let argument_types = function.get_argument_types();
+                    let argument_types: Box<dyn Iterator<Item = ArgumentType>> =
+                        if function.get_argument_types_cycle() {
+                            Box::new(argument_types.into_iter().cycle())
+                        } else {
+                            Box::new(argument_types.into_iter())
+                        };
+                    for type_ in argument_types {
                         if self.current().kind == TokenKind::Rparen {
                             // Got rparen instead of argument-separating comma.
                             if args_seen >= function.get_mandatory_arguments() {

@@ -279,7 +279,7 @@ fn main() -> ExitCode {
         &env.resource_manager,
         &env.execution_options,
     );
-    if !LinuxSandboxedSpawnRunner::is_supported(&env) {
+    if !LinuxSandboxedSpawnRunner::is_supported(&env).unwrap_or(false) {
         eprintln!("linux-sandbox is not supported here");
         return ExitCode::from(1);
     }
