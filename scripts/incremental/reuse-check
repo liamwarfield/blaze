@@ -2,7 +2,7 @@
 """Checks that a persistent Blaze server reuses its graph for a no-op rebuild.
 
 usage: scripts/incremental/reuse-check help
-       scripts/incremental/reuse-check run [--blaze B] [--keep]
+       scripts/incremental/reuse-check run [--blaze B] [--disk-cache] [--keep]
 
 Writes a small workspace (a genrule that runs in the sandbox, a filegroup) under
 ~/.cache/blaze/work/i3/reuse/ws and runs `build //...` three times on one daemon server
@@ -11,6 +11,10 @@ and third builds must print what Bazel prints for a no-op rebuild on a warm serv
 "INFO: Analyzed 2 targets (0 packages loaded, 0 targets configured)." and
 "INFO: 1 process: 1 internal.", and the server's debug output must contain no line saying the
 kept graph was discarded or not kept. Exit 1 otherwise (the failing lines are printed).
+
+With --disk-cache every build also gets --disk_cache=<dir> and the server runs with
+BLAZE_INCREMENTAL_REMOTE_FAILSAFE=off (the kept graph is used with a cache), which checks the
+remote services for the same kind of cycle (the rewound action synchronizer's graph).
 
 This is the check for the regression of 2026-11-26 (a reference cycle kept the executor's
 evaluator alive, so every daemon command after a build that executed actions rebuilt the
@@ -54,13 +58,18 @@ def main():
         f.write("x\n")
     env = {"HOME": HOME, "PATH": "/usr/bin:/bin", "BLAZE_SERVER_MODE": "daemon",
            "BLAZE_INCREMENTAL_DEBUG": "1"}
+    extra = []
+    if "--disk-cache" in args:
+        env["BLAZE_INCREMENTAL_REMOTE_FAILSAFE"] = "off"
+        extra = ["--disk_cache=" + os.path.join(ROOT, "disk-cache")]
     startup = [blaze, "--output_user_root=" + out_root, "--max_idle_secs=60", "--nohome_rc",
                "--nosystem_rc"]
     failures = []
     try:
         for i in range(3):
             p = subprocess.run(startup + ["build", "--jobs=4", "--color=no", "--curses=no",
-                                          "--repository_cache=" + REPO_CACHE, "//..."],
+                                          "--repository_cache=" + REPO_CACHE] + extra
+                               + ["//..."],
                                cwd=ws, env=env, capture_output=True, timeout=900)
             err = p.stderr.decode("utf-8", "replace")
             lines = [l for l in err.splitlines() if l.startswith("INFO: Analyzed")

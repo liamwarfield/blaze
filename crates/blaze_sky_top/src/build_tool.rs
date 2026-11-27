@@ -76,6 +76,9 @@ pub struct BuildRequest {
     /// `getViewOptions().skipIncompatibleExplicitTargets`.
     // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:349 BuildRequest.getViewOptions
     pub skip_incompatible_explicit_targets: bool,
+    /// `getViewOptions().versionWindowForDirtyNodeGc` (`--version_window_for_dirty_node_gc`).
+    // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:349 BuildRequest.getViewOptions
+    pub version_window_for_dirty_node_gc: i64,
     /// `getOptions(RemoteAnalysisCachingOptions.class)` (`None`: the command has no such
     /// options).
     remote_analysis_caching_options: Option<RemoteAnalysisCachingOptions>,
@@ -187,6 +190,10 @@ impl BuildRequest {
                 .get_options::<AnalysisOptions>()
                 .unwrap_or_else(Options::<AnalysisOptions>::get_defaults)
                 .skip_incompatible_explicit_targets,
+            version_window_for_dirty_node_gc: options
+                .get_options::<AnalysisOptions>()
+                .unwrap_or_else(Options::<AnalysisOptions>::get_defaults)
+                .version_window_for_dirty_node_gc,
             remote_analysis_caching_options: options.get_options::<RemoteAnalysisCachingOptions>(),
             build_request_options: build_options,
             local_test_jobs: options
@@ -391,7 +398,14 @@ impl BuildRequest {
 /// `processRequest`).
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum BuildToolError {
-    /// `BuildFailedException`.
+    /// `BuildFailedException`: its message (empty: `isErrorAlreadyShown()`, a null message in
+    /// Java) and its detailed exit code's failure detail. `isCatastrophic()` travels beside it
+    /// (blaze_runtime `RethrownException::BuildFailed { catastrophic }`).
+    // Java: com/google/devtools/build/lib/actions/BuildFailedException.java:43 BuildFailedException.<init>
+    // Java: com/google/devtools/build/lib/actions/BuildFailedException.java:51 BuildFailedException.<init>
+    // Java: com/google/devtools/build/lib/actions/BuildFailedException.java:62 BuildFailedException.isCatastrophic
+    // Java: com/google/devtools/build/lib/actions/BuildFailedException.java:66 BuildFailedException.isErrorAlreadyShown
+    // Java: com/google/devtools/build/lib/actions/BuildFailedException.java:70 BuildFailedException.getDetailedExitCode
     #[error("{message}")]
     BuildFailed {
         message: String,
@@ -779,6 +793,12 @@ impl<'a> BuildTool<'a> {
             hooks.build_starting(request);
         }
         let result = self.build_targets_try(request);
+        // Delete dirty nodes to ensure that they do not accumulate indefinitely.
+        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:443 BuildTool.buildTargets
+        let version_window = request.version_window_for_dirty_node_gc;
+        if version_window != -1 {
+            self.skyframe_executor.delete_old_nodes(version_window);
+        }
         if let Some(hooks) = self.build_event_hooks {
             hooks.ensure_build_info_posted();
         }

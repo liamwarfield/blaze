@@ -736,11 +736,18 @@ pub fn to_event_location(location: &blaze_starlark::Location) -> blaze_events::L
 /// Java `StarlarkAttributeTransitionProvider` (and `StarlarkExecTransitionProvider`, the
 /// provider of the Starlark exec transition: immutable flag changes allowed, an exec transition
 /// provider).
+// PORT: skipped, a field read in Rust: StarlarkAttributeTransitionProvider.getStarlarkDefinedConfigTransitionForTesting
+// PORT: skipped, no transition caching or deduplication in Blaze (nothing compares transitions): StarlarkAttributeTransitionProvider.hashCode
+// PORT: skipped, no transition caching (as above): StarlarkAttributeTransitionProvider.FunctionSplitTransition.equals, StarlarkAttributeTransitionProvider.FunctionSplitTransition.hashCode
+// PORT: skipped, implied by the type (an attribute transition provider is always a split transition; blaze_packages' TransitionFactory kind): StarlarkAttributeTransitionProvider.transitionType, StarlarkAttributeTransitionProvider.isSplit
+// PORT: skipped, not a Starlark value in Blaze (an attribute's `cfg` is not readable from Starlark): StarlarkAttributeTransitionProvider.repr
 // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAttributeTransitionProvider.java:47 StarlarkAttributeTransitionProvider
 #[derive(Clone, Debug)]
 pub struct StarlarkAttributeTransitionProvider {
     pub starlark_defined_config_transition: Arc<StarlarkDefinedConfigTransition>,
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAttributeTransitionProvider.java:83 StarlarkAttributeTransitionProvider.allowImmutableFlagChanges
     pub allow_immutable_flag_changes: bool,
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAttributeTransitionProvider.java:87 StarlarkAttributeTransitionProvider.isExecTransitionProvider
     pub is_exec_transition_provider: bool,
 }
 

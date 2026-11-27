@@ -154,12 +154,16 @@ impl LoadingSignature {
     }
 }
 
-/// Whether the remote fail safe of `build_evaluator` is on: Blaze-only, `BLAZE_INCREMENTAL_REMOTE_
-/// FAILSAFE=off` in the server's environment turns it off, for the probes that compare the remote
-/// invalidations with the oracle (scripts/incremental/remote-seq).
+/// Whether the remote fail safe of `build_evaluator` is on.
+///
+/// PORT: Blaze-only. In a debug build (`debug_assertions`), `BLAZE_INCREMENTAL_REMOTE_FAILSAFE=off`
+/// in the server's environment turns it off, for the probes that compare the remote invalidations
+/// with the oracle (scripts/incremental/remote-seq); a release build ignores the variable (review
+/// round 2, S2-3).
 fn remote_fail_safe_enabled() -> bool {
     static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
-        std::env::var("BLAZE_INCREMENTAL_REMOTE_FAILSAFE").as_deref() != Ok("off")
+        !(cfg!(debug_assertions)
+            && std::env::var("BLAZE_INCREMENTAL_REMOTE_FAILSAFE").as_deref() == Ok("off"))
     });
     *ON
 }
@@ -229,8 +233,13 @@ fn is_analysis_phase_action_lookup_key(key: &SkyKey) -> bool {
 #[derive(Clone)]
 pub struct IncrementalCommand {
     pub state: Arc<SkyframeIncrementalState>,
-    /// The command's id (`BUILD_ID`); executors of one command share it.
+    /// The command's id (`BUILD_ID`); executors of one command share it. The user can set it
+    /// (`--invocation_id`, `BAZEL_INTERNAL_INVOCATION_ID`), so it never keys the sync.
     pub command_id: String,
+    /// A token the server allocates for each command (one `CommandEnvironment`): the per-command
+    /// sync runs once per command call, as Java's `SequencedSkyframeExecutor.sync` does, keyed on
+    /// this, never on the user's id (review round 2, S1-A).
+    pub command_token: u64,
     /// The command's `TimestampGranularityMonitor`.
     pub tsgm: Arc<TimestampGranularityMonitor>,
     /// `--batch` (startup).
@@ -265,8 +274,8 @@ struct KeptGraph {
     evaluator: Arc<Evaluator>,
     _lease: blaze_util::build_arena::Lease,
     signature: LoadingSignature,
-    /// The command that gave the graph back.
-    command_id: String,
+    /// The command that gave the graph back (its token, see `IncrementalCommand`).
+    command_token: u64,
     /// Whether that command had a remote cache, a disk cache or remote execution (see
     /// [`remote_configured`]).
     remote: bool,
@@ -297,9 +306,9 @@ struct Inner {
     track_incremental_state: bool,
     kept: Option<KeptGraph>,
     /// The command the per-command sync ran for.
-    synced_command: Option<String>,
+    synced_command: Option<u64>,
     /// The command whose outputs were checked (`detectModifiedOutputFiles`).
-    outputs_checked_command: Option<String>,
+    outputs_checked_command: Option<u64>,
     /// `deletedPackages`.
     deleted_packages: HashSet<PackageIdentifier>,
     /// `previousClientEnvironment`.
@@ -327,14 +336,13 @@ struct Inner {
     /// so a graph is never kept with the state of another one.
     generation: u64,
     /// The command `decideKeepIncrementalState` ran for.
-    decided_command: Option<String>,
+    decided_command: Option<u64>,
     /// `SkyframeExecutor.lastExecutionSalt`.
     last_execution_salt: Option<String>,
-    /// `memoizingEvaluator.delete(...)` requests made while no executor holds the graph,
-    /// applied to the graph the next executor reuses (Java's deletions are themselves pending
-    /// until the next evaluation).
-    #[allow(clippy::type_complexity)]
-    pending_deletions: Vec<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+    /// Blaze-only: the evaluator of the current generation while an executor holds it (Java's
+    /// server has one evaluator; a `delete` during a command reaches the graph the command
+    /// evaluates on, review round 2, S2-5).
+    handed_out: Option<std::sync::Weak<Evaluator>>,
 }
 
 impl ExecutorHandle {
@@ -410,7 +418,7 @@ impl SkyframeIncrementalState {
                 generation: 0,
                 decided_command: None,
                 last_execution_salt: None,
-                pending_deletions: Vec::new(),
+                handed_out: None,
             }),
         }
     }
@@ -443,7 +451,7 @@ impl SkyframeIncrementalState {
                     evaluator: Arc::new(stripped),
                     _lease: kept._lease,
                     signature: kept.signature,
-                    command_id: kept.command_id,
+                    command_token: kept.command_token,
                     remote: kept.remote,
                 });
             }
@@ -472,7 +480,7 @@ impl SkyframeIncrementalState {
             evaluator,
             _lease,
             signature,
-            command_id,
+            command_token,
             remote,
         } = kept;
         let evaluator = match Arc::try_unwrap(evaluator) {
@@ -490,16 +498,34 @@ impl SkyframeIncrementalState {
             evaluator,
             _lease,
             signature,
-            command_id,
+            command_token,
             remote,
         });
     }
 
-    /// `memoizingEvaluator.delete(k -> predicate(k.functionName()))` on the server's graph
-    /// (`RemoteOutputChecker.maybeInvalidateSkyframeValues`): applied to the kept graph when the
-    /// next executor reuses it; nothing to do when it builds a new one.
-    pub fn delete_by_function_name(&self, predicate: Arc<dyn Fn(&str) -> bool + Send + Sync>) {
-        self.inner.lock().pending_deletions.push(predicate);
+    /// `memoizingEvaluator.delete(deletePredicate)` on the server's graph: the graph the current
+    /// executor holds (from its next evaluation on, as Java's pending deletions; the graph keeps
+    /// them when it is given back), or else the kept graph (from the next executor's first
+    /// evaluation). Nothing to do when there is neither: a new graph has no nodes.
+    // Java: com/google/devtools/build/skyframe/InMemoryMemoizingEvaluator.java:212 InMemoryMemoizingEvaluator.delete
+    pub fn delete(&self, delete_predicate: &dyn Fn(&SkyKey) -> bool) {
+        let inner = self.inner.lock();
+        if let Some(evaluator) = inner.handed_out.as_ref().and_then(|w| w.upgrade()) {
+            debug("delete: on the graph of the current executor");
+            evaluator.delete(|k, _| delete_predicate(k));
+        } else if let Some(kept) = &inner.kept {
+            debug("delete: on the kept graph");
+            kept.evaluator.delete(|k, _| delete_predicate(k));
+        }
+    }
+
+    /// Records the evaluator built for `handle` (an `Arc` now) as the one a `delete` during the
+    /// command applies to (see [`SkyframeIncrementalState::delete`]).
+    pub fn attach(&self, handle: &ExecutorHandle, evaluator: &Arc<Evaluator>) {
+        let mut inner = self.inner.lock();
+        if handle.generation == inner.generation {
+            inner.handed_out = Some(Arc::downgrade(evaluator));
+        }
     }
 
     /// `SkyframeExecutor.notifyCommandComplete` for the graph kept between commands:
@@ -519,6 +545,17 @@ impl SkyframeIncrementalState {
             .kept
             .as_ref()
             .map(|kept| kept.evaluator.post_logging_stats())
+    }
+
+    /// The kept graph, for a command that reads the server's graph without evaluating on it
+    /// (Java `skyframeExecutor.getEvaluator()` in `config` and `dump`). The caller drops it
+    /// before the command ends (the server then strips the graph it keeps).
+    pub fn kept_evaluator(&self) -> Option<Arc<Evaluator>> {
+        self.inner
+            .lock()
+            .kept
+            .as_ref()
+            .map(|kept| kept.evaluator.clone())
     }
 
     /// Whether a graph is kept for the next command.
@@ -546,6 +583,7 @@ impl SkyframeIncrementalState {
         // A graph an executor holds now is dropped when it is given back (a reset during a
         // command, as `invalidate_repo_directories`'s).
         inner.generation += 1;
+        inner.handed_out = None;
         // skyframeBuildView.reset(): configuration = null, skyframeAnalysisWasDiscarded = false.
         inner.has_configuration = false;
         inner.original_configuration_options = None;
@@ -592,18 +630,24 @@ impl SkyframeIncrementalState {
     ) -> (Evaluator, ExecutorHandle) {
         let state = &command.state;
         let mut inner = state.inner.lock();
-        let first_in_command = inner.synced_command.as_deref() != Some(&command.command_id);
+        let first_in_command = inner.synced_command != Some(command.command_token);
         if first_in_command {
-            inner.synced_command = Some(command.command_id.clone());
-            if inner.decided_command.as_deref() != Some(&command.command_id) {
+            inner.synced_command = Some(command.command_token);
+            if inner.decided_command != Some(command.command_token) {
                 let track = command.track_incremental_state
                     && !(command.batch && command.discard_analysis_cache);
-                Self::decide_keep_incremental_state(state, &mut inner, &command.command_id, track);
+                Self::decide_keep_incremental_state(
+                    state,
+                    &mut inner,
+                    command.command_token,
+                    track,
+                );
             }
         }
         let analyzed = inputs.top_level_build_options.is_some();
         let remote = remote_configured(inputs.options);
         inner.generation += 1;
+        inner.handed_out = None;
         let handle = ExecutorHandle {
             command: command.clone(),
             signature: inputs.signature.clone(),
@@ -624,7 +668,7 @@ impl SkyframeIncrementalState {
             debug("no kept graph");
         }
         let previous = kept.and_then(|kept| {
-            if kept.command_id != command.command_id
+            if kept.command_token != command.command_token
                 && (kept.remote || remote)
                 && remote_fail_safe_enabled()
             {
@@ -666,12 +710,24 @@ impl SkyframeIncrementalState {
             // A new graph: nothing of an earlier command is in it.
             Self::reset_graph_bookkeeping(&mut inner);
             Self::note_new_graph(&mut inner, &inputs, command);
-            drop(inner);
-            let evaluator = builder.build();
-            if first_in_command {
-                Self::diff_awareness_on_new_graph(state, &evaluator, &inputs);
+            if first_in_command && state.mode == KeepGraphMode::Keep {
+                // Java's handleDiffs runs on every graph, also a new one: it evaluates the
+                // ignored subdirectories (new nodes) before it takes the diff awareness's view,
+                // and a first view is EVERYTHING_MODIFIED, so the missing-diff check stats the
+                // nodes just made after the watches exist (review round 2, S1-C).
+                // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3775 SkyframeExecutor.handleDiffs
+                let fallback = builder.clone();
+                let evaluator = builder.build();
+                let evaluator =
+                    match Self::handle_diffs(state, &mut inner, command, evaluator, &inputs) {
+                        Some(evaluator) => evaluator,
+                        None => fallback.build(),
+                    };
+                drop(inner);
+                return (evaluator, handle);
             }
-            return (evaluator, handle);
+            drop(inner);
+            return (builder.build(), handle);
         };
 
         // The sync runs on the executor's evaluator (its functions and its precomputed values
@@ -679,10 +735,6 @@ impl SkyframeIncrementalState {
         // a sync that cannot keep the graph falls back to a new one.
         let fallback = builder.clone();
         let evaluator = builder.build_reusing(previous);
-        for predicate in std::mem::take(&mut inner.pending_deletions) {
-            debug("delete: pending deletion");
-            evaluator.delete(|k, _| predicate(k.function_name().0));
-        }
         if debug_enabled() {
             debug(&format!(
                 "reusing the kept graph: {} nodes",
@@ -712,7 +764,6 @@ impl SkyframeIncrementalState {
     /// The analysis-cache bookkeeping that describes the graph (Java resets it with the graph in
     /// `resetEvaluator`): a new graph starts without it, whatever discarded the old one.
     fn reset_graph_bookkeeping(inner: &mut Inner) {
-        inner.pending_deletions.clear();
         inner.last_execution_salt = None;
         inner.has_configuration = false;
         inner.original_configuration_options = None;
@@ -731,7 +782,7 @@ impl SkyframeIncrementalState {
         inner.main_repo_mapping = None;
         if inputs.executes {
             // Nothing of an earlier build is in the new graph: no output to check.
-            inner.outputs_checked_command = Some(command.command_id.clone());
+            inner.outputs_checked_command = Some(command.command_token);
         }
         if inputs.top_level_build_options.is_some() {
             inner.last_top_level_build_options = inputs.top_level_build_options.clone();
@@ -745,21 +796,21 @@ impl SkyframeIncrementalState {
     /// runtime computed with its warnings (blaze_runtime `CommandEnvironment`); runs for every
     /// command, also one that builds no executor.
     // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:896 CommandEnvironment.decideKeepIncrementalState
-    pub fn decide_keep_incremental_state_for_command(&self, command_id: &str, track: bool) {
+    pub fn decide_keep_incremental_state_for_command(&self, command_token: u64, track: bool) {
         let mut inner = self.inner.lock();
-        if inner.decided_command.as_deref() == Some(command_id) {
+        if inner.decided_command == Some(command_token) {
             return;
         }
-        Self::decide_keep_incremental_state(self, &mut inner, command_id, track);
+        Self::decide_keep_incremental_state(self, &mut inner, command_token, track);
     }
 
     fn decide_keep_incremental_state(
         state: &SkyframeIncrementalState,
         inner: &mut Inner,
-        command_id: &str,
+        command_token: u64,
         track: bool,
     ) {
-        inner.decided_command = Some(command_id.to_string());
+        inner.decided_command = Some(command_token);
         let old_value_of_track_incremental_state = inner.track_incremental_state;
         // First check if the incrementality state should be kept around during the build
         // (`!explicitlyRequestedNoIncrementalData && !implicitlyRequestedNoIncrementalData`,
@@ -775,6 +826,7 @@ impl SkyframeIncrementalState {
             state.diff_awareness.lock().manager.reset();
             inner.kept = None;
             inner.generation += 1;
+            inner.handed_out = None;
             inner.has_configuration = false;
             inner.original_configuration_options = None;
             inner.skyframe_analysis_was_discarded = false;
@@ -867,9 +919,8 @@ impl SkyframeIncrementalState {
         if inputs.top_level_build_options.is_some() {
             inner.last_top_level_build_options = inputs.top_level_build_options.clone();
         }
-        if inputs.executes && inner.outputs_checked_command.as_deref() != Some(&command.command_id)
-        {
-            inner.outputs_checked_command = Some(command.command_id.clone());
+        if inputs.executes && inner.outputs_checked_command != Some(command.command_token) {
+            inner.outputs_checked_command = Some(command.command_token);
             Self::detect_modified_output_files(&evaluator, command, inputs);
         }
         Some(evaluator)
@@ -1063,32 +1114,6 @@ impl SkyframeIncrementalState {
             diffs.push((path_entry, modified_file_set));
         }
         Some(diffs)
-    }
-
-    /// The first command on a new graph: `handleDiffs` asks the diff awareness for its view
-    /// (which starts watching), and the empty graph has nothing to invalidate.
-    fn diff_awareness_on_new_graph(
-        state: &SkyframeIncrementalState,
-        evaluator: &Evaluator,
-        inputs: &SyncInputs<'_>,
-    ) {
-        if state.mode != KeepGraphMode::Keep {
-            return;
-        }
-        let ctx = EvaluationContext {
-            keep_going: false,
-            parallelism: crate::skyframe_executor::DEFAULT_THREAD_COUNT,
-            event_handler: inputs.reporter.clone(),
-            ..EvaluationContext::default()
-        };
-        let mut diff_awareness = state.diff_awareness.lock();
-        let Some(diffs) = Self::get_diffs(state, &mut diff_awareness, evaluator, &ctx, inputs)
-        else {
-            return;
-        };
-        for (_, modified_file_set) in &diffs {
-            diff_awareness.manager.mark_processed(modified_file_set);
-        }
     }
 
     /// The invalidations and injections of the files a complete diff names.
@@ -1346,7 +1371,7 @@ impl SkyframeIncrementalState {
             return;
         }
         if !Self::passes_graph(self, &inner)
-            || inner.synced_command.as_deref() != Some(&handle.command.command_id)
+            || inner.synced_command != Some(handle.command.command_token)
         {
             debug("put_back: graph not kept");
             inner.kept = None;
@@ -1366,7 +1391,7 @@ impl SkyframeIncrementalState {
             evaluator,
             _lease: blaze_util::build_arena::lease(),
             signature: handle.signature,
-            command_id: handle.command.command_id.clone(),
+            command_token: handle.command.command_token,
             remote: handle.remote,
         });
     }

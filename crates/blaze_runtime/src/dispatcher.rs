@@ -1081,6 +1081,9 @@ impl BlazeCommandDispatcher {
         {
             env.get_blaze_workspace().reset_evaluator();
         }
+        // execExclusively's finally, after afterCommand.
+        // Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:891 BlazeCommandDispatcher.execExclusively
+        blaze_util::profiler::memory_profiler::MemoryProfiler::instance().stop();
         // Swallow IOException, as we are already in a finally clause
         let _ = out_err.get_output_stream().flush();
         let _ = out_err.get_error_stream().flush();

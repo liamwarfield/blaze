@@ -333,18 +333,23 @@ impl SuppressingErrorReporter {
 }
 
 impl RuleErrorConsumer for SuppressingErrorReporter {
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:2233 RuleContext.SuppressingErrorReporter.ruleWarning
     fn rule_warning(&self, _message: &str) {}
 
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:2236 RuleContext.SuppressingErrorReporter.ruleError
     fn rule_error(&self, message: &str) {
         self.error_messages.lock().push(message.to_owned());
     }
 
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:2241 RuleContext.SuppressingErrorReporter.attributeWarning
     fn attribute_warning(&self, _attr_name: &str, _message: &str) {}
 
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:2244 RuleContext.SuppressingErrorReporter.attributeError
     fn attribute_error(&self, _attr_name: &str, message: &str) {
         self.error_messages.lock().push(message.to_owned());
     }
 
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:2249 RuleContext.SuppressingErrorReporter.hasErrors
     fn has_errors(&self) -> bool {
         !self.error_messages.lock().is_empty()
     }

@@ -69,6 +69,18 @@ pub fn provider_info(v: Value) -> Option<ProviderInfo> {
 /// strings, tuples of immutables, struct-like values of exported providers with immutable
 /// fields, and values providing [`DeeplyImmutable`].
 pub fn is_immutable(v: Value) -> bool {
+    // Types whose Java class keeps StarlarkValue's default (`isImmutable` false) whether or not
+    // the value is frozen: `RangeList` and `BuiltinFunction` (a global such as `len` is frozen
+    // here).
+    if matches!(v.get_type(), "range" | "builtin_function_or_method") {
+        return false;
+    }
+    // A provider decides by itself: `StarlarkProvider.isImmutable` is `isExported()` (it provides
+    // `DeeplyImmutable` once exported); a `BuiltinProvider` (`struct`, `DefaultInfo`, ...) keeps
+    // the default, false, though it is frozen here.
+    if provider_info(v).is_some() {
+        return v.request_value::<DeeplyImmutable>().is_some();
+    }
     if v.unpack_frozen().is_some() {
         return true;
     }

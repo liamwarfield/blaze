@@ -52,15 +52,14 @@ fn get_graph_from_patterns_evaluation(
 }
 
 // Java: src/test/java/com/google/devtools/build/lib/skyframe/PrepareDepsOfPatternsFunctionTest.java:317 PrepareDepsOfPatternsFunctionTest.createFooAndFoo2
+/// PORT: Java's `genrule`s have an implicit dependency on `@bazel_tools`, which this harness does
+/// not define; `filegroup`s (no implicit dependency) give the same graph shape.
 fn create_foo_and_foo2(setup: &TestSetup, dependent: bool) {
     let dependency_if_any = if dependent { "srcs = [':foo2']," } else { "" };
     file(
         setup,
         "foo/BUILD",
-        &format!(
-            "genrule(name = 'foo',\n{dependency_if_any}\n    outs = ['out.txt'],\n    cmd = 'touch $@')\n\
-             genrule(name = 'foo2',\n    outs = ['out2.txt'],\n    cmd = 'touch $@')\n"
-        ),
+        &format!("filegroup(name = 'foo',\n{dependency_if_any})\nfilegroup(name = 'foo2')\n"),
     );
 }
 
@@ -129,7 +128,7 @@ fn test_dependency_traversal_no_such_package_exception() {
     file(
         &s,
         "foo/BUILD",
-        "genrule(\n    name = \"foo\",\n    srcs = [\"//bar\"],\n    outs = [\"out.txt\"],\n    cmd = \"touch $@\",\n)\n",
+        "filegroup(\n    name = \"foo\",\n    srcs = [\"//bar\"],\n)\n",
     );
     let (graph, _) = get_graph_from_patterns_evaluation(&s, &["//foo"], true);
     assert_valid_value(&graph, &get_key_for_label("//foo:foo"), true);
@@ -144,7 +143,7 @@ fn test_dependency_traversal_no_such_target_exception() {
     file(
         &s,
         "foo/BUILD",
-        "genrule(\n    name = \"foo\",\n    srcs = [\"//bar\"],\n    outs = [\"out.txt\"],\n    cmd = \"touch $@\",\n)\n",
+        "filegroup(\n    name = \"foo\",\n    srcs = [\"//bar\"],\n)\n",
     );
     file(&s, "bar/BUILD", "");
     let (graph, _) = get_graph_from_patterns_evaluation(&s, &["//foo"], true);

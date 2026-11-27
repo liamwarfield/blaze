@@ -111,6 +111,10 @@ impl TransitiveInfoProvider for RequiredConfigFragmentsProvider {
 /// PORT: Java's builder switches from the `ImmutableSet` it was given to a `HashSet` on the
 /// first addition (an allocation optimization; iteration order of the result is then hash
 /// order). Blaze keeps insertion order.
+/// PORT: Java keeps an `ImmutableSet` until a new element is added and then a `HashSet` (a
+/// copy-on-write saving); its iteration order then follows Java hashing, here insertion order.
+/// The only output of these sets, cquery's `--show_config_fragments`, sorts them.
+// PORT: skipped, copy-on-write sets (see above): RequiredConfigFragmentsProvider.Builder.append, RequiredConfigFragmentsProvider.Builder.appendAll
 // Java: com/google/devtools/build/lib/analysis/RequiredConfigFragmentsProvider.java:121 RequiredConfigFragmentsProvider.Builder
 #[derive(Default)]
 pub struct RequiredConfigFragmentsProviderBuilder {
@@ -121,11 +125,13 @@ pub struct RequiredConfigFragmentsProviderBuilder {
 }
 
 impl RequiredConfigFragmentsProviderBuilder {
+    // Java: com/google/devtools/build/lib/analysis/RequiredConfigFragmentsProvider.java:125 RequiredConfigFragmentsProvider.Builder.addOptionsClass
     pub fn add_options_class(&mut self, options_class: &str) -> &mut Self {
         self.options_classes.insert(options_class.to_owned());
         self
     }
 
+    // Java: com/google/devtools/build/lib/analysis/RequiredConfigFragmentsProvider.java:131 RequiredConfigFragmentsProvider.Builder.addOptionsClasses
     pub fn add_options_classes<'a>(
         &mut self,
         classes: impl IntoIterator<Item = &'a str>,
@@ -135,6 +141,7 @@ impl RequiredConfigFragmentsProviderBuilder {
         self
     }
 
+    // Java: com/google/devtools/build/lib/analysis/RequiredConfigFragmentsProvider.java:137 RequiredConfigFragmentsProvider.Builder.addFragmentClasses
     pub fn add_fragment_classes<'a>(
         &mut self,
         classes: impl IntoIterator<Item = &'a str>,
@@ -144,21 +151,25 @@ impl RequiredConfigFragmentsProviderBuilder {
         self
     }
 
+    // Java: com/google/devtools/build/lib/analysis/RequiredConfigFragmentsProvider.java:143 RequiredConfigFragmentsProvider.Builder.addDefine
     pub fn add_define(&mut self, define: &str) -> &mut Self {
         self.defines.insert(define.to_owned());
         self
     }
 
+    // Java: com/google/devtools/build/lib/analysis/RequiredConfigFragmentsProvider.java:149 RequiredConfigFragmentsProvider.Builder.addDefines
     pub fn add_defines<'a>(&mut self, defines: impl IntoIterator<Item = &'a str>) -> &mut Self {
         self.defines.extend(defines.into_iter().map(str::to_owned));
         self
     }
 
+    // Java: com/google/devtools/build/lib/analysis/RequiredConfigFragmentsProvider.java:155 RequiredConfigFragmentsProvider.Builder.addStarlarkOption
     pub fn add_starlark_option(&mut self, option: Label) -> &mut Self {
         self.starlark_options.insert(option);
         self
     }
 
+    // Java: com/google/devtools/build/lib/analysis/RequiredConfigFragmentsProvider.java:161 RequiredConfigFragmentsProvider.Builder.addStarlarkOptions
     pub fn add_starlark_options(&mut self, options: impl IntoIterator<Item = Label>) -> &mut Self {
         self.starlark_options.extend(options);
         self

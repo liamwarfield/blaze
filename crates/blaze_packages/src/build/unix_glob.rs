@@ -97,7 +97,7 @@ fn check_and_split_patterns(patterns: &[String]) -> Result<Vec<Vec<String>>, Bad
 }
 
 /// Checks that `pattern` is a valid glob; returns the error message or `None`.
-// Java: com/google/devtools/build/lib/vfs/UnixGlob.java:157 UnixGlob.checkPatternForError
+// Java: com/google/devtools/build/lib/vfs/UnixGlob.java:170 UnixGlob.checkPatternForError
 pub fn check_pattern_for_error(pattern: &str) -> Option<String> {
     if pattern.is_empty() {
         return Some("pattern cannot be empty".to_owned());
@@ -129,13 +129,13 @@ pub fn matches_segments(pattern: &[String], path: &[String]) -> bool {
 pub type PatternCache = HashMap<String, Regex>;
 
 /// Whether the wildcard `pattern` (one segment: `*`, `?`, `**`) matches `str`.
-// Java: com/google/devtools/build/lib/vfs/UnixGlob.java:194 UnixGlob.matches
+// Java: com/google/devtools/build/lib/vfs/UnixGlob.java:199 UnixGlob.matches
 pub fn matches(pattern: &str, s: &str) -> bool {
     matches_cached(pattern, s, None)
 }
 
 /// Like [`matches`], caching compiled patterns in `pattern_cache`.
-// Java: com/google/devtools/build/lib/vfs/UnixGlob.java:194 UnixGlob.matches
+// Java: com/google/devtools/build/lib/vfs/UnixGlob.java:212 UnixGlob.matches
 pub fn matches_cached(pattern: &str, s: &str, pattern_cache: Option<&mut PatternCache>) -> bool {
     if pattern.is_empty() || s.is_empty() {
         return false;
@@ -293,7 +293,7 @@ fn matches_pattern(
     false
 }
 
-// Java: com/google/devtools/build/lib/vfs/UnixGlob.java:902 UnixGlob.isWildcardFree
+// Java: com/google/devtools/build/lib/vfs/UnixGlob.java:982 UnixGlob.isWildcardFree
 fn is_wildcard_free(pattern: &str) -> bool {
     !pattern.contains('*') && !pattern.contains('?')
 }
@@ -374,20 +374,21 @@ impl UnixGlobBuilder {
         }
     }
 
-    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:340 UnixGlob.Builder.addPattern
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:339 UnixGlob.Builder.addPattern
     pub fn add_pattern(&mut self, pattern: &str) -> &mut Self {
         self.patterns.push(pattern.to_owned());
         self
     }
 
-    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:351 UnixGlob.Builder.addPatterns
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:350 UnixGlob.Builder.addPatterns
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:361 UnixGlob.Builder.addPatterns
     pub fn add_patterns(&mut self, patterns: &[&str]) -> &mut Self {
         self.patterns
             .extend(patterns.iter().map(|p| (*p).to_owned()));
         self
     }
 
-    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:390 UnixGlob.Builder.setPathDiscriminator
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:389 UnixGlob.Builder.setPathDiscriminator
     pub fn set_path_discriminator(
         &mut self,
         path_discriminator: Arc<dyn UnixGlobPathDiscriminator>,
@@ -398,6 +399,9 @@ impl UnixGlobBuilder {
 
     /// Executes the glob; the order of the result is unspecified.
     // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:396 UnixGlob.Builder.glob
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:406 UnixGlob.Builder.globInterruptible
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:101 UnixGlob.globInternal
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:112 UnixGlob.globInternalUninterruptible
     pub fn glob(&self) -> Result<Vec<Path>, UnixGlobError> {
         GlobVisitor::default().glob(
             &self.base,
@@ -408,7 +412,9 @@ impl UnixGlobBuilder {
     }
 
     /// Java `globInterruptibleAndReturnNumGlobTasksForTesting`.
-    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:411 UnixGlob.Builder.globInterruptibleAndReturnNumGlobTasksForTesting
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:410 UnixGlob.Builder.globInterruptibleAndReturnNumGlobTasksForTesting
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:123 UnixGlob.globInternalAndReturnNumGlobTasksForTesting
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:659 UnixGlob.GlobVisitor.getNumGlobTasksForTesting
     pub fn glob_and_return_num_glob_tasks_for_testing(&self) -> Result<u64, UnixGlobError> {
         let mut visitor = GlobVisitor::default();
         visitor.glob(
@@ -420,6 +426,19 @@ impl UnixGlobBuilder {
         Ok(visitor.total_ops)
     }
 }
+
+// The glob runs on the calling thread over a work queue (Java: an executor, or inline when there
+// is none); the queue loop of `GlobVisitor::glob` stands for `enqueue`'s wrapper (a task does not
+// run once an error is recorded) and `decrementAndCheckDone` (the result or the first error when
+// the queue is empty). Results are a set in both; Java's order is the concurrent set's, and every
+// caller (`GlobCache.globUnsorted`) puts them in a `HashSet` and the package sorts them.
+// PORT: an interrupt does not stop a glob (Java's `globInterruptible` waits on the future
+// interruptibly); a glob has no executor to stop, it ends when its queue is empty.
+// PORT: skipped, the synchronous visitor (no future, executor or cancellation): UnixGlob.globAsyncInternal, UnixGlob.setExecutor, UnixGlob.globAsync
+// PORT: skipped, the synchronous visitor (no future, executor or cancellation): UnixGlob.delegate, UnixGlob.setException, UnixGlob.set, UnixGlob.cancel, UnixGlob.markCanceled
+// PORT: skipped, the synchronous visitor (no future, executor or cancellation): UnixGlob.queueTask, UnixGlob.decrementAndCheckDone
+// PORT: skipped, errors and panics: only I/O errors are values in Rust (a panic propagates): UnixGlob.getMostSeriousThrowableSoFar
+// PORT: skipped, the (base, index) tuple of RecursiveGlobTaskContext's set: UnixGlob.equals, UnixGlob.hashCode
 
 /// One top-level glob task's context (Java `GlobVisitor.GlobTaskContext` and
 /// `RecursiveGlobTaskContext`).
@@ -463,7 +482,9 @@ fn is_recursive_pattern(pattern: &str) -> bool {
 }
 
 impl GlobVisitor {
-    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:526 UnixGlob.GlobVisitor.globAsync
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:544 UnixGlob.GlobVisitor.globAsync
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:502 UnixGlob.GlobVisitor.glob
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:518 UnixGlob.GlobVisitor.globUninterruptible
     fn glob(
         &mut self,
         base: &Path,
@@ -539,6 +560,9 @@ impl GlobVisitor {
     }
 
     // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:604 UnixGlob.GlobVisitor.queueGlob
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:699 UnixGlob.GlobVisitor.GlobTaskContext.queueGlob
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:747 UnixGlob.GlobVisitor.RecursiveGlobTaskContext.queueGlob
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:637 UnixGlob.GlobVisitor.enqueue
     // and RecursiveGlobTaskContext.queueGlob (dedupes subtasks).
     fn queue_glob(
         &mut self,
@@ -576,7 +600,7 @@ impl GlobVisitor {
     ///  reallyGlob base []     = { base }
     ///  reallyGlob base [x:xs] = union { reallyGlob(f, xs) | f results "base/x" }
     /// ```
-    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:612 UnixGlob.GlobVisitor.reallyGlob
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:771 UnixGlob.GlobVisitor.reallyGlob
     fn really_glob(
         &mut self,
         contexts: &mut [GlobTaskContext<'_>],
@@ -673,7 +697,7 @@ impl GlobVisitor {
         Ok(())
     }
 
-    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:774 UnixGlob.GlobVisitor.maybeAddResult
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:842 UnixGlob.GlobVisitor.maybeAddResult
     fn maybe_add_result(&mut self, context: &GlobTaskContext<'_>, base: &Path, is_directory: bool) {
         if context
             .path_discriminator
@@ -693,7 +717,7 @@ impl GlobVisitor {
 
     /// Process symlinks asynchronously. If we should used readdir(..., Symlinks.FOLLOW), that
     /// would result in a sequential symlink resolution with many file system implementations.
-    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:834 UnixGlob.GlobVisitor.processSymlink
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:860 UnixGlob.GlobVisitor.processSymlink
     fn process_symlink(
         &mut self,
         contexts: &mut [GlobTaskContext<'_>],
@@ -717,7 +741,7 @@ impl GlobVisitor {
         Ok(())
     }
 
-    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:836 UnixGlob.GlobVisitor.processFileOrDirectory
+    // Java: com/google/devtools/build/lib/vfs/UnixGlob.java:874 UnixGlob.GlobVisitor.processFileOrDirectory
     fn process_file_or_directory(
         &mut self,
         contexts: &mut [GlobTaskContext<'_>],
@@ -1041,13 +1065,69 @@ mod tests {
         fixture().assert_glob_matches(&["foo/bar/wiz/file/*"], &[]);
     }
 
-    #[test]
-    #[ignore = "needs an injectable FileSystem that fails statIfFound (InMemoryFileSystem)"]
-    fn test_io_failure_on_stat() {}
+    /// `FilesystemOps` whose stat or readdir fails as a test asks.
+    struct FailingOps {
+        stat_error: bool,
+        readdir_panics: bool,
+        /// `throwOnReaddir`: a readdir of this path throws `FileNotFoundException(path)`.
+        throw_on_readdir: Option<Path>,
+    }
+
+    impl FilesystemOps for FailingOps {
+        fn stat_if_found(&self, path: &Path) -> io::Result<Option<FileStatus>> {
+            if self.stat_error {
+                return Err(io::Error::other("EIO"));
+            }
+            DirectFilesystemOps.stat_if_found(path)
+        }
+
+        fn readdir(&self, path: &Path) -> io::Result<Vec<Dirent>> {
+            assert!(!self.readdir_panics, "IllegalStateException");
+            if self.throw_on_readdir.as_ref() == Some(path) {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    path.get_path_string().to_string(),
+                ));
+            }
+            DirectFilesystemOps.readdir(path)
+        }
+    }
 
     #[test]
-    #[ignore = "needs a FileSystem that counts readdir calls (InMemoryFileSystem)"]
-    fn test_glob_without_wildcards_does_not_call_readdir() {}
+    fn test_io_failure_on_stat() {
+        let f = fixture();
+        let mut b = UnixGlobBuilder::new(
+            f.tmp_path.clone(),
+            Arc::new(FailingOps {
+                stat_error: true,
+                readdir_panics: true,
+                throw_on_readdir: None,
+            }),
+        );
+        b.add_pattern("foo/bar/wiz/file");
+        match b.glob() {
+            Err(UnixGlobError::Io(e)) => assert_eq!(e.to_string(), "EIO"),
+            other => panic!("expected an IOException, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_glob_without_wildcards_does_not_call_readdir() {
+        let f = fixture();
+        let mut b = UnixGlobBuilder::new(
+            f.tmp_path.clone(),
+            Arc::new(FailingOps {
+                stat_error: false,
+                readdir_panics: true,
+                throw_on_readdir: None,
+            }),
+        );
+        b.add_pattern("foo/bar/wiz/file");
+        assert_eq!(
+            b.glob().unwrap(),
+            vec![f.tmp_path.get_relative_str("foo/bar/wiz/file")]
+        );
+    }
 
     #[test]
     fn test_illegal_patterns() {
@@ -1198,9 +1278,24 @@ mod tests {
         f.assert_glob_matches(&[".*also*"], &["..also.hidden"]);
     }
 
+    /// PORT: Java's file system throws on a readdir of `throwOnReaddir`; the failure is injected
+    /// through `FilesystemOps` here (the glob sees the same error).
     #[test]
-    #[ignore = "needs an injectable FileSystem that fails readdir (InMemoryFileSystem)"]
-    fn test_io_exception() {}
+    fn test_io_exception() {
+        let f = fixture();
+        let throw_on_readdir = f.tmp_path.get_relative_str("throw_on_readdir");
+        throw_on_readdir.create_directory().unwrap();
+        let mut b = UnixGlobBuilder::new(
+            throw_on_readdir.clone(),
+            Arc::new(FailingOps {
+                stat_error: false,
+                readdir_panics: false,
+                throw_on_readdir: Some(throw_on_readdir.clone()),
+            }),
+        );
+        b.add_pattern("**");
+        assert!(matches!(b.glob(), Err(UnixGlobError::Io(_))));
+    }
 
     #[test]
     #[ignore = "Blaze globs on the calling thread; Java's executor interruption does not apply"]

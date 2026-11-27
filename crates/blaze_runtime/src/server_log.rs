@@ -492,9 +492,11 @@ pub fn flush_server_log() {
 // PORT: skipped, Google-internal remote logging: LoggingUtil.getRemoteLogger
 // PORT: skipped, JVM-only (class path scanning, used by docgen only): Classpath.findClasses
 
-/// `LogManager.getLogManager().reset()`: closes the server log.
+/// `LogManager.getLogManager().reset()`: removes the server log's handler from the root logger
+/// and closes it. Later records are dropped (no handler), so nothing reopens the log file: after
+/// `clean --expunge` the output base stays deleted.
 pub fn close() {
-    if let Some(handler) = SERVER_LOG_HANDLER.lock().as_mut() {
+    if let Some(mut handler) = SERVER_LOG_HANDLER.lock().take() {
         handler.close();
     }
 }

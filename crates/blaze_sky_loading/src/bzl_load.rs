@@ -404,6 +404,27 @@ impl BzlLoadFailedException {
     }
 }
 
+// CachedBzlLoadData records the loads of the inlining mode, which never runs at the pin.
+// PORT: skipped, inlining is never enabled at the pin: CachedBzlLoadData.traverse, CachedBzlLoadData.getValue, CachedBzlLoadData.equals, CachedBzlLoadData.hashCode
+// PORT: skipped, inlining is never enabled at the pin: CachedBzlLoadData.addDep, CachedBzlLoadData.addDeps, CachedBzlLoadData.noteException, CachedBzlLoadData.addTransitiveDeps
+// PORT: skipped, inlining is never enabled at the pin: CachedBzlLoadData.setValue, CachedBzlLoadData.setKey, CachedBzlLoadData.build, CachedBzlLoadData.toString
+// PORT: skipped, inlining is never enabled at the pin: CachedBzlLoadDataBuilderFactory.newCachedBzlLoadDataBuilder
+// BzlLoadThreadOwner is the owner of a .bzl thread's SymbolGenerator (identity tokens for
+// providers, rules and aspects defined there); blaze_starlark's ThreadContext generates the tokens
+// and the bzl key is the BzlInitThreadContext's.
+// PORT: skipped, the token owner is the thread context's bzl key (see above); its codec is serialization (ruling 2026-11-19 (1)): BzlLoadThreadOwner.of, BzlLoadThreadOwner.createGenerator, BzlLoadThreadOwner.codec, BzlLoadThreadOwner.getEncodedClass
+// PORT: skipped, the token owner is the thread context's bzl key (see above); its codec is serialization (ruling 2026-11-19 (1)): BzlLoadThreadOwner.serialize, BzlLoadThreadOwner.deserializeDeferred, BzlLoadThreadOwner.getSemanticsFingerprint, BzlLoadThreadOwner.getTransitiveDigest
+// PORT: skipped, the token owner is the thread context's bzl key (see above); its codec is serialization (ruling 2026-11-19 (1)): BzlLoadThreadOwner.call, BzlLoadThreadOwner.setBzlLoadValue
+// Bazel's SkyframeExecutor never enables .bzl inlining (`getBzlLoadFunctionForInliningPackageAndWorkspaceNodes`
+// returns null and nothing overrides it), so the inlining machinery does not run at the pin.
+// PORT: skipped, inlining is never enabled at the pin: BzlLoadFunction.createForInlining, BzlLoadFunction.computeInline, BzlLoadFunction.computeInlineCachedData
+// PORT: skipped, inlining is never enabled at the pin: BzlLoadFunction.computeInlineForCacheMiss, BzlLoadFunction.resetInliningCache, BzlLoadFunction.computeBzlLoadsWithInlining
+// PORT: skipped, inlining is never enabled at the pin: BzlLoadFunction.create, BzlLoadFunction.createChildState, BzlLoadFunction.buildCachedData, BzlLoadFunction.beginLoad
+// PORT: skipped, inlining is never enabled at the pin: BzlLoadFunction.finishLoad, BzlLoadFunction.getEnvironment, BzlLoadFunction.cachedDataBuilder, BzlLoadFunction.reset
+// PORT: skipped, the getter of the regular (non-inlining) path is direct env lookups: BzlLoadFunction.getBzlCompileValue, BzlLoadFunction.doneWithBzlCompileValue
+// PORT: skipped, test-only: BzlLoadFunction.resetInliningCacheAndBuiltinsForTesting
+// PORT: skipped, no caller at the pin: BzlLoadFunction.getLoadsFromStarlarkFiles
+
 // Java: com/google/devtools/build/lib/skyframe/BzlLoadFunction.java:1564 BzlLoadFunction.whileLoadingDep
 fn while_loading_dep(loc: &Location, cause: &BzlLoadFailedException) -> BzlLoadFailedException {
     // Don't chain exception cause, just incorporate the message with a prefix.
@@ -618,6 +639,8 @@ pub fn check_valid_load_label(
 /// the file's package. If any label is malformed, the function reports one or more errors to the
 /// handler and returns `None`.
 // Java: com/google/devtools/build/lib/skyframe/BzlLoadFunction.java:1073 BzlLoadFunction.getLoadLabels
+// Java: com/google/devtools/build/lib/skyframe/BzlLoadFunction.java:1134 BzlLoadFunction.getLoadLabels
+// (the second overload reads the two semantics flags; PackageFunction passes them in)
 pub fn get_load_labels(
     handler: &dyn ExtendedEventHandler,
     loads: &[LoadRequest],
@@ -1211,6 +1234,7 @@ impl BzlLoadFunction {
             return Ok(Ok(None));
         };
         let mut repo_mapping_recorder = LabelSimpleRepoMappingRecorder::new();
+        // Java: com/google/devtools/build/lib/skyframe/BzlLoadFunction.java:1157 BzlLoadFunction.getLoadsFromProgram
         let program_loads = &prog.loads;
         let Some(load_labels) = get_load_labels(
             env.listener(),
@@ -1531,6 +1555,9 @@ impl BzlLoadFunction {
 
     /// Executes the compiled .bzl file defining the module to be loaded.
     // Java: com/google/devtools/build/lib/skyframe/BzlLoadFunction.java:1378 BzlLoadFunction.executeBzlFile
+    // Java: com/google/devtools/build/lib/skyframe/BzlLoadFunction.java:1419 BzlLoadFunction.execAndExport
+    // (the post-assign export hook is starlark-rust's `export_as`, called on each top-level
+    // assignment)
     fn execute_bzl_file(
         prog: CompiledFile,
         key: &BzlLoadKey,

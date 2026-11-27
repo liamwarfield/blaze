@@ -37,12 +37,16 @@ impl ContainingPackageLookupValue {
 
     /// Returns whether there is a containing package.
     // Java: com/google/devtools/build/lib/skyframe/ContainingPackageLookupValue.java:41 ContainingPackageLookupValue.hasContainingPackage
+    // Java: com/google/devtools/build/lib/skyframe/ContainingPackageLookupValue.java:195 ContainingPackageLookupValue.ContainingPackage.hasContainingPackage
+    // Java: com/google/devtools/build/lib/skyframe/ContainingPackageLookupValue.java:158 ContainingPackageLookupValue.NoContainingPackage.hasContainingPackage
     pub fn has_containing_package(&self) -> bool {
         matches!(self, ContainingPackageLookupValue::ContainingPackage { .. })
     }
 
     /// If there is a containing package, returns its name.
     // Java: com/google/devtools/build/lib/skyframe/ContainingPackageLookupValue.java:44 ContainingPackageLookupValue.getContainingPackageName
+    // Java: com/google/devtools/build/lib/skyframe/ContainingPackageLookupValue.java:200 ContainingPackageLookupValue.ContainingPackage.getContainingPackageName
+    // Java: com/google/devtools/build/lib/skyframe/ContainingPackageLookupValue.java:163 ContainingPackageLookupValue.NoContainingPackage.getContainingPackageName
     pub fn get_containing_package_name(&self) -> &PackageIdentifier {
         match self {
             ContainingPackageLookupValue::ContainingPackage {
@@ -54,6 +58,8 @@ impl ContainingPackageLookupValue {
 
     /// If there is a containing package, returns its package root.
     // Java: com/google/devtools/build/lib/skyframe/ContainingPackageLookupValue.java:47 ContainingPackageLookupValue.getContainingPackageRoot
+    // Java: com/google/devtools/build/lib/skyframe/ContainingPackageLookupValue.java:205 ContainingPackageLookupValue.ContainingPackage.getContainingPackageRoot
+    // Java: com/google/devtools/build/lib/skyframe/ContainingPackageLookupValue.java:168 ContainingPackageLookupValue.NoContainingPackage.getContainingPackageRoot
     pub fn get_containing_package_root(&self) -> &Root {
         match self {
             ContainingPackageLookupValue::ContainingPackage {
@@ -67,6 +73,7 @@ impl ContainingPackageLookupValue {
     /// If there is not a containing package, returns a reason why (this is usually the reason the
     /// outer-most directory isn't a package).
     // Java: com/google/devtools/build/lib/skyframe/ContainingPackageLookupValue.java:53 ContainingPackageLookupValue.getReasonForNoContainingPackage
+    // Java: com/google/devtools/build/lib/skyframe/ContainingPackageLookupValue.java:178 ContainingPackageLookupValue.NoContainingPackage.getReasonForNoContainingPackage
     pub fn get_reason_for_no_containing_package(&self) -> Option<&str> {
         match self {
             ContainingPackageLookupValue::NoContainingPackage { reason } => reason.as_deref(),

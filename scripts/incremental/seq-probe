@@ -1,0 +1,359 @@
+#!/usr/bin/env python3
+"""Command sequences on a persistent server, oracle against Blaze (I3 review rounds 1 and 2).
+
+usage: scripts/incremental/seq-probe help
+       scripts/incremental/seq-probe list [--group G]
+       scripts/incremental/seq-probe run [--blaze B] [--oracle O] [--group G] [--only NAME[,NAME]]
+                                         [--port P] [--failsafe on|off] [--keep]
+
+Each sequence runs first with the oracle (~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64), then
+with Blaze (BLAZE_SERVER_MODE=daemon), each side on its own workspace and output user root under
+~/.cache/blaze/work/i3/seq/<sequence>/<side>/ and, for the sequences that use a gRPC cache or
+executor, its own fresh remote worker (scripts/remote/worker start i3-<side> PORT, stopped right
+after the side's sequence). One server per side and sequence; it is shut down at the end.
+
+Per command step it records the exit code, the "INFO: Analyzed" line, the "INFO: ... process"
+line and the contents of the sequence's output files (first line, or "-" when missing); per
+file-system step its name. It prints one line per step, with both sides where they differ.
+Exit 1 if any step differs.
+
+--failsafe off runs Blaze with BLAZE_INCREMENTAL_REMOTE_FAILSAFE=off (a debug build's switch:
+the kept graph is used with remote options); the default is on (the product's behaviour).
+
+The workspace: //lib:lib (a genrule writing lib.out), //app:app (a genrule reading //lib and
+app/in.txt), //app:bad (a genrule that fails), //t:t (a Starlark test rule whose runfiles hold
+app.out), //t:tree (a tree artifact), //t:tool (an executable genrule), and a/BUILD with //a:a
+reading a/sub/x.txt (for the --watchfs sequences). Builds get --jobs=4 --color=no --curses=no
+--repository_cache=~/.cache/blaze/repo-cache; startup options --max_idle_secs=60 --nohome_rc
+--nosystem_rc. Directories are deleted at the end unless --keep.
+
+Groups (`list` prints the steps): remote (review round 1 S1-1, S1-2 and round 2 section 2, items
+1-8), id (round 2 S1-A), watchfs (round 2 S1-B).
+"""
+
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+HOME = os.path.expanduser("~")
+ROOT = os.path.join(HOME, ".cache/blaze/work/i3/seq")
+ORACLE = os.path.join(HOME, ".cache/blaze/oracle/bazel-9.3.2-linux-x86_64")
+REPO_CACHE = os.path.join(HOME, ".cache/blaze/repo-cache")
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+WORKER = os.path.join(REPO, "scripts/remote/worker")
+
+LIB = "bazel-bin/lib/lib.out"
+APP = "bazel-bin/app/app.out"
+TREE = "bazel-bin/t/tree/f.txt"
+RUNFILE = "bazel-bin/t/t.runfiles/_main/app/app.out"
+ID = "--invocation_id=11111111-1111-1111-1111-111111111111"
+
+TEST_BZL = '''def _t(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(out, "#!/bin/sh\\ncat app/app.out\\n", is_executable = True)
+    return [DefaultInfo(executable = out, runfiles = ctx.runfiles(files = ctx.files.data))]
+
+t_test = rule(_t, test = True, attrs = {"data": attr.label_list(allow_files = True)})
+
+def _tree(ctx):
+    d = ctx.actions.declare_directory(ctx.label.name)
+    ctx.actions.run_shell(
+        inputs = ctx.files.srcs,
+        outputs = [d],
+        command = "cat %s > %s/f.txt" % (" ".join([f.path for f in ctx.files.srcs]), d.path),
+    )
+    return [DefaultInfo(files = depset([d]))]
+
+tree = rule(_tree, attrs = {"srcs": attr.label_list(allow_files = True)})
+'''
+
+
+def write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+
+
+def setup_workspace(ws):
+    write(os.path.join(ws, "MODULE.bazel"), "")
+    write(os.path.join(ws, "lib", "BUILD"),
+          'genrule(name = "lib", outs = ["lib.out"], cmd = "echo lib-contents > $@",\n'
+          '        visibility = ["//visibility:public"])\n')
+    write(os.path.join(ws, "app", "in.txt"), "in-1\n")
+    write(os.path.join(ws, "app", "BUILD"),
+          'genrule(name = "app", srcs = ["//lib", "in.txt"], outs = ["app.out"],\n'
+          '        cmd = "cat $(location //lib) $(location in.txt) > $@; echo app >> $@",\n'
+          '        visibility = ["//visibility:public"])\n'
+          'genrule(name = "bad", outs = ["bad.out"], cmd = "exit 1")\n')
+    write(os.path.join(ws, "t", "defs.bzl"), TEST_BZL)
+    write(os.path.join(ws, "t", "BUILD"),
+          'load(":defs.bzl", "t_test", "tree")\n'
+          't_test(name = "t", data = ["//app"])\n'
+          'tree(name = "tree", srcs = ["//lib"])\n'
+          'genrule(name = "tool", outs = ["tool.sh"], executable = True,\n'
+          '        cmd = "printf \'#!/bin/sh\\\\necho tool\\\\n\' > $@")\n')
+    write(os.path.join(ws, "a", "BUILD"),
+          'genrule(name = "a", srcs = ["sub/x.txt"], outs = ["a.out"], cmd = "cp $< $@")\n')
+    write(os.path.join(ws, "a", "sub", "x.txt"), "x-1\n")
+
+
+# Flags with placeholders: {disk} the side's disk cache, {grpc} the side's worker.
+DISK = "--disk_cache={disk}"
+RCACHE = "--remote_cache={grpc}"
+REXEC = "--remote_executor={grpc}"
+
+
+def s1_1(cache, target="//lib", out=LIB, extra=()):
+    c = [cache] + list(extra)
+    return [("build", c + ["//app"]), ("clean", []), ("build", c + ["//app"]),
+            ("build", c + [target]), ("rm", [out]), ("build", c + [target])]
+
+
+def s1_1b(cache, extra=()):
+    c = [cache] + list(extra)
+    return [("build", c + ["//app"]), ("clean", []),
+            ("build", c + ["--remote_download_minimal", "//app"]),
+            ("build", c + ["--remote_download_toplevel", "//app"])]
+
+
+def s1_2(extra=()):
+    c = [REXEC] + list(extra)
+    return [("build", c + ["--remote_default_exec_properties=image=a", "//app"]),
+            ("build", c + ["--remote_default_exec_properties=image=a", "//app"]),
+            ("build", c + ["--remote_default_exec_properties=image=b", "//app"])]
+
+
+WATCHFS = ["--watchfs", "--", "//...", "-//app:bad"]
+
+
+def watchfs_prefix():
+    w = WATCHFS
+    return [("build", w), ("build", w), ("mv", ["a", "b"]), ("build", w)]
+
+
+# name: (group, files to record, steps, env for both sides)
+SEQUENCES = {
+    # Round 1 S1-1, S1-2; round 2 section 2 item 1.
+    "s1-1-grpc": ("remote", [LIB, APP], s1_1(RCACHE), {}),
+    "s1-1-disk": ("remote", [LIB, APP], s1_1(DISK), {}),
+    "s1-1b-grpc": ("remote", [LIB, APP], s1_1b(RCACHE), {}),
+    "s1-1b-disk": ("remote", [LIB, APP], s1_1b(DISK), {}),
+    "s1-2": ("remote", [LIB, APP], s1_2(), {}),
+    # Item 2: the salt without a cache (round 2 S2-2).
+    "salt-local": ("remote", [APP], [
+        ("build", ["--remote_default_exec_properties=a=1", "//app"]),
+        ("build", ["--remote_default_exec_properties=a=1", "//app"]),
+        ("build", ["--remote_default_exec_properties=a=2", "//app"])], {}),
+    # Item 3: cache on and off.
+    "cache-onoff-disk": ("remote", [LIB, APP], [
+        ("build", ["//app"]), ("build", [DISK, "//app"]), ("build", ["//app"])], {}),
+    "cache-onoff-grpc": ("remote", [LIB, APP], [
+        ("build", ["//app"]), ("build", [RCACHE, "//app"]), ("build", ["//app"])], {}),
+    # Item 4: command mode.
+    "mode-test": ("remote", [LIB, APP], [
+        ("build", [RCACHE, "--remote_download_toplevel", "//t:t"]),
+        ("test", [RCACHE, "--remote_download_toplevel", "//t:t"]),
+        ("build", [RCACHE, "--remote_download_toplevel", "//t:t"])], {}),
+    "mode-run": ("remote", [LIB, APP], [
+        ("build", [RCACHE, "--remote_download_toplevel", "//t:tool"]),
+        ("run", [RCACHE, "--remote_download_toplevel", "//t:tool"]),
+        ("build", [RCACHE, "--remote_download_toplevel", "//t:tool"])], {}),
+    # Item 5: a command without remote options in between.
+    "no-remote-between": ("remote", [LIB, APP], [
+        ("build", [RCACHE, "--remote_download_minimal", "//app"]),
+        ("query", ["//..."]),
+        ("build", [RCACHE, "--remote_download_toplevel", "//app"])], {}),
+    # Item 6: tree artifact, runfiles tree, a top-level output removed twice.
+    "s1-1-tree": ("remote", [TREE], s1_1(RCACHE, "//t:tree", TREE), {}),
+    "s1-1-runfiles": ("remote", [APP, RUNFILE], s1_1(RCACHE, "//t:t", RUNFILE), {}),
+    "s1-1-twice": ("remote", [LIB, APP],
+                   s1_1(RCACHE) + [("rm", [LIB]), ("build", [RCACHE, "//lib"])], {}),
+    # Item 7: a failed remote build between two good ones.
+    "failed-between": ("remote", [LIB, APP], [
+        ("build", [RCACHE, "//app"]), ("build", [RCACHE, "//app:bad"]),
+        ("build", [RCACHE, "//app"])], {}),
+    # Item 8: the same --invocation_id on every command.
+    "s1-1-grpc-same-id": ("remote", [LIB, APP], s1_1(RCACHE, extra=[ID]), {}),
+    "s1-2-same-id": ("remote", [LIB, APP], s1_2(extra=[ID]), {}),
+    # Round 2 S1-A.
+    "id-reuse": ("id", [APP], [
+        ("build", [ID, "//app"]), ("edit", ["app/in.txt", "in-2\n"]), ("build", [ID, "//app"])],
+        {}),
+    "id-reuse-env": ("id", [APP], [
+        ("build", ["//app"]), ("edit", ["app/in.txt", "in-2\n"]), ("build", ["//app"])],
+        {"BAZEL_INTERNAL_INVOCATION_ID": "22222222-2222-2222-2222-222222222222"}),
+    "id-reuse-disk": ("id", [LIB, APP], [
+        ("build", [ID, "//app"]), ("build", [ID, DISK, "//app"]),
+        ("edit", ["app/in.txt", "in-2\n"]), ("build", [ID, "//app"])], {}),
+    "id-reuse-notrack": ("id", [APP], [
+        ("build", [ID, "//app"]), ("build", [ID, "--notrack_incremental_state", "//app"]),
+        ("edit", ["app/in.txt", "in-2\n"]), ("build", [ID, "//app"])], {}),
+    # Round 2 S1-B.
+    "watchfs-stale": ("watchfs", ["bazel-bin/b/a.out"], watchfs_prefix() + [
+        ("mkdir", ["a"]), ("build", WATCHFS),
+        ("mkdir", ["a/sub"]), ("rmdir", ["a/sub"]), ("build", WATCHFS),
+        ("edit", ["b/sub/x.txt", "x-2\n"]), ("build", WATCHFS)], {}),
+    "watchfs-crash": ("watchfs", ["bazel-bin/b/a.out"], watchfs_prefix() + [
+        ("mkdir", ["a/sub"]), ("build", WATCHFS),
+        ("edit", ["b/sub/x.txt", "x-2\n"]), ("build", WATCHFS)], {}),
+    "watchfs-recreate": ("watchfs", ["bazel-bin/a/a.out", "bazel-bin/b/a.out"],
+                         watchfs_prefix() + [
+        ("mv", ["b", "a"]), ("build", WATCHFS),
+        ("edit", ["a/sub/x.txt", "x-3\n"]), ("build", WATCHFS)], {}),
+}
+
+COMMANDS = ("build", "test", "run", "query", "clean")
+
+
+def uses_grpc(steps):
+    return any("{grpc}" in a for _, args in steps for a in args)
+
+
+def remove(path):
+    if os.path.isdir(path):
+        subprocess.run(["chmod", "-R", "u+w", path], capture_output=True)
+        shutil.rmtree(path)
+
+
+def first_line(path):
+    if not os.path.exists(path):
+        return "-"
+    try:
+        with open(path, errors="replace") as f:
+            return f.read().strip().replace("\n", "/")
+    except IsADirectoryError:
+        return "<dir>"
+
+
+def run_side(name, side, binary, port, failsafe):
+    _, files, steps, seq_env = SEQUENCES[name]
+    root = os.path.join(ROOT, name, side)
+    remove(root)
+    ws = os.path.join(root, "ws")
+    out_root = os.path.join(root, "ur")
+    setup_workspace(ws)
+    env = {"HOME": HOME, "PATH": "/usr/bin:/bin"}
+    env.update(seq_env)
+    if side == "blaze":
+        env["BLAZE_SERVER_MODE"] = "daemon"
+        if failsafe == "off":
+            env["BLAZE_INCREMENTAL_REMOTE_FAILSAFE"] = "off"
+    startup = [binary, "--output_user_root=" + out_root, "--max_idle_secs=60", "--nohome_rc",
+               "--nosystem_rc"]
+    grpc = uses_grpc(steps)
+    worker = "i3-" + side
+    subst = {"disk": os.path.join(root, "disk-cache"), "grpc": "grpc://localhost:%d" % port}
+    rows = []
+    if grpc:
+        subprocess.run([WORKER, "start", worker, str(port)], check=True, capture_output=True)
+    try:
+        for step, args in steps:
+            if step not in COMMANDS:
+                p = [os.path.join(ws, a) for a in args]
+                if step == "rm":
+                    for f in p:
+                        if os.path.lexists(f):
+                            os.chmod(f, 0o644)
+                            os.remove(f)
+                elif step == "edit":
+                    write(p[0], args[1])
+                elif step == "mv":
+                    os.rename(p[0], p[1])
+                elif step == "mkdir":
+                    os.makedirs(p[0])
+                elif step == "rmdir":
+                    os.rmdir(p[0])
+                else:
+                    raise ValueError(step)
+                # Let the file system watchers deliver their events.
+                time.sleep(1)
+                rows.append(("%s %s" % (step, " ".join(args[:1] if step == "edit" else args)),
+                             ""))
+                continue
+            cmd = startup + [step]
+            args = [a.format(**subst) for a in args]
+            if step != "clean":
+                cmd += ["--color=no", "--curses=no"]
+            if step in ("build", "test", "run"):
+                cmd += ["--jobs=4", "--repository_cache=" + REPO_CACHE]
+            p = subprocess.run(cmd + args, cwd=ws, env=env, capture_output=True, timeout=900)
+            err = p.stderr.decode("utf-8", "replace")
+            procs = next((l for l in err.splitlines()
+                          if l.startswith("INFO:") and " process" in l), "")
+            analyzed = next((l for l in err.splitlines() if l.startswith("INFO: Analyzed")), "")
+            present = " ".join("%s=%s" % (os.path.basename(f) if f != RUNFILE else "runfile",
+                                          first_line(os.path.join(ws, f))) for f in files)
+            shown = [a for a in args if not a.startswith(("--disk_cache=", "--remote_cache=",
+                                                          "--remote_executor="))]
+            rows.append(("%s %s" % (step, " ".join(shown)),
+                         "exit=%d %s | %s | %s" % (p.returncode, present, analyzed, procs)))
+            if p.returncode != 0:
+                tail = [l for l in err.splitlines() if "ERROR" in l or "FATAL" in l
+                        or "panicked" in l][:3]
+                rows.append(("  stderr", " / ".join(tail)))
+    finally:
+        subprocess.run(startup + ["shutdown"], cwd=ws, env=env, capture_output=True, timeout=120)
+        for d in os.listdir(out_root) if os.path.isdir(out_root) else []:
+            try:
+                pid = int(open(os.path.join(out_root, d, "server", "server.pid.txt")).read())
+                os.kill(pid, signal.SIGKILL)
+            except Exception:
+                pass
+        if grpc:
+            subprocess.run([WORKER, "stop", worker], capture_output=True)
+    return rows
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("help", "-h", "--help"):
+        print(__doc__)
+        return 0
+    args = sys.argv[2:]
+
+    def opt(name, default):
+        return args[args.index(name) + 1] if name in args else default
+
+    group = opt("--group", None)
+    only = opt("--only", None)
+    names = [n for n, s in SEQUENCES.items()
+             if (not group or s[0] == group) and (not only or n in only.split(","))]
+    if sys.argv[1] == "list":
+        for n in names:
+            print("%s [%s]: %s" % (n, SEQUENCES[n][0], "; ".join(
+                s + " " + " ".join(a).replace("\n", "\\n") for s, a in SEQUENCES[n][2])))
+        return 0
+    if sys.argv[1] != "run":
+        print(__doc__)
+        return 2
+    blaze = opt("--blaze", os.path.join(HOME, ".cache/blaze/work/i3/bin/blaze"))
+    oracle = opt("--oracle", ORACLE)
+    port = int(opt("--port", "18980"))
+    failsafe = opt("--failsafe", "on")
+    differences = 0
+    for name in names:
+        o = run_side(name, "oracle", oracle, port, failsafe)
+        b = run_side(name, "blaze", blaze, port, failsafe)
+        print("== %s" % name)
+        for i in range(max(len(o), len(b))):
+            ro = o[i] if i < len(o) else ("-", "-")
+            rb = b[i] if i < len(b) else ("-", "-")
+            same = ro == rb
+            print("  %s %s" % ("SAME     " if same else "DIFFERENT", ro[0]))
+            if not same:
+                differences += 1
+                print("      oracle: %s" % ro[1])
+                print("      blaze:  %s" % rb[1])
+            elif ro[1]:
+                print("      %s" % ro[1])
+        sys.stdout.flush()
+        if "--keep" not in args:
+            remove(os.path.join(ROOT, name))
+    print("== differences: %d" % differences)
+    return 1 if differences else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

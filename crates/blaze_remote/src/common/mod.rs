@@ -1,5 +1,6 @@
 //! Port of `com.google.devtools.build.lib.remote.common`.
 
+pub mod blob_not_splittable_exception;
 pub mod bulk_transfer_exception;
 pub mod cache_not_found_exception;
 pub mod errors;
@@ -13,6 +14,7 @@ pub mod remote_execution_capabilities_exception;
 pub mod remote_execution_client;
 pub mod remote_path_resolver;
 
+pub use blob_not_splittable_exception::BlobNotSplittableException;
 pub use bulk_transfer_exception::{BulkTransferException, LostArtifacts};
 pub use cache_not_found_exception::CacheNotFoundException;
 pub use network_time::NetworkTime;

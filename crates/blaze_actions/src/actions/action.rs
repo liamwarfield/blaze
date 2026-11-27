@@ -291,6 +291,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
 
     /// Returns true if inputs are known for this action.
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:123 AbstractAction.inputsKnown
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:94 ActionExecutionMetadata.inputsKnown
     fn inputs_known(&self) -> bool {
         if !self.discovers_inputs() {
             return true;
@@ -299,6 +300,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
     }
 
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:139 AbstractAction.discoversInputs
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:102 ActionExecutionMetadata.discoversInputs
     fn discovers_inputs(&self) -> bool {
         false
     }
@@ -440,6 +442,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
     }
 
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:337 AbstractAction.describeKey
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:78 ActionExecutionMetadata.describeKey
     fn describe_key(&self) -> Option<String> {
         None
     }
@@ -488,7 +491,8 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
 
     /// `getProgressMessage()` / `getProgressMessage(mainRepositoryMapping)`.
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:363 AbstractAction.getProgressMessage
-    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:363 AbstractAction.getProgressMessage
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:34 ActionExecutionMetadata.getProgressMessage
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:45 ActionExecutionMetadata.getProgressMessage
     fn get_progress_message(
         &self,
         main_repository_mapping: Option<&RepositoryMapping>,

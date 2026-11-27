@@ -37,6 +37,10 @@ pub enum ArtifactValue {
     Tree(Arc<TreeArtifactValue>),
 }
 
+// PORT: skipped, debugging text (the Debug form): ArtifactFunction.MissingArtifactValue.toString
+// PORT: skipped, remote analysis caching stops with unported!: ArtifactFunction.State.getRetrievalContext
+// PORT: skipped, the failures are SkyFunctionExceptions built at the throw sites with the same transience (TRANSIENT for an action failure): ArtifactFunctionException.ArtifactFunctionException
+// PORT: skipped, key interning: DirectoryArtifactTraversalRequest.getSkyKeyInterner
 /// A `SkyValue` representing a missing input file.
 // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:80 ArtifactFunction.MissingArtifactValue
 #[derive(Clone, Debug)]
@@ -56,6 +60,7 @@ impl MissingArtifactValue {
     }
 
     /// `getDetailedExitCode().getFailureDetail()`.
+    // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:92 ArtifactFunction.MissingArtifactValue.getDetailedExitCode
     pub fn get_failure_detail(&self) -> &FailureDetail {
         &self.failure_detail
     }
@@ -134,6 +139,7 @@ impl SourceArtifactException {
         }
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:560 ArtifactFunction.SourceArtifactException.getDetailedExitCode
     pub fn get_failure_detail(&self) -> &FailureDetail {
         &self.failure_detail
     }

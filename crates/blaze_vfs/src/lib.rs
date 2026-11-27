@@ -12,6 +12,7 @@ pub mod digest_hash_function;
 pub mod dirent;
 pub mod file_status;
 pub mod file_system;
+mod in_memory_fs;
 pub mod modified_file_set;
 pub mod os_path_policy;
 pub mod path;
@@ -25,11 +26,11 @@ pub use detailed_io_exception::DetailedIOException;
 pub use digest_hash_function::{DigestHashFunction, DigestHasher};
 pub use dirent::{Dirent, DirentType};
 pub use file_status::{FileStatus, StatMetadata};
-pub use modified_file_set::ModifiedFileSet;
 pub use file_system::{
     FileSymlinkLoopException, FileSystem, FileSystemExt, FileSystemRef, MAX_SYMLINKS,
     NotASymlinkException,
 };
+pub use modified_file_set::ModifiedFileSet;
 pub use path::{NOW_SENTINEL_TIME, Path};
 pub use path_fragment::{InvalidBaseNameException, PathFragment, PathSegmentIterator};
 pub use root::Root;

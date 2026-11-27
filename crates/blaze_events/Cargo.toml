@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 blaze_util = { path = "../blaze_util" }
+blaze_vfs = { path = "../blaze_vfs" }
 parking_lot.workspace = true
 regex.workspace = true
 libc = "0.2"

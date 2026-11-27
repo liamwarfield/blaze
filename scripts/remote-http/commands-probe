@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# Runs the commands other than build with remote flags on the oracle or on Blaze, for a
+# side-by-side comparison (remote-7 item 3): cquery, aquery, fetch and coverage with
+# --remote_cache, and run under Build without the Bytes (--remote_download_minimal), against
+# Bazel's remote worker as the cache.
+#
+# usage: scripts/remote-http/commands-probe <oracle|BINARY> <side-name> [STARTUP_FLAG...]
+#        scripts/remote-http/commands-probe help
+#
+# STARTUP_FLAGs (e.g. --digest_function=blake3) go before the command of every invocation.
+#
+# One workspace and one output user root per side, reused by the whole sequence:
+#   ~/.cache/blaze/work/remote-7/commands-probe/<side-name>/{ws,ur,worker,log}
+# The sequence: build //:gen and //:bin with the cache (to fill it), clean, then each command
+# below with the cache; the server is shut down at the end and the output base expunged.
+# startup --max_idle_secs=60, --jobs=4, one server and the worker. Runs inside
+#   systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0
+# with BLAZE_SERVER_MODE=daemon. Writes log/<step>.{exit,out,err} and log/summary.tsv (step,
+# exit code, stdout lines, the stderr lines that start with ERROR, WARNING, FAIL or "INFO: Build
+# completed"/"Target"/"Executed"), with paths and invocation IDs normalised so that the two
+# sides' summaries can be diffed.
+set -uo pipefail
+
+if [[ $# -lt 2 || "$1" == "help" || "$1" == "-h" || "$1" == "--help" ]]; then
+  sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
+  [[ $# -ge 1 && ( "$1" == "help" || "$1" == "-h" || "$1" == "--help" ) ]] && exit 0
+  exit 2
+fi
+CACHE="$HOME/.cache/blaze"
+SRC="$CACHE/src/bazel-9.3.2"
+if [[ "$1" == "oracle" ]]; then
+  BIN="$CACHE/oracle/bazel-9.3.2-linux-x86_64"
+else
+  BIN="$(realpath "$1")"
+fi
+SIDE="$2"
+STARTUP=("${@:3}")
+BASE="$CACHE/work/remote-7/commands-probe/$SIDE"
+
+if [[ "${COMMANDS_PROBE_IN_UNIT:-}" != "1" ]]; then
+  mkdir -p "$BASE"
+  exec systemd-run --user --collect --wait --quiet --pipe -p MemoryMax=12G -p MemorySwapMax=0 \
+    --setenv=HOME="$HOME" --setenv=PATH=/usr/bin:/bin:/usr/sbin \
+    --setenv=COMMANDS_PROBE_IN_UNIT=1 --setenv=BLAZE_SERVER_MODE=daemon \
+    "$(realpath "$0")" "$@"
+fi
+
+INSTALL="$CACHE/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9"
+JAVA="$INSTALL/embedded_tools/jdk/bin/java"
+JAR="$CACHE/work/upstream-src/bazel-bin/src/tools/remote/worker_deploy.jar"
+LOCKFILE="$SRC/src/test/tools/bzlmod/MODULE.bazel.lock"
+WS="$BASE/ws"
+UR="$BASE/ur"
+LOG="$BASE/log"
+BAZELRC="$BASE/bazelrc"
+rm -rf "$WS" "$LOG"
+mkdir -p "$WS" "$UR" "$LOG" "$BASE/home"
+cat > "$BAZELRC" <<EOF
+common --show_progress_rate_limit=-1
+common --color=no --curses=no
+common --repository_cache=$CACHE/repo-cache
+startup --max_idle_secs=60
+build --jobs=4
+EOF
+
+bazel() {
+  HOME="$BASE/home" "$BIN" --bazelrc="$BAZELRC" --output_user_root="$UR" "${STARTUP[@]}" "$@"
+}
+
+# The worker (as remote_utils.sh start_worker).
+mkdir -p "$BASE/worker/work" "$BASE/worker/cas" \
+  "$BASE/worker/runfiles/io_bazel/src/tools/remote/src/main/java/com/google/devtools/build/remote/worker"
+worker_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1])')
+RUNFILES_DIR="$BASE/worker/runfiles" "$JAVA" -jar "$JAR" --work_path="$BASE/worker/work" \
+  --cas_path="$BASE/worker/cas" --listen_port="$worker_port" --pid_file="$BASE/worker/pid" \
+  >> "$BASE/worker/log" 2>&1 &
+WORKER_PID=$!
+for i in $(seq 1 150); do [[ -s "$BASE/worker/pid" ]] && break; sleep 0.2; done
+REMOTE="--remote_cache=grpc://localhost:$worker_port"
+
+cd "$WS"
+version=$(sed -n "s|.*modules/rules_shell/\([^/]*\)/source\.json.*|\1|p" "$LOCKFILE" | head -1)
+cat > MODULE.bazel <<EOF
+module(name = 'test')
+bazel_dep(name = "rules_shell", version = "$version")
+EOF
+cp "$LOCKFILE" MODULE.bazel.lock
+cat > BUILD.bazel <<'EOF'
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+genrule(
+    name = "gen",
+    outs = ["gen.txt"],
+    cmd = "echo generated > $@",
+)
+
+sh_binary(
+    name = "bin",
+    srcs = ["bin.sh"],
+    data = [":gen"],
+)
+
+sh_test(
+    name = "t",
+    srcs = ["t.sh"],
+    data = [":gen"],
+)
+EOF
+printf '#!/bin/sh\necho "bin says: $(cat gen.txt)"\n' > bin.sh
+printf '#!/bin/sh\ngrep -q generated gen.txt\n' > t.sh
+chmod +x bin.sh t.sh
+
+step() {
+  local name="$1"
+  shift
+  bazel "$@" > "$LOG/$name.out" 2> "$LOG/$name.err"
+  echo $? > "$LOG/$name.exit"
+}
+
+step fill build $REMOTE //:gen //:bin //:t
+step clean clean
+step cquery cquery $REMOTE //:gen //:bin
+step cquery_deps cquery $REMOTE 'deps(//:bin, 1)' --output=label_kind
+step aquery aquery $REMOTE //:gen --output=text
+step fetch fetch $REMOTE //...
+step run run $REMOTE --remote_download_minimal //:bin
+step run_toplevel run $REMOTE --remote_download_toplevel //:bin
+step coverage coverage $REMOTE //:t
+step build_minimal build $REMOTE --remote_download_minimal //:gen
+# Build without the Bytes: the output of a minimal build is not downloaded.
+if [[ -e bazel-bin/gen.txt ]]; then echo present; else echo absent; fi > "$LOG/bwob_output.out"
+: > "$LOG/bwob_output.err"
+echo 0 > "$LOG/bwob_output.exit"
+bazel clean --expunge > /dev/null 2>&1
+bazel shutdown > /dev/null 2>&1
+kill -9 "$WORKER_PID" 2>/dev/null
+wait "$WORKER_PID" 2>/dev/null
+rm -rf "$BASE/worker"
+
+# The summary, normalised.
+{
+  for f in "$LOG"/*.exit; do
+    name=$(basename "$f" .exit)
+    echo "== $name exit=$(cat "$f")"
+    sed -e "s|$BASE|<BASE>|g" -e 's|[0-9a-f]\{32\}|<HASH>|g' "$LOG/$name.out" \
+      | sed 's/^/  out: /'
+    grep -E '^(ERROR|WARNING|FAIL|INFO: Build completed|Target |Executed |INFO: [0-9]+ process)' \
+      "$LOG/$name.err" \
+      | grep -v "auth_enabled\|Invocation ID\|Elapsed time" \
+      | sed -e "s|$BASE|<BASE>|g" -e 's|[0-9a-f]\{32\}|<HASH>|g' -e 's/[0-9.]*s, Critical Path.*//' \
+      | sed 's/^/  err: /'
+  done
+} > "$LOG/summary.tsv"
+cat "$LOG/summary.tsv"

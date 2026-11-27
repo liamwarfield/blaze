@@ -111,6 +111,9 @@ fn toolchain_attribute() -> &'static Attribute {
     })
 }
 
+// PORT: skipped, Blaze analyzes before it executes (the incremental conflict finder is skipped, see blaze_sky_exec BuildDriverFunction): RuleContext.getConflictFinder, RuleContext.Builder.setConflictFinder
+// PORT: skipped, Blaze's native rules call no Starlark-defined builtins: RuleContext.getStarlarkDefinedBuiltin, RuleContext.callStarlarkOrThrowRuleError
+// PORT: skipped, the Starlark thread and context are the evaluator's (thread_payload): RuleContext.getStarlarkThread, RuleContext.getStarlarkRuleContext
 /// The totality of data available during the analysis of a rule.
 ///
 /// These objects should not outlast the analysis phase. Do not pass them to `Action` objects or
@@ -652,6 +655,7 @@ impl RuleContext {
     /// Returns a configuration fragment for this target. The fragment class is named by its Java
     /// simple class name and its `@StarlarkBuiltin` name, if any.
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:493 RuleContext.getFragment
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:497 RuleContext.getFragment
     pub fn get_fragment<T: blaze_build_config::fragment::Fragment>(
         &self,
         simple_name: &str,
@@ -806,11 +810,13 @@ impl RuleContext {
     }
 
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:688 RuleContext.getBinArtifact
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:692 RuleContext.getBinArtifact
     pub fn get_bin_artifact(&self, relative: &PathFragment) -> Artifact {
         self.get_package_relative_artifact(relative, &self.get_bin_directory())
     }
 
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:701 RuleContext.getGenfilesArtifact
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:705 RuleContext.getGenfilesArtifact
     pub fn get_genfiles_artifact(&self, relative: &PathFragment) -> Artifact {
         self.get_package_relative_artifact(relative, &self.get_genfiles_directory())
     }
@@ -826,6 +832,7 @@ impl RuleContext {
     }
 
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:716 RuleContext.getPackageRelativeArtifact
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:725 RuleContext.getPackageRelativeArtifact
     pub fn get_package_relative_artifact(
         &self,
         relative: &PathFragment,
@@ -878,6 +885,7 @@ impl RuleContext {
     }
 
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:770 RuleContext.getPackageRelativeTreeArtifact
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:774 RuleContext.getPackageRelativeTreeArtifact
     pub fn get_package_relative_tree_artifact(
         &self,
         relative: &PathFragment,
@@ -887,6 +895,7 @@ impl RuleContext {
     }
 
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:788 RuleContext.getUniqueDirectoryArtifact
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:782 RuleContext.getUniqueDirectoryArtifact
     pub fn get_unique_directory_artifact(
         &self,
         unique_directory_suffix: &str,
@@ -900,6 +909,7 @@ impl RuleContext {
     }
 
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:798 RuleContext.getUniqueDirectoryArtifact
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:792 RuleContext.getUniqueDirectoryArtifact
     pub fn get_unique_directory_artifact_in(
         &self,
         unique_directory: &str,
@@ -942,6 +952,7 @@ impl RuleContext {
     /// Returns the declared provider (native and Starlark) for the given key under the specified
     /// attribute.
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:836 RuleContext.getPrerequisite
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:842 RuleContext.getPrerequisite
     pub fn get_prerequisite_info(
         &self,
         attribute_name: &str,
@@ -2521,7 +2532,8 @@ impl RuleErrorConsumer for RuleContextBuilder {
 }
 
 /// Java `FileTypeSet.toString()`.
-// Java: com/google/devtools/build/lib/util/FileTypeSet.java:145 FileTypeSet.toString
+// Java: com/google/devtools/build/lib/util/FileTypeSet.java:144 FileTypeSet.toString
+// Java: com/google/devtools/build/lib/util/FileTypeSet.java:136 FileTypeSet.getExtensions
 pub fn file_type_set_to_string(set: Option<&FileTypeSet>) -> String {
     match set {
         None => "null".to_owned(),

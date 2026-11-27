@@ -737,8 +737,10 @@ impl FileArtifactValue {
                 // under the new stat.
                 //
                 // Java: DigestUtils.getDigestWithManualFallback(path, SyscallCache.NO_CACHE, stat)
-                let new_digest =
-                    crate::actions::cache::digest_utils::DigestUtils::get_digest_with_manual_fallback(path)?;
+                let new_digest = crate::actions::cache::digest_utils::DigestUtils::get_digest_with_manual_fallback_and_status(
+                    path,
+                    Some(&stat),
+                )?;
                 Ok(digest.as_deref() != Some(&new_digest[..]))
             }
             // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:513 DirectoryArtifactValue.wasModifiedSinceDigest

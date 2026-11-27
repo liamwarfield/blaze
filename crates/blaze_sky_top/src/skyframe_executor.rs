@@ -67,7 +67,7 @@ use indexmap::IndexMap;
 
 use crate::action_conflict_exception::{ActionConflictException, ActionConflicts};
 use crate::action_lookup_conflict_finding_function::{
-    self, ActionConflictsCell, TopLevelActionLookupConflictFindingKey,
+    self, ACTION_CONFLICTS, ActionConflictsValue, TopLevelActionLookupConflictFindingKey,
 };
 use crate::cycles_reporter::{CyclesReporter, SingleCycleReporter, TargetCycleReporter};
 use crate::pattern_expanding_error::PatternExpandingError;
@@ -164,9 +164,6 @@ pub struct SkyframeExecutor {
     execution: Option<crate::execution_phase::ExecutionState>,
     /// `cyclesReporter` (`createCyclesReporter()`).
     cycles_reporter: CyclesReporter,
-    /// `ArtifactConflictFinder.ACTION_CONFLICTS`: the conflicts the conflict-finding functions
-    /// read (see `ActionConflictsCell`).
-    action_conflicts: ActionConflictsCell,
     /// `topLevelArtifactContextForConflictPruning` of the request being analyzed: the requested
     /// output groups (see `skyframe_build_view::configure_targets`).
     top_level_artifact_context_for_conflict_pruning: parking_lot::Mutex<Option<Vec<String>>>,
@@ -434,8 +431,6 @@ impl SkyframeExecutor {
         let mut analysis_services = None;
         let mut configuration = None;
         let mut execution = None;
-        let action_conflicts: ActionConflictsCell =
-            Arc::new(parking_lot::RwLock::new(Arc::new(ActionConflicts::new())));
         if let Some(build_options) = inputs.top_level_build_options {
             // Java: done by the rule class provider's construction (subrule calls, fragment
             // Starlark values, build info files).
@@ -554,10 +549,7 @@ impl SkyframeExecutor {
             builder = blaze_rules::genquery::register_sky_functions(builder);
             // Java: ActionLookupConflictFindingFunction and
             // TopLevelActionLookupConflictFindingFunction.
-            builder = action_lookup_conflict_finding_function::register(
-                builder,
-                action_conflicts.clone(),
-            );
+            builder = action_lookup_conflict_finding_function::register(builder);
             // Java: WorkspaceStatusFunction (SkyFunctions.BUILD_INFO).
             let status_services = services.clone();
             builder = builder
@@ -652,7 +644,9 @@ impl SkyframeExecutor {
                             top_level_build_options: top_level_build_options_for_sync,
                         },
                     );
-                (Arc::new(evaluator), Some(handle))
+                let evaluator = Arc::new(evaluator);
+                incremental.state.attach(&handle, &evaluator);
+                (evaluator, Some(handle))
             }
             None => (Arc::new(builder.build()), None),
         };
@@ -718,7 +712,6 @@ impl SkyframeExecutor {
         Ok(SkyframeExecutor {
             progress_receiver,
             cycles_reporter,
-            action_conflicts,
             top_level_artifact_context_for_conflict_pruning: parking_lot::Mutex::new(None),
             evaluator,
             package_manager,
@@ -919,8 +912,10 @@ impl SkyframeExecutor {
         action_conflicts: &ActionConflicts,
         top_level_artifact_context: &[String],
     ) -> Result<TopLevelActionConflictReport, Interrupted> {
-        // ACTION_CONFLICTS.set(injectable(), actionConflicts)
-        *self.action_conflicts.write() = Arc::new(action_conflicts.clone());
+        ACTION_CONFLICTS.set_on(
+            &self.evaluator,
+            ActionConflictsValue(Arc::new(action_conflicts.clone())),
+        );
         let top_level_keys: Vec<SkyKey> =
             action_lookup_conflict_finding_function::keys(keys, top_level_artifact_context)
                 .into_iter()
@@ -947,6 +942,36 @@ impl SkyframeExecutor {
             result,
             top_level_artifact_context: top_level_artifact_context.to_vec(),
         })
+    }
+
+    /// Deletes the dirty nodes that have not been evaluated for more than
+    /// `version_window_for_dirty_gc` versions (none when the graph is not kept: it is dropped
+    /// with the executor).
+    // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:779 SequencedSkyframeExecutor.deleteOldNodes
+    pub fn delete_old_nodes(&self, version_window_for_dirty_gc: i64) {
+        // if (trackIncrementalState)
+        if self
+            .incremental
+            .as_ref()
+            .is_some_and(|h| h.state().passes_graph_between_executors())
+            && self.evaluator.has_evaluated()
+        {
+            self.evaluator.delete_dirty(version_window_for_dirty_gc);
+        }
+    }
+
+    /// Actually invalidates values marked for invalidation (an empty evaluation).
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:4098 SkyframeExecutor.applyInvalidation
+    pub fn apply_invalidation(
+        &self,
+        event_handler: Arc<dyn ExtendedEventHandler>,
+    ) -> Result<(), Interrupted> {
+        let _c = blaze_util::profiler::Profiler::instance().profile(
+            blaze_util::profiler::ProfilerTask::INFO,
+            "applyInvalidation",
+        );
+        self.evaluate(&[], false, DEFAULT_THREAD_COUNT, event_handler)
+            .map(|_| ())
     }
 
     /// `SkyframeExecutor.setSaltAndDeleteActionsIfChanged` on the graph kept between commands
@@ -2273,9 +2298,15 @@ impl blaze_actions::actions::artifact_factory::PackageRootLookup for DonePackage
         &self,
         package_identifier: &PackageIdentifier,
     ) -> Option<blaze_vfs::Root> {
-        let value = self
-            .evaluator
-            .upgrade()?
+        // A lookup of an executor that is gone is a holder that outlived its command (the
+        // executor's graph is the one the lookup reads): fail loudly (review round 2, S2-1).
+        let evaluator = self.evaluator.upgrade().unwrap_or_else(|| {
+            panic!(
+                "IllegalStateException: getRootForDonePackage({package_identifier}) after the \
+                 command's Skyframe executor is gone"
+            )
+        });
+        let value = evaluator
             .get_existing_value(&SkyKey::new(PackageKey::key(package_identifier.clone())))?;
         let package_value = value.downcast::<PackageValue>().ok()?;
         Some(package_value.get_package().get_source_root().clone())

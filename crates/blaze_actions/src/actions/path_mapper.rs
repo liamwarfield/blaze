@@ -45,6 +45,10 @@ impl FileRoot {
 
 /// A root for files that have been subject to path mapping.
 // Java: com/google/devtools/build/lib/actions/PathMapper.java:232 PathMapper.MappedArtifactRoot
+// (equals/hashCode derived over the mapped root's exec path)
+// Java: com/google/devtools/build/lib/actions/PathMapper.java:247 PathMapper.MappedArtifactRoot.equals
+// Java: com/google/devtools/build/lib/actions/PathMapper.java:259 PathMapper.MappedArtifactRoot.hashCode
+// PORT: skipped, serialization only (immutability of a codec value): MappedArtifactRoot.isImmutable
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MappedArtifactRoot {
     mapped_root_exec_path: PathFragment,

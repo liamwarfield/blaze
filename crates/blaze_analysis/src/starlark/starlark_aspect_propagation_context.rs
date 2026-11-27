@@ -48,6 +48,7 @@ pub struct StarlarkAspectPropagationContext {
     label: Label,
     /// `createQualifiedRuleKind(ruleClass)`: the rule definition environment label (null for
     /// native rules) and the rule class name.
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAspectPropagationContext.java:102 StarlarkAspectPropagationContext.createQualifiedRuleKind
     file_label: Option<Label>,
     rule_name: String,
     /// The fields of `StarlarkAspectPropagationRule.attr`.
@@ -280,6 +281,8 @@ where
 {
     // Java: com/google/devtools/build/lib/starlarkbuildapi/StarlarkAspectPropagationContextApi.java:38 StarlarkAspectPropagationContextApi.getAttr
     // Java: com/google/devtools/build/lib/starlarkbuildapi/StarlarkAspectPropagationContextApi.java:46 StarlarkAspectPropagationContextApi.getRule
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAspectPropagationContext.java:107 StarlarkAspectPropagationContext.getRule
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAspectPropagationContext.java:112 StarlarkAspectPropagationContext.getAttr
     fn get_attr(&self, attribute: &str, _heap: Heap<'v>) -> Option<Value<'v>> {
         match attribute {
             "attr" => Some(self.aspect_public_params.to_value()),
@@ -346,6 +349,9 @@ where
     // Java: com/google/devtools/build/lib/starlarkbuildapi/StarlarkAspectPropagationContextApi.java:54 StarlarkAspectPropagationRuleApi.getLabel
     // Java: com/google/devtools/build/lib/starlarkbuildapi/StarlarkAspectPropagationContextApi.java:57 StarlarkAspectPropagationRuleApi.getAttr
     // Java: com/google/devtools/build/lib/starlarkbuildapi/StarlarkAspectPropagationContextApi.java:68 StarlarkAspectPropagationRuleApi.getQualifiedKind
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAspectPropagationContext.java:120 StarlarkAspectPropagationContext.StarlarkAspectPropagationRule.getLabel
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAspectPropagationContext.java:125 StarlarkAspectPropagationContext.StarlarkAspectPropagationRule.getQualifiedKind
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAspectPropagationContext.java:130 StarlarkAspectPropagationContext.StarlarkAspectPropagationRule.getAttr
     fn get_attr(&self, attribute: &str, _heap: Heap<'v>) -> Option<Value<'v>> {
         match attribute {
             "label" => Some(self.label.to_value()),
@@ -394,6 +400,8 @@ impl fmt::Display for QualifiedRuleKind {
 impl<'v> StarlarkValue<'v> for QualifiedRuleKind {
     // Java: com/google/devtools/build/lib/starlarkbuildapi/StarlarkAspectPropagationContextApi.java:80 QualifiedRuleKindApi.getFileLabel
     // Java: com/google/devtools/build/lib/starlarkbuildapi/StarlarkAspectPropagationContextApi.java:88 QualifiedRuleKindApi.getRuleName
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAspectPropagationContext.java:138 StarlarkAspectPropagationContext.QualifiedRuleKind.getFileLabel
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAspectPropagationContext.java:143 StarlarkAspectPropagationContext.QualifiedRuleKind.getRuleName
     fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         match attribute {
             // allowReturnNones: null (native rules) is None.
@@ -456,6 +464,8 @@ where
     Self: ProvidesStaticType<'v>,
 {
     // Java: com/google/devtools/build/lib/starlarkbuildapi/StarlarkAspectPropagationContextApi.java:97 RuleAttributeApi.getValue
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAspectPropagationContext.java:150 StarlarkAspectPropagationContext.RuleAttribute.getValue
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAspectPropagationContext.java:155 StarlarkAspectPropagationContext.RuleAttribute.isTool
     // Java: com/google/devtools/build/lib/starlarkbuildapi/StarlarkAspectPropagationContextApi.java:100 RuleAttributeApi.isTool
     fn get_attr(&self, attribute: &str, _heap: Heap<'v>) -> Option<Value<'v>> {
         match attribute {

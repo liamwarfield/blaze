@@ -164,11 +164,20 @@ impl DigestUtils {
     /// (`path.getFastDigest()`, the `XattrProvider` of the path's file system), and calculating
     /// the digest manually otherwise.
     // Java: com/google/devtools/build/lib/vfs/DigestUtils.java:127 DigestUtils.getDigestWithManualFallback
-    // Java: com/google/devtools/build/lib/vfs/DigestUtils.java:139 DigestUtils.getDigestWithManualFallback
     pub fn get_digest_with_manual_fallback(path: &blaze_vfs::Path) -> std::io::Result<Vec<u8>> {
+        Self::get_digest_with_manual_fallback_and_status(path, None)
+    }
+
+    /// [`DigestUtils::get_digest_with_manual_fallback`] with a recently obtained file status (the
+    /// key of the digest cache), if available.
+    // Java: com/google/devtools/build/lib/vfs/DigestUtils.java:139 DigestUtils.getDigestWithManualFallback
+    pub fn get_digest_with_manual_fallback_and_status(
+        path: &blaze_vfs::Path,
+        status: Option<&blaze_vfs::FileStatus>,
+    ) -> std::io::Result<Vec<u8>> {
         match path.get_fast_digest()? {
             Some(digest) => Ok(digest),
-            None => Self::manually_compute_digest(path, None),
+            None => Self::manually_compute_digest(path, status),
         }
     }
 

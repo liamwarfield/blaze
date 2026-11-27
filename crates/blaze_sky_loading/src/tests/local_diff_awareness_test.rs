@@ -98,6 +98,41 @@ impl Fixture {
         std::os::unix::fs::symlink(self.p(to), self.p(from)).unwrap();
     }
 
+    /// Takes views until the accumulated diffs contain every path of `expected` (Blaze-only
+    /// helper of the rename tests: the exact sets of the intermediate steps do not matter there).
+    fn wait_for(&mut self, expected: &[&str]) {
+        let expected: BTreeSet<PathFragment> =
+            expected.iter().map(|p| PathFragment::create(p)).collect();
+        let mut seen: BTreeSet<PathFragment> = BTreeSet::new();
+        for _ in 0..MAX_RETRY_COUNT {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            let new_view = self.local_diff.get_current_view(&options(true)).unwrap();
+            let modified_file_set = self
+                .local_diff
+                .get_diff(self.old_view.as_ref(), &new_view)
+                .unwrap_or_else(|e| panic!("{e:?}"));
+            self.old_view = Some(new_view);
+            assert!(!modified_file_set.treat_everything_as_modified());
+            seen.extend(modified_file_set.modified_source_files().iter().cloned());
+            if expected.is_subset(&seen) {
+                return;
+            }
+        }
+        panic!("never saw {expected:?}; saw {seen:?}");
+    }
+
+    /// Takes one view (draining what the watcher has) after a short wait.
+    fn drain(&mut self) {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let new_view = self.local_diff.get_current_view(&options(true)).unwrap();
+        let modified_file_set = self
+            .local_diff
+            .get_diff(self.old_view.as_ref(), &new_view)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        self.old_view = Some(new_view);
+        assert!(!modified_file_set.treat_everything_as_modified());
+    }
+
     // Java: LocalDiffAwarenessTest.ModifiedFileSetChecker.check
     fn check(&mut self, modified: &[&str]) {
         let modified: BTreeSet<PathFragment> =
@@ -366,4 +401,43 @@ fn modified_path_isnt_under_watch_root() {
         ),
     }
     local_diff.close();
+}
+
+/// Not a Java test (review of package I3, round 2, S1-B): after `mv a b` the watch service hands
+/// the key of `a/sub` to `b/sub`; `watchKeyToDirBiMap.put` must drop `a/sub` from the inverse
+/// view, or the deletion of a new `a/sub` cancels the watch of `b/sub` and its edits are lost.
+#[test]
+fn renamed_directory_keeps_watching_its_subdirectory() {
+    let mut f = Fixture::new();
+    f.mkdir("a/sub");
+    f.touch("a/sub/x.txt");
+    f.capture_first_view(&options(true));
+    f.wait_for(&[]);
+    std::fs::rename(f.p("a"), f.p("b")).unwrap();
+    f.wait_for(&["a", "b", "b/sub", "b/sub/x.txt"]);
+    f.mkdir("a");
+    f.wait_for(&["a"]);
+    f.mkdir("a/sub");
+    std::fs::remove_dir(f.p("a/sub")).unwrap();
+    f.drain();
+    f.touch("b/sub/x.txt");
+    f.wait_for(&["b/sub/x.txt"]);
+}
+
+/// Not a Java test (round 2, S1-B, the crash variant): `mkdir -p a/sub` after `mv a b`, then an
+/// edit in `b/sub`: the event of `b/sub` must find its directory (Java's
+/// `checkArgument(dir != null)`).
+#[test]
+fn recreated_path_of_renamed_directory_does_not_lose_the_moved_one() {
+    let mut f = Fixture::new();
+    f.mkdir("a/sub");
+    f.touch("a/sub/x.txt");
+    f.capture_first_view(&options(true));
+    f.wait_for(&[]);
+    std::fs::rename(f.p("a"), f.p("b")).unwrap();
+    f.wait_for(&["b/sub/x.txt"]);
+    f.mkdir("a/sub");
+    f.wait_for(&["a", "a/sub"]);
+    f.touch("b/sub/x.txt");
+    f.wait_for(&["b/sub/x.txt"]);
 }

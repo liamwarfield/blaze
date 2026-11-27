@@ -856,6 +856,14 @@ impl Evaluator {
         self.incremental.lock().values_to_delete.extend(to_delete);
     }
 
+    /// Whether an evaluation has run on this graph (Java's `lastGraphVersion != null`).
+    ///
+    /// PORT: Java's evaluator lives with the server, so `deleteDirty` always finds one; a Blaze
+    /// executor's new graph may have none yet (a command that failed before evaluating).
+    pub fn has_evaluated(&self) -> bool {
+        self.incremental.lock().last_graph_version.is_some()
+    }
+
     /// Marks for deletion, at the start of the next evaluation, the dirty nodes that were not
     /// evaluated since they were dirtied and whose version is at most the last graph version
     /// minus `version_age_limit`.

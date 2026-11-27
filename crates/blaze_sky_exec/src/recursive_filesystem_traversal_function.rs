@@ -284,6 +284,7 @@ impl HasDigest {
     }
 
     /// `getDigest()`.
+    // Java: com/google/devtools/build/lib/actions/HasDigest.java:35 HasDigest.ByteStringDigest.getDigest
     pub fn get_digest(&self) -> Option<&[u8]> {
         match self {
             HasDigest::FileArtifactValue(v) => v.get_digest(),
@@ -292,6 +293,10 @@ impl HasDigest {
     }
 }
 
+// (ByteStringDigest's equals and hashCode are the derived equality and this hash, over the
+// digest.)
+// Java: com/google/devtools/build/lib/actions/HasDigest.java:40 HasDigest.ByteStringDigest.equals
+// Java: com/google/devtools/build/lib/actions/HasDigest.java:48 HasDigest.ByteStringDigest.hashCode
 impl Hash for HasDigest {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.get_digest().hash(state);
@@ -333,6 +338,7 @@ pub enum FileType {
 }
 
 impl FileType {
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:222 RecursiveFilesystemTraversalValue.FileType.isFile
     pub fn is_file(self) -> bool {
         match self {
             FileType::File | FileType::SymlinkToFile => true,
@@ -341,6 +347,7 @@ impl FileType {
         }
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:226 RecursiveFilesystemTraversalValue.FileType.isDirectory
     pub fn is_directory(self) -> bool {
         match self {
             FileType::Directory | FileType::SymlinkToDirectory => true,
@@ -349,6 +356,7 @@ impl FileType {
         }
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:230 RecursiveFilesystemTraversalValue.FileType.isSymlink
     pub fn is_symlink(self) -> bool {
         matches!(
             self,
@@ -356,6 +364,7 @@ impl FileType {
         )
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:234 RecursiveFilesystemTraversalValue.FileType.exists
     pub fn exists(self) -> bool {
         matches!(
             self,
@@ -387,6 +396,9 @@ impl fmt::Display for FileType {
 // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:466 DanglingSymlink
 // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:512 SymlinkToFile
 // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:567 SymlinkToDirectory
+// PORT: skipped, derived (PartialEq, Eq, Hash over the same fields; Debug for toString, which no message formats): RecursiveFilesystemTraversalValue.equals, RecursiveFilesystemTraversalValue.hashCode, RecursiveFilesystemTraversalValue.toString
+// PORT: skipped, the enum variants are built directly (the link name and target are variant fields, Java's Symlink): RecursiveFilesystemTraversalValue.regularFile, RecursiveFilesystemTraversalValue.directory
+// PORT: skipped, the enum variants are built directly (the link name and target are variant fields, Java's Symlink): RecursiveFilesystemTraversalValue.symlinkToFile, RecursiveFilesystemTraversalValue.symlinkToDirectory
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ResolvedFile {
     RegularFile {
@@ -417,6 +429,12 @@ pub enum ResolvedFile {
 
 impl ResolvedFile {
     /// Type of the entity under this path.
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:599 RecursiveFilesystemTraversalValue.ResolvedFile.getType
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:288 RecursiveFilesystemTraversalValue.RegularFile.getType
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:339 RecursiveFilesystemTraversalValue.Directory.getType
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:390 RecursiveFilesystemTraversalValue.DanglingSymlink.getType
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:449 RecursiveFilesystemTraversalValue.SymlinkToFile.getType
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:508 RecursiveFilesystemTraversalValue.SymlinkToDirectory.getType
     pub fn get_type(&self) -> FileType {
         match self {
             ResolvedFile::RegularFile { .. } => FileType::File,
@@ -428,6 +446,12 @@ impl ResolvedFile {
     }
 
     /// Path of the file or the symlink itself.
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:602 RecursiveFilesystemTraversalValue.ResolvedFile.getPath
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:293 RecursiveFilesystemTraversalValue.RegularFile.getPath
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:344 RecursiveFilesystemTraversalValue.Directory.getPath
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:395 RecursiveFilesystemTraversalValue.DanglingSymlink.getPath
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:454 RecursiveFilesystemTraversalValue.SymlinkToFile.getPath
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:513 RecursiveFilesystemTraversalValue.SymlinkToDirectory.getPath
     pub fn get_path(&self) -> &RootedPath {
         match self {
             ResolvedFile::RegularFile { path, .. } | ResolvedFile::Directory { path } => path,
@@ -438,6 +462,12 @@ impl ResolvedFile {
     }
 
     /// Associated metadata.
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:609 RecursiveFilesystemTraversalValue.ResolvedFile.getMetadata
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:298 RecursiveFilesystemTraversalValue.RegularFile.getMetadata
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:349 RecursiveFilesystemTraversalValue.Directory.getMetadata
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:401 RecursiveFilesystemTraversalValue.DanglingSymlink.getMetadata
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:459 RecursiveFilesystemTraversalValue.SymlinkToFile.getMetadata
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:518 RecursiveFilesystemTraversalValue.SymlinkToDirectory.getMetadata
     pub fn get_metadata(&self) -> &HasDigest {
         static EMPTY: std::sync::LazyLock<HasDigest> = std::sync::LazyLock::new(HasDigest::empty);
         match self {
@@ -451,6 +481,13 @@ impl ResolvedFile {
 
     /// Returns the path of the Fileset-output symlink relative to the output directory: the
     /// root-relative path of the file or of the symlink itself.
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:617 RecursiveFilesystemTraversalValue.ResolvedFile.getNameInSymlinkTree
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:252 RecursiveFilesystemTraversalValue.Symlink.getNameInSymlinkTree
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:326 RecursiveFilesystemTraversalValue.RegularFile.getNameInSymlinkTree
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:375 RecursiveFilesystemTraversalValue.Directory.getNameInSymlinkTree
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:428 RecursiveFilesystemTraversalValue.DanglingSymlink.getNameInSymlinkTree
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:487 RecursiveFilesystemTraversalValue.SymlinkToFile.getNameInSymlinkTree
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:546 RecursiveFilesystemTraversalValue.SymlinkToDirectory.getNameInSymlinkTree
     pub fn get_name_in_symlink_tree(&self) -> &PathFragment {
         self.get_path().get_root_relative_path()
     }
@@ -499,11 +536,13 @@ impl RecursiveFilesystemTraversalValue {
     }
 
     /// Returns the root of the traversal; `None` if the root did not exist.
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:83 RecursiveFilesystemTraversalValue.getResolvedRoot
     pub fn get_resolved_root(&self) -> Option<&ResolvedFile> {
         self.resolved_root.as_ref()
     }
 
     /// Returns the transitive closure of [`ResolvedFile`]s.
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalValue.java:98 RecursiveFilesystemTraversalValue.getTransitiveFiles
     pub fn get_transitive_files(&self) -> &NestedSet<ResolvedFile> {
         &self.resolved_paths
     }

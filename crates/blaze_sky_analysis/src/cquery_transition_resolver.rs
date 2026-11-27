@@ -130,9 +130,13 @@ fn compute(
     }
 
     if state.transitive_state.has_root_cause() {
+        // Java throws EvaluateException("expected empty: " + the root causes' toString), and the
+        // formatter prints it; `Cause.toString` includes `DetailedExitCode.toString` (the
+        // FailureDetail's text form), which is not ported.
         blaze_util::unported!(
             "CqueryTransitionResolver.dependencies",
-            "\"expected empty: \" + state.transitiveRootCauses().build().toList() for {:?}",
+            "\"expected empty: \" + state.transitiveRootCauses().build().toList() for {:?} \
+             (Cause.toString needs DetailedExitCode.toString, not ported)",
             configured_target_key
         );
     }

@@ -99,6 +99,7 @@ impl PathFragment {
     }
 
     // Java: com/google/devtools/build/lib/vfs/PathFragment.java:146 PathFragment.makePathFragment
+    // PORT: skipped, the subclasses are the `drive_str_length` field (0 relative, 1 Unix absolute; Windows is not ported): PathFragment.getDriveStrLength
     fn make_path_fragment(normalized_path: Arc<str>, drive_str_length: usize) -> PathFragment {
         match drive_str_length {
             0 | 1 => PathFragment {
@@ -1001,3 +1002,7 @@ impl<'a> Iterator for PathSegmentIterator<'a> {
         Some(segment)
     }
 }
+
+// PORT: skipped, PathStrippable.expand is inlined where command lines map paths (blaze_actions command_lines, custom_command_line): PathFragment.expand
+// PORT: skipped, serialization for remote analysis caching (not ported, ruling 2026-11-19 (1)): PathFragment.pathFragmentCodec, PathFragment.getEncodedClass
+// PORT: skipped, serialization for remote analysis caching (not ported, ruling 2026-11-19 (1)): PathFragment.serialize, PathFragment.deserialize

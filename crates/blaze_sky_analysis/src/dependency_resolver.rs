@@ -751,7 +751,6 @@ pub fn load_starlark_exec_transition_provider(
     }
     let loader = EnvironmentBzlFileLoader {
         env: std::cell::RefCell::new(env),
-        semantics: &services.starlark_semantics,
         loaded_user_file: std::cell::Cell::new(false),
     };
     let Some(transition) =
@@ -773,15 +772,12 @@ pub fn load_starlark_exec_transition_provider(
 
 /// `(bzlKey) -> (BzlLoadValue) env.getValueOrThrow(bzlKey, BzlLoadFailedException.class)`.
 // Java: com/google/devtools/build/lib/skyframe/DependencyResolver.java:404 DependencyResolver.evaluate
-struct EnvironmentBzlFileLoader<'e, 'a, 's> {
+struct EnvironmentBzlFileLoader<'e, 'a> {
     env: std::cell::RefCell<&'e mut Environment<'a>>,
-    semantics: &'s Arc<blaze_starlark::StarlarkSemantics>,
     loaded_user_file: std::cell::Cell<bool>,
 }
 
-impl blaze_build_config::starlark_transition::BzlFileLoader
-    for EnvironmentBzlFileLoader<'_, '_, '_>
-{
+impl blaze_build_config::starlark_transition::BzlFileLoader for EnvironmentBzlFileLoader<'_, '_> {
     fn convert_transition(
         &self,
         value: &starlark::values::OwnedFrozenValue,
@@ -801,15 +797,14 @@ impl blaze_build_config::starlark_transition::BzlFileLoader
         bzl_file: &blaze_cmdline::Label,
         for_builtins: bool,
     ) -> Result<Option<starlark::environment::FrozenModule>, String> {
-        if for_builtins {
-            return blaze_build_config::starlark_transition::load_builtins_bzl(
-                bzl_file,
-                self.semantics,
-            )
-            .map(Some);
-        }
-        self.loaded_user_file.set(true);
-        let key = blaze_sky_loading::bzl_load::BzlLoadKey::key_for_build(bzl_file.clone());
+        // isForBuiltins ? BzlLoadValue.keyForBuiltins(bzlFile) : BzlLoadValue.keyForBuild(bzlFile)
+        // Java: com/google/devtools/build/lib/analysis/config/StarlarkExecTransitionLoader.java:93 StarlarkExecTransitionLoader.loadStarlarkExecTransition
+        let key = if for_builtins {
+            blaze_sky_loading::bzl_load::BzlLoadKey::key_for_builtins(bzl_file.clone())
+        } else {
+            self.loaded_user_file.set(true);
+            blaze_sky_loading::bzl_load::BzlLoadKey::key_for_build(bzl_file.clone())
+        };
         let mut env = self.env.borrow_mut();
         match env.get_value_or_throw::<
             blaze_sky_loading::bzl_load::BzlLoadKey,

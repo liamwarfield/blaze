@@ -243,15 +243,11 @@ fn to_artifact_mapping(tree: &dyn RunfilesTree) -> BTreeMap<PathFragment, Option
         .collect()
 }
 
-/// `DigestUtils.getDigestWithManualFallback(path, xattrProvider)` without the digest cache
-/// (`DigestUtils.configureCache` is not called for a single build).
+/// `DigestUtils.getDigestWithManualFallback(path, xattrProvider)`, through the digest cache as
+/// in Java.
 // Java: com/google/devtools/build/lib/vfs/DigestUtils.java:127 DigestUtils.getDigestWithManualFallback
 fn get_digest_with_manual_fallback(path: &Path) -> io::Result<Vec<u8>> {
-    match path.get_fast_digest()? {
-        Some(digest) => Ok(digest),
-        // Java: com/google/devtools/build/lib/vfs/DigestUtils.java:164 DigestUtils.manuallyComputeDigest
-        None => path.get_digest(),
-    }
+    crate::actions::cache::digest_utils::DigestUtils::get_digest_with_manual_fallback(path)
 }
 
 #[cfg(test)]

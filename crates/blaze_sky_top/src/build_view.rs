@@ -1056,6 +1056,9 @@ pub struct AnalysisPhaseCompleteStats {
 /// Java `PackageRoots.MapAsPackageRoots.getPackageRootLookup()`: the root of a package of the
 /// map, null for any other package.
 // Java: com/google/devtools/build/lib/skyframe/MapAsPackageRoots.java:39 MapAsPackageRoots.getPackageRootLookup
+// (the constructor is the struct literal and getPackageRootsMap() the field)
+// Java: com/google/devtools/build/lib/skyframe/MapAsPackageRoots.java:29 MapAsPackageRoots.<init>
+// Java: com/google/devtools/build/lib/skyframe/MapAsPackageRoots.java:34 MapAsPackageRoots.getPackageRootsMap
 struct MapAsPackageRoots {
     package_roots_map: IndexMap<blaze_cmdline::PackageIdentifier, blaze_vfs::Root>,
 }

@@ -126,6 +126,7 @@ pub struct ClosedStarlarkRuleContext {
     is_for_aspect: bool,
 }
 
+// PORT: skipped, a field read in Rust: StarlarkRuleContext.getRuleLabelCanonicalName
 impl fmt::Debug for StarlarkRuleContext<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -659,7 +660,7 @@ impl<'v> StarlarkRuleContext<'v> {
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:960 StarlarkRuleContext.expandMakeVariables
     fn expand_make_variables_with(
         &self,
-        attribute_name: &str,
+        attribute_name: Option<&str>,
         command: &str,
         additional_substitutions_map: IndexMap<String, String>,
     ) -> String {
@@ -675,7 +676,7 @@ impl<'v> StarlarkRuleContext<'v> {
             ))],
         );
         rc.get_expander_for(Arc::new(make_variable_context))
-            .expand(Some(attribute_name), command)
+            .expand(attribute_name, command)
     }
 }
 
@@ -1245,11 +1246,13 @@ fn add_runfiles(
 }
 
 /// `isNonEmptyDict(o)`.
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:1129 StarlarkRuleContext.isNonEmptyDict
 fn is_non_empty_dict(o: Value) -> bool {
     DictRef::from_value(o).is_some_and(|d| !d.is_empty())
 }
 
 /// `isNonEmptyDepset(o)`.
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:1133 StarlarkRuleContext.isNonEmptyDepset
 fn is_non_empty_depset(o: Value) -> bool {
     Depset::from_value(o).is_some_and(|d| !d.is_empty())
 }
@@ -1275,6 +1278,8 @@ fn symlink_entries(
 
 /// `Dict.cast(x, String.class, Artifact.class, what)`.
 fn dict_cast_string_artifact(x: Value, what: &str) -> starlark::Result<Vec<(String, Artifact)>> {
+    // A key-tracking dict (`ctx.var`) records every key: Java Dict.cast: `entrySet()`.
+    starlark::values::dict::dict_record_all_keys_accessed(x);
     let d = DictRef::from_value(x).expect("dict");
     let mut result = Vec::new();
     for (k, v) in d.iter() {
@@ -1363,6 +1368,57 @@ fn starlark_option_to_value<'v>(v: &StarlarkOptionValue, heap: Heap<'v>) -> Valu
             }
         }
     }
+}
+
+/// Ensures the given map has keys that have `Label` type and values that are iterables of
+/// `File`s, and raises an error otherwise.
+///
+/// PORT: Java collects into a `HashMap`; the order only feeds `CommandHelper`'s label map, which
+/// is looked up by key, so insertion order is kept.
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:1247 StarlarkRuleContext.checkLabelDict
+fn check_label_dict<'v>(
+    label_dict: Value<'v>,
+    heap: Heap<'v>,
+) -> starlark::Result<IndexMap<Label, Vec<Artifact>>> {
+    let mut converted_map = IndexMap::new();
+    let Some(dict) = DictRef::from_value(label_dict) else {
+        return Ok(converted_map);
+    };
+    for (key, val) in dict.iter() {
+        let Some(key) = key.downcast_ref::<LabelValue>() else {
+            return Err(errorf(format!(
+                "invalid key {} in 'label_dict'",
+                key.to_repr()
+            )));
+        };
+        // `val instanceof Iterable`: a sequence, dict or set (a depset is not Iterable).
+        let elements: Option<Vec<Value<'v>>> = if Depset::from_value(val).is_some() {
+            None
+        } else {
+            val.iterate(heap).ok().map(|it| it.collect())
+        };
+        let Some(elements) = elements else {
+            return Err(errorf(format!(
+                "invalid value {} in 'label_dict': expected iterable, but got '{}'",
+                val.to_repr(),
+                val.get_type()
+            )));
+        };
+        let mut files = Vec::new();
+        for file in elements {
+            match artifact_from_value(file) {
+                Some(a) => files.push(a),
+                None => {
+                    return Err(errorf(format!(
+                        "invalid value {} in 'label_dict'",
+                        val.to_repr()
+                    )));
+                }
+            }
+        }
+        converted_map.insert(key.0.clone(), files);
+    }
+    Ok(converted_map)
 }
 
 /// The targets of a Starlark sequence of `Target`s (Java `Sequence.cast(targets,
@@ -1776,7 +1832,11 @@ fn ctx_methods(builder: &mut MethodsBuilder) {
             additional_substitutions,
             "additional_substitutions",
         )?;
-        Ok(ctx.expand_make_variables_with(attribute_name, command, additional_substitutions_map))
+        Ok(ctx.expand_make_variables_with(
+            Some(attribute_name),
+            command,
+            additional_substitutions_map,
+        ))
     }
 
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:995 StarlarkRuleContext.getStableWorkspaceStatus
@@ -1811,6 +1871,7 @@ fn ctx_methods(builder: &mut MethodsBuilder) {
     #[starlark(attribute)]
     fn build_file_path<'v>(this: Value<'v>) -> starlark::Result<String> {
         let ctx = live(this, "build_file_path")?;
+        // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:1018 StarlarkRuleContext.checkDeprecated
         // Java: checkDeprecated("ctx.label.package + '/BUILD'", "ctx.build_file_path", semantics)
         if ctx
             .context
@@ -1863,6 +1924,7 @@ fn ctx_methods(builder: &mut MethodsBuilder) {
         let expander = if !short_paths {
             LocationExpander::with_exec_paths(&rc, label_map)
         } else {
+            // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:1054 StarlarkRuleContext.checkPrivateAccess
             fail_if_called_outside_default_allowlist(eval)?;
             LocationExpander::with_runfiles_paths(&rc, Some(label_map))
         };
@@ -1984,21 +2046,82 @@ fn ctx_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named, default = AllocList::EMPTY)] tools: Value<'v>,
         #[starlark(require = named, default = AllocDict::EMPTY)] label_dict: Value<'v>,
         #[starlark(require = named, default = AllocDict::EMPTY)] execution_requirements: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
         let ctx = live(this, "resolve_command")?;
-        let _ = (
-            ctx,
-            command,
-            attribute,
-            expand_locations,
-            make_variables,
-            tools,
-            label_dict,
+        let label_dict = check_label_dict(label_dict, eval.heap())?;
+        let tools = sequence_cast_targets(tools, "tools", eval)?;
+        let rc = ctx.context.handle.borrow();
+        // The best way to fix this probably is to convert CommandHelper to Starlark.
+        let helper = crate::rule::command_helper::CommandHelper::builder(&rc)
+            .add_tool_dependencies(tools)
+            .add_label_map(label_dict)
+            .build();
+        let attribute = match Type::String.convert_optional(attribute, Some(&"attribute"), None) {
+            Ok(Some(blaze_packages::types::AttrValue::String(s))) => Some(s),
+            Ok(_) => None,
+            Err(e) => return Err(errorf(e.get_message())),
+        };
+        let mut command = command.to_owned();
+        if expand_locations {
+            command = helper.resolve_command_and_expand_labels(
+                &command,
+                attribute.as_deref(),
+                /* allow_data_in_label= */ false,
+            );
+        }
+        if !make_variables.is_none() {
+            let make_variables =
+                match Type::StringDict.convert(make_variables, Some(&"make_variables"), None) {
+                    Ok(blaze_packages::types::AttrValue::StringDict(m)) => m,
+                    Ok(other) => unreachable!("STRING_DICT converted to {other:?}"),
+                    Err(e) => return Err(errorf(e.get_message())),
+                };
+            command =
+                ctx.expand_make_variables_with(attribute.as_deref(), &command, make_variables);
+        }
+        // TODO(lberki): This flattens a NestedSet.
+        // However, we can't turn this into a Depset because it's an incompatible change to
+        // Starlark.
+        let mut inputs: Vec<Artifact> = helper.get_resolved_tools().to_list().to_vec();
+
+        let execution_requirements = super::util::dict_noneable_cast_string_string(
             execution_requirements,
-            &ctx.resolve_command_script_counter,
+            "execution_requirements",
+        )?;
+        // TODO(b/234923262): Take exec_group into consideration instead of using the default
+        // exec_group.
+        let execution_platform = rc.get_execution_platform();
+        let sh_executable = crate::rule::sh_toolchain::get_path_for_platform(
+            rc.get_configuration(),
+            execution_platform.as_ref(),
         );
-        // Java: CommandHelper.builder(ruleContext)...buildCommandLine(...)
-        blaze_util::unported!("StarlarkRuleContext.resolveCommand")
+        let counter = ctx.resolve_command_script_counter.get();
+        ctx.resolve_command_script_counter.set(counter + 1);
+        let constructor = crate::rule::command_helper::build_bash_command_constructor(
+            &execution_requirements,
+            &sh_executable,
+            &format!(".resolve_command_{counter}.script.sh"),
+        );
+        let argv = helper.build_command_line_list(
+            &command,
+            &mut inputs,
+            &constructor,
+            crate::platform::constraint_constants::get_os_from_constraints_or_host(
+                execution_platform.as_deref(),
+            ),
+        );
+        let heap = eval.heap();
+        let inputs: Vec<Value<'v>> = inputs
+            .into_iter()
+            .map(|a| heap.alloc(StarlarkFile::new(a)))
+            .collect();
+        let argv: Vec<Value<'v>> = argv.iter().map(|a| heap.alloc(a.as_str())).collect();
+        Ok(heap.alloc(starlark::values::tuple::AllocTuple([
+            heap.alloc(AllocList(inputs)),
+            heap.alloc(AllocList(argv)),
+            heap.alloc(AllocList::EMPTY),
+        ])))
     }
 
     /// Returns a tuple `(inputs, empty list)` of the depset of resolved inputs required to run
@@ -2007,8 +2130,10 @@ fn ctx_methods(builder: &mut MethodsBuilder) {
     fn resolve_tools<'v>(
         this: Value<'v>,
         #[starlark(require = named, default = AllocList::EMPTY)] tools: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
         let ctx = live(this, "resolve_tools")?;
+        // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:1208 StarlarkRuleContext.checkResolveToolsAllowed
         // Java: checkResolveToolsAllowed()
         if ctx
             .context
@@ -2021,9 +2146,18 @@ fn ctx_methods(builder: &mut MethodsBuilder) {
                  --noincompatible_disallow_ctx_resolve_tools to temporarily disable this check.",
             ));
         }
-        let _ = tools;
-        // Java: CommandHelper.builder(ruleContext).addToolDependencies(...).getResolvedTools()
-        blaze_util::unported!("StarlarkRuleContext.resolveTools")
+        let tools = sequence_cast_targets(tools, "tools", eval)?;
+        let rc = ctx.context.handle.borrow();
+        let helper = crate::rule::command_helper::CommandHelper::builder(&rc)
+            .add_tool_dependencies(tools)
+            .build();
+        let heap = eval.heap();
+        Ok(heap.alloc(starlark::values::tuple::AllocTuple([
+            crate::rule::depsets::depset_value(&crate::rule::depsets::artifacts_to_depset(
+                helper.get_resolved_tools(),
+            )),
+            heap.alloc(AllocList::EMPTY),
+        ])))
     }
 
     /// Converts the input string into a Label object, in the context of the package where the

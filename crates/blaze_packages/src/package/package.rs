@@ -414,7 +414,9 @@ impl PartialEq for PackageDeclarations {
 // Java: com/google/devtools/build/lib/packages/Package.java:1039 Package.Builder.PackageSettings
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PackageSettings {
+    // Java: com/google/devtools/build/lib/packages/Package.java:1048 Package.Builder.PackageSettings.succinctTargetNotFoundErrors
     pub succinct_target_not_found_errors: bool,
+    // Java: com/google/devtools/build/lib/packages/Package.java:1065 Package.Builder.PackageSettings.precomputeTransitiveLoads
     pub precompute_transitive_loads: bool,
 }
 
@@ -422,6 +424,7 @@ pub struct PackageSettings {
 // Java: com/google/devtools/build/lib/packages/Package.java:1073 Package.Builder.PackageLimits
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PackageLimits {
+    // Java: com/google/devtools/build/lib/packages/Package.java:1096 Package.Builder.PackageLimits.maxStarlarkComputationStepsPerPackage
     pub max_starlark_computation_steps_per_package: i64,
 }
 
@@ -1076,6 +1079,7 @@ impl TargetDefinitionContext {
     // order) and the digest Java computes (a Fingerprint over the direct loads'
     // `bzlTransitiveDigest`s) instead. Transitive loads are always "precomputed".
     // Java: com/google/devtools/build/lib/packages/Package.java:720 Package.AbstractBuilder.setLoads
+    // Java: com/google/devtools/build/lib/packages/Package.java:1166 Package.Builder.setLoads
     pub fn set_loads(&mut self, transitive_loads: Vec<Label>, transitive_bzl_digest: Vec<u8>) {
         self.declarations
             .check_mutable()
@@ -1090,6 +1094,7 @@ impl TargetDefinitionContext {
     }
 
     // Java: com/google/devtools/build/lib/packages/Package.java:753 Package.AbstractBuilder.mergePackageArgsFrom
+    // Java: com/google/devtools/build/lib/packages/Package.java:748 Package.AbstractBuilder.mergePackageArgsFrom
     pub fn merge_package_args_from(&mut self, package_args: &PackageArgs) {
         self.declarations
             .check_mutable()
@@ -1266,3 +1271,8 @@ impl TargetDefinitionContext {
         (self, Ok(()))
     }
 }
+
+// PORT: skipped, Metadata is built with a struct literal (Java's AutoBuilder): Package.builder, Package.packageIdentifier, Package.buildFilename, Package.workspaceName
+// PORT: skipped, Metadata is built with a struct literal (Java's AutoBuilder): Package.repositoryMapping, Package.associatedModuleName, Package.associatedModuleVersion
+// PORT: skipped, Metadata is built with a struct literal (Java's AutoBuilder): Package.configSettingVisibilityPolicy, Package.succinctTargetNotFoundErrors
+// PORT: skipped, serialization for remote analysis caching (not ported, ruling 2026-11-19 (1)): Package.setTransitiveLoadsForDeserialization, Package.getEncodedClass, Package.serialize, Package.deserialize

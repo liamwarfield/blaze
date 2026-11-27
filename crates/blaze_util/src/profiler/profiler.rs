@@ -1114,7 +1114,7 @@ impl Profiler {
     /// Convenience method to log phase marker tasks.
     // Java: com/google/devtools/build/lib/profiler/Profiler.java:1024 Profiler.markPhase
     pub fn mark_phase(&self, phase: ProfilePhase) {
-        // PORT: skipped, memory instrumentation (MemoryProfiler.instance().markPhase(phase)).
+        crate::profiler::memory_profiler::MemoryProfiler::instance().mark_phase(phase);
         if self.is_active() && self.is_profiling(ProfilerTask::PHASE) {
             self.log_event(ProfilerTask::PHASE, phase.description());
         }

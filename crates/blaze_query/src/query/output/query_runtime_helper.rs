@@ -52,6 +52,13 @@ impl std::error::Error for QueryRuntimeHelperException {}
 /// file"); here the file closes when the last handle of the stream is dropped, and a close error
 /// cannot be observed.
 // Java: com/google/devtools/build/lib/runtime/QueryRuntimeHelper.java:57 StdoutQueryRuntimeHelperFactory.create
+// Java: com/google/devtools/build/lib/runtime/QueryRuntimeHelper.java:54 QueryRuntimeHelper.Factory.create
+// Java: com/google/devtools/build/lib/runtime/QueryRuntimeHelper.java:83 QueryRuntimeHelper.StdoutQueryRuntimeHelperFactory.createInternal
+// Java: com/google/devtools/build/lib/runtime/QueryRuntimeHelper.java:38 QueryRuntimeHelper.getOutputStreamForQueryOutput
+// Java: com/google/devtools/build/lib/runtime/QueryRuntimeHelper.java:96 QueryRuntimeHelper.StdoutQueryRuntimeHelperFactory.StdoutQueryRuntimeHelper.getOutputStreamForQueryOutput
+// Java: com/google/devtools/build/lib/runtime/QueryRuntimeHelper.java:132 QueryRuntimeHelper.StdoutQueryRuntimeHelperFactory.FileQueryRuntimeHelper.getOutputStreamForQueryOutput
+// PORT: skipped, a no-op in both helpers: QueryRuntimeHelper.afterQueryOutputIsWritten
+// PORT: skipped, the file closes when its stream is dropped (see above): QueryRuntimeHelper.close
 pub fn create(
     stdout: &OutputStream,
     working_directory: &Path,

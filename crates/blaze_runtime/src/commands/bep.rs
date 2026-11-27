@@ -2728,9 +2728,16 @@ impl BepCommandSupport {
             },
             // PORT: remote analysis caching is not ported (no cache hits, misses or stores).
             remote_analysis_caching: RemoteAnalysisCachingFacts::default(),
-            // PORT: Blaze is not a JVM: there is no heap, no garbage collector and no
-            // MemoryProfiler heap reading (docs/decisions.md, review response 2026-11-25).
-            memory: JvmMemoryFacts::default(),
+            // MemoryProfiler's heap at FINISH (D15: resident memory after malloc_trim). PORT:
+            // the PostGCMemoryUseRecorder figures stay absent: they come from the JVM's GC
+            // notifications, and Blaze has no garbage collector.
+            // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:508 MetricsCollector.createMemoryMetrics
+            memory: JvmMemoryFacts {
+                heap_used_memory_at_finish:
+                    blaze_util::profiler::memory_profiler::MemoryProfiler::instance()
+                        .get_heap_used_memory_at_finish(),
+                ..JvmMemoryFacts::default()
+            },
             // Profiler.getProfileElapsedTime() and getServerProcessCpuTime() never return
             // null.
             profile_elapsed_time_ms: Some(profile_elapsed_time_ms),

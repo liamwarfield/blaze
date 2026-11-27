@@ -18,7 +18,13 @@ use starlark::values::ValueLike;
 use starlark::values::list_or_tuple::UnpackListOrTuple;
 use starlark::values::{Demand, Heap, NoSerialize, StarlarkValue, Value, starlark_value};
 
-use crate::rule::depsets::{artifacts_to_depset, depset_value, strings_to_depset};
+use blaze_actions::analysis::symlink_entry::SymlinkEntry;
+use blaze_collect::NestedSet;
+use starlark::values::{FrozenHeap, OwnedFrozenValue};
+
+use crate::rule::depsets::{
+    artifacts_to_depset, depset_value, nested_set_to_depset, strings_to_depset,
+};
 
 fn errorf(msg: String) -> starlark::Error {
     starlark::Error::new_other(anyhow::anyhow!("{msg}"))
@@ -75,14 +81,15 @@ impl<'v> StarlarkValue<'v> for StarlarkRunfiles {
 
     fn get_attr(&self, attribute: &str, _heap: Heap<'v>) -> Option<Value<'v>> {
         match attribute {
-            // Java: com/google/devtools/build/lib/analysis/Runfiles.java:238 Runfiles.getArtifactsForStarlark
+            // Java: com/google/devtools/build/lib/analysis/Runfiles.java:228 Runfiles.getArtifactsForStarlark
             "files" => Some(depset_value(&artifacts_to_depset(self.0.get_artifacts()))),
-            // Java: com/google/devtools/build/lib/analysis/Runfiles.java:255 Runfiles.getSymlinksForStarlark
-            "symlinks" | "root_symlinks" => {
-                // PORT: the Starlark `SymlinkEntry` value is not ported.
-                blaze_util::unported!("Runfiles.getSymlinksForStarlark")
-            }
-            // Java: com/google/devtools/build/lib/analysis/Runfiles.java:270 Runfiles.getEmptyFilenamesForStarlark
+            // Java: com/google/devtools/build/lib/analysis/Runfiles.java:238 Runfiles.getSymlinksForStarlark
+            "symlinks" => Some(depset_value(&symlinks_to_depset(self.0.get_symlinks()))),
+            // Java: com/google/devtools/build/lib/analysis/Runfiles.java:405 Runfiles.getRootSymlinksForStarlark
+            "root_symlinks" => Some(depset_value(&symlinks_to_depset(
+                self.0.get_root_symlinks(),
+            ))),
+            // Java: com/google/devtools/build/lib/analysis/Runfiles.java:247 Runfiles.getEmptyFilenamesForStarlark
             "empty_filenames" => Some(depset_value(&strings_to_depset(
                 &self.0.get_empty_filenames_for_starlark(),
             ))),
@@ -117,6 +124,20 @@ impl<'v> StarlarkValue<'v> for StarlarkRunfiles {
     fn provide(&'v self, demand: &mut Demand<'_, 'v>) {
         demand.provide_value(DeeplyImmutable);
     }
+}
+
+/// `Depset.of(SymlinkEntry.class, set)`: a depset of `SymlinkEntry`s.
+// Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:180 Depset.of
+fn symlinks_to_depset(set: &NestedSet<SymlinkEntry>) -> OwnedFrozenValue {
+    nested_set_to_depset(
+        set,
+        "SymlinkEntry",
+        &|e: &SymlinkEntry, heap: &FrozenHeap| {
+            heap.alloc(crate::starlark::starlark_runfiles::StarlarkSymlinkEntry(
+                e.clone(),
+            ))
+        },
+    )
 }
 
 #[starlark_module]

@@ -526,6 +526,9 @@ impl BugReport {
 // Java: com/google/devtools/build/lib/util/CrashFailureDetails.java:31 CrashFailureDetails
 pub struct CrashFailureDetails;
 
+// PORT: skipped, no OOM crash or detector in Rust (see for_throwable): CrashFailureDetails.setOomDetector, CrashFailureDetails.oomDetected
+// PORT: skipped, a panic has no cause chain (see for_throwable): CrashFailureDetails.getRootCauseToleratingCycles
+
 impl CrashFailureDetails {
     /// Max message length in a `FailureDetails.Throwable` submessage; anything beyond this is
     /// truncated.
@@ -543,6 +546,10 @@ impl CrashFailureDetails {
     /// `CRASH_UNKNOWN` (exit code 37). A panic has no class and no cause chain: the cause list
     /// has one entry whose class is `panic`, and no stack trace elements.
     // Java: com/google/devtools/build/lib/util/CrashFailureDetails.java:72 CrashFailureDetails.forThrowable
+    // Java: com/google/devtools/build/lib/util/CrashFailureDetails.java:91 CrashFailureDetails.joinSummarizedCauses
+    // Java: com/google/devtools/build/lib/util/CrashFailureDetails.java:97 CrashFailureDetails.summarizeCause
+    // Java: com/google/devtools/build/lib/util/CrashFailureDetails.java:102 CrashFailureDetails.addCause
+    // Java: com/google/devtools/build/lib/util/CrashFailureDetails.java:117 CrashFailureDetails.getThrowable
     pub fn for_throwable(message: &str) -> FailureDetail {
         let throwable = failure_details::Throwable {
             throwable_class: "panic".to_owned(),

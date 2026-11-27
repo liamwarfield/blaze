@@ -35,6 +35,13 @@ pub const TRANSITIVE_TARGET: SkyFunctionName = SkyFunctionName("TRANSITIVE_TARGE
 pub struct TransitiveTargetKey(pub Label);
 
 impl TransitiveTargetKey {
+    // (`argument()` is the label, `functionName()` `Key::FUNCTION`, equals/hashCode derived on the
+    // label.)
+    // Java: com/google/devtools/build/lib/skyframe/TransitiveTargetKey.java:45 TransitiveTargetKey.functionName
+    // Java: com/google/devtools/build/lib/skyframe/TransitiveTargetKey.java:50 TransitiveTargetKey.argument
+    // Java: com/google/devtools/build/lib/skyframe/TransitiveTargetKey.java:64 TransitiveTargetKey.hashCode
+    // Java: com/google/devtools/build/lib/skyframe/TransitiveTargetKey.java:69 TransitiveTargetKey.equals
+    // PORT: skipped, key interning: TransitiveTargetKey.getSkyKeyInterner
     // Java: com/google/devtools/build/lib/skyframe/TransitiveTargetKey.java:35 TransitiveTargetKey.of
     pub fn of(label: Label) -> Self {
         TransitiveTargetKey(label)

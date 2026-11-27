@@ -430,7 +430,8 @@ pub fn register_java_interface_matcher(matcher: JavaInterfaceMatcher) { // BLAZE
 /// BLAZE PATCH 0062: whether `v` is one of Java's allowed classes of the builtin's parameter, as
 /// the table lists them (`Starlark.classType` names); `None` when the table has no text for it.
 // Java: net/starlark/java/eval/BuiltinFunction.java:388 checkParamValue
-pub(crate) fn java_param_accepts<'v>(
+#[doc(hidden)] // BLAZE PATCH 0062 (round 3): public for the conformance tests
+pub fn java_param_accepts<'v>(
     function: &str,
     receiver: Option<&str>,
     param: &str,
@@ -593,3 +594,4 @@ pub(crate) fn java_check_callable_or_none<'v>(
 pub fn bazel_argument_binding_error(message: String) -> crate::Error {
     crate::Error::new_value(crate::eval::runtime::java_call::JavaArgBinding(message))
 }
+

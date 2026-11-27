@@ -17,7 +17,7 @@ use crate::chunker::Chunker;
 use crate::common::errors::{self, StatusRuntimeException, io_exception, status_to_io_error};
 use crate::common::remote_execution_capabilities_exception::RemoteExecutionCapabilitiesException;
 use crate::common::{
-    ActionKey, Blob, CacheNotFoundException, MissingDigestsFinder, OutputDigestMismatchException,
+    ActionKey, BlobNotSplittableException, Blob, CacheNotFoundException, MissingDigestsFinder, OutputDigestMismatchException,
     RemoteActionExecutionContext, RemoteCacheClient,
 };
 use crate::grpc::channel::io_result;
@@ -25,8 +25,9 @@ use crate::grpc::{CallOptions, ReferenceCountedChannel, methods};
 use crate::reapi::bytestream::{ReadRequest, ReadResponse};
 use crate::reapi::{
     ActionResult, Digest, FindMissingBlobsRequest, FindMissingBlobsResponse,
-    GetActionResultRequest, ServerCapabilities, SplitBlobResponse, UpdateActionResultRequest,
-    chunking_function, digest_function,
+    GetActionResultRequest, ServerCapabilities, SpliceBlobRequest, SpliceBlobResponse,
+    SplitBlobRequest, SplitBlobResponse, UpdateActionResultRequest, chunking_function,
+    digest_function,
 };
 use crate::remote_retrier::{ProgressiveBackoff, RemoteRetrier};
 use crate::retrier::Retrier;
@@ -319,40 +320,105 @@ impl GrpcCacheClient {
     /// Returns a future that completes when the splice is acknowledged, or `None` if chunking is
     /// not enabled.
     // Java: com/google/devtools/build/lib/remote/GrpcCacheClient.java:219 GrpcCacheClient.spliceBlob
-    pub fn splice_blob(
-        &self,
-        _context: &RemoteActionExecutionContext<'_>,
-        _blob_digest: &Digest,
-        _chunk_digests: &[Digest],
-        _chunking_function: chunking_function::Value,
-    ) -> Option<BoxFuture<'static, io::Result<()>>> {
+    pub fn splice_blob<'a>(
+        &'a self,
+        context: &'a RemoteActionExecutionContext<'_>,
+        blob_digest: &Digest,
+        chunk_digests: &[Digest],
+        chunking_function: chunking_function::Value,
+    ) -> Option<BoxFuture<'a, io::Result<()>>> {
         if !self.options.experimental_remote_cache_chunking {
             return None;
         }
-        blaze_util::unported!(
-            "GrpcCacheClient.spliceBlob (content-defined chunking: --experimental_remote_cache_chunking)"
-        )
+        let request = SpliceBlobRequest {
+            instance_name: self.options.remote_instance_name.clone(),
+            blob_digest: Some(blob_digest.clone()),
+            chunk_digests: chunk_digests.to_vec(),
+            digest_function: self.digest_util.get_digest_function() as i32,
+            chunking_function: chunking_function as i32,
+        };
+        Some(Box::pin(async move {
+            // catchingAsync(.., StatusRuntimeException.class, e -> new IOException(e)): the
+            // port's call outcome is already that `IOException`.
+            utils::refresh_if_unauthenticated_async(
+                || {
+                    self.retrier.execute_async(|| async {
+                        // channel.withChannelFuture(
+                        //     ch -> casFutureStub(context, ch).spliceBlob(request))
+                        io_result(
+                            self.channel
+                                .unary::<SpliceBlobRequest, SpliceBlobResponse>(
+                                    methods::SPLICE_BLOB,
+                                    request.clone(),
+                                    self.cas_future_stub(context),
+                                )
+                                .await,
+                        )
+                    })
+                },
+                &*self.call_credentials_provider,
+            )
+            .await
+            .map(|_| ())
+        }))
     }
 
     /// Queries the server for chunk information about a blob using the SplitBlob RPC.
     ///
-    /// The returned future fails with a `BlobNotSplittableException` if the server does not
+    /// The returned future fails with a [`BlobNotSplittableException`] if the server does not
     /// implement the RPC or has no chunks for this blob.
     ///
     /// Returns a future with the split blob response, or `None` if chunking is not enabled.
     // Java: com/google/devtools/build/lib/remote/GrpcCacheClient.java:260 GrpcCacheClient.splitBlob
-    pub fn split_blob(
-        &self,
-        _context: &RemoteActionExecutionContext<'_>,
-        _digest: &Digest,
-        _chunking_function: chunking_function::Value,
-    ) -> Option<BoxFuture<'static, io::Result<SplitBlobResponse>>> {
+    pub fn split_blob<'a>(
+        &'a self,
+        context: &'a RemoteActionExecutionContext<'_>,
+        digest: &Digest,
+        chunking_function: chunking_function::Value,
+    ) -> Option<BoxFuture<'a, io::Result<SplitBlobResponse>>> {
         if !self.options.experimental_remote_cache_chunking {
             return None;
         }
-        blaze_util::unported!(
-            "GrpcCacheClient.splitBlob (content-defined chunking: --experimental_remote_cache_chunking)"
-        )
+        let request = SplitBlobRequest {
+            instance_name: self.options.remote_instance_name.clone(),
+            blob_digest: Some(digest.clone()),
+            digest_function: self.digest_util.get_digest_function() as i32,
+            chunking_function: chunking_function as i32,
+        };
+        let digest = digest.clone();
+        Some(Box::pin(async move {
+            let result = utils::refresh_if_unauthenticated_async(
+                || {
+                    self.retrier.execute_async(|| async {
+                        io_result(
+                            self.channel
+                                .unary::<SplitBlobRequest, SplitBlobResponse>(
+                                    methods::SPLIT_BLOB,
+                                    request.clone(),
+                                    self.cas_future_stub(context),
+                                )
+                                .await,
+                        )
+                    })
+                },
+                &*self.call_credentials_provider,
+            )
+            .await;
+            match result {
+                Ok(response) => Ok(response),
+                Err(e) => match errors::downcast_ref::<StatusRuntimeException>(&e)
+                    .map(|sre| sre.status.code())
+                {
+                    // NOT_FOUND: the server knows how to split blobs, but has no chunks for this
+                    // one. UNIMPLEMENTED: the server advertised the parameters of a chunking
+                    // function in its capabilities, but does not actually implement SplitBlob.
+                    Some(tonic::Code::NotFound) | Some(tonic::Code::Unimplemented) => {
+                        Err(BlobNotSplittableException::new(digest).into())
+                    }
+                    _ => Err(e),
+                },
+            }
+        }))
     }
 
     /// Returns true if 'options.remoteCache' uses 'grpc' or an empty scheme

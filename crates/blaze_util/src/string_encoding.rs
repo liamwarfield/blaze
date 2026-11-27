@@ -174,6 +174,7 @@ fn not_internal(s: &str) -> ! {
 // U+00FF, which a well-formed path never has, becomes `?`) and the JDK with `sun.jnu.encoding`
 // ISO-8859-1 (unmappable chars become `?` too). So the platform string is the Latin-1
 // encoding, and a string that is not internal does not fail here either.
+// Java: com/google/devtools/build/lib/util/StringEncoding.java:151 StringEncoding.needsReencodeForPlatform
 pub fn internal_to_platform(s: &str) -> Cow<'_, OsStr> {
     match latin1_encode_lossy(s) {
         Cow::Borrowed(b) => Cow::Borrowed(OsStr::from_bytes(b)),
@@ -195,6 +196,7 @@ pub fn platform_to_internal(s: &OsStr) -> Cow<'_, str> {
 /// Java: com/google/devtools/build/lib/util/StringEncoding.java:126
 /// StringEncoding.internalToUnicode (`new String(getInternalStringBytes(s), UTF_8)`: byte
 /// sequences that are not UTF-8 become U+FFFD the way the JDK's decoder replaces them).
+// Java: com/google/devtools/build/lib/util/StringEncoding.java:127 StringEncoding.internalToUnicode
 pub fn internal_to_unicode(s: &str) -> Cow<'_, str> {
     if !needs_reencode_for_unicode(s) {
         return Cow::Borrowed(s);
@@ -208,6 +210,7 @@ pub fn internal_to_unicode(s: &str) -> Cow<'_, str> {
 /// StringEncoding.unicodeToInternal (`newInstance(s.getBytes(UTF_8), LATIN1)`)
 // PORT: Java's `getBytes(UTF_8)` writes `?` for an unpaired surrogate; a Rust `str` cannot hold
 // one, so the UTF-8 bytes are the string's own.
+// Java: com/google/devtools/build/lib/util/StringEncoding.java:138 StringEncoding.unicodeToInternal
 pub fn unicode_to_internal(s: &str) -> Cow<'_, str> {
     if !needs_reencode_for_unicode(s) {
         return Cow::Borrowed(s);

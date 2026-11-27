@@ -240,13 +240,98 @@ impl Recorder {
             let listener = tokio::net::TcpListener::from_std(listener).expect("listener");
             tonic::transport::Server::builder()
                 .serve_with_incoming(
-                    PublishBuildEventServer::new(service),
+                    RecordResets(PublishBuildEventServer::new(service)),
                     tonic::transport::server::TcpIncoming::from(listener),
                 )
                 .await
                 .expect("fake server failed");
         });
         addr
+    }
+}
+
+/// Whether the request body of a call ended with an error: the client reset the stream
+/// (`RST_STREAM`). tonic's server `Streaming` reports a `CANCELLED` request stream as the end of
+/// the requests (tonic `codec/decode.rs`), where grpc-java's server reports the cancel.
+#[derive(Clone, Default)]
+struct RequestReset(Arc<std::sync::atomic::AtomicBool>);
+
+impl RequestReset {
+    fn is_reset(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// The request body of a call, recording a reset in its [`RequestReset`].
+struct ResetRecordingBody {
+    inner: tonic::body::Body,
+    reset: RequestReset,
+}
+
+impl http_body::Body for ResetRecordingBody {
+    type Data = tonic::codegen::Bytes;
+    type Error = Status;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        let frame = Pin::new(&mut self.inner).poll_frame(cx);
+        if let std::task::Poll::Ready(Some(Err(_))) = &frame {
+            self.reset
+                .0
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        frame
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+/// The fake server's service with each request body wrapped in a [`ResetRecordingBody`], its
+/// [`RequestReset`] in the request's extensions.
+#[derive(Clone)]
+struct RecordResets<S>(S);
+
+impl<S> tonic::server::NamedService for RecordResets<S>
+where
+    S: tonic::server::NamedService,
+{
+    const NAME: &'static str = S::NAME;
+}
+
+impl<S> tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::Body>>
+    for RecordResets<S>
+where
+    S: tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::Body>>,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = S::Future;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.0.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: tonic::codegen::http::Request<tonic::body::Body>) -> Self::Future {
+        let reset = RequestReset::default();
+        let mut request = request.map(|inner| {
+            tonic::body::Body::new(ResetRecordingBody {
+                inner,
+                reset: reset.clone(),
+            })
+        });
+        request.extensions_mut().insert(reset);
+        self.0.call(request)
     }
 }
 
@@ -333,6 +418,11 @@ impl PublishBuildEvent for Recorder {
         request: Request<Streaming<PublishBuildToolEventStreamRequest>>,
     ) -> Result<Response<ResponseStream>, Status> {
         self.0.lock().publish_build_tool_event_stream_accepted = true;
+        let reset = request
+            .extensions()
+            .get::<RequestReset>()
+            .cloned()
+            .expect("the server records resets");
         let mut requests = request.into_inner();
         let (sender, receiver) = tokio::sync::mpsc::channel(1024);
         let recorder = self.clone();
@@ -342,6 +432,15 @@ impl PublishBuildEvent for Recorder {
             loop {
                 let request = match requests.message().await {
                     Ok(Some(request)) => request,
+                    // A cancel before the half-close: grpc-java's server calls
+                    // onError(Status.CANCELLED "client cancelled") (ServerCalls
+                    // StreamingServerCallListener.onCancel); tonic reports it as the end of the
+                    // requests, which RecordResets tells apart.
+                    Ok(None) if reset.is_reset() => {
+                        recorder.0.lock().event_stream_error =
+                            Some(Status::cancelled("client cancelled"));
+                        return;
+                    }
                     Ok(None) => {
                         sender.closed().await;
                         return;

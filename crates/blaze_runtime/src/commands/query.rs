@@ -199,6 +199,7 @@ pub(crate) fn incremental_command(
     blaze_sky_top::incremental::IncrementalCommand {
         state: env.get_blaze_workspace().get_incremental_state().clone(),
         command_id: env.get_command_id().to_owned(),
+        command_token: env.incremental_command_token(),
         tsgm: env.get_timestamp_granularity_monitor().clone(),
         batch: env
             .get_runtime()

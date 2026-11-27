@@ -318,13 +318,15 @@ pub(crate) fn eval_rule<'v>(
 
             // If the error was expected by an analysis test, return None, to produce an empty
             // target.
+            // ex.getMessage().matches(expectFailure): String.matches compiles the pattern (an
+            // invalid one throws the unchecked PatternSyntaxException) and matches the whole
+            // message.
             if !expect_failure.is_empty() {
-                // Java: ex.getMessage().matches(expectFailure) (a java.util.regex match)
-                blaze_util::unported!(
-                    "StarlarkRuleConfiguredTargetUtil.evalRule(expect_failure)",
-                    "regex match of '{}'",
-                    expect_failure
-                );
+                let pattern = blaze_util::java_regex::Pattern::compile(&expect_failure, 0)
+                    .unwrap_or_else(|e| panic!("PatternSyntaxException: {e}"));
+                if pattern.matches(&ex.message) {
+                    return Some(Value::new_none());
+                }
             }
 
             // Emit a single event that spans multiple lines:

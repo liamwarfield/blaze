@@ -478,6 +478,11 @@ fn artifacts_equal_without_owner(collection1: &[Artifact], collection2: &[Artifa
 /// PORT: Java also carries the action's `InputMetadataProvider` (for the critical path and the
 /// execution graph); neither subscriber is ported.
 // Java: com/google/devtools/build/lib/actions/CachedActionEvent.java:20 CachedActionEvent
+// (the getters are the public fields)
+// Java: com/google/devtools/build/lib/actions/CachedActionEvent.java:47 CachedActionEvent.getAction
+// Java: com/google/devtools/build/lib/actions/CachedActionEvent.java:55 CachedActionEvent.getNanoTimeStart
+// Java: com/google/devtools/build/lib/actions/CachedActionEvent.java:59 CachedActionEvent.getNanoTimeFinish
+// PORT: skipped, read only by the critical path's input metadata and the execution graph (see above): CachedActionEvent.getInputMetadataProvider
 pub struct CachedActionEvent {
     pub action: ActionRef,
     pub nano_time_start: Instant,
@@ -543,6 +548,10 @@ pub struct SkyframeActionExecutor {
     /// `directories.getRelativeOutputPath()`, which `ActionExecutionFunction` hands the
     /// `SkyframeInputMetadataProvider` of each action.
     per_build_file_cache: OnceLock<Arc<SingleBuildFileCache>>,
+    /// The `MemoizingEvaluator` the `SkyframeInputMetadataProvider` of each action reads done
+    /// values from (`evaluator.getExistingValue`); see
+    /// [`SkyframeActionExecutor::set_memoizing_evaluator_graph`].
+    memoizing_evaluator_graph: RwLock<Option<Arc<dyn blaze_skyframe::WalkableGraph>>>,
     /// See [`SkyframeActionExecutor::set_timestamp_granularity_monitor`].
     tsgm: OnceLock<Arc<TimestampGranularityMonitor>>,
     /// Java: `buildActionMap`. Shared actions (same primary output) execute once; the entry
@@ -624,6 +633,7 @@ impl SkyframeActionExecutor {
             action_rewind_strategy:
                 crate::rewinding::action_rewind_strategy::ActionRewindStrategy::new(),
             per_build_file_cache: OnceLock::new(),
+            memoizing_evaluator_graph: RwLock::new(None),
             tsgm: OnceLock::new(),
             build_action_map: Mutex::new(HashMap::new()),
             had_execution_error: AtomicBool::new(false),
@@ -947,6 +957,16 @@ impl SkyframeActionExecutor {
     /// `ExecutionTool` hands the executor once per build.
     // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:1044 CommandEnvironment.getFileCache
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1035 SkyframeActionExecutor.configure
+    /// The graph of the command's `MemoizingEvaluator`, which `ActionExecutionFunction` hands
+    /// the `SkyframeInputMetadataProvider` of each action
+    /// (`new SkyframeInputMetadataProvider(skyframeActionExecutor.getEvaluator(), ...)`).
+    ///
+    /// PORT: set by the build once its evaluator exists, as the remote module's graph is.
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:154 ActionExecutionFunction.<init>
+    pub fn set_memoizing_evaluator_graph(&self, graph: Arc<dyn blaze_skyframe::WalkableGraph>) {
+        *self.memoizing_evaluator_graph.write() = Some(graph);
+    }
+
     pub fn configure_file_cache(&self, file_cache: Arc<SingleBuildFileCache>) {
         if self.per_build_file_cache.set(file_cache).is_err() {
             // One build per executor: Java replaces the cache of the previous build.
@@ -1269,6 +1289,7 @@ impl SkyframeActionExecutor {
     /// the paths are converted to it when there is one.
     // Java: com/google/devtools/build/lib/actions/ActionLogBufferPathGenerator.java:36 ActionLogBufferPathGenerator.generate
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:382 SkyframeActionExecutor.setActionLogBufferPathGenerator
+    // Java: com/google/devtools/build/lib/actions/ActionLogBufferPathGenerator.java:29 ActionLogBufferPathGenerator.<init>
     fn generate_file_out_err(
         &self,
         action_file_system: Option<&Arc<RemoteActionFileSystem>>,
@@ -4095,12 +4116,17 @@ pub struct ActionInputMetadata {
     allow_skyframe: AtomicBool,
     /// `SkyframeInputMetadataProvider.seen`.
     seen: Mutex<HashMap<PathFragment, ActionInputRef>>,
+    /// `SkyframeInputMetadataProvider.evaluator`.
+    evaluator: Option<Arc<dyn blaze_skyframe::WalkableGraph>>,
 }
 
 impl ActionInputMetadata {
     /// An empty `ActionInputMap` with the providers of an action executed by `executor`.
     pub fn new(executor: &SkyframeActionExecutor) -> ActionInputMetadata {
-        ActionInputMetadata::with_providers(executor.per_build_file_cache.get().cloned())
+        let mut metadata =
+            ActionInputMetadata::with_providers(executor.per_build_file_cache.get().cloned());
+        metadata.evaluator = executor.memoizing_evaluator_graph.read().clone();
+        metadata
     }
 
     fn with_providers(per_build: Option<Arc<SingleBuildFileCache>>) -> ActionInputMetadata {
@@ -4109,6 +4135,7 @@ impl ActionInputMetadata {
             per_build,
             allow_skyframe: AtomicBool::new(false),
             seen: Mutex::new(HashMap::new()),
+            evaluator: None,
         }
     }
 
@@ -4393,6 +4420,8 @@ impl ActionInputMetadata {
     }
 
     // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:167 SkyframeInputMetadataProvider.getInputMetadataChecked
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:60 SkyframeInputMetadataProvider.SkyframeLookup.<init>
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:65 SkyframeInputMetadataProvider.SkyframeLookup.tryLookup
     fn skyframe_input_metadata_provider_get_input_metadata_checked(
         &self,
         input: &ActionInputRef,
@@ -4424,15 +4453,38 @@ impl ActionInputMetadata {
             return Ok(None);
         }
 
-        // PORT: Java reads the ActionExecutionValue of the input's generating action from the
-        // graph (`evaluator.getExistingValue(Artifact.key(artifact))`; these are transitive
-        // dependencies of the action) and returns `getExistingFileArtifactValue(artifact)`. The
-        // engine gives no handle to read a done node from an InputMetadataProvider (the
-        // Environment is not shared with the action), so the metadata is rebuilt from the output
-        // file, which is what that value was built from
-        // (ActionOutputMetadataStore.constructFileArtifactValueFromFilesystem). A file that does
-        // not exist means the generating action is not done: Java requests it
-        // (`env.getValue(key)`) and throws MissingDepExecException.
+        // We use .getExistingValue() to spare a Skyframe edge. This is correct because these are
+        // always transitive dependencies.
+        if let Some(evaluator) = &self.evaluator {
+            let key = crate::keys::artifact_key(blaze_artifact);
+            let Some(value) = evaluator.get_value(&key) else {
+                // This can only happen if a transitive dependency was rewound but the
+                // re-evaluation resulted in an error or the rewinding is in progress: Java
+                // requests it (`env.getValue(key)`) and throws MissingDepExecException.
+                blaze_util::unported!(
+                    "SkyframeInputMetadataProvider.SkyframeLookup.tryLookup",
+                    "the generating action of {} is not done (MissingDepExecException)",
+                    input
+                );
+            };
+            self.seen
+                .lock()
+                .insert(input.get_exec_path().clone(), input.clone());
+            let action_execution_value =
+                value
+                    .downcast::<ActionExecutionValue>()
+                    .unwrap_or_else(|_| {
+                        panic!("ClassCastException: {key:?} is not an ActionExecutionValue")
+                    });
+            return Ok(action_execution_value
+                .get_existing_file_artifact_value(blaze_artifact)
+                .cloned());
+        }
+
+        // PORT: without the evaluator's graph (an executor no build configured, as in unit
+        // tests) the metadata is rebuilt from the output file, which is what the generating
+        // action's value was built from
+        // (ActionOutputMetadataStore.constructFileArtifactValueFromFilesystem).
         let path = blaze_artifact.get_path();
         let Some(stat) = path.stat_if_found(Symlinks::Follow)? else {
             blaze_util::unported!(
@@ -4546,6 +4598,12 @@ impl InputMetadataProvider for ActionInputMetadata {
     }
 
     // Java: com/google/devtools/build/lib/actions/DelegatingPairInputMetadataProvider.java:48 DelegatingPairInputMetadataProvider.getTreeMetadata
+    // (the secondary, SkyframeInputMetadataProvider, answers null for trees, filesets and
+    // runfiles, so these return the input map's answer)
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:195 SkyframeInputMetadataProvider.getTreeMetadata
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:207 SkyframeInputMetadataProvider.getFileset
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:218 SkyframeInputMetadataProvider.getRunfilesMetadata
+    // PORT: skipped, not methods of Blaze's InputMetadataProvider (no caller at the pin reads them through these providers): SkyframeInputMetadataProvider.getEnclosingTreeMetadata SkyframeInputMetadataProvider.getFilesets SkyframeInputMetadataProvider.getRunfilesTrees
     fn get_tree_metadata(&self, input: &ActionInputRef) -> Option<Arc<TreeArtifactValue>> {
         // SkyframeInputMetadataProvider.getTreeMetadata returns null.
         self.action_input_map_get_tree_metadata(input)
@@ -4578,6 +4636,7 @@ impl InputMetadataProvider for ActionInputMetadata {
 /// `ProgressSuppressingEventHandler`: the reporter without the posts that are not stored for
 /// replay (the progress events).
 // Java: com/google/devtools/build/lib/skyframe/ProgressSuppressingEventHandler.java:25 ProgressSuppressingEventHandler
+// Java: com/google/devtools/build/lib/skyframe/ProgressSuppressingEventHandler.java:28 ProgressSuppressingEventHandler.<init>
 struct ProgressSuppressingEventHandler(Arc<dyn ExtendedEventHandler>);
 
 impl EventHandler for ProgressSuppressingEventHandler {

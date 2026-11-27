@@ -471,7 +471,6 @@ my_rule(name = "example")
 
 // Java: RequiredConfigFragmentsTest.aspectInErrorWithAllowAnalysisFailures
 #[test]
-#[ignore = "needs AnalysisFailureInfo.forAnalysisFailureSets (MergedConfiguredTarget.getAnalysisFailures)"]
 fn aspect_in_error_with_allow_analysis_failures() {
     let mut t = BuildViewTestCase::new();
     t.scratch.file(

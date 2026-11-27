@@ -168,6 +168,38 @@ impl<'v> MutableDictData<'v> {
     }
 }
 
+/// BLAZE PATCH 0063 (round 2): the keys Java's `x.equals(y)` reads from a key-tracking `y`.
+/// `Dict.equals` is `contents.equals(y)`: an `ImmutableMap` `x` (`Maps.equalsImpl`) compares
+/// `entrySet()`s, which records every key of `y`; a `LinkedHashMap` `x` (`AbstractMap.equals`)
+/// returns at once on different sizes, else calls `y.get(k)` for its keys in order (recording a
+/// present key) until the first missing key or unequal value.
+// Java: net/starlark/java/eval/Dict.java:209 Dict.equals
+fn record_equals_accesses<'v, X: DictLike<'v>>(
+    x: &X,
+    y: &MutableDictData<'v>,
+    y_content: &SmallMap<Value<'v>, Value<'v>>,
+) -> crate::Result<()> {
+    if x.java_contents_immutable() {
+        y.record_all_keys_access();
+        return Ok(());
+    }
+    let x_content = x.content();
+    if x_content.len() != y_content.len() {
+        return Ok(());
+    }
+    for (xk, xv) in x_content.iter_hashed() {
+        let Some(i) = y_content.get_index_of_hashed_by_value(xk.copied()) else {
+            return Ok(());
+        };
+        y.record_index(i);
+        let yv = *y_content.get_index(i).expect("index of a key").1;
+        if !xv.equals(yv)? {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
 /// BLAZE PATCH 0018: Java's error for mutating a frozen dict (Starlark.checkMutable).
 pub(crate) fn frozen_dict_error() -> anyhow::Error {
     anyhow::anyhow!("trying to mutate a frozen dict value")
@@ -461,6 +493,12 @@ trait DictLike<'v>: Debug + Allocative {
     fn record_key_index_access(&self, _index: usize) {}
     /// BLAZE PATCH 0063: records an access of every key (key-tracking dicts only).
     fn record_all_keys_access(&self) {}
+    /// BLAZE PATCH 0063 (round 2): whether Java's `contents` of this dict is an `ImmutableMap`
+    /// (a dict made immutable, `Dict.immutableCopyOf`) rather than a `LinkedHashMap` (a mutable
+    /// dict, frozen or not).
+    fn java_contents_immutable(&self) -> bool {
+        false
+    }
 }
 
 // BLAZE PATCH 0018: implemented on `MutableDictData` (was `RefCell<Dict>`, now `self.cell`).
@@ -498,6 +536,11 @@ impl<'v> DictLike<'v> for MutableDictData<'v> {
     // BLAZE PATCH 0063
     fn record_key_index_access(&self, index: usize) {
         self.record_index(index);
+    }
+
+    // BLAZE PATCH 0063 (round 2)
+    fn java_contents_immutable(&self) -> bool {
+        self.immutable.get()
     }
 
     // BLAZE PATCH 0063
@@ -591,8 +634,14 @@ where
     fn equals(&self, other: Value<'v>) -> crate::Result<bool> {
         match DictRef::from_value(other) {
             None => Ok(false),
-            Some(other) => {
-                equals_small_map(&*self.0.content(), &other.content, |x, y| x.equals(*y))
+            Some(other_ref) => {
+                // BLAZE PATCH 0063 (round 2): the reads of Java's `x.equals(y)` on a key-tracking `y`.
+                if let Some(tracking) = other.downcast_ref::<MutableDict>() {
+                    if tracking.0.accessed_keys.borrow().is_some() {
+                        record_equals_accesses(&self.0, &tracking.0, &other_ref.content)?;
+                    }
+                }
+                equals_small_map(&*self.0.content(), &other_ref.content, |x, y| x.equals(*y))
             }
         }
     }

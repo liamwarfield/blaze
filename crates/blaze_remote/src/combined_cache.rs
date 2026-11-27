@@ -25,10 +25,15 @@ use crate::common::output_digest_mismatch_exception::OutputDigestMismatchExcepti
 use crate::common::progress_status_listener::{ProgressStatusListener, no_action};
 use crate::common::remote_action_execution_context::RemoteActionExecutionContext;
 use crate::common::remote_cache_client::{
-    ActionKey, Blob, BytesBlob, RemoteCacheClient, RemoteCacheClientUploads,
+    ActionKey, Blob, BytesBlob, RemoteCacheClient, RemoteCacheClientUploads, dedup_upload,
 };
+use crate::chunked_blob_downloader::ChunkedBlobDownloader;
+use crate::chunked_blob_uploader::ChunkedBlobUploader;
+use crate::chunking::ChunkingConfig;
+use crate::common::BlobNotSplittableException;
 use crate::disk::DiskCacheClient;
-use crate::reapi::{ActionResult, CacheCapabilities, Digest, ServerCapabilities};
+use crate::grpc_cache_client::GrpcCacheClient;
+use crate::reapi::{ActionResult, CacheCapabilities, Digest, ServerCapabilities, chunking_function};
 use crate::runtime::get_from_future;
 use crate::store::Store;
 use crate::util::digest_util::DigestUtil;
@@ -71,6 +76,55 @@ pub struct CombinedCache {
     pub(crate) symlink_template: Option<String>,
     pub(crate) digest_util: DigestUtil,
     chunking_function: Option<ChunkingFunctionValue>,
+    /// `chunking` (`Chunking`'s `config` once `initialized`): `None` until the first
+    /// [`CombinedCache::chunking_supported`] that got the server capabilities, then the
+    /// negotiated configuration (itself `None` when the server advertises no chunking function).
+    ///
+    /// PORT: Java's `Chunking` also holds a `ChunkedBlobDownloader` and a `ChunkedBlobUploader`;
+    /// both are stateless apart from the configuration and are made per chunked transfer here
+    /// (the downloader borrows the cache, the uploader runs as a task that owns its clients).
+    chunking: Mutex<Option<Option<ChunkingConfig>>>,
+}
+
+/// The body of `CombinedCache.uploadBlob(context, digest, blob, force)` over the cache's two
+/// clients, so that a chunked upload (which owns the clients, see `ChunkedBlobUploader`) uploads
+/// its chunks as the cache does.
+// Java: com/google/devtools/build/lib/remote/CombinedCache.java:458 CombinedCache.uploadBlob
+pub(crate) async fn upload_blob_to_clients(
+    remote_cache_client: Option<&Arc<dyn RemoteCacheClient>>,
+    disk_cache_client: Option<&Arc<DiskCacheClient>>,
+    context: &RemoteActionExecutionContext<'_>,
+    digest: &Digest,
+    blob: Arc<dyn Blob>,
+    force: bool,
+) -> io::Result<()> {
+    if digest.size_bytes == 0 {
+        return Ok(());
+    }
+
+    let disk_cache_future = async {
+        if let Some(disk_cache_client) = disk_cache_client
+            && context.get_write_cache_policy().allow_disk_cache()
+        {
+            disk_cache_client.upload_blob(digest, &*blob).await
+        } else {
+            Ok(())
+        }
+    };
+
+    let remote_cache_future = async {
+        if let Some(remote_cache_client) = remote_cache_client
+            && context.get_write_cache_policy().allow_remote_cache()
+        {
+            remote_cache_client
+                .upload_blob(context, digest, blob.clone(), force)
+                .await
+        } else {
+            Ok(())
+        }
+    };
+
+    when_all_succeed(disk_cache_future, remote_cache_future).await
 }
 
 impl std::fmt::Debug for CombinedCache {
@@ -152,6 +206,7 @@ impl CombinedCache {
             symlink_template,
             digest_util,
             chunking_function,
+            chunking: Mutex::new(None),
         }
     }
 
@@ -177,28 +232,56 @@ impl CombinedCache {
 
     /// `Chunking.supported()`: delays the initialization of the chunking support logic until
     /// first use to avoid blocking on a server capabilities check at construction time.
-    ///
-    /// PORT: Java continues with `remoteCacheClient instanceof GrpcCacheClient` and returns false
-    /// for other clients; a `dyn RemoteCacheClient` cannot be asked, and everything behind the
-    /// check (`ChunkingConfig.fromServerCapabilities`, `ChunkedBlobDownloader`,
-    /// `ChunkedBlobUploader`) is content-defined chunking, which is not ported. A cache built
-    /// with a chunking function and a remote client fails loudly here.
     // Java: com/google/devtools/build/lib/remote/CombinedCache.java:122 CombinedCache.Chunking.supported
     fn chunking_supported(&self) -> io::Result<bool> {
-        if self.chunking_function.is_none() {
+        let Some(chunking_function) = self.chunking_function else {
+            return Ok(false);
+        };
+        if self.grpc_cache_client().is_none() {
+            // `!(remoteCacheClient instanceof GrpcCacheClient)`.
             return Ok(false);
         }
-        if self.remote_cache_client.is_none() {
-            // `null instanceof GrpcCacheClient`.
-            return Ok(false);
+        let mut chunking = self.chunking.lock();
+        if chunking.is_none() {
+            // synchronized (this): the capabilities are fetched once; a failure leaves the
+            // state uninitialized, as Java's `initialized` stays false.
+            let capabilities = self.get_remote_server_capabilities()?;
+            *chunking = Some(match chunking_function {
+                ChunkingFunctionValue::AUTO => {
+                    ChunkingConfig::from_server_capabilities(&capabilities)
+                }
+                ChunkingFunctionValue::FAST_CDC_2020 => {
+                    ChunkingConfig::from_server_capabilities_for(
+                        &capabilities,
+                        chunking_function::Value::FastCdc2020,
+                    )
+                }
+                ChunkingFunctionValue::REP_MAX_CDC => {
+                    ChunkingConfig::from_server_capabilities_for(
+                        &capabilities,
+                        chunking_function::Value::RepMaxCdc,
+                    )
+                }
+            });
         }
-        blaze_util::unported!("CombinedCache.Chunking.supported (content-defined chunking)")
+        Ok(chunking.expect("initialized above").is_some())
     }
 
-    /// `Chunking.config().chunkingThreshold()`.
+    /// `Chunking.config()`.
     // Java: com/google/devtools/build/lib/remote/CombinedCache.java:152 CombinedCache.Chunking.config
-    fn chunking_config_chunking_threshold(&self) -> i64 {
-        blaze_util::unported!("CombinedCache.Chunking.config (content-defined chunking)")
+    fn chunking_config(&self) -> ChunkingConfig {
+        self.chunking
+            .lock()
+            .flatten()
+            .expect("must not call config() unless supported() is true")
+    }
+
+    /// `remoteCacheClient instanceof GrpcCacheClient grpcClient ? grpcClient : null`.
+    fn grpc_cache_client(&self) -> Option<&GrpcCacheClient> {
+        self.remote_cache_client
+            .as_ref()?
+            .as_any()?
+            .downcast_ref::<GrpcCacheClient>()
     }
 
     /// `getRemoteCacheCapabilities()`.
@@ -461,8 +544,8 @@ impl CombinedCache {
             }
         };
 
-        // PORT: Java has already started the disk cache upload when this check fails; it only
-        // fails inside the chunking code, which is not ported.
+        // PORT: Java has already started the disk cache upload when this check fails (it is not
+        // awaited then); here it has not started yet.
         let chunking_supported = self.chunking_supported()?;
 
         let remote_cache_future = async {
@@ -470,11 +553,17 @@ impl CombinedCache {
                 && context.get_write_cache_policy().allow_remote_cache()
             {
                 if chunking_supported
-                    && digest.size_bytes > self.chunking_config_chunking_threshold()
+                    && digest.size_bytes > self.chunking_config().chunking_threshold()
                 {
-                    // Java: remoteCacheClient.dedupUpload(
+                    // remoteCacheClient.dedupUpload(
                     //     digest, () -> uploadChunked(context, digest, file, force), force)
-                    blaze_util::unported!("CombinedCache.uploadChunked (content-defined chunking)")
+                    dedup_upload(
+                        &**remote_cache_client,
+                        digest,
+                        self.upload_chunked(context, digest, file, force),
+                        force,
+                    )
+                    .await
                 } else {
                     remote_cache_client
                         .upload_file(context, digest, file, force)
@@ -486,6 +575,34 @@ impl CombinedCache {
         };
 
         when_all_succeed(disk_cache_future, remote_cache_future).await
+    }
+
+    /// The chunked upload of a file, as the task of the remote client's upload deduplication: it
+    /// owns what it uses (a `ChunkedBlobUploader` over this cache's clients, the detached context).
+    // Java: com/google/devtools/build/lib/remote/CombinedCache.java:413 CombinedCache.uploadChunked
+    fn upload_chunked(
+        &self,
+        context: &RemoteActionExecutionContext<'_>,
+        digest: &Digest,
+        file: &Path,
+        force: bool,
+    ) -> impl std::future::Future<Output = io::Result<()>> + Send + 'static {
+        let uploader = ChunkedBlobUploader::new(
+            self.remote_cache_client
+                .clone()
+                .expect("a chunked upload needs the remote cache"),
+            self.disk_cache_client.clone(),
+            &self.chunking_config(),
+            self.digest_util.clone(),
+        );
+        let context = context.detached();
+        let digest = digest.clone();
+        let file = file.clone();
+        async move {
+            uploader
+                .upload_chunked(&context, &digest, &file, force)
+                .await
+        }
     }
 
     /// Uploads a sequence of bytes to the cache.
@@ -538,33 +655,15 @@ impl CombinedCache {
         blob: Arc<dyn Blob>,
         force: bool,
     ) -> io::Result<()> {
-        if digest.size_bytes == 0 {
-            return Ok(());
-        }
-
-        let disk_cache_future = async {
-            if let Some(disk_cache_client) = &self.disk_cache_client
-                && context.get_write_cache_policy().allow_disk_cache()
-            {
-                disk_cache_client.upload_blob(digest, &*blob).await
-            } else {
-                Ok(())
-            }
-        };
-
-        let remote_cache_future = async {
-            if let Some(remote_cache_client) = &self.remote_cache_client
-                && context.get_write_cache_policy().allow_remote_cache()
-            {
-                remote_cache_client
-                    .upload_blob(context, digest, blob.clone(), force)
-                    .await
-            } else {
-                Ok(())
-            }
-        };
-
-        when_all_succeed(disk_cache_future, remote_cache_future).await
+        upload_blob_to_clients(
+            self.remote_cache_client.as_ref(),
+            self.disk_cache_client.as_ref(),
+            context,
+            digest,
+            blob,
+            force,
+        )
+        .await
     }
 
     /// `downloadBlob(context, digest)`: only for use by tests and the remote executor
@@ -720,15 +819,26 @@ impl CombinedCache {
 
         let chunking_supported = self.chunking_supported()?;
 
-        if chunking_supported && digest.size_bytes > self.chunking_config_chunking_threshold() {
+        if chunking_supported && digest.size_bytes > self.chunking_config().chunking_threshold() {
+            let downloader = ChunkedBlobDownloader::new(
+                self.grpc_cache_client()
+                    .expect("chunking is supported only with a GrpcCacheClient"),
+                self,
+                &self.chunking_config(),
+                self.digest_util.clone(),
+            );
             // Only a failure to split the blob is recoverable by downloading it as a whole. Once
             // the server has described the blob as a sequence of chunks, the download is
             // committed to that path: chunks are written to `out` as they arrive, so restarting
             // would append the blob to the chunks already written. A missing chunk is reported
             // as a missing blob instead, letting the usual lost input handling regenerate it.
-            blaze_util::unported!(
-                "CombinedCache.downloadBlobFromRemote (content-defined chunking)"
-            );
+            return match downloader.download_chunked(context, digest, &mut *out).await {
+                Err(e) if BlobNotSplittableException::is(&e) => {
+                    self.regular_download_blob_from_remote(context, digest, out, out_path)
+                        .await
+                }
+                result => result,
+            };
         }
 
         self.regular_download_blob_from_remote(context, digest, out, out_path)

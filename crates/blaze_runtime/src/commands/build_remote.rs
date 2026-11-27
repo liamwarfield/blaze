@@ -281,7 +281,7 @@ fn set_up_module(
             skyframe_delete_by_function_name: Some({
                 let incremental_state = env.get_blaze_workspace().get_incremental_state().clone();
                 Arc::new(move |predicate: Arc<dyn Fn(&str) -> bool + Send + Sync>| {
-                    incremental_state.delete_by_function_name(predicate)
+                    incremental_state.delete(&|k| predicate(k.function_name().0))
                 })
             }),
             ..RemoteHooks::new()
@@ -337,15 +337,9 @@ fn remote_external_overlay_file_system(
     )
 }
 
-/// `invalidateRepoDirectories(evaluator, repoNames)` for the overlay file system: Java deletes
-/// the `REPOSITORY_DIRECTORY` nodes of the repos (and their reverse dependencies) from the
-/// server's graph.
-///
-/// PORT: the server's graph is the graph `SkyframeIncrementalState` keeps between commands
-/// (crates/blaze_sky_top/src/incremental.rs), which offers no targeted `delete`; Blaze drops the
-/// whole kept graph instead (`resetEvaluator`). The next command then re-evaluates everything,
-/// which re-fetches exactly the repos Java's delete would, but also reloads the other nodes
-/// (visible only in the "N packages loaded" counts of the progress messages).
+/// `invalidateRepoDirectories(evaluator, repoNames)` for the overlay file system: deletes the
+/// `REPOSITORY_DIRECTORY` nodes of the repos (and their reverse dependencies) from the server's
+/// graph (`SkyframeIncrementalState::delete`: the graph the command holds, or the kept one).
 // Java: com/google/devtools/build/lib/remote/RemoteExternalOverlayFileSystem.java:195 RemoteExternalOverlayFileSystem.invalidateRepoDirectories
 fn invalidate_repo_directories(
     env: &CommandEnvironment,
@@ -355,7 +349,11 @@ fn invalidate_repo_directories(
         if repo_names.is_empty() {
             return;
         }
-        incremental_state.reset_evaluator();
+        incremental_state.delete(&|k| {
+            k.function_name() == blaze_sky_loading::sky_functions::REPOSITORY_DIRECTORY
+                && k.downcast::<blaze_sky_loading::repos::RepositoryDirectoryKey>()
+                    .is_some_and(|key| repo_names.contains(key.0.get_name()))
+        });
     })
 }
 
@@ -933,7 +931,9 @@ impl RemoteSupport {
     // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1298 RemoteModule.executorInit
     pub(crate) fn set_rewinding_action_graph(&self, graph: Arc<dyn blaze_skyframe::WalkableGraph>) {
         if let Some(synchronizer) = self.module.lock().get_rewound_action_synchronizer() {
-            synchronizer.set_graph(Arc::new(SkyframeRewindingActionGraph { graph }));
+            synchronizer.set_graph(Arc::new(SkyframeRewindingActionGraph {
+                graph: Arc::downgrade(&graph),
+            }));
         }
     }
 
@@ -1122,8 +1122,22 @@ fn is_owned_by_coverage_report(input: &ActionInputRef) -> bool {
 
 /// The reads of `RemoteRewoundActionSynchronizer.lockKeysFor` on the command's Skyframe graph
 /// (`SkyframeExecutorWrappingWalkableGraph`).
+///
+/// PORT: the graph is held weakly. The synchronizer belongs to the command's remote services,
+/// which the evaluator's execution functions reach; a strong reference would make the evaluator
+/// own itself (an `Arc` cycle: never freed, and a server could not keep its graph for the next
+/// command). Java's collector frees such cycles. The synchronizer is used only while the
+/// command's executor, which holds the evaluator, runs actions.
 struct SkyframeRewindingActionGraph {
-    graph: Arc<dyn blaze_skyframe::WalkableGraph>,
+    graph: std::sync::Weak<dyn blaze_skyframe::WalkableGraph>,
+}
+
+impl SkyframeRewindingActionGraph {
+    fn graph(&self) -> Arc<dyn blaze_skyframe::WalkableGraph> {
+        self.graph
+            .upgrade()
+            .expect("IllegalStateException: the command's Skyframe graph is gone")
+    }
 }
 
 impl blaze_remote::remote_rewound_action_synchronizer::RewindingActionGraph
@@ -1132,9 +1146,11 @@ impl blaze_remote::remote_rewound_action_synchronizer::RewindingActionGraph
     // Java: com/google/devtools/build/lib/remote/RemoteRewoundActionSynchronizer.java:389 RemoteRewoundActionSynchronizer.lockKeysFor
     fn is_action_template(&self, key: &blaze_actions::ActionLookupData) -> bool {
         // (ActionLookupValue) checkNotNull(graph.getValue(key.getActionLookupKey()), artifact)
-        let actions =
-            crate::commands::print_action::owner_actions(&*self.graph, key.get_action_lookup_key())
-                .unwrap_or_else(|| panic!("NullPointerException: {key:?}"));
+        let actions = crate::commands::print_action::owner_actions(
+            &*self.graph(),
+            key.get_action_lookup_key(),
+        )
+        .unwrap_or_else(|| panic!("NullPointerException: {key:?}"));
         // owner.getActions().get(key.getActionIndex()) instanceof ActionTemplate
         blaze_exec::actions::action_template::as_action_template(
             &*actions[key.get_action_index() as usize],
@@ -1154,7 +1170,7 @@ impl blaze_remote::remote_rewound_action_synchronizer::RewindingActionGraph
             key.get_action_index(),
         );
         let expansion = self
-            .graph
+            .graph()
             .get_value(&blaze_skyframe::SkyKey::new(expansion_key))
             .unwrap_or_else(|| panic!("NullPointerException: {tree}"))
             .downcast::<ActionTemplateExpansionValue>()

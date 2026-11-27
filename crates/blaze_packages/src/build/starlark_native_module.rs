@@ -275,10 +275,10 @@ pub fn starlarkify_value<'v>(
         AttrValue::LateBound(_) => {
             blaze_util::unported!("StarlarkNativeModule.starlarkifyValue(LateBoundDefault)")
         }
-        // Java: a STRING_SET value is neither a List nor a Map.
-        AttrValue::StringSet(_) => {
-            blaze_util::unported!("StarlarkNativeModule.starlarkifyValue(STRING_SET)")
-        }
+        // Java: a STRING_SET value (a Java `Set`, e.g. the `build_setting_default` of a
+        // `config.string_set` flag) is neither a List, a Map nor a StarlarkValue: `default ->
+        // null`, the attribute is left out.
+        AttrValue::StringSet(_) => None,
     }
 }
 

@@ -58,6 +58,8 @@ pub fn to_variable_object<'v>(v: Value<'v>, heap: Heap<'v>) -> starlark::Result<
     if let Some(t) = TupleRef::from_value(v) {
         return iterable(t.content().iter().copied(), heap);
     }
+    // A key-tracking dict (`ctx.var`) records every key: Java a Dict as an `Iterable`: `iterator()` is `keySet().iterator()`.
+    starlark::values::dict::dict_record_all_keys_accessed(v);
     if let Some(d) = DictRef::from_value(v) {
         let keys: Vec<Value<'v>> = d.keys().collect();
         return iterable(keys.into_iter(), heap);

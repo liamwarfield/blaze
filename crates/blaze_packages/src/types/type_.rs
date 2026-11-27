@@ -139,6 +139,7 @@ impl Type {
 
     /// For collection types, the element type; `None` otherwise.
     // Java: com/google/devtools/build/lib/packages/Type.java:288 Type.getListElementType
+    // Java: com/google/devtools/build/lib/packages/Type.java:636 Type.CollectionType.getListElementType
     pub fn get_list_element_type(self) -> Option<Type> {
         match self {
             Type::StringList | Type::StringSet => Some(Type::String),
@@ -179,6 +180,8 @@ impl Type {
 
     /// Returns the class of labels contained by this type, if any.
     // Java: com/google/devtools/build/lib/packages/Type.java:233 Type.getLabelClass
+    // Java: com/google/devtools/build/lib/packages/Type.java:641 Type.CollectionType.getLabelClass
+    // Java: com/google/devtools/build/lib/packages/Type.java:548 Type.DictType.getLabelClass
     pub fn get_label_class(self) -> LabelClass {
         match self {
             Type::Label
@@ -214,6 +217,11 @@ impl Type {
 
     /// The default value for this type; `None` iff no default is defined (labels, outputs).
     // Java: com/google/devtools/build/lib/packages/Type.java:190 Type.getDefaultValue
+    // Java: com/google/devtools/build/lib/packages/Type.java:396 Type.BooleanType.getDefaultValue
+    // Java: com/google/devtools/build/lib/packages/Type.java:646 Type.CollectionType.getDefaultValue
+    // Java: com/google/devtools/build/lib/packages/Type.java:612 Type.DictType.getDefaultValue
+    // Java: com/google/devtools/build/lib/packages/Type.java:343 Type.IntegerType.getDefaultValue
+    // Java: com/google/devtools/build/lib/packages/Type.java:455 Type.StringType.getDefaultValue
     pub fn get_default_value(self) -> Option<AttrValue> {
         match self {
             Type::Integer => Some(AttrValue::Int(0)),
@@ -305,6 +313,7 @@ impl Type {
 
     /// Like [`Type::convert`], but converts Starlark `None` to Java null (`Ok(None)`).
     // Java: com/google/devtools/build/lib/packages/Type.java:166 Type.convertOptional
+    // Java: com/google/devtools/build/lib/packages/Type.java:174 Type.convertOptional
     pub fn convert_optional<'v>(
         self,
         x: Value<'v>,
@@ -438,6 +447,11 @@ impl Type {
     /// Java `Type.cast`: checks that `value` has this type's representation (panics otherwise,
     /// as Java's ClassCastException).
     // Java: com/google/devtools/build/lib/packages/Type.java:180 Type.cast
+    // Java: com/google/devtools/build/lib/packages/Type.java:391 Type.BooleanType.cast
+    // Java: com/google/devtools/build/lib/packages/Type.java:630 Type.CollectionType.cast
+    // Java: com/google/devtools/build/lib/packages/Type.java:553 Type.DictType.cast
+    // Java: com/google/devtools/build/lib/packages/Type.java:336 Type.IntegerType.cast
+    // Java: com/google/devtools/build/lib/packages/Type.java:450 Type.StringType.cast
     pub fn cast(self, value: &AttrValue) -> &AttrValue {
         if !self.is_instance(value) {
             panic!("ClassCastException: {value:?} is not a value of type {self}");
@@ -447,6 +461,10 @@ impl Type {
 
     /// Invokes `visitor` for each label of `value`, an instance of this type.
     // Java: com/google/devtools/build/lib/packages/Type.java:210 Type.visitLabels
+    // Java: com/google/devtools/build/lib/packages/Type.java:401 Type.BooleanType.visitLabels
+    // Java: com/google/devtools/build/lib/packages/Type.java:348 Type.IntegerType.visitLabels
+    // Java: com/google/devtools/build/lib/packages/Type.java:794 Type.SetType.visitLabels
+    // Java: com/google/devtools/build/lib/packages/Type.java:460 Type.StringType.visitLabels
     pub fn visit_labels(
         self,
         visitor: &mut LabelVisitor<'_>,
@@ -1179,6 +1197,12 @@ pub(crate) fn into_label_list(v: AttrValue) -> Vec<Label> {
 
 impl fmt::Display for Type {
     // Java: com/google/devtools/build/lib/packages/Type.java:183 Type.toString (and the
+    // Java: com/google/devtools/build/lib/packages/Type.java:404 Type.BooleanType.toString
+    // Java: com/google/devtools/build/lib/packages/Type.java:559 Type.DictType.toString
+    // Java: com/google/devtools/build/lib/packages/Type.java:351 Type.IntegerType.toString
+    // Java: com/google/devtools/build/lib/packages/Type.java:724 Type.ListType.toString
+    // Java: com/google/devtools/build/lib/packages/Type.java:806 Type.SetType.toString
+    // Java: com/google/devtools/build/lib/packages/Type.java:463 Type.StringType.toString
     // subclass overrides: "int", "string", "boolean", "list(E)", "set(E)", "dict(K, V)",
     // "label", "license", "output", "tristate").
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

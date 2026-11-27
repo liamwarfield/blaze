@@ -2624,6 +2624,31 @@ fn patch_0063_key_tracking_dict() {
         r#"["a", "b", "c"]"#,
     );
     ok("r = accessed_keys({'a': 1})", "None");
+    // Round 2 (P63-2): Java `x == d` is `x.contents.equals(d)`. A mutable `x`
+    // (`AbstractMap.equals`) reads `d.get(k)` for its keys, in order, when the sizes are equal,
+    // until the first missing key or unequal value; an immutable `x` (`ImmutableMap`) reads
+    // `d.entrySet()`. `d == x` reads nothing of `d`.
+    ok(
+        "x = {'c': 3, 'a': 1, 'b': 2} == d\nr = accessed_keys(d)",
+        r#"["c", "a", "b"]"#,
+    );
+    ok(
+        "x = {'b': 2, 'z': 0, 'a': 1} == d\nr = accessed_keys(d)",
+        r#"["b"]"#,
+    );
+    ok(
+        "x = {'b': 9, 'a': 1, 'c': 3} == d\nr = accessed_keys(d)",
+        r#"["b"]"#,
+    );
+    ok("x = {'a': 1} == d\nr = accessed_keys(d)", "[]");
+    ok(
+        "x = d == {'a': 1, 'b': 2, 'c': 3}\nr = accessed_keys(d)",
+        "[]",
+    );
+    ok(
+        "x = immutable_dict({'a': 1}) == d\nr = accessed_keys(d)",
+        r#"["a", "b", "c"]"#,
+    );
     // Immutable as patch 0018's dicts.
     assert_eq!(
         eval_with_probe("d = key_tracking_dict({'a': 1})\nd['b'] = 2"),
@@ -2671,4 +2696,47 @@ fn patch_0064_current_extra() {
         .join()
         .unwrap();
     assert_eq!(r, (false, Ok("(True, True)".to_owned()), false));
+}
+
+/// Patch 0062 (round 3): the table's Java class names that are not Starlark type names:
+/// `StarlarkValue` and `Iterable` in the crate, the provider interfaces through a registered
+/// matcher (here one that takes a tuple for a `structure`, standing in for Blaze's).
+#[test]
+fn patch_0062_round_3_java_interface_names() {
+    use starlark::values::dict::AllocDict;
+    use starlark::values::list::AllocList;
+    use starlark::values::{Heap, Value, java_param_accepts, register_java_interface_matcher};
+    Heap::temp(|heap| {
+        let string = heap.alloc("s");
+        let int = heap.alloc(1);
+        let tuple = heap.alloc((1,));
+        let list = heap.alloc(AllocList([1]));
+        let dict = heap.alloc(AllocDict([("u", 1)]));
+        let none = Value::new_none();
+        let bool_ = Value::new_bool(true);
+        // `cc_internal.freeze(value: StarlarkValue)`: every value but a string or a bool.
+        let freeze = |v| java_param_accepts("freeze", Some("cc_internal"), "value", v);
+        assert_eq!(freeze(int), Some(true));
+        assert_eq!(freeze(none), Some(true));
+        assert_eq!(freeze(dict), Some(true));
+        assert_eq!(freeze(string), Some(false));
+        assert_eq!(freeze(bool_), Some(false));
+        // `repository_ctx.download(url: string or Iterable)`.
+        let download = |v| java_param_accepts("download", Some("repository_ctx"), "url", v);
+        assert_eq!(download(string), Some(true));
+        assert_eq!(download(list), Some(true));
+        assert_eq!(download(tuple), Some(true));
+        assert_eq!(download(dict), Some(true));
+        assert_eq!(download(int), Some(false));
+        // `proto.encode_text(x: structure or NativeInfo)`: by name until a matcher knows it.
+        let encode = |v| java_param_accepts("encode_text", Some("proto"), "x", v);
+        assert_eq!(encode(tuple), Some(false));
+        fn matcher(name: &str, v: Value) -> Option<bool> {
+            (name == "structure").then(|| v.get_type() == "tuple")
+        }
+        register_java_interface_matcher(matcher);
+        register_java_interface_matcher(matcher);
+        assert_eq!(encode(tuple), Some(true));
+        assert_eq!(encode(int), Some(false));
+    });
 }

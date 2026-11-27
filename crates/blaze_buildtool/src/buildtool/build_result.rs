@@ -181,13 +181,36 @@ impl BuildResult {
     /// Gets the `DetailedExitCode` containing the `ExitCode` and optional failure detail to
     /// complete the command with.
     // Java: com/google/devtools/build/lib/buildtool/BuildResult.java:116 BuildResult.getDetailedExitCode
-    pub fn get_detailed_exit_code(&self) -> DetailedExitCodeRef {
+    ///
+    /// PORT: `factory` makes the `DetailedExitCode` (see [`DetailedExitCodeFactory`]). Without an
+    /// exit code Java reports a crash for `new IllegalStateException("Unspecified
+    /// DetailedExitCode")` (`CrashFailureDetails.forThrowable`); its stack trace elements are the
+    /// JVM's frames and have no Rust counterpart, so the cause has none.
+    // Java: com/google/devtools/build/lib/util/CrashFailureDetails.java:67 CrashFailureDetails.detailedExitCodeForThrowable
+    pub fn get_detailed_exit_code(
+        &self,
+        factory: &dyn DetailedExitCodeFactory,
+    ) -> DetailedExitCodeRef {
         if let Some(code) = &self.detailed_exit_code {
             return code.clone();
         }
-        unported!(
-            "CrashFailureDetails.detailedExitCodeForThrowable(new IllegalStateException(\"Unspecified DetailedExitCode\"))"
-        )
+        use blaze_protos::failure_details::{self, failure_detail::Category};
+        let throwable = failure_details::Throwable {
+            throwable_class: "java.lang.IllegalStateException".to_owned(),
+            message: "Unspecified DetailedExitCode".to_owned(),
+            stack_trace: Vec::new(),
+        };
+        factory.of(FailureDetail {
+            message: format!(
+                "Crashed: ({}) {}",
+                throwable.throwable_class, throwable.message
+            ),
+            category: Some(Category::Crash(failure_details::Crash {
+                code: failure_details::crash::Code::CrashUnknown as i32,
+                causes: vec![throwable],
+                oom_cause_category: failure_details::crash::OomCauseCategory::None as i32,
+            })),
+        })
     }
 
     /// Sets the RuntimeException / Error that induced a Blaze crash.

@@ -133,6 +133,8 @@ impl<'v, V: ValueLike<'v>> DefaultInfoGen<V> {
 
     /// Java `getFiles()`: the `files` depset, or `None`.
     // Java: com/google/devtools/build/lib/starlarkbuildapi/DefaultInfoApi.java:53 DefaultInfoApi.getFiles
+    // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:108 DefaultInfo.DefaultDefaultInfo.getFiles
+    // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:153 DefaultInfo.DelegatingDefaultInfo.getFiles
     pub fn get_files(&self) -> Option<Value<'v>> {
         match &self.data {
             DefaultInfoData::Default { .. } => {
@@ -148,6 +150,8 @@ impl<'v, V: ValueLike<'v>> DefaultInfoGen<V> {
 
     /// Java `getFilesToRun()`.
     // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:59 DefaultInfo.getFilesToRun
+    // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:113 DefaultInfo.DefaultDefaultInfo.getFilesToRun
+    // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:159 DefaultInfo.DelegatingDefaultInfo.getFilesToRun
     pub fn get_files_to_run(&self) -> Option<Arc<FilesToRunProvider>> {
         match &self.data {
             DefaultInfoData::Default {
@@ -160,6 +164,8 @@ impl<'v, V: ValueLike<'v>> DefaultInfoGen<V> {
 
     /// Java `getStatelessRunfiles()`.
     // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:49 DefaultInfo.getStatelessRunfiles
+    // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:118 DefaultInfo.DefaultDefaultInfo.getStatelessRunfiles
+    // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:179 DefaultInfo.DelegatingDefaultInfo.getStatelessRunfiles
     pub fn get_stateless_runfiles(&self) -> Option<Runfiles> {
         match &self.data {
             DefaultInfoData::Default { runfiles, .. } => runfiles.clone(),
@@ -169,6 +175,8 @@ impl<'v, V: ValueLike<'v>> DefaultInfoGen<V> {
 
     /// Java `getDataRunfiles()`.
     // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:52 DefaultInfo.getDataRunfiles
+    // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:123 DefaultInfo.DefaultDefaultInfo.getDataRunfiles
+    // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:165 DefaultInfo.DelegatingDefaultInfo.getDataRunfiles
     pub fn get_data_runfiles(&self) -> Option<Runfiles> {
         match &self.data {
             DefaultInfoData::Default { data_runfiles, .. } => data_runfiles.clone(),
@@ -183,6 +191,8 @@ impl<'v, V: ValueLike<'v>> DefaultInfoGen<V> {
 
     /// Java `getDefaultRunfiles()`.
     // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:55 DefaultInfo.getDefaultRunfiles
+    // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:128 DefaultInfo.DefaultDefaultInfo.getDefaultRunfiles
+    // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:172 DefaultInfo.DelegatingDefaultInfo.getDefaultRunfiles
     pub fn get_default_runfiles(&self) -> Option<Runfiles> {
         match &self.data {
             DefaultInfoData::Default {
@@ -208,6 +218,8 @@ impl<'v, V: ValueLike<'v>> DefaultInfoGen<V> {
 
     /// Java `getExecutable()`.
     // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:57 DefaultInfo.getExecutable
+    // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:139 DefaultInfo.DefaultDefaultInfo.getExecutable
+    // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:184 DefaultInfo.DelegatingDefaultInfo.getExecutable
     pub fn get_executable(&self) -> Option<Artifact> {
         match &self.data {
             DefaultInfoData::Default { executable, .. } => executable.clone(),
@@ -304,6 +316,7 @@ where
         v
     }
 
+    // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:44 DefaultInfo.getProvider
     fn provide(&'v self, demand: &mut Demand<'_, 'v>) {
         demand.provide_value(InfoProviderKey(DEFAULT_INFO.key()));
         demand.provide_value(DeeplyImmutable);
@@ -370,6 +383,7 @@ pub fn default_info_constructor<'v>(
         args,
         eval,
     )?;
+    // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:230 DefaultInfo.castNoneToNull
     let none_or = |v: Option<Value<'v>>| v.filter(|v| !v.is_none());
     let check_type = |param: &str,
                       v: Option<Value<'v>>,

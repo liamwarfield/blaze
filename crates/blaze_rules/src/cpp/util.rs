@@ -169,6 +169,8 @@ pub fn depset_get_set_strings(x: Value) -> Result<NestedSet<String>, String> {
 /// `Dict.cast(x, String.class, String.class, what)`, keeping the dict's order.
 // Java: net/starlark/java/eval/Dict.java:659 Dict.cast
 pub fn dict_cast_string_string(x: Value, what: &str) -> starlark::Result<IndexMap<String, String>> {
+    // A key-tracking dict (`ctx.var`) records every key: Java Dict.cast: `entrySet()`.
+    starlark::values::dict::dict_record_all_keys_accessed(x);
     let Some(dict) = DictRef::from_value(x) else {
         return Err(errorf(format!(
             "got {} for '{what}', want dict",
@@ -203,6 +205,8 @@ pub fn dict_cast_string_object<'v>(
     x: Value<'v>,
     what: &str,
 ) -> starlark::Result<Vec<(String, Value<'v>)>> {
+    // A key-tracking dict (`ctx.var`) records every key: Java Dict.cast: `entrySet()`.
+    starlark::values::dict::dict_record_all_keys_accessed(x);
     let Some(dict) = DictRef::from_value(x) else {
         return Err(errorf(format!(
             "got {} for '{what}', want dict",

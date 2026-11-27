@@ -180,6 +180,12 @@ impl Hash for ActionInputRef {
 /// Port of `ActionInputHelper.BasicActionInput` (`ActionInputHelper.fromPath`): a plain input
 /// identified only by its exec path.
 // Java: com/google/devtools/build/lib/actions/ActionInputHelper.java:40 ActionInputHelper.BasicActionInput
+// (equality and hash are the exec path's, as Java's on getExecPathString())
+// Java: com/google/devtools/build/lib/actions/ActionInputHelper.java:44 ActionInputHelper.BasicActionInput.hashCode
+// Java: com/google/devtools/build/lib/actions/ActionInputHelper.java:49 ActionInputHelper.BasicActionInput.equals
+// PORT: skipped, debugging text ("BasicActionInput: <path>"; messages print an input's exec path): ActionInputHelper.BasicActionInput.toString
+// PORT: skipped, the private constructor of a static class: ActionInputHelper.ActionInputHelper
+// PORT: skipped, its one caller (SpawnAction's ExtraActionInfo output files) maps the outputs' exec paths itself: ActionInputHelper.toExecPaths
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BasicActionInput {
     exec_path: PathFragment,
@@ -206,9 +212,11 @@ impl ActionInput for BasicActionInput {
     fn get_exec_path(&self) -> &PathFragment {
         &self.exec_path
     }
+    // Java: com/google/devtools/build/lib/actions/ActionInputHelper.java:39 ActionInputHelper.BasicActionInput.isDirectory
     fn is_directory(&self) -> bool {
         false
     }
+    // Java: com/google/devtools/build/lib/actions/ActionInputHelper.java:34 ActionInputHelper.BasicActionInput.isSymlink
     fn is_symlink(&self) -> bool {
         false
     }

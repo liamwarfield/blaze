@@ -64,6 +64,8 @@ pub fn register_execution_functions(
     unrunnable_test_reporter: Option<Arc<UnrunnableTestReporter>>,
 ) -> EvaluatorBuilder {
     let completion_executor = executor.clone();
+    // new ArtifactFunction(..., actionExecutor, ...): the closure registered below.
+    // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:116 ArtifactFunction.<init>
     let artifact_executor = executor.clone();
     let seam_artifact = seam.clone();
     let traversal_executor = executor.clone();

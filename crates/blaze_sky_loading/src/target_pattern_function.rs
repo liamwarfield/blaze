@@ -43,6 +43,9 @@ use crate::target_pattern_eval::{self, TargetPatternEvalError, TargetPatternReso
 /// A filtering policy for targets (Java `FilteringPolicy` and the `FilteringPolicies`
 /// constants).
 // Java: com/google/devtools/build/lib/pkgcache/FilteringPolicies.java:27 FilteringPolicies
+// PORT: skipped, derived PartialEq/Hash: a variant equals itself (AbstractFilteringPolicy, by class) and And compares both parts: FilteringPolicies.hashCode, FilteringPolicies.equals
+// PORT: skipped, the variant's fields (And(x, y)): FilteringPolicies.getFirstPolicy, FilteringPolicies.getSecondPolicy
+// PORT: skipped, RuleTypeFilter and ruleTypeExplicit are the Custom policies of their users (toolchain and execution platform registration, by name): FilteringPolicies.ruleTypeExplicit, FilteringPolicies.create
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum FilteringPolicy {
     NoFilter,
@@ -90,6 +93,11 @@ impl FilteringPolicy {
 
     /// Returns true if this target should be retained.
     // Java: com/google/devtools/build/lib/pkgcache/FilteringPolicy.java:33 FilteringPolicy.shouldRetain
+    // Java: com/google/devtools/build/lib/pkgcache/FilteringPolicies.java:74 FilteringPolicies.NoFilter.shouldRetain
+    // Java: com/google/devtools/build/lib/pkgcache/FilteringPolicies.java:86 FilteringPolicies.FilterManual.shouldRetain
+    // Java: com/google/devtools/build/lib/pkgcache/FilteringPolicies.java:93 FilteringPolicies.FilterTests.shouldRetain
+    // Java: com/google/devtools/build/lib/pkgcache/FilteringPolicies.java:101 FilteringPolicies.RulesOnly.shouldRetain
+    // Java: com/google/devtools/build/lib/pkgcache/FilteringPolicies.java:142 FilteringPolicies.AndFilteringPolicy.shouldRetain
     pub fn should_retain(&self, target: &Target, explicit: bool) -> bool {
         match self {
             FilteringPolicy::NoFilter => true,
@@ -108,6 +116,7 @@ impl FilteringPolicy {
 }
 
 // Java: com/google/devtools/build/lib/pkgcache/FilteringPolicies.java:80 FilteringPolicies.NoFilter.toString
+// Java: com/google/devtools/build/lib/pkgcache/FilteringPolicies.java:169 FilteringPolicies.AndFilteringPolicy.toString
 impl fmt::Debug for FilteringPolicy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

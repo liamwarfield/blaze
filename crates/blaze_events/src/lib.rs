@@ -11,6 +11,7 @@ pub mod event;
 pub mod event_kind;
 pub mod handler;
 pub mod io;
+pub mod blaze_clock;
 pub mod java_format;
 pub mod time_utilities;
 pub mod location;

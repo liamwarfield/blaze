@@ -130,6 +130,7 @@ pub struct SubruleActionState {
 impl StarlarkActionContext {
     /// Java `isImmutable()` of the rule context (locked by a subrule) or of the subrule context
     /// (`starlarkRuleContext.getLockedForSubrule() != this`).
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkActionFactory.java:1278 StarlarkActionFactory.isImmutable
     pub(crate) fn is_immutable(&self) -> bool {
         let locked_by = self
             .shared
@@ -159,6 +160,7 @@ impl StarlarkActionContext {
     /// Java `newFileRoot()`.
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleContext.java:486 StarlarkRuleContext.newFileRoot
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkSubrule.java:415 SubruleContext.newFileRoot
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkActionFactory.java:126 StarlarkActionFactory.newFileRoot
     pub(crate) fn new_file_root(&self) -> ArtifactRoot {
         let rc = self.handle.borrow();
         if self.is_for_aspect || self.subrule.is_some() {
@@ -213,6 +215,7 @@ impl StarlarkActionContext {
 
     /// Java `maybeOverrideExecGroup(execGroupUnchecked)`.
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkSubrule.java:465 SubruleContext.maybeOverrideExecGroup
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkActionFactory.java:1311 StarlarkActionFactory.StarlarkActionContext.maybeOverrideExecGroup
     pub(crate) fn maybe_override_exec_group<'a>(
         &self,
         exec_group_unchecked: Option<&'a str>,
@@ -226,6 +229,7 @@ impl StarlarkActionContext {
 
     /// Java `maybeOverrideToolchain(toolchainUnchecked)`.
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkSubrule.java:474 SubruleContext.maybeOverrideToolchain
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkActionFactory.java:1315 StarlarkActionFactory.StarlarkActionContext.maybeOverrideToolchain
     pub(crate) fn maybe_override_toolchain<'v>(
         &self,
         toolchain_unchecked: Option<Value<'v>>,
@@ -743,6 +747,8 @@ fn parse_resource_set_from_dict(resource_set_unchecked: Value) -> starlark::Resu
     // The loss of precision for memory and CPU usage due to the cast to float is negligible for
     // the purpose of resource scheduling.
     if local_test_count == default.local_test_count {
+        // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkActionFactory.java:1018 StarlarkActionFactory.StarlarkActionResourceSet.create
+        // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkActionFactory.java:1027 StarlarkActionFactory.StarlarkActionResourceSet.buildResourceSet
         // Java: StarlarkActionResourceSet.create((float) memoryMb, (float) cpuUsage)
         return Ok(ResourceSet {
             memory_mb: (memory_mb as f32) as f64,
@@ -789,6 +795,8 @@ fn system_err_println(s: &str) {
 
 /// The `resource_set` callback of `ctx.actions.run` / `run_shell`: called at execution with the
 /// OS and the number of inputs, its dict result becomes the spawn's local resources.
+// PORT: skipped, nothing compares resource set builders in Blaze (Java: action sharing checks): StarlarkActionFactory.StarlarkActionResourceSetBuilder.equals, StarlarkActionFactory.StarlarkActionResourceSetBuilder.hashCode
+// PORT: skipped, inlined accessors (the context's semantics and the analysis environment's main repo mapping): StarlarkActionFactory.getSemantics, StarlarkActionFactory.getMainRepoMappingSupplier
 // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkActionFactory.java:902 StarlarkActionResourceSetBuilder
 pub(crate) struct StarlarkActionResourceSetBuilder {
     pub(crate) fn_: starlark::values::OwnedFrozenValue,
@@ -2211,6 +2219,7 @@ pub(crate) fn finish_pending_actions(
                 // (250 MB, 1 CPU); failing loudly there would stop every C++ link, since rules_cc
                 // passes a callback on each one.
                 if let Some((index, mnemonic, semantics)) = resource_set_callback {
+                    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkActionFactory.java:916 StarlarkActionFactory.StarlarkActionResourceSetBuilder.create
                     builder.set_resources_builder(Arc::new(StarlarkActionResourceSetBuilder {
                         fn_: FrozenAnalysisKeepAlive::get_owned(keep_alive, index),
                         mnemonic,

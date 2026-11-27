@@ -18,3 +18,10 @@
 // PORT: skipped, unused at the pin (no other class refers to it): ByteStringDeterministicWriter.writeTo, ByteStringDeterministicWriter.getBytes
 // PORT: skipped, no caller at the pin: UserUtils.getOriginatingUser
 // PORT: skipped, test-only (VisibleForTesting hostname override): NetUtil.overrideHostnameSupplier
+// PORT: skipped, unused at the pin (no class outside util/io refers to it, so --test_output and worker logs never pass through it): StreamDemultiplexer.close, StreamDemultiplexer.flush, StreamDemultiplexer.write, StreamDemultiplexer.parseSize
+// PORT: skipped, unused at the pin (no class outside util/io refers to it, so --test_output and worker logs never pass through it): StreamDemultiplexer.parseMarkerByte, StreamDemultiplexer.parsePayload
+// PORT: skipped, unused at the pin (no class outside util/io refers to it, so --test_output and worker logs never pass through it): StreamMultiplexer.flushingHook, StreamMultiplexer.createStdout, StreamMultiplexer.createStderr, StreamMultiplexer.createControl
+// PORT: skipped, unused at the pin (no class outside util/io refers to it, so --test_output and worker logs never pass through it): LineFlushingOutputStream.write, LineFlushingOutputStream.close, LineFlushingOutputStream.flush, LineFlushingOutputStream.flushingHook
+// PORT: skipped, unused at the pin (no class outside util/io refers to it, so --test_output and worker logs never pass through it): LinePrefixingOutputStream.flushingHook
+// PORT: skipped, serialization for remote analysis caching (not ported, ruling 2026-11-19 (1)): NestedSetCodecWithStore.getEncodedClass, NestedSetCodecWithStore.serialize, NestedSetCodecWithStore.deserialize
+// PORT: skipped, serialization for remote analysis caching (not ported, ruling 2026-11-19 (1)): NestedSetCodecWithStore.intern, NestedSetCodecWithStore.hashCode, NestedSetCodecWithStore.deserializingAndMaterializedSetsAreEqual, NestedSetCodecWithStore.equals

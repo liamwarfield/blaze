@@ -168,6 +168,8 @@ fn template_variable_info_constructor<'v>(
             "TemplateVariableInfo() missing 1 required positional argument: vars",
         ));
     };
+    // A key-tracking dict (`ctx.var`) records every key: Java Dict.noneableCast: `entrySet()`.
+    starlark::values::dict::dict_record_all_keys_accessed(vars);
     let Some(dict) = DictRef::from_value(vars) else {
         return Err(errorf(format!(
             "in call to TemplateVariableInfo(), parameter 'vars' got value of type '{}', want 'dict'",

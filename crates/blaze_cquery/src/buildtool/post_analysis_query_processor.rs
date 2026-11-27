@@ -227,11 +227,23 @@ pub fn handle_post_analysis_query_result(
 // Java: com/google/devtools/build/lib/buildtool/PostAnalysisQueryProcessor.java:72 PostAnalysisQueryProcessor.process
 pub fn before_post_analysis_query(
     tracks_state_for_incrementality: bool,
+    skyframe_executor: Option<(
+        &blaze_sky_top::skyframe_executor::SkyframeExecutor,
+        std::sync::Arc<dyn blaze_events::ExtendedEventHandler>,
+    )>,
 ) -> Result<(), BuildToolError> {
     // This query will operate over the graph as constructed by analysis, but will also pick up
-    // any nodes that are in the graph from prior builds, including dirty nodes.
-    // PORT: skipped, incremental: deleteOldNodes / applyInvalidation (one evaluation per
-    // process).
+    // any nodes that are in the graph from prior builds, including dirty nodes. While they can't
+    // be reached from the scope of the current build via deps, they can appear in rdeps, which
+    // results in the processor doing unnecessary work or even expecting stale keys to be
+    // present. Clean them up now, which requires ignoring the value of
+    // --version_window_for_dirty_node_gc.
+    if let Some((skyframe_executor, reporter)) = skyframe_executor {
+        skyframe_executor.delete_old_nodes(/* version_window_for_dirty_gc= */ 0);
+        if skyframe_executor.apply_invalidation(reporter).is_err() {
+            return Err(BuildToolError::Interrupted);
+        }
+    }
     if !tracks_state_for_incrementality {
         return Err(BuildToolError::Exit(DetailedExitCode::of(FailureDetail {
             message: "Queries based on analysis results are not allowed if incrementality state \
@@ -346,8 +358,8 @@ mod tests {
     // not allowed if incrementality state is not being kept", exit 2.
     #[test]
     fn queries_need_incrementality_state() {
-        assert!(before_post_analysis_query(true).is_ok());
-        match before_post_analysis_query(false) {
+        assert!(before_post_analysis_query(true, None).is_ok());
+        match before_post_analysis_query(false, None) {
             Err(BuildToolError::Exit(detailed_exit_code)) => {
                 assert_eq!(detailed_exit_code.get_exit_code(), 2);
                 assert_eq!(

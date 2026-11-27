@@ -264,6 +264,7 @@ enum ExceptionType {
 /// `Filesystem` code, given by its enum value name, that takes precedence over the
 /// `PackageLoading` code of a package that failed to load.
 // Java: com/google/devtools/build/lib/skyframe/BazelSkyframeExecutorConstants.java:39 BazelSkyframeExecutorConstants.ACTION_ON_FILESYSTEM_ERROR_CODE_LOADING_BZL_FILE
+// Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:268 PackageFunction.ActionOnFilesystemErrorCodeLoadingBzlFile.shouldTakePrecedenceOverPackageLoadingCode
 fn should_take_precedence_over_package_loading_code(filesystem_code: &str) -> bool {
     filesystem_code == "REMOTE_FILE_EVICTED"
 }
@@ -298,6 +299,12 @@ struct PackageFunctionExceptionBuilder {
 }
 
 impl PackageFunctionExceptionBuilder {
+    // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1725 PackageFunction.PackageFunctionException.builder
+    // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1785 PackageFunction.PackageFunctionException.Builder.setType
+    // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1791 PackageFunction.PackageFunctionException.Builder.setPackageIdentifier
+    // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1797 PackageFunction.PackageFunctionException.Builder.setTransience
+    // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1809 PackageFunction.PackageFunctionException.Builder.setMessage
+    // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1815 PackageFunction.PackageFunctionException.Builder.setPackageLoadingCode
     fn new(
         exception_type: ExceptionType,
         package_identifier: &PackageIdentifier,
@@ -322,6 +329,7 @@ impl PackageFunctionExceptionBuilder {
         self
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1803 PackageFunction.PackageFunctionException.Builder.setException
     fn set_exception(mut self, exception: impl Into<String>) -> Self {
         self.exception = Some(exception.into());
         self
@@ -335,6 +343,7 @@ impl PackageFunctionExceptionBuilder {
                 message: self.message.clone(),
                 code: FailureCode::Other(format!("Filesystem.{}", filesystem_code)),
             },
+            // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1871 PackageFunction.PackageFunctionException.Builder.createDetailedExitCodeWithPackageLoadingCode
             None => {
                 DetailedExitCode::package_loading(self.message.clone(), self.package_loading_code)
             }
@@ -366,6 +375,7 @@ impl PackageFunctionExceptionBuilder {
 
 /// Java `new PackageFunctionException(e, transience)`.
 // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1717 PackageFunction.PackageFunctionException.<init>
+// Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1713 PackageFunction.PackageFunctionException.<init>
 fn package_function_exception(e: NoSuchPackageException, transience: Transience) -> ComputeError {
     SkyFunctionException::new(e, transience).into()
 }
@@ -380,6 +390,7 @@ struct InternalInconsistentFilesystemException {
 
 impl InternalInconsistentFilesystemException {
     /// Used to represent a filesystem inconsistency discovered outside the PackageFunction.
+    // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1688 PackageFunction.InternalInconsistentFilesystemException.isTransient
     fn of(package_identifier: &PackageIdentifier, e: &IOException) -> Self {
         // This is not a transient error from the perspective of the PackageFunction.
         InternalInconsistentFilesystemException {
@@ -457,6 +468,7 @@ fn bad_repo_file_exception(cause: &str, package_id: &PackageIdentifier) -> Compu
 /// The result of compiling a BUILD file (Java `PackageFunction.CompiledBuildFile`): either the
 /// static errors or the program and what Java extracted from the syntax tree.
 // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:147 PackageFunction.CompiledBuildFile
+// Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:159 PackageFunction.CompiledBuildFile.ok
 enum CompiledBuildFile {
     Errors(Vec<SyntaxError>),
     Ok {
@@ -491,6 +503,24 @@ enum Packageoid {
 }
 
 /// What PACKAGE is constructed with (Java `PackageFunction.Builder` settings).
+// PORT: skipped, the function's parameters are the fields of PackageFunctionConfig: PackageFunction.newBuilder, PackageFunction.setPackageFactory, PackageFunction.setPackageLocator
+// PORT: skipped, the function's parameters are the fields of PackageFunctionConfig: PackageFunction.setShowLoadingProgress, PackageFunction.setNumPackagesSuccessfullyLoaded
+// PORT: skipped, the function's parameters are the fields of PackageFunctionConfig: PackageFunction.setPackageProgress, PackageFunction.setShouldUseRepoDotBazel, PackageFunction.setGlobbingStrategy
+// Bazel's SkyframeExecutor uses SINGLE_GLOBS_HYBRID (`globUnderSingleDep` is true and nothing sets it
+// false), so the classes of the other strategies never run.
+// PORT: skipped, the MULTIPLE_GLOB_HYBRID strategy, never used at the pin (nothing calls setGlobUnderSingleDep(false)): GlobFunctionWithMultipleRecursiveFunctions.compute, GlobFunctionWithMultipleRecursiveFunctions.processSubdir, GlobFunctionWithMultipleRecursiveFunctions.containsGlobs, GlobFunctionWithMultipleRecursiveFunctions.addToMatches
+// PORT: skipped, the MULTIPLE_GLOB_HYBRID strategy, never used at the pin (nothing calls setGlobUnderSingleDep(false)): GlobFunctionWithMultipleRecursiveFunctions.getSkyKeyForSubdir, GlobFunctionWithMultipleRecursiveFunctions.getSubdirMatchesFromSkyValue
+// PORT: skipped, the MULTIPLE_GLOB_HYBRID strategy, never used at the pin (nothing calls setGlobUnderSingleDep(false)): GlobValueWithNestedSet.getMatchesInNestedSet, GlobValueWithNestedSet.getMatches, GlobValueWithNestedSet.equals, GlobValueWithNestedSet.hashCode
+// PORT: skipped, the MULTIPLE_GLOB_HYBRID strategy, never used at the pin (nothing calls setGlobUnderSingleDep(false)): PackageFunctionWithMultipleGlobDeps.handleGlobDepsAndPropagateFilesystemExceptions, PackageFunctionWithMultipleGlobDeps.getGlobDepsRequested, PackageFunctionWithMultipleGlobDeps.getGlobKey, PackageFunctionWithMultipleGlobDeps.runAsync
+// PORT: skipped, the MULTIPLE_GLOB_HYBRID strategy, never used at the pin (nothing calls setGlobUnderSingleDep(false)): PackageFunctionWithMultipleGlobDeps.fetchUnsorted, PackageFunctionWithMultipleGlobDeps.onInterrupt, PackageFunctionWithMultipleGlobDeps.onCompletion, PackageFunctionWithMultipleGlobDeps.resolve
+// PORT: skipped, the MULTIPLE_GLOB_HYBRID strategy, never used at the pin (nothing calls setGlobUnderSingleDep(false)): PackageFunctionWithMultipleGlobDeps.getGlobMatches, PackageFunctionWithMultipleGlobDeps.makeGlobber, PackageFunctionWithMultipleGlobDeps.newLoadedPackage
+// PORT: skipped, the function's parameters are the fields of PackageFunctionConfig: PackageFunction.setThreadStateReceiverFactoryForMetrics, PackageFunction.setCpuBoundSemaphore
+// PORT: skipped, Bazel's values are fixed (UseOriginalIOException, see PackageFunctionExceptionBuilder): PackageFunction.setActionOnIOExceptionReadingBuildFile, PackageFunction.setActionOnFilesystemErrorCodeLoadingBzlFile
+// PORT: skipped, Bazel's value is UseOriginalIOException (no replacement contents): PackageFunction.maybeGetBuildFileContentsToUse
+// PORT: skipped, .bzl inlining is never enabled at the pin (see bzl_load.rs): PackageFunction.setBzlLoadFunctionForInlining, PackageFunction.computeBzlLoadsWithInlining
+// PORT: skipped, test-only: PackageFunction.setBzlLoadFunctionForInliningForTesting
+// PORT: skipped, ExceptionType is a Rust enum: PackageFunction.create
+// PORT: skipped, the builder is consumed by build/build_cause (never hashed or compared): PackageFunction.hashCode, PackageFunction.equals
 pub struct PackageFunctionConfig {
     pub package_factory: Arc<PackageFactory>,
     /// Java `packageLocator` (`SkyframePackageManager`).
@@ -1234,6 +1264,7 @@ impl PackageFunction {
             )),
             self.config.package_locator.clone(),
         );
+        // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:984 PackageFunction.makeGlobber
         let globber = Arc::new(GlobsGlobber::new(non_skyframe_globber));
 
         let generator_map = match &compiled {
@@ -1342,6 +1373,8 @@ impl PackageFunction {
         // long loadTimeNanos = Math.max(BlazeClock.nanoTime() - startTimeNanos, 0L)
         // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1248 PackageFunction.loadPackage
         let load_time_nanos = i64::try_from(start_time.elapsed().as_nanos()).unwrap_or(i64::MAX);
+        // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1265 PackageFunction.newLoadedPackage
+        // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:349 PackageFunction.LoadedPackage.<init>
         Ok(Some(LoadedPackage {
             builder: pkg_builder,
             glob_requests: globber.get_glob_requests(),
@@ -1602,6 +1635,11 @@ fn visit_load_graph(
 }
 
 // Java: com/google/devtools/build/lib/packages/Package.java:736 Package.AbstractBuilder.computeTransitiveLoads
+// Java: com/google/devtools/build/lib/packages/Package.java:266 Package.computeTransitiveLoads
+// Java: com/google/devtools/build/lib/packages/Package.java:1629 Package.Declarations.getOrComputeTransitivelyLoadedStarlarkFilesInternal
+// Java: com/google/devtools/build/lib/packages/Package.java:1734 Package.Declarations.Builder.setDirectLoads
+// (Rust always precomputes the transitive loads; Java's default stores the direct loads and computes
+// the same list on demand)
 fn compute_transitive_loads(direct_loads: &[Arc<BazelModuleContext>]) -> Vec<Label> {
     let mut loads: IndexSet<Label> = IndexSet::new();
     visit_load_graph(direct_loads, &mut |m| loads.insert(m.label.clone()));

@@ -22,6 +22,14 @@ pub const CONFIGURED_TARGET: SkyFunctionName = SkyFunctionName("CONFIGURED_TARGE
 /// `ToolchainDependencyConfiguredTargetKey`, ...) are the combinations of
 /// `execution_platform_label` and `should_apply_rule_transition`; `Debug` prints the subclass's
 /// simple name like Java's `toString`.
+// PORT: skipped, interning (keys are values; the evaluator compares them by value): ConfiguredTargetKey.getSkyKeyInterner
+// PORT: skipped, subclass representation (fields of this struct): ConfiguredTargetKey.ConfiguredTargetKeyWithFinalConfiguration.<init>, ConfiguredTargetKey.ToolchainDependencyConfiguredTargetKey.<init>
+// PORT: skipped, subclass representation: ConfiguredTargetKey.ToolchainDependencyConfiguredTargetKeyWithFinalConfiguration.<init>
+// PORT: skipped, serialization (remote analysis caching is not ported): ConfiguredTargetKey.valueSharingCodec, ConfiguredTargetKey.Builder.call
+// PORT: skipped, serialization: ConfiguredTargetKey.ConfiguredTargetKeyValueSharingCodec.autoRegister, ConfiguredTargetKey.ConfiguredTargetKeyValueSharingCodec.getEncodedClass
+// PORT: skipped, serialization: ConfiguredTargetKey.ConfiguredTargetKeyValueSharingCodec.serialize, ConfiguredTargetKey.ConfiguredTargetKeyValueSharingCodec.deserializeDeferred
+// PORT: skipped, serialization: ConfiguredTargetKey.ConfiguredTargetKeyCodec.getEncodedClass, ConfiguredTargetKey.ConfiguredTargetKeyCodec.serialize, ConfiguredTargetKey.ConfiguredTargetKeyCodec.deserializeDeferred
+// PORT: skipped, serialization: ConfiguredTargetKey.ConfiguredTargetKeyCodec.setLabel, ConfiguredTargetKey.ConfiguredTargetKeyCodec.setConfigurationKey, ConfiguredTargetKey.ConfiguredTargetKeyCodec.setExecutionPlatformLabel
 // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetKey.java:47 ConfiguredTargetKey
 #[derive(Clone, PartialEq, Eq)]
 pub struct ConfiguredTargetKey {
@@ -52,6 +60,7 @@ impl ConfiguredTargetKey {
     }
 
     // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetKey.java:90 ConfiguredTargetKey.getExecutionPlatformLabel
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetKey.java:200 ConfiguredTargetKey.ToolchainDependencyConfiguredTargetKey.getExecutionPlatformLabel
     pub fn get_execution_platform_label(&self) -> Option<&Label> {
         self.execution_platform_label.as_ref()
     }
@@ -60,6 +69,8 @@ impl ConfiguredTargetKey {
     /// already have been transitioned (for example the top-level configured target with
     /// `--trim_test_configuration`).
     // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetKey.java:101 ConfiguredTargetKey.shouldApplyRuleTransition
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetKey.java:182 ConfiguredTargetKey.ConfiguredTargetKeyWithFinalConfiguration.shouldApplyRuleTransition
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetKey.java:216 ConfiguredTargetKey.ToolchainDependencyConfiguredTargetKeyWithFinalConfiguration.shouldApplyRuleTransition
     pub fn should_apply_rule_transition(&self) -> bool {
         self.should_apply_rule_transition
     }
@@ -131,6 +142,7 @@ pub struct ConfiguredTargetKeyBuilder {
 }
 
 impl ConfiguredTargetKeyBuilder {
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetKey.java:256 ConfiguredTargetKey.Builder.setLabel
     pub fn set_label(mut self, label: Label) -> Self {
         self.label = Some(label);
         self
@@ -141,6 +153,7 @@ impl ConfiguredTargetKeyBuilder {
         self.set_configuration_key(build_configuration.map(|c| c.get_key()))
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetKey.java:269 ConfiguredTargetKey.Builder.setConfigurationKey
     pub fn set_configuration_key(
         mut self,
         configuration_key: Option<BuildConfigurationKey>,
@@ -149,11 +162,13 @@ impl ConfiguredTargetKeyBuilder {
         self
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetKey.java:279 ConfiguredTargetKey.Builder.setExecutionPlatformLabel
     pub fn set_execution_platform_label(mut self, label: Option<Label>) -> Self {
         self.execution_platform_label = label;
         self
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetKey.java:285 ConfiguredTargetKey.Builder.setShouldApplyRuleTransition
     pub fn set_should_apply_rule_transition(mut self, v: bool) -> Self {
         self.should_apply_rule_transition = v;
         self
@@ -215,10 +230,12 @@ impl ActionLookupKey for ConfiguredTargetKey {
         self.get_configuration_checksum().map(str::to_owned)
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetKey.java:78 ConfiguredTargetKey.functionName
     fn function_name(&self) -> &'static str {
         CONFIGURED_TARGET.0
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetKey.java:126 ConfiguredTargetKey.equals
     fn key_equals(&self, other: &dyn ActionLookupKey) -> bool {
         other
             .as_any()

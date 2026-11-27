@@ -517,6 +517,11 @@ where
             printable_name: self.get_printable_name(),
             exported: self.is_exported(),
         });
+        // Java: StarlarkProvider.isImmutable is isExported().
+        // Java: com/google/devtools/build/lib/packages/StarlarkProvider.java:522 StarlarkProvider.isImmutable
+        if self.is_exported() {
+            demand.provide_value(blaze_starlark::structs::DeeplyImmutable);
+        }
     }
 }
 

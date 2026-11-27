@@ -129,11 +129,8 @@ impl BazelWorkspaceStatusAction {
         }
     }
 
-    /// Runs `--workspace_status_command` and writes the files.
-    // Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:174 BazelWorkspaceStatusAction.execute
-    pub fn execute(&self) -> ! {
-        blaze_util::unported!("BazelWorkspaceStatusAction.execute (execution, wave W6)")
-    }
+    // `execute` (running `--workspace_status_command` and writing the files) is ported with the
+    // execution: blaze_exec `analysis::actions::bazel_workspace_status_module`.
 }
 
 /// What `BazelWorkspaceStatusAction.execute` writes and posts.

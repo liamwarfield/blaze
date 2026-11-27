@@ -276,11 +276,13 @@ impl StreamContext for BesGrpcStreamContext {
     /// `stream.onError(status.asException())`: the call is cancelled and the response observer
     /// sees `CANCELLED` caused by `status`, which `onError` unwraps to `status`.
     // Java: com/google/devtools/build/lib/buildeventservice/client/BuildEventServiceGrpcClient.java:173 BESGrpcStreamContext.abortStream
+    ///
+    /// The call's task drops the call, and dropping the response stream of
+    /// `ReferenceCountedChannel::bidi_streaming` (blaze_remote) resets the HTTP/2 stream
+    /// (`RST_STREAM CANCEL`) although the request side is still open, so the server's call fails
+    /// with `CANCELLED`, as after grpc-java's `onError` (`test_file_upload_fails`).
     fn abort_stream(&self, status: Status) {
         self.stream_status.set(status);
-        // The call is cancelled without a half-close (the request side stays open until the
-        // task drops the call), so the server sees the call fail, as with grpc-java's
-        // `onError`.
         self.abort.notify_one();
     }
 

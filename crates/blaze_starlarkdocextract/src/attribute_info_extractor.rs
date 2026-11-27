@@ -1,6 +1,7 @@
 //! Port of `starlarkdocextract/AttributeInfoExtractor.java`.
 
 use blaze_packages::attribute::Attribute;
+use blaze_packages::attribute::computed_default::ComputedDefaultKind;
 use blaze_packages::types::{AttrValue, Type};
 use blaze_protos::stardoc_output::{AttributeInfo, AttributeType};
 use starlark::values::Heap;
@@ -38,14 +39,48 @@ pub fn build_attribute_info(context: &ExtractorContext, attribute: &Attribute) -
 
     if !attribute.is_mandatory() {
         builder.default_value = Heap::temp(|heap| {
-            // Attribute.valueToStarlark(attribute.getDefaultValueUnchecked()); a computed or
-            // late-bound default is no Starlark value (InvalidStarlarkValueException).
+            // Attribute.valueToStarlark(attribute.getDefaultValueUnchecked()): Starlark.fromJava
+            // passes a StarlarkValue through and fails on any other non-Starlark object.
             match attribute.get_default_value_unchecked() {
-                Some(
-                    AttrValue::ComputedDefault(_)
-                    | AttrValue::StarlarkComputedDefaultTemplate(_)
-                    | AttrValue::LateBound(_),
-                ) => UNREPRESENTABLE_VALUE.to_owned(),
+                // StarlarkComputedDefaultTemplate is no StarlarkValue
+                // (InvalidStarlarkValueException).
+                Some(AttrValue::StarlarkComputedDefaultTemplate(_)) => {
+                    UNREPRESENTABLE_VALUE.to_owned()
+                }
+                // ComputedDefault and LateBoundDefault are StarlarkValues: their repr.
+                Some(AttrValue::LateBound(late_bound)) => {
+                    if late_bound
+                        .get_resolver_name()
+                        .is_some_and(|name| name.starts_with("configuration_field:"))
+                    {
+                        // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkLateBoundDefault.java:124 StarlarkLateBoundDefault.repr
+                        "<late-bound default>".to_owned()
+                    } else {
+                        // StarlarkValue.repr: "<unknown object " + getClass().getName() + ">".
+                        blaze_util::unported!(
+                            "StarlarkValue.repr",
+                            "the Java class name of the native LateBoundDefault {:?}",
+                            late_bound.get_resolver_name()
+                        )
+                    }
+                }
+                Some(AttrValue::ComputedDefault(computed_default)) => {
+                    match computed_default.kind() {
+                        // StarlarkValue.repr of Attribute.StarlarkComputedDefault.
+                        // Java: net/starlark/java/eval/StarlarkValue.java:50 StarlarkValue.repr
+                        ComputedDefaultKind::Starlark(_) => {
+                            "<unknown object com.google.devtools.build.lib.packages.Attribute$StarlarkComputedDefault>"
+                                .to_owned()
+                        }
+                        // StarlarkValue.repr: "<unknown object " + getClass().getName() + ">",
+                        // the (often anonymous) class of the native computed default.
+                        ComputedDefaultKind::Native(_) => blaze_util::unported!(
+                            "StarlarkValue.repr",
+                            "the Java class name of a native ComputedDefault of attribute {}",
+                            attribute.get_name()
+                        ),
+                    }
+                }
                 default_value => {
                     let value = Attribute::value_to_starlark(default_value, heap);
                     context.label_renderer.repr_without_label_constructor(value)

@@ -17,6 +17,7 @@ pub type AspectClassName = AspectClass;
 
 /// The kind of a dependency edge: an attribute (of the rule, or of an aspect), a toolchain of an
 /// exec group, or one of the non-attribute kinds.
+// PORT: skipped, enum variant constructors: DependencyKind.NonAttributeDependencyKind.<init>
 // Java: com/google/devtools/build/lib/analysis/DependencyKind.java:29 DependencyKind
 #[derive(Clone)]
 pub enum DependencyKind {
@@ -51,6 +52,9 @@ impl DependencyKind {
         DependencyKind::NonAttribute("OUTPUT_FILE");
 
     /// Java `getAttribute()`.
+    // Java: com/google/devtools/build/lib/analysis/DependencyKind.java:66 DependencyKind.NonAttributeDependencyKind.getAttribute
+    // Java: com/google/devtools/build/lib/analysis/DependencyKind.java:89 DependencyKind.ToolchainDependencyKind.getAttribute
+    // Java: com/google/devtools/build/lib/analysis/DependencyKind.java:164 DependencyKind.AttributeDependencyKind.getAttribute
     pub fn get_attribute(&self) -> Option<&Arc<Attribute>> {
         match self {
             DependencyKind::Attribute { attribute, .. } => Some(attribute),
@@ -59,6 +63,9 @@ impl DependencyKind {
     }
 
     /// Java `getOwningAspect()` (panics like Java for non-attribute kinds).
+    // Java: com/google/devtools/build/lib/analysis/DependencyKind.java:72 DependencyKind.NonAttributeDependencyKind.getOwningAspect
+    // Java: com/google/devtools/build/lib/analysis/DependencyKind.java:94 DependencyKind.ToolchainDependencyKind.getOwningAspect
+    // Java: com/google/devtools/build/lib/analysis/DependencyKind.java:167 DependencyKind.AttributeDependencyKind.getOwningAspect
     pub fn get_owning_aspect(&self) -> Option<&AspectClass> {
         match self {
             DependencyKind::Attribute { owning_aspect, .. } => owning_aspect.as_ref(),
@@ -116,6 +123,7 @@ impl DependencyKind {
     }
 
     /// Java `AttributeDependencyKind.forRule(attribute)`.
+    // Java: com/google/devtools/build/lib/analysis/DependencyKind.java:171 DependencyKind.AttributeDependencyKind.forRule
     pub fn for_rule(attribute: Arc<Attribute>) -> DependencyKind {
         DependencyKind::Attribute {
             attribute,
@@ -124,6 +132,7 @@ impl DependencyKind {
     }
 
     /// Java `AttributeDependencyKind.forAspect(attribute, owningAspect)`.
+    // Java: com/google/devtools/build/lib/analysis/DependencyKind.java:175 DependencyKind.AttributeDependencyKind.forAspect
     pub fn for_aspect(attribute: Arc<Attribute>, owning_aspect: AspectClass) -> DependencyKind {
         DependencyKind::Attribute {
             attribute,
@@ -132,6 +141,7 @@ impl DependencyKind {
     }
 
     /// Java `ToolchainDependencyKind.getExecGroupName()`.
+    // Java: com/google/devtools/build/lib/analysis/DependencyKind.java:101 DependencyKind.ToolchainDependencyKind.getExecGroupName
     pub fn get_exec_group_name(&self) -> Option<&str> {
         match self {
             DependencyKind::Toolchain {
@@ -140,6 +150,32 @@ impl DependencyKind {
             | DependencyKind::BaseTargetToolchain {
                 exec_group_name, ..
             } => Some(exec_group_name),
+            _ => None,
+        }
+    }
+
+    /// Java `ToolchainDependencyKind.isDefaultExecGroup()` (`None` for other kinds, which do not
+    /// have the method).
+    // Java: com/google/devtools/build/lib/analysis/DependencyKind.java:104 DependencyKind.ToolchainDependencyKind.isDefaultExecGroup
+    pub fn is_default_exec_group(&self) -> Option<bool> {
+        match self {
+            DependencyKind::Toolchain {
+                is_default_exec_group,
+                ..
+            }
+            | DependencyKind::BaseTargetToolchain {
+                is_default_exec_group,
+                ..
+            } => Some(*is_default_exec_group),
+            _ => None,
+        }
+    }
+
+    /// Java `BaseTargetToolchainDependencyKind.getToolchainType()`.
+    // Java: com/google/devtools/build/lib/analysis/DependencyKind.java:121 DependencyKind.BaseTargetToolchainDependencyKind.getToolchainType
+    pub fn get_toolchain_type(&self) -> Option<&Label> {
+        match self {
+            DependencyKind::BaseTargetToolchain { toolchain_type, .. } => Some(toolchain_type),
             _ => None,
         }
     }

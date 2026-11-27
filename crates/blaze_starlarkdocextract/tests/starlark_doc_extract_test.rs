@@ -249,6 +249,11 @@ starlark_doc_extract(
     });
     assert_contains(&error_doc_failure, "invalid character: '!'");
 
+    // PORT: Java's evaluator replays the stored events of error.bzl's failed compilation for the
+    // second request; Blaze's evaluator does not replay events between evaluations (one command
+    // per evaluator), so the second request gets a fresh one, as a new command would.
+    t.invalidate_packages();
+
     let error_loader_doc_failure = assert_throws(|| {
         t.get_configured_target("//:error_loader_doc");
     });

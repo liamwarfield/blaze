@@ -67,6 +67,7 @@ pub struct StarlarkOptionsParserBuilder<'a> {
 
 impl<'a> StarlarkOptionsParserBuilder<'a> {
     /// Set the `BuildSettingLoader` used to find flags.
+    // Java: com/google/devtools/build/lib/runtime/StarlarkOptionsParser.java:92 StarlarkOptionsParser.Builder.buildSettingLoader
     pub fn build_setting_loader(
         mut self,
         build_setting_loader: &'a dyn BuildSettingLoader,
@@ -76,18 +77,21 @@ impl<'a> StarlarkOptionsParserBuilder<'a> {
     }
 
     /// Sets the native `OptionsParser` used for handling flags.
+    // Java: com/google/devtools/build/lib/runtime/StarlarkOptionsParser.java:95 StarlarkOptionsParser.Builder.nativeOptionsParser
     pub fn native_options_parser(mut self, native_options_parser: &'a mut OptionsParser) -> Self {
         self.native_options_parser = Some(native_options_parser);
         self
     }
 
     /// Whether or not to report Starlark flags which are set to their default values.
+    // Java: com/google/devtools/build/lib/runtime/StarlarkOptionsParser.java:98 StarlarkOptionsParser.Builder.includeDefaultValues
     pub fn include_default_values(mut self, include_default_values: bool) -> Self {
         self.include_default_values = include_default_values;
         self
     }
 
     /// Returns a new [`StarlarkOptionsParser`].
+    // Java: com/google/devtools/build/lib/runtime/StarlarkOptionsParser.java:101 StarlarkOptionsParser.Builder.build
     pub fn build(self) -> StarlarkOptionsParser<'a> {
         StarlarkOptionsParser {
             native_options_parser: self

@@ -237,7 +237,7 @@ impl TestCommandSupport {
                     })),
                 })
             } else {
-                build_result.get_detailed_exit_code()
+                build_result.get_detailed_exit_code(self.exit_codes.as_ref())
             };
             self.event_bus.post(Arc::new(TestingCompleteEvent {
                 exit_code: get_exit_code(&detailed_exit_code),
@@ -262,7 +262,7 @@ impl TestCommandSupport {
                     })),
                 })
             } else {
-                build_result.get_detailed_exit_code()
+                build_result.get_detailed_exit_code(self.exit_codes.as_ref())
             };
             self.event_bus.post(Arc::new(NoTestsFound {
                 exit_code: get_exit_code(&detailed_exit_code),
@@ -290,7 +290,7 @@ impl TestCommandSupport {
         }
 
         let detailed_exit_code = choose_more_important_with_first_if_tie(
-            Some(build_result.get_detailed_exit_code()),
+            Some(build_result.get_detailed_exit_code(self.exit_codes.as_ref())),
             Some(test_results),
         )
         .expect("chooseMoreImportantWithFirstIfTie of two codes");

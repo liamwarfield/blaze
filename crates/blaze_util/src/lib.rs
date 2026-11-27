@@ -3,6 +3,7 @@
 pub mod bug_report;
 pub mod build_arena;
 pub mod concurrent;
+pub mod hash_codes;
 pub mod java_idioms;
 pub mod exit_code;
 pub mod fingerprint;

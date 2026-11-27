@@ -1052,12 +1052,13 @@ fn after_command_shuts_the_action_input_fetcher_down() {
     assert!(prefetcher.get_download_cache().is_shutdown());
 }
 
-/// Root ruling 2026-11-19 (lead, round 2): action rewinding is not ported, so the disk cache
-/// checks that the blobs of an action result are present also under `--rewind_lost_inputs`
-/// (Java skips the check then, `RemoteModule.java:700-706`): an action result whose output blob
-/// is missing is a cache miss.
+/// Not in the Java test. With `--rewind_lost_inputs` the disk cache does not check that the blobs
+/// of an action result are present (`RemoteModule.java:700-706`): an action result whose output
+/// blob is missing is a hit, and the lost blob is recovered by rewinding. (The root ruling of
+/// 2026-11-19, round 2, that kept the check while rewinding was not ported, ended when rewinding
+/// was ported in checkpoint 40.)
 #[test]
-fn disk_cache_checks_action_result_integrity_with_rewind_lost_inputs() {
+fn disk_cache_skips_action_result_integrity_check_with_rewind_lost_inputs() {
     let env = TestEnv::new();
     let disk_cache_dir = env.root.get_relative_str("disk_cache");
     let remote_options = parse_remote_options(&[&format!(
@@ -1097,7 +1098,7 @@ fn disk_cache_checks_action_result_integrity_with_rewind_lost_inputs() {
         .download_action_result(&context, &action_key, false, &indexmap::IndexSet::new())
         .unwrap();
 
-    assert!(cached.is_none());
+    assert!(cached.is_some());
 }
 
 /// Review 2026-11-19 round 2 R13 (a), not in the Java test: with `--rewind_lost_inputs`,

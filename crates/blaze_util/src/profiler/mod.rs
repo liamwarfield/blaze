@@ -1,7 +1,8 @@
 //! Port of `com/google/devtools/build/lib/profiler` (the profiler that writes
 //! `command.profile.gz`; decisions.md 2026-11-19, profiling ruling (3)).
 //!
-//! PORT: skipped, memory instrumentation: `MemoryProfiler`, `profiler/memory`. Skipped, JVM only:
+//! `MemoryProfiler` is ported with the D15 process figures (`memory_profiler`). PORT: skipped,
+//! memory instrumentation: `profiler/memory` (the allocation tracker). Skipped, JVM only:
 //! `GoogleAutoProfilerUtils` (Google-internal logging) and the JVM heap and GC collectors of
 //! `CollectLocalResourceUsage`. `CollectLocalResourceUsage` itself needs the worker metrics, the
 //! resource manager and `/proc/meminfo` parsing of higher crates and lives in `blaze_runtime`.
@@ -12,6 +13,7 @@ pub mod java_hash_order;
 pub mod json_profile;
 pub mod json_trace_file_writer;
 pub mod json_writer;
+pub mod memory_profiler;
 pub mod network_metrics_collector;
 pub mod profile_phase;
 #[allow(clippy::module_inception)]

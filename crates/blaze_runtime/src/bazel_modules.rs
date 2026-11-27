@@ -430,6 +430,7 @@ impl BlazeModule for MobileInstallModule {
 /// ported with the analysis services and the command's execution setup
 /// (`blaze_analysis::analysis_services`, `blaze_sky_top::execution_phase`).
 // Java: com/google/devtools/build/lib/bazel/BazelWorkspaceStatusModule.java:73 BazelWorkspaceStatusModule
+// PORT: skipped, the factory is made where it is used (blaze_analysis analysis_services): BazelWorkspaceStatusModule.workspaceInit
 pub struct BazelWorkspaceStatusModule;
 
 impl BlazeModule for BazelWorkspaceStatusModule {

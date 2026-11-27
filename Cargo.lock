@@ -321,6 +321,7 @@ dependencies = [
  "blaze_shell",
  "blaze_util",
  "blaze_vfs",
+ "http-body",
  "indexmap",
  "parking_lot",
  "prost",
@@ -553,6 +554,7 @@ name = "blaze_events"
 version = "0.1.0"
 dependencies = [
  "blaze_util",
+ "blaze_vfs",
  "libc",
  "parking_lot",
  "regex",
@@ -850,6 +852,7 @@ dependencies = [
  "flate2",
  "hex",
  "indexmap",
+ "libz-sys",
  "once_cell",
  "parking_lot",
  "prost",

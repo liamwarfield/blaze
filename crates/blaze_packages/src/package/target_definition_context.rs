@@ -258,6 +258,8 @@ impl TargetDefinitionContext {
 
     /// The builder of the running BUILD / macro evaluation, or `None`.
     // Java: com/google/devtools/build/lib/packages/TargetDefinitionContext.java:163 TargetDefinitionContext.fromOrNull
+    // Java: com/google/devtools/build/lib/packages/Package.java:679 Package.AbstractBuilder.fromOrNull
+    // Java: com/google/devtools/build/lib/packages/Package.java:1156 Package.Builder.fromOrNull
     pub fn from_or_null<'a>(
         eval: &Evaluator<'_, 'a, '_>,
     ) -> Option<RefMut<'a, TargetDefinitionContext>> {
@@ -932,6 +934,8 @@ impl TargetDefinitionContext {
         // We create an InputFile corresponding to the BUILD file in Builder's constructor.
         // However, the visibility of this target may be overridden with an exports_files
         // directive, so we wait until now to obtain the current instance from the targets map.
+        // Java: com/google/devtools/build/lib/packages/Package.java:858 Package.AbstractBuilder.setBuildFile
+        // Java: com/google/devtools/build/lib/packages/Package.java:1325 Package.Builder.setBuildFile
         self.build_file = Some(self.current_build_file());
 
         self.before_build_base()
@@ -1048,6 +1052,7 @@ impl TargetDefinitionContext {
 
     /// Java `buildPartial()`: `beforeBuild()` unless already built.
     // Java: com/google/devtools/build/lib/packages/TargetDefinitionContext.java:850 TargetDefinitionContext.buildPartial
+    // Java: com/google/devtools/build/lib/packages/Package.java:1319 Package.Builder.buildPartial
     pub fn build_partial(&mut self) -> Result<(), NoSuchPackageException> {
         if self.already_built {
             return Ok(());
@@ -1058,6 +1063,8 @@ impl TargetDefinitionContext {
     /// Freezes rules and macros and builds the package (Java `finishBuild`, with
     /// `Package.Builder`'s hooks).
     // Java: com/google/devtools/build/lib/packages/TargetDefinitionContext.java:866 TargetDefinitionContext.finishBuild
+    // Java: com/google/devtools/build/lib/packages/Package.java:1330 Package.Builder.finishBuild
+    // Java: com/google/devtools/build/lib/packages/Package.java:1162 Package.Builder.getPackage
     pub fn finish_build(&mut self) -> Arc<Package> {
         if self.already_built {
             return self

@@ -211,6 +211,8 @@ pub(crate) fn dict_cast_string_string(
     x: Value,
     what: &str,
 ) -> starlark::Result<IndexMap<String, String>> {
+    // A key-tracking dict (`ctx.var`) records every key: Java Dict.cast: `entrySet()`.
+    starlark::values::dict::dict_record_all_keys_accessed(x);
     let Some(d) = DictRef::from_value(x) else {
         return Err(errorf(format!(
             "for {what}, got {}, want dict",
@@ -257,6 +259,8 @@ pub(crate) fn dict_cast_string_object<'v>(
     x: Value<'v>,
     what: &str,
 ) -> starlark::Result<IndexMap<String, Value<'v>>> {
+    // A key-tracking dict (`ctx.var`) records every key: Java Dict.cast: `entrySet()`.
+    starlark::values::dict::dict_record_all_keys_accessed(x);
     let Some(d) = DictRef::from_value(x) else {
         return Err(errorf(format!(
             "got {} for '{what}', want dict",

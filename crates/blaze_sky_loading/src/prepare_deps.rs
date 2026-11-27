@@ -181,11 +181,15 @@ impl CollectPackagesUnderDirectoryValue {
     }
 
     // Java: com/google/devtools/build/lib/skyframe/CollectPackagesUnderDirectoryValue.java:83 CollectPackagesUnderDirectoryValue.isDirectoryPackage
+    // Java: com/google/devtools/build/lib/skyframe/CollectPackagesUnderDirectoryValue.java:137 CollectPackagesUnderDirectoryValue.ErrorCollectPackagesUnderDirectoryValue.isDirectoryPackage
+    // Java: com/google/devtools/build/lib/skyframe/CollectPackagesUnderDirectoryValue.java:82 CollectPackagesUnderDirectoryValue.NoErrorCollectPackagesUnderDirectoryValue.isDirectoryPackage
     pub fn is_directory_package(&self) -> bool {
         self.is_directory_package
     }
 
     // Java: com/google/devtools/build/lib/skyframe/CollectPackagesUnderDirectoryValue.java:89 CollectPackagesUnderDirectoryValue.getErrorMessage
+    // Java: com/google/devtools/build/lib/skyframe/CollectPackagesUnderDirectoryValue.java:142 CollectPackagesUnderDirectoryValue.ErrorCollectPackagesUnderDirectoryValue.getErrorMessage
+    // Java: com/google/devtools/build/lib/skyframe/CollectPackagesUnderDirectoryValue.java:87 CollectPackagesUnderDirectoryValue.NoErrorCollectPackagesUnderDirectoryValue.getErrorMessage
     pub fn get_error_message(&self) -> Option<&str> {
         self.error_message.as_deref()
     }

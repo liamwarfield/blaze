@@ -15,6 +15,7 @@ use blaze_analysis::aspect_key_creator::{
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::configured_target_key::{CONFIGURED_TARGET, ConfiguredTargetKey};
 use blaze_collect::{NestedSet, NestedSetBuilder};
+use blaze_skyframe::precomputed::Precomputed;
 use blaze_skyframe::{
     ComputeError, Environment, EvaluatorBuilder, FunctionHermeticity, Key, SkyFunction,
     SkyFunctionException, SkyFunctionName, SkyKey, SkyValue, Transience,
@@ -32,13 +33,39 @@ pub const ACTION_LOOKUP_CONFLICT_FINDING: SkyFunctionName =
 pub const TOP_LEVEL_ACTION_LOOKUP_CONFLICT_FINDING: SkyFunctionName =
     SkyFunctionName("TOP_LEVEL_ACTION_LOOKUP_CONFLICT_DETECTION");
 
-/// `ArtifactConflictFinder.ACTION_CONFLICTS`: the conflicts the conflict-finding functions read.
-///
-/// PORT: Java injects a precomputed value before each conflict-finding evaluation
-/// (`ACTION_CONFLICTS.set(injectable(), actionConflicts)`); the functions here read the cell the
-/// `SkyframeExecutor` sets at the same point.
-// Java: com/google/devtools/build/lib/skyframe/ArtifactConflictFinder.java:42 ArtifactConflictFinder.ACTION_CONFLICTS
-pub type ActionConflictsCell = Arc<parking_lot::RwLock<Arc<ActionConflicts>>>;
+/// `ArtifactConflictFinder.ACTION_CONFLICTS`: the conflicts the conflict-finding functions read,
+/// injected by `SkyframeExecutor.filterActionConflictsForConfiguredTargetsAndAspects`
+/// (`ACTION_CONFLICTS.set(injectable(), actionConflicts)`). Its node is a dependency of every
+/// `ACTION_LOOKUP_CONFLICT_DETECTION` node, so a new set of conflicts invalidates the verdicts a
+/// kept graph still holds (review round 2, S2-4).
+// Java: com/google/devtools/build/lib/skyframe/ArtifactConflictFinder.java:43 ArtifactConflictFinder.ACTION_CONFLICTS
+pub static ACTION_CONFLICTS: Precomputed<ActionConflictsValue> =
+    Precomputed::new("action_conflicts");
+
+/// The value of [`ACTION_CONFLICTS`]: Java's
+/// `ImmutableMap<ActionAnalysisMetadata, ActionConflictException>`.
+#[derive(Clone, Debug)]
+pub struct ActionConflictsValue(pub Arc<ActionConflicts>);
+
+impl PartialEq for ActionConflictsValue {
+    /// `ImmutableMap.equals` (`Maps.equalsImpl`): the same keys (actions by identity) with equal
+    /// values, in any order.
+    ///
+    /// PORT: Java's `ActionConflictException` does not override `equals` (identity); the port's
+    /// exceptions are copied, so two are equal when their message (which names the artifact and
+    /// both actions) is.
+    // Java: com/google/common/collect/Maps.java equalsImpl (Guava)
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+            || self.0.len() == other.0.len()
+                && self.0.entries().all(|(action, exception)| {
+                    other
+                        .0
+                        .get(action)
+                        .is_some_and(|o| o.get_message() == exception.get_message())
+                })
+    }
+}
 
 /// A marker for an `ActionLookupValue` which is known to be transitively error-free from action
 /// conflict issues.
@@ -220,9 +247,7 @@ fn get_action_lookup_value_actions(
 
 /// Check all transitive actions of an `ActionLookupValue` for action conflicts.
 // Java: com/google/devtools/build/lib/skyframe/ActionLookupConflictFindingFunction.java:38 ActionLookupConflictFindingFunction
-pub struct ActionLookupConflictFindingFunction {
-    action_conflicts: ActionConflictsCell,
-}
+pub struct ActionLookupConflictFindingFunction;
 
 impl SkyFunction for ActionLookupConflictFindingFunction {
     // Java: com/google/devtools/build/lib/skyframe/ActionLookupConflictFindingFunction.java:43 ActionLookupConflictFindingFunction.compute
@@ -231,8 +256,7 @@ impl SkyFunction for ActionLookupConflictFindingFunction {
         sky_key: &SkyKey,
         env: &mut Environment<'_>,
     ) -> blaze_skyframe::ComputeResult {
-        // ACTION_CONFLICTS.get(env)
-        let action_conflicts: Arc<ActionConflicts> = self.action_conflicts.read().clone();
+        let action_conflicts: Option<Arc<ActionConflictsValue>> = ACTION_CONFLICTS.get(env)?;
         let key = sky_key
             .downcast::<ActionLookupConflictFindingKey>()
             .expect("ACTION_LOOKUP_CONFLICT_DETECTION key");
@@ -244,6 +268,9 @@ impl SkyFunction for ActionLookupConflictFindingFunction {
             return Ok(None);
         }
         let al_value_actions = al_value_actions.expect("value is not missing");
+        let action_conflicts: Arc<ActionConflictsValue> =
+            action_conflicts.expect("the precomputed value is not missing");
+        let action_conflicts: &ActionConflicts = &action_conflicts.0;
 
         // CompactHashSet: insertion order.
         let mut dep_keys: IndexSet<SkyKey> = IndexSet::new();
@@ -390,14 +417,11 @@ fn get_all_artifacts_to_build(
 
 /// Registers `ACTION_LOOKUP_CONFLICT_DETECTION` and `TOP_LEVEL_ACTION_LOOKUP_CONFLICT_DETECTION`.
 // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:760 SkyframeExecutor.skyFunctions
-pub fn register(
-    builder: EvaluatorBuilder,
-    action_conflicts: ActionConflictsCell,
-) -> EvaluatorBuilder {
+pub fn register(builder: EvaluatorBuilder) -> EvaluatorBuilder {
     builder
         .function(
             ACTION_LOOKUP_CONFLICT_FINDING,
-            ActionLookupConflictFindingFunction { action_conflicts },
+            ActionLookupConflictFindingFunction,
         )
         .function(
             TOP_LEVEL_ACTION_LOOKUP_CONFLICT_FINDING,

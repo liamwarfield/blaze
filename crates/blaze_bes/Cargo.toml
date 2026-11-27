@@ -30,6 +30,8 @@ tonic-build.workspace = true
 
 [dev-dependencies]
 blaze_remote = { path = "../blaze_remote", features = ["testing"] }
+# The fake BES server's request-body wrapper (tests/build_event_service_transport_test.rs).
+http-body = "1"
 tempfile.workspace = true
 sha2.workspace = true
 

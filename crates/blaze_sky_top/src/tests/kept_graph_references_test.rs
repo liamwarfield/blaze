@@ -32,9 +32,9 @@ fn root_for_done_package_lookup_does_not_keep_the_evaluator_alive() {
         evaluator.upgrade().is_none(),
         "the package root lookup keeps the evaluator of a dropped executor alive"
     );
-    assert!(
-        lookup
-            .get_root_for_package(&PackageIdentifier::create_in_main_repo_str("pkg"))
-            .is_none()
-    );
+    // A lookup that outlived its executor is a bug of its holder: it fails loudly.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        lookup.get_root_for_package(&PackageIdentifier::create_in_main_repo_str("pkg"))
+    }));
+    assert!(result.is_err());
 }

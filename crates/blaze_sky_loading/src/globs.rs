@@ -647,6 +647,11 @@ fn compute_glob(
     error: &mut Option<GlobError>,
 ) -> Result<bool, ComputeError> {
     // Java GlobDescriptor.create(packageId, packageRoot, subdir = EMPTY_FRAGMENT, ...).
+    // Java: com/google/devtools/build/lib/skyframe/GlobDescriptor.java:50 GlobDescriptor.create
+    // (its getters are GlobDetail's fields; GlobsFunction never makes it a Skyframe key)
+    // PORT: skipped, GlobsFunction uses the descriptor as a value, not a key (no interning, equality or key name): GlobDescriptor.intern, GlobDescriptor.equals, GlobDescriptor.hashCode
+    // PORT: skipped, GlobsFunction uses the descriptor as a value, not a key (no interning, equality or key name): GlobDescriptor.functionName, GlobDescriptor.getSkyKeyInterner, GlobDescriptor.toString
+    // PORT: skipped, the fields of GlobDetail: GlobDescriptor.getPackageId, GlobDescriptor.getPackageRoot, GlobDescriptor.getSubdir, GlobDescriptor.getPattern, GlobDescriptor.globberOperation
     let patterns: Vec<String> = glob_request
         .get_pattern()
         .split('/')

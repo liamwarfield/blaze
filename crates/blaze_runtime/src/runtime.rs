@@ -167,7 +167,6 @@ impl BlazeRuntime {
     }
 
     /// Hook method called by the BlazeCommandDispatcher prior to the dispatch of each command.
-    /// PORT: skipped, memory instrumentation: the memory profiler (`--memory_profile`).
     // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:636 BlazeRuntime.beforeCommand
     pub(crate) fn before_command(
         &self,
@@ -185,6 +184,31 @@ impl BlazeRuntime {
             .get_options()
             .get_options::<blaze_optdefs::command::common_command_options::CommonCommandOptions>()
             .expect("CommonCommandOptions");
+        // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:638 BlazeRuntime.beforeCommand
+        if let Some(memory_profile_path) = &options.memory_profile_path {
+            let memory_profile_path = env
+                .get_working_directory()
+                .get_relative(memory_profile_path.get());
+            let profiler = blaze_util::profiler::memory_profiler::MemoryProfiler::instance();
+            // PORT: the --jvm_heap_histogram_internal_object_pattern is not passed (it feeds only
+            // the JVM heap-histogram workaround, see MemoryProfiler.markPhase).
+            profiler.set_stable_memory_parameters(Some(
+                options
+                    .memory_profile_stable_heap_parameters
+                    .gc_specs
+                    .clone(),
+            ));
+            match memory_profile_path.get_output_stream() {
+                Ok(out) => profiler.start(Some(out)),
+                Err(e) => blaze_events::EventHandler::handle(
+                    &**env.get_reporter(),
+                    &blaze_events::Event::error(format!(
+                        "Error while creating memory profile file: {}",
+                        e
+                    )),
+                ),
+            }
+        }
 
         let state_kept_after_build =
             env.get_command_name() != "clean" && options.keep_state_after_build;
@@ -1143,6 +1167,10 @@ impl BlazeRuntime {
                 .server_init(&options, &mut server_builder)
                 .map_err(NewRuntimeError::Abrupt)?;
         }
+        // ManagementFactory.getMemoryMXBean() of the memory profiler: the D15 process figures.
+        blaze_util::profiler::memory_profiler::set_platform_memory_bean(Arc::new(
+            crate::process_memory::ProcessMemoryBean,
+        ));
         // The package factory's PackageLoadingListener: Blaze's package factory is created per
         // command and reads the listener from a process-wide slot.
         // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1738 BlazeRuntime.Builder.build

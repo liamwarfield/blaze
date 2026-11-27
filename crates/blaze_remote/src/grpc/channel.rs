@@ -682,6 +682,25 @@ impl ReferenceCountedChannel {
         request
     }
 
+    /// [`Self::request`] with the guard that cancels it: dropping the guard resets the HTTP/2
+    /// stream (`RST_STREAM CANCEL`) if the request side has not ended, which grpc-java's
+    /// `ClientCall.cancel` does for a call that is given up (a dropped future, an interrupt, an
+    /// aborted stream). It matters once the response headers have arrived: hyper resets the
+    /// stream itself when the call's future is dropped before them, but afterwards it keeps the
+    /// request side open in a task of its own until the request stream ends, and then
+    /// half-closes as if the call had finished normally (BES's `abortStream`). A request side that
+    /// has ended (unary, server streaming) is reset by h2 when the response is dropped; the guard
+    /// changes nothing there. Tested in `tests/grpc_call_cancellation_test.rs`.
+    fn cancellable_request<T>(
+        message: T,
+        headers: MetadataMap,
+        deadline: Option<Duration>,
+    ) -> (tonic::Request<T>, CancelOnDrop) {
+        let mut request = Self::request(message, headers, deadline);
+        let cancel = CancelOnDrop(Some(request.cancellation_handle()));
+        (request, cancel)
+    }
+
     /// A unary call (`ClientCalls.futureUnaryCall`).
     pub async fn unary<Req, Resp>(
         &self,
@@ -696,18 +715,15 @@ impl ReferenceCountedChannel {
         let (headers, mut listeners) = self.start_call(&method, &options).await?;
         listeners.on_request(&request);
         let deadline = self.deadline_for(&method, &options);
+        let (request, _cancel) = Self::cancellable_request(request, headers, deadline);
         let call = async {
             let mut grpc = self.grpc();
             grpc.ready()
                 .await
                 .map_err(|e| not_ready(e, &self.inner.authority, self.lifecycle()))?;
             let codec: ProstCodec<Req, Resp> = ProstCodec::default();
-            grpc.unary(
-                Self::request(request, headers, deadline),
-                PathAndQuery::from_static(method.path),
-                codec,
-            )
-            .await
+            grpc.unary(request, PathAndQuery::from_static(method.path), codec)
+                .await
         };
         let result = with_deadline(deadline, call)
             .await
@@ -743,18 +759,15 @@ impl ReferenceCountedChannel {
         listeners.on_request(&request);
         let deadline = self.deadline_for(&method, &options);
         let deadline_at = deadline.map(|d| tokio::time::Instant::now() + d);
+        let (request, cancel) = Self::cancellable_request(request, headers, deadline);
         let call = async {
             let mut grpc = self.grpc();
             grpc.ready()
                 .await
                 .map_err(|e| not_ready(e, &self.inner.authority, self.lifecycle()))?;
             let codec: ProstCodec<Req, Resp> = ProstCodec::default();
-            grpc.server_streaming(
-                Self::request(request, headers, deadline),
-                PathAndQuery::from_static(method.path),
-                codec,
-            )
-            .await
+            grpc.server_streaming(request, PathAndQuery::from_static(method.path), codec)
+                .await
         };
         let idle_timeout = if method == methods::READ {
             self.inner.download_idle_timeout
@@ -774,6 +787,7 @@ impl ReferenceCountedChannel {
                 deadline: deadline_at,
                 idle_timeout,
                 method,
+                _cancel: cancel,
             }),
             Err(status) => {
                 listeners.on_close(&status);
@@ -803,18 +817,17 @@ impl ReferenceCountedChannel {
             let listeners = listeners.clone();
             requests.inspect(move |message| listeners.lock().on_request(message))
         };
+        // Dropping this call (an interrupt) or its end with requests left (the server answered
+        // early) resets the stream: hyper would otherwise go on sending the rest.
+        let (request, _cancel) = Self::cancellable_request(observed, headers, deadline);
         let call = async {
             let mut grpc = self.grpc();
             grpc.ready()
                 .await
                 .map_err(|e| not_ready(e, &self.inner.authority, self.lifecycle()))?;
             let codec: ProstCodec<Req, Resp> = ProstCodec::default();
-            grpc.client_streaming(
-                Self::request(observed, headers, deadline),
-                PathAndQuery::from_static(method.path),
-                codec,
-            )
-            .await
+            grpc.client_streaming(request, PathAndQuery::from_static(method.path), codec)
+                .await
         };
         let result = with_deadline(deadline, call)
             .await
@@ -836,7 +849,9 @@ impl ReferenceCountedChannel {
 
     /// A bidirectional-streaming call (`ClientCalls.asyncBidiStreamingCall`): sends every item
     /// of `requests` (the call half-closes when the stream ends) and returns the responses.
-    /// Dropping the returned stream cancels the call.
+    /// Dropping the returned stream (or this future) cancels the call: the HTTP/2 stream is
+    /// reset (`RST_STREAM CANCEL`) even while `requests` is still open, so the server's call
+    /// fails with `CANCELLED`, as after grpc-java's `ClientCall.cancel` / `onError`.
     ///
     /// PORT: added for the Build Event Service client
     /// (`PublishBuildEvent.PublishBuildToolEventStream`, blaze_bes). The channel-level listeners
@@ -856,18 +871,15 @@ impl ReferenceCountedChannel {
         let (headers, mut listeners) = self.start_call(&method, &options).await?;
         let deadline = self.deadline_for(&method, &options);
         let deadline_at = deadline.map(|d| tokio::time::Instant::now() + d);
+        let (request, cancel) = Self::cancellable_request(requests, headers, deadline);
         let call = async {
             let mut grpc = self.grpc();
             grpc.ready()
                 .await
                 .map_err(|e| not_ready(e, &self.inner.authority, self.lifecycle()))?;
             let codec: ProstCodec<Req, Resp> = ProstCodec::default();
-            grpc.streaming(
-                Self::request(requests, headers, deadline),
-                PathAndQuery::from_static(method.path),
-                codec,
-            )
-            .await
+            grpc.streaming(request, PathAndQuery::from_static(method.path), codec)
+                .await
         };
         match with_deadline_at(deadline_at, call)
             .await
@@ -881,6 +893,7 @@ impl ReferenceCountedChannel {
                 deadline: deadline_at,
                 idle_timeout: None,
                 method,
+                _cancel: cancel,
             }),
             Err(status) => {
                 listeners.on_close(&status);
@@ -1945,6 +1958,21 @@ pub struct ResponseStream<Resp> {
     deadline: Option<tokio::time::Instant>,
     idle_timeout: Option<Duration>,
     method: Method,
+    /// Cancels the call when the stream is dropped (see
+    /// [`ReferenceCountedChannel::cancellable_request`]).
+    _cancel: CancelOnDrop,
+}
+
+/// Cancels a call's request side when dropped (`ClientCall.cancel`).
+struct CancelOnDrop(Option<tonic::CancellationHandle>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            // A no-op for a request side that has already ended.
+            handle.cancel();
+        }
+    }
 }
 
 impl<Resp: Send + Sync + 'static> ResponseStream<Resp> {

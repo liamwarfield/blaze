@@ -137,3 +137,34 @@ mod tests {
         assert!(peak_resident_bytes().unwrap() >= total);
     }
 }
+
+/// `ManagementFactory.getMemoryMXBean()` for the memory profiler (`--memory_profile`), with the
+/// D15 figures: `gc()` returns the allocator's free memory to the system (`malloc_trim`); every
+/// heap number is resident memory (init, used and committed) except the maximum, physical
+/// memory, as for `info`.
+///
+/// PORT: the non-heap figures (the JVM's method area and code cache) have no counterpart in
+/// Blaze, whose code and static data are part of its resident memory: init, used and committed
+/// are 0 and max is -1 (`MemoryUsage`'s "undefined", which HotSpot also reports for non-heap
+/// max). Root's ruling of the memory profile names only the heap figures.
+pub struct ProcessMemoryBean;
+
+impl blaze_util::profiler::memory_profiler::MemoryMXBean for ProcessMemoryBean {
+    fn gc(&self) {
+        release_free_memory();
+    }
+
+    fn get_heap_memory_usage(&self) -> blaze_util::profiler::memory_profiler::MemoryUsage {
+        let resident = resident_bytes();
+        blaze_util::profiler::memory_profiler::MemoryUsage::new(
+            resident,
+            resident,
+            resident,
+            physical_memory_bytes(),
+        )
+    }
+
+    fn get_non_heap_memory_usage(&self) -> blaze_util::profiler::memory_profiler::MemoryUsage {
+        blaze_util::profiler::memory_profiler::MemoryUsage::new(0, 0, 0, -1)
+    }
+}

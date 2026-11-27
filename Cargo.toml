@@ -31,7 +31,9 @@ rayon = "1"
 # The C zlib backend (libz-sys, the system libz through pkg-config): Bazel's JDK deflates with
 # the zlib its libzip.so links (the system libz.so.1 on Linux), and gzip streams Blaze writes
 # where Bazel writes them (genquery `compressed_output`, command.profile.gz) must be the same
-# bytes; flate2's default miniz_oxide backend compresses differently.
+# bytes; flate2's default miniz_oxide backend compresses differently. libz-sys falls back to its
+# bundled stock zlib (other bytes than the host's) when it finds no system zlib: the build of
+# blaze_rules fails then (crates/blaze_rules/build.rs).
 flate2 = { version = "1", default-features = false, features = ["zlib"] }
 tar = "0.4"
 xz2 = { version = "0.1", features = ["static"] }

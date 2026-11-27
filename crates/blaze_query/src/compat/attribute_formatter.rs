@@ -56,6 +56,9 @@ fn is_no_dep_type(type_: Type) -> bool {
 /// `source_aspect` is the name of the aspect class (`Aspect.getAspectClass().getName()`) the
 /// attribute comes from, if any.
 // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:128 AttributeFormatter.getAttributeProto
+// Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:90 AttributeFormatter.getAttributeProto
+// Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:106 AttributeFormatter.getAttributeProto
+// (the public overloads pass `attr.getName()` and `attr.getType()`; callers do that here)
 pub fn get_attribute_proto(
     name: &str,
     type_: Type,
@@ -297,16 +300,27 @@ fn tri_state_to_proto(value: TriState) -> Tristate {
 /// writing to both `Build.Attribute` and `SelectorEntry` messages.
 // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:315 AttributeFormatter.AttributeValueBuilderAdapter
 trait AttributeValueBuilderAdapter {
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:308 AttributeFormatter.AttributeValueBuilderAdapter.addStringListValue
     fn add_string_list_value(&mut self, s: String);
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:310 AttributeFormatter.AttributeValueBuilderAdapter.addLabelDictUnaryValue
     fn add_label_dict_unary_value(&mut self, entry: LabelDictUnaryEntry);
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:312 AttributeFormatter.AttributeValueBuilderAdapter.addLabelKeyedStringDictValue
     fn add_label_keyed_string_dict_value(&mut self, entry: LabelKeyedStringDictEntry);
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:314 AttributeFormatter.AttributeValueBuilderAdapter.addIntListValue
     fn add_int_list_value(&mut self, i: i32);
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:316 AttributeFormatter.AttributeValueBuilderAdapter.addStringDictValue
     fn add_string_dict_value(&mut self, entry: StringDictEntry);
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:318 AttributeFormatter.AttributeValueBuilderAdapter.addStringListDictValue
     fn add_string_list_dict_value(&mut self, entry: StringListDictEntry);
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:320 AttributeFormatter.AttributeValueBuilderAdapter.setBooleanValue
     fn set_boolean_value(&mut self, b: bool);
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:322 AttributeFormatter.AttributeValueBuilderAdapter.setIntValue
     fn set_int_value(&mut self, i: i32);
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:324 AttributeFormatter.AttributeValueBuilderAdapter.setLicense
     fn set_license(&mut self, license: LicensePb);
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:326 AttributeFormatter.AttributeValueBuilderAdapter.setStringValue
     fn set_string_value(&mut self, s: String);
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:328 AttributeFormatter.AttributeValueBuilderAdapter.setTristateValue
     fn set_tristate_value(&mut self, tristate: Tristate);
 }
 
@@ -317,28 +331,34 @@ struct AttributeBuilderAdapter<'a> {
 }
 
 impl AttributeValueBuilderAdapter for AttributeBuilderAdapter<'_> {
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:349 AttributeFormatter.AttributeBuilderAdapter.addStringListValue
     fn add_string_list_value(&mut self, s: String) {
         self.attribute_builder.string_list_value.push(s);
     }
 
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:354 AttributeFormatter.AttributeBuilderAdapter.addLabelDictUnaryValue
     fn add_label_dict_unary_value(&mut self, entry: LabelDictUnaryEntry) {
         self.attribute_builder.label_dict_unary_value.push(entry);
     }
 
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:359 AttributeFormatter.AttributeBuilderAdapter.addLabelKeyedStringDictValue
     fn add_label_keyed_string_dict_value(&mut self, entry: LabelKeyedStringDictEntry) {
         self.attribute_builder
             .label_keyed_string_dict_value
             .push(entry);
     }
 
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:364 AttributeFormatter.AttributeBuilderAdapter.addIntListValue
     fn add_int_list_value(&mut self, i: i32) {
         self.attribute_builder.int_list_value.push(i);
     }
 
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:369 AttributeFormatter.AttributeBuilderAdapter.addStringDictValue
     fn add_string_dict_value(&mut self, entry: StringDictEntry) {
         self.attribute_builder.string_dict_value.push(entry);
     }
 
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:374 AttributeFormatter.AttributeBuilderAdapter.addStringListDictValue
     fn add_string_list_dict_value(&mut self, entry: StringListDictEntry) {
         self.attribute_builder.string_list_dict_value.push(entry);
     }
@@ -360,14 +380,17 @@ impl AttributeValueBuilderAdapter for AttributeBuilderAdapter<'_> {
         }
     }
 
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:396 AttributeFormatter.AttributeBuilderAdapter.setIntValue
     fn set_int_value(&mut self, i: i32) {
         self.attribute_builder.int_value = Some(i);
     }
 
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:401 AttributeFormatter.AttributeBuilderAdapter.setLicense
     fn set_license(&mut self, license: LicensePb) {
         self.attribute_builder.license = Some(license);
     }
 
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:406 AttributeFormatter.AttributeBuilderAdapter.setStringValue
     fn set_string_value(&mut self, s: String) {
         self.attribute_builder.string_value = Some(s);
     }
@@ -400,52 +423,63 @@ struct SelectorEntryBuilderAdapter<'a> {
 }
 
 impl AttributeValueBuilderAdapter for SelectorEntryBuilderAdapter<'_> {
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:456 AttributeFormatter.SelectorEntryBuilderAdapter.addStringListValue
     fn add_string_list_value(&mut self, s: String) {
         self.selector_entry_builder.string_list_value.push(s);
     }
 
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:461 AttributeFormatter.SelectorEntryBuilderAdapter.addLabelDictUnaryValue
     fn add_label_dict_unary_value(&mut self, entry: LabelDictUnaryEntry) {
         self.selector_entry_builder
             .label_dict_unary_value
             .push(entry);
     }
 
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:466 AttributeFormatter.SelectorEntryBuilderAdapter.addLabelKeyedStringDictValue
     fn add_label_keyed_string_dict_value(&mut self, entry: LabelKeyedStringDictEntry) {
         self.selector_entry_builder
             .label_keyed_string_dict_value
             .push(entry);
     }
 
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:471 AttributeFormatter.SelectorEntryBuilderAdapter.addIntListValue
     fn add_int_list_value(&mut self, i: i32) {
         self.selector_entry_builder.int_list_value.push(i);
     }
 
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:476 AttributeFormatter.SelectorEntryBuilderAdapter.addStringDictValue
     fn add_string_dict_value(&mut self, entry: StringDictEntry) {
         self.selector_entry_builder.string_dict_value.push(entry);
     }
 
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:481 AttributeFormatter.SelectorEntryBuilderAdapter.addStringListDictValue
     fn add_string_list_dict_value(&mut self, entry: StringListDictEntry) {
         self.selector_entry_builder
             .string_list_dict_value
             .push(entry);
     }
 
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:486 AttributeFormatter.SelectorEntryBuilderAdapter.setBooleanValue
     fn set_boolean_value(&mut self, b: bool) {
         self.selector_entry_builder.boolean_value = Some(b);
     }
 
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:491 AttributeFormatter.SelectorEntryBuilderAdapter.setIntValue
     fn set_int_value(&mut self, i: i32) {
         self.selector_entry_builder.int_value = Some(i);
     }
 
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:496 AttributeFormatter.SelectorEntryBuilderAdapter.setLicense
     fn set_license(&mut self, license: LicensePb) {
         self.selector_entry_builder.license = Some(license);
     }
 
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:501 AttributeFormatter.SelectorEntryBuilderAdapter.setStringValue
     fn set_string_value(&mut self, s: String) {
         self.selector_entry_builder.string_value = Some(s);
     }
 
+    // Java: com/google/devtools/build/lib/packages/AttributeFormatter.java:506 AttributeFormatter.SelectorEntryBuilderAdapter.setTristateValue
     fn set_tristate_value(&mut self, tristate: Tristate) {
         self.selector_entry_builder.set_tristate_value(tristate);
     }

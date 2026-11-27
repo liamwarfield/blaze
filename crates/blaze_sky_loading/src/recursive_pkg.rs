@@ -621,6 +621,15 @@ impl Key for PackageErrorMessageKey {
 
 /// Whether a package loaded, loaded with errors, or failed (Java `PackageErrorMessageValue`).
 // Java: com/google/devtools/build/lib/skyframe/PackageErrorMessageValue.java:30 PackageErrorMessageValue
+// The variants are the values of ofPackageWithNoErrors, ofPackageWithErrors and
+// ofNoSuchPackageException; getResult is the variant and getNoSuchPackageExceptionMessage the field.
+// Java: com/google/devtools/build/lib/skyframe/PackageErrorMessageValue.java:62 PackageErrorMessageValue.ofPackageWithNoErrors
+// Java: com/google/devtools/build/lib/skyframe/PackageErrorMessageValue.java:66 PackageErrorMessageValue.ofPackageWithErrors
+// Java: com/google/devtools/build/lib/skyframe/PackageErrorMessageValue.java:70 PackageErrorMessageValue.ofNoSuchPackageException
+// Java: com/google/devtools/build/lib/skyframe/PackageErrorMessageValue.java:139 PackageErrorMessageValue.NoSuchPackageExceptionValue.<init>
+// PORT: skipped, the variant and its field (see above): PackageErrorMessageValue.getResult, PackageErrorMessageValue.getNoSuchPackageExceptionMessage
+// PORT: skipped, derived PartialEq; the value is not hashed: PackageErrorMessageValue.hashCode
+// PORT: skipped, the key is a newtype key (Key::FUNCTION; no interning): PackageErrorMessageValue.create, PackageErrorMessageValue.intern, PackageErrorMessageValue.functionName, PackageErrorMessageValue.getSkyKeyInterner
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PackageErrorMessageValue {
     NoError,

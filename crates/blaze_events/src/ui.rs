@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{OnceLock, Weak};
 
-use blaze_util::{check_argument, unported};
+use blaze_util::unported;
 use parking_lot::{Mutex, RwLock};
 
 use crate::event::Event;
@@ -214,77 +214,6 @@ pub fn ansi_strip_err(out_err: &OutErr) -> OutErr {
     OutErr::create(out_err.get_output_stream().clone(), wrapped_err)
 }
 
-fn is_absolute(p: &str) -> bool {
-    p.starts_with('/')
-}
-
-/// `PathFragment.create(path).getPathString()` for paths that are already normalized.
-///
-/// PORT: PathFragment normalization (`.`, `..`, `//`, trailing `/`) is not ported here; a path
-/// that needs it fails loudly.
-fn path_fragment_create(p: &str) -> &str {
-    let normalized = p.is_empty()
-        || p == "/"
-        || (!p.ends_with('/')
-            && p.strip_prefix('/')
-                .unwrap_or(p)
-                .split('/')
-                .all(|s| !s.is_empty() && s != "." && s != ".."));
-    if !normalized {
-        unported!("PathFragment.create", "normalizing {p:?}");
-    }
-    p
-}
-
-fn drive_str_length(p: &str) -> usize {
-    if is_absolute(p) { 1 } else { 0 }
-}
-
-// Java: com/google/devtools/build/lib/vfs/PathFragment.java:412 PathFragment.startsWith
-fn fragment_starts_with(p: &str, other: &str) -> bool {
-    if other.len() > p.len() {
-        return false;
-    }
-    if drive_str_length(p) != drive_str_length(other) {
-        return false;
-    }
-    if !p.starts_with(other) {
-        return false;
-    }
-    p.len() == other.len()
-        || other.len() == drive_str_length(p)
-        || p.as_bytes()[other.len()] == b'/'
-}
-
-// Java: com/google/devtools/build/lib/vfs/PathFragment.java:369 PathFragment.relativeTo
-fn fragment_relative_to<'a>(p: &'a str, base: &str) -> &'a str {
-    check_argument!(
-        is_absolute(p) == is_absolute(base),
-        "Cannot relativize an absolute and a non-absolute path pair"
-    );
-    check_argument!(
-        p.starts_with(base),
-        "Path '{}' is not under '{}', cannot relativize",
-        p,
-        base
-    );
-    let bn = base.len();
-    if bn == 0 {
-        return p;
-    }
-    if p.len() == bn {
-        return "";
-    }
-    let last_slash_index = if base.ends_with('/') { bn - 1 } else { bn };
-    check_argument!(
-        p.as_bytes()[last_slash_index] == b'/',
-        "Path '{}' is not under '{}', cannot relativize",
-        p,
-        base
-    );
-    &p[last_slash_index + 1..]
-}
-
 /// Port of `com.google.devtools.build.lib.runtime.LocationPrinter`.
 ///
 /// PORT: package path roots are given as their absolute path strings (`Root.fromPath`); the
@@ -334,24 +263,23 @@ impl LocationPrinter {
         workspace_path_fragment: Option<&str>,
         package_path_roots: &[String],
     ) -> String {
-        let mut relative_path_to_use: Option<&str> = None;
-        let location_path_fragment = path_fragment_create(location.file());
-        if is_absolute(location_path_fragment) {
-            match workspace_path_fragment.map(path_fragment_create) {
-                Some(workspace) if fragment_starts_with(location_path_fragment, workspace) => {
-                    relative_path_to_use =
-                        Some(fragment_relative_to(location_path_fragment, workspace));
+        use blaze_vfs::PathFragment;
+        let mut relative_path_to_use: Option<PathFragment> = None;
+        let location_path_fragment = PathFragment::create(location.file());
+        if location_path_fragment.is_absolute() {
+            match workspace_path_fragment.map(PathFragment::create) {
+                Some(workspace) if location_path_fragment.starts_with(&workspace) => {
+                    relative_path_to_use = Some(location_path_fragment.relative_to(&workspace));
                 }
                 _ => {
                     for package_path_root in package_path_roots {
-                        let root = path_fragment_create(package_path_root);
+                        let root = PathFragment::create(package_path_root);
                         // Java: com/google/devtools/build/lib/vfs/Root.java:117 PathRoot.contains
-                        if is_absolute(location_path_fragment)
-                            && fragment_starts_with(location_path_fragment, root)
+                        if location_path_fragment.is_absolute()
+                            && location_path_fragment.starts_with(&root)
                         {
                             // Java: com/google/devtools/build/lib/vfs/Root.java:106 PathRoot.relativize
-                            relative_path_to_use =
-                                Some(fragment_relative_to(location_path_fragment, root));
+                            relative_path_to_use = Some(location_path_fragment.relative_to(&root));
                             break;
                         }
                     }
@@ -360,7 +288,12 @@ impl LocationPrinter {
         }
 
         let mut b = String::new();
-        b.push_str(relative_path_to_use.unwrap_or(location_path_fragment));
+        b.push_str(
+            relative_path_to_use
+                .as_ref()
+                .unwrap_or(&location_path_fragment)
+                .get_path_string(),
+        );
         let line = location.line();
         if line != 0 {
             b.push(':');

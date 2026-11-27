@@ -76,6 +76,8 @@ pub struct CommandEnvironment {
     relative_working_directory: PathFragment,
     client_env: IndexMap<String, String>,
     command_id: String,
+    /// Blaze-only: the server's token for this command (see [`CommandEnvironment::incremental_command_token`]).
+    incremental_command_token: u64,
     /// Java: `attemptNumber` (1 for the first attempt; the dispatcher retries a build after a
     /// transient remote cache error).
     attempt_number: i32,
@@ -358,6 +360,8 @@ impl CommandEnvironment {
             relative_working_directory,
             client_env,
             command_id,
+            incremental_command_token: NEXT_INCREMENTAL_COMMAND_TOKEN
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             attempt_number,
             visible_action_env,
             visible_test_env,
@@ -483,7 +487,7 @@ impl CommandEnvironment {
         self.workspace
             .get_incremental_state()
             .decide_keep_incremental_state_for_command(
-                &self.command_id,
+                self.incremental_command_token,
                 self.track_incremental_state,
             );
     }
@@ -705,6 +709,17 @@ impl CommandEnvironment {
     // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:668 CommandEnvironment.getCommandId
     pub fn get_command_id(&self) -> &str {
         &self.command_id
+    }
+
+    /// A token unique to this command in the server, which keys the per-command Skyframe sync
+    /// (blaze_sky_top `incremental`).
+    ///
+    /// PORT: Blaze-only. Java syncs once per command call (`SequencedSkyframeExecutor.sync` is
+    /// called by the command); Blaze's executors of one command share the sync, so they need a
+    /// key, which must not be the command id: the user sets it (`--invocation_id`,
+    /// `BAZEL_INTERNAL_INVOCATION_ID`) and may repeat it.
+    pub fn incremental_command_token(&self) -> u64 {
+        self.incremental_command_token
     }
 
     // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:1144 CommandEnvironment.getAttemptNumber
@@ -1019,6 +1034,10 @@ fn make_map_from_map_entries(entries: &[(String, String)]) -> IndexMap<String, S
     }
     result.into_iter().collect()
 }
+
+/// The next [`CommandEnvironment::incremental_command_token`] of this server.
+static NEXT_INCREMENTAL_COMMAND_TOKEN: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
 
 /// The command's event bus (Java: Guava's `EventBus` of the command). Subscribers receive every
 /// posted event in registration order; each ignores the events it does not subscribe to.

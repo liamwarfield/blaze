@@ -118,6 +118,7 @@ impl PackageLookupValue {
     /// For a successful package lookup, returns the root (package path entry) that the package
     /// resides in. Panics otherwise.
     // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:81 PackageLookupValue.getRoot
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:186 PackageLookupValue.SuccessfulPackageLookupValue.getRoot
     pub fn get_root(&self) -> &Root {
         match self {
             PackageLookupValue::Success { root, .. } => root,
@@ -127,6 +128,8 @@ impl PackageLookupValue {
 
     /// For a successful package lookup, returns the build file name that the package uses.
     // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:84 PackageLookupValue.getBuildFileName
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:191 PackageLookupValue.SuccessfulPackageLookupValue.getBuildFileName
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:232 PackageLookupValue.UnsuccessfulPackageLookupValue.getBuildFileName
     pub fn get_build_file_name(&self) -> BuildFileName {
         match self {
             PackageLookupValue::Success {
@@ -138,6 +141,8 @@ impl PackageLookupValue {
 
     /// Returns whether the package lookup was successful.
     // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:87 PackageLookupValue.packageExists
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:181 PackageLookupValue.SuccessfulPackageLookupValue.packageExists
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:222 PackageLookupValue.UnsuccessfulPackageLookupValue.packageExists
     pub fn package_exists(&self) -> bool {
         matches!(self, PackageLookupValue::Success { .. })
     }
@@ -156,6 +161,12 @@ impl PackageLookupValue {
 
     /// For an unsuccessful package lookup, gets the reason why `package_exists` returns false.
     // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:102 PackageLookupValue.getErrorReason
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:356 PackageLookupValue.DeletedPackageLookupValue.getErrorReason
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:313 PackageLookupValue.IncorrectRepositoryReferencePackageLookupValue.getErrorReason
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:263 PackageLookupValue.InvalidNamePackageLookupValue.getErrorReason
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:243 PackageLookupValue.NoBuildFilePackageLookupValue.getErrorReason
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:380 PackageLookupValue.NoRepositoryPackageLookupValue.getErrorReason
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:196 PackageLookupValue.SuccessfulPackageLookupValue.getErrorReason
     pub fn get_error_reason(&self) -> ErrorReason {
         match self {
             PackageLookupValue::Success { .. } => panic!("IllegalStateException"),
@@ -172,6 +183,11 @@ impl PackageLookupValue {
     /// For an unsuccessful package lookup, gets a detailed error message for `get_error_reason`
     /// that is suitable for reporting to a user.
     // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:108 PackageLookupValue.getErrorMsg
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:361 PackageLookupValue.DeletedPackageLookupValue.getErrorMsg
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:318 PackageLookupValue.IncorrectRepositoryReferencePackageLookupValue.getErrorMsg
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:268 PackageLookupValue.InvalidNamePackageLookupValue.getErrorMsg
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:248 PackageLookupValue.NoBuildFilePackageLookupValue.getErrorMsg
+    // Java: com/google/devtools/build/lib/skyframe/PackageLookupValue.java:385 PackageLookupValue.NoRepositoryPackageLookupValue.getErrorMsg
     pub fn get_error_msg(&self) -> String {
         match self {
             PackageLookupValue::Success { .. } => panic!(

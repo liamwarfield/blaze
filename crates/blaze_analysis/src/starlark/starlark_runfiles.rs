@@ -40,14 +40,14 @@ pub fn runfiles_from_value(v: Value) -> Option<Runfiles> {
 // SymlinkEntry
 
 /// A runfiles symlink entry as a Starlark value (type `SymlinkEntry`).
-// Java: com/google/devtools/build/lib/analysis/SymlinkEntry.java:30 SymlinkEntry
+// Java: com/google/devtools/build/lib/analysis/SymlinkEntry.java:51 SymlinkEntry
 #[derive(Debug, Clone, ProvidesStaticType, NoSerialize, Allocative)]
 pub struct StarlarkSymlinkEntry(#[allocative(skip)] pub SymlinkEntry);
 
 starlark_simple_value!(StarlarkSymlinkEntry);
 
 impl fmt::Display for StarlarkSymlinkEntry {
-    // Java: com/google/devtools/build/lib/analysis/SymlinkEntry.java SymlinkEntry.repr
+    // Java: com/google/devtools/build/lib/analysis/SymlinkEntry.java:80 SymlinkEntry.repr
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0.repr())
     }
@@ -64,18 +64,18 @@ impl<'v> StarlarkValue<'v> for StarlarkSymlinkEntry {
         collector.push_str(&self.0.repr());
     }
 
-    // Java: SymlinkEntry is an AutoValue-like record: equal by path and artifact.
+    // Java: SymlinkEntry has no equals/hashCode (deliberately, see `SymlinkEntry`): Starlark
+    // equality and hashing are by identity. `isImmutable()` is true, so it is hashable.
+    // Java: com/google/devtools/build/lib/analysis/SymlinkEntry.java:75 SymlinkEntry.isImmutable
     fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
         Ok(other
             .downcast_ref::<StarlarkSymlinkEntry>()
-            .is_some_and(|o| {
-                o.0.get_path() == self.0.get_path() && o.0.get_artifact() == self.0.get_artifact()
-            }))
+            .is_some_and(|o| SymlinkEntry::ptr_eq(&o.0, &self.0)))
     }
 
     fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
-        self.0.get_path().hash(hasher);
-        self.0.get_artifact().hash(hasher);
+        // SymlinkEntry's Hash is its identity.
+        self.0.hash(hasher);
         Ok(())
     }
 
@@ -87,14 +87,14 @@ impl<'v> StarlarkValue<'v> for StarlarkSymlinkEntry {
 #[starlark_module]
 fn symlink_entry_methods(builder: &mut MethodsBuilder) {
     /// The requested path of the symlink in the runfiles tree.
-    // Java: com/google/devtools/build/lib/analysis/SymlinkEntry.java SymlinkEntry.getPathString
+    // Java: com/google/devtools/build/lib/analysis/SymlinkEntry.java:61 SymlinkEntry.getPathString
     #[starlark(attribute)]
     fn path(this: &StarlarkSymlinkEntry) -> starlark::Result<String> {
         Ok(this.0.get_path_string().to_owned())
     }
 
     /// Target file of the symlink.
-    // Java: com/google/devtools/build/lib/analysis/SymlinkEntry.java SymlinkEntry.getArtifact
+    // Java: com/google/devtools/build/lib/analysis/SymlinkEntry.java:70 SymlinkEntry.getArtifact
     #[starlark(attribute)]
     fn target_file(this: &StarlarkSymlinkEntry) -> starlark::Result<StarlarkFile> {
         Ok(StarlarkFile::new(this.0.get_artifact().clone()))

@@ -7,6 +7,8 @@ publish.workspace = true
 
 [dependencies]
 flate2.workspace = true
+# Only so that build.rs sees how libz-sys was built (DEP_Z_ROOT); no features of its own.
+libz-sys = { version = "1", default-features = false }
 blaze_util = { path = "../blaze_util" }
 blaze_cmdline = { path = "../blaze_cmdline" }
 blaze_vfs = { path = "../blaze_vfs" }

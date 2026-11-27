@@ -109,6 +109,8 @@ impl FrozenDepset {
     /// A frozen depset node from its parts (for converting a `blaze_collect::NestedSet` into a
     /// depset with the same structure). `children` must mirror NestedSet's node shape.
     // W4-analysis: needed by blaze_analysis::rule::depsets (NestedSet -> depset).
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:120 Depset.<init>
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:161 Depset.of
     pub fn new_frozen(
         order: Order,
         elem_type: Option<&'static str>,
@@ -159,15 +161,21 @@ enum ChildRef<'v> {
 }
 
 impl<'v, V: ValueLike<'v>> DepsetGen<V> {
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:309 Depset.getOrder
     pub fn order(&self) -> Order {
         self.order
     }
 
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:283 Depset.isEmpty
     pub fn is_empty(&self) -> bool {
         matches!(self.children, DepsetChildren::Empty)
     }
 
     /// Java `Depset.getElementType().toString()`: "empty" or the element type name.
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:292 Depset.getElementType
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:441 Depset.ElementType.toString
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:451 Depset.ElementType.of
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:463 Depset.ElementType.getTypeClass
     pub fn element_type(&self) -> &'static str {
         self.elem_type.unwrap_or("empty")
     }
@@ -204,6 +212,7 @@ impl<'v, V: ValueLike<'v>> DepsetGen<V> {
     }
 
     /// Java `Depset.toList` / `NestedSet.toList`: unique elements in traversal order.
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:245 Depset.toList
     pub fn to_list(&self) -> starlark::Result<Vec<Value<'v>>> {
         match &self.children {
             DepsetChildren::Empty => Ok(Vec::new()),
@@ -368,8 +377,9 @@ pub trait DepsetNodeMemo<E> {
     fn put(&mut self, node: usize, frozen: bool, set: NestedSet<E>) -> NestedSet<E>;
 }
 
+// Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:318 Depset.repr
+// Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:304 Depset.toString
 impl<'v, V: ValueLike<'v>> fmt::Display for DepsetGen<V> {
-    // Java: Depset.repr
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "depset([")?;
         if let Ok(list) = self.to_list() {
@@ -398,12 +408,13 @@ where
         Some(RES.methods())
     }
 
-    // Java: Depset.truth
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:287 Depset.truth
     fn to_bool(&self) -> bool {
         !self.is_empty()
     }
 
     // Java: Depset.equals is NestedSet identity (same children array).
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:558 Depset.equals
     fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
         let Some(o) = Depset::from_value(other) else {
             return Ok(false);
@@ -417,6 +428,7 @@ where
         })
     }
 
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:553 Depset.hashCode
     fn write_hash(&self, hasher: &mut starlark_map::StarlarkHasher) -> starlark::Result<()> {
         use std::hash::Hash;
         let id = self
@@ -435,13 +447,14 @@ where
     }
 
     fn provide(&'v self, demand: &mut Demand<'_, 'v>) {
+        // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:313 Depset.isImmutable
         demand.provide_value(DeeplyImmutable);
     }
 }
 
 #[starlark_module]
 fn depset_methods(builder: &mut MethodsBuilder) {
-    /// Java: Depset.toListForStarlark
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:338 Depset.toListForStarlark
     fn to_list<'v>(this: Value<'v>, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
         let d = Depset::from_value(this).expect("depset");
         Ok(heap.alloc(AllocList(d.to_list()?)))
@@ -480,7 +493,7 @@ pub fn empty_depset<'v>(order: Order, eval: &Evaluator<'v, '_, '_>) -> Value<'v>
     Value::new_frozen(unsafe { owned.owned_frozen_value(eval.frozen_heap()) })
 }
 
-// Java: Depset.checkElement
+// Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:125 Depset.checkElement
 fn check_element(x: Value, strict: bool) -> starlark::Result<()> {
     if strict && !is_immutable(x) {
         return Err(err("depset elements must not be mutable values".to_owned()));
@@ -492,7 +505,7 @@ fn check_element(x: Value, strict: bool) -> starlark::Result<()> {
     Ok(())
 }
 
-// Java: Depset.checkType
+// Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:181 Depset.checkType
 fn check_type(
     existing: Option<&'static str>,
     new: &'static str,
@@ -509,6 +522,7 @@ fn check_type(
 impl<'v> Depset<'v> {
     /// Java: Depset.fromDirectAndTransitive, followed by NestedSetBuilder.build and the
     /// NestedSet constructor.
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:353 Depset.fromDirectAndTransitive
     pub fn from_direct_and_transitive(
         order: Order,
         direct: &[Value<'v>],
@@ -704,8 +718,14 @@ fn sequence<'v>(x: Value<'v>, what: &str) -> starlark::Result<Vec<Value<'v>>> {
 
 /// Registers `depset` (Java `Depset.DepsetLibrary`, in the BUILD and .bzl environments).
 #[starlark_module]
+// PORT: skipped, a depset's element type is its elements' Starlark type name here; the typed views are checked by their users ("got a depset of ..."): Depset.getSet, Depset.toList, Depset.cast, Depset.noneableCast
+// PORT: skipped, a depset's element type is its elements' Starlark type name here; the typed views are checked by their users ("got a depset of ..."): Depset.getElementClass, Depset.canBeCastTo
+// PORT: skipped, the element type is a &'static str (string equality) (ElementType.equals, hashCode): Depset.equals, Depset.hashCode
+// PORT: skipped, debugger-only (no Starlark debugger in Blaze): Depset.getDebugAttributes
 pub fn register_depset(builder: &mut GlobalsBuilder) {
     /// Java: Depset.java DepsetLibrary.depset and Depset.depset
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:571 Depset.DepsetLibrary.depset
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:523 Depset.depset
     fn depset<'v>(
         #[starlark(default = NoneOr::None)] direct: NoneOr<Value<'v>>,
         #[starlark(default = "default")] order: &str,

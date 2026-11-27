@@ -223,6 +223,86 @@ fn composite_metadata_is_remote_only_for_entirely_remote_children() {
     assert_eq!(metadata, local_twin);
 }
 
+/// `isEntirelyRemote()`: the `entirelyRemote` of `Builder.build` (every child remote, false for
+/// `EMPTY`, vacuously true for a tree with only a resolved path).
+#[test]
+fn is_entirely_remote_follows_builder_build() {
+    let parent = create_tree_artifact("bin/tree");
+    let child1 = create_tree_output(&parent, "child1");
+    let child2 = create_tree_output(&parent, "child2");
+
+    assert!(!TreeArtifactValue::build(Vec::new(), None, None).is_entirely_remote());
+    assert!(
+        TreeArtifactValue::build(Vec::new(), None, Some(PathFragment::create("/target")))
+            .is_entirely_remote()
+    );
+    assert!(
+        TreeArtifactValue::build(
+            vec![
+                (child1.clone(), metadata_with_id(1)),
+                (child2.clone(), metadata_with_id(2))
+            ],
+            None,
+            None,
+        )
+        .is_entirely_remote()
+    );
+    assert!(
+        !TreeArtifactValue::build(
+            vec![(child1, metadata_with_id(1)), (child2, local_metadata(2))],
+            None,
+            None,
+        )
+        .is_entirely_remote()
+    );
+}
+
+/// `getTotalChildBytes()`: the sizes of the regular-file children (`totalChildSize`).
+#[test]
+fn get_total_child_bytes_sums_regular_file_children() {
+    let parent = create_tree_artifact("bin/tree");
+    let child1 = create_tree_output(&parent, "child1");
+    let child2 = create_tree_output(&parent, "child2");
+    let tree = TreeArtifactValue::build(
+        vec![(child1, local_metadata(3)), (child2, metadata_with_id(4))],
+        None,
+        None,
+    );
+    assert_eq!(tree.get_total_child_bytes(), 7);
+    assert_eq!(
+        TreeArtifactValue::build(Vec::new(), None, None).get_total_child_bytes(),
+        0
+    );
+}
+
+#[test]
+#[ignore = "TreeArtifactValue.MultiBuilder has no caller at Bazel 9.3.2 and is not ported"]
+fn multi_builder_empty_injects_nothing() {}
+
+#[test]
+#[ignore = "TreeArtifactValue.MultiBuilder has no caller at Bazel 9.3.2 and is not ported"]
+fn multi_builder_injects_empty_tree_artifact() {}
+
+#[test]
+#[ignore = "TreeArtifactValue.MultiBuilder has no caller at Bazel 9.3.2 and is not ported"]
+fn multi_builder_injects_single_tree_artifact() {}
+
+#[test]
+#[ignore = "TreeArtifactValue.MultiBuilder has no caller at Bazel 9.3.2 and is not ported"]
+fn multi_builder_injects_multiple_tree_artifacts() {}
+
+#[test]
+#[ignore = "TreeArtifactValue.MultiBuilder and archived tree artifacts are not ported"]
+fn multi_builder_injects_tree_artifact_with_archived_representation() {}
+
+#[test]
+#[ignore = "TreeArtifactValue.MultiBuilder and archived tree artifacts are not ported"]
+fn multi_builder_injects_empty_tree_artifact_with_archived_representation() {}
+
+#[test]
+#[ignore = "TreeArtifactValue.MultiBuilder and archived tree artifacts are not ported"]
+fn multi_builder_injects_tree_artifacts_with_and_without_archived_representation() {}
+
 /// The remote half of `RemoteActionFileSystem.readdir` for a tree artifact whose files were not
 /// downloaded: the injected files below the directory, relative to it, sorted.
 #[test]

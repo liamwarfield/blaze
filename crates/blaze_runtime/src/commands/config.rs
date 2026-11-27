@@ -7,10 +7,10 @@
 //! the writers it does not have (the ids, the list of configurations as JSON, the diff) are
 //! here.
 //!
-//! PORT: the configurations are the `BuildConfigurationValue`s done in the server's graph, which
-//! earlier commands left there. Blaze keeps no graph between commands (decision D2, see
-//! [`crate::commands::dump::server_evaluator`]), so a command always finds none and reports
-//! "No configurations found", as Bazel does in a fresh server or with `--batch`.
+//! The configurations are the `BuildConfigurationValue`s done in the server's graph, which
+//! earlier commands left there ([`crate::commands::dump::server_evaluator`]). PORT: a server
+//! that keeps no graph (decision D2) finds none and reports "No configurations found", as Bazel
+//! does in a fresh server or with `--batch`.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -71,7 +71,7 @@ impl BlazeCommand for ConfigCommand {
         env: &mut CommandEnvironment,
         options: &OptionsParsingResult,
     ) -> BlazeCommandResult {
-        let evaluator = crate::commands::dump::server_evaluator();
+        let evaluator = crate::commands::dump::server_evaluator(env);
         let configurations = find_configurations(&evaluator);
         if configurations.is_empty() {
             let message = "No configurations found. This can happen if the 'config' subcommand \
@@ -623,16 +623,15 @@ mod tests {
     //! test runs `build --nobuild` and then `config` in one server, reading the configurations
     //! the build left in the graph.
 
-    const NEEDS_GRAPH: &str =
-        "needs the Skyframe graph kept between commands (Blaze discards it, decision D2)";
+    const NEEDS_HARNESS: &str = "needs BuildIntegrationTestCase (several commands in one in-process runtime), not ported; the kept graph exists in daemon mode and `build` then `config` (ids, one config, --dump_all, --output=json) was checked against the oracle by hand";
 
     macro_rules! ignored {
         ($($name:ident),* $(,)?) => {
             $(
                 #[test]
-                #[ignore = "needs the Skyframe graph kept between commands (Blaze discards it, decision D2)"]
+                #[ignore = "needs BuildIntegrationTestCase (several commands in one in-process runtime), not ported; the kept graph exists in daemon mode and `build` then `config` (ids, one config, --dump_all, --output=json) was checked against the oracle by hand"]
                 fn $name() {
-                    let _ = NEEDS_GRAPH;
+                    let _ = NEEDS_HARNESS;
                 }
             )*
         };

@@ -24,6 +24,8 @@ struct Entry {
 // resizing at 75% load) is a memory/GC optimization whose layout is not observable; this port
 // keeps the same operations and results on a locked hash map. As in Java, the first digest
 // inserted for a key wins.
+// PORT: skipped, the open-addressing table (a locked HashMap here): DigestMap.findKey, DigestMap.insertKey, DigestMap.resizeTableWriteLocked
+// PORT: skipped, the open-addressing table (a locked HashMap here): DigestMap.firstFreeIndex, DigestMap.hash, DigestMap.probe, DigestMap.getNextResize, DigestMap.smear
 pub(crate) struct DigestMap {
     #[allow(dead_code)]
     digest_hash_function: DigestHashFunction,

@@ -664,6 +664,14 @@ fn run_build_with_bep(
             .len(),
     );
     request.set_merged_analysis_and_execution(merged_analysis_and_execution);
+    // ActionExecutionFunction's SkyframeInputMetadataProvider reads done values from the
+    // evaluator (`skyframeActionExecutor.getEvaluator()`).
+    if let Some(execution) = skyframe_executor.get_execution() {
+        execution
+            .prepared
+            .executor
+            .set_memoizing_evaluator_graph(skyframe_executor.get_walkable_graph());
+    }
     if let Some(remote) = remote {
         remote.set_merged_analysis_and_execution(merged_analysis_and_execution);
         if let Some(execution) = skyframe_executor.get_execution() {
@@ -827,6 +835,7 @@ fn run_build_with_bep(
     let post_processor = ExecutionToolConstruction {
         execution_phase: &execution_phase,
         spawn_log: &spawn_log,
+        cache_file_digests_initialized: Cell::new(false),
     };
     let build_tool = BuildTool::new(
         &skyframe_executor,
@@ -1137,13 +1146,46 @@ fn run_build_with_bep(
         .get_analysis_services()
         .and_then(|s| s.main_repo_mapping.read().clone())
         .expect("the main repository mapping was computed");
+    // TestCommand.analyzeTestResults: with the validation aspect, the base targets of the
+    // successful ValidateTarget aspects.
+    // Java: com/google/devtools/build/lib/runtime/commands/TestCommand.java:237 TestCommand.analyzeTestResults
+    let validated_targets: Option<
+        Vec<blaze_buildtool::runtime::aggregating_test_listener::ConfiguredTargetKey>,
+    > = if validation_mode(&build_request_options) == ValidationMode::Aspect {
+        Some(
+            build_result
+                .get_successful_aspects()
+                .into_iter()
+                .flatten()
+                .filter_map(|key| {
+                    key.as_any()
+                        .downcast_ref::<blaze_analysis::aspect_key_creator::AspectKey>()
+                })
+                .filter(|key| {
+                    key.get_aspect_name()
+                        == blaze_buildtool::buildtool::build_result_printer::VALIDATION_ASPECT_NAME
+                })
+                .map(|key| {
+                    let base = key.get_base_configured_target_key();
+                    blaze_buildtool::runtime::aggregating_test_listener::ConfiguredTargetKey {
+                        label: base.get_label().clone(),
+                        configuration_checksum: base
+                            .get_configuration_checksum()
+                            .map(str::to_owned),
+                    }
+                })
+                .collect(),
+        )
+    } else {
+        None
+    };
     let code = test_support.finish(
         &build_result,
         reporter.as_ref(),
         printer,
         formatter,
         main_repo_mapping,
-        None,
+        validated_targets.as_deref(),
     );
     let exit_code = get_exit_code(&code);
     let detailed = match code.get_failure_detail() {
@@ -1326,6 +1368,9 @@ fn set_salt_and_delete_actions_if_changed(skyframe_executor: &SkyframeExecutor) 
 struct ExecutionToolConstruction<'a> {
     execution_phase: &'a RuntimeExecutionPhase,
     spawn_log: &'a SpawnLogSetup,
+    /// Whether `CacheFileDigestsModule.executorInit` ran for this command (once, when Java
+    /// constructs the `ExecutionTool`: before a merged analysis, else after the analysis).
+    cache_file_digests_initialized: Cell<bool>,
 }
 
 impl AnalysisPostProcessor for ExecutionToolConstruction<'_> {
@@ -1334,6 +1379,11 @@ impl AnalysisPostProcessor for ExecutionToolConstruction<'_> {
     /// `AnalysisAndExecutionPhaseRunner.execute`'s `env.throwPendingException()`.
     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:613 BuildTool.buildTargetsWithMergedAnalysisExecution
     // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:113 AnalysisAndExecutionPhaseRunner.execute
+    // (runAnalysisAndExecutionPhase is blaze_sky_top's BuildTool analysis with these hooks:
+    // BuildView.update, then execute_build.)
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:173 AnalysisAndExecutionPhaseRunner.runAnalysisAndExecutionPhase
+    // PORT: skipped, Blaze analyzes before it executes, so no watcher follows each top-level entity's analysis to start its execution: TopLevelTargetAnalysisWatcher.TopLevelTargetAnalysisWatcher TopLevelTargetAnalysisWatcher.createAndRegisterWithEventBus TopLevelTargetAnalysisWatcher.handleTopLevelTargetAnalysisConcluded TopLevelTargetAnalysisWatcher.handleAspectAnalyzed
+    // PORT: skipped, same reason: TopLevelTargetAnalysisWatcher.handleTestAnalyzed TopLevelTargetAnalysisWatcher.handleKnownCoverageArtifacts TopLevelTargetAnalysisWatcher.close AnalysisAndExecutionPhaseRunner.AnalysisAndExecutionPhaseRunner
     fn before_merged_analysis(
         &self,
         _request: &BuildRequest,
@@ -1345,6 +1395,12 @@ impl AnalysisPostProcessor for ExecutionToolConstruction<'_> {
         self.execution_phase
             .prepare_incremental_package_roots(skyframe_executor)?;
         set_salt_and_delete_actions_if_changed(skyframe_executor);
+        // new ExecutionTool(env, request) runs the modules' executorInit before the analysis,
+        // which with merged analysis and execution also executes actions (the workspace status
+        // action among them): CacheFileDigestsModule configures the digest cache and takes the
+        // command's starting statistics here.
+        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:613 BuildTool.buildTargetsWithMergedAnalysisExecution
+        self.cache_file_digests_executor_init();
         // The end of prepareForExecution: announceEnteringDirIfEmacs().
         // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:358 ExecutionTool.prepareForExecution
         if let Some(state) = skyframe_executor.get_execution() {
@@ -1419,6 +1475,19 @@ impl AnalysisPostProcessor for ExecutionToolConstruction<'_> {
 }
 
 impl ExecutionToolConstruction<'_> {
+    /// `CacheFileDigestsModule.executorInit`, once per command.
+    // Java: com/google/devtools/build/lib/runtime/CacheFileDigestsModule.java:53 CacheFileDigestsModule.executorInit
+    fn cache_file_digests_executor_init(&self) {
+        if self.cache_file_digests_initialized.replace(true) {
+            return;
+        }
+        crate::bazel_modules::CacheFileDigestsModule::executor_init(
+            self.execution_phase
+                .execution_options
+                .cache_size_for_computed_file_digests,
+        );
+    }
+
     /// `new ExecutionTool(env, request)`, and `init()`: `getExecutor()` creates the
     /// `BlazeExecutor` (here the prepared execution state, `check_execution_tool_created`).
     ///
@@ -1433,12 +1502,9 @@ impl ExecutionToolConstruction<'_> {
             .expect("IllegalStateException: the executor was created without execution");
         // SpawnLogModule.executorInit (already run before a merged analysis).
         self.spawn_log.executor_init();
-        // CacheFileDigestsModule.executorInit, next in the module order.
-        crate::bazel_modules::CacheFileDigestsModule::executor_init(
-            self.execution_phase
-                .execution_options
-                .cache_size_for_computed_file_digests,
-        );
+        // CacheFileDigestsModule.executorInit, next in the module order (already run before a
+        // merged analysis).
+        self.cache_file_digests_executor_init();
         // ExecutionTool.<init>: each module's executorInit (BuildSummaryStatsModule's registers
         // the CriticalPathComputer) runs before the spawn strategy registry is built.
         // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:171 ExecutionTool.<init>
@@ -1562,7 +1628,19 @@ fn determine_if_merging_analysis_execution(
 /// PORT: the analyzed tests are the analysis result's tests (Blaze analyzes every top-level
 /// target before it executes), the built targets are read from the graph
 /// ([`top_level_target_built`]), and there are no top-level aspects.
+///
+/// The analyzed tests are `analysis_result.get_targets_to_test()`, the analyzed aspects the keys
+/// of `get_aspects_map()`, and the built targets and aspects are read from the evaluation
+/// (`top_level_target_built`, `top_level_aspect_built`) where Java collects them from events.
 // Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:42 BuildResultListener
+// Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:59 BuildResultListener.addAnalyzedTest
+// Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:93 BuildResultListener.getAnalyzedTests
+// Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:65 BuildResultListener.addAnalyzedAspect
+// Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:97 BuildResultListener.getAnalyzedAspects
+// Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:77 BuildResultListener.addBuiltTarget
+// Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:105 BuildResultListener.getBuiltTargets
+// Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:83 BuildResultListener.addBuiltAspect
+// Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:109 BuildResultListener.getBuiltAspects
 #[derive(Default)]
 struct BuildResultListener {
     // Also includes test targets.
@@ -2393,6 +2471,8 @@ impl RuntimeExecutionPhase {
     /// `--experimental_skyframe_error_handling_refactor` and `processResult` otherwise.
     // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:245 SkyframeErrorProcessor.processExecutionErrors
     // Java: com/google/devtools/build/lib/buildtool/SkyframeBuilder.java:119 SkyframeBuilder.buildArtifacts
+    // PORT: skipped, the builder's parts are the prepared execution state (blaze_buildtool ExecutionToolConfig, the action executor's cache checker, file cache and prefetcher): SkyframeBuilder.SkyframeBuilder SkyframeBuilder.getActionCacheChecker SkyframeBuilder.getFileCache SkyframeBuilder.getActionOutputDirectoryHelper SkyframeBuilder.getActionInputPrefetcher
+    // PORT: skipped, without merged analysis and execution Java's progress receiver counts the exclusive tests' status artifacts; Blaze registers ExecutionTool's receiver (count 0) for every build, so the "[done / total]" totals of a non-merged build with exclusive tests are lower (open item): SkyframeBuilder.countTestActions
     fn uses_process_errors(&self, merged: bool) -> bool {
         merged
             || self

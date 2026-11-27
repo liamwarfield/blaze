@@ -37,11 +37,15 @@ pub const WARNING_MESSAGE: &str = "This information is intended for consumption 
 
 /// The server's Skyframe graph at the start of a command that does not analyze.
 ///
-/// PORT: Java reads `env.getSkyframeExecutor().getEvaluator()`, the server's evaluator, which
-/// holds what earlier commands computed. Blaze discards the graph after each command (decision
-/// D2, see the module comment), so it is an empty evaluator.
-pub(crate) fn server_evaluator() -> Evaluator {
-    blaze_skyframe::EvaluatorBuilder::new().build()
+/// Java reads `env.getSkyframeExecutor().getEvaluator()`, the server's evaluator, which holds
+/// what earlier commands computed: here the graph the server keeps between commands. PORT: when
+/// none is kept (a fresh server, `--batch`, or a server that does not keep graphs, decision D2)
+/// it is an empty evaluator, as Java's after `resetEvaluator`.
+pub(crate) fn server_evaluator(env: &CommandEnvironment) -> Arc<Evaluator> {
+    env.get_blaze_workspace()
+        .get_incremental_state()
+        .kept_evaluator()
+        .unwrap_or_else(|| Arc::new(blaze_skyframe::EvaluatorBuilder::new().build()))
 }
 
 impl BlazeCommand for DumpCommand {
@@ -106,7 +110,7 @@ impl DumpCommand {
     ) -> BlazeCommandResult {
         env.get_reporter().handle(&Event::warn(WARNING_MESSAGE));
         let mut failure: Option<BlazeCommandResult> = None;
-        let evaluator = server_evaluator();
+        let evaluator = server_evaluator(env);
 
         if dump_options.dump_packages {
             // env.getPackageManager().dump(out): SkyframePackageManager.dump ->
@@ -306,20 +310,235 @@ fn dump_rule_classes(out: &mut PrintStream) {
     }
 }
 
+/// `SkyKeyStats`: a rule class's (or aspect class's) count and action count.
+// Java: com/google/devtools/build/lib/skyframe/SkyKeyStats.java SkyKeyStats
+struct SkyKeyStats {
+    key: String,
+    name: String,
+    count: i64,
+    action_count: i64,
+}
+
+impl SkyKeyStats {
+    // Java: com/google/devtools/build/lib/skyframe/SkyKeyStats.java:34 SkyKeyStats.countWithActions
+    fn count_with_actions(&mut self, action_count: i64) {
+        self.count += 1;
+        self.action_count += action_count;
+    }
+}
+
+/// `ImmutableList.sortedCopyOf(SkyKeyStats.BY_COUNT_DESC, stats.values())` of a
+/// `HashMap<String, SkyKeyStats>` filled by `computeIfAbsent` in the order of the graph's done
+/// values: a stable sort by descending count of the map's iteration order.
+///
+/// PORT: the map's order is `java.util.HashMap`'s for the keys' `String.hashCode`; within one
+/// bin it is the insertion order, which follows Java's `ConcurrentHashMap` of graph nodes. That
+/// order only shows when two entries of one bin have the same count, which fails loudly.
+fn sorted_by_count_desc(stats: Vec<SkyKeyStats>, method: &'static str) -> Vec<SkyKeyStats> {
+    use blaze_util::profiler::java_hash_order::{Insertion, java_hash_map_order, string_hash_code};
+    let keys: Vec<String> = stats.iter().map(|s| s.key.clone()).collect();
+    let order = java_hash_map_order(&keys, |k| string_hash_code(k), Insertion::ComputeIfAbsent);
+    let mut capacity = 16usize;
+    while keys.len() > capacity * 3 / 4 {
+        capacity *= 2;
+    }
+    let bin = |k: &str| {
+        let h = string_hash_code(k);
+        ((h ^ ((h as u32) >> 16) as i32) as u32 as usize) & (capacity - 1)
+    };
+    let mut by_key: std::collections::HashMap<String, SkyKeyStats> =
+        stats.into_iter().map(|s| (s.key.clone(), s)).collect();
+    let mut ordered: Vec<SkyKeyStats> = order
+        .iter()
+        .map(|k| by_key.remove(k).expect("key of the map"))
+        .collect();
+    for (i, a) in ordered.iter().enumerate() {
+        for b in &ordered[i + 1..] {
+            if a.count == b.count && bin(&a.key) == bin(&b.key) {
+                blaze_util::unported!(
+                    method,
+                    "the order of {} and {} (same count, same HashMap bin): Java's insertion \
+                     order from the graph's ConcurrentHashMap",
+                    a.key,
+                    b.key
+                );
+            }
+        }
+    }
+    // Comparator.comparing(SkyKeyStats::getCount).reversed(): a stable sort.
+    ordered.sort_by(|a, b| b.count.cmp(&a.count));
+    ordered
+}
+
+/// `getSkyframeStats(eventHandler)`: the rule and aspect statistics of the graph's done values.
+// Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:522 SequencedSkyframeExecutor.getSkyframeStats
+fn get_skyframe_stats(evaluator: &Evaluator) -> (Vec<SkyKeyStats>, Vec<SkyKeyStats>) {
+    use blaze_analysis::configured_target::ConfiguredTarget;
+    use blaze_analysis::configured_target_value::ConfiguredTargetValue;
+    let mut rule_stats: indexmap::IndexMap<String, SkyKeyStats> = indexmap::IndexMap::new();
+    let mut aspect_stats: indexmap::IndexMap<String, SkyKeyStats> = indexmap::IndexMap::new();
+    for (key, value) in evaluator.get_done_values() {
+        if let Some(ct_value) = value.downcast_ref::<ConfiguredTargetValue>() {
+            // value instanceof RuleConfiguredTargetValue: configuredTarget instanceof
+            // RuleConfiguredTarget.
+            if let ConfiguredTarget::Rule(_) = ct_value.get_configured_target() {
+                let rule_class_id = match ct_value.get_target() {
+                    Some(blaze_packages::target::Target::Rule(rule)) => {
+                        rule.get_rule_class_object().get_rule_class_id().clone()
+                    }
+                    _ => blaze_util::unported!(
+                        "RuleConfiguredTarget.getRuleClassId",
+                        "a rule configured target value without its rule ({:?})",
+                        key
+                    ),
+                };
+                rule_stats
+                    .entry(rule_class_id.key.clone())
+                    .or_insert_with(|| SkyKeyStats {
+                        key: rule_class_id.key.clone(),
+                        name: rule_class_id.name.clone(),
+                        count: 0,
+                        action_count: 0,
+                    })
+                    .count_with_actions(ct_value.get_actions().len() as i64);
+            }
+        } else if key.function_name() == blaze_analysis::aspect_key_creator::ASPECT {
+            let aspect_value = value
+                .downcast_ref::<blaze_analysis::aspect_value::AspectValue>()
+                .expect("ClassCastException: AspectValue");
+            // PORT: Blaze's AspectValue is never cleared (no --discard_analysis_cache
+            // clearing of aspects), so `isCleared()` is false.
+            let aspect_class = aspect_value.get_aspect().get_aspect_class();
+            let aspect_key = aspect_class.get_key();
+            aspect_stats
+                .entry(aspect_key.clone())
+                .or_insert_with(|| SkyKeyStats {
+                    key: aspect_key.clone(),
+                    name: aspect_class.get_name().to_owned(),
+                    count: 0,
+                    action_count: 0,
+                })
+                .count_with_actions(aspect_value.get_actions().len() as i64);
+        }
+    }
+    (
+        sorted_by_count_desc(
+            rule_stats.into_values().collect(),
+            "SequencedSkyframeExecutor.getSkyframeStats",
+        ),
+        sorted_by_count_desc(
+            aspect_stats.into_values().collect(),
+            "SequencedSkyframeExecutor.getSkyframeStats",
+        ),
+    )
+}
+
 // Java: com/google/devtools/build/lib/runtime/commands/DumpCommand.java:480 DumpCommand.dumpRuleStats
 fn dump_rule_stats(evaluator: &Evaluator, out: &mut PrintStream) {
-    // executor.getSkyframeStats(eventHandler): SequencedSkyframeExecutor.getSkyframeStats walks
-    // the done values for rule configured targets and aspects.
-    // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:522 SequencedSkyframeExecutor.getSkyframeStats
-    let done_values = evaluator.get_done_values();
-    if !done_values.is_empty() {
-        unported_graph_entries(
-            "SequencedSkyframeExecutor.getSkyframeStats",
-            done_values.len(),
-        );
+    let (rules, aspects) = get_skyframe_stats(evaluator);
+    if rules.is_empty() {
+        out.print("No rules in Bazel server, please run a build command first.");
+        return;
     }
-    // skyframeStats.ruleStats().isEmpty()
-    out.print("No rules in Bazel server, please run a build command first.");
+    // allocationTracker == null: no BYTES/EACH columns.
+    print_rule_stats_of_type(&rules, "RULE", out, false);
+    print_rule_stats_of_type(&aspects, "ASPECT", out, true);
+}
+
+// Java: com/google/devtools/build/lib/runtime/commands/DumpCommand.java:503 DumpCommand.printRuleStatsOfType
+fn print_rule_stats_of_type(
+    rule_stats: &[SkyKeyStats],
+    type_: &str,
+    out: &mut PrintStream,
+    trim_key: bool,
+) {
+    if rule_stats.is_empty() {
+        return;
+    }
+    // ruleStats are already sorted. Lengths are String.length() (UTF-16 units).
+    let utf16_len = |s: &str| s.encode_utf16().count();
+    let longest_name = rule_stats
+        .iter()
+        .map(|r| utf16_len(&r.name))
+        .max()
+        .expect("non-empty");
+    let max_name_width = 30;
+    let name_column_width = longest_name.min(max_name_width);
+    let number_column_width = 10;
+    print_with_padding(out, type_, name_column_width);
+    print_with_padding_before(out, "COUNT", number_column_width);
+    print_with_padding_before(out, "ACTIONS", number_column_width);
+    out.println("");
+    for rule_stat in rule_stats {
+        print_with_padding(
+            out,
+            &truncate_name(&rule_stat.name, trim_key, max_name_width),
+            name_column_width,
+        );
+        print_with_padding_before(out, &format_long(rule_stat.count), number_column_width);
+        print_with_padding_before(
+            out,
+            &format_long(rule_stat.action_count),
+            number_column_width,
+        );
+        out.println("");
+    }
+    out.println("");
+}
+
+// Java: com/google/devtools/build/lib/runtime/commands/DumpCommand.java:545 DumpCommand.truncateName
+fn truncate_name(name: &str, trim_key: bool, max_name_width: usize) -> String {
+    let mut name: Vec<u16> = name.encode_utf16().collect();
+    // If this is an aspect, we'll chop off everything except the aspect name
+    if trim_key && let Some(divider_index) = name.iter().rposition(|&c| c == u16::from(b'%')) {
+        name = name[divider_index + 1..].to_vec();
+    }
+    if name.len() <= max_name_width {
+        return String::from_utf16_lossy(&name);
+    }
+    let starti = name.len() - max_name_width + "...".len();
+    format!("...{}", String::from_utf16_lossy(&name[starti..]))
+}
+
+// Java: com/google/devtools/build/lib/runtime/commands/DumpCommand.java:560 DumpCommand.printWithPadding
+fn print_with_padding(out: &mut PrintStream, str: &str, column_width: usize) {
+    out.print(str);
+    pad(out, column_width + 2, str.encode_utf16().count());
+}
+
+// Java: com/google/devtools/build/lib/runtime/commands/DumpCommand.java:565 DumpCommand.printWithPaddingBefore
+fn print_with_padding_before(out: &mut PrintStream, str: &str, column_width: usize) {
+    pad(out, column_width, str.encode_utf16().count());
+    out.print(str);
+    pad(out, 2, 0);
+}
+
+// Java: com/google/devtools/build/lib/runtime/commands/DumpCommand.java:571 DumpCommand.pad
+fn pad(out: &mut PrintStream, column_width: usize, consumed: usize) {
+    for _ in consumed..column_width {
+        out.print(" ");
+    }
+}
+
+/// `String.format("%,d", number)` in the server's default locale.
+///
+/// The grouping separator `,` (root and English locales), as the other ports of `%,d`
+/// (`blaze_repo_fetch::downloader::download_progress_event::format_grouped`).
+// Java: com/google/devtools/build/lib/runtime/commands/DumpCommand.java:577 DumpCommand.formatLong
+fn format_long(number: i64) -> String {
+    let digits = number.unsigned_abs().to_string();
+    let mut grouped = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(c);
+    }
+    if number < 0 {
+        format!("-{grouped}")
+    } else {
+        grouped
+    }
 }
 
 // Java: com/google/devtools/build/lib/runtime/commands/DumpCommand.java:691 DumpCommand.dumpStarlarkHeap

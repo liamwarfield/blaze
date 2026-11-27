@@ -56,6 +56,7 @@ impl ConfiguredTarget {
     }
 
     /// Java `getLookupKey()`.
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTarget.java:48 ConfiguredTarget.getLookupKey
     pub fn get_lookup_key(&self) -> &ActionLookupKeyRef {
         if let ConfiguredTarget::Merged(_) = self {
             // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:112 MergedConfiguredTarget.getLookupKey
@@ -101,6 +102,7 @@ impl ConfiguredTarget {
     }
 
     /// Java `getConfigurationKey()` (`None` for the null configuration).
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTarget.java:73 ConfiguredTarget.getConfigurationKey
     pub fn get_configuration_key(&self) -> Option<BuildConfigurationKey> {
         if let ConfiguredTarget::Merged(m) = self {
             // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:125 MergedConfiguredTarget.getConfigurationKey
@@ -129,11 +131,13 @@ impl ConfiguredTarget {
     }
 
     /// Java `isRuleConfiguredTarget()`.
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTarget.java:128 ConfiguredTarget.isRuleConfiguredTarget
     pub fn is_rule_configured_target(&self) -> bool {
         matches!(self, ConfiguredTarget::Rule(_))
     }
 
     /// Java `getActual()`: follows aliases.
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTarget.java:96 ConfiguredTarget.getActual
     pub fn get_actual(&self) -> ConfiguredTarget {
         match self {
             ConfiguredTarget::Alias(a) => a.get_actual(),
@@ -142,6 +146,7 @@ impl ConfiguredTarget {
     }
 
     /// Java `getOriginalLabel()`.
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTarget.java:114 ConfiguredTarget.getOriginalLabel
     pub fn get_original_label(&self) -> Label {
         match self {
             ConfiguredTarget::Alias(a) => a.get_original_label(),
@@ -149,8 +154,24 @@ impl ConfiguredTarget {
         }
     }
 
+    /// Java `getConfigConditions()`: the `select()` conditions of a rule (or alias) target, empty
+    /// for the other kinds (the interface's default).
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTarget.java:123 ConfiguredTarget.getConfigConditions
+    pub fn get_config_conditions(
+        &self,
+    ) -> Arc<
+        indexmap::IndexMap<Label, crate::config::config_matching_provider::ConfigMatchingProvider>,
+    > {
+        match self {
+            ConfiguredTarget::Rule(t) => t.get_config_conditions().clone(),
+            ConfiguredTarget::Alias(t) => t.get_config_conditions().clone(),
+            _ => Arc::new(indexmap::IndexMap::new()),
+        }
+    }
+
     /// Java `unwrapIfMerged()`.
     // Java: com/google/devtools/build/lib/analysis/configuredtargets/MergedConfiguredTarget.java:393 MergedConfiguredTarget.unwrapIfMerged
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTarget.java:138 ConfiguredTarget.unwrapIfMerged
     pub fn unwrap_if_merged(&self) -> ConfiguredTarget {
         match self {
             ConfiguredTarget::Merged(m) => m.base_configured_target.unwrap_if_merged(),

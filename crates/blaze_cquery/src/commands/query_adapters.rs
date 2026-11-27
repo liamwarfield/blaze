@@ -37,6 +37,14 @@ fn no_such_thing_or_interrupted(e: NoSuchThingOrInterrupted) -> GetTargetError {
     }
 }
 
+// `TargetProviderForQueryEnvironment` (query's provider) reads a package from the walkable
+// graph first and falls back to the package manager; both read the values of one evaluator, so
+// the package manager alone gives the same targets. Its package-piece branches (lazy macro
+// expansion) are reached only when packages are split into pieces; Blaze's query reads whole
+// packages from the package manager.
+// PORT: skipped, see above: TargetProviderForQueryEnvironment.getTarget, TargetProviderForQueryEnvironment.getBuildFile
+// PORT: skipped, see above: TargetProviderForQueryEnvironment.getSiblingTargetsInPackage, TargetProviderForQueryEnvironment.getPackageFromWalkableGraph
+// PORT: skipped, see above: TargetProviderForQueryEnvironment.illegalErrorInPackagePieceForBuildFile, TargetProviderForQueryEnvironment.checkCycle
 impl TargetProvider for PackageManagerTargetProvider {
     fn get_target(
         &self,

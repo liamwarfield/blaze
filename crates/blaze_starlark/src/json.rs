@@ -105,6 +105,8 @@ impl<'v> Encoder<'v> {
         }
 
         // e.g. dict (must have string keys)
+        // A key-tracking dict (`ctx.var`) records every key: Java Json.Encoder.encode of a Map: `keySet()`.
+        starlark::values::dict::dict_record_all_keys_accessed(x);
         if let Some(d) = DictRef::from_value(x) {
             let entries: Vec<(Value<'v>, Value<'v>)> = d.iter().collect();
             drop(d);

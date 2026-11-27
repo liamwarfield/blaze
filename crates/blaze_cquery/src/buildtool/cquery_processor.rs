@@ -116,7 +116,10 @@ impl AnalysisPostProcessor for CqueryProcessor {
         let Some(query_expression) = &self.query_expression else {
             return Ok(());
         };
-        before_post_analysis_query(self.tracks_state_for_incrementality)?;
+        before_post_analysis_query(
+            self.tracks_state_for_incrementality,
+            Some((skyframe_executor, self.reporter.clone())),
+        )?;
 
         // doPostAnalysisQuery
         let walkable_graph = skyframe_executor.get_walkable_graph();

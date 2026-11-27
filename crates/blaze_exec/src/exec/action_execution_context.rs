@@ -118,6 +118,11 @@ pub trait ActionExecutionContext: ActionContextRegistry {
     // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:124 TransformResolver.convertPath
     // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:86 IdentityResolver.convertPath
     // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:409 ActionExecutionContext.getPathResolver
+    // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:38 ArtifactPathResolver.convertPath
+    // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:45 ArtifactPathResolver.forExecRoot
+    // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:70 ArtifactPathResolver.IdentityResolver.<init>
+    // PORT: skipped, read only by ActionExecutionContext.getRoot (no caller) and the include scanner (unported!): ArtifactPathResolver.transformRoot IdentityResolver.transformRoot TransformResolver.transformRoot
+    // PORT: skipped, no caller at the pin: ArtifactPathResolver.withTransformedFileSystem
     fn convert_path(&self, path: &Path) -> Path {
         match self.get_action_file_system() {
             Some(file_system) => Path::create(path.as_fragment().clone(), &file_system),
@@ -213,6 +218,7 @@ pub trait ActionExecutionContext: ActionContextRegistry {
     /// `getInputPath(ActionInput)`: the path of `input` for this action (the execroot path, on
     /// the action file system when there is one).
     // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:401 ActionExecutionContext.getInputPath
+    // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:33 ArtifactPathResolver.toPath
     fn get_input_path(&self, input: &dyn crate::actions::ActionInput) -> Path {
         self.convert_path(&self.get_exec_root().get_relative(input.get_exec_path()))
     }

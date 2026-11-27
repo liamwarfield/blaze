@@ -554,15 +554,26 @@ impl WatchServiceDiffAwareness {
         self.watch_service = WatchService::new().ok();
     }
 
+    /// `watchKeyToDirBiMap.put(key, dir)`: Guava's `HashBiMap.put`. A key bound to another
+    /// directory is rebound and that directory leaves the inverse view (inotify returns the
+    /// existing key for a directory it already watches, for example after `mv a b` the key of
+    /// `a/sub` for `b/sub`); a directory bound to another key is an `IllegalArgumentException`
+    /// ("value already present"), as in Java (`put`, not `forcePut`).
+    // Java: com/google/devtools/build/lib/skyframe/WatchServiceDiffAwareness.java:329 WatcherFileVisitor.preVisitDirectory
     fn put_key(&mut self, key: WatchKey, dir: PathBuf) {
-        // HashBiMap.put: a value already bound to another key is an error in Guava; inotify
-        // returns the existing key for a directory that is already watched.
-        if let Some(old) = self.dir_to_watch_key.insert(dir.clone(), key)
-            && old != key
-        {
-            self.watch_key_to_dir.remove(&old);
+        if let Some(&bound) = self.dir_to_watch_key.get(&dir) {
+            if bound == key {
+                return;
+            }
+            panic!(
+                "IllegalArgumentException: value already present: {}",
+                dir.display()
+            );
         }
-        self.watch_key_to_dir.insert(key, dir);
+        if let Some(old_dir) = self.watch_key_to_dir.insert(key, dir.clone()) {
+            self.dir_to_watch_key.remove(&old_dir);
+        }
+        self.dir_to_watch_key.insert(dir, key);
     }
 
     fn remove_key(&mut self, key: WatchKey) {

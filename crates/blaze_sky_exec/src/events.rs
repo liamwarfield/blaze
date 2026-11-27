@@ -3,6 +3,16 @@
 //! PORT: Java events hold the `Action` itself; posted values must own their data here, so each
 //! event keeps the action as an `ActionRef` (shared) plus the fields consumers read.
 
+// Events and small classes of the execution cluster with nothing to port at the pin:
+// PORT: skipped, no class of Bazel 9.3.2 posts or subscribes to it: InjectedActionExecutionEvent.InjectedActionExecutionEvent InjectedActionExecutionEvent.getAction
+// PORT: skipped, posted with no subscriber in Bazel: ChangedFilesMessage.ChangedFilesMessage ChangedFilesMessage.create BaselineClDiffEvent.BaselineClDiffEvent BaselineClDiffEvent.getBaselineClDiff WorkspaceInfoFromDiff.getEvaluatingVersion WorkspaceInfoFromDiff.getSnapshot
+// PORT: skipped, posted with no subscriber in Bazel (Google-internal consumers): SourceDirectoryEvent.SourceDirectoryEvent SourceDirectoryEvent.create ActionInputCollectedEvent.ActionInputCollectedEvent ActionInputCollectedEvent.create
+// PORT: skipped, its only subscriber, ExecutionGraphModule, stops with unported! (--experimental_enable_execution_graph_log): SharedActionEvent.SharedActionEvent SharedActionEvent.getExecuted SharedActionEvent.getTransformed
+// PORT: skipped, no user at the pin: SingleSourcePackageRoots.SingleSourcePackageRoots SingleSourcePackageRoots.getPackageRootsMap SingleSourcePackageRoots.getPackageRootLookup
+// PORT: skipped, key interning: InternerWithPresenceCheck.intern InternerWithPresenceCheck.getCanonical
+// PORT: skipped, no PRECOMPUTED function is registered: an unset precomputed value fails in the evaluator, as Java's compute throws IllegalStateException (blaze_skyframe precomputed): PrecomputedFunction.compute
+// PORT: skipped, private constructors of static classes: ActionUtils.ActionUtils ActionInputMapHelper.ActionInputMapHelper PathMapperConstants.PathMapperConstants
+
 use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;

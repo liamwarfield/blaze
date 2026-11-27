@@ -94,6 +94,11 @@ pub fn partition<T>(items: Vec<T>, size: usize) -> Vec<Vec<T>> {
 
 /// Visits `keys` and everything reachable from them, passing the results to the callback.
 // Java: com/google/devtools/build/lib/cmdline/ParallelVisitor.java:183 ParallelVisitor.visitAndWaitForCompletion
+// PORT: skipped, the tasks run on the calling thread (see the module comment): ParallelVisitor.process, ParallelVisitor.awaitTerminationAndPropagateErrorsIfAny
+// PORT: skipped, Bazel's status callback is NULL_INSTANCE (see the module comment): ParallelVisitor.onVisitTaskDiscovered, ParallelVisitor.onVisitTaskCompleted
+// Java: com/google/devtools/build/lib/cmdline/ParallelVisitor.java:312 ParallelVisitor.VisitingTaskExecutor.visitAndWaitForCompletion
+// Java: com/google/devtools/build/lib/cmdline/ParallelVisitor.java:352 ParallelVisitor.VisitingTaskExecutor.moreWorkToDo
+// Java: com/google/devtools/build/lib/cmdline/ParallelVisitor.java:216 ParallelVisitor.addToVisitQueue
 pub fn visit_and_wait_for_completion<V: ParallelVisitor + ?Sized>(
     visitor: &V,
     keys: Vec<V::Input>,
@@ -106,12 +111,15 @@ pub fn visit_and_wait_for_completion<V: ParallelVisitor + ?Sized>(
         let pending_keys_to_visit = std::mem::take(&mut visit_queue);
         for keys_to_visit in visitor.get_visit_tasks(pending_keys_to_visit)? {
             // Java VisitTask.process.
+            // Java: com/google/devtools/build/lib/cmdline/ParallelVisitor.java:264 ParallelVisitor.VisitTask.process
+            // Java: com/google/devtools/build/lib/cmdline/ParallelVisitor.java:229 ParallelVisitor.Task.run
             let visit = visitor.get_visit_result(keys_to_visit)?;
             for keys_to_use_for_result_batch in partition(
                 visit.keys_to_use_for_result,
                 visitor.process_results_batch_size(),
             ) {
                 // Java GetAndProcessUniqueResultsTask.process.
+                // Java: com/google/devtools/build/lib/cmdline/ParallelVisitor.java:288 ParallelVisitor.GetAndProcessUniqueResultsTask.process
                 visitor
                     .process(visitor.output_keys_to_output_values(keys_to_use_for_result_batch)?)?;
             }

@@ -467,6 +467,13 @@ pub fn apply_scl_config(
 /// `AnalysisPhaseRunner.ProjectEvaluationResult` (without the active directories matcher, which
 /// only remote analysis caching and Skyfocus read).
 // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:183 AnalysisPhaseRunner.ProjectEvaluationResult
+// (the builder is `Default` and the fields)
+// Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:194 AnalysisPhaseRunner.ProjectEvaluationResult.builder
+// Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:200 AnalysisPhaseRunner.ProjectEvaluationResult.Builder.buildOptions
+// Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:204 AnalysisPhaseRunner.ProjectEvaluationResult.Builder.projectFile
+// Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:206 AnalysisPhaseRunner.ProjectEvaluationResult.Builder.build
+// PORT: skipped, the matcher only serves remote analysis caching and Skyfocus (see above): AnalysisPhaseRunner.ProjectEvaluationResult.Builder.activeDirectoriesMatcher
+// PORT: skipped, the private constructor of a static class: AnalysisPhaseRunner.AnalysisPhaseRunner
 #[derive(Clone, Debug, Default)]
 pub struct ProjectEvaluationResult {
     pub build_options: IndexSet<String>,

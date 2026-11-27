@@ -140,6 +140,12 @@ pub struct TargetRecorder {
     /// All targets, in insertion order (Java `SnapshottableBiMap`, which tracks rule insertion
     /// order for `native.existing_rules()`).
     target_map: IndexMap<String, Target>,
+    // PORT: skipped, an IndexMap (insertion order, as Guava's HashBiMap iterates; existing_rules() copies the rules at the call, the entries Java's TrackedSnapshot shows): SnapshottableBiMap.getUnderlyingBiMap, SnapshottableBiMap.size, SnapshottableBiMap.sizeTracked, SnapshottableBiMap.isEmpty, SnapshottableBiMap.containsKey
+    // PORT: skipped, an IndexMap (insertion order, as Guava's HashBiMap iterates; existing_rules() copies the rules at the call, the entries Java's TrackedSnapshot shows): SnapshottableBiMap.containsValue, SnapshottableBiMap.get, SnapshottableBiMap.getTrackedKeyOrder, SnapshottableBiMap.getTrackedKey, SnapshottableBiMap.put
+    // PORT: skipped, an IndexMap (insertion order, as Guava's HashBiMap iterates; existing_rules() copies the rules at the call, the entries Java's TrackedSnapshot shows): SnapshottableBiMap.forcePut, SnapshottableBiMap.remove, SnapshottableBiMap.putAll, SnapshottableBiMap.clear, SnapshottableBiMap.keySet
+    // PORT: skipped, an IndexMap (insertion order, as Guava's HashBiMap iterates; existing_rules() copies the rules at the call, the entries Java's TrackedSnapshot shows): SnapshottableBiMap.values, SnapshottableBiMap.entrySet, SnapshottableBiMap.inverse, SnapshottableBiMap.startedOrderTracking, SnapshottableBiMap.ensureOrderTracking
+    // PORT: skipped, an IndexMap (insertion order, as Guava's HashBiMap iterates; existing_rules() copies the rules at the call, the entries Java's TrackedSnapshot shows): SnapshottableBiMap.recordKeyOrder, SnapshottableBiMap.add, SnapshottableBiMap.containsAll, SnapshottableBiMap.addAll, SnapshottableBiMap.retainAll
+    // PORT: skipped, an IndexMap (insertion order, as Guava's HashBiMap iterates; existing_rules() copies the rules at the call, the entries Java's TrackedSnapshot shows): SnapshottableBiMap.removeAll
     /// Symbolic macro instances by id (not name).
     macro_map: IndexMap<String, Arc<MacroInstance>>,
     current_macro_frame: Option<MacroFrame>,
@@ -631,11 +637,13 @@ impl TargetRecorder {
     }
 
     // Java: com/google/devtools/build/lib/packages/TargetRecorder.java:670 TargetRecorder.putAllMacroNamespaceViolatingTargets
+    // Java: com/google/devtools/build/lib/packages/Package.java:1217 Package.Builder.putAllMacroNamespaceViolatingTargets
     pub fn put_all_macro_namespace_violating_targets(&mut self, targets: IndexMap<String, String>) {
         self.macro_namespace_violating_targets.extend(targets);
     }
 
     // Java: com/google/devtools/build/lib/packages/TargetRecorder.java:681 TargetRecorder.putAllTargetsToDeclaringPackage
+    // Java: com/google/devtools/build/lib/packages/Package.java:1221 Package.Builder.putAllTargetsToDeclaringPackage
     pub fn put_all_targets_to_declaring_package(
         &mut self,
         targets_to_declaring_package: IndexMap<String, PackageIdentifier>,

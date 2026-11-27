@@ -34,7 +34,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      args: &'a Arguments<'v, 'a>,
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/environment/modules.rs starlark/src/environment/modules.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/environment/modules.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/environment/modules.rs	2026-11-25 10:38:27.300465526 -0700
++++ starlark/src/environment/modules.rs	2026-11-26 17:09:42.438556745 -0700
 @@ -179,6 +179,16 @@
      /// serialization and restore as `None`.
      #[starlark_pagable(skip)]
@@ -104,7 +104,20 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      /// Obtain the [`FrozenHeapRef`] which owns the storage of all values defined in this module.
      pub fn frozen_heap(&self) -> &FrozenHeapRef {
          &self.heap
-@@ -436,6 +484,7 @@
+@@ -306,6 +354,12 @@
+         self.module.all_items()
+     }
+ 
++    /// BLAZE PATCH 0065: the module's raw docstring (Java `Module.getDocumentation()` before // BLAZE PATCH 0065
++    /// `Starlark.trimDocString`), `None` without one. // BLAZE PATCH 0065
++    pub fn raw_docstring(&self) -> Option<&str> { // BLAZE PATCH 0065
++        self.module.docstring.as_deref() // BLAZE PATCH 0065
++    } // BLAZE PATCH 0065
++
+     /// The documentation for the module, and all of its top level values
+     ///
+     /// Returns `(<module documentation>, { <symbol> : <that symbol's documentation> })`
+@@ -436,6 +490,7 @@
              eval_duration: Cell::new(Duration::ZERO),
              extra_value: Cell::new(None),
              heap_profile_on_freeze: Cell::new(None),
@@ -112,7 +125,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          }
      }
  
-@@ -531,6 +580,7 @@
+@@ -531,6 +586,7 @@
              eval_duration,
              extra_value,
              heap_profile_on_freeze,
@@ -120,7 +133,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          } = self;
          #[cfg(not(target_arch = "wasm32"))]
          let start = Instant::now();
-@@ -561,6 +611,8 @@
+@@ -561,6 +617,8 @@
              slots,
              docstring: docstring.into_inner(),
              heap_profile: stacks,
@@ -129,7 +142,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          };
          let frozen_module_ref = freezer.heap.alloc_any_value(rest);
          for frozen_def in freezer.frozen_defs.borrow().as_slice() {
-@@ -617,9 +669,23 @@
+@@ -617,9 +675,23 @@
          }
      }
  
@@ -153,7 +166,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          symbol: &str,
      ) -> crate::Result<Value<'v>> {
          if Self::default_visibility(symbol) != Visibility::Public {
-@@ -627,11 +693,21 @@
+@@ -627,11 +699,21 @@
                  EnvironmentError::CannotImportPrivateSymbol(symbol.to_owned()),
              ));
          }
@@ -695,7 +708,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                      });
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/def.rs starlark/src/eval/compiler/def.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/def.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/compiler/def.rs	2026-11-26 11:44:36.749260612 -0700
++++ starlark/src/eval/compiler/def.rs	2026-11-26 16:10:09.721682885 -0700
 @@ -42,6 +42,7 @@
  use crate as starlark;
  use crate::any::ProvidesStaticType;
@@ -758,7 +771,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
              parameter_captures: self
                  .eval
                  .frozen_heap()
-@@ -602,14 +629,159 @@
+@@ -602,14 +629,236 @@
  }
  
  impl<V> Display for DefGen<V> {
@@ -781,6 +794,30 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  pub(crate) type Def<'v> = DefGen<Value<'v>>;
  pub(crate) type FrozenDef = DefGen<FrozenValue>;
  
++/// BLAZE PATCH 0065: the role of a parameter (Java `StarlarkFunction`'s order). // BLAZE PATCH 0065
++#[derive(Debug, Clone, Copy, PartialEq, Eq)] // BLAZE PATCH 0065
++pub enum DefParameterRole { // BLAZE PATCH 0065
++    /// A parameter that can be given positionally. // BLAZE PATCH 0065
++    Ordinary, // BLAZE PATCH 0065
++    /// A parameter after `*` or `*args`. // BLAZE PATCH 0065
++    KeywordOnly, // BLAZE PATCH 0065
++    /// `*args`. // BLAZE PATCH 0065
++    Varargs, // BLAZE PATCH 0065
++    /// `**kwargs`. // BLAZE PATCH 0065
++    Kwargs, // BLAZE PATCH 0065
++} // BLAZE PATCH 0065
++
++/// BLAZE PATCH 0065: a parameter of a `def` (see [`DefModule::def_parameters`]). // BLAZE PATCH 0065
++#[derive(Debug, Clone)] // BLAZE PATCH 0065
++pub struct DefParameter<'v> { // BLAZE PATCH 0065
++    /// The parameter's name. // BLAZE PATCH 0065
++    pub name: String, // BLAZE PATCH 0065
++    /// The parameter's role. // BLAZE PATCH 0065
++    pub role: DefParameterRole, // BLAZE PATCH 0065
++    /// The default value (`None` for a mandatory parameter, `*args` and `**kwargs`). // BLAZE PATCH 0065
++    pub default_value: Option<Value<'v>>, // BLAZE PATCH 0065
++} // BLAZE PATCH 0065
++
 +/// BLAZE PATCH 0017: the module a `def` or `lambda` was defined in (Java
 +/// net/starlark/java/eval/StarlarkFunction.java:195 `StarlarkFunction.getModule`), or the module
 +/// whose top level is executing.
@@ -835,6 +872,44 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +        }
 +    }
 +
++    /// BLAZE PATCH 0065: the parameters of a `def` or `lambda` as Java's `StarlarkFunction` // BLAZE PATCH 0065
++    /// lists them (`getParameterNames`, `getNumOrdinaryParameters`, // BLAZE PATCH 0065
++    /// `getNumKeywordOnlyParameters`, `hasVarargs`, `hasKwargs`, `getDefaultValue`); `None` for // BLAZE PATCH 0065
++    /// other values. // BLAZE PATCH 0065
++    pub fn def_parameters(function: Value<'v>) -> Option<Vec<DefParameter<'v>>> { // BLAZE PATCH 0065
++        let params: Vec<(String, DefParameterRole, Option<Value<'v>>)> = // BLAZE PATCH 0065
++            if let Some(f) = function.downcast_ref::<Def<'v>>() { // BLAZE PATCH 0065
++                f.parameters.blaze_java_parameters() // BLAZE PATCH 0065
++            } else if let Some(f) = function.downcast_ref::<FrozenDef>() { // BLAZE PATCH 0065
++                f.parameters // BLAZE PATCH 0065
++                    .blaze_java_parameters() // BLAZE PATCH 0065
++                    .into_iter() // BLAZE PATCH 0065
++                    .map(|(n, r, d)| (n, r, d.map(|v| v.to_value()))) // BLAZE PATCH 0065
++                    .collect() // BLAZE PATCH 0065
++            } else { // BLAZE PATCH 0065
++                return None; // BLAZE PATCH 0065
++            }; // BLAZE PATCH 0065
++        Some( // BLAZE PATCH 0065
++            params // BLAZE PATCH 0065
++                .into_iter() // BLAZE PATCH 0065
++                .map(|(name, role, default_value)| DefParameter { name, role, default_value }) // BLAZE PATCH 0065
++                .collect(), // BLAZE PATCH 0065
++        ) // BLAZE PATCH 0065
++    } // BLAZE PATCH 0065
++
++    /// BLAZE PATCH 0065: the docstring of a `def` (Java `StarlarkFunction.getDocumentation`, // BLAZE PATCH 0065
++    /// the raw string); `Some(None)` without one, `None` for values that are not a `def`. // BLAZE PATCH 0065
++    pub fn def_docstring(function: Value<'v>) -> Option<Option<String>> { // BLAZE PATCH 0065
++        let def_info = if let Some(f) = function.downcast_ref::<Def<'v>>() { // BLAZE PATCH 0065
++            f.def_info // BLAZE PATCH 0065
++        } else if let Some(f) = function.downcast_ref::<FrozenDef>() { // BLAZE PATCH 0065
++            f.def_info // BLAZE PATCH 0065
++        } else { // BLAZE PATCH 0065
++            return None; // BLAZE PATCH 0065
++        }; // BLAZE PATCH 0065
++        Some(def_info.docstring.clone()) // BLAZE PATCH 0065
++    } // BLAZE PATCH 0065
++
 +    /// BLAZE PATCH 0024: where `function` (a `def` or `lambda`) is declared, Java
 +    /// `StarlarkFunction.getLocation()` (net/starlark/java/eval/StarlarkFunction.java:172): the
 +    /// span of the name of a `def`, or of the whole `lambda` expression. Its start is the
@@ -873,6 +948,21 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +    pub fn frozen_extra_value(&self) -> Option<FrozenValue> {
 +        self.frozen.and_then(|module| module.extra_value)
 +    }
++
++    /// BLAZE PATCH 0065: the globals of the frozen defining module in definition order (Java // BLAZE PATCH 0065
++    /// `Module.getGlobals()` as `StarlarkFunctionInfoExtractor` searches it), `None` while the // BLAZE PATCH 0065
++    /// module is not frozen. starlark-rust keeps `load` bindings among the names (see // BLAZE PATCH 0065
++    /// `get_global`). // BLAZE PATCH 0065
++    pub fn frozen_globals(&self) -> Option<Vec<(String, FrozenValue)>> { // BLAZE PATCH 0065
++        let module = self.frozen?; // BLAZE PATCH 0065
++        Some( // BLAZE PATCH 0065
++            module // BLAZE PATCH 0065
++                .names // BLAZE PATCH 0065
++                .all_symbols() // BLAZE PATCH 0065
++                .filter_map(|(name, slot)| Some((name.as_str().to_owned(), module.slots.get_slot(slot)?))) // BLAZE PATCH 0065
++                .collect(), // BLAZE PATCH 0065
++        ) // BLAZE PATCH 0065
++    } // BLAZE PATCH 0065
 +
 +    /// Whether `self` and `other` are the same module (same compiled file).
 +    pub fn same_module(&self, other: &DefModule) -> bool {
@@ -919,7 +1009,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  starlark_complex_values!(Def);
  
  impl<'v> Def<'v> {
-@@ -773,6 +945,39 @@
+@@ -773,6 +1022,39 @@
          Ok(())
      }
  
@@ -959,7 +1049,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      #[inline(always)]
      fn invoke_impl<'a, A: ArgumentsImpl<'v, 'a>>(
          &self,
-@@ -795,7 +1000,14 @@
+@@ -795,7 +1077,14 @@
                  //   We use `slots` only in `collect_inline`,
                  //   which does not have access to `eval` thus cannot access the frame indirectly.
                  let slots = unsafe { eval.current_frame.locals_mut() };
@@ -2086,7 +2176,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 Only in starlark/src/eval/runtime: java_call.rs
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/params/spec.rs starlark/src/eval/runtime/params/spec.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/params/spec.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/runtime/params/spec.rs	2026-11-26 14:40:41.977825743 -0700
++++ starlark/src/eval/runtime/params/spec.rs	2026-11-26 17:33:40.409685931 -0700
 @@ -124,6 +124,7 @@
  /// Builder for [`ParametersSpec`]
  pub(crate) struct ParametersSpecBuilder<V> {
@@ -2240,7 +2330,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
                      for (k, v) in y.iter_hashed() {
                          match StringValue::new(*k.key()) {
                              None => return Err(FunctionError::ArgsValueIsNotString.into()),
-@@ -1005,3 +1098,273 @@
+@@ -1005,3 +1098,307 @@
          self.as_value().can_fill_with_args_impl(pos, names)
      }
  }
@@ -2514,6 +2604,40 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +        Ok(())
 +    }
 +}
++
++impl<V: Copy> ParametersSpec<V> { // BLAZE PATCH 0065
++    /// BLAZE PATCH 0065: the parameters as Java's `StarlarkFunction` lists them (ordinary, // BLAZE PATCH 0065
++    /// keyword-only, `*args`, `**kwargs`): each name with its role and its default value. // BLAZE PATCH 0065
++    pub(crate) fn blaze_java_parameters(&self) -> Vec<(String, crate::eval::compiler::def::DefParameterRole, Option<V>)> { // BLAZE PATCH 0065
++        use crate::eval::compiler::def::DefParameterRole; // BLAZE PATCH 0065
++        let default_of = |i: usize| match &self.param_kinds[i] { // BLAZE PATCH 0065
++            ParameterKind::Defaulted(v) => Some(*v), // BLAZE PATCH 0065
++            _ => None, // BLAZE PATCH 0065
++        }; // BLAZE PATCH 0065
++        let num_positional = self.indices.num_positional as usize; // BLAZE PATCH 0065
++        let args = self.indices.args.map(|i| i as usize); // BLAZE PATCH 0065
++        let kwargs = self.indices.kwargs.map(|i| i as usize); // BLAZE PATCH 0065
++        let mut result = Vec::new(); // BLAZE PATCH 0065
++        for i in 0..num_positional { // BLAZE PATCH 0065
++            result.push((self.param_names[i].clone(), DefParameterRole::Ordinary, default_of(i))); // BLAZE PATCH 0065
++        } // BLAZE PATCH 0065
++        for i in num_positional..self.param_names.len() { // BLAZE PATCH 0065
++            if Some(i) != args && Some(i) != kwargs { // BLAZE PATCH 0065
++                result.push((self.param_names[i].clone(), DefParameterRole::KeywordOnly, default_of(i))); // BLAZE PATCH 0065
++            } // BLAZE PATCH 0065
++        } // BLAZE PATCH 0065
++        // The names of `*args` and `**kwargs` are kept with their stars; Java's are the bare // BLAZE PATCH 0065
++        // identifiers. // BLAZE PATCH 0065
++        let bare = |name: &str| name.trim_start_matches('*').to_owned(); // BLAZE PATCH 0065
++        if let Some(i) = args { // BLAZE PATCH 0065
++            result.push((bare(&self.param_names[i]), DefParameterRole::Varargs, None)); // BLAZE PATCH 0065
++        } // BLAZE PATCH 0065
++        if let Some(i) = kwargs { // BLAZE PATCH 0065
++            result.push((bare(&self.param_names[i]), DefParameterRole::Kwargs, None)); // BLAZE PATCH 0065
++        } // BLAZE PATCH 0065
++        result // BLAZE PATCH 0065
++    } // BLAZE PATCH 0065
++} // BLAZE PATCH 0065
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime.rs starlark/src/eval/runtime.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/eval/runtime.rs	2026-11-26 11:42:44.866975778 -0700
@@ -2527,18 +2651,19 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  pub(crate) mod rust_loc;
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval.rs starlark/src/eval.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval.rs	2026-11-26 15:25:00.572712348 -0700
-@@ -42,6 +42,9 @@
++++ starlark/src/eval.rs	2026-11-26 15:48:26.885684234 -0700
+@@ -42,6 +42,10 @@
  pub use runtime::profile::mode::ProfileMode;
  pub use soft_error::SoftErrorHandler;
  pub use starlark_syntax::call_stack::CallStack;
 +
 +pub use crate::eval::compiler::def::DefModule; // BLAZE PATCH 0017
++pub use crate::eval::compiler::def::{DefParameter, DefParameterRole}; // BLAZE PATCH 0065
 +pub use crate::eval::runtime::evaluator::with_current_extra; // BLAZE PATCH 0064
  use starlark_syntax::slice_vec_ext::SliceExt;
  use starlark_syntax::syntax::module::AstModule;
  use starlark_syntax::syntax::module::AstModuleFields;
-@@ -66,10 +69,44 @@
+@@ -66,10 +70,44 @@
  // Register CodeMap for use with StarlarkAny
  register_starlark_any!(CodeMap);
  
@@ -2583,7 +2708,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          #[cfg(not(target_arch = "wasm32"))]
          let start = Instant::now();
  
-@@ -144,6 +181,7 @@
+@@ -144,6 +182,7 @@
              check_types: dialect.enable_types == DialectTypes::Enable,
              top_level_stmt_count,
              typecheck,
@@ -2591,7 +2716,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          };
  
          let res = compiler.eval_module(cst, local_names);
-@@ -169,6 +207,13 @@
+@@ -169,6 +208,13 @@
          positional: &[Value<'v>],
          named: &[(&str, Value<'v>)],
      ) -> crate::Result<Value<'v>> {
@@ -8825,7 +8950,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          heap: Heap<'v>,
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/unpack.rs starlark/src/values/unpack.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/unpack.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/unpack.rs	2026-11-26 14:43:36.535485274 -0700
++++ starlark/src/values/unpack.rs	2026-11-26 18:28:10.194248421 -0700
 @@ -226,17 +226,27 @@
      fn unpack_named_param(value: Value<'v>, param_name: &str) -> crate::Result<Self> {
          #[cold]
@@ -8863,7 +8988,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          Self::unpack_value(value)
              .into_anyhow_result()
              .with_context(|| {
-@@ -273,3 +283,287 @@
+@@ -273,3 +283,313 @@
          }
      }
  }
@@ -8995,6 +9120,22 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +    java_allowed_types(function, param, ty)
 +}
 +
++/// BLAZE PATCH 0062 (round 3): a test of Java's `instanceof` for a class name of the table that
++/// is not a Starlark type name and that only the embedder knows (Bazel's provider interfaces:
++/// `Info`, `NativeInfo`, `Provider`, `structure`); `None` for a name it does not know.
++pub type JavaInterfaceMatcher = for<'v> fn(&str, Value<'v>) -> Option<bool>; // BLAZE PATCH 0062 (round 3)
++
++static JAVA_INTERFACE_MATCHERS: std::sync::RwLock<Vec<JavaInterfaceMatcher>> = // BLAZE PATCH 0062 (round 3)
++    std::sync::RwLock::new(Vec::new()); // BLAZE PATCH 0062 (round 3)
++
++/// BLAZE PATCH 0062 (round 3): registers a [`JavaInterfaceMatcher`] (once per function).
++pub fn register_java_interface_matcher(matcher: JavaInterfaceMatcher) { // BLAZE PATCH 0062 (round 3)
++    let mut matchers = JAVA_INTERFACE_MATCHERS.write().unwrap(); // BLAZE PATCH 0062 (round 3)
++    if !matchers.iter().any(|m| std::ptr::fn_addr_eq(*m, matcher)) { // BLAZE PATCH 0062 (round 3)
++        matchers.push(matcher); // BLAZE PATCH 0062 (round 3)
++    } // BLAZE PATCH 0062 (round 3)
++} // BLAZE PATCH 0062 (round 3)
++
 +/// BLAZE PATCH 0062: whether `v` is one of Java's allowed classes of the builtin's parameter, as
 +/// the table lists them (`Starlark.classType` names); `None` when the table has no text for it.
 +// Java: net/starlark/java/eval/BuiltinFunction.java:388 checkParamValue
@@ -9020,13 +9161,23 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +        "NoneType" => v.is_none(),
 +        "string" => v.unpack_str().is_some(),
 +        "sequence" => ty == "list" || ty == "tuple",
-+        "iterable" => matches!(ty, "list" | "tuple" | "dict" | "set" | "range" | "depset"),
++        // BLAZE PATCH 0062 (round 3): Java's `StarlarkIterable` (a `Sequence`, `Dict` or
++        // `StarlarkSet`; `Depset` is not one) and `java.lang.Iterable` (the same Starlark
++        // values).
++        "iterable" | "Iterable" => matches!(ty, "list" | "tuple" | "dict" | "set" | "range"), // BLAZE PATCH 0062 (round 3)
++        // BLAZE PATCH 0062 (round 3): every Starlark value but Java's `String` and `Boolean`.
++        "StarlarkValue" => ty != "string" && ty != "bool", // BLAZE PATCH 0062 (round 3)
 +        "callable" => v.vtable().starlark_value.HAS_invoke,
 +        "unknown" | "Object" => true,
 +        // BLAZE PATCH 0062 (round 2): a Java interface is not a Starlark type name: every class
 +        // implementing `CqueryNode` (the configured target classes) has the type `Target`.
 +        "CqueryNode" => ty == "Target", // BLAZE PATCH 0062 (round 2)
-+        other => ty == other,
++        other => JAVA_INTERFACE_MATCHERS // BLAZE PATCH 0062 (round 3)
++            .read() // BLAZE PATCH 0062 (round 3)
++            .unwrap() // BLAZE PATCH 0062 (round 3)
++            .iter() // BLAZE PATCH 0062 (round 3)
++            .find_map(|m| m(other, v)) // BLAZE PATCH 0062 (round 3)
++            .unwrap_or(ty == other), // BLAZE PATCH 0062 (round 3)
 +    }))
 +}
 +
@@ -9153,14 +9304,15 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +}
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values.rs starlark/src/values.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values.rs	2026-11-26 11:43:45.453223133 -0700
-@@ -136,7 +136,8 @@
++++ starlark/src/values.rs	2026-11-26 18:28:10.194474450 -0700
+@@ -136,7 +136,9 @@
  pub mod type_repr;
  pub(crate) mod types;
  pub mod typing;
 -mod unpack;
 +pub(crate) mod unpack; // BLAZE PATCH 0052 (was private)
 +pub use unpack::bazel_argument_binding_error; // BLAZE PATCH 0061
++pub use unpack::{JavaInterfaceMatcher, register_java_interface_matcher}; // BLAZE PATCH 0062 (round 3)
  mod unpack_and_discard;
  pub(crate) mod value_of;
  pub(crate) mod value_of_unchecked;

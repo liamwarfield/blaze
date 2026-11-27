@@ -1,0 +1,944 @@
+#!/usr/bin/env python3
+"""Randomized incremental builds: Blaze on a kept graph against the oracle and a clean Blaze build.
+
+usage: scripts/incremental/fuzz help
+       scripts/incremental/fuzz kinds
+       scripts/incremental/fuzz run [--blaze B] [--oracle O] [--rounds N] [--seed S]
+                                    [--failsafe on|off] [--keep]
+
+Three sides, each with its own copy of a generated workspace under
+~/.cache/blaze/work/i3/fuzz/<seed>/<side>/ (ws, the local modules ext and ext2, a second package
+path root pp, a repository override ovr) and its own output user root:
+
+  A  Blaze, BLAZE_SERVER_MODE=daemon: the server keeps its graph (the side under test);
+  O  the oracle (~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64), a server with its state kept;
+  B  Blaze in process (no server) with BLAZE_INCREMENTAL=none and `clean` before every build.
+
+Each round picks one edit (`kinds` lists them), applies the same edit to the three workspaces,
+sometimes tampers with an output in A's and O's bazel-bin (a file, a tree artifact's file or a
+runfiles entry), sometimes runs another command on A and O first (query, cquery, test, fetch),
+then runs the round's build (`build --keep_going //...` with the options the edits have set) on
+the three sides and compares:
+
+  vs oracle (counted): the exit code; every file under bazel-bin, both ways (path, sha256, exec
+    bit, symlink target with the output root and workspace normalised), except compiler
+    intermediates (_objs, .d, .o, .a, .so, .params, .cppmap, manifests, .repo_mapping); the
+    stdout of query and cquery and the exit code of the other commands.
+  vs clean (counted unless A agrees with O there, i.e. Bazel keeps the same stale state): the
+    exit code, the ERROR and WARNING lines as sets, and every file of B's bazel-bin (A must have
+    it with the same sha256 and exec bit).
+  The ERROR and WARNING lines against the oracle are printed (msgdiff) but not counted: the
+    Starlark interpreter's error texts differ by the user's decision (starlark-rust).
+
+Round-2 review additions: a fixed --invocation_id on stretches of rounds (all sides); --watchfs on
+stretches of rounds with directory renames, re-creations and removals; writes racing the start of
+A's command (the racing round is not compared; the next build of all sides is, with no edit in
+between); SIGINT during A's build (the same). Interrupts and races apply to A only.
+
+Servers: A and O only (two at once), startup --max_idle_secs=900 with a `.keep-server` file in
+their output roots while the run lasts; builds use --jobs=4. Both are shut down at the end.
+Heavy: run under `systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0`.
+--failsafe off sets BLAZE_INCREMENTAL_REMOTE_FAILSAFE=off for A (debug builds only).
+The log is ~/.cache/blaze/work/i3/fuzz/<seed>/log.txt; directories are deleted unless --keep.
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import random
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+
+HOME = os.path.expanduser("~")
+WORK = os.path.join(HOME, ".cache/blaze/work/i3/fuzz")
+ORACLE = os.path.join(HOME, ".cache/blaze/oracle/bazel-9.3.2-linux-x86_64")
+REPO_CACHE = os.path.join(HOME, ".cache/blaze/repo-cache")
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DEFAULT_BLAZE = os.path.join(REPO, "target/debug/blaze")
+BROTLI_LOCK = os.path.join(HOME, ".cache/blaze/corpus/brotli/MODULE.bazel.lock")
+INVOCATION_ID = "33333333-3333-3333-3333-333333333333"
+
+# ---------------------------------------------------------------------------------------------
+# The generated workspace.
+
+EXT2_DEP = ('bazel_dep(name = "extmod2", version = "1.0")\n'
+            'local_path_override(module_name = "extmod2", path = "../ext2")\n')
+
+MODULE = """module(name = "ws", version = "0.0")
+
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "extmod", version = "1.0")
+local_path_override(module_name = "extmod", path = "../ext")
+# EXT2
+
+envext = use_extension("//:envext.bzl", "envext")
+use_repo(envext, "envrepo")
+"""
+
+ENVEXT = """def _envrepo_impl(rctx):
+    value = rctx.getenv("I3_REPO_ENV", "unset")
+    data = rctx.read(rctx.attr.input).strip()
+    rctx.file("BUILD.bazel", 'genrule(name = "v", outs = ["v.txt"], cmd = "echo %s %s > $@", visibility = ["//visibility:public"])\\n' % (value, data))
+
+envrepo = repository_rule(implementation = _envrepo_impl, attrs = {"input": attr.label()})
+
+def _envext_impl(mctx):
+    envrepo(name = "envrepo", input = "//:repo_input.txt")
+
+envext = module_extension(implementation = _envext_impl)
+"""
+
+DEFS = """load("//:inner.bzl", "INNER")
+
+SUFFIX = "suffix-0"
+
+def gen(name, srcs, deps = []):
+    native.genrule(
+        name = name,
+        srcs = srcs + deps,
+        outs = [name + ".out"],
+        cmd = "cat $(SRCS) > $@ && echo " + SUFFIX + " " + INNER + " >> $@",
+        visibility = ["//visibility:public"],
+    )
+"""
+
+RULES = """FlagInfo = provider(fields = ["value"])
+
+def _w_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".w")
+    ctx.actions.write(out, ctx.attr.content + "\\n")
+    return [DefaultInfo(files = depset([out]))]
+
+w = rule(implementation = _w_impl, attrs = {"content": attr.string()})
+
+def _flag_impl(ctx):
+    return [FlagInfo(value = ctx.build_setting_value)]
+
+string_flag = rule(implementation = _flag_impl, build_setting = config.string(flag = True))
+
+def _flagged_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".w")
+    ctx.actions.write(out, ctx.attr.flag[FlagInfo].value + "\\n")
+    return [DefaultInfo(files = depset([out]))]
+
+flagged = rule(implementation = _flagged_impl, attrs = {"flag": attr.label()})
+
+def _tree_impl(ctx):
+    d = ctx.actions.declare_directory(ctx.label.name)
+    ctx.actions.run_shell(
+        inputs = ctx.files.srcs,
+        outputs = [d],
+        command = "cat %s > %s/f.txt && echo g > %s/g.txt" % (
+            " ".join([f.path for f in ctx.files.srcs]), d.path, d.path),
+    )
+    return [DefaultInfo(files = depset([d]))]
+
+tree = rule(implementation = _tree_impl, attrs = {"srcs": attr.label_list(allow_files = True)})
+
+def _t_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(
+        out,
+        "#!/bin/sh\\nset -e\\nfor f in %s; do test -e $f; done\\n" % " ".join(
+            [f.short_path for f in ctx.files.data]),
+        is_executable = True,
+    )
+    return [DefaultInfo(executable = out, runfiles = ctx.runfiles(files = ctx.files.data))]
+
+t_test = rule(implementation = _t_impl, test = True,
+         attrs = {"data": attr.label_list(allow_files = True)})
+"""
+
+ROOT_BUILD = """load("//:rules.bzl", "flagged", "string_flag", "t_test", "tree", "w")
+
+config_setting(name = "mode_a", define_values = {"mode": "a"})
+
+genrule(
+    name = "moded",
+    outs = ["moded.out"],
+    cmd = select({":mode_a": "echo A > $@", "//conditions:default": "echo B > $@"}),
+)
+
+genrule(
+    name = "envd",
+    outs = ["envd.out"],
+    cmd = "echo $${I3_ACTION_ENV:-none} > $@",
+)
+
+genrule(
+    name = "ext_user",
+    srcs = ["@extmod//:data", "@envrepo//:v"],
+    outs = ["ext_user.out"],
+    cmd = "cat $(SRCS) > $@",
+)
+
+w(name = "written", content = "w-0")
+
+string_flag(name = "flag", build_setting_default = "f-0")
+
+flagged(name = "flagged", flag = ":flag")
+
+tree(name = "tree", srcs = ["//pkg1:g1"])
+
+t_test(name = "t", data = ["//pkg0:g0", ":tree"])
+
+platform(name = "p", parents = ["@platforms//host"])
+"""
+
+PLATFORM_MAPPINGS = """platforms:
+  //:unused_platform
+    --define=pm=0
+"""
+
+CC_BUILD = """load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+
+cc_library(name = "inc_a", hdrs = glob(["inc_a/*.h"], allow_empty = True), includes = ["inc_a"])
+
+cc_library(name = "inc_b", hdrs = ["inc_b/val.h"], includes = ["inc_b"])
+
+cc_library(name = "lib", srcs = ["lib.cc"], hdrs = ["lib.h"], deps = [":inc_a", ":inc_b"])
+
+cc_binary(name = "bin", srcs = ["main.cc"], deps = [":lib"])
+
+genrule(name = "run", outs = ["run.out"], tools = [":bin"], cmd = "$(location :bin) > $@")
+"""
+
+LOAD_LINE = 'load("//:extra.bzl", "EXTRA")\n'
+LOAD_USE = 'genrule(name = "ex", outs = ["ex.out"], cmd = "echo " + EXTRA + " > $@")\n'
+
+
+def pkg_build(i):
+    deps = ""
+    if i > 0:
+        deps = ', deps = ["//pkg%d:g%d"]' % (i - 1, i - 1)
+    return 'load("//:defs.bzl", "gen")\n\ngen(name = "g%d", srcs = glob(["*.txt"])%s)\n' % (i, deps)
+
+
+def files_of_workspace():
+    files = {
+        "ws/MODULE.bazel": MODULE,
+        "ws/REPO.bazel": "",
+        "ws/.bazelignore": "",
+        "ws/envext.bzl": ENVEXT,
+        "ws/repo_input.txt": "input-0\n",
+        "ws/defs.bzl": DEFS,
+        "ws/inner.bzl": 'INNER = "inner-0"\n',
+        "ws/extra.bzl": 'EXTRA = "extra-0"\n',
+        "ws/rules.bzl": RULES,
+        "ws/BUILD.bazel": ROOT_BUILD,
+        "ws/platform_mappings": PLATFORM_MAPPINGS,
+        "ws/sym/BUILD": 'genrule(name = "s", srcs = ["link.txt"], outs = ["s.out"], cmd = "cat $< > $@")\n',
+        "ws/sym/t1.data": "target one\n",
+        "ws/sym/t2.data": "target two\n",
+        "ws/swp/BUILD": 'genrule(name = "g", srcs = glob(["*"], exclude = ["BUILD"]), outs = ["g.out"], cmd = "echo $(SRCS) > $@; cat $(SRCS) >> $@")\n',
+        "ws/swp/x": "x file\n",
+        "ws/swp/y": "y file\n",
+        "ws/globber/BUILD": 'genrule(name = "g", srcs = glob(["**/*.txt"]), outs = ["g.out"], cmd = "echo $(SRCS) > $@; cat $(SRCS) >> $@")\n',
+        "ws/globber/top.txt": "top\n",
+        "ws/globber/sub/s.txt": "sub\n",
+        "ws/globber/sub/deep/d.txt": "deep\n",
+        "ws/ign/BUILD": 'genrule(name = "i", outs = ["i.out"], cmd = "echo ign > $@")\n',
+        "ws/ign2/BUILD": 'genrule(name = "i", outs = ["i.out"], cmd = "echo ign2 > $@")\n',
+        "ws/cc/BUILD": CC_BUILD,
+        "ws/cc/lib.h": "#define LIB_V 1\nint lib();\n",
+        "ws/cc/lib.cc": '#include "cc/lib.h"\n#include "val.h"\nint lib() { return LIB_V * 100 + VAL; }\n',
+        "ws/cc/inc_b/val.h": "#define VAL 2\n",
+        "ws/cc/main.cc": '#include <cstdio>\n#include "cc/lib.h"\nint main() { std::printf("%d\\n", lib()); return 0; }\n',
+        "ext/MODULE.bazel": 'module(name = "extmod", version = "1.0")\n',
+        "ext/BUILD.bazel": 'genrule(name = "data", srcs = ["data.txt"], outs = ["data.out"], cmd = "cp $< $@", visibility = ["//visibility:public"])\n',
+        "ext/data.txt": "ext data 0\n",
+        "ext2/MODULE.bazel": 'module(name = "extmod2", version = "1.0")\n',
+        "ext2/BUILD.bazel": 'genrule(name = "d", outs = ["d.out"], cmd = "echo d > $@")\n',
+        "pp/pponly/BUILD": 'genrule(name = "pp", outs = ["pp.out"], cmd = "echo pp > $@")\n',
+        "ovr/REPO.bazel": "",
+        "ovr/BUILD.bazel": 'genrule(name = "v", outs = ["v.txt"], cmd = "echo override > $@", visibility = ["//visibility:public"])\n',
+    }
+    for i in range(4):
+        files["ws/pkg%d/BUILD" % i] = pkg_build(i)
+        files["ws/pkg%d/a.txt" % i] = "pkg%d a\n" % i
+        files["ws/pkg%d/b.txt" % i] = "pkg%d b\n" % i
+    return files
+
+
+def generate(side_root):
+    for d in ("ws", "ext", "ext2", "pp", "ovr"):
+        remove_tree(os.path.join(side_root, d))
+    for rel, text in files_of_workspace().items():
+        write(os.path.join(side_root, rel), text)
+    os.symlink("t1.data", os.path.join(side_root, "ws/sym/link.txt"))
+    if os.path.exists(BROTLI_LOCK):
+        # Registry file hashes, so that module resolution needs no network.
+        shutil.copyfile(BROTLI_LOCK, os.path.join(side_root, "ws/MODULE.bazel.lock"))
+
+
+def write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+
+
+def read(path):
+    with open(path) as f:
+        return f.read()
+
+
+def remove_tree(path):
+    if os.path.lexists(path):
+        subprocess.run(["chmod", "-R", "u+w", path], capture_output=True)
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
+
+
+# ---------------------------------------------------------------------------------------------
+# Sides.
+
+
+class Side:
+    def __init__(self, name, binary, root, env, daemon):
+        self.name = name
+        self.binary = binary
+        self.root = root
+        self.ws = os.path.join(root, "ws")
+        self.out_root = os.path.join(root, "ur")
+        self.daemon = daemon
+        self.env = {"HOME": HOME, "PATH": "/usr/bin:/bin"}
+        self.env.update(env)
+
+    def path(self, rel):
+        return os.path.join(self.root, rel)
+
+    def run(self, args, env=None, timeout=900, interrupt_after=None, during=None):
+        e = dict(self.env)
+        if env:
+            e.update(env)
+        cmd = [self.binary, "--output_user_root=" + self.out_root, "--nohome_rc",
+               "--nosystem_rc"]
+        if self.daemon:
+            cmd.append("--max_idle_secs=900")
+        p = subprocess.Popen(cmd + args, cwd=self.ws, env=e, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
+        timer = None
+        if during is not None:
+            delay, fn = during
+            timer = threading.Timer(delay, fn)
+            timer.start()
+        if interrupt_after is not None:
+            time.sleep(interrupt_after)
+            p.send_signal(signal.SIGINT)
+        try:
+            out, err = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            out, err = p.communicate()
+            return 124, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+        finally:
+            if timer is not None:
+                timer.join()
+        return p.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+
+    def bazel_bin(self):
+        code, out, _ = self.run(["info", "--symlink_prefix=/", "bazel-bin"])
+        return out.strip() if code == 0 else None
+
+    def shutdown(self):
+        if not self.daemon:
+            return
+        try:
+            self.run(["shutdown"], timeout=120)
+        except Exception:
+            pass
+        if not os.path.isdir(self.out_root):
+            return
+        for d in os.listdir(self.out_root):
+            try:
+                pid = int(read(os.path.join(self.out_root, d, "server", "server.pid.txt")))
+                with open("/proc/%d/cmdline" % pid, "rb") as f:
+                    if self.out_root in f.read().decode("utf-8", "replace"):
+                        os.kill(pid, signal.SIGKILL)
+            except Exception:
+                pass
+
+
+COMMON = ["--symlink_prefix=/", "--jobs=4", "--color=no", "--curses=no",
+          "--repository_cache=" + REPO_CACHE]
+
+INTERMEDIATE = re.compile(
+    r"(/_objs/|\.d$|\.o$|\.a$|\.so$|\.params$|\.cppmap$|_manifest$|/MANIFEST$|\.repo_mapping$)")
+
+
+def output_tree(side, bb):
+    """{relative path: (sha256 or link target, exec bit)} of every file under bazel-bin."""
+    result = {}
+    if not bb or not os.path.isdir(bb):
+        return result
+    for d, dirs, fs in os.walk(bb):
+        for f in fs + [x for x in dirs if os.path.islink(os.path.join(d, x))]:
+            p = os.path.join(d, f)
+            rel = os.path.relpath(p, bb)
+            if os.path.islink(p):
+                target = os.readlink(p)
+                target = target.replace(side.out_root, "<OUT_ROOT>").replace(side.root, "<ROOT>")
+                target = re.sub(r"\b[0-9a-f]{32}\b", "<HASH>", target)
+                result[rel] = ("link:" + target, False)
+                continue
+            h = hashlib.sha256()
+            with open(p, "rb") as fh:
+                h.update(fh.read())
+            result[rel] = (h.hexdigest(), os.access(p, os.X_OK))
+    return result
+
+
+VOLATILE = [
+    re.compile(r"^(Loading|Analyzing|Computing main repo mapping|Fetching|Building|Starting local|Extracting)\b"),
+    re.compile(r"^\[[\d,]+ / [\d,]+\]"),
+    re.compile(r"^INFO: (Invocation ID|Elapsed time|Streaming build results|Reading rc options|Current date)"),
+    re.compile(r"^\s*$"),
+    re.compile(r"^Another command .* is running"),
+    re.compile(r"^(Server terminated|Starting local Bazel server|.* still trying to connect)"),
+]
+
+
+def norm_lines(text, side):
+    lines = []
+    for line in text.splitlines():
+        line = line.replace(side.out_root, "<OUT_ROOT>").replace(side.root, "<ROOT>")
+        line = re.sub(r"\b[0-9a-f]{32}\b", "<HASH>", line)
+        line = re.sub(r"\d+\.\d+s\b", "<T>s", line)
+        if any(r.search(line) for r in VOLATILE):
+            continue
+        lines.append(line)
+    return lines
+
+
+def problem_lines(text, side):
+    return sorted({
+        l for l in norm_lines(text, side)
+        if (l.startswith("ERROR:") or l.startswith("WARNING:"))
+        and "discarding analysis cache" not in l
+        and l != "WARNING: Target pattern parsing failed."
+    })
+
+
+# ---------------------------------------------------------------------------------------------
+# Edits. An edit is decided once (with the round's random numbers) and applied to every side's
+# copy as a function of the side's root directory.
+
+
+class Editor:
+    def __init__(self, rng, roots):
+        self.rng = rng
+        self.master = roots[0]  # decisions read A's copy; all copies are equal between rounds
+        self.counter = 0
+        self.extra_pkgs = []
+        self.broken = None
+        # Command options set by edits.
+        self.opts = {}
+
+    def m(self, rel):
+        return os.path.join(self.master, rel)
+
+    def txt_files(self):
+        out = []
+        for i in range(4):
+            for f in sorted(os.listdir(self.m("ws/pkg%d" % i))):
+                if f.endswith(".txt"):
+                    out.append("ws/pkg%d/%s" % (i, f))
+        return out
+
+    def toggle(self, key, value):
+        if key in self.opts:
+            del self.opts[key]
+            return "%s off" % key
+        self.opts[key] = value
+        return "%s on" % key
+
+    def edit(self):
+        """Returns (description, op(root) or None)."""
+        self.counter += 1
+        n = self.counter
+        r = self.rng
+        if self.broken is not None and r.random() < 0.7:
+            rel = self.broken
+            self.broken = None
+            return "repair " + rel, lambda root: replace_in(root, rel, "this is not starlark(\n", "")
+        kind = r.choice(KINDS)
+        files = self.txt_files()
+        if kind == "same-size":
+            rel = r.choice(files)
+            text = read(self.m(rel))
+            i = r.randrange(len(text) - 1)
+            c = r.choice([x for x in "abcdefgh" if x != text[i]])
+            new = text[:i] + c + text[i + 1:]
+            return "same-size rewrite " + rel, lambda root: write(os.path.join(root, rel), new)
+        if kind == "double-edit":
+            rel = r.choice(files)
+            text = read(self.m(rel))
+
+            def op(root):
+                write(os.path.join(root, rel), text.replace("a", "x", 1))
+                write(os.path.join(root, rel), text.replace("a", "y", 1))
+            return "two same-size rewrites at once " + rel, op
+        if kind == "append":
+            rel = r.choice(files)
+            return "append " + rel, lambda root: append(root, rel, "line %d\n" % n)
+        if kind == "touch":
+            rel = r.choice(files)
+            return "touch " + rel, lambda root: os.utime(os.path.join(root, rel), None)
+        if kind == "add-glob":
+            rel = "ws/pkg%d/n%d.txt" % (r.randrange(4), n)
+            return "add glob file " + rel, lambda root: write(os.path.join(root, rel), "new %d\n" % n)
+        if kind == "del-glob":
+            cands = [f for f in files if os.path.basename(f) != "a.txt"]
+            if not cands:
+                return "nothing", None
+            rel = r.choice(cands)
+            return "delete glob file " + rel, lambda root: os.remove(os.path.join(root, rel))
+        if kind == "add-pkg":
+            name = "ws/extra%d" % n
+            self.extra_pkgs.append(name)
+
+            def op(root):
+                write(os.path.join(root, name, "BUILD"),
+                      'genrule(name = "x", srcs = glob(["*.in"]), outs = ["x.out"], '
+                      'cmd = "echo %d > $@; cat $(SRCS) >> $@")\n' % n)
+                write(os.path.join(root, name, "a.in"), "in\n")
+            return "add package " + name, op
+        if kind == "del-pkg":
+            if not self.extra_pkgs:
+                return "nothing", None
+            name = self.extra_pkgs.pop(r.randrange(len(self.extra_pkgs)))
+            return "delete package " + name, lambda root: shutil.rmtree(os.path.join(root, name))
+        if kind == "build-edit":
+            i = r.randrange(4)
+            rel = "ws/pkg%d/BUILD" % i
+            text = read(self.m(rel))
+            if "deps = " in text and r.random() < 0.5:
+                new = re.sub(r', deps = \["[^"]*"\]', "", text)
+                return "remove dep " + rel, lambda root: write(os.path.join(root, rel), new)
+            new = pkg_build(i)
+            if LOAD_LINE in text:
+                new = LOAD_LINE + new + LOAD_USE
+            new += "# edit %d\n" % n
+            return "rewrite " + rel, lambda root: write(os.path.join(root, rel), new)
+        if kind == "bzl-edit":
+            old = re.search(r'SUFFIX = "([^"]*)"', read(self.m("ws/defs.bzl"))).group(1)
+            return "edit defs.bzl", lambda root: replace_in(root, "ws/defs.bzl", old, "suffix-%d" % n)
+        if kind == "inner-bzl-edit":
+            return "edit inner.bzl (loaded by defs.bzl)", lambda root: write(
+                os.path.join(root, "ws/inner.bzl"), 'INNER = "inner-%d"\n' % n)
+        if kind == "extra-bzl-edit":
+            return "edit extra.bzl", lambda root: write(
+                os.path.join(root, "ws/extra.bzl"), 'EXTRA = "extra-%d"\n' % n)
+        if kind == "load-toggle":
+            rel = "ws/pkg2/BUILD"
+            text = read(self.m(rel))
+            if LOAD_LINE in text:
+                new = text.replace(LOAD_LINE, "").replace(LOAD_USE, "")
+                return "remove load() from " + rel, lambda root: write(os.path.join(root, rel), new)
+            new = LOAD_LINE + text + LOAD_USE
+            return "add load() to " + rel, lambda root: write(os.path.join(root, rel), new)
+        if kind == "rule-edit":
+            new = re.sub(r'content = "[^"]*"', 'content = "w-%d"' % n, read(self.m("ws/BUILD.bazel")))
+            return "edit rule attribute", lambda root: write(os.path.join(root, "ws/BUILD.bazel"), new)
+        if kind == "pm-edit":
+            new = re.sub(r"pm=\d+", "pm=%d" % n, read(self.m("ws/platform_mappings")))
+            return "edit platform_mappings", lambda root: write(
+                os.path.join(root, "ws/platform_mappings"), new)
+        if kind == "ext-edit":
+            return "edit external module file", lambda root: write(
+                os.path.join(root, "ext/data.txt"), "ext data %d\n" % n)
+        if kind == "repo-input-edit":
+            return "edit file the repository rule reads", lambda root: write(
+                os.path.join(root, "ws/repo_input.txt"), "input-%d\n" % n)
+        if kind == "module-ext2":
+            text = read(self.m("ws/MODULE.bazel"))
+            if EXT2_DEP in text:
+                new = text.replace(EXT2_DEP, "# EXT2\n")
+                desc = "MODULE.bazel: remove bazel_dep extmod2"
+            else:
+                new = text.replace("# EXT2\n", EXT2_DEP)
+                desc = "MODULE.bazel: add bazel_dep extmod2"
+            return desc, lambda root: write(os.path.join(root, "ws/MODULE.bazel"), new)
+        if kind == "module-comment":
+            return "MODULE.bazel: comment", lambda root: append(root, "ws/MODULE.bazel", "# %d\n" % n)
+        if kind == "lockfile-delete":
+            def op(root):
+                p = os.path.join(root, "ws/MODULE.bazel.lock")
+                if os.path.exists(p):
+                    os.remove(p)
+            return "delete MODULE.bazel.lock", op
+        if kind == "break":
+            if self.broken is not None:
+                return "nothing", None
+            rel = "ws/pkg%d/BUILD" % r.randrange(4)
+            self.broken = rel
+            return "break " + rel, lambda root: append(root, rel, "this is not starlark(\n")
+        # Symlinks.
+        if kind == "sym-retarget":
+            cur = os.readlink(self.m("ws/sym/link.txt"))
+            new = {"t1.data": "t2.data", "t2.data": "../pkg0/a.txt"}.get(cur, "t1.data")
+
+            def op(root):
+                p = os.path.join(root, "ws/sym/link.txt")
+                os.remove(p)
+                os.symlink(new, p)
+            return "retarget sym/link.txt -> " + new, op
+        if kind == "sym-target-edit":
+            rel = "ws/sym/" + r.choice(["t1.data", "t2.data"])
+            return "edit symlink target " + rel, lambda root: append(root, rel, "more %d\n" % n)
+        if kind == "swap-file-dir":
+            p = "ws/swp/x"
+            if os.path.isdir(self.m(p)):
+                def op(root):
+                    shutil.rmtree(os.path.join(root, p))
+                    write(os.path.join(root, p), "x file %d\n" % n)
+                return "swp/x: directory -> file", op
+
+            def op(root):
+                os.remove(os.path.join(root, p))
+                write(os.path.join(root, p, "z"), "z %d\n" % n)
+            return "swp/x: file -> directory", op
+        # BUILD files under a globbed directory, .bazelignore, REPO.bazel.
+        if kind == "sub-build-toggle":
+            rel = "ws/globber/sub/BUILD"
+            if not os.path.isdir(self.m("ws/globber/sub")):
+                return "nothing", None
+            if os.path.exists(self.m(rel)):
+                return "remove " + rel, lambda root: os.remove(os.path.join(root, rel))
+            return "add " + rel, lambda root: write(os.path.join(root, rel), "")
+        if kind == "bazelignore-toggle":
+            text = read(self.m("ws/.bazelignore"))
+            new = "" if "ign" in text else "ign\n"
+            return ".bazelignore: %r" % new, lambda root: write(os.path.join(root, "ws/.bazelignore"), new)
+        if kind == "repo-bazel-toggle":
+            text = read(self.m("ws/REPO.bazel"))
+            new = "" if text else 'ignore_directories(["ign2"])\n'
+            return "REPO.bazel: %r" % new, lambda root: write(os.path.join(root, "ws/REPO.bazel"), new)
+        # C++ headers (discovered inputs).
+        if kind == "header-edit":
+            return "edit cc/lib.h", lambda root: write(
+                os.path.join(root, "ws/cc/lib.h"), "#define LIB_V %d\nint lib();\n" % (n % 9 + 1))
+        if kind == "header-same-size":
+            text = read(self.m("ws/cc/inc_b/val.h"))
+            new = re.sub(r"VAL \d", "VAL %d" % (n % 9), text)
+            return "same-size edit cc/inc_b/val.h", lambda root: write(
+                os.path.join(root, "ws/cc/inc_b/val.h"), new)
+        if kind == "header-shadow":
+            rel = "ws/cc/inc_a/val.h"
+            if os.path.exists(self.m(rel)):
+                return "remove " + rel, lambda root: os.remove(os.path.join(root, rel))
+            return "add " + rel + " (earlier on the include path)", lambda root: write(
+                os.path.join(root, rel), "#define VAL 7\n")
+        # Directories (renames and re-creations, for --watchfs).
+        if kind == "dir-rename":
+            a, b = "ws/globber/sub", "ws/globber/sub2"
+            if not os.path.isdir(self.m(a)):
+                a, b = b, a
+            return "mv %s %s" % (a, b), lambda root: os.rename(os.path.join(root, a), os.path.join(root, b))
+        if kind == "dir-recreate":
+            d = "ws/globber/tmp"
+
+            def op(root):
+                os.makedirs(os.path.join(root, d))
+                os.rmdir(os.path.join(root, d))
+            return "mkdir and rmdir " + d, op
+        if kind == "dir-deep":
+            d = "ws/globber/n1"
+            if os.path.isdir(self.m(d)):
+                return "rm -r " + d, lambda root: shutil.rmtree(os.path.join(root, d))
+            return "mkdir -p %s/n2 with a file" % d, lambda root: write(
+                os.path.join(root, d, "n2/n.txt"), "n %d\n" % n)
+        # Options.
+        if kind == "define":
+            v = r.choice([None, "a", "b"])
+            self.opts.pop("define", None)
+            if v:
+                self.opts["define"] = ["--define=mode=" + v]
+            return "define mode=%s" % v, None
+        if kind == "action-env":
+            v = r.choice([None, "one", "two"])
+            self.opts.pop("action_env", None)
+            if v:
+                self.opts["action_env"] = ["--action_env=I3_ACTION_ENV=" + v]
+            return "action env %s" % v, None
+        if kind == "copt":
+            return self.toggle("opt", ["-c", "opt"]), None
+        if kind == "flag":
+            self.opts["flag"] = ["--//:flag=f-%d" % n]
+            return "--//:flag=f-%d" % n, None
+        if kind == "platforms":
+            return self.toggle("platforms", ["--platforms=//:p"]), None
+        if kind == "deleted-packages":
+            return self.toggle("deleted_packages", ["--deleted_packages=pkg3"]), None
+        if kind == "package-path":
+            return self.toggle("package_path", ["--package_path=%workspace%:{root}/pp"]), None
+        if kind == "repo-env":
+            v = r.choice([None, "x", "y"])
+            self.opts.pop("repo_env", None)
+            if v:
+                self.opts["repo_env"] = ["--repo_env=I3_REPO_ENV=" + v]
+            return "repo env %s" % v, None
+        if kind == "override-repository":
+            return self.toggle("override", ["--override_repository=+envext+envrepo={root}/ovr"]), None
+        if kind == "disk-cache":
+            return self.toggle("disk_cache", ["--disk_cache={root}/disk-cache"]), None
+        if kind == "invocation-id":
+            return self.toggle("invocation_id", ["--invocation_id=" + INVOCATION_ID]), None
+        if kind == "watchfs":
+            return self.toggle("watchfs", ["--watchfs"]), None
+        raise ValueError(kind)
+
+    def options(self, root):
+        out = []
+        for key in sorted(self.opts):
+            out += [a.replace("{root}", root) for a in self.opts[key]]
+        return out
+
+
+def append(root, rel, text):
+    with open(os.path.join(root, rel), "a") as f:
+        f.write(text)
+
+
+def replace_in(root, rel, old, new):
+    p = os.path.join(root, rel)
+    write(p, read(p).replace(old, new))
+
+
+# Edit kinds with their weights. Round 1 S2-5: symlinks (1), BUILD under a globbed directory,
+# .bazelignore and REPO.bazel (2), headers (3), other commands and options (4: the commands are
+# drawn separately), load graph and module edits (5). Round 2: invocation ids, --watchfs with
+# renames and re-creations (writes racing a command and interrupts are drawn separately).
+KIND_WEIGHTS = {
+    "same-size": 4, "double-edit": 2, "append": 3, "touch": 2, "add-glob": 2, "del-glob": 2,
+    "add-pkg": 1, "del-pkg": 1, "build-edit": 2, "bzl-edit": 1, "inner-bzl-edit": 1,
+    "extra-bzl-edit": 1, "load-toggle": 1, "rule-edit": 1, "pm-edit": 1, "ext-edit": 1,
+    "repo-input-edit": 1, "module-ext2": 1, "module-comment": 1, "lockfile-delete": 1,
+    "break": 1, "sym-retarget": 2, "sym-target-edit": 2, "swap-file-dir": 2,
+    "sub-build-toggle": 2, "bazelignore-toggle": 1, "repo-bazel-toggle": 1, "header-edit": 2,
+    "header-same-size": 2, "header-shadow": 2, "dir-rename": 2, "dir-recreate": 1,
+    "dir-deep": 1, "define": 1, "action-env": 1, "copt": 1, "flag": 1, "platforms": 1,
+    "deleted-packages": 1, "package-path": 1, "repo-env": 1, "override-repository": 1,
+    "disk-cache": 1, "invocation-id": 2, "watchfs": 2,
+}
+KINDS = [k for k, w in KIND_WEIGHTS.items() for _ in range(w)]
+
+OTHER_COMMANDS = ["query", "cquery", "test", "fetch"]
+
+
+# ---------------------------------------------------------------------------------------------
+# The run.
+
+
+def build_args(editor, side):
+    return COMMON + editor.options(side.root) + ["--keep_going", "--", "//..."]
+
+
+def compare_trees(ta, tother, both_ways):
+    """Paths where A differs from the other side (intermediates skipped)."""
+    paths = set(tother)
+    if both_ways:
+        paths |= set(ta)
+    return sorted(p for p in paths if not INTERMEDIATE.search(p) and ta.get(p) != tother.get(p))
+
+
+def cmd_run(a):
+    root = os.path.join(WORK, str(a.seed))
+    os.makedirs(root, exist_ok=True)
+    rng = random.Random(a.seed)
+    env_a = {"BLAZE_SERVER_MODE": "daemon"}
+    if a.failsafe == "off":
+        env_a["BLAZE_INCREMENTAL_REMOTE_FAILSAFE"] = "off"
+    side_a = Side("A", a.blaze, os.path.join(root, "a"), env_a, daemon=True)
+    side_o = Side("O", a.oracle, os.path.join(root, "o"), {}, daemon=True)
+    side_b = Side("B", a.blaze, os.path.join(root, "b"), {"BLAZE_INCREMENTAL": "none"},
+                  daemon=False)
+    sides = [side_a, side_o, side_b]
+    for s in sides:
+        remove_tree(s.out_root)
+        generate(s.root)
+        os.makedirs(s.out_root, exist_ok=True)
+        if s.daemon:
+            write(os.path.join(s.out_root, ".keep-server"), "scripts/incremental/fuzz\n")
+    editor = Editor(rng, [s.root for s in sides])
+    counts = {"rounds": 0, "vs_oracle": 0, "vs_clean": 0, "msgdiff": 0, "skipped": 0}
+    log = open(os.path.join(root, "log.txt"), "w")
+
+    def say(line):
+        print(line)
+        log.write(line + "\n")
+        log.flush()
+
+    def compare(what, results, i):
+        (ca, oa, ea), (co, oo, eo), (cb, ob, eb) = results
+        bba, bbo, bbb = side_a.bazel_bin(), side_o.bazel_bin(), side_b.bazel_bin()
+        ta, to, tb = output_tree(side_a, bba), output_tree(side_o, bbo), output_tree(side_b, bbb)
+        vs_o, vs_b, notes = [], [], []
+        if ca != co:
+            vs_o.append("exit %d (A) vs %d (oracle)" % (ca, co))
+        for p in compare_trees(ta, to, True):
+            vs_o.append("output %s: A %s oracle %s" % (p, ta.get(p), to.get(p)))
+        if ca != cb and ca != co:
+            vs_b.append("exit %d (A) vs %d (clean)" % (ca, cb))
+        pa, po, pb = problem_lines(ea, side_a), problem_lines(eo, side_o), problem_lines(eb, side_b)
+        if pa != pb and pa != po:
+            vs_b.append("messages: A %s clean %s" % (pa, pb))
+        if pa != po:
+            notes.append("msgdiff: A %s oracle %s" % (pa, po))
+        for p in compare_trees(ta, tb, False):
+            if ta.get(p) != to.get(p):
+                vs_b.append("output %s: A %s clean %s" % (p, ta.get(p), tb.get(p)))
+        state = "OK" if not vs_o and not vs_b else "MISMATCH"
+        say("%4d %-58s %s" % (i, what[:58], state))
+        for x in vs_o:
+            say("      vs oracle: " + x)
+        for x in vs_b:
+            say("      vs clean:  " + x)
+        for x in notes:
+            say("      " + x)
+        counts["vs_oracle"] += bool(vs_o)
+        counts["vs_clean"] += bool(vs_b)
+        counts["msgdiff"] += bool(notes)
+        counts["rounds"] += 1
+
+    def build_all(skip_a=False, race=None, interrupt=None):
+        results = []
+        for s in sides:
+            env = {}
+            if s is side_b:
+                s.run(["clean"])
+            if s is side_a and skip_a:
+                r = s.run(["build"] + build_args(editor, s), env=env, during=race,
+                          interrupt_after=interrupt)
+            else:
+                r = s.run(["build"] + build_args(editor, s), env=env)
+            results.append(r)
+        return results
+
+    try:
+        for i in range(a.rounds):
+            what, op = editor.edit()
+            if op:
+                for s in sides:
+                    op(s.root)
+            # Output tampering (A and O alike; B is clean anyway).
+            if rng.random() < 0.08:
+                bba, bbo = side_a.bazel_bin(), side_o.bazel_bin()
+                if bba and bbo:
+                    cands = sorted(p for p in output_tree(side_a, bba)
+                                   if not INTERMEDIATE.search(p)
+                                   and os.path.lexists(os.path.join(bbo, p)))
+                    if cands:
+                        rel = rng.choice(cands)
+                        modify = rng.random() < 0.5 and not os.path.islink(os.path.join(bba, rel))
+                        for bb in (bba, bbo):
+                            p = os.path.join(bb, rel)
+                            if modify:
+                                os.chmod(p, 0o644)
+                                with open(p, "a") as f:
+                                    f.write("tampered\n")
+                            else:
+                                if not os.path.islink(p):
+                                    os.chmod(os.path.dirname(p), 0o755)
+                                os.remove(p)
+                        what += "; %s output %s" % ("modify" if modify else "delete", rel)
+            # Another command first (A and O).
+            if rng.random() < 0.12:
+                c = rng.choice(OTHER_COMMANDS)
+                out = []
+                for s in (side_a, side_o):
+                    if c in ("query",):
+                        args = [c, "--color=no", "--curses=no"] + [
+                            x for x in editor.options(s.root)
+                            if x.startswith(("--package_path", "--deleted_packages",
+                                             "--repo_env", "--override_repository",
+                                             "--invocation_id", "--watchfs"))] + ["//..."]
+                    elif c == "fetch":
+                        args = [c, "--color=no", "--curses=no",
+                                "--repository_cache=" + REPO_CACHE, "--all"]
+                    elif c == "test":
+                        args = [c] + build_args(editor, s)[:-3] + ["--", "//:t"]
+                    else:
+                        args = [c] + build_args(editor, s)
+                    code, so, se = s.run(args)
+                    out.append((code, sorted(norm_lines(so, s)) if c in ("query", "cquery") else []))
+                if out[0] != out[1]:
+                    counts["vs_oracle"] += 1
+                    say("%4d %-58s MISMATCH" % (i, c))
+                    say("      vs oracle: %s: A %s oracle %s" % (c, out[0], out[1]))
+                else:
+                    say("%4d %-58s OK" % (i, c + " (exit %d)" % out[0][0]))
+            x = rng.random()
+            if x < 0.05:
+                # A write racing the start of A's command, then a compared build of all sides.
+                rel = rng.choice(editor.txt_files())
+                text = read(side_a.path(rel)) + "race %d\n" % i
+                delay = rng.uniform(0.0, 0.6)
+                build_all(skip_a=True, race=(delay, lambda: write(side_a.path(rel), text)))
+                for s in (side_o, side_b):
+                    write(s.path(rel), text)
+                counts["skipped"] += 1
+                say("%4d %-58s (A not compared)" % (i, what + "; race " + rel))
+                compare("  build after the race", build_all(), i)
+            elif x < 0.08:
+                delay = rng.uniform(0.2, 3.0)
+                build_all(skip_a=True, interrupt=delay)
+                counts["skipped"] += 1
+                say("%4d %-58s (A not compared)" % (i, what + "; SIGINT after %.1fs" % delay))
+                compare("  build after the interrupt", build_all(), i)
+            else:
+                compare(what, build_all(), i)
+    finally:
+        for s in sides:
+            s.shutdown()
+            try:
+                os.remove(os.path.join(s.out_root, ".keep-server"))
+            except OSError:
+                pass
+        say("rounds %d mismatches: vs oracle %d, vs clean %d; msgdiff %d; races and interrupts "
+            "%d (seed %d)" % (counts["rounds"], counts["vs_oracle"], counts["vs_clean"],
+                             counts["msgdiff"], counts["skipped"], a.seed))
+        log.close()
+    if not a.keep:
+        for s in sides:
+            remove_tree(s.root)
+    return 0 if counts["vs_oracle"] == 0 and counts["vs_clean"] == 0 else 1
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("help", "-h", "--help"):
+        print(__doc__)
+        return 0
+    if sys.argv[1] == "kinds":
+        for k, w in KIND_WEIGHTS.items():
+            print("%-22s weight %d" % (k, w))
+        print("other commands (12%% of rounds): %s" % ", ".join(OTHER_COMMANDS))
+        print("output tampering 8%; racing write 5%; SIGINT 3%")
+        return 0
+    ap = argparse.ArgumentParser(prog="scripts/incremental/fuzz")
+    sub = ap.add_subparsers(dest="cmd")
+    r = sub.add_parser("run")
+    r.add_argument("--blaze", default=DEFAULT_BLAZE)
+    r.add_argument("--oracle", default=ORACLE)
+    r.add_argument("--rounds", type=int, default=500)
+    r.add_argument("--seed", type=int, default=1)
+    r.add_argument("--failsafe", default="on", choices=["on", "off"])
+    r.add_argument("--keep", action="store_true")
+    a = ap.parse_args()
+    if a.cmd == "run":
+        return cmd_run(a)
+    print(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

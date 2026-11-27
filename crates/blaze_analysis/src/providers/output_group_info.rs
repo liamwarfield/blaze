@@ -15,7 +15,8 @@ use starlark::eval::{Arguments, Evaluator};
 use starlark::starlark_simple_value;
 use starlark::values::list_or_tuple::UnpackListOrTuple;
 use starlark::values::{
-    Demand, Heap, NoSerialize, OwnedFrozenValue, StarlarkValue, UnpackValue, Value, starlark_value,
+    Demand, Heap, NoSerialize, OwnedFrozenValue, StarlarkValue, UnpackValue, Value, ValueLike,
+    starlark_value,
 };
 
 use crate::info::{InfoProviderKey, freeze_native_info};
@@ -74,6 +75,13 @@ pub enum ValidationMode {
 /// `HiddenTopLevelAndOneOther`, `ArbitraryGroups`) are memory optimizations with identical
 /// behaviour; one struct holds the groups in the subclass's iteration order (empty groups keep
 /// their entry, as `EmptyFiles` keeps its group names).
+// PORT: skipped, memory optimization (one struct): OutputGroupInfo.EmptyFiles.of, OutputGroupInfo.EmptyFiles.<init>
+// PORT: skipped, memory optimization (one struct): OutputGroupInfo.SingleGroup.<init>, OutputGroupInfo.SingleGroup.groupName
+// PORT: skipped, memory optimization (one struct): OutputGroupInfo.HiddenTopLevelOnly.<init>, OutputGroupInfo.HiddenTopLevelOnly.groupName
+// PORT: skipped, memory optimization (one struct): OutputGroupInfo.ValidationOnly.<init>, OutputGroupInfo.ValidationOnly.groupName
+// PORT: skipped, memory optimization (one struct): OutputGroupInfo.DefaultOnly.<init>, OutputGroupInfo.DefaultOnly.groupName
+// PORT: skipped, memory optimization (one struct): OutputGroupInfo.OtherGroupOnly.<init>, OutputGroupInfo.OtherGroupOnly.groupName
+// PORT: skipped, memory optimization (one struct): OutputGroupInfo.HiddenTopLevelAndOneOther.<init>, OutputGroupInfo.ArbitraryGroups.<init>
 // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:61 OutputGroupInfo
 #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative)]
 pub struct OutputGroupInfo {
@@ -198,16 +206,38 @@ impl OutputGroupInfo {
     /// Returns the artifacts in a particular output group, or the empty set if the group is
     /// absent.
     // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:318 OutputGroupInfo.getOutputGroup
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:374 OutputGroupInfo.EmptyFiles.getOutputGroup
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:418 OutputGroupInfo.SingleGroup.getOutputGroup
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:510 OutputGroupInfo.HiddenTopLevelAndOneOther.getOutputGroup
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:545 OutputGroupInfo.ArbitraryGroups.getOutputGroup
     pub fn get_output_group(&self, name: &str) -> NestedSet<Artifact> {
         self.groups.get(name).cloned().unwrap_or_else(empty_files)
     }
 
     // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:338 OutputGroupInfo.containsKey
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:379 OutputGroupInfo.EmptyFiles.containsKey
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:423 OutputGroupInfo.SingleGroup.containsKey
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:521 OutputGroupInfo.HiddenTopLevelAndOneOther.containsKey
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:550 OutputGroupInfo.ArbitraryGroups.containsKey
     pub fn contains_key(&self, name: &str) -> bool {
         self.groups.contains_key(name)
     }
 
+    /// Whether Java would represent this as `EmptyFiles` (every group empty).
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:286 OutputGroupInfo.createInternal
+    fn is_empty_files(&self) -> bool {
+        self.groups.values().all(|files| files.is_empty())
+    }
+
     /// The group names, in iteration order (Java `iterator()` / `getFieldNames()`).
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:384 OutputGroupInfo.EmptyFiles.iterator
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:389 OutputGroupInfo.EmptyFiles.getFieldNames
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:428 OutputGroupInfo.SingleGroup.iterator
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:433 OutputGroupInfo.SingleGroup.getFieldNames
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:526 OutputGroupInfo.HiddenTopLevelAndOneOther.iterator
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:531 OutputGroupInfo.HiddenTopLevelAndOneOther.getFieldNames
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:555 OutputGroupInfo.ArbitraryGroups.iterator
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:560 OutputGroupInfo.ArbitraryGroups.getFieldNames
     pub fn groups(&self) -> Vec<String> {
         self.groups.keys().cloned().collect()
     }
@@ -279,6 +309,41 @@ impl<'v> StarlarkValue<'v> for OutputGroupInfo {
         self.groups()
     }
 
+    /// Java: `Object.equals` (identity) except for `EmptyFiles` (every group empty), whose
+    /// instances are equal when their group-name sets are (`ImmutableSet.equals`).
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:394 OutputGroupInfo.EmptyFiles.equals
+    fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
+        // Identical values are equal before this is called (starlark-rust compares pointers).
+        let Some(other) = other.downcast_ref::<OutputGroupInfo>() else {
+            return Ok(false);
+        };
+        Ok(self.is_empty_files()
+            && other.is_empty_files()
+            && self.groups.len() == other.groups.len()
+            && self.groups.keys().all(|k| other.groups.contains_key(k)))
+    }
+
+    /// `isImmutable()` is true, so an `OutputGroupInfo` is hashable: `EmptyFiles.hashCode` is the
+    /// group-name set's hash (order-independent); the other representations hash by identity,
+    /// which equality then decides (a constant hash is valid for those).
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:316 OutputGroupInfo.isImmutable
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:405 OutputGroupInfo.EmptyFiles.hashCode
+    fn write_hash(&self, hasher: &mut starlark_map::StarlarkHasher) -> starlark::Result<()> {
+        use std::hash::{Hash, Hasher};
+        if self.is_empty_files() {
+            // Set.hashCode: the sum of the elements' hashes.
+            let mut sum: u64 = 0;
+            for k in self.groups.keys() {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                k.hash(&mut h);
+                sum = sum.wrapping_add(h.finish());
+            }
+            sum.hash(hasher);
+        }
+        Ok(())
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:311 OutputGroupInfo.getProvider
     fn provide(&'v self, demand: &mut Demand<'_, 'v>) {
         demand.provide_value(InfoProviderKey(OUTPUT_GROUP_INFO.key()));
         demand.provide_value(DeeplyImmutable);
@@ -429,5 +494,31 @@ mod tests {
         assert!(info.contains_key(VALIDATION));
         assert!(!info.contains_key(DEFAULT));
         assert!(info.get_output_group(DEFAULT).is_empty());
+    }
+
+    /// `EmptyFiles.equals` / `hashCode`: infos whose groups are all empty are equal (and hash
+    /// alike) when their group-name sets are, in any order.
+    #[test]
+    fn empty_files_equal_by_group_names() {
+        starlark::environment::Module::with_temp_heap(|module| {
+            let heap = module.heap();
+            let make = |names: &[&str]| {
+                let mut map = IndexMap::new();
+                for n in names {
+                    map.insert(n.to_string(), empty_files());
+                }
+                heap.alloc(OutputGroupInfo::create_internal(map))
+            };
+            let ab = make(&["a", "b"]);
+            let ba = make(&["b", "a"]);
+            let a = make(&["a"]);
+            assert!(ab.equals(ba).unwrap());
+            assert!(!ab.equals(a).unwrap());
+            assert_eq!(
+                ab.get_hashed().unwrap().hash(),
+                ba.get_hashed().unwrap().hash()
+            );
+            assert!(a.get_hashed().is_ok());
+        });
     }
 }

@@ -958,9 +958,10 @@ impl FileSystem for RemoteActionFileSystem {
         match self.stat_internal(path, follow_mode, StatSources::All)? {
             None | Some(Stat::Directory(_)) => Ok(None),
             Some(Stat::Local(_, canonical)) => self.local_fs.stat_metadata(&canonical, false),
-            Some(stat) => Ok(stat.metadata().cloned().map(|m| {
-                std::sync::Arc::new(m) as std::sync::Arc<dyn blaze_vfs::StatMetadata>
-            })),
+            Some(stat) => Ok(stat
+                .metadata()
+                .cloned()
+                .map(|m| std::sync::Arc::new(m) as std::sync::Arc<dyn blaze_vfs::StatMetadata>)),
         }
     }
     // Java: com/google/devtools/build/lib/remote/RemoteActionFileSystem.java:648 RemoteActionFileSystem.statNullable

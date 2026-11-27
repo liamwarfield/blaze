@@ -186,9 +186,12 @@ impl<'a> TransitionsOutputFormatterCallback<'a> {
             ));
         }
         let Some(value) = result.get(&key) else {
+            // Java's resolver runs outside Skyframe and has no such state: a resolver node ending
+            // with neither a value nor a DependencyResolver error (which the node returns as a
+            // value) is a Skyframe cycle or catastrophe, which analysis would have reported.
             blaze_util::unported!(
                 "CqueryTransitionResolver.dependencies",
-                "no value for {:?}: {:?}",
+                "no value for {:?} (a Skyframe cycle or catastrophe, which Java cannot have): {:?}",
                 key,
                 result.get_error(&SkyKey::new(key.clone()))
             );

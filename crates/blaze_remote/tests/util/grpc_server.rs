@@ -75,7 +75,9 @@ impl ServiceRegistry {
         ServiceRegistry::default()
     }
 
-    fn add<S>(&mut self, name: &str, service: S)
+    /// Adds a service by hand (a tower service for the paths `/<name>/...`), for a test that needs
+    /// a method no fake here has.
+    pub fn add<S>(&mut self, name: &str, service: S)
     where
         S: Service<http::Request<Body>, Response = http::Response<Body>, Error = Infallible>
             + Clone

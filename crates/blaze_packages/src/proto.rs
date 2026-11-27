@@ -306,6 +306,8 @@ impl<'v> TextEncoder<'v> {
     // Java: com/google/devtools/build/lib/packages/Proto.java:146 Proto.TextEncoder.field
     fn field(&mut self, name: &str, v: Value<'v>) -> EvalResult {
         // dict?
+        // A key-tracking dict (`ctx.var`) records every key: Java Proto.TextEncoder.field of a Map: `entrySet()`.
+        starlark::values::dict::dict_record_all_keys_accessed(v);
         if let Some(dict) = DictRef::from_value(v) {
             let entries: Vec<(Value<'v>, Value<'v>)> = dict.iter().collect();
             drop(dict);

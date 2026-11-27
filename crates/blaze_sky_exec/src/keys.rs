@@ -195,6 +195,13 @@ impl Key for ArtifactNestedSetKey {
 /// built.
 // Java: com/google/devtools/build/lib/skyframe/TargetCompletionValue.java:61 TargetCompletionValue.TargetCompletionKey
 #[derive(Clone, PartialEq, Eq, Hash)]
+// (`create` is the struct literal; `functionName` is `Key::FUNCTION`; `key`/`keys` are built by
+// the callers.)
+// Java: com/google/devtools/build/lib/skyframe/TargetCompletionValue.java:55 TargetCompletionValue.TargetCompletionKey.create
+// Java: com/google/devtools/build/lib/skyframe/TargetCompletionValue.java:66 TargetCompletionValue.TargetCompletionKey.functionName
+// Java: com/google/devtools/build/lib/skyframe/TargetCompletionValue.java:33 TargetCompletionValue.key
+// Java: com/google/devtools/build/lib/skyframe/TargetCompletionValue.java:40 TargetCompletionValue.keys
+// PORT: skipped, shareability only matters to remote analysis caching (unported!): TargetCompletionKey.valueIsShareable
 pub struct TargetCompletionKey {
     /// `actionLookupKey()` (the `ConfiguredTargetKey`).
     pub action_lookup_key: ActionLookupKeyRef,
@@ -275,6 +282,13 @@ impl Key for AspectCompletionKey {
 /// `TestCompletionKey`: all runs and shards of a test target.
 // Java: com/google/devtools/build/lib/skyframe/TestCompletionValue.java:45 TestCompletionValue.TestCompletionKey
 #[derive(Clone, PartialEq, Eq, Hash)]
+// (`create` is the struct literal; `functionName` is `Key::FUNCTION`; `key`/`keys` are built by
+// the callers.)
+// Java: com/google/devtools/build/lib/skyframe/TestCompletionValue.java:62 TestCompletionValue.TestCompletionKey.create
+// Java: com/google/devtools/build/lib/skyframe/TestCompletionValue.java:78 TestCompletionValue.TestCompletionKey.functionName
+// Java: com/google/devtools/build/lib/skyframe/TestCompletionValue.java:36 TestCompletionValue.key
+// Java: com/google/devtools/build/lib/skyframe/TestCompletionValue.java:43 TestCompletionValue.keys
+// PORT: skipped, shareability (remote analysis caching, unported!) and key interning: TestCompletionKey.valueIsShareable TestCompletionKey.getSkyKeyInterner
 pub struct TestCompletionKey {
     /// `configuredTargetKey()`.
     pub configured_target_key: ActionLookupKeyRef,

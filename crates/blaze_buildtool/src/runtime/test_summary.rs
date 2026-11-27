@@ -122,7 +122,7 @@ impl TestSummaryBuilder {
     }
 
     // Implements copy on write logic, allowing reuse of the same builder.
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:111 Builder.checkMutation
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:121 TestSummary.Builder.checkMutation
     fn check_mutation(&mut self) {
         // If mutating the builder after an object was built, create another copy.
         if self.built {

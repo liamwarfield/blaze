@@ -1,10 +1,10 @@
 //! Port of `lib/remote/RemoteRepositoryRemoteExecutor.java`, with the interface it implements,
 //! `lib/runtime/RepositoryRemoteExecutor.java`.
 
+use blaze_util::java_duration::JavaDuration;
 use std::collections::BTreeMap;
 use std::io;
 use std::sync::Arc;
-use blaze_util::java_duration::JavaDuration;
 
 use blaze_optdefs::fragment::fragment_options::java_string_compare;
 use blaze_protos::JavaMessage;

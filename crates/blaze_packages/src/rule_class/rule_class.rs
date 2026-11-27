@@ -296,6 +296,7 @@ pub struct RuleClassNamePredicate {
     overlappable: Option<IndexSet<String>>,
 }
 
+// PORT: skipped, equality is PartialEq (never hashed): RuleClass.hashCode, RuleClass.equals
 impl PartialEq for RuleClassNamePredicate {
     // Java: com/google/devtools/build/lib/packages/RuleClass.java:630 RuleClass.Builder.RuleClassNamePredicate.equals
     fn eq(&self, other: &RuleClassNamePredicate) -> bool {
@@ -306,6 +307,7 @@ impl PartialEq for RuleClassNamePredicate {
 
 impl RuleClassNamePredicate {
     // Java: com/google/devtools/build/lib/packages/RuleClass.java:564 RuleClass.Builder.RuleClassNamePredicate.only
+    // Java: com/google/devtools/build/lib/packages/RuleClass.java:569 RuleClass.Builder.RuleClassNamePredicate.only
     pub fn only(rule_class_names: &[&str]) -> Self {
         let names: IndexSet<String> = rule_class_names.iter().map(|s| (*s).to_owned()).collect();
         RuleClassNamePredicate {
@@ -373,6 +375,9 @@ impl RuleClassNamePredicate {
 
     /// The Java `toString` of the name predicate (e.g. "a, b or c", "all but ...").
     // Java: com/google/devtools/build/lib/packages/RuleClass.java:620 RuleClass.Builder.RuleClassNamePredicate.toString
+    // (the DescribedPredicate descriptions: `joinEnglishList(names)`, `all but ...`)
+    // Java: com/google/devtools/build/lib/packages/RuleClass.java:656 RuleClass.Builder.RuleClassNamePredicate.DescribedPredicate.toString
+    // Java: com/google/devtools/build/lib/packages/RuleClass.java:640 RuleClass.Builder.RuleClassNamePredicate.DescribedPredicate.apply
     pub fn describe(&self) -> String {
         let names: Vec<&str> = self.rule_class_names.iter().map(String::as_str).collect();
         match self.predicate_type {
@@ -470,6 +475,8 @@ impl RuleClass {
     }
 
     // Java: com/google/devtools/build/lib/packages/RuleClass.java:1956 RuleClass.getConfiguredTargetFactory
+    // Java: com/google/devtools/build/lib/packages/RuleClass.java:1952 RuleClass.getConfiguredTargetFactory
+    // PORT: skipped, the factory is the analysis crate's dispatch on the factory's name: RuleClass.create
     pub fn get_configured_target_factory(&self) -> Option<&str> {
         self.configured_target_factory.as_deref()
     }
@@ -1832,6 +1839,7 @@ impl RuleClassBuilder {
     }
 
     // Java: com/google/devtools/build/lib/packages/RuleClass.java:1587 RuleClass.Builder.addToolchainTypes
+    // Java: com/google/devtools/build/lib/packages/RuleClass.java:1596 RuleClass.Builder.addToolchainTypes
     pub fn add_toolchain_types(
         &mut self,
         toolchain_types: impl IntoIterator<Item = ToolchainTypeRequirement>,
@@ -1850,6 +1858,7 @@ impl RuleClassBuilder {
     ) -> &mut Self {
         if let Err(duplicate) = self.add_exec_groups_checked(exec_groups, override_) {
             // Java: com/google/devtools/build/lib/packages/RuleClass.java:1625 RuleClass.Builder.DuplicateExecGroupError
+            // Java: com/google/devtools/build/lib/packages/RuleClass.java:1633 RuleClass.Builder.DuplicateExecGroupError.getDuplicateGroup
             panic!(
                 "DuplicateExecGroupError: Multiple execution groups with the same name: \
                  '{duplicate}'."
@@ -1900,6 +1909,7 @@ impl RuleClassBuilder {
     }
 
     // Java: com/google/devtools/build/lib/packages/RuleClass.java:1676 RuleClass.Builder.addExecutionPlatformConstraints
+    // Java: com/google/devtools/build/lib/packages/RuleClass.java:1666 RuleClass.Builder.addExecutionPlatformConstraints
     pub fn add_execution_platform_constraints(
         &mut self,
         constraints: impl IntoIterator<Item = Label>,

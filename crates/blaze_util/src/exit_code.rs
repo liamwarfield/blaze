@@ -116,6 +116,10 @@ impl ExitCode {
     }
 }
 
+// PORT: skipped, the registry is the constant table above (no other module registers a code): ExitCode.create, ExitCode.createInfrastructureFailure, ExitCode.createUnregistered
+// PORT: skipped, the registry is the constant table above (no other module registers a code): ExitCode.register, ExitCode.values
+// PORT: skipped, derived (PartialEq, Eq, Hash over the same three fields): ExitCode.hashCode, ExitCode.equals
+// Java: com/google/devtools/build/lib/util/ExitCode.java:182 ExitCode.toString
 impl fmt::Display for ExitCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name)
@@ -211,6 +215,12 @@ impl DetailedExitCode {
     }
 
     // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:115 DetailedExitCode.getNumericExitCode
+    // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:126 DetailedExitCode.getNumericExitCode
+    // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:138 DetailedExitCode.getCategorySubmessage
+    // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:156 DetailedExitCode.isCategoryField
+    // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:165 DetailedExitCode.getSubcategoryDescriptor
+    // PORT: the category submessage and its enum field #1 come from the generated table
+    // (`generated::category_number_and_code`), not from proto reflection.
     pub fn get_numeric_exit_code(failure_detail: &FailureDetail) -> i32 {
         let category = failure_detail.category.as_ref().unwrap_or_else(|| {
             panic!(
@@ -230,6 +240,7 @@ impl DetailedExitCode {
 
     /// `DetailedExitCodeComparator.chooseMoreImportantWithFirstIfTie` (Java accepts nulls).
     // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:190 DetailedExitCodeComparator.chooseMoreImportantWithFirstIfTie
+    // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:195 DetailedExitCode.DetailedExitCodeComparator.compare
     pub fn choose_more_important_with_first_if_tie(
         first: Option<DetailedExitCode>,
         second: Option<DetailedExitCode>,
@@ -262,6 +273,7 @@ impl DetailedExitCode {
     }
 }
 
+// PORT: skipped, derived PartialEq over exit code and failure detail (no Rust caller hashes one): DetailedExitCode.hashCode, DetailedExitCode.equals
 impl fmt::Display for DetailedExitCode {
     // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:109 DetailedExitCode.toString
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
