@@ -695,3 +695,13 @@ Each entry: date, decision, why, who decided.
   should not sit in a measured checkpoint without the server-mode reuse check passing on it;
   the reuse check's basic scenario did fail on this binary and root read it as a tool problem.
   Root.
+- 2026-11-26. Checkpoint 44 is c434f6c (clean-checkout build, exact binary sha256 ddd7d845…,
+  graph-reuse check ok). Rulings: the Starlark debugger is ported on starlark-rust's existing
+  per-statement hook; because that hook only instruments code compiled while it is installed,
+  every evaluator of a command with `--experimental_skylark_debug` installs it before
+  compiling, and a server discards a kept graph when the flag changes (no interpreter patch,
+  no cost when off). The `Skipping '//...'` target named for two failing patterns in one
+  package is a race in Bazel itself (four runs, two outcomes): either is accepted. The
+  server-mode regression of checkpoint 43 is fixed in the tree by its implementer: Java resets
+  the build driver's per-key posted-event and conflict-check sets after every evaluation
+  (SkyframeBuildView.java:749); the port kept them in memory a server never releases. Root.
