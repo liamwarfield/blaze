@@ -631,3 +631,11 @@ Each entry: date, decision, why, who decided.
   cycle fix is right. The server stays opt-in. Also at 38cd662: extra actions PASS (round 2);
   the query fixes hold, one new S1 in patch 0063 (a `ctx.var` passed whole to a native records
   no key). Root.
+- 2026-11-26. Rulings from the Build Event Service follow-up: `computationSteps` in package
+  metrics is 0 (starlark-rust does not count Java's steps: declared deviation, same class as
+  the cquery step limit); build_event_stream_test#test_glob_filesystem_operation_cost is a
+  declared gap (its check needs one package to be the slowest, a property of Bazel's speed);
+  `--memory_profile` and the BEP's memory figures follow D15 (resident memory where Java
+  reports a JVM heap number). Open in the BES client: an aborted stream is seen by the server
+  as a normal half-close, because the gRPC streaming call cannot be cancelled; with the remote
+  implementer. Root.

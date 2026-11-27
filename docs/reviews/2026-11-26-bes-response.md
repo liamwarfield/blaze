@@ -1,8 +1,9 @@
 # Response: bes (Build Event Service client), first round, 2026-11-26
 
 Response to `docs/reviews/2026-11-26-bes.md` (STOP at a673e29, blocking BES-1), by the
-implementer (task `ea-4`). The changes are in the working tree on top of f051fd73 (not
-committed; root commits).
+implementer (task `ea-4`). The fixes below were committed by root in checkpoint 41 (9b5671c8);
+the corrections in "Found while porting the tests" are in the working tree on top of 38cd662a.
+Test counts are from that tree.
 
 ## BES-1 (S1): a timed-out background upload that finishes before the next command — fixed
 
@@ -72,7 +73,7 @@ the BES-1 regression test.
   are scaled down (`--bes_timeout` 200 ms, `WAIT_FOR_LAST_INVOCATION_TIMEOUT` 500 ms through a
   test override of `getMaxWaitForPreviousInvocation`, as the Java test overrides it; delays
   3 s). The uploader's own behaviour under those services is covered by `blaze_bes`' transport
-  tests (21 of 21).
+  tests (20 of 21 run and pass; `test_file_upload_fails` is ignored, see below).
 - **25 are `#[ignore]` with the reason**:
   - two are `@Ignore("b/246912214")` in Java;
   - three are OOM handling (JVM-only);
@@ -97,14 +98,28 @@ the BES-1 regression test.
 
 ## Found while porting the tests
 
-`BesGrpcStreamContext::abort_stream` dropped the request sender before cancelling the call,
-which half-closed the stream first. The server then saw an orderly end instead of the error
-that grpc-java's `onError` gives (found by `test_file_upload_fails`, which waits for the
-server's `eventStreamError`). The call is now cancelled without a half-close.
+A new finding against my own code (S2, open): after `abortStream` the server does not see the
+call fail. grpc-java's `onError` resets the HTTP/2 stream, so the server's call fails with
+`CANCELLED`. `test_file_upload_fails` waits for that server-side error, and it hangs in Blaze.
+
+- Blaze stops reading responses, but hyper pipes the request stream in a task of its own,
+  which ends only when the stream ends.
+- `ReferenceCountedChannel::bidi_streaming` (blaze_remote) cannot cancel a call whose request
+  side is open.
+- tonic's encoder cannot turn a stream item into a body error, which hyper would send as a reset.
+
+So the server sees a normal half-close without the last events: at once in a673e29, and when the
+stream context is dropped in checkpoint 41. My earlier claim that checkpoint 41 fixes it was
+wrong: I had not run the test to the end.
+
+The client's own outcome is as in Java: the status set by `abortStream`, the exit code, and the
+message. The code now says this (`PORT: deviation` at `BesGrpcStreamContext::abort_stream`), and
+the test is `#[ignore]` with this reason. A fix needs a cancellable bidi-streaming call in
+blaze_remote's channel; that crate belongs to another agent.
 
 ## Probes against a live backend
 
-On today's tree (binary `blaze-d3`), against the oracle and the crate's logging server, in one
+On the tree before checkpoint 41 (binary `blaze-d3`), against the oracle and the crate's logging server, in one
 reused workspace per side:
 
 - `test_bes_upload_failure_does_not_block_run` by hand: `bazel run --bes_backend=localhost:1234
