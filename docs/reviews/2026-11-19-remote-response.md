@@ -2377,7 +2377,7 @@ mode, `--max_idle_secs=60`, `--jobs=4`. Tools: `scripts/remote-http/early-answer
 |---|---|---|---|
 | H1 `early`: 403 before the body of a 64 MiB PUT | `WARNING: Remote Cache: 403 Forbidden`, exit 0 | same | requests equal (as sets; order is concurrent on both sides) |
 | H1 `auth`: 401 invalid_token before the body, credential helper | 2 helper calls, exit 0 | same | requests equal |
-| H1 `authput`: as `auth`, first request an upload | `WARNING: Remote Cache: 401 Unauthorized`; the two small blobs repeated with the new token, the 64 MiB file not | same | requests equal |
+| H1 `authput`: as `auth`, first request an upload | (corrected in round 9) `Multiple errors during bulk transfer: 401 Unauthorized / Upload of '/cas/…' timed out. Sent 145 bytes.`, about 12 s; one small blob re-sent with the new token | at round 8: `401 Unauthorized` at once, both small blobs re-sent | DIFFERENT at round 8 (J1); see Round 9 |
 | `snappy` 1000 B, 16 MiB, 64 MiB (GET answered with `Content-Encoding: snappy`) | remote cache hit, output sha256 = CAS digest | same digests (`758bee38…`, `dbe472a3…`, `bd1b5118…`) | equal |
 | `snappy-bad` (reserved unskippable chunk) | FATAL crash, `DecompressionException: Found reserved unskippable chunk type: 0x2`, exit 37 | same class and message, exit 37 | equal |
 | `unix` (`--remote_proxy=unix:`) build, clean, download | both builds exit 0 | same | requests equal |
@@ -2484,3 +2484,207 @@ still sends the same requests on both sides. In two runs of `authput` the oracle
 "Multiple errors during bulk transfer" (401, plus a timeout of the 145-byte retry, which the
 server never received), where earlier today it gave the plain 401. The oracle is not
 deterministic on that probe; Blaze's output did not change.
+
+# Round 9
+
+Response to the round-9 review (STOP at `8ecc520` on J1). Code: the shared tree at HEAD
+`8ecc520` plus uncommitted changes. Binary `blaze-8` (sha256 `0bb956be3a45e43a`).
+
+## J1 (S1). FIXED as the Java has it (root's ruling)
+
+`exchange_upload` keeps a keep-alive connection after an early answer as well:
+`let kept = is_keep_alive(&head).then_some(connection)` (`HttpUploadHandler.java:66`,
+`HttpCacheClient.java:360`). The PORT comment that declared the deviation is gone. The idle pool
+is LIFO (a `Vec`), as Netty's channel pool is. The round-8 row of the probe table was wrong and is
+corrected above.
+
+Test: `expired_auth_token_before_body_is_refreshed` (TCP and Unix) now expects Java's outcome. The
+token is refreshed once, the retry takes the kept connection (which the server holds open without
+reading), and the upload ends in `UploadTimeoutException` (timeout 1 s). It no longer expects
+success.
+
+`authput`, three runs per side. `early-answer-probe` now gives the workspace the pinned lockfile
+and scopes the helper to `127.0.0.1`. Without that, a fresh output root sends the helper's token
+to bcr.bazel.build: the oracle crashed (exit 37) and Blaze stopped at module resolution (exit 32).
+The probe's earlier output roots had a warm registry cache.
+
+| Run | Oracle | Blaze |
+|---|---|---|
+| 1 | `Multiple errors during bulk transfer:` / `401 Unauthorized` / `Upload of '/cas/…' timed out. Sent 145 bytes.`, exit 0, 15.2 s; the 271-byte blob re-sent with the good token | `401 Unauthorized`, exit 0, 4.9 s; both small blobs re-sent |
+| 2 | same as run 1, 12.3 s | same as Blaze run 1, 0.6 s |
+| 3 | same as run 1, 11.9 s | same warning, exit 0, 10.9 s; the 271-byte blob re-sent: equal to the oracle |
+
+What remains (OPEN, S2): which upload is answered last. The kept connection goes to the retry
+that asks for a connection next, so the outcome depends on whether the early-answered 64 MiB
+upload's connection was released last. In all three oracle runs the server logged the 64 MiB PUT
+after at least one small PUT, and it was answered last. In Blaze runs 1 and 2 the 64 MiB PUT
+reached the server first and was answered first, so both small retries took the more recently
+released connections. Run 3 had the oracle's order and gives the oracle's output. The order in
+which an action's uploads open their connections is the next thing to examine
+(`UploadManifest.uploadAsync` against `upload_blob_owned` tasks).
+
+## S3. FIXED: a top-level aspect with a remote output checker
+
+`build_remote.rs`: `after_single_aspect_analysis(configured_aspect, output_groups)` calls
+`RemoteOutputChecker.after_aspect_analysis` (already ported; it returns at once with `ALL`)
+through a new `ConfiguredAspectView`. The view takes the important artifacts from
+`get_all_artifacts_to_build_of_aspect` and the runfiles from the aspect's `FilesToRunProvider`.
+`build.rs` passes the `AspectAnalyzedEvent`'s aspect. `after_analysis` also passes
+`analysisResult.getAspectsMap().values()`; it used to pass an empty list. Suite function
+`build_without_the_bytes_test#test_downloads_minimal_bep_partially_failed_aspect`: pass in both
+modes on `blaze-8` (labels `remote7-b8` and `remote7-b8-daemon`).
+
+## S3. FIXED: an early answer over TLS with unsent records
+
+The response is now read with `tls_read`, which decrypts records without first flushing the
+records rustls still has to send. `StreamOwned::read` used to flush them in a blocking write
+first, so against a server that does not read, the read waited up to `--remote_timeout` and
+could end in a write timeout instead of the server's status. Netty's `SslHandler` decodes
+inbound records independently of its pending writes. No test: the HTTP test server has no TLS.
+This is an open item.
+
+## S4. FIXED: `AbortOnDrop`
+
+A task the runtime cancelled (the runtime shut down under the waiter) now ends the upload as
+interrupted instead of panicking. Unit test:
+`http_cache_client::abort_on_drop_tests::cancelled_task_is_interrupted`.
+
+## Tests (round 9)
+
+blaze_remote, full run: 888 passed, 0 failed, 53 ignored. This includes the connection-pool work
+(`token_bucket_test` 14; `connection_pool_test` 21 passed, 2 ignored; `remote_module_test`
+`remote_max_connections_sizes_the_connection_pool`).
+
+## J1: ten `authput` runs per side (root's request)
+
+`blaze-8` (sha256 `0bb956be3a45e43a`) against the oracle, alternating, same probe as above.
+Raw lines: `~/.cache/blaze/work/remote-7/authput-dist.txt`.
+
+| Outcome | Oracle | Blaze |
+|---|---|---|
+| `Multiple errors during bulk transfer` (401 plus `Upload … timed out`), one small blob re-sent | 6 (12.3-19.0 s) | 5 (11.0-22.7 s) |
+| `401 Unauthorized` only, both small blobs re-sent | 4 (3.2-7.4 s) | 4 (0.6-1.6 s) |
+| no warning (the 64 MiB upload started after the refresh) | 0 | 1 |
+| first PUT the server logged was the 64 MiB one | 0 of 10 | 2 of 10 |
+
+The remaining difference is the order the uploads open their connections. `UploadManifest`
+orders the digests as Java does (blobs, then files). But Java's `HttpCacheClient.uploadAsync`
+calls `acquireUploadChannel()` (`channelPool.acquire`: an idle channel, LIFO, or a connect started
+asynchronously) on the calling thread, in the manifest's order. Blaze's `upload_blob_owned`
+spawns one task per upload, and each task acquires its connection when it runs, so the
+connections race. Port (not done yet): acquire in `upload_blob_owned`, on the caller and in
+order. That means taking an idle connection, or starting a non-blocking connect that the task
+completes, so that connects are not serialized. The retry after a refresh acquires again when it
+runs, as `uploadAfterCredentialRefresh` does. Then ten runs per side again.
+
+# Round 10 (2026-11-27)
+
+Implementer handover (the round-9 implementer's context ran out). Code: HEAD `8e10c3af` plus
+the uncommitted tree; binary `blaze-9a` (debug, sha256 `bdadce39c06f4993`,
+`~/.cache/blaze/work/remote-9/blaze-9a`).
+
+## J1, the rest: channels acquired on the calling thread, in call order
+
+Read first: `HttpCacheClient.java:304-445` (`acquireUploadChannel`, `acquireDownloadChannel`),
+`:479-603` (`get`, `getAfterCredentialRefresh`), `:634-717` (`uploadAsync`,
+`uploadAfterCredentialRefresh`), `:720` (`uploadBlobImpl` under `retrier.executeAsync`, whose
+`call.call()` runs on the caller, `Retrier.java:301-323`), `RemoteCacheClient.uploadBlob`
+(`RxFutures.toCompletable` subscribes at once), `CombinedCache.uploadFile/uploadBlob` and
+`UploadManifest.upload` (a plain loop over the missing digests, blobs before files). Netty has no
+source at the pin; its pool was read from the oracle's own jar (`javap -c` of
+`io.netty.channel.pool.FixedChannelPool` and `SimpleChannelPool` in `A-server.jar`):
+`acquire0` runs on the pool's one executor in submission order; at the limit it queues an
+`AcquireTask` (`pendingAcquireQueue`, `maxPendingAcquires = Integer.MAX_VALUE`, no timeout);
+each release runs `runTaskQueue`, which hands the slot to the oldest task, which polls the idle
+deque from the end (`lastRecentUsed`) or connects; a failed acquisition decrements and runs the
+queue too; `close0` fails the queued tasks with `ClosedChannelException`.
+
+Changes, all in `crates/blaze_remote/src/http/http_cache_client.rs`:
+- `ConnectionPool` (`:463`) takes the acquisition at once and never blocks the caller
+  (`acquire`, `:504`): an idle connection (LIFO, health-checked), or a connect started at once,
+  or a place in a FIFO queue; `release` (`:557`) hands slots to the queue in order; `close`
+  (`:594`) fails the queue with `ClosedChannelException`. The old `Condvar` wait (no order,
+  blocking) is gone.
+- `Connector` (`:275`): `start` (`:318`) is `Bootstrap.connect()`: a non-blocking socket whose
+  connect has been issued (the SYN is sent in call order); `finish` (`:384`) waits for it within
+  `CONNECT_TIMEOUT_MILLIS` of its start and sets up the idle timeout and TLS. The connect
+  timeout now has Netty's text: `ConnectTimeoutException: connection timed out after <ms> ms:
+  <host>/<ip>:<port>` (from the jar's `AbstractNioChannel$AbstractNioUnsafe$1`); before it was
+  `connection timed out: …` as an `AnnotatedConnectException`. A kernel `ETIMEDOUT` keeps the
+  `AnnotatedConnectException` with its `strerror`.
+- `Lease` (`:610`, `:635`) is `channelReady`: it never completes on the poll that took it (Java
+  completes it on the channel's event loop), and a dropped lease gives its slot or connection
+  back.
+- Uploads: `upload_blob_impl` (`:2103`) acquires inside the retrier's call; `upload_blob_owned`
+  (`:1965`) polls the upload once on the caller before spawning its task, which runs exactly
+  the part Java runs on the calling thread (circuit-breaker check, `uploadAsync`,
+  `acquireUploadChannel`) and stops at the lease. The request head (with the credentials) is
+  built when the connection is ready, as `HttpUploadHandler.write` builds it; a credential
+  failure there gives the open connection back to the pool (an exception thrown by `write`
+  fails the promise and leaves the channel open). The retry after a refresh acquires when it
+  runs (`upload_async`, `:1100`), as `uploadAfterCredentialRefresh` does. `upload_action_result`
+  acquires on the caller too (Java: `uploadAsync` without the retrier).
+- Downloads had the same pattern and worse: each `download_blob` blocked its caller's task
+  (`block_in_place`) for the whole transfer, so the downloads of one action ran one after
+  another on one connection, where Java runs them at once on one channel each. Now `get`
+  (`:795`) takes the lease the retrier's call acquired, and `download` (`:893`) runs the
+  exchange on a thread of the remote runtime's blocking pool (`on_blocking_thread`, `:1918`)
+  while the caller's task writes what arrives to the output stream (`ChunkSink`); an error of
+  the output stream fails the download as `channelRead0`'s exception does (`failAndClose`).
+- gRPC: no change needed for this pattern. The default `upload_blob_owned` awaits in place
+  (no spawned task), and the calls start in poll order. Item 2 (the gRPC connection pool's
+  probe) is still to come.
+
+Tests (new): unit `http_cache_client::connection_pool_tests` (7: FIFO queue, LIFO reuse, a
+dropped queued acquisition passes its turn, an unused grant frees its slot, close fails the
+queue, a refused connect frees its slot, a lease never completes on its first poll);
+`http_cache_client_test` `uploads_take_channels_in_call_order` and `downloads_proceed_together`
+(each `_inet` and `_unix`; the second fails with the old serial downloads). `http_cache_client_test`:
+41 passed, 0 failed, 0 ignored; lib `http`: 13 passed (6 old, 7 new).
+
+### `authput`, ten runs per side (`blaze-9a`)
+
+`scripts/remote-http/authput-dist <binary> 10 <file>` (alternating, oracle first). Raw lines:
+`~/.cache/blaze/work/remote-9/authput-dist.txt`. The "first PUT" rows count the server's log.
+
+| Outcome | Oracle | `blaze-9a` | `blaze-8` (round 9, before) |
+|---|---|---|---|
+| `Multiple errors` (401 + `Upload … timed out`), one small blob re-sent | 7 (13.0-22.7 s) | 2 (10.8-10.9 s) | 5 |
+| `401 Unauthorized` only, both small blobs re-sent | 1 (3.6 s) | 7 (0.7-16.5 s) | 4 |
+| no warning (the 64 MiB upload went out with the new token) | 2 (3.5-4.6 s) | 1 (0.8 s) | 1 |
+| first PUT the server logged was the 64 MiB one | 0 of 10 | 0 of 10 | 2 of 10 |
+| first PUT the server logged was the 145-byte one (else the 271-byte one) | 5 of 10 | 9 of 10 | |
+
+The order now agrees: on both sides the three connections are accepted in call order and the
+64 MiB request is never first. The outcome does not agree, and I do not think it can without
+porting Netty's event loop. A second series of four per side, with timestamps and connection
+numbers in the server's log (`early-answer-server.py` now logs ` @<ms> c<n>`; per-run logs
+`~/.cache/blaze/work/remote-9/early-probe/{oracle,blaze}/log/authput.server.<i>.log`;
+`authput-dist-stamped.txt`) shows why:
+
+- Oracle: the three connections are accepted within 0.5 ms, and the first request comes 9-13 ms
+  later. It is not the credential helper: Java fetches the token at command start
+  (`RemoteModule.createCredentials`, ported at `remote_module.rs:1312`), as Blaze does. It is
+  the first use of the upload pipeline in the JVM. Blaze writes its first request 0.1-0.2 ms
+  after the accept.
+- The timeout happens when the upload whose retry takes the 64 MiB channel had its 401 handled
+  after that channel was released. In the oracle runs this is exactly the small upload on the
+  same event loop as the 64 MiB channel. `HttpCacheClient.java:260` gives all channels two
+  event-loop threads, assigned round robin, so with three channels two share one. On that
+  thread, the 64 MiB channel's `write` (the head, then `ChunkedWriteHandler` writing until the
+  socket is full) and its early answer run before the other channel's 401 is read. That
+  listener then releases its own channel, refreshes, and `channelPool.acquire()` pops the most
+  recently released channel, the 64 MiB one. Stamped oracle runs 2, 3, 4: the timed-out retry
+  is always of the upload on `c1`, and `c1`/`c3` share a loop. Run 1 (401 only) had the 64 MiB
+  upload on `c2`, alone on its loop.
+- In Blaze each transfer has its own thread, so a 401 is handled as soon as it arrives. Both
+  retries usually acquire before the 64 MiB connection is released and take their own
+  connections back.
+
+So the remaining difference comes from Netty's threading (two shared event loops, one long write
+delaying another channel's read) and from the JVM's first-use delay. Neither is Bazel code at
+the pin, and the pool order the reviewer asked for is ported. Matching the rate would mean
+running every HTTP channel on two shared threads in Netty's order, which changes the transport
+design rather than the port of `HttpCacheClient`. I leave that to the reviewer and root as an
+open question: J1 as asked (order) is ready for re-check, and the outcome rate is DECLARED with
+this analysis.

@@ -145,7 +145,8 @@ flags), the S1 oracle sequences with the remote worker, `SequencedSkyframeExecut
 
 Implementer: task `i3-c`. Tree: HEAD `b2166031` plus uncommitted work. Binaries:
 `~/.cache/blaze/work/i3/bin/blaze21` (before the round-2 fixes), `blaze24` (`target/debug/blaze`
-of the tree with the round-2 fixes, before the server-log lines and the holder check below).
+of the tree with the round-2 fixes, before the server-log lines and the holder check below),
+`blaze26` (the tree with everything below, and the other agents' work of the night of 2026-11-26).
 Sequences: `scripts/incremental/seq-probe` (new; oracle first, then Blaze, one server per side
 and sequence; it replaces `remote-seq`, whose five sequences it contains). Nothing is committed.
 
@@ -159,7 +160,7 @@ and sequence; it replaces `remote-seq`, whose five sequences it contains). Nothi
 | S2-3 switch in the product binary | **fixed**: debug builds only |
 | S2-4 conflict cell | **fixed**: the `ACTION_CONFLICTS` precomputed |
 | S2-5 reset inside a command | **fixed**: a targeted `delete` on the command's graph |
-| S3 randomized test | **extended** (`scripts/incremental/fuzz`), run in progress |
+| S3 randomized test | **extended** (`scripts/incremental/fuzz`): 2,000 rounds, 25 seeds, below |
 | S4 configuration-key text | `i3-result.md` describes this tree (the node is its own); unchanged |
 
 ## S1-A
@@ -292,3 +293,122 @@ Not lifted yet. With it off, every sequence of the eight groups has the oracle's
 the differences left are counts: group 3 (adding a cache analyzes more in Blaze) and groups 1/8
 through Skymeld. I propose to lift it once group 3 is explained, and to record the decision
 with these sequences as its evidence.
+
+## The randomized test (round 1's S2-5, round 2's additions)
+
+`scripts/incremental/fuzz run --rounds N --seed S` (new; `stress random` stays as it was). Three
+sides on separate copies of a generated workspace: A Blaze with a kept graph (daemon), O the
+oracle (a server, state kept), B Blaze without a kept graph and `clean` before every build. Each
+round applies one edit to the three copies, sometimes tampers with an output of A and O (a file,
+a tree artifact's file, a runfiles entry), sometimes runs `query`, `cquery`, `test` or `fetch` on
+A and O first, then builds `//...` with `--keep_going` and the options the edits set. Counted:
+A against O (exit code, every file under bazel-bin both ways except compiler intermediates,
+query and cquery output) and A against B (exit code, ERROR and WARNING lines, B's files), the
+latter excused where A equals O. ERROR and WARNING lines against the oracle are printed, not
+counted (the interpreter's error texts differ by ruling).
+
+Edit kinds: the earlier ones (same-size rewrites, two writes in one millisecond, appends,
+touches, glob files, packages, BUILD and `.bzl` edits, `platform_mappings`, `--define`,
+`--action_env`, an external module file, a syntax error and its repair) and the reviewer's five:
+(1) a source symlink retargeted, its target edited, a file swapped with a directory; (2) a BUILD
+file added and removed under a directory a parent package globs, `.bazelignore` and
+`REPO.bazel` (`ignore_directories`) edits; (3) C++ (rules_cc 0.2.17): a header edited, a
+same-size header edit, a header added earlier on the include path and removed; (4) `query`,
+`cquery`, `test`, `fetch` between builds, a Starlark flag, `--platforms`, `-c opt`,
+`--package_path` with a second root, `--deleted_packages`, `--repo_env`,
+`--override_repository`, `--disk_cache`; (5) `load()` added and removed, a transitively loaded
+`.bzl`, `MODULE.bazel` (a `bazel_dep` with `local_path_override` added and removed, comments),
+the lockfile deleted, a file a repository rule reads. Round 2's additions: a fixed
+`--invocation_id` on stretches of rounds, `--watchfs` on stretches with directory renames,
+re-creations and removals, writes racing the start of A's command and SIGINT during A's build
+(the racing or interrupted build is not compared; the next build of the three sides is).
+
+Run (binary `blaze26`): 25 seeds (21-45) of 80 rounds, 2,000 rounds; each seed starts new
+servers (see "Memory" for why not 500 per seed). Results:
+
+| Seeds | Result |
+| --- | --- |
+| 22 seeds | 0 mismatches |
+| 21 | 9 against the clean build: a deleted runfiles `_repo_mapping` entry (A and the oracle keep it deleted, as Bazel does) counted by the first version of the repeated-id rule; the rule was corrected before seed 22 |
+| 30, 32 | 17 and 39 against the oracle: after a repeated-id stretch the oracle's `pkg3/g3.out` stays stale for the rest of the seed while A equals the clean build (Bazel's own repeated-id staleness, see S1-A); seed 30 also 1 message difference (below) |
+| 42 | 1: A's build after deleting `MODULE.bazel.lock` (with `--watchfs`, `--package_path`, `--override_repository`, `--deleted_packages`) hit the tool's 900 s limit; not reproduced by a replay of the seed nor by the same options directly (open) |
+
+Also found by the fuzz and the probes, not counted: Bazel 9.3.2 crashes (NullPointerException in
+`ExecutionProgressReceiver.evaluated`, `SkyframeExecutor.evaluateBuildDriverKeys`) when two builds
+in a row have the same `--invocation_id`; the "Switched off --watchfs again" warning comes at a
+different command than Bazel's in two long sequences (seed 11 round 77, seed 30 round 63; the
+plain sequence `--watchfs`, `--watchfs`, none, none, `--watchfs`, none matches): open.
+
+## Memory
+
+The fuzz workspace (rules_cc, a module extension, frequent `.bzl` and module edits) grows Blaze
+A's server by about 100 MB per round (1.3 GB after 13 rounds, 8 GB after 83; the first run was
+killed by its 12 GB limit at about round 120). The oracle stays at about 0.6 GB. It is the heaps
+of replaced `.bzl` modules and analysis values held by the three heap slots (`KeepAlive`,
+`KeptHeaps`, `GeneratorNameHeaps`): the D7 implementation (approved) fixes it and is the next
+item; until then a server that keeps its graph over hundreds of `.bzl`-changing commands runs
+out of memory.
+
+## Test ports (S3)
+
+- `FilesystemValueCheckerTest`'s output part (crates/blaze_sky_exec/src/output_checker.rs,
+  `mod tests`): `testDirtyActions` (`checkDirtyActions`, `pretendBuildTwoArtifacts`,
+  `checkActionDirtiedByFile`) and `testRemoteArtifactMaterializedAsToplevelOutputThenDeleted`
+  pass; the three `BatchStat` variants are `#[ignore]` (`@Ignore` in Java too; `BatchStat` not
+  ported, Bazel's local output service has none). The tree artifact and other remote metadata
+  tests are not ported yet.
+- `SequencedSkyframeExecutorTest`: not ported yet; root's plan (integration tests on
+  `BuildIntegrationTestCase` in crates/blaze_sky_top/tests/) is the next step after D7.
+
+## Open (round 2 and after)
+
+- Lifting the fail-safe: group 3's count difference (adding a cache: Blaze re-evaluates the
+  lockfile's `FILE_STATE` and through it the module extension, `REPOSITORY_DIRECTORY` and the
+  external packages, 5 packages against Bazel's 1).
+- D7 (memory, above); the fuzz with 500 rounds per server after it.
+- The seed-42 timeout; the `--watchfs` warning timing.
+- The second cquery with changed options (root): 16 `BZL_LOAD`, 1 `STARLARK_BUILTINS`, 2
+  `REPOSITORY_MAPPING`, 1 `REPO_PACKAGE_ARGS` the oracle evaluates and Blaze leaves dirty.
+- The 14 dependency edges `dump --skyframe=summary` counts less (the sweep agent's list).
+
+## The repeated invocation id on the oracle (for round 3)
+
+Correction of what the S1-A section above says ("with the same id and only a source edit Bazel
+stays stale"): that holds only right after the server's first command. Measured with the oracle
+(`~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64`, startup `--max_idle_secs=60 --nohome_rc
+--nosystem_rc`, a fresh output user root per row, a workspace with an empty MODULE.bazel and
+`genrule(name="app", srcs=["in.txt"], outs=["app.out"], cmd="cat $< > $@")`, no lockfile at the
+start; U = `--invocation_id=11111111-1111-1111-1111-111111111111`):
+
+| Commands | Last build prints | app/app.out |
+| --- | --- | --- |
+| build U; edit in.txt; build U | `INFO: Found 0 targets...` `INFO: 0 processes.` | stale (in-1) |
+| build U; edit in.txt; build V (another id) | `INFO: Found 1 target...` `INFO: 2 processes: 1 internal, 1 linux-sandbox.` | in-2 |
+| build U; build U; edit in.txt; build U | `INFO: Found 1 target...` `INFO: 1 process: 1 linux-sandbox.` | in-2 |
+
+Profile of the stale build (`--experimental_profile_additional_tasks=skyfunction`): FILE 2,
+FILE_STATE 1, BAZEL_LOCK_FILE 2, REGISTRY 1, MODULE_FILE 156, BAZEL_MODULE_RESOLUTION 12,
+REPO_SPEC 27, BAZEL_DEP_GRAPH 1, SINGLE_EXTENSION_EVAL 1, and no BUILD_DRIVER, ACTION_EXECUTION or
+TARGET_COMPLETION: the first command wrote MODULE.bazel.lock, the second re-resolves the modules
+and never evaluates its build driver keys. With the build in between (third row), the profile has
+BUILD_DRIVER 2, TARGET_COMPLETION 2, ACTION_EXECUTION 2, ARTIFACT 1, FILE 1.
+
+Java lines involved, as far as traced: `BUILD_ID` is set per command from the command id
+(`J:skyframe/SkyframeExecutor.java:1599-1600` `setCommandId`, called from `sync` at `:1707`); its
+consumers are `BuildDriverFunction.compute` ("Register a dependency on the BUILD_ID. We do this to
+make sure BuildDriverFunction is reevaluated every build", `J:skyframe/BuildDriverFunction.java:163-165`)
+and volatile actions (`J:skyframe/ActionExecutionFunction.java:217`). "Found 0 targets" is
+`AnalysisPhaseRunner.reportTargets` over `BuildResultListener.getAnalyzedTargets()`
+(`J:buildtool/AnalysisAndExecutionPhaseRunner.java:136-140`), which only `TopLevelTargetAnalyzedEvent`
+fills, posted from `BuildDriverFunction` (`J:skyframe/BuildDriverFunction.java:442`). Why the
+driver keys are not evaluated after the lockfile change when `BUILD_ID` is unchanged is not
+traced; `handleDiffs` runs on every sync (`J:skyframe/SequencedSkyframeExecutor.java:308`), and
+the syscall cache is per command. A related Bazel defect seen in the fuzz run: two builds in a
+row with the same id can crash the server (NullPointerException at
+`ExecutionProgressReceiver.evaluated(ExecutionProgressReceiver.java:130)` from
+`SkyframeExecutor.evaluateBuildDriverKeys(SkyframeExecutor.java:2503)`).
+
+Blaze at `blaze26`: rebuilds in all three rows (in-2). Sequences in `scripts/incremental/seq-probe`:
+`id-reuse` (first row; differs: the oracle is stale), `id-reuse-warm` (third row; outputs equal,
+the oracle also re-checks the lib action, "1 action cache hit", Blaze does not),
+`id-reuse-build-edit` (equal).

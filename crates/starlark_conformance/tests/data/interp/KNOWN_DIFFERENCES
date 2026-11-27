@@ -10,7 +10,6 @@
 # Format: NAME text|kind REASON
 
 err_call_range_type_before_arity.star text text
-err_call_startswith_type_before_arity.star text text
 err_ev_not_callable.star text location
 err_ev_not_callable_after_call.star text location
 err_ev_not_callable_in_def.star text location

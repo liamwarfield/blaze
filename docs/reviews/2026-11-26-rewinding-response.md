@@ -86,3 +86,25 @@ the old deps and the reset deps (taken in `evaluate_node`). The successor order 
 ## RW-5
 
 Agreed; root has withdrawn the "runs alone" ruling.
+
+# Round 2 (answers `2026-11-26-rewinding-round2.md`, STOP at b216603 on AT-1)
+
+| item | what changed | where |
+|---|---|---|
+| AT-1 (S1) | fixed by root in the tree (`"unknown"` for a cast to `Object.class`); confirmed on the oracle: `want dict<string, unknown>`, and Blaze prints the same (probe `rewinding/bin/atest.sh`, case at7) | `blaze_packages/src/starlark_defs/*` (root's change) |
+| RW-6 (S2) | the rewind build sets `--experimental_remote_cache_eviction_retries=0` and the test asserts no "retrying the build"; the oracle succeeds the same way | `crates/blaze/tests/rewind_lost_inputs_test.rs:188` |
+| IS-1 (S2) | the include scan's interrupt carries Java's message `Include scanning interrupted while {operation} {source}` at both call sites | `blaze_rules/src/includescanning/legacy_include_scanner.rs:576-583` |
+| AT-2 (S2) | every export error of `analysis_test` is reported, each after a newline | `blaze_packages/src/starlark_defs/rule_class_functions.rs:1574` |
+| S3 (shared-action rewind) | new end-to-end test `shared_action_copies_rewound_once`, expectations from the oracle (`rewinding/bin/rw2.sh oracle`) | `crates/blaze/tests/rewind_lost_inputs_test.rs:214` |
+| S4 (check order) | the `@Param` type checks run before the BUILD-thread check | `blaze_analysis/src/test/starlark_testing_module.rs:144-176` |
+
+# Round 3 (answers `2026-11-26-rewinding-round3.md`, STOP at 8ecc520 on IS-2)
+
+Not compiled yet: the suite runs until about 01:00 (no Cargo before then); the next checkpoint
+carries the test counts.
+
+| item | what changed | where |
+|---|---|---|
+| IS-2 (S1) | root's fix kept (`swap_remove`, Java's `CompactHashSet.moveEntry`); new unit test: the modules [A, own, B, C] give [A, C, B] | `blaze_rules/src/cpp/cc_compilation_context.rs:338`, test `:544` |
+| IS-3 (S2) | the interrupt of a discovery read is carried: `DiscoveryEnvironment`'s reads return `Result<Option<_>, ExecException>`, `Err(ExecException::Interrupted)` on an interrupted `get_values_and_exceptions`; `handle_tree_artifacts`, `create_include_scanning_header_data`, `expand_tree_artifacts`, `compute_transitively_used_modules` and `find_minimal_set_of_required_modules` pass it up, and `discover_inputs` reports it as the interrupted `ActionExecutionException` (Java's `InterruptedException` out of `discoverInputs`) | `blaze_exec/src/exec/action_execution_context.rs` (trait), `blaze_sky_exec/src/discovery_env.rs:79,109`, `blaze_rules/src/cpp/cc_compilation_context.rs:378`, `blaze_rules/src/includescanning/cpp_include_scanning_context_impl.rs:159`, `blaze_rules/src/cpp/cpp_compile_action.rs:1734` |
+| S4 (`range`) | Java's `Sequence` includes `RangeList`: `range` passes the type check of `fragments`/`toolchains`, and is handed on as the list of its elements (blaze_packages' `Sequence.cast` reads lists and tuples; the elements, and so the errors, are the same) | `blaze_analysis/src/test/starlark_testing_module.rs:144, 200` |

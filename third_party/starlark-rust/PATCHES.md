@@ -77,6 +77,7 @@ by adding.
 | 0066 | applied | a native callable's own location (`StarlarkValue::callable_location`, `Frame::callable_location`; Java `StarlarkCallable.getLocation()`): its traceback frame and `Error: ...` |
 | 0067 | applied | a function's `repr` names its module's extra value also while that module executes (`<function f from //pkg:file.bzl>`) |
 | 0068 | applied | native values Java implements as a `Map` (`StarlarkValue::java_map_entries`; Bazel's `existing_rule` views) in `dict(m)`, `d.update(m)`, `f(**m)`, `\|`, `\|=` and the set methods |
+| 0069 | applied | `dict == m` for such a `Map` compares entries (Java `Dict.equals`, `AbstractMap.equals`); public `dict::java_map_entries` for Blaze's other `Map` readers (`json.encode`, attribute conversion) |
 
 Conformance (Bazel ScriptTest, `starlark_conformance run`; strict = Java ScriptTest semantics,
 resilient = aborted chunks re-run statement by statement):
@@ -1266,4 +1267,19 @@ and users read them).
   called by the five call instructions in `bc/instr_impl.rs` before the callee binds its
   arguments) and `set/methods.rs` (`hashable_collection`) use it.
 - Test: `patch_0068_java_map_values`.
+
+## 0069 — dict equality with a Java `Map`; `java_map_entries` for Blaze
+
+- Gap (review 2026-11-26-patches-fixture P1-1, P1-2, P1-3): Java's `Dict.equals`
+  (net/starlark/java/eval/Dict.java:209) is `contents.equals(o)`, `AbstractMap.equals`: true for
+  any `Map` of the same size whose value for each key equals the dict's. So
+  `dict(native.existing_rule("x")) == native.existing_rule("x")` is True (the view's own `equals`
+  is identity, so the reverse is False); Blaze compared only with dicts. Blaze's other readers of
+  any `Map` (`json.encode`, Json.java:171; dict-typed attribute conversion, Type.java:567 and
+  :585; list conversion of a `StarlarkIterable`) could not reach patch 0068's hook from outside
+  this crate.
+- Fix: `dict/value.rs`: `DictGen::equals` compares with a value that has `java_map_entries`
+  (`java_map_equals`: the map's entries are made on a temporary heap, since `equals` has none;
+  only lifetimes are cast); public `values::dict::java_map_entries`.
+- Test: `patch_0069_dict_equals_java_map`; oracle: interp cases q32-q34 (server-4 run record).
 
