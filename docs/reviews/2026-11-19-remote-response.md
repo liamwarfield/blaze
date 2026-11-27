@@ -2119,3 +2119,120 @@ a TLS 1.2 handshake, and `v1_chain_is_refused_with_blazes_text`) passes; the ver
 are in the 35 of the library. `prefetch_files_file_exists_records_contents_proxy` is no longer
 ignored (the repo contents cache work gave `FileArtifactValue::RemoteFile` its shared contents
 proxy).
+
+# Round 7
+
+Response to the round-7 review (STOP at `a673e29` on N1, N2, T8; D1 residual, three S2 items,
+S4). Code: the shared working tree on HEAD `f051fd73` with the uncommitted round-7 changes.
+Binary for the end-to-end runs: `~/.cache/blaze/work/remote-7/blaze-3` (release build of that
+tree; see "Oracle" for the runs).
+
+## N1 (S1). FIXED: the eviction detail is carried through
+
+- `blaze_vfs::DetailedIOException` (new, `vfs/DetailedIOException.java`): message, a
+  `Filesystem.Code` (enum value name) and the transience, carried inside the `io::Error` of a file
+  system (`DetailedIOException::find` is Java's `instanceof`); `get_detailed_exit_code` rebuilds
+  the `FailureDetail`.
+- The overlay's lost file (`remote_external_overlay_file_system.rs`, `getInputStream`) returns it
+  with `REMOTE_FILE_EVICTED`, `TRANSIENT` (`RemoteExternalOverlayFileSystem.java:911-919`).
+- `blaze_sky_loading::io::IOException` keeps the class (`IOExceptionKind::Detailed`, from
+  `from_io`); the consumers take it as Java does:
+  - `PackageFunction` reading the BUILD file (`:1295-1325`) and `loadBzlModules` (`:737-753`):
+    `setFilesystemCode` when `ACTION_ON_FILESYSTEM_ERROR_CODE_LOADING_BZL_FILE` says so. The
+    port's comment that Bazel's action is `ALWAYS_USE_PACKAGE_LOADING_CODE` was wrong:
+    `BazelSkyframeExecutorConstants.java:39-41` makes `REMOTE_FILE_EVICTED` take precedence. The
+    builder gained `set_filesystem_code`; `build_cause` makes the `Filesystem` failure detail
+    (`createDetailedExitCodeWithFilesystemCode`).
+  - `BzlLoadFunction.errorReadingBzl` (`:1608-1622`): the detail and transience of the cause.
+  - `PackageLookupFunction.getFileValue` (`:212-228`): the `DetailedIOException` branch.
+  - `ArtifactFunction.createSourceValue` (`:283-285`) with `SourceArtifactException.createdDetailed`
+    (`:532-545`), and the traversal's `DETAILED_IO_EXCEPTION` type
+    (`RecursiveFilesystemTraversalFunction.java:127-130, 259-262`).
+  - The comments that said no Blaze file system throws one now say why the remaining branches
+    are not reached: the only `DetailedIOException` comes from reading contents, which globbing
+    (`StarlarkNativeModule`, `PackageFunction.java:558`) and the diff stat
+    (`FileSystemValueCheckerInferringAncestors`) never do.
+- Lost-input `unported!` paths: none are left in my area. The rewinding paths of the important
+  output handler already call the ported rewinding (round 6); see S2 for its guard.
+
+Oracle: see "Oracle" below. `testLostRemoteFile_build` itself still fails on Blaze, for a
+reason outside N1: the daemon discards the kept graph when a command has a remote cache
+("Skyframe graph of the previous command discarded: this command has a remote cache, a disk
+cache or remote execution configured (remote output invalidation is not ported)",
+`blaze_sky_top/src/incremental.rs`, the incremental agent's), so the third command reruns the
+repository rule, the cache lookup misses and the repository is fetched again (Java would do the
+same without the kept graph: the marker file of an in-memory repository is not on disk). To show
+N1 within one command on both sides I added hand-written cases (below), in which the blob
+disappears after the injection.
+
+## N2 (S1). FIXED
+
+`dispatcher_before_command` calls `notify_no_cache_available` on both early paths (no
+`RemoteOptions`; nothing remote requested), as `RemoteModule.beforeCommand` does for every
+command (`RemoteModule.java:416-421`). Oracle: `testRound7QueryWithoutCacheAfterCachedBuild`
+below.
+
+Found while proving N1: Blaze ran `RemoteModule.beforeCommand` for `build`/`test` inside the
+build command, after the Starlark options were parsed; Java runs every module's `beforeCommand`
+in the dispatcher first (`BlazeCommandDispatcher.java:493`, the flags at `:768`). A repository a
+Starlark flag needs was therefore fetched without the remote repo contents cache (no lookup), and
+`INFO: Invocation ID` (printed by `RemoteModule.setup`, `:579`) came after "Computing main repo
+mapping". `dispatcher_before_command` now runs for every command; the build command takes the
+module over (`DISPATCHER_RAN`, as it already did for coverage/run/fetch).
+
+## T8 (S1). Declared under D16 as generalised, one fixture per class
+
+Root's ruling: of the user's own trust-file certificate presented byte for byte, Blaze makes the
+structural check after the key and nothing more; every other reason the JDK's parser refuses is
+a declared lenient case. Seven new fixtures, each its own root, each `REJECT` by the oracle's JDK
+and listed in `LENIENT` (the test fails if Blaze refuses one, or accepts any other JDK-rejected
+case):
+
+| Fixture | JDK message |
+|---|---|
+| `direct_v2_issuer_uid_empty` (`81 00`) | Invalid encoding: zero length bit string |
+| `direct_v2_issuer_uid_bad_padding` (`81 01 09`) | Invalid number of padding bits |
+| `direct_outer_tbs_only` | Unable to initialize, Too short |
+| `direct_outer_fourth_element` | signed overrun, bytes = 2 |
+| `direct_outer_signature_octet_string` | DerValue.getBitString, not a bit string 4 |
+| `direct_inner_alg_empty_oid` (`06 00`) | ObjectIdentifier() -- Invalid DER encoding, not ended |
+| `direct_name_attribute_empty_oid` (`06 00`) | ObjectIdentifier() -- Invalid DER encoding, not ended |
+
+The module comment of `jdk_server_cert_verifier.rs` and the `LENIENT` comment state the ruling
+and name every fixture. No code change in the verifier.
+
+## D1 residual (S2). Fixtures added, comments corrected
+
+Six new fixtures, each `ACCEPT` by the JDK and refused by Blaze, in `STRICTER` with the reason:
+`direct_non_minimal_length`, `direct_serial_leading_zero`, `cn_general`, `cn_universal`,
+`direct_idn_host` (host `bücher.example`, CN `xn--bcher-kva.example`), `direct_all_digit_host`
+(`256.0.0.1`). The last two are refused before the verifier, by rustls' `ServerName`; the reason
+says so. Function comments now cite fixtures that exist (`direct_trailing_dot_host`,
+`direct_underscore`, `direct_v1_upper_host`, `direct_wildcard`, `direct_non_minimal_length`,
+`direct_serial_leading_zero`, `cn_general`, `cn_universal`, `direct_idn_host`,
+`direct_all_digit_host`); a check of every fixture name the file cites finds each `.der`.
+Fixture count: 67 (42 ACCEPT, 25 REJECT); the 54 earlier verdicts recorded again are unchanged.
+
+## S2
+
+- **Rewinding guard.** `process_outputs_and_get_lost_artifacts` hands the synchronizer the
+  important outputs and the artifacts of every runfiles tree (`RemoteImportantOutputHandler.java:82-88`).
+- **Interrupt during materialization.** The per-repo lock is an async mutex taken with
+  `block_on_interruptibly`, so a second caller waiting for another's materialization is
+  interrupted as Java's `getFromFuture` is; `get_path_from_label` lets an interrupt through as
+  `EvaluationAbort::Interrupted` instead of "Failed to materialize remote repo ..." (Java catches
+  `IOException` only, `StarlarkBaseExternalContext.java:2394-2399`). An interrupted
+  materialization leaves the repository in memory for the next caller.
+- **`stat_metadata`.** The trait method has no default any more: every `FileSystem` states it.
+  `UnixFileSystem` and `BundledFileSystem` return `None` (nothing remote); `RemoteActionFileSystem`
+  forwards it as its `stat` does (`RemoteActionFileSystem.java:631`, `statInternal`): the input's
+  metadata, the remote output tree's, or the local file system's own `stat_metadata` (which may
+  be the overlay); the overlay and its in-memory part already forwarded it. The test wrappers
+  (eight, in blaze_exec, blaze_remote, blaze_sky_exec, blaze_sky_loading) forward to their
+  delegate.
+
+## S4
+
+A negative `timeout` passes through: `RepositoryRemoteExecutor.execute` takes a `JavaDuration`
+(`Duration.ofSeconds(timeout)`), and `build_action` sets any non-zero timeout
+(`build_action_keeps_a_negative_timeout`, utils_test).
