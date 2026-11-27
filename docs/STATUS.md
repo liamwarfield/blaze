@@ -1,8 +1,35 @@
 # Status
 
-Updated 2026-11-27, 01:25 (root). Running. Numbers cite their evidence; history is in
-`git log` and `docs/decisions.md`. Quota rule (user, 2026-11-26): pause when 20% of the weekly
-all-model quota remains; the user watches it and sends the pause.
+Updated 2026-11-27, 11:30 (root). **Winding down on the user's word (quota nearly used up).**
+Implementers were told to stop at a compiling point and write `STATE.md` in their work
+directory; the harness re-check (Fable) was cancelled. Numbers cite their evidence; history is
+in `git log` and `docs/decisions.md`.
+
+## Where things stand at the pause
+
+- `main` is at checkpoint 47 (`49b5618`, builds from a clean checkout, pushed) plus documents and referee batch 4. Later edits are in the
+  working tree only, plus a local snapshot branch `wip/pause-2026-11-27` (not pushed, not
+  verified to build).
+- Checkpoint 47 went out at 11:25. The snapshot job (`~/.cache/blaze/work/root-runs/checkpoint2.sh`)
+  was running at the pause; if it finished, `git log` shows "Checkpoint 47" and
+  `~/.cache/blaze/work/root-runs/blaze-<commit>` exists; if not, run it again first.
+- Committed: referee batch 4 (PASS with conditions K1-K4;
+  files and hashes in `docs/reviews/2026-11-27-audit-referee-4.md`; new base
+  `corpus/scores/blaze-ef66f55e904e.referee4.json`).
+- Waiting for its auditor: harness batch B rounds 2 and 3 (first audit PASS with conditions;
+  the re-check was cancelled at the pause; task text in the root thread). After its commit:
+  three oracle runs for `corpus/upstream-tests/oracle-9.3.2-v2.json`, then `8ecc520` once per
+  mode as the bridge, then the newest checkpoint in both modes, all on a quiet machine.
+- Reviews owed at the next checkpoint: Skymeld (first; notes in
+  `docs/reviews/2026-11-27-skymeld-notes.md`), debugger and materializers (first; notes in
+  `docs/reviews/2026-11-27-debugger-materializer-notes.md`), incremental builds round 3,
+  rewinding round 4 (IS-2, IS-3), patches round 2 (0069), WebAssembly round 2, remote round 10
+  when J1's connection order is ported.
+- Threads to resume with a message ("continue from your STATE.md"): Incremental builds (D7
+  heap handles first), Execution 2, Remote 2, Query, Rewinding and configuration, Sweep,
+  Server 2, Analysis 2, Harness batch B (finished round 3; nothing to resume).
+- The keeper runs as the user unit `blaze-keeper` (stops by itself after eight hours;
+  `systemctl --user stop blaze-keeper` ends it now).
 
 ## To resume after a pause
 

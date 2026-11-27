@@ -35,7 +35,10 @@ VOLATILE_STATUS_KEYS = {"BUILD_HOST", "BUILD_USER", "BUILD_TIMESTAMP", "FORMATTE
 # --install_md5 is the md5 of its embedded install files, Blaze's is its own install key.
 # The value becomes a placeholder; the option itself is still compared.
 MASKED_OPTION_VALUES = {"install_md5": "<INSTALL_MD5>"}
-MASKED_OPTION_RE = re.compile(r"^--(%s)=\S*$" % "|".join(MASKED_OPTION_VALUES))
+# Only a value of this form is masked (audit of batch 3, A7): an empty or malformed key stays
+# visible and differs.
+MASKED_OPTION_VALUE_RE = {"install_md5": re.compile(r"[0-9a-f]{32}")}
+MASKED_OPTION_RE = re.compile(r"^--(%s)=([0-9a-f]{32})$" % "|".join(MASKED_OPTION_VALUES))
 # Startup options the recorder sets for its own sake: --max_idle_secs (README "Server mode",
 # AGENTS.md "Memory"). The reference was recorded without it, so it is removed on both sides from
 # every BEP startup-option list (parsed, explicit, canonical with Bazel's default value, and the
@@ -402,9 +405,11 @@ def s_build_stderr(rd, manifest, ctx):
         raise SurfaceFailed("command build was not run")
     text = _read(rd, "build.stderr")
     _write_norm(rd, "build.stderr.txt", ctx.text(text))
-    # The server-start line is compared only for a recording made on Blaze's persistent server
-    # (see normalise.SERVER_START_RE); every other recording drops it, as before batch 3.
-    return stderr_summary(ctx, text, keep_server_start=oc.blaze_server_mode(manifest) == "daemon")
+    # The server-start line is compared only for a recording judged by the daemon-mode rules
+    # (oc.strict_server_rules: mode daemon, or a command that did not start a server; audit of
+    # batch 3b, A2 and C1; see normalise.SERVER_START_RE); a one-process recording, which prints
+    # it on every command, drops it, as before batch 3.
+    return stderr_summary(ctx, text, keep_server_start=oc.strict_server_rules(manifest, os.path.join(rd, "raw")))
 
 
 def normalise_spawn(ctx, spawn):
@@ -456,12 +461,15 @@ def mask_option_values(obj):
     string and in an option message (optionValue and combinedForm)."""
     if isinstance(obj, dict):
         out = {k: mask_option_values(v) for k, v in obj.items()}
-        ph = MASKED_OPTION_VALUES.get(out.get("optionName"))
-        if ph is not None:
-            if "optionValue" in out:
-                out["optionValue"] = ph
-            if "combinedForm" in out:
-                out["combinedForm"] = "--%s=%s" % (out["optionName"], ph)
+        name = out.get("optionName")
+        ph = MASKED_OPTION_VALUES.get(name)
+        value = out.get("optionValue")
+        if ph is not None and isinstance(value, str) and MASKED_OPTION_VALUE_RE[name].fullmatch(value):
+            out["optionValue"] = ph
+            cf = out.get("combinedForm")
+            if isinstance(cf, str) and cf.endswith("=" + value):
+                # The value is replaced inside the printed combinedForm, which is otherwise kept.
+                out["combinedForm"] = cf[:-len(value)] + ph
         return out
     if isinstance(obj, list):
         return [mask_option_values(x) for x in obj]
@@ -522,11 +530,15 @@ def drop_recorder_options(obj):
 
 def presence(obj):
     """The shape of a measurement: which fields are set. Scalars become "<measured>", a list
-    (proto3 JSON prints only non-empty ones) "<list>"; message fields are kept by name."""
+    (proto3 JSON prints only non-empty ones) "<list>"; message fields are kept by name.
+    What proto3 JSON never prints for a set field (an empty list, null, a zero, false) is kept
+    as it is, so that it differs from a measured value (audit of batch 3, A6)."""
     if isinstance(obj, dict):
         return {k: presence(v) for k, v in obj.items()}
     if isinstance(obj, list):
-        return "<list>"
+        return "<list>" if obj else []
+    if obj is None or obj is False or obj == 0 or obj == "0":
+        return obj
     return "<measured>"
 
 
@@ -548,10 +560,19 @@ def normalise_build_metrics(ctx, bm):
             am = {}
             for group, g in v.items():
                 g = dict(g) if isinstance(g, dict) else g
-                if group in ARTIFACT_SIZE_MASKED and isinstance(g, dict) and "sizeInBytes" in g:
+                # Only a size proto3 JSON can print is masked (audit of batch 3, A5): an int64 as
+                # a decimal string without sign; anything else stays and differs.
+                if (group in ARTIFACT_SIZE_MASKED and isinstance(g, dict)
+                        and isinstance(g.get("sizeInBytes"), str) and re.fullmatch(r"[0-9]+", g["sizeInBytes"])):
                     g["sizeInBytes"] = "<path-dependent>"
                 am[group] = g
             counters[k] = am
+        elif k == "buildGraphMetrics" and isinstance(v, dict) and isinstance(v.get("dirtiedValues"), list):
+            # Audit of batch 3, A8: Bazel prints dirtiedValues in an order that varies between
+            # identical runs (the counts do not), so the list is sorted by SkyFunction and its
+            # counts are compared (the allow list no longer excuses them in daemon mode).
+            counters[k] = dict(v, dirtiedValues=sorted(
+                v["dirtiedValues"], key=lambda x: (str(x.get("skyfunctionName")), oc.canonical(x))))
         else:
             counters[k] = v
     out = _drop_timing(ctx.deep(counters))

@@ -741,9 +741,12 @@ class DaemonModeAllowTest(unittest.TestCase):
 
     def test_the_real_entry_drops_the_four_cold_server_fields_in_daemon_mode(self):
         for path in ("buildMetrics.buildGraphMetrics.evaluatedValues[3].count",
-                     "buildMetrics.buildGraphMetrics.dirtiedValues[2].skyfunctionName",
                      "buildMetrics.actionSummary.actionCacheStatistics.sizeInBytes"):
             self.assertIsNotNone(ocmp.AllowList().match("re2", "bep", self.BM, "DIFF", [path], "daemon"), path)
+        # A8: dirtiedValues is sorted by the extractor; its counts are judged in daemon mode.
+        path = "buildMetrics.buildGraphMetrics.dirtiedValues[2].count"
+        self.assertIsNotNone(ocmp.AllowList().match("re2", "bep", self.BM, "DIFF", [path]), path)
+        self.assertIsNone(ocmp.AllowList().match("re2", "bep", self.BM, "DIFF", [path], "daemon"), path)
         for path in ("buildMetrics.buildGraphMetrics.builtValues[0].count",
                      "buildMetrics.buildGraphMetrics.postInvocationSkyframeNodeCount",
                      "buildMetrics.buildGraphMetrics.changedValues", "buildMetrics.buildGraphMetrics.cleanedValues"):
@@ -817,10 +820,10 @@ class DaemonRulesTest(unittest.TestCase):
         # A2: a binary whose default is a server; the recorder was not asked for daemon mode.
         _, r = self.cand(self.COLD_BUILD, mode=None)
         self.assertEqual(r["status"], "DIFF")
-        self.assertTrue(oc.strict_server_rules({"commands": [{"name": "build", "server": {"state": "warm"}}]}))
-        self.assertTrue(oc.strict_server_rules({"server": {"blaze_server_mode": "daemon"}}))
-        self.assertFalse(oc.strict_server_rules({"commands": [{"name": "build", "server": {"state": "cold"}}]}))
-        self.assertFalse(oc.strict_server_rules({"commands": [{"name": "build", "exit_code": 0}]}))
+        self.assertTrue(oc.strict_server_rules({"commands": [{"name": "build", "server": {"state": "warm"}}]}, None))
+        self.assertTrue(oc.strict_server_rules({"server": {"blaze_server_mode": "daemon"}}, None))
+        self.assertFalse(oc.strict_server_rules({"commands": [{"name": "build", "server": {"state": "cold"}}]}, None))
+        self.assertFalse(oc.strict_server_rules({"commands": [{"name": "build", "exit_code": 0}]}, None))
 
     def test_an_observed_warm_server_gets_the_daemon_allow_fields(self):
         bm = '{"buildMetrics":{}}'
@@ -835,6 +838,141 @@ class DaemonRulesTest(unittest.TestCase):
         got = {l: by_surface(ocmp.compare_labels(REF + "-x", l, surfaces=["bep"]), "brotli")["bep"]["status"]
                for l in ("lenient", "observed")}
         self.assertEqual(got, {"lenient": "MATCH", "observed": "DIFF"})
+
+
+class StrictByAnySourceTest(unittest.TestCase):
+    """Referee batch 4 (audit of batch 3b, C1): the daemon-mode rules apply when any command did
+    not start a server by any source (manifest start line, pid-file state, raw stderr), not only
+    when the recorder saw the pid file. One-process Blaze prints the start line on every command
+    and stays lenient."""
+
+    START = DaemonRulesTest.START
+
+    def setUp(self):
+        self.rec = Records(self)
+        codes = {"mod_graph": 0, "build": 0, "info": 0}
+        rd = self.rec.add(REF, "brotli", {"exit_codes": codes}, manifest=dict(CLEAN, commands=[
+            {"name": n, "exit_code": 0} for n in codes]))
+        self.stderr(rd, {"mod_graph": self.START, "build": "", "info": ""})
+
+    @staticmethod
+    def stderr(rd, texts):
+        os.makedirs(os.path.join(rd, "raw"), exist_ok=True)
+        for name, text in texts.items():
+            with open(os.path.join(rd, "raw", name + ".stderr"), "w") as f:
+                f.write(text)
+
+    def cand(self, commands, server=None, stderr=None, label="cand"):
+        m = dict(CLEAN, commands=commands)
+        if server is not None:
+            m["server"] = server
+        rd = self.rec.add(label, "brotli", {"exit_codes": {c["name"]: 0 for c in commands}}, manifest=m)
+        if stderr:
+            self.stderr(rd, stderr)
+        cmp = ocmp.compare_labels(REF, label, surfaces=["exit_codes"])
+        return cmp, by_surface(cmp, "brotli")["exit_codes"]
+
+    def test_c1_no_pid_seen_and_no_start_line_gets_the_strict_rules(self):
+        # The auditor's last evasion row: mode unset, no pid seen, no start line printed. The
+        # build and info ran without starting a server but are recorded cold.
+        cmds = [{"name": n, "exit_code": 0, "server": {"pid_before": None, "pid_after": None,
+                                                         "start_line": n == "mod_graph", "state": "cold"}}
+                for n in ("mod_graph", "build", "info")]
+        cmp, r = self.cand(cmds, server={"blaze_server_mode": None, "shutdown_exit_code": 0,
+                                         "alive_after_shutdown": []})
+        self.assertTrue(cmp.provenance["brotli"]["b"]["strict_server_rules"])
+        self.assertEqual(r["status"], "DIFF")
+        self.assertEqual(sorted(d["key"] for d in r["details"]), ["build", "info"])
+
+    def test_c1_a_recording_shaped_before_batch_3_gets_the_strict_rules_from_stderr(self):
+        # The auditor's evasion row "no `server` key and no states": the states come from stderr.
+        cmds = [{"name": n, "exit_code": 0} for n in ("mod_graph", "build", "info")]
+        cmp, r = self.cand(cmds, stderr={"mod_graph": self.START, "build": self.START, "info": ""})
+        self.assertTrue(cmp.provenance["brotli"]["b"]["strict_server_rules"])
+        self.assertEqual([(d["key"], d["paths"]) for d in r["details"]], [("build", ["server_state"])])
+        # Its shutdown was never recorded: not a failure, but said.
+        self.assertTrue(any("recorded before batch 3" in n and "shutdown is not checked" in n for n in cmp.notes),
+                        cmp.notes)
+
+    def test_c1_the_oracle_shape_against_itself_matches(self):
+        # oracle-9.3.2-rerun and -check have this shape: strict now, and equal to the reference.
+        cmds = [{"name": n, "exit_code": 0} for n in ("mod_graph", "build", "info")]
+        cmp, r = self.cand(cmds, stderr={"mod_graph": self.START, "build": "", "info": ""})
+        self.assertTrue(cmp.provenance["brotli"]["b"]["strict_server_rules"])
+        self.assertEqual((r["status"], r["counts"]["MATCH"]), ("MATCH", 3))
+
+    def test_c1_raw_stderr_is_read_even_when_the_manifest_has_states(self):
+        # A manifest that claims a start line on every command, against a stderr that has none.
+        cmds = [{"name": n, "exit_code": 0, "server": {"pid_before": None, "pid_after": None,
+                                                         "start_line": True, "state": "cold"}}
+                for n in ("mod_graph", "build", "info")]
+        cmp, _ = self.cand(cmds, server={"shutdown_exit_code": 0, "alive_after_shutdown": []},
+                           stderr={"mod_graph": self.START, "build": "", "info": self.START})
+        self.assertTrue(cmp.provenance["brotli"]["b"]["strict_server_rules"])
+
+    def test_c1_one_process_blaze_stays_lenient(self):
+        # The shape of blaze-ef66f55e904e (no server record) and of guard-8ecc520 (with one).
+        for label, server, with_states in (("old", None, False), ("new", {"shutdown_exit_code": 0,
+                                                                         "alive_after_shutdown": []}, True)):
+            cmds = [dict({"name": n, "exit_code": 0}, **({"server": {"pid_before": None, "pid_after": None,
+                                                                      "start_line": True, "state": "cold"}}
+                                                         if with_states else {}))
+                    for n in ("mod_graph", "build", "info")]
+            cmp, r = self.cand(cmds, server=server, label=label,
+                               stderr={n: self.START + "INFO: x\n" for n in ("mod_graph", "build", "info")})
+            self.assertFalse(cmp.provenance["brotli"]["b"]["strict_server_rules"], label)
+            self.assertEqual(r["status"], "MATCH", label)
+
+    def test_c1_a_recorded_server_without_shutdown_fields_still_fails(self):
+        # Only a recording with no `server` record at all has an unknown shutdown.
+        cmds = [{"name": n, "exit_code": 0, "server": {"pid_before": 1, "pid_after": 1,
+                                                         "start_line": n == "mod_graph",
+                                                         "state": "cold" if n == "mod_graph" else "warm"}}
+                for n in ("mod_graph", "build", "info")]
+        _, r = self.cand(cmds, server={"blaze_server_mode": None})
+        self.assertEqual([(d["key"], d["kind"]) for d in r["details"]], [(ocmp.SHUTDOWN_ITEM, "EXTRA")])
+
+    def test_c1_strict_server_rules_sources(self):
+        import tempfile, shutil
+        raw = tempfile.mkdtemp(prefix="oracle-test-")
+        self.addCleanup(shutil.rmtree, raw)
+        with open(os.path.join(raw, "build.stderr"), "w") as f:
+            f.write("INFO: x\n")
+        with open(os.path.join(raw, "info.stderr"), "w") as f:
+            f.write(self.START)
+        self.assertTrue(oc.strict_server_rules({"commands": [{"name": "build", "server": {"start_line": False,
+                                                                                         "state": "cold"}}]}, None))
+        self.assertTrue(oc.strict_server_rules({"commands": [{"name": "build"}]}, raw))
+        self.assertFalse(oc.strict_server_rules({"commands": [{"name": "info"}]}, raw))
+        # No evidence (no stderr, no fields) is not a server.
+        self.assertFalse(oc.strict_server_rules({"commands": [{"name": "query_label_kind"}]}, raw))
+        self.assertFalse(oc.strict_server_rules({"commands": [{"name": "build", "server": {"state": "cold"}}]}, None))
+
+
+class RefereeHashTest(unittest.TestCase):
+    """Referee batch 4 (audit of batch 3b, C2): the hashes cover the file that holds the strict
+    rules, so two scores with one referee hash are judged by the same rules."""
+
+    def test_the_strict_rules_are_inside_both_hashes(self):
+        import inspect
+        for fn in (oc.strict_server_rules, oc.started_no_server, oc.server_states, oc.canonical,
+                   ocmp.server_checked_exit_codes):
+            name = os.path.basename(inspect.getsourcefile(fn))
+            self.assertIn(name, oc.REFEREE_FILES, fn.__name__)
+        for fn in (oc.strict_server_rules, oc.started_no_server, oc.canonical):
+            self.assertIn(os.path.basename(inspect.getsourcefile(fn)), oc.EXTRACTOR_FILES, fn.__name__)
+
+    def test_a_change_to_oracle_common_changes_both_hashes(self):
+        real = oc.sha256_file
+        before = (oc.referee_sha256(), oc.extractor_sha256())
+
+        def fake(path):
+            return "0" * 64 if os.path.basename(path) == "oracle_common.py" else real(path)
+        self.addCleanup(setattr, oc, "sha256_file", real)
+        oc.sha256_file = fake
+        after = (oc.referee_sha256(), oc.extractor_sha256())
+        self.assertNotEqual(before[0], after[0])
+        self.assertNotEqual(before[1], after[1])
 
 
 class EmptyFieldListTest(unittest.TestCase):

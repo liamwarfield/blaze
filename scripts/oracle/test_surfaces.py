@@ -202,7 +202,7 @@ class InstallMd5Test(unittest.TestCase):
 
     def test_string_form_is_masked(self):
         ev = [{"id": {"unstructuredCommandLine": {}},
-               "unstructuredCommandLine": {"args": ["build", "--install_md5=0123abcd", "--x=1"]}}]
+               "unstructuredCommandLine": {"args": ["build", "--install_md5=" + "0123abcd" * 4, "--x=1"]}}]
         got = list(surfaces.normalise_bep(CTX, ev).values())[0]["unstructuredCommandLine"]["args"]
         self.assertEqual(got, ["build", "--install_md5=<INSTALL_MD5>", "--x=1"])
 
@@ -427,6 +427,86 @@ class BuildStderrModeTest(unittest.TestCase):
         self.assertEqual(self.extract({"server": {"blaze_server_mode": "daemon"}}),
                          {"Starting local Bazel server (9.3.2) and connecting to it...": 1,
                           "INFO: Found 1 target...": 1})
+
+    def test_kept_under_the_strict_rules_without_the_mode(self):
+        # Referee batch 4 (audit of batch 3b, A2 and C1): a recording with the mode unset whose
+        # commands show a server (here the build's own start line is printed, as when the server
+        # died and was restarted, but another command started none) keeps the line.
+        import os
+        import shutil
+        import tempfile
+        rd = tempfile.mkdtemp(prefix="oracle-test-")
+        self.addCleanup(shutil.rmtree, rd)
+        for sub in ("raw", "norm"):
+            os.makedirs(os.path.join(rd, sub))
+        start = "Starting local Bazel server (9.3.2) and connecting to it...\n"
+        for name, text in (("mod_graph", start), ("build", start + "INFO: Found 1 target...\n"),
+                           ("info", "")):
+            with open(os.path.join(rd, "raw", name + ".stderr"), "w") as f:
+                f.write(text)
+        cmds = [{"name": n, "exit_code": 0} for n in ("mod_graph", "build", "info")]
+        want = {"Starting local Bazel server (9.3.2) and connecting to it...": 1, "INFO: Found 1 target...": 1}
+        self.assertEqual(surfaces.s_build_stderr(rd, {"commands": cmds}, CTX), want)
+        cmds = [dict(c, server={"start_line": c["name"] != "info", "state": "warm" if c["name"] == "info" else "cold"})
+                for c in cmds]
+        os.remove(os.path.join(rd, "raw", "info.stderr"))
+        self.assertEqual(surfaces.s_build_stderr(rd, {"server": {}, "commands": cmds}, CTX), want)
+        # Every command started a server (one-process Blaze): dropped, as before.
+        with open(os.path.join(rd, "raw", "info.stderr"), "w") as f:
+            f.write(start)
+        cmds = [dict(c, server={"start_line": True, "state": "cold"}) for c in cmds]
+        self.assertEqual(surfaces.s_build_stderr(rd, {"server": {}, "commands": cmds}, CTX),
+                         {"INFO: Found 1 target...": 1})
+
+
+class NextExtractorTest(unittest.TestCase):
+    """Batch 3b, prepared for the next extractor change (audit of batch 3, A5 to A8)."""
+
+    def test_a5_only_a_printable_size_is_masked(self):
+        for bad in ("-3", "", "x", "1.5"):
+            bm = _changed(artifactMetrics__outputArtifactsSeen={"sizeInBytes": bad, "count": 89})
+            self.assertNotEqual(_metrics(ORACLE_METRICS), _metrics(bm), bad)
+        bm = _changed(artifactMetrics__outputArtifactsSeen={"sizeInBytes": "1", "count": 89})
+        self.assertEqual(_metrics(ORACLE_METRICS), _metrics(bm))
+
+    def test_a6_empty_list_null_and_zero_are_not_measurements(self):
+        for bad in (dict(memoryMetrics__garbageMetrics=[]), dict(timingMetrics__wallTimeInMs=None),
+                    dict(timingMetrics__wallTimeInMs="0"), dict(networkMetrics__systemNetworkStats=None)):
+            self.assertNotEqual(_metrics(ORACLE_METRICS), _metrics(_changed(**bad)), bad)
+
+    def test_a7_only_a_32_hex_install_key_is_masked(self):
+        good = surfaces.normalise_bep(CTX, [_canonical_cmdline("58cf1ecbff441bac762b0050d6da21e9")])
+        for bad in ("", "58cf", "58CF1ECBFF441BAC762B0050D6DA21E9", "g" * 32):
+            self.assertNotEqual(good, surfaces.normalise_bep(CTX, [_canonical_cmdline(bad)]), bad)
+        ev = [{"id": {"unstructuredCommandLine": {}},
+               "unstructuredCommandLine": {"args": ["--install_md5=", "--install_md5=" + "a" * 32]}}]
+        got = list(surfaces.normalise_bep(CTX, ev).values())[0]["unstructuredCommandLine"]["args"]
+        self.assertEqual(got, ["--install_md5=", "--install_md5=<INSTALL_MD5>"])
+
+    def test_a7_the_printed_combined_form_is_kept_around_the_value(self):
+        ev = _canonical_cmdline("58cf1ecbff441bac762b0050d6da21e9")
+        opt = ev["structuredCommandLine"]["sections"][0]["optionList"]["option"][0]
+        opt["combinedForm"] = "--noinstall_md5=58cf1ecbff441bac762b0050d6da21e9"
+        got = list(surfaces.normalise_bep(CTX, [ev]).values())[0]["structuredCommandLine"]["sections"][0]
+        self.assertEqual(got["optionList"]["option"][0]["combinedForm"], "--noinstall_md5=<INSTALL_MD5>")
+
+    def test_a8_dirtied_values_order_is_ignored_and_counts_are_compared(self):
+        a = _changed(buildGraphMetrics__dirtiedValues=[{"skyfunctionName": "FILE", "count": "2"},
+                                                       {"skyfunctionName": "BZL_LOAD", "count": "1"}])
+        b = _changed(buildGraphMetrics__dirtiedValues=[{"skyfunctionName": "BZL_LOAD", "count": "1"},
+                                                       {"skyfunctionName": "FILE", "count": "2"}])
+        c = _changed(buildGraphMetrics__dirtiedValues=[{"skyfunctionName": "BZL_LOAD", "count": "1"},
+                                                       {"skyfunctionName": "FILE", "count": "3"}])
+        self.assertEqual(_metrics(a), _metrics(b))
+        self.assertNotEqual(_metrics(a), _metrics(c))
+        ea = surfaces.normalise_bep(CTX, [{"id": {"buildMetrics": {}}, "buildMetrics": a}])
+        ec = surfaces.normalise_bep(CTX, [{"id": {"buildMetrics": {}}, "buildMetrics": c}])
+        r = ocmp.compare_surface("brotli", "bep", {"status": "OK", "items": ea}, {"status": "OK", "items": ec},
+                                 ocmp.AllowList(), mode_b="daemon")
+        self.assertEqual(r["status"], "DIFF", "a dirtied count is not excused in daemon mode")
+        r = ocmp.compare_surface("brotli", "bep", {"status": "OK", "items": ea}, {"status": "OK", "items": ec},
+                                 ocmp.AllowList())
+        self.assertEqual(r["status"], "MATCH", "one-process candidates keep the excuse (cold server)")
 
 
 class DefaultOverrideTest(unittest.TestCase):

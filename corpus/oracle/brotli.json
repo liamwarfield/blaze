@@ -16,10 +16,10 @@
   "query_jsonproto": 0,
   "query_label_kind": 0
  },
- "extractor_sha256": "c215d2d7087c8ff0b2094a42201fd889a6a2e33a5709b8fba5d8413daa993f97",
+ "extractor_sha256": "fb3ca2d0e8653f7a275ba85087b078a51078d1e3d47e31610e86dbca98364b3d",
  "files_sha256": {
   "items/aquery_actions.json": "8845d749aef52f83868d6a479342666ff112207c70be38f3bad45ba290f51575",
-  "items/bep.json": "b97e59e496a04d5a7307bc9f570168499396782b82e51f09d4465c0c3f58a79d",
+  "items/bep.json": "40cd363e19895212ffa5555c018547bd364bc0fa7454516f1b1f9c1c3f57e80b",
   "items/build_stderr.json": "8641ff1443c2d4063616986205f1bb354fd2300fb67b1da603d09c0d22ba91fd",
   "items/cquery_jsonproto.json": "bc34c28ad95512b51ad3a50b5abccb440464922f698674b8ec39c4c501264e8f",
   "items/cquery_label_kind.json": "9d32f8b8c06c2111eb5f7f6c56b834fcea23f76391d9771e2ea21297dc86bba6",
@@ -34,7 +34,7 @@
   "norm/MODULE.bazel.lock": "b740de99469ec391a88b4893c923fa754e0967281e46628f071f50fa69442297",
   "norm/aquery_actions.json": "ecff3eb896b41d71ffa0e05b71e6570e12c953f52f08816e0b54ca84224fca95",
   "norm/aquery_deps_jsonproto.json": "f4091b32718ac104e042c69915a89bf3c701facaa85e111d57699daaa052b209",
-  "norm/bep.json": "1e312d7d197b95bb4c86d6757f612f4b3ff107c3d193e1a7c614590a38079db4",
+  "norm/bep.json": "23dc037b525ad123318329e3daaba9b671afd94cca22dd53d88793fe629dcf5b",
   "norm/build.stderr.txt": "b010d8567855c5e8ffe96dee72544ad39ba1c08040ffc8de6a55fbfa1e72ff8f",
   "norm/cquery_deps_label_kind.txt": "b2a9f0a709d4d10ed77c1065c75ace685590b26b31fd878d92a94c5978ae85cc",
   "norm/cquery_jsonproto.json": "2ef47773b53a9a03304c10bfee913074c53b0eff2c0400f8db62d1d43c3743e8",

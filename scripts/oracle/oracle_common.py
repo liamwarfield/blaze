@@ -165,20 +165,29 @@ def repo_state(root=None):
     return state
 
 
+# Referee batch 4 (audit of batch 3b, C2): oracle_common.py holds strict_server_rules,
+# server_states and canonical(), which decide how items are extracted and compared, so it is part
+# of both hashes.
+REFEREE_FILES = ("normalise.py", "surfaces.py", "oracle_common.py", "oracle_compare.py", "allow.json")
+EXTRACTOR_FILES = ("normalise.py", "surfaces.py", "oracle_common.py")
+
+
 def referee_sha256():
-    """sha256 over the files that decide what a recording's items are and how they compare."""
+    """sha256 over the files that decide what a recording's items are and how they compare
+    (REFEREE_FILES)."""
     here = os.path.dirname(os.path.abspath(__file__))
     h = hashlib.sha256()
-    for name in ("normalise.py", "surfaces.py", "oracle_compare.py", "allow.json"):
+    for name in REFEREE_FILES:
         h.update(name.encode() + b"\0" + sha256_file(os.path.join(here, name)).encode() + b"\n")
     return h.hexdigest()
 
 
 def extractor_sha256():
-    """sha256 over the files that turn raw/ into norm/ and items/ (normalise.py, surfaces.py)."""
+    """sha256 over the files that turn raw/ into norm/ and items/ (EXTRACTOR_FILES; surfaces.py
+    calls oracle_common for strict_server_rules and canonical())."""
     here = os.path.dirname(os.path.abspath(__file__))
     h = hashlib.sha256()
-    for name in ("normalise.py", "surfaces.py"):
+    for name in EXTRACTOR_FILES:
         h.update(name.encode() + b"\0" + sha256_file(os.path.join(here, name)).encode() + b"\n")
     return h.hexdigest()
 
@@ -255,18 +264,44 @@ def blaze_server_mode(manifest):
     return ((manifest or {}).get("server") or {}).get("blaze_server_mode")
 
 
-def observed_warm_server(manifest):
-    """Whether `record` saw a persistent server: a command recorded (from the server's pid file)
-    as having run warm. Recordings made before batch 3 carry no such field: False."""
-    return any(isinstance(c.get("server"), dict) and c["server"].get("state") == "warm"
-               for c in (manifest or {}).get("commands", []))
+def started_no_server(manifest, raw_dir):
+    """Whether any command of a recording ran without starting a server, by any source (audit of
+    referee batch 3b, C1; the pid file alone is not enough): the manifest says the client printed
+    no server-start line (`server.start_line` false), or the recorder saw the same server before
+    and after it (`server.state` warm), or its raw/<command>.stderr exists and has no start line
+    (the source of server_states() for recordings made before batch 3, and a check on the
+    manifest for later ones). One-process Blaze prints the start line on every command, so it
+    never qualifies; Bazel does after its first command."""
+    for c in (manifest or {}).get("commands", []):
+        s = c.get("server")
+        if isinstance(s, dict) and (s.get("start_line") is False or s.get("state") == "warm"):
+            return True
+        path = os.path.join(raw_dir, c["name"] + ".stderr") if raw_dir and c.get("name") else None
+        if path and os.path.isfile(path):
+            with open(path, errors="replace") as f:
+                if not client_started_server(f.read()):
+                    return True
+    return False
 
 
-def strict_server_rules(manifest):
-    """Whether a candidate is judged by the daemon-mode rules (audit of batch 3, A1 and A2): the
-    recorder ran Blaze's persistent server (`blaze_server_mode` daemon), or it observed a warm
-    server whatever the mode it was asked for (a binary whose default is a server)."""
-    return blaze_server_mode(manifest) == "daemon" or observed_warm_server(manifest)
+def strict_server_rules(manifest, raw_dir):
+    """Whether a candidate is judged by the daemon-mode rules (audit of batch 3, A1 and A2; audit
+    of batch 3b, C1): the recorder ran Blaze's persistent server (`blaze_server_mode` daemon), or
+    some command of the recording did not start a server (started_no_server), whatever mode the
+    recorder was asked for (a binary whose default is a server). `raw_dir` is the recording's
+    raw/ directory (raw_dir(label, project); the extractor passes its own)."""
+    return blaze_server_mode(manifest) == "daemon" or started_no_server(manifest, raw_dir)
+
+
+def shutdown_recorded(manifest):
+    """Whether the recorder could record the final shutdown: the manifest has the per-recording
+    `server` record (batch 3 or later; always so for mode daemon). A recording made before batch
+    3 has none; its shutdown is unknown, not failed."""
+    return isinstance((manifest or {}).get("server"), dict)
+
+
+def raw_dir(label, project):
+    return os.path.join(record_dir(label, project), "raw")
 
 
 def client_started_server(stderr_text):
@@ -298,7 +333,7 @@ def server_states(label, project, manifest):
         if isinstance(s, dict) and s.get("state"):
             out[c["name"]] = [s["state"], "pid"]
             continue
-        path = os.path.join(record_dir(label, project), "raw", c["name"] + ".stderr")
+        path = os.path.join(raw_dir(label, project), c["name"] + ".stderr")
         if os.path.isfile(path):
             with open(path, errors="replace") as f:
                 out[c["name"]] = ["cold" if client_started_server(f.read()) else "warm", "stderr"]

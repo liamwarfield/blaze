@@ -789,3 +789,19 @@ Each entry: date, decision, why, who decided.
   failed (lost), source `log`; functions that never started stay unmeasured. A new oracle
   baseline (`oracle-9.3.2-v2.json`, three runs, per-action repository cache) follows the
   auditor's conditions; old labels are not scored against it. Root.
+- 2026-11-27, 11:10. Second restart: the machine went down again at 04:05 and came back at
+  11:06 (seven hours without work; kernel 7.3.4 to 7.3.5, so a system update; not started by
+  root). Limits re-applied, keeper restarted, all ten threads running again by themselves. The
+  snapshot checkpoint job was cut off both times and is started a third time. Nothing was
+  pushed in between; `main` is still 8e10c3a. Root.
+- 2026-11-27, 11:30. Checkpoint 47 is 49b5618 (code commit 4ab1357): built from a clean
+  snapshot worktree (check and `cargo build -p blaze`, rc 0), binary `blaze-49b5618` (sha256
+  be458b3e…), `scripts/incremental/reuse-check` ok, pushed by the snapshot job on its first
+  attempt after the second restart. Referee batch 4 committed after it (K1: hashes equal the
+  audit's table; K2: 0 notes in the new base); ratchet base is now
+  `corpus/scores/blaze-ef66f55e904e.referee4.json`. Then the work was wound down on the user's
+  word (quota): the Fable re-check of harness rounds 2 and 3 cancelled, eight implementers
+  stopped at a compiling point with `STATE.md` in their work directories (Remote 2 ended
+  without a closing message; check its files first). Local snapshot of the whole tree at the
+  pause: branch `wip/pause-2026-11-27`. Not done: harness commit, new oracle baseline, suite
+  runs at checkpoint 47, the reviews owed (list in docs/STATUS.md). Root.

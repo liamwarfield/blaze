@@ -315,7 +315,7 @@ def compare_surface(project, surface, a, b, allow, exits_a=None, exits_b=None, m
 SHUTDOWN_ITEM = "__shutdown__"
 
 
-def server_checked_exit_codes(a, b, states_a, states_b, shutdown_b):
+def server_checked_exit_codes(a, b, states_a, states_b, shutdown_b, shutdown_recorded=True):
     """exit_codes of both sides with the daemon-mode server checks (audit of batch 3, A1).
 
     For a candidate under the daemon-mode rules: a command that ran on a cold server on one side
@@ -323,6 +323,9 @@ def server_checked_exit_codes(a, b, states_a, states_b, shutdown_b):
     final `shutdown` that exited non-zero, left a server alive or was not recorded becomes the
     candidate-only item SHUTDOWN_ITEM (EXTRA). Decided here, at compare time, so that no
     recording's items change. Returns new (a, b) surface dicts; the inputs are not modified.
+    `shutdown_recorded` false (oc.shutdown_recorded: a recording made before batch 3, which has no
+    `server` record at all, so its shutdown is unknown) skips the shutdown check only; the
+    caller notes it. A manifest that has the record but lacks the fields still fails.
     """
     ia, ib = dict(a.get("items", {})), dict(b.get("items", {}))
     for cmd in sorted(set(ia) & set(ib)):
@@ -332,7 +335,7 @@ def server_checked_exit_codes(a, b, states_a, states_b, shutdown_b):
             ia[cmd] = {"exit_code": ia[cmd], "server_state": sa}
             ib[cmd] = {"exit_code": ib[cmd], "server_state": sb}
     sd = shutdown_b or {}
-    if sd.get("shutdown_exit_code") != 0 or sd.get("alive_after_shutdown"):
+    if shutdown_recorded and (sd.get("shutdown_exit_code") != 0 or sd.get("alive_after_shutdown")):
         ib[SHUTDOWN_ITEM] = {"shutdown_exit_code": sd.get("shutdown_exit_code"),
                              "alive_after_shutdown": sd.get("alive_after_shutdown")}
     return dict(a, items=ia), dict(b, items=ib)
@@ -379,8 +382,9 @@ def provenance(label, project, manifest):
         # Referee batch 3: BLAZE_SERVER_MODE the recorder set (None: unset), what it saw of the
         # server per command (oc.server_states), and the final shutdown.
         "server_mode": oc.blaze_server_mode(manifest),
-        # Batch 3b (A2): judged by the daemon-mode rules (mode daemon, or a warm server observed).
-        "strict_server_rules": oc.strict_server_rules(manifest),
+        # Batch 3b (A2), batch 4 (C1): judged by the daemon-mode rules (mode daemon, or a command
+        # that did not start a server by any source).
+        "strict_server_rules": oc.strict_server_rules(manifest, oc.raw_dir(label, project)),
         "server_states": oc.server_states(label, project, manifest),
         "shutdown": {k: v for k, v in (manifest.get("server") or {}).items()
                      if k in ("shutdown_exit_code", "alive_after_shutdown")} or None,
@@ -463,15 +467,20 @@ def compare_labels(label_a, label_b, projects=None, surfaces=None, allow=None):
         exits_a = load_surface(label_a, p, "exit_codes", ma, sa).get("items")
         exits_b = load_surface(label_b, p, "exit_codes", mb, sb).get("items")
         excs = [(side, e) for side in ("a", "b") for e in cmp.provenance[p][side].get("exceptions", [])]
-        # Audit of batch 3, A1 and A2: the daemon-mode rules follow the server the recorder
-        # observed, not only the mode it was asked for.
-        strict = mb is not None and oc.strict_server_rules(mb)
+        # Audit of batch 3, A1 and A2; audit of batch 3b, C1: the daemon-mode rules follow the
+        # server the recording shows (pid file, start line in the manifest or in raw stderr), not
+        # only the mode the recorder was asked for.
+        strict = mb is not None and oc.strict_server_rules(mb, oc.raw_dir(label_b, p))
         for s in scope_surfaces:
             sur_a, sur_b = load_surface(label_a, p, s, ma, sa), load_surface(label_b, p, s, mb, sb)
             if strict and s == "exit_codes" and sur_a.get("status") == "OK" and sur_b.get("status") == "OK":
                 pa, pb = cmp.provenance[p]["a"], cmp.provenance[p]["b"]
+                recorded = oc.shutdown_recorded(mb)
+                if not recorded:
+                    cmp.notes.append("%s/%s: judged by the daemon-mode rules, but recorded before batch 3 "
+                                     "(no `server` record): the final shutdown is not checked" % (label_b, p))
                 sur_a, sur_b = server_checked_exit_codes(sur_a, sur_b, pa.get("server_states"),
-                                                         pb.get("server_states"), pb.get("shutdown"))
+                                                         pb.get("server_states"), pb.get("shutdown"), recorded)
             r = compare_surface(p, s, sur_a, sur_b, allow, exits_a, exits_b, "daemon" if strict else None)
             r["exceptions"] = [{"side": side, "id": e["id"]} for side, e in excs if s in e["surfaces"]]
             cmp.results.append(r)

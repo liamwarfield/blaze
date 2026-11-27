@@ -55,7 +55,8 @@ rounded down, so a missing surface lowers it and `100.0` means every item.
 
 `scoreboard <label> --write` writes `corpus/scores/<label>.json` and `.md`. They depend only on
 the two recordings, the referee (`referee_sha256`: `normalise.py`, `surfaces.py`,
-`oracle_compare.py`, `allow.json`) and `--allow-dirty`, so they can be regenerated and diffed. A
+`oracle_common.py`, `oracle_compare.py`, `allow.json`; `oracle_common.py` since batch 4, because
+it holds the daemon-mode trigger and `server_states`) and `--allow-dirty`, so they can be regenerated and diffed. A
 score is committed with the commit that accepts it; `scripts/gate/compare-scores` holds a later
 score against it.
 
@@ -114,8 +115,8 @@ Layout of `~/.cache/blaze/oracle-records/<label>/<project>/`:
   Blaze checkout the recorder ran from), `binary_origin` (whether the binary can come from that
   commit, below), `replaced`/`forced` (what `--force` overrode), checkout commit of the project, workspace fix-ups, the
   normaliser context (paths, user, host), every command line with exit code and duration, item
-  counts per surface, `extractor_sha256` (the `normalise.py` and `surfaces.py` that built `norm/`
-  and `items/`), and the sha256 of every file below.
+  counts per surface, `extractor_sha256` (the `normalise.py`, `surfaces.py` and, since batch 4,
+  `oracle_common.py` that built `norm/` and `items/`), and the sha256 of every file below.
 - `raw/`: outputs exactly as the binary wrote them (stdout/stderr per command, exec log, BEP,
   lockfile, output-tree walk, `testxml/`).
 - `norm/`: normalised outputs for people to read and diff: `mod_graph.json`, `MODULE.bazel.lock`,
@@ -164,15 +165,23 @@ cold on the other, or when the final shutdown failed or left a server alive. The
 carries them in `provenance` (`server_mode`, `server_states`, `shutdown`,
 `strict_server_rules`).
 
-The daemon-mode rules (batch 3b) apply to a candidate whose manifest has `blaze_server_mode`
-`daemon`, or on which `record` observed a warm server (a command with `server.state` `warm`,
-whatever mode was asked for: a binary whose default is the server gets them too;
-`oracle_common.strict_server_rules`). Under them:
+The daemon-mode rules (batch 3b; trigger widened in batch 4, audit of batch 3b C1) apply to a
+candidate whose manifest has `blaze_server_mode` `daemon`, or one of whose commands did not start
+a server by any source, whatever mode was asked for (a binary whose default is the server gets
+them too; `oracle_common.strict_server_rules`): `server.start_line` false or `server.state`
+`warm` in the manifest, or a `raw/<command>.stderr` without the client's start line (read even
+when the manifest has states, so the pid file is not the only witness). One-process Blaze prints
+the start line on every command and is not judged by them; Bazel is, after its first command,
+so the oracle against itself is too (its three recordings agree in states and in the narrowed
+allow fields). Under them:
 
 - a command that ran cold on one side and warm on the other makes its `exit_codes` item a DIFF
   (both values become `{"exit_code", "server_state"}`; path `server_state`);
 - a final `shutdown` that exited non-zero, left a server alive or was not recorded adds the
-  candidate-only item `__shutdown__` to `exit_codes` (EXTRA);
+  candidate-only item `__shutdown__` to `exit_codes` (EXTRA). A recording without any `server`
+  record (made before batch 3: the recorder did not record the shutdown then; `oracle-9.3.2-rerun`
+  and `-check`) is not given the item; `compare` prints a note that its shutdown is not checked
+  (`oracle_common.shutdown_recorded`). A `server` record without the shutdown fields still fails;
 - allow-list entries use `only_fields_in_daemon_mode` (below).
 
 Both are decided at compare time (`oracle_compare.server_checked_exit_codes`), so no
@@ -184,12 +193,12 @@ daemon mode does with them:
 
 - the client's server-start line in `build_stderr` (it has no prefix, so the stderr summary
   drops it; Blaze in one-process mode prints it on every command): kept and compared for a
-  recording with `blaze_server_mode` `daemon` (`normalise.SERVER_START_RE`); dropped otherwise,
-  as before. This is decided at extraction by the requested mode; a server started by the build
-  of a recording with an observed warm server is caught by the `server_state` check above
-  instead (moving this to the observed state is listed for the next extractor change).
+  recording judged by the daemon-mode rules (`normalise.SERVER_START_RE`; batch 4, audit of
+  batch 3b A2: the same `strict_server_rules` as at compare time, applied by the extractor to the
+  recording's own manifest and `raw/`); dropped otherwise (one-process recordings), as before.
 - Four of the nine `only_fields` of `build-metrics-volatile-counters`: `builtValues`,
-  `changedValues`, `cleanedValues` and `postInvocationSkyframeNodeCount`. In `oracle-9.3.2`,
+  `changedValues`, `cleanedValues` and `postInvocationSkyframeNodeCount` (and, since batch 4,
+  `dirtiedValues`, which the extractor now sorts; see "Normalisation"). In `oracle-9.3.2`,
   `-rerun` and `-check` they are equal (per SkyFunction and in order; node count brotli 7305, re2
   23543); only the `evaluatedValues` counts, the order of `dirtiedValues` and the re2 action
   cache `sizeInBytes` vary. So they excuse nothing but a one-process Blaze, whose build runs cold
@@ -342,7 +351,7 @@ Per format (`surfaces.py`):
 - stderr summary: only `INFO`/`WARNING`/`ERROR`/`DEBUG` lines and the test summary; drop
   progress, `Invocation ID`, `Elapsed time`, `INFO: From ...` banners; durations become `<DUR>`,
   PIDs `<PID>`; lines are counted, not ordered (their order depends on scheduling). The client's
-  server-start line is kept only in daemon mode (see "Server mode").
+  server-start line is kept only under the daemon-mode rules (see "Server mode").
 - exec log: drop `metrics` and `walltime`; digests of spawn outputs under `testlogs/` become
   `<timing-dependent>`.
 - BEP: drop `progress` events and progress children; inline named sets of files into
@@ -356,8 +365,10 @@ Per format (`surfaces.py`):
   options (the client's `.bazelrc` lines) are stable-sorted by `<rc index>:<command>[:config]`
   group within each contiguous run (the client emits the groups in hash-map order; order within
   a group is kept); the value of `--install_md5` (the installation's identity: Bazel's md5 of
-  its embedded files, Blaze's own install key) becomes `<INSTALL_MD5>`, the option itself is
-  compared; the startup option `--max_idle_secs` (set by the recorder in daemon mode, see
+  its embedded files, Blaze's own install key) becomes `<INSTALL_MD5>` when it is 32 lowercase
+  hex digits (batch 4, A7; any other value stays and differs), in the string form, in
+  `optionValue` and inside the printed `combinedForm`, which is otherwise kept; the option itself
+  is compared; the startup option `--max_idle_secs` (set by the recorder in daemon mode, see
   "Server mode"; the reference was recorded without it) is removed from every startup-option
   list on both sides, the reference's default `--max_idle_secs=10800` included, together with
   the empty entry Bazel's client sends after each original startup option (`blaze.cc`
@@ -373,11 +384,15 @@ Per format (`surfaces.py`):
   `remoteAnalysisCacheStatistics` are compared without their wall-clock keys (as above);
   `artifactMetrics` counts are compared, and so is `sourceArtifactsRead.sizeInBytes`; the
   `sizeInBytes` of `outputArtifactsSeen`, `outputArtifactsFromActionCache` and
-  `topLevelArtifacts` become `<path-dependent>` (runfiles manifests name absolute paths and test
+  `topLevelArtifacts` become `<path-dependent>` when they are a string of decimal digits (batch 4,
+  A5; anything else stays and differs) (runfiles manifests name absolute paths and test
   logs carry times: the three oracle recordings differ there, brotli 7671064/7671088/7671088
   for `outputArtifactsSeen`); `memoryMetrics`, `timingMetrics`, `networkMetrics`,
   `workerMetrics`, `workerPoolMetrics` and `dynamicExecutionMetrics` only measure the machine and
-  are compared by presence: which fields are set (values `<measured>`, a list `<list>`).
+  are compared by presence: which fields are set (values `<measured>`, a non-empty list
+  `<list>`; an empty list, `null`, `0`, `"0"` and `false`, which proto3 JSON never prints for a
+  set field, stay as they are: batch 4, A6). `buildGraphMetrics.dirtiedValues` is sorted by
+  SkyFunction (batch 4, A8: Bazel prints it in an order that varies between identical runs).
   The `buildGraphMetrics` counters that vary between identical oracle runs, `evaluatedValues`
   among them by name (a declared deviation, decisions 2026-11-26), stay with the allow-list entry
   `build-metrics-volatile-counters`.
@@ -424,8 +439,8 @@ equally to Blaze recordings, so keep entries narrow. Current entries:
   per-SkyFunction evaluated/built/changed/cleaned/dirtied counts (and their order), the
   post-invocation Skyframe node count and the action cache `sizeInBytes` vary between identical
   runs. The other counters in the event are compared. In daemon mode only the evaluated counts,
-  the dirtied order and the action cache size are excused (batch 3: the oracle's three runs vary
-  in nothing else).
+  the action cache size and the JVM's `garbageMetrics` are excused (batch 3: the oracle's three
+  runs vary in nothing else but the dirtied order, which the extractor sorts since batch 4).
 
 Normalisation and the allow list were derived from three oracle recordings (`oracle-9.3.2`,
 `oracle-9.3.2-rerun`, `oracle-9.3.2-check`); the third found the test-suite expansion order.
