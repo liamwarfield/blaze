@@ -744,3 +744,9 @@ Each entry: date, decision, why, who decided.
   thread, together with `RemoteOutputChecker.afterAspectAnalysis` (a build with `--aspects`
   and a remote or disk cache stops on `unported!`). Suite at 8ecc520 recorded in
   `docs/upstream-tests.md`: one process 2,715, server mode 2,779 with seven targets hung. Root.
+- 2026-11-27, 02:15. First review of small ports at 8ecc520
+  (docs/reviews/2026-11-27-small-ports.md): hash functions (SHA-1, Git SHA-1, BLAKE3) PASS;
+  `starlark_doc_extract` PASS; `--proto:rule_classes`, Android and J2ObjC fragments, feature
+  flags PASS; auto output filter PASS; WebAssembly in repository rules STOP on W-1 (text-format
+  modules accepted) and W-2 (module's own memory limits kept instead of the computed ones).
+  With the sweep thread. Root.
