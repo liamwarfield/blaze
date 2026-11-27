@@ -54,6 +54,17 @@
 > about 28 worker functions that need a worker kept between commands), functions not measured
 > after a shard's output overflow 32, JVM-only items 21, SkyQuery 20, the HTTP cache 13, the
 > remote repo contents cache about 20.
+>
+> **Commit `a673e29` (checkpoint 40), label `blaze-a673e29`** (2026-11-26 17:21, suite mode, 237
+> of 237 targets ran, 3,145 s; binary sha256 `53e3431b…`, debug build from a clean checkout of
+> the commit; three read-only reviewers reading; builders paused on Cargo): **163 of 211 targets
+> and 2,679 of 2,878 functions** (lost 48 targets and 175 functions; 24 absent). Against the
+> `374c631` run: 66 functions gained, none lost. What remains, by cause: the persistent server
+> as the default, about 70 (35 server tests, about 20 worker functions that need a worker kept
+> between commands, credential-cache and incrementality checks); functions not measured after a
+> shard's output overflow 22; JVM-only items 21; SkyQuery 20; the rest in groups of four or
+> fewer. A daemon-mode run of `ce81d5a` was stopped unfinished and gives no total
+> (docs/decisions.md, 2026-11-26 17:00).
 
 
 First full run of Bazel's own shell and Python integration tests (237 targets) against Blaze,
