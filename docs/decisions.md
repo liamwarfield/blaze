@@ -705,3 +705,9 @@ Each entry: date, decision, why, who decided.
   server-mode regression of checkpoint 43 is fixed in the tree by its implementer: Java resets
   the build driver's per-key posted-event and conflict-check sets after every evaluation
   (SkyframeBuildView.java:749); the port kept them in memory a server never releases. Root.
+- 2026-11-26, 23:00. Root's error: checkpoint 45 (e205a17) was pushed although its
+  clean-checkout check had failed (a file an agent was writing, mobile_install.rs, entered the
+  commit between the tree check and `git add`); root's push command did not read the check's
+  result. e205a17 does not build; the next checkpoint replaces it. From now on the checkpoint
+  job itself pushes, and only when the clean-checkout check returns 0; otherwise it resets the
+  commit and retries. Root.
