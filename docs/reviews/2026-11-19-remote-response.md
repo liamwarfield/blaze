@@ -2448,3 +2448,39 @@ New this round:
   with `NOT_FOUND` and once with `UNIMPLEMENTED`.
 - `http/snappy.rs` unit tests: 4.
 - The H1 and S4 tests listed above.
+
+## Follow-up: the interrupt timing (OPEN above, FIXED)
+
+The time difference had nothing to do with the interrupt: without SIGINT Bazel ended at 12.6 s
+and Blaze at 28.0 s. Sampling the sockets showed the cause. Bazel had about 3.9 MB of the 4 MiB
+body in the kernel's send queue within a second, while Blaze stayed at about 2.75 MB. Blaze polled
+for `POLLOUT` before every write, and Linux reports a TCP socket writable only while its free space
+is at least half of what is queued, so Blaze stopped at 2.8 MB of the 4 MB buffer. It then
+restarted its timer on every write the kernel accepted as the server drained. Bazel had nothing
+left to write, so its all-idle timer fired 10 s later.
+
+What the oracle's jar shows (netty 4.1.119.Final, `javap`):
+
+- `IdleStateHandler.write` adds its write listener to each write's promise. The listener sets
+  `lastWriteTime`, and `AllIdleTimeoutTask` measures from `max(lastReadTime, lastWriteTime)`. So
+  only a completed write restarts the timer.
+- `ChunkedStream` sends the body in 8192-byte chunks.
+- `NioSocketChannel.doWrite` writes while the socket takes data, and registers `OP_WRITE` only
+  after a write takes nothing.
+
+`write_watching_plain` and `write_watching_tls` now do the same: they write first, wait for
+writability only after `WouldBlock` (checking for an early answer before each write), and the
+deadline runs from the start of each 8 KiB piece. Probe (`http-variants-probe interrupt`,
+`blaze-7`, sha256 `ea70aa91ab80ea28`):
+
+| | no SIGINT | SIGINT at 3 s |
+|---|---|---|
+| Bazel | 12.2 s | 13.1 s |
+| Blaze | 13.9 s | 10.6 s |
+
+Both sides print the same `Upload of '/cas/…' timed out. Sent 4194304 bytes.` and exit 0. The
+remaining spread is server start-up time, under a load average of 11 to 13. The H1 `early` probe
+still sends the same requests on both sides. In two runs of `authput` the oracle ended with
+"Multiple errors during bulk transfer" (401, plus a timeout of the 145-byte retry, which the
+server never received), where earlier today it gave the plain 401. The oracle is not
+deterministic on that probe; Blaze's output did not change.

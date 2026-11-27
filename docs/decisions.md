@@ -734,3 +734,13 @@ Each entry: date, decision, why, who decided.
   fall in the same `HashMap` bin are printed sorted by key. Java's order there is the insertion
   order from the graph's `ConcurrentHashMap`, which follows SkyKey hash codes and is not a
   fixed value; a comparison treats such a tied group as a set. Declared deviation. Root.
+- 2026-11-27, 01:40. Remote review round 9 at 8ecc520: STOP on J1 only. H1 (HTTP upload reads
+  the response late) is fixed. J1: after an upload answered before its body was written, Blaze
+  closes the connection where Java returns the channel to the pool; in the oracle the retried
+  request is then swallowed as the rest of the unsent body, the upload times out, and the
+  warning, the time and the re-uploads differ from Blaze's. Ruling: Blaze ports this as the
+  Java has it (the difference is visible behaviour; "port, do not redesign"). The reviewer's
+  round-8 wording that led the fixer the other way was wrong about the Java. With the remote
+  thread, together with `RemoteOutputChecker.afterAspectAnalysis` (a build with `--aspects`
+  and a remote or disk cache stops on `unported!`). Suite at 8ecc520 recorded in
+  `docs/upstream-tests.md`: one process 2,715, server mode 2,779 with seven targets hung. Root.
