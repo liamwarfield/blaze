@@ -711,3 +711,10 @@ Each entry: date, decision, why, who decided.
   result. e205a17 does not build; the next checkpoint replaces it. From now on the checkpoint
   job itself pushes, and only when the clean-checkout check returns 0; otherwise it resets the
   commit and retries. Root.
+- 2026-11-26, 23:15. Checkpoint 46 is 8ecc520: it builds from a clean checkout (check and
+  `cargo build -p blaze` in a worktree, rc 0), binary `blaze-8ecc520` (sha256 238f2559…),
+  `scripts/incremental/reuse-check` ok. It repairs e205a17. Pushed by the checkpoint job
+  (`~/.cache/blaze/work/root-runs/checkpoint.sh`) after the check passed. Suite runs in both
+  modes started on that binary (labels `blaze-8ecc520-daemon`, `blaze-8ecc520`); reviews
+  started at 8ecc520: remote round 9, query round 4 with rewinding round 3, first review of
+  interpreter patches 0066-0068 and the multi-command test fixture. Root.
